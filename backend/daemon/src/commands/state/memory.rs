@@ -39,15 +39,7 @@ pub fn memory_changelog(
     let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
 
     let char_name = engine.character_name();
-    let dreams_path = ctx
-        .config
-        .dirs
-        .config
-        .join("characters")
-        .join(char_name)
-        .join("workspace")
-        .join("memory")
-        .join("DREAMS.md");
+    let dreams_path = crate::memory::dreams_log::dreams_log_path(&ctx.config.dirs.data, char_name);
     if !dreams_path.exists() {
         return Ok(json!({ "changelog": [], "character": char_name }));
     }
@@ -55,7 +47,7 @@ pub fn memory_changelog(
     let content = std::fs::read_to_string(&dreams_path).map_err(|e| {
         (
             ErrorCode::InternalError,
-            format!("failed to read DREAMS.md: {e}"),
+            format!("failed to read dreams log: {e}"),
         )
     })?;
     let mut sections = content
@@ -98,6 +90,56 @@ pub fn memory_changelog(
         "Memory changelog queried"
     );
     Ok(json!({ "changelog": sections, "character": char_name }))
+}
+
+/// Print recent entries from the dreams audit log (data-dir-rooted).
+pub fn memory_dreams(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .unwrap_or(10);
+    let char_name = engine.character_name();
+    let path = crate::memory::dreams_log::dreams_log_path(&ctx.config.dirs.data, char_name);
+    if !path.exists() {
+        return Ok(json!({
+            "character": char_name,
+            "entries": [],
+            "path": path.display().to_string(),
+            "exists": false,
+        }));
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("failed to read dreams log: {e}"),
+        )
+    })?;
+
+    let mut sections = content
+        .split("\n## ")
+        .filter_map(|section| {
+            let trimmed = section.trim();
+            if trimmed.is_empty() || trimmed.starts_with("# Dreams") {
+                None
+            } else {
+                Some(format!("## {trimmed}"))
+            }
+        })
+        .collect::<Vec<_>>();
+    sections.reverse();
+    sections.truncate(limit);
+
+    Ok(json!({
+        "character": char_name,
+        "entries": sections,
+        "path": path.display().to_string(),
+        "exists": true,
+    }))
 }
 
 pub async fn memory_dream(
@@ -319,6 +361,8 @@ pub async fn compact(
     .await
     .ok();
 
+    let cached_request = ctx.autonomy.cached_last_request(&char_name);
+
     let outcome = mgr
         .compact(
             &char_name,
@@ -334,6 +378,8 @@ pub async fn compact(
             markdown_store.as_ref(),
             dry_run,
             keep_turns_override,
+            cached_request,
+            Some(&ctx.config.dirs.data),
         )
         .await
         .map_err(compaction_err)?;

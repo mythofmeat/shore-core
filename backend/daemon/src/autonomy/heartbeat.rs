@@ -325,6 +325,7 @@ mod tests {
             dormant_after_idle_time: ConfigDuration::from_secs(172800), // 48h
             minimum_heartbeat_latency: ConfigDuration::from_secs(3600), // 1h
             max_tool_rounds: 3,
+            wrap_up_grace_rounds: 1,
         };
         HeartbeatClock::with_config(&config)
     }

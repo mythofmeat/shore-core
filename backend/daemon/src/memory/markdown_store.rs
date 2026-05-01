@@ -90,6 +90,10 @@ impl MarkdownMemoryStore {
         Ok(Self { base_dir })
     }
 
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
     /// List all `.md` files in the store, recursively.
     pub async fn list_all(&self) -> Result<Vec<MarkdownEntry>, MarkdownStoreError> {
         let mut entries = Vec::new();

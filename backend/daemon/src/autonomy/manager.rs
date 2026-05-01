@@ -992,12 +992,15 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
         "Autonomy tick: running idle-triggered compaction"
     );
 
+    let cached_request = lock_state(&ctx.state).last_request.clone();
+
     match crate::memory::compaction::run_compaction(
         character,
         loaded_config,
         llm_client,
         &ctx.data_dir,
         notifier,
+        cached_request,
     )
     .await
     {
@@ -1141,6 +1144,11 @@ to {user_name}.
 Thoughts, tool-use results, and any text in your response that is not part \
 of `<sendMessage>` tags are private and ephemeral. If you want to carry \
 something forward, write it down with a workspace tool.
+
+If you have a multi-step task in progress and want future-you to pick it up, \
+edit HEARTBEAT.md to record what you were doing and what to come back to. \
+HEARTBEAT.md is read into your prompt at the start of every heartbeat tick, \
+so notes you leave there will be visible to your next session.
 
 Changes you make to workspace files, including files under memory/, will persist. \
 If nothing needs doing right now, respond with HEARTBEAT_OK and stop.]"
@@ -1455,25 +1463,59 @@ async fn execute_heartbeat_tick(
             return;
         }
     };
-    let max_iterations = lc.app.behavior.autonomy.heartbeat.max_tool_rounds;
+    let max_normal_iterations = lc.app.behavior.autonomy.heartbeat.max_tool_rounds;
+    let wrap_up_grace = lc.app.behavior.autonomy.heartbeat.wrap_up_grace_rounds;
+    let total_iterations = max_normal_iterations.saturating_add(wrap_up_grace);
 
     info!(
         character,
-        max_iterations, "Heartbeat: executing tool loop tick"
+        max_iterations = max_normal_iterations,
+        wrap_up_grace,
+        "Heartbeat: executing tool loop tick"
     );
 
     // Collect <sendMessage> content across iterations (last-wins).
     let mut send_message_text: Option<String> = None;
 
     let loop_deadline = std::time::Instant::now() + HEARTBEAT_LOOP_DEADLINE;
+    let mut wrap_up_nudged = false;
 
-    for iteration in 0..max_iterations {
-        if std::time::Instant::now() >= loop_deadline {
+    for iteration in 0..total_iterations {
+        let deadline_reached = std::time::Instant::now() >= loop_deadline;
+        let normal_cap_reached = iteration >= max_normal_iterations;
+
+        if (deadline_reached || normal_cap_reached) && !wrap_up_nudged {
+            if wrap_up_grace == 0 {
+                warn!(
+                    character,
+                    iteration,
+                    deadline_reached,
+                    normal_cap_reached,
+                    "Heartbeat: tool budget reached, no wrap-up grace configured"
+                );
+                break;
+            }
             warn!(
                 character,
                 iteration,
-                loop_deadline_secs = HEARTBEAT_LOOP_DEADLINE.as_secs(),
-                "Heartbeat: tool loop soft deadline reached, breaking to wrap-up"
+                deadline_reached,
+                normal_cap_reached,
+                wrap_up_grace,
+                "Heartbeat: tool budget reached, nudging wrap-up"
+            );
+            append_wrap_up_nudge(&mut request);
+            wrap_up_nudged = true;
+            {
+                let mut s = lock_state(state);
+                s.heartbeat_log.push(
+                    HeartbeatEventKind::ToolUse,
+                    "Wrap-up nudge: budget reached, model asked to summarize".to_string(),
+                );
+            }
+        } else if deadline_reached && wrap_up_nudged {
+            warn!(
+                character,
+                iteration, "Heartbeat: deadline tripped during wrap-up grace, breaking"
             );
             break;
         }
@@ -1784,6 +1826,39 @@ fn extract_send_message(content: &str) -> Option<String> {
     extract_tag(content, "<sendMessage>", "</sendMessage>")
 }
 
+const WRAP_UP_NUDGE_TEXT: &str = "[System nudge: heartbeat tool-use budget reached. Wrap up now — \
+if you have unfinished work, edit HEARTBEAT.md so future-you can pick it up where you left off. \
+Then either send a final <sendMessage> or respond HEARTBEAT_OK and stop.]";
+
+/// Append the wrap-up nudge text to the request. The nudge has to land on the
+/// last user message (Anthropic rejects two consecutive user turns), so this
+/// folds it into the trailing tool_results message when one exists, and only
+/// pushes a fresh user message when the request happens to end on an assistant
+/// turn or is otherwise empty.
+fn append_wrap_up_nudge(request: &mut LlmRequest) {
+    let block = json!({"type": "text", "text": WRAP_UP_NUDGE_TEXT});
+    if let Some(last) = request.messages.last_mut() {
+        if last.get("role").and_then(|r| r.as_str()) == Some("user") {
+            match last.get_mut("content") {
+                Some(serde_json::Value::Array(arr)) => {
+                    arr.push(block);
+                    return;
+                }
+                Some(serde_json::Value::String(existing)) => {
+                    let combined = format!("{existing}\n\n{WRAP_UP_NUDGE_TEXT}");
+                    last["content"] = json!(combined);
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+    request.messages.push(json!({
+        "role": "user",
+        "content": WRAP_UP_NUDGE_TEXT,
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // Dormant ping executor
 // ---------------------------------------------------------------------------
@@ -1903,6 +1978,85 @@ mod tests {
             test_message(Role::User),
             test_message(Role::Assistant)
         ]));
+    }
+
+    fn empty_request() -> LlmRequest {
+        LlmRequest {
+            sdk: shore_config::models::Sdk::Anthropic,
+            model: "test".into(),
+            api_key: "k".into(),
+            base_url: None,
+            messages: vec![],
+            system: None,
+            tools: None,
+            max_tokens: 1024,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+            rid: None,
+            forensic_character: None,
+        }
+    }
+
+    #[test]
+    fn wrap_up_nudge_folds_into_trailing_tool_results() {
+        let mut req = empty_request();
+        req.messages.push(json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"}
+            ],
+        }));
+        append_wrap_up_nudge(&mut req);
+        assert_eq!(
+            req.messages.len(),
+            1,
+            "must not introduce a second user turn"
+        );
+        let content = req.messages[0]["content"]
+            .as_array()
+            .expect("array content");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[1]["type"], "text");
+        assert!(content[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("HEARTBEAT.md"));
+    }
+
+    #[test]
+    fn wrap_up_nudge_folds_into_string_user_content() {
+        let mut req = empty_request();
+        req.messages.push(json!({"role": "user", "content": "hi"}));
+        append_wrap_up_nudge(&mut req);
+        assert_eq!(req.messages.len(), 1);
+        let s = req.messages[0]["content"].as_str().expect("string content");
+        assert!(s.starts_with("hi"));
+        assert!(s.contains("HEARTBEAT.md"));
+    }
+
+    #[test]
+    fn wrap_up_nudge_pushes_after_assistant_turn() {
+        let mut req = empty_request();
+        req.messages.push(json!({"role": "user", "content": "hi"}));
+        req.messages
+            .push(json!({"role": "assistant", "content": "bye"}));
+        append_wrap_up_nudge(&mut req);
+        assert_eq!(req.messages.len(), 3);
+        assert_eq!(req.messages[2]["role"], "user");
+        assert!(req.messages[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("HEARTBEAT.md"));
+    }
+
+    #[test]
+    fn wrap_up_nudge_pushes_when_request_is_empty() {
+        let mut req = empty_request();
+        append_wrap_up_nudge(&mut req);
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0]["role"], "user");
     }
 
     // -- ensure_state ---------------------------------------------------------

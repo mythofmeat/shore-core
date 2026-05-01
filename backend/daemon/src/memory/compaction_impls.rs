@@ -163,18 +163,39 @@ impl RealCompactionLlm {
             character,
         }
     }
-}
 
-impl CompactionLlm for RealCompactionLlm {
-    fn summarize(
+    fn build_compaction_request(
         &self,
         system: &str,
         messages: Vec<serde_json::Value>,
-    ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
-        let system = system.to_string();
-        Box::pin(async move {
-            let msg_count = messages.len();
-            let request = LedgerClient::build_request_with_provider_keys(
+        cached_request: Option<shore_llm::types::LlmRequest>,
+    ) -> Result<shore_llm::types::LlmRequest, CompactionError> {
+        let mut request = match cached_request {
+            Some(cached) => {
+                // Cache-preserving path: keep the live conversation's cached
+                // prefix, but rebuild the request shell from the resolved
+                // compaction model. This preserves compaction provider/model,
+                // token, sampler, provider-option, and no-tool settings instead
+                // of leaking chat request settings into background compaction.
+                let mut request = LedgerClient::build_request_with_provider_keys(
+                    &self.model,
+                    &self.providers,
+                    cached.messages,
+                    cached.system,
+                    None,
+                    None,
+                )
+                .map_err(|e| CompactionError::Llm(e.to_string()))?;
+                for msg in messages {
+                    request.messages.push(msg);
+                }
+                request.messages.push(json!({
+                    "role": "system",
+                    "content": system,
+                }));
+                request
+            }
+            None => LedgerClient::build_request_with_provider_keys(
                 &self.model,
                 &self.providers,
                 messages,
@@ -182,11 +203,32 @@ impl CompactionLlm for RealCompactionLlm {
                 None,
                 None,
             )
-            .map_err(|e| CompactionError::Llm(e.to_string()))?;
+            .map_err(|e| CompactionError::Llm(e.to_string()))?,
+        };
+
+        request.rid = None;
+        request.forensic_character = Some(self.character.clone());
+
+        Ok(request)
+    }
+}
+
+impl CompactionLlm for RealCompactionLlm {
+    fn summarize(
+        &self,
+        system: &str,
+        messages: Vec<serde_json::Value>,
+        cached_request: Option<shore_llm::types::LlmRequest>,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
+        let system = system.to_string();
+        Box::pin(async move {
+            let msg_count = messages.len();
+            let cached_prefix_used = cached_request.is_some();
+            let request = self.build_compaction_request(&system, messages, cached_request)?;
 
             debug!(
                 system_len = system.len(),
-                msg_count, "compaction: starting LLM summarize"
+                msg_count, cached_prefix_used, "compaction: starting LLM summarize"
             );
             let t0 = std::time::Instant::now();
             let resp = self
@@ -340,7 +382,106 @@ impl ConversationManager for RealConversationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shore_config::models::{ModelConfigFields, Sdk};
     use tempfile::TempDir;
+
+    fn test_compaction_model(api_key_env: &str) -> ResolvedModel {
+        ResolvedModel::from_parts(
+            "compact".to_string(),
+            "chat.anthropic.compact".to_string(),
+            "chat".to_string(),
+            "anthropic".to_string(),
+            "compaction-model".to_string(),
+            Sdk::Anthropic,
+            ModelConfigFields {
+                sdk: Some(Sdk::Anthropic),
+                api_key_env: Some(api_key_env.to_string()),
+                base_url: Some("http://compaction.example".to_string()),
+                max_tokens: Some(777),
+                temperature: Some(0.25),
+                reasoning_effort: Some("medium".to_string()),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn cached_compaction_request_keeps_prefix_but_uses_compaction_settings() {
+        let api_key_env = format!("SHORE_TEST_COMPACTION_{}", uuid::Uuid::new_v4().simple());
+        std::env::set_var(&api_key_env, "compaction-secret");
+        let model = test_compaction_model(&api_key_env);
+        let ledger_tmp = TempDir::new().unwrap();
+        let llm = RealCompactionLlm::new(
+            LedgerClient::new(
+                shore_llm::LlmClient::new(),
+                &ledger_tmp.path().join("ledger.db"),
+            )
+            .unwrap(),
+            model,
+            ProviderRegistry::default(),
+            "alice".to_string(),
+        );
+        let cached = shore_llm::types::LlmRequest {
+            sdk: Sdk::Anthropic,
+            model: "chat-model".to_string(),
+            api_key: "chat-secret".to_string(),
+            base_url: Some("http://chat.example".to_string()),
+            messages: vec![
+                json!({"role": "user", "content": "cached user"}),
+                json!({"role": "assistant", "content": "cached assistant"}),
+            ],
+            system: Some(json!("cached system")),
+            tools: Some(vec![json!({
+                "name": "read",
+                "description": "chat tool that compaction must not inherit",
+                "input_schema": { "type": "object" }
+            })]),
+            max_tokens: 42,
+            temperature: Some(0.9),
+            top_p: Some(0.8),
+            provider_options: Some(json!({
+                "cache_ttl": "1h",
+                "chat_only": true
+            })),
+            provider_key: Some("anthropic".to_string()),
+            rid: Some("rid-chat".to_string()),
+            forensic_character: Some("chat-forensics".to_string()),
+        };
+
+        let request = llm
+            .build_compaction_request(
+                "compaction system",
+                vec![json!({"role": "user", "content": "compact now"})],
+                Some(cached),
+            )
+            .unwrap();
+
+        std::env::remove_var(&api_key_env);
+
+        assert_eq!(request.model, "compaction-model");
+        assert_eq!(request.api_key, "compaction-secret");
+        assert_eq!(
+            request.base_url.as_deref(),
+            Some("http://compaction.example")
+        );
+        assert_eq!(request.max_tokens, 777);
+        assert_eq!(request.temperature, Some(0.25));
+        assert_eq!(request.top_p, None);
+        assert!(request.tools.is_none());
+        assert_eq!(request.rid, None);
+        assert_eq!(request.forensic_character.as_deref(), Some("alice"));
+        assert_eq!(request.system, Some(json!("cached system")));
+        assert_eq!(request.messages.len(), 4);
+        assert_eq!(request.messages[0]["content"], "cached user");
+        assert_eq!(request.messages[1]["content"], "cached assistant");
+        assert_eq!(request.messages[2]["content"], "compact now");
+        assert_eq!(request.messages[3]["role"], "system");
+        assert_eq!(request.messages[3]["content"], "compaction system");
+
+        let provider_options = request.provider_options.expect("provider options");
+        assert_eq!(provider_options["reasoning_effort"], "medium");
+        assert!(provider_options.get("chat_only").is_none());
+    }
 
     // -- RealConversationManager: archive_and_retain --------------------------
 

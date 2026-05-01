@@ -8,8 +8,8 @@ pub use parser::{
 };
 pub use types::*;
 
-use crate::memory::markdown_query;
 use crate::memory::markdown_store::MarkdownMemoryStore;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::time::Duration;
@@ -28,8 +28,14 @@ pub struct CompactionManager {
 }
 
 struct CompactionWriteState {
-    markdown_path: String,
-    previous_markdown: Option<String>,
+    display_path: String,
+    target: CompactionWriteTarget,
+    previous_content: Option<String>,
+}
+
+enum CompactionWriteTarget {
+    Markdown { path: String },
+    MemoryIndex { path: PathBuf },
 }
 
 fn truncate_chars(text: &str, limit: usize) -> String {
@@ -110,14 +116,44 @@ impl CompactionManager {
             .replace("{{user}}", user_name)
     }
 
-    /// Build the structured messages array for a compaction LLM call.
-    ///
-    /// Returns the conversation messages as role/content JSON objects followed
-    /// by a final user message rendered from `final_message_template`.
-    ///
-    /// The final message template supports:
+    /// Render the final compaction user message. The template supports:
     /// - `{{existing_memories}}` — bounded snapshot of current markdown memories
     /// - `{{char}}` / `{{user}}` — character and user names
+    /// - legacy `{{#if recap}}...{{/if}}` and `{{recap}}` placeholders, which
+    ///   are stripped (recaps are no longer generated).
+    pub fn build_final_message(
+        final_message_template: &str,
+        existing_memories: Option<&str>,
+        char_name: &str,
+        user_name: &str,
+    ) -> String {
+        let existing_memories_text = existing_memories
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or("No existing memory files were available.");
+
+        let mut final_msg = final_message_template
+            .replace("{{existing_memories}}", existing_memories_text)
+            .replace("{{char}}", char_name)
+            .replace("{{user}}", user_name);
+
+        while let (Some(if_start), Some(endif_pos)) =
+            (final_msg.find("{{#if recap}}"), final_msg.find("{{/if}}"))
+        {
+            final_msg = format!(
+                "{}{}",
+                &final_msg[..if_start],
+                &final_msg[endif_pos + "{{/if}}".len()..],
+            );
+        }
+        final_msg.replace("{{recap}}", "")
+    }
+
+    /// Build the structured messages array for a fresh-prefix compaction LLM
+    /// call. Returns the conversation messages as role/content JSON objects
+    /// followed by a final user message rendered from `final_message_template`.
+    ///
+    /// In cache-preserving mode, the conversation slice is already part of the
+    /// cached request prefix; only [`build_final_message`] is needed.
     pub fn build_messages(
         final_message_template: &str,
         messages: &[ConversationMessage],
@@ -129,29 +165,12 @@ impl CompactionManager {
             .iter()
             .map(|msg| serde_json::json!({"role": msg.role, "content": msg.content}))
             .collect();
-
-        let existing_memories_text = existing_memories
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or("No existing memory files were available.");
-
-        let mut final_msg = final_message_template
-            .replace("{{existing_memories}}", existing_memories_text)
-            .replace("{{char}}", char_name)
-            .replace("{{user}}", user_name);
-
-        // Legacy custom compaction prompts may still contain recap placeholders.
-        // Recaps are no longer generated or injected, so strip those blocks.
-        while let (Some(if_start), Some(endif_pos)) =
-            (final_msg.find("{{#if recap}}"), final_msg.find("{{/if}}"))
-        {
-            final_msg = format!(
-                "{}{}",
-                &final_msg[..if_start],
-                &final_msg[endif_pos + "{{/if}}".len()..],
-            );
-        }
-        final_msg = final_msg.replace("{{recap}}", "");
-
+        let final_msg = Self::build_final_message(
+            final_message_template,
+            existing_memories,
+            char_name,
+            user_name,
+        );
         result.push(serde_json::json!({"role": "user", "content": final_msg}));
         result
     }
@@ -266,8 +285,14 @@ impl CompactionManager {
             .trim_start_matches("./")
             .replace('\\', "/")
             .to_lowercase();
-        normalized != "memory.md"
-            && !crate::memory::dreaming::is_generated_dreaming_path(&normalized)
+        // Block dreaming-generated artifacts so compaction doesn't stomp on
+        // them. MEMORY.md is intentionally allowed: compaction's job is to
+        // update the conversational throughline before the cache is rotated.
+        !(normalized == "dreams.md"
+            || normalized == "dreams"
+            || normalized == "dreams/"
+            || normalized.starts_with(".dreams/")
+            || normalized.starts_with("dreaming/"))
     }
 
     fn filter_file_ops(file_ops: Vec<MemoryFileOp>) -> Vec<MemoryFileOp> {
@@ -284,6 +309,42 @@ impl CompactionManager {
                 allowed
             })
             .collect()
+    }
+
+    fn is_memory_index_path(path: &str) -> bool {
+        crate::memory::deferred_edits::normalize_prompt_visible_path(path).as_deref()
+            == Some(crate::memory::deferred_edits::MEMORY_INDEX_DEFERRED_PATH)
+    }
+
+    fn workspace_memory_index_path(
+        store: &MarkdownMemoryStore,
+    ) -> Result<PathBuf, CompactionError> {
+        let workspace_dir = store.base_dir().parent().ok_or_else(|| {
+            CompactionError::MarkdownStore(format!(
+                "memory store has no workspace parent: {}",
+                store.base_dir().display()
+            ))
+        })?;
+        Ok(workspace_dir.join(crate::memory::deferred_edits::MEMORY_INDEX_FILE))
+    }
+
+    async fn read_optional_workspace_file(path: &Path) -> Result<Option<String>, CompactionError> {
+        match tokio::fs::read_to_string(path).await {
+            Ok(content) => Ok(Some(content)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(CompactionError::MarkdownStore(e.to_string())),
+        }
+    }
+
+    async fn write_workspace_file(path: &Path, content: &str) -> Result<(), CompactionError> {
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| CompactionError::MarkdownStore(e.to_string()))?;
+        }
+        tokio::fs::write(path, content)
+            .await
+            .map_err(|e| CompactionError::MarkdownStore(e.to_string()))
     }
 
     /// Splits messages into a compacted portion (sent to LLM) and a retained
@@ -308,6 +369,8 @@ impl CompactionManager {
         markdown_store: Option<&MarkdownMemoryStore>,
         dry_run: bool,
         keep_turns_override: Option<usize>,
+        cached_request: Option<shore_llm::types::LlmRequest>,
+        data_dir: Option<&std::path::Path>,
     ) -> Result<CompactionOutcome, CompactionError> {
         let compaction_started = std::time::Instant::now();
         info!(
@@ -349,17 +412,32 @@ impl CompactionManager {
 
         let existing_memory_context = Self::build_existing_memory_context(markdown_store).await;
 
-        // Build system prompt (stable instructions, cacheable) and structured
-        // messages (conversation history + appended compaction instruction).
+        // Build system prompt (stable instructions, cacheable). In cache-
+        // preserving mode the cached request prefix already contains the
+        // conversation, so only the final user instruction needs to be
+        // appended; the trailing inline `system` message is wrapped to a
+        // user `<system_instruction>` turn by the Anthropic provider so the
+        // top-level system parameter stays untouched and the cache prefix
+        // remains valid.
         let system = Self::build_system(system_template, char_name, user_name);
-        let llm_messages = Self::build_messages(
-            prompt_template,
-            compacted_part,
-            Some(&existing_memory_context),
-            char_name,
-            user_name,
-        );
-        let raw_response = llm.summarize(&system, llm_messages).await?;
+        let llm_messages = if cached_request.is_some() {
+            let final_msg = Self::build_final_message(
+                prompt_template,
+                Some(&existing_memory_context),
+                char_name,
+                user_name,
+            );
+            vec![serde_json::json!({"role": "user", "content": final_msg})]
+        } else {
+            Self::build_messages(
+                prompt_template,
+                compacted_part,
+                Some(&existing_memory_context),
+                char_name,
+                user_name,
+            )
+        };
+        let raw_response = llm.summarize(&system, llm_messages, cached_request).await?;
 
         // Parse memory file operations from LLM response.
         let raw_file_ops = parse_compaction_response(&raw_response)?;
@@ -394,25 +472,50 @@ impl CompactionManager {
 
         let mut created: Vec<CompactionWriteState> = Vec::new();
         let mut markdown_elapsed = std::time::Duration::ZERO;
+        let mut memory_index_updated = false;
 
         for op in &file_ops {
-            let previous_markdown = match store.read(&op.path).await {
-                Ok(entry) => Some(entry.content),
-                Err(crate::memory::markdown_store::MarkdownStoreError::NotFound(_)) => None,
-                Err(e) => return Err(CompactionError::MarkdownStore(e.to_string())),
-            };
-            created.push(CompactionWriteState {
-                markdown_path: op.path.clone(),
-                previous_markdown,
-            });
+            if Self::is_memory_index_path(&op.path) {
+                let index_path = Self::workspace_memory_index_path(store)?;
+                let previous_content = Self::read_optional_workspace_file(&index_path).await?;
+                created.push(CompactionWriteState {
+                    display_path: crate::memory::deferred_edits::MEMORY_INDEX_FILE.to_string(),
+                    target: CompactionWriteTarget::MemoryIndex {
+                        path: index_path.clone(),
+                    },
+                    previous_content,
+                });
 
-            let md_started = std::time::Instant::now();
-            if let Err(e) = store.write(&op.path, &op.content).await {
-                Self::rollback_compaction(&created, store).await;
-                return Err(CompactionError::MarkdownStore(e.to_string()));
+                let md_started = std::time::Instant::now();
+                if let Err(e) = Self::write_workspace_file(&index_path, &op.content).await {
+                    Self::rollback_compaction(&created, store).await;
+                    return Err(e);
+                }
+                memory_index_updated = true;
+                debug!(path = %index_path.display(), elapsed = ?md_started.elapsed(), "compaction: workspace memory index written");
+                markdown_elapsed += md_started.elapsed();
+            } else {
+                let previous_content = match store.read(&op.path).await {
+                    Ok(entry) => Some(entry.content),
+                    Err(crate::memory::markdown_store::MarkdownStoreError::NotFound(_)) => None,
+                    Err(e) => return Err(CompactionError::MarkdownStore(e.to_string())),
+                };
+                created.push(CompactionWriteState {
+                    display_path: op.path.clone(),
+                    target: CompactionWriteTarget::Markdown {
+                        path: op.path.clone(),
+                    },
+                    previous_content,
+                });
+
+                let md_started = std::time::Instant::now();
+                if let Err(e) = store.write(&op.path, &op.content).await {
+                    Self::rollback_compaction(&created, store).await;
+                    return Err(CompactionError::MarkdownStore(e.to_string()));
+                }
+                debug!(path = %op.path, elapsed = ?md_started.elapsed(), "compaction: markdown entry written");
+                markdown_elapsed += md_started.elapsed();
             }
-            debug!(path = %op.path, elapsed = ?md_started.elapsed(), "compaction: markdown entry written");
-            markdown_elapsed += md_started.elapsed();
         }
 
         // Archive compacted messages and retain recent context.
@@ -442,8 +545,22 @@ impl CompactionManager {
 
         let markdown_paths: Vec<String> = created
             .iter()
-            .map(|state| state.markdown_path.clone())
+            .map(|state| state.display_path.clone())
             .collect();
+        if memory_index_updated {
+            if let Some(data_dir) = data_dir {
+                if let Err(e) = crate::memory::deferred_edits::note_memory_index_deferred(
+                    &data_dir.join(char_name),
+                ) {
+                    warn!(
+                        error = %e,
+                        "compaction: failed to queue MEMORY.md prompt refresh"
+                    );
+                }
+            } else {
+                warn!("compaction: MEMORY.md updated but data_dir was unavailable for prompt refresh queue");
+            }
+        }
         let dream_body = format!(
             "Compacted {} messages from `{conversation_id}`.\n\nUpdated memory files:\n{}",
             split_at,
@@ -453,15 +570,19 @@ impl CompactionManager {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
-        if let Err(e) = markdown_query::append_dream_entry(
-            store,
-            chrono::Local::now().fixed_offset(),
-            "compaction",
-            &dream_body,
-        )
-        .await
-        {
-            warn!(error = %e, "compaction: failed to append DREAMS.md entry");
+        let _ = store;
+        if let Some(data_dir) = data_dir {
+            if let Err(e) = crate::memory::dreams_log::append_dream_entry(
+                data_dir,
+                char_name,
+                chrono::Local::now().fixed_offset(),
+                "compaction",
+                &dream_body,
+            )
+            .await
+            {
+                warn!(error = %e, "compaction: failed to append dreams log entry");
+            }
         }
 
         info!(
@@ -487,7 +608,7 @@ impl CompactionManager {
     ///
     /// Iterates the created list in reverse and removes each resource:
     /// - markdown memory files
-    /// - DREAMS.md changelog entries where possible
+    /// - workspace-root MEMORY.md writes
     ///
     /// Errors during cleanup are logged at WARN level and skipped so that
     /// rollback continues regardless of individual failures.
@@ -497,18 +618,34 @@ impl CompactionManager {
     ) {
         use tracing::warn;
         for state in created.iter().rev() {
-            match &state.previous_markdown {
-                Some(previous) => {
-                    if let Err(e) = markdown_store.write(&state.markdown_path, previous).await {
-                        warn!(path = %state.markdown_path, error = %e, "rollback: failed to restore markdown entry");
+            match &state.target {
+                CompactionWriteTarget::Markdown { path } => match &state.previous_content {
+                    Some(previous) => {
+                        if let Err(e) = markdown_store.write(path, previous).await {
+                            warn!(path = %path, error = %e, "rollback: failed to restore markdown entry");
+                        }
                     }
-                }
-                None => match markdown_store.delete(&state.markdown_path).await {
-                    Ok(()) => {}
-                    Err(crate::memory::markdown_store::MarkdownStoreError::NotFound(_)) => {}
-                    Err(e) => {
-                        warn!(path = %state.markdown_path, error = %e, "rollback: failed to delete markdown entry");
+                    None => match markdown_store.delete(path).await {
+                        Ok(()) => {}
+                        Err(crate::memory::markdown_store::MarkdownStoreError::NotFound(_)) => {}
+                        Err(e) => {
+                            warn!(path = %path, error = %e, "rollback: failed to delete markdown entry");
+                        }
+                    },
+                },
+                CompactionWriteTarget::MemoryIndex { path } => match &state.previous_content {
+                    Some(previous) => {
+                        if let Err(e) = Self::write_workspace_file(path, previous).await {
+                            warn!(path = %path.display(), error = %e, "rollback: failed to restore workspace memory index");
+                        }
                     }
+                    None => match tokio::fs::remove_file(path).await {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => {
+                            warn!(path = %path.display(), error = %e, "rollback: failed to delete workspace memory index");
+                        }
+                    },
                 },
             }
         }
@@ -580,6 +717,7 @@ mod tests {
             &self,
             _system: &str,
             _messages: Vec<serde_json::Value>,
+            _cached_request: Option<shore_llm::types::LlmRequest>,
         ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
             let result = Ok(self.response.clone());
             Box::pin(async move { result })
@@ -590,6 +728,10 @@ mod tests {
         response: String,
         /// Captures the content of the last user message from the messages array.
         last_user_message: StdMutex<Option<String>>,
+        /// Captures the message count passed in for each call.
+        last_message_count: StdMutex<Option<usize>>,
+        /// Captures whether a cached request was provided.
+        cached_request_provided: StdMutex<bool>,
     }
 
     impl CapturingLlm {
@@ -597,11 +739,21 @@ mod tests {
             Self {
                 response,
                 last_user_message: StdMutex::new(None),
+                last_message_count: StdMutex::new(None),
+                cached_request_provided: StdMutex::new(false),
             }
         }
 
         fn prompt(&self) -> Option<String> {
             self.last_user_message.lock().unwrap().clone()
+        }
+
+        fn message_count(&self) -> Option<usize> {
+            *self.last_message_count.lock().unwrap()
+        }
+
+        fn saw_cached_request(&self) -> bool {
+            *self.cached_request_provided.lock().unwrap()
         }
     }
 
@@ -610,6 +762,7 @@ mod tests {
             &self,
             _system: &str,
             messages: Vec<serde_json::Value>,
+            cached_request: Option<shore_llm::types::LlmRequest>,
         ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
             let captured = messages
                 .iter()
@@ -619,6 +772,8 @@ mod tests {
                 .and_then(|c| c.as_str())
                 .map(|s| s.to_string());
             *self.last_user_message.lock().unwrap() = captured;
+            *self.last_message_count.lock().unwrap() = Some(messages.len());
+            *self.cached_request_provided.lock().unwrap() = cached_request.is_some();
             let result = Ok(self.response.clone());
             Box::pin(async move { result })
         }
@@ -1045,6 +1200,7 @@ mod tests {
         let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
             .await
             .unwrap();
+        let data_dir = tmp.path().join("data");
 
         let result = mgr
             .compact(
@@ -1061,6 +1217,8 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                None,
+                Some(&data_dir),
             )
             .await
             .unwrap();
@@ -1078,15 +1236,22 @@ mod tests {
 
         assert!(store.read("daily/2026-03-25.md").await.is_ok());
         assert!(store.read("preferences/beverages.md").await.is_ok());
-        let dreams = store.read("DREAMS.md").await.unwrap();
-        assert!(dreams.content.contains("Compacted 6 messages"));
+        let dreams = crate::memory::dreams_log::read_dreams_log(&data_dir, "TestChar")
+            .await
+            .unwrap()
+            .expect("dreams log should be written by compaction");
+        assert!(dreams.contains("Compacted 6 messages"));
     }
 
     #[tokio::test]
-    async fn test_compact_refuses_memory_index_and_generated_paths() {
+    async fn test_compact_writes_memory_index_but_refuses_generated_paths() {
         let llm = MockLlm {
             response: r#"<memory>
-<write path="MEMORY.md"># Bad index overwrite</write>
+<write path="MEMORY.md"># Memory Index
+
+## Throughline
+- Carry-forward note from compaction.
+</write>
 <write path="DREAMS.md"># Bad dream diary overwrite</write>
 <write path=".dreams/candidates.md">bad staged output</write>
 <write path="dreaming/rem/today.md">bad phase report</write>
@@ -1103,6 +1268,7 @@ mod tests {
         let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
             .await
             .unwrap();
+        let data_dir = tmp.path().join("data");
 
         let result = mgr
             .compact(
@@ -1119,6 +1285,8 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                None,
+                Some(&data_dir),
             )
             .await
             .unwrap();
@@ -1126,12 +1294,30 @@ mod tests {
         let CompactionOutcome::Compacted(result) = result else {
             panic!("Expected Compacted outcome");
         };
-        assert_eq!(result.memory_files_written, vec!["notes/ok.md"]);
-        assert!(store.read("MEMORY.md").await.is_err());
+        assert!(result.memory_files_written.iter().any(|p| p == "MEMORY.md"));
+        assert!(result
+            .memory_files_written
+            .iter()
+            .any(|p| p == "notes/ok.md"));
+        assert!(!result.memory_files_written.iter().any(|p| p == "DREAMS.md"));
+        let memory = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
+        assert!(memory.contains("Carry-forward note"));
+        assert!(
+            store.read("MEMORY.md").await.is_err(),
+            "MEMORY.md must live at the workspace root, not workspace/memory"
+        );
+        let pending =
+            crate::memory::deferred_edits::pending_deferred_edit_paths(&data_dir.join("TestChar"))
+                .unwrap();
+        assert_eq!(
+            pending,
+            vec![crate::memory::deferred_edits::MEMORY_INDEX_FILE.to_string()]
+        );
         assert!(store.read(".dreams/candidates.md").await.is_err());
         assert!(store.read("dreaming/rem/today.md").await.is_err());
-        let dreams = store.read("DREAMS.md").await.unwrap();
-        assert!(!dreams.content.contains("Bad dream diary overwrite"));
+        // DREAMS.md must not be created in the workspace memory store; the
+        // daemon-controlled dreams log lives in data_dir.
+        assert!(store.read("DREAMS.md").await.is_err());
     }
 
     #[tokio::test]
@@ -1166,6 +1352,8 @@ mod tests {
             Some(&store),
             false,
             None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -1174,6 +1362,73 @@ mod tests {
         assert!(prompt.contains("people/TestUser.md"));
         assert!(prompt.contains("Already likes green tea"));
         assert!(!prompt.contains("{{existing_memories}}"));
+    }
+
+    #[tokio::test]
+    async fn test_compact_cache_preserving_passes_only_final_message() {
+        // When a cached request is provided, the conversation slice is already
+        // part of the cached prefix; only the final user instruction should be
+        // appended in the messages array passed to summarize().
+        let llm = CapturingLlm::new(make_xml_response());
+        let conv_mgr = MockConversationMgr::new("new-conv-cached");
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+        let messages = make_messages(10);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
+
+        let cached = shore_llm::types::LlmRequest {
+            sdk: shore_config::models::Sdk::Anthropic,
+            model: "test-model".into(),
+            api_key: "k".into(),
+            base_url: None,
+            messages: vec![
+                serde_json::json!({"role": "user", "content": "hi"}),
+                serde_json::json!({"role": "assistant", "content": "hello"}),
+            ],
+            system: Some(serde_json::json!("sys")),
+            tools: None,
+            max_tokens: 1024,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+            rid: None,
+            forensic_character: None,
+        };
+
+        mgr.compact(
+            "conv-cached",
+            &messages,
+            "",
+            false,
+            DEFAULT_COMPACT_SYSTEM,
+            DEFAULT_COMPACT_PROMPT,
+            "TestChar",
+            "TestUser",
+            &llm,
+            &conv_mgr,
+            Some(&store),
+            false,
+            None,
+            Some(cached),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            llm.saw_cached_request(),
+            "cached request must reach summarize()"
+        );
+        assert_eq!(
+            llm.message_count(),
+            Some(1),
+            "cache-preserving mode must pass only the final user message"
+        );
+        let prompt = llm.prompt().expect("final user message captured");
+        assert!(prompt.contains("Existing memory files:"));
     }
 
     #[tokio::test]
@@ -1202,6 +1457,8 @@ mod tests {
                 &conv_mgr,
                 Some(&store),
                 false,
+                None,
+                None,
                 None,
             )
             .await
@@ -1248,6 +1505,8 @@ mod tests {
                 Some(&store),
                 false,
                 Some(0),
+                None,
+                None,
             )
             .await
             .unwrap();
@@ -1290,6 +1549,8 @@ mod tests {
                 Some(&store),
                 false,
                 Some(3),
+                None,
+                None,
             )
             .await
             .unwrap();
@@ -1329,6 +1590,8 @@ mod tests {
                 &conv_mgr,
                 Some(&store),
                 false,
+                None,
+                None,
                 None,
             )
             .await
@@ -1391,6 +1654,8 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                None,
+                None,
             )
             .await;
 
@@ -1424,6 +1689,8 @@ mod tests {
                 &conv_mgr,
                 Some(&store),
                 true,
+                None,
+                None,
                 None,
             )
             .await
@@ -1470,6 +1737,8 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                None,
+                None,
             )
             .await;
 
@@ -1502,6 +1771,8 @@ mod tests {
                 &conv_mgr,
                 Some(&store),
                 false,
+                None,
+                None,
                 None,
             )
             .await;
@@ -1606,6 +1877,8 @@ mod tests {
                 &conv_mgr,
                 Some(&store),
                 false,
+                None,
+                None,
                 None,
             )
             .await;

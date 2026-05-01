@@ -10,6 +10,11 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 
 ### Added
 - Workspace `search` tool now uses hybrid (semantic + lexical) ranking by default so paraphrased queries find the right files; pass `mode: "lexical"` for the previous substring-only behavior or `mode: "vector"` for pure semantic similarity. Embeddings default to a local fastembed-rs model (BGE-small, no API key needed); a hosted OpenAI-compatible embedder can be configured via `[embedding.<profile>]` in TOML. Vectors are cached per character at `<data>/<Character>/workspace_index.json` and re-embedded incrementally on file change.
+- Heartbeat soft-budget wrap-up: when a tick exhausts `max_tool_rounds` or the wall-clock deadline without natural termination, the daemon appends a wrap-up nudge asking the character to record any unfinished work into `HEARTBEAT.md` and respond `HEARTBEAT_OK`. New `wrap_up_grace_rounds` config (default 3) gives the model additional rounds to wrap up. The next heartbeat reads the updated `HEARTBEAT.md`, so multi-tick tasks survive cleanly
+- Heartbeat affordances now mention `HEARTBEAT.md` as the place to leave carry-forward notes for future-self
+- Compaction now updates `MEMORY.md` with the conversational throughline so the next conversation can pick up where the previous one left off (dreaming reorganizes the index later)
+- Compaction now reuses the live conversation's cached LLM prefix when available, preserving the Anthropic prompt cache for the compaction call itself (mirrors the existing dreaming pattern via the Anthropic provider's `<system_instruction>` wrapping)
+- `shore memory dreams [--limit N]` prints recent entries from the dreams audit log
 - Persistent heartbeat event log: events are written to `<data>/<Character>/heartbeat.jsonl` (batch-flushed on the autonomy tick cadence and on graceful shutdown) and reloaded on daemon start, so autonomy history survives restarts
 - `shore status` autonomy block now shows the heartbeat schedule (next wake, time since last user message, idle ticks, dormancy thresholds) and the most recent heartbeat events
 - Effective model catalog (Phase 7): `shore model <name>` accepts manual aliases, upstream `<provider>/<id>` strings, and explicit `provider:model_id` selectors against a catalog merged from static config, provider discovery, and saved preferences
@@ -33,6 +38,8 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 - Repository ownership layout: `core/`, `backend/`, `clients/`, `bridges/`, and `dev/`, with default Cargo members for faster local daemon/CLI builds
 
 ### Changed
+- Dreams audit log moved from `workspace/memory/DREAMS.md` to `$XDG_DATA_HOME/shore/<Character>/DREAMS.md`. The log is daemon-written (the model itself no longer writes `DREAMS.md`) so it never bleeds into prompts or memory snapshots. Use `shore memory dreams` to inspect entries
+- Dreaming may now edit the protected prompt files (`SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`); writes stage through the active-prompt snapshot and take effect at the next compaction/reload boundary, matching how user-driven self-edits already work
 - Background-task model configuration moved under `[defaults.background]` with `model`, `heartbeat`, `compaction`, and `dreaming` selectors; resolvers chain per-task → `background.model` → `defaults.model` → first chat model. Compaction is now a background task and no longer follows the per-character active chat model, so a runtime `switch_model` only affects chat. The legacy `defaults.heartbeat` / `defaults.dreaming` keys still parse but log a deprecation warning and forward into `[defaults.background]`
 - Dreaming machine-readable JSON now lives under `<data>/<Character>/dreams/` instead of `characters/<Character>/workspace/memory/.dreams/`; existing legacy state is still read for scheduler continuity
 - TUI keystroke latency no longer scales with conversation length: the conversation pane caches its rendered lines and rebuilds only when a fingerprint of rendering-relevant state changes

@@ -28,6 +28,7 @@ impl CompactionLlm for MockCompactionLlm {
         &self,
         _system: &str,
         _messages: Vec<serde_json::Value>,
+        _cached_request: Option<shore_llm::types::LlmRequest>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<String, CompactionError>> + Send + '_>,
     > {
@@ -111,9 +112,10 @@ async fn test_markdown_memory_compaction_end_to_end() {
     ]);
     let mgr = CompactionManager::new(CompactionConfig::default());
 
+    let data_dir = tmp.path().join("data");
     let outcome = mgr
         .compact(
-            "conv-1",
+            "Shore",
             &messages,
             &active,
             false,
@@ -126,6 +128,8 @@ async fn test_markdown_memory_compaction_end_to_end() {
             Some(&store),
             false,
             Some(1),
+            None,
+            Some(&data_dir),
         )
         .await
         .unwrap();
@@ -139,8 +143,11 @@ async fn test_markdown_memory_compaction_end_to_end() {
     assert!(store.read("people/user.md").await.is_ok());
     assert!(store.read("topics/pets/mochi.md").await.is_ok());
 
-    let dreams = store.read("DREAMS.md").await.unwrap();
-    assert!(dreams.content.contains("Updated memory files"));
+    let dreams_log = shore_daemon::memory::dreams_log::read_dreams_log(&data_dir, "Shore")
+        .await
+        .unwrap()
+        .expect("dreams log should be written by compaction");
+    assert!(dreams_log.contains("Updated memory files"));
 
     let direct =
         markdown_query::format_direct_response("ramen", &store.search_text("ramen").await.unwrap());
@@ -174,6 +181,8 @@ async fn test_compaction_rejects_private_conversation() {
             &conv_mgr,
             Some(&store),
             false,
+            None,
+            None,
             None,
         )
         .await;

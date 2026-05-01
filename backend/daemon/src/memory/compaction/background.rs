@@ -4,12 +4,18 @@ use super::CompactionManager;
 
 /// Run compaction for a single character (called from the background task).
 /// Returns the number of retained turns on success.
+///
+/// `cached_request` is the live conversation's cached LLM request (typically
+/// from `AutonomyManager::cached_last_request`). When provided, compaction
+/// reuses the cached prefix instead of building a fresh request, preserving
+/// the Anthropic prompt cache for the compaction call itself.
 pub async fn run_compaction(
     character: &str,
     config: &shore_config::LoadedConfig,
     llm_client: &shore_ledger::LedgerClient,
     data_dir: &std::path::Path,
     notifier: &crate::notifications::NotificationService,
+    cached_request: Option<shore_llm::types::LlmRequest>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
     use crate::notifications::NotificationEvent;
@@ -104,6 +110,8 @@ pub async fn run_compaction(
             markdown_store.as_ref(),
             false,
             None,
+            cached_request,
+            Some(data_dir),
         )
         .await?;
 

@@ -4,7 +4,9 @@ mod models;
 mod status;
 
 pub use config::{config, config_check, config_reset};
-pub use memory::{compact, memory, memory_changelog, memory_dream, resolve_compaction_model};
+pub use memory::{
+    compact, memory, memory_changelog, memory_dream, memory_dreams, resolve_compaction_model,
+};
 pub use models::{
     list_models, list_models_with_args, model_info, model_settings, reset_model, set_model_setting,
     set_reasoning_effort, switch_model,

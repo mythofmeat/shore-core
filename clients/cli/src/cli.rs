@@ -464,6 +464,13 @@ pub enum MemoryCommand {
         #[arg(long)]
         force: bool,
     },
+
+    /// Print recent entries from the dreams audit log
+    Dreams {
+        /// Maximum number of entries to print (newest first)
+        #[arg(short = 'n', long, default_value = "10")]
+        limit: u32,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -745,6 +752,10 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             "memory_dream",
             json!({ "status": status, "dry_run": dry_run, "force": force }),
         )),
+        CliCommand::Memory {
+            subcommand: Some(MemoryCommand::Dreams { limit }),
+            ..
+        } => Some(("memory_dreams", json!({ "limit": limit }))),
         CliCommand::Memory { query, .. } => Some(("memory", json!({ "query": query }))),
 
         CliCommand::Config { reset: true, .. } => Some(("config_reset", json!({}))),

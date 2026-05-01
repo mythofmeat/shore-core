@@ -220,7 +220,7 @@ pub async fn dream_status(
     character: &str,
     cfg: &DreamingConfig,
 ) -> Result<DreamStatus, DreamingError> {
-    let memory_dir = character_memory_dir(config_dir, character);
+    let _ = character_memory_dir(config_dir, character);
     let state = read_state(data_dir, config_dir, character).await?;
     let due = cfg.enabled && is_due(cfg, state.last_run_at.as_deref())?;
     Ok(DreamStatus {
@@ -230,7 +230,9 @@ pub async fn dream_status(
         last_run_at: state.last_run_at,
         due,
         state_path: dream_state_path(data_dir, character).display().to_string(),
-        dreams_path: memory_dir.join("DREAMS.md").display().to_string(),
+        dreams_path: crate::memory::dreams_log::dreams_log_path(data_dir, character)
+            .display()
+            .to_string(),
     })
 }
 
@@ -289,7 +291,9 @@ pub async fn run_librarian_sweep(
     if dry_run {
         let would_write_paths = vec![
             memory_index_path.display().to_string(),
-            memory_dir.join("DREAMS.md").display().to_string(),
+            crate::memory::dreams_log::dreams_log_path(data_dir, character)
+                .display()
+                .to_string(),
             state_path.display().to_string(),
         ];
         return Ok(Some(DreamSweepResult {
@@ -346,27 +350,20 @@ pub async fn run_librarian_sweep(
         }
     }
 
-    let dreams_before = before.get("DREAMS.md").cloned();
-    let dreams_after_before_fallback = store
-        .read("DREAMS.md")
-        .await
-        .ok()
-        .map(|entry| entry.content);
-    let model_wrote_dreams =
-        dreams_after_before_fallback.is_some() && dreams_after_before_fallback != dreams_before;
-    let mut audit_appended = false;
-    if !model_wrote_dreams {
-        append_fallback_librarian_audit(
-            &store,
-            &ran_at,
-            &loop_result.inspected,
-            &loop_result.changed,
-            memory_created_by_fallback,
-            loop_result.final_report.as_deref(),
-        )
-        .await?;
-        audit_appended = true;
-    }
+    // Always write the daemon-controlled audit entry. DREAMS.md lives in the
+    // data directory, outside the workspace, so the model cannot reach it
+    // through the write tool — every audit is daemon-generated.
+    append_librarian_audit(
+        data_dir,
+        character,
+        &ran_at,
+        &loop_result.inspected,
+        &loop_result.changed,
+        memory_created_by_fallback,
+        loop_result.final_report.as_deref(),
+    )
+    .await?;
+    let audit_appended = true;
 
     let mut next_state = state;
     next_state.last_run_at = Some(ran_at.clone());
@@ -430,7 +427,11 @@ pub async fn run_librarian_sweep(
         paths_written,
         would_write_paths: Vec::new(),
         staged_path: Some(state_path.display().to_string()),
-        dreams_path: Some(memory_dir.join("DREAMS.md").display().to_string()),
+        dreams_path: Some(
+            crate::memory::dreams_log::dreams_log_path(data_dir, character)
+                .display()
+                .to_string(),
+        ),
         memory_path: Some(memory_index_path.display().to_string()),
         inspected: loop_result.inspected,
         changed,
@@ -497,7 +498,9 @@ pub async fn run_legacy_diagnostic_sweep(
         signals_path.display().to_string(),
         promotions_path.display().to_string(),
         state_path.display().to_string(),
-        memory_dir.join("DREAMS.md").display().to_string(),
+        crate::memory::dreams_log::dreams_log_path(data_dir, character)
+            .display()
+            .to_string(),
         memory_index_path.display().to_string(),
         memory_dir.join(&light_report_rel).display().to_string(),
         memory_dir.join(&rem_report_rel).display().to_string(),
@@ -550,7 +553,7 @@ pub async fn run_legacy_diagnostic_sweep(
     write_data_json(&character_data_dir, &candidates_path, &deep.candidates).await?;
     write_data_json(&character_data_dir, &signals_path, &rem).await?;
     write_data_json(&character_data_dir, &promotions_path, &deep).await?;
-    append_dream_diary(&store, &ran_at, &light, &rem, &deep).await?;
+    append_dream_diary(data_dir, character, &ran_at, &light, &rem, &deep).await?;
     write_phase_reports(
         &store,
         &ran_at,
@@ -657,7 +660,7 @@ async fn build_librarian_request(
     let user_prompt = if dry_run {
         "Run the dry-run memory librarian pass now. Inspect memory files with read-only tools and finish with a proposed plan. Do not write, edit, or emit a user-facing message."
     } else {
-        "Run the memory librarian pass now. Use memory tools to inspect and improve workspace/memory, update MEMORY.md (at the workspace root), and write an audit entry to memory/DREAMS.md. Do not emit a user-facing message."
+        "Run the memory librarian pass now. Use memory tools to inspect and improve workspace/memory, update MEMORY.md (at the workspace root), and finish with a concise summary of what you inspected and changed. The daemon writes the dreams audit log automatically; do not try to write DREAMS.md yourself. Do not emit a user-facing message."
     };
     if let Some(cached) = cached_request {
         let mut request = cached.clone();
@@ -707,7 +710,7 @@ fn build_librarian_prompt(
     character_definition: Option<&str>,
     user_definition: Option<&str>,
     dry_run: bool,
-    ran_at: &str,
+    _ran_at: &str,
 ) -> String {
     let mut prompt = format!(
         "\
@@ -728,18 +731,18 @@ Maintain `MEMORY.md` (at the workspace root, alongside `SOUL.md`/`USER.md`/`AGEN
 `MEMORY.md` is not the full memory itself. It must not duplicate `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`; those are protected prompt files with separate roles.
 `MEMORY.md` is prompt-visible through an active snapshot. Updating `MEMORY.md` changes the canonical file now, but the new index only becomes prompt-active after the next compaction boundary.
 
-Write an audit entry to `memory/DREAMS.md` describing:
-- timestamp: {ran_at}
-- that this was an AI librarian dreaming pass
+Finish with a concise summary covering:
 - files inspected
 - files changed
 - important moves, dedupes, or supersessions
 - unresolved issues
 - whether `MEMORY.md` was updated
 
-Generated dreaming artifacts are not durable memory sources. Do not mine legacy `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, or `dreaming/**` as facts, although you may read `MEMORY.md` and `DREAMS.md` for index and audit continuity.
+The daemon writes a timestamped audit entry to the dreams log automatically once you finish — you do not (and cannot) write `DREAMS.md` yourself.
 
-Do not silently rewrite protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`. If information belongs there, record it under Needs Review in `MEMORY.md` and/or in `DREAMS.md`.
+Generated dreaming artifacts are not durable memory sources. Do not mine legacy `.dreams/**`, `dreams.md`, `MEMORY.md`, or `dreaming/**` as facts; you may read `MEMORY.md` for index continuity.
+
+You may edit any workspace file, including the protected prompt files (`SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`). Edits to those files are staged through an active-prompt snapshot and take effect at the next compaction or reload boundary, not immediately within this pass. Be deliberate when changing them.
 
 The memory folder is self-organizing. Do not impose a rigid folder taxonomy. Inspect the existing layout and improve it sympathetically.
 "
@@ -939,7 +942,7 @@ fn push_assistant_response(request: &mut LlmRequest, resp: &GenerateResponse) {
 
 fn blocked_librarian_tool_result(
     name: &str,
-    input: &Value,
+    _input: &Value,
     dry_run: bool,
 ) -> Option<(String, bool)> {
     if name == "exec" {
@@ -953,17 +956,6 @@ fn blocked_librarian_tool_result(
             "dry-run dreaming does not write or edit files".to_string(),
             true,
         ));
-    }
-    if matches!(name, "write" | "edit") {
-        if let Some(path) = tool_path(input) {
-            if crate::memory::deferred_edits::normalize_protected_path(path).is_some() {
-                return Some((
-                    "protected prompt files are not edited during dreaming; record needed changes in MEMORY.md Needs Review or memory/DREAMS.md"
-                        .to_string(),
-                    true,
-                ));
-            }
-        }
     }
     None
 }
@@ -1008,13 +1000,6 @@ async fn snapshot_memory_files(
         .map_err(|e| DreamingError::Memory(e.to_string()))?
     {
         snapshot.insert(entry.path, entry.content);
-    }
-    match store.read("DREAMS.md").await {
-        Ok(entry) => {
-            snapshot.insert("DREAMS.md".to_string(), entry.content);
-        }
-        Err(MarkdownStoreError::NotFound(_)) => {}
-        Err(e) => return Err(DreamingError::Memory(e.to_string())),
     }
     match fs::read_to_string(memory_index_path).await {
         Ok(content) => {
@@ -1104,8 +1089,9 @@ async fn write_fallback_memory_index(
         .map_err(|e| DreamingError::Io(e.to_string()))
 }
 
-async fn append_fallback_librarian_audit(
-    store: &MarkdownMemoryStore,
+async fn append_librarian_audit(
+    data_dir: &Path,
+    character: &str,
     ran_at: &str,
     inspected: &[String],
     changed: &[String],
@@ -1118,19 +1104,9 @@ async fn append_fallback_librarian_audit(
     push_markdown_list_or_none(&mut body, inspected);
     body.push_str("\nFiles changed by tools:\n");
     push_markdown_list_or_none(&mut body, changed);
-    body.push_str("\nImportant moves/dedupes/supersessions:\n");
-    body.push_str(
-        "- The model did not write an audit entry, so Rust recorded this fallback trace.\n",
-    );
-    body.push_str("\nUnresolved issues:\n");
-    if memory_created_by_fallback {
-        body.push_str("- `MEMORY.md` was missing or empty after the pass and was recreated as a minimal fallback index.\n");
-    } else {
-        body.push_str("- Review the final internal report for any details not captured in this fallback entry.\n");
-    }
     body.push_str("\nMEMORY.md updated:\n");
     body.push_str(if memory_created_by_fallback {
-        "- Yes, by Rust fallback.\n"
+        "- Yes, by Rust fallback (the model left it missing or empty).\n"
     } else {
         "- Present after the pass.\n"
     });
@@ -1140,14 +1116,15 @@ async fn append_fallback_librarian_audit(
         body.push('\n');
     }
 
-    crate::memory::markdown_query::append_dream_entry(
-        store,
+    crate::memory::dreams_log::append_dream_entry(
+        data_dir,
+        character,
         Local::now().fixed_offset(),
         "AI librarian dreaming pass",
         &body,
     )
     .await
-    .map_err(|e| DreamingError::Memory(e.to_string()))
+    .map_err(|e| DreamingError::Io(e.to_string()))
 }
 
 fn push_markdown_list_or_none(body: &mut String, items: &[String]) {
@@ -1720,16 +1697,17 @@ async fn write_data_json<T: Serialize>(
 }
 
 async fn append_dream_diary(
-    store: &MarkdownMemoryStore,
+    data_dir: &Path,
+    character: &str,
     ran_at: &str,
     light: &LightPhaseOutput,
     rem: &RemPhaseOutput,
     deep: &DeepPhaseOutput,
 ) -> Result<(), DreamingError> {
-    let mut body = match store.read("DREAMS.md").await {
-        Ok(entry) => normalize_dream_diary(entry.content),
-        Err(MarkdownStoreError::NotFound(_)) => DREAM_DIARY_HEADER.to_string(),
-        Err(e) => return Err(DreamingError::Memory(e.to_string())),
+    let mut body = match crate::memory::dreams_log::read_dreams_log(data_dir, character).await {
+        Ok(Some(content)) => normalize_dream_diary(content),
+        Ok(None) => DREAM_DIARY_HEADER.to_string(),
+        Err(e) => return Err(DreamingError::Io(e.to_string())),
     };
 
     body.push_str(&format!("## Dream Cycle - {ran_at}\n\n"));
@@ -1817,10 +1795,15 @@ async fn append_dream_diary(
     body.push_str("- Safe to edit/delete for human review.\n");
     body.push_str("- Does not directly control memory notes or the prompt-visible index.\n\n");
 
-    store
-        .write("DREAMS.md", &body)
+    let path = crate::memory::dreams_log::dreams_log_path(data_dir, character);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| DreamingError::Io(e.to_string()))?;
+    }
+    fs::write(&path, body)
         .await
-        .map_err(|e| DreamingError::Memory(e.to_string()))
+        .map_err(|e| DreamingError::Io(e.to_string()))
 }
 
 async fn write_phase_reports(
@@ -2435,7 +2418,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.mode, "ai_librarian");
-        assert!(!result.audit_appended);
+        // The daemon now always writes the audit; model writes to DREAMS.md
+        // are no longer wired (DREAMS lives in data_dir, outside the workspace).
+        assert!(result.audit_appended);
         assert!(result.tools_used.contains(&"list_files".to_string()));
         assert!(result.tools_used.contains(&"read".to_string()));
         assert!(result.tools_used.contains(&"search".to_string()));
@@ -2454,9 +2439,10 @@ mod tests {
         assert!(memory.contains("shore-notes.md"));
         assert!(!memory
             .contains("Trevor wants Shore memory to use MEMORY.md as an index.\n- Trevor wants"));
-        let dreams = fs::read_to_string(mem.join("DREAMS.md")).await.unwrap();
+        let dreams_path = crate::memory::dreams_log::dreams_log_path(&config.dirs.data, "alice");
+        let dreams = fs::read_to_string(&dreams_path).await.unwrap();
         assert!(dreams.contains("AI librarian dreaming pass"));
-        assert!(dreams.contains("MEMORY.md updated: yes"));
+        assert!(dreams.contains("MEMORY.md updated:"));
         assert!(
             crate::memory::deferred_edits::load_memory_index(
                 &config.dirs.data.join("alice"),
@@ -2648,13 +2634,14 @@ mod tests {
             .unwrap();
         assert!(memory.contains("Fallback note"));
         assert!(memory.contains("notes.md"));
-        let dreams = fs::read_to_string(mem.join("DREAMS.md")).await.unwrap();
+        let dreams_path = crate::memory::dreams_log::dreams_log_path(&config.dirs.data, "alice");
+        let dreams = fs::read_to_string(&dreams_path).await.unwrap();
         assert!(dreams.contains("AI librarian dreaming pass"));
-        assert!(dreams.contains("Rust recorded this fallback trace"));
+        let _ = mem;
     }
 
     #[tokio::test]
-    async fn librarian_sweep_blocks_protected_prompt_file_writes() {
+    async fn librarian_sweep_writes_protected_prompt_file_via_deferred_edits() {
         let tmp = tempfile::tempdir().unwrap();
         let mock = MockLlmServer::start().await;
         let config = librarian_config(&tmp, &mock, "alice", 3);
@@ -2663,6 +2650,13 @@ mod tests {
         fs::write(workspace.join(SOUL_FILE), "original soul")
             .await
             .unwrap();
+        let character_data_dir = config.dirs.data.join("alice");
+        crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+            &character_data_dir,
+            &config.dirs.config,
+            "alice",
+        )
+        .unwrap();
 
         mock.enqueue_json_tool_use(
             "t_write_soul",
@@ -2670,8 +2664,7 @@ mod tests {
             json!({"path": "SOUL.md", "content": "new soul"}),
         )
         .await;
-        mock.enqueue_json_text("Recorded protected edit as needs review.")
-            .await;
+        mock.enqueue_json_text("Updated soul.").await;
 
         let result = run_librarian_sweep(
             &config,
@@ -2689,7 +2682,21 @@ mod tests {
         assert!(result.tools_used.contains(&"write".to_string()));
         assert_eq!(
             fs::read_to_string(workspace.join(SOUL_FILE)).await.unwrap(),
-            "original soul"
+            "new soul"
+        );
+        let pending =
+            crate::memory::deferred_edits::pending_deferred_edit_paths(&character_data_dir)
+                .unwrap();
+        assert!(
+            pending.iter().any(|p| p == SOUL_FILE),
+            "expected SOUL.md in deferred-edit queue, got {pending:?}"
+        );
+        let active_soul =
+            crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, SOUL_FILE)
+                .unwrap_or_default();
+        assert_eq!(
+            active_soul, "original soul",
+            "active_prompt snapshot should not refresh until next reload boundary"
         );
     }
 
@@ -2751,7 +2758,7 @@ mod tests {
             .unwrap();
         assert!(memory.contains("# Memory Index"));
         assert!(memory.contains("notes.md"));
-        assert!(mem.join("DREAMS.md").exists());
+        assert!(crate::memory::dreams_log::dreams_log_path(&data_dir, "alice").exists());
         assert!(data_dir.join("alice/dreams/state.json").exists());
         assert!(!mem.join(".dreams").join("state.json").exists());
     }
@@ -2922,37 +2929,10 @@ mod tests {
         assert!(!data_dir.join("alice/dreams/state.json").exists());
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn sweep_rejects_symlinked_dream_report_escape() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join("config");
-        let data_dir = tmp.path().join("data");
-        let mem = character_memory_dir(&cfg_dir, "alice");
-        let outside = tmp.path().join("outside");
-        fs::create_dir_all(&mem).await.unwrap();
-        fs::create_dir_all(&outside).await.unwrap();
-        fs::write(
-            mem.join("notes.md"),
-            "- Alice prefers jasmine tea and remembers the blue cup.\n",
-        )
-        .await
-        .unwrap();
-        fs::write(outside.join("DREAMS.md"), "outside")
-            .await
-            .unwrap();
-        std::os::unix::fs::symlink(outside.join("DREAMS.md"), mem.join("DREAMS.md")).unwrap();
-
-        let cfg = DreamingConfig::default();
-        assert!(matches!(
-            run_legacy_diagnostic_sweep(&data_dir, &cfg_dir, "alice", &cfg, false, true).await,
-            Err(DreamingError::Memory(_))
-        ));
-        assert_eq!(
-            fs::read_to_string(outside.join("DREAMS.md")).await.unwrap(),
-            "outside"
-        );
-    }
+    // sweep_rejects_symlinked_dream_report_escape: removed.
+    // The DREAMS.md log no longer lives in the workspace memory store; it is
+    // written directly to `data_dir/{character}/DREAMS.md`, so the markdown-
+    // store symlink-escape protection no longer applies to this path.
 
     #[cfg(unix)]
     #[tokio::test]
