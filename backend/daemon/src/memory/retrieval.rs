@@ -17,7 +17,9 @@ const DEFAULT_LOCAL_MODEL_ID: &str = "bge-small-en-v1.5";
 ///
 /// If the embedding catalog is empty and no default profile is named, falls
 /// back to a local BGE-small embedder so the daemon stays useful with no
-/// API keys.
+/// API keys. A `default_name` that doesn't match a profile is interpreted
+/// as a bundled local model id (see `shore_llm::embed::local`); typos or
+/// unknown ids surface as `unknown local embedding model: <name>`.
 pub fn resolve_embedder(
     default_name: Option<&str>,
     embedding_catalog: &BTreeMap<String, toml::Value>,
@@ -30,9 +32,10 @@ pub fn resolve_embedder(
     let profile_name = default_name
         .or_else(|| embedding_catalog.keys().next().map(String::as_str))
         .ok_or_else(|| "no embedding profile configured".to_string())?;
-    let entry = embedding_catalog
-        .get(profile_name)
-        .ok_or_else(|| format!("embedding profile '{profile_name}' not found"))?;
+    let entry = match embedding_catalog.get(profile_name) {
+        Some(e) => e,
+        None => return build_local_embedder(profile_name),
+    };
 
     let provider = entry
         .get("provider")
@@ -96,4 +99,27 @@ fn build_local(model_id: &str) -> Result<Arc<dyn Embedder>, String> {
 #[cfg(not(feature = "local-embeddings"))]
 fn build_local(_model_id: &str) -> Result<Arc<dyn Embedder>, String> {
     Err("local-embeddings feature is not enabled in this build".to_string())
+}
+
+#[cfg(all(test, feature = "local-embeddings"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_default_name_routes_to_local_and_errors_clearly() {
+        let catalog: BTreeMap<String, toml::Value> = BTreeMap::new();
+        let http = reqwest::Client::new();
+        let err = match resolve_embedder(Some("not-a-model"), &catalog, &http) {
+            Ok(_) => panic!("unknown name with no profile should error"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("unknown local embedding model"),
+            "expected local-model error, got: {err}"
+        );
+        assert!(
+            err.contains("not-a-model"),
+            "error should name the bad id: {err}"
+        );
+    }
 }

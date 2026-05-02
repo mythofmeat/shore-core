@@ -144,6 +144,12 @@ works out of the box without API keys. Local embedding support is
 controlled by the `local-embeddings` Cargo feature on `shore-daemon`
 (default-on).
 
+You can also set `defaults.embedding` directly to one of the five bundled
+local model ids (`bge-small-en-v1.5`, `bge-base-en-v1.5`,
+`bge-large-en-v1.5`, `all-minilm-l6-v2`, `nomic-embed-text-v1.5`) without
+writing an `[embedding.*]` block. Profile blocks are only needed for
+hosted backends or to give a profile a custom name.
+
 ## Providers
 
 Provider entries replace per-model `api_key_env` duplication and unlock
