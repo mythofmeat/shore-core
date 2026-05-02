@@ -1119,9 +1119,16 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
 ///
 /// This intentionally keeps heartbeat-specific behavior in HEARTBEAT.md and
 /// only documents the scheduler affordances that the runtime understands.
+/// A `[Current time: ...]` line is prepended so the character has a fresh
+/// time anchor on every tick without needing to call `check_time`.
 fn build_heartbeat_prompt(user_name: &str, default_interval: &str) -> String {
+    let now = chrono::Local::now()
+        .format("%A %Y-%m-%d · %-I:%M %p")
+        .to_string();
     format!(
         "\
+[Current time: {now}]
+
 [This is a private heartbeat turn governed by the active HEARTBEAT.md content above. \
 You have real tools and can search or write workspace and memory files, search \
 your conversation history, check the web, generate images, and schedule the next wake.
