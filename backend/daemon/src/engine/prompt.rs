@@ -380,12 +380,13 @@ fn relative_gap_phrase(gap_secs: f64) -> String {
 
 /// Format a time marker for injection on a user message.
 ///
-/// - When `gap_secs >= TIME_GAP_THRESHOLD_SECS`: `[6 hours later · 9:14 PM]`
-/// - Otherwise (or no prior message): `[9:14 PM]`
+/// - When `gap_secs >= TIME_GAP_THRESHOLD_SECS`:
+///   `[6 hours later · Saturday 2026-04-04 · 9:14 PM]`
+/// - Otherwise (or no prior message): `[Saturday 2026-04-04 · 9:14 PM]`
 fn format_time_marker(gap_secs: Option<f64>, current_ts: &DateTime<FixedOffset>) -> String {
     let time_str = current_ts
         .with_timezone(&Local)
-        .format("%-I:%M %p")
+        .format("%A %Y-%m-%d · %-I:%M %p")
         .to_string();
     match gap_secs {
         Some(g) if g >= TIME_GAP_THRESHOLD_SECS => {
@@ -908,7 +909,10 @@ mod tests {
     #[test]
     fn format_time_marker_under_threshold_omits_relative() {
         let ts = DateTime::parse_from_rfc3339("2026-04-04T09:30:00-07:00").unwrap();
-        let local_str = ts.with_timezone(&Local).format("%-I:%M %p").to_string();
+        let local_str = ts
+            .with_timezone(&Local)
+            .format("%A %Y-%m-%d · %-I:%M %p")
+            .to_string();
         let expected = format!("[{local_str}]");
 
         // Sub-threshold gap → absolute-only marker.
@@ -924,7 +928,10 @@ mod tests {
         let ts = DateTime::parse_from_rfc3339("2026-04-04T10:30:00-07:00").unwrap();
         let result = format_time_marker(Some(3600.0), &ts);
         assert!(result.contains("about an hour later"));
-        let local_str = ts.with_timezone(&Local).format("%-I:%M %p").to_string();
+        let local_str = ts
+            .with_timezone(&Local)
+            .format("%A %Y-%m-%d · %-I:%M %p")
+            .to_string();
         assert!(result.contains(&local_str));
     }
 
@@ -933,7 +940,10 @@ mod tests {
         let ts = DateTime::parse_from_rfc3339("2026-04-04T21:14:00-07:00").unwrap();
         let result = format_time_marker(Some(6.0 * 3600.0), &ts);
         assert!(result.contains("6 hours later"));
-        let local_str = ts.with_timezone(&Local).format("%-I:%M %p").to_string();
+        let local_str = ts
+            .with_timezone(&Local)
+            .format("%A %Y-%m-%d · %-I:%M %p")
+            .to_string();
         assert!(result.contains(&local_str));
     }
 
@@ -942,6 +952,10 @@ mod tests {
         let ts = DateTime::parse_from_rfc3339("2026-04-05T09:00:00-07:00").unwrap();
         let result = format_time_marker(Some(24.0 * 3600.0), &ts);
         assert!(result.contains("about a day later"));
+        let weekday = ts.with_timezone(&Local).format("%A").to_string();
+        let iso_date = ts.with_timezone(&Local).format("%Y-%m-%d").to_string();
+        assert!(result.contains(&weekday), "missing weekday in: {result}");
+        assert!(result.contains(&iso_date), "missing ISO date in: {result}");
     }
 
     #[test]
@@ -949,6 +963,10 @@ mod tests {
         let ts = DateTime::parse_from_rfc3339("2026-04-07T09:00:00-07:00").unwrap();
         let result = format_time_marker(Some(3.0 * 86400.0), &ts);
         assert!(result.contains("3 days later"));
+        let weekday = ts.with_timezone(&Local).format("%A").to_string();
+        let iso_date = ts.with_timezone(&Local).format("%Y-%m-%d").to_string();
+        assert!(result.contains(&weekday), "missing weekday in: {result}");
+        assert!(result.contains(&iso_date), "missing ISO date in: {result}");
     }
 
     #[test]
@@ -967,7 +985,10 @@ mod tests {
         // Third message (user, 6.5h gap): should have marker.
         assert!(result[2].content.contains("hours later"));
         let ts3 = DateTime::parse_from_rfc3339("2026-04-04T15:30:00-07:00").unwrap();
-        let local_str = ts3.with_timezone(&Local).format("%-I:%M %p").to_string();
+        let local_str = ts3
+            .with_timezone(&Local)
+            .format("%A %Y-%m-%d · %-I:%M %p")
+            .to_string();
         assert!(result[2].content.contains(&local_str));
         assert!(result[2].content.contains("I'm back"));
         // content_blocks should also be updated.
@@ -1027,7 +1048,7 @@ mod tests {
         let user_ts = DateTime::parse_from_rfc3339("2026-04-04T09:01:00-07:00").unwrap();
         let local_str = user_ts
             .with_timezone(&Local)
-            .format("%-I:%M %p")
+            .format("%A %Y-%m-%d · %-I:%M %p")
             .to_string();
         // Absolute-only marker (no big gap to render relatively).
         assert!(result[1].content.starts_with(&format!("[{local_str}]")));
@@ -1112,7 +1133,10 @@ mod tests {
         // (sub-threshold), but 64 min have elapsed since the last marker
         // at 15:30, so we drop an absolute-only marker.
         let ts = DateTime::parse_from_rfc3339("2026-04-04T16:34:00-07:00").unwrap();
-        let local_str = ts.with_timezone(&Local).format("%-I:%M %p").to_string();
+        let local_str = ts
+            .with_timezone(&Local)
+            .format("%A %Y-%m-%d · %-I:%M %p")
+            .to_string();
         assert!(result[6].content.contains("Still here"));
         assert!(result[6].content.starts_with(&format!("[{local_str}]")));
         assert!(!result[6].content.contains("later"));
