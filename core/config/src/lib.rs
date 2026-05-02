@@ -1743,7 +1743,7 @@ env = "OPENROUTER_API_KEY_OVERFLOW"
 
 [providers.openrouter.discovery]
 enabled = true
-visibility = [
+ignore = [
   "*",
   "!anthropic/*",
   "!openai/*",
@@ -1772,7 +1772,7 @@ model = "sonnet"
         assert!(or.keys[0].warn_on_fallback);
         assert_eq!(or.keys[1].name, "overflow");
         assert!(or.discovery.enabled);
-        assert_eq!(or.discovery.visibility.len(), 4);
+        assert_eq!(or.discovery.ignore.len(), 4);
 
         // Compact form folds into a synthetic "default" key.
         let openai = loaded.providers.get("openai").unwrap();

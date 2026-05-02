@@ -1,7 +1,7 @@
-//! Phase 10 — Discovery + visibility setup E2E.
+//! Phase 10 — Discovery + ignore setup E2E.
 //!
 //! Boots a daemon with `[providers.openrouter]` discovery enabled and a
-//! gitignore-style visibility filter, then pre-seeds the on-disk
+//! gitignore-style ignore filter, then pre-seeds the on-disk
 //! `<data>/providers/openrouter/models.json` cache with three models.
 //! No real `/v1/models` fetch happens — the cache is the source of
 //! truth for this test.
@@ -9,12 +9,12 @@
 //! Asserts:
 //!
 //! * `list_provider_models` splits cache rows into `discovered` (visible)
-//!   and `hidden` according to the visibility patterns (last match wins).
+//!   and `hidden` according to the ignore patterns (last match wins).
 //! * `include_hidden = true` collapses the split into one full list.
 //! * The effective catalog returned by `list_models` exposes only the
 //!   visible discovered rows by default and tags them `source = "discovered"`.
 //! * `list_models` with `include_hidden = true` reveals every cache row.
-//! * Static aliases are never filtered, even when the visibility rules
+//! * Static aliases are never filtered, even when the ignore rules
 //!   would otherwise hide their `(provider, model_id)` pair.
 
 use serde_json::{json, Value};
@@ -79,8 +79,8 @@ fn ids(arr: &Value) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn discovery_and_visibility_filter_listings_end_to_end() {
-    // Visibility: hide everything by default, then re-expose anthropic/*.
+async fn discovery_and_ignore_filter_listings_end_to_end() {
+    // Ignore: hide everything by default, then re-expose anthropic/*.
     // Last match wins in gitignore-style rules.
     let registry = r#"
 [providers.openrouter]
@@ -89,7 +89,7 @@ api_key_env = "SHORE_TEST_API_KEY"
 
 [providers.openrouter.discovery]
 enabled = true
-visibility = ["*", "!anthropic/*"]
+ignore = ["*", "!anthropic/*"]
 "#;
 
     let harness =
@@ -148,7 +148,7 @@ visibility = ["*", "!anthropic/*"]
         vec!["anthropic/claude-sonnet-4.5"],
         "effective catalog must hide non-anthropic discovered rows by default"
     );
-    // Static haiku alias remains visible regardless of visibility rules.
+    // Static haiku alias remains visible regardless of ignore rules.
     assert!(entries
         .iter()
         .any(|m| m["name"] == "haiku" && m["source"] == "static"));

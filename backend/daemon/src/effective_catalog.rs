@@ -18,8 +18,8 @@
 //!   discovered metadata only fills in for providers without a static
 //!   override. We achieve this by checking static-by-upstream-id before
 //!   constructing a synthetic `ResolvedModel` from the discovered record.
-//! * Static catalog entries are never affected by visibility rules; only
-//!   discovered models can be hidden.
+//! * Static catalog entries are never affected by `discovery.ignore`
+//!   rules; only discovered models can be hidden.
 
 use std::path::Path;
 
@@ -39,8 +39,8 @@ pub enum EffectiveCatalogError {
     Ambiguous { name: String, locations: String },
 
     #[error(
-        "model {name:?} is hidden by [providers.{provider}.discovery.visibility]; \
-         pass include_hidden=true or update the visibility rules to allow it"
+        "model {name:?} is hidden by [providers.{provider}.discovery.ignore]; \
+         pass include_hidden=true or update the ignore rules to allow it"
     )]
     Hidden { name: String, provider: String },
 }
@@ -57,8 +57,8 @@ pub enum EffectiveSource {
 pub struct EffectiveModel {
     pub source: EffectiveSource,
     pub resolved: ResolvedModel,
-    /// True if visibility rules would normally hide this model. Static
-    /// entries are always `false` here.
+    /// True if `discovery.ignore` rules would normally hide this model.
+    /// Static entries are always `false` here.
     pub hidden: bool,
 }
 
@@ -76,7 +76,7 @@ pub struct EffectiveModel {
 ///    `Ambiguous` so the caller can disambiguate with `provider:id`.
 ///
 /// `include_hidden = true` permits resolving discovered models matched by
-/// visibility hide patterns. Static entries are never hidden.
+/// `discovery.ignore` patterns. Static entries are never hidden.
 pub fn find_effective_model(
     config: &LoadedConfig,
     data_dir: &Path,
@@ -179,7 +179,7 @@ pub fn find_effective_model(
 /// the static side.
 ///
 /// `include_hidden = false` (the default) drops discovered rows hidden by
-/// visibility rules. Static rows are always included.
+/// `discovery.ignore` rules. Static rows are always included.
 pub fn list_effective_models(
     config: &LoadedConfig,
     data_dir: &Path,
@@ -644,7 +644,7 @@ base_url = "https://openrouter.ai/api/v1"
 
 [providers.openrouter.discovery]
 enabled = true
-visibility = ["meta-llama/*"]
+ignore = ["meta-llama/*"]
 "#,
             "",
         );
@@ -685,7 +685,7 @@ base_url = "https://openrouter.ai/api/v1"
 
 [providers.openrouter.discovery]
 enabled = true
-visibility = ["meta-llama/*"]
+ignore = ["meta-llama/*"]
 "#,
             "",
         );
@@ -708,7 +708,7 @@ base_url = "https://openrouter.ai/api/v1"
 
 [providers.openrouter.discovery]
 enabled = true
-visibility = ["meta-llama/*"]
+ignore = ["meta-llama/*"]
 "#,
             "",
         );
@@ -813,7 +813,7 @@ base_url = "https://openrouter.ai/api/v1"
 
 [providers.openrouter.discovery]
 enabled = true
-visibility = ["meta-llama/*"]
+ignore = ["meta-llama/*"]
 "#,
             "",
         );
@@ -983,7 +983,7 @@ base_url = "https://api.together.xyz/v1"
 
 [providers.together.discovery]
 enabled = true
-visibility = ["meta-llama/*"]
+ignore = ["meta-llama/*"]
 "#,
             "",
         );

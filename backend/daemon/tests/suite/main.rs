@@ -3,7 +3,7 @@ mod helpers;
 mod autonomy;
 mod compaction;
 mod concurrency;
-mod discovery_visibility;
+mod discovery_ignore;
 mod e2e;
 mod guardrails;
 mod heartbeat;

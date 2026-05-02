@@ -968,7 +968,7 @@ mod phase7 {
                     .collect::<Vec<_>>()
                     .join(",\n");
                 format!(
-                    "{providers_toml}\n[providers.{provider}.discovery]\nenabled = true\nvisibility = [\n{pats_lit}\n]\n"
+                    "{providers_toml}\n[providers.{provider}.discovery]\nenabled = true\nignore = [\n{pats_lit}\n]\n"
                 )
             }
             None => format!("{providers_toml}\n[providers.{provider}.discovery]\nenabled = true\n"),

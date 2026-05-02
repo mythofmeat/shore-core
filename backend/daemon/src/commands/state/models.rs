@@ -37,7 +37,7 @@ fn require_character(ctx: &CommandContext) -> Result<&str, (ErrorCode, String)> 
 /// active selection saved as an upstream `model_id` (or
 /// `provider:model_id`) keeps resolving across daemon restarts. Once an
 /// active model is set, the user has already chosen it explicitly, so
-/// `include_hidden = true` here — visibility is enforced at *selection*
+/// `include_hidden = true` here — `discovery.ignore` is enforced at *selection*
 /// time (`switch_model`), not on every subsequent request.
 fn resolve_active_model(
     ctx: &CommandContext,
@@ -224,7 +224,7 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
 ///
 /// Phase 7+: hidden discovered models cannot be selected unless the
 /// caller passes `include_hidden = true`. The error spells out how to
-/// either opt in for the call or update visibility rules permanently.
+/// either opt in for the call or update `discovery.ignore` rules permanently.
 pub fn switch_model(ctx: &mut CommandContext, args: &Value) -> CommandResult {
     let name = args.get("name").and_then(|v| v.as_str());
     let include_hidden = args

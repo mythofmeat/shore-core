@@ -191,13 +191,13 @@ exhausted budget cap), a one-line client warning surfaces. The
 fallback is non-sticky: the next request retries from the top of the
 list.
 
-### Discovery and visibility
+### Discovery and filtering
 
 ```toml
 [providers.openrouter.discovery]
 enabled = true
 # gitignore-style; last match wins. `*` opt-out, `!pattern` opt-in.
-visibility = [
+ignore = [
   "*",
   "!anthropic/*",
   "!openai/*",

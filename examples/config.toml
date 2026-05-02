@@ -268,7 +268,7 @@ model_id = "claude-sonnet-4-6"
 # (sdk + base_url + ordered keys + /v1/models discovery) so you don't have
 # to define every model inline. Manual `[chat.<provider>.<alias>]` entries
 # above keep working alongside discovered models — they win on conflict
-# and are never hidden by visibility filters.
+# and are never hidden by `discovery.ignore` rules.
 #
 # Use `shore provider` and `shore model` to inspect, refresh, and switch.
 
@@ -300,7 +300,7 @@ model_id = "claude-sonnet-4-6"
 # # Hidden discovered models stay in the cache but are filtered from
 # # `shore model` and `shore provider models <name>` until `--all`
 # # (CLI) / `:model all` (TUI) is used.
-# visibility = [
+# ignore = [
 #   "*",
 #   "!anthropic/*",
 #   "!openai/*",

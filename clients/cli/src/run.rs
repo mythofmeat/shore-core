@@ -386,7 +386,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             // `--all` propagates `include_hidden = true` so `shore model
             // <hidden-id> --all` is the documented escape hatch from the
-            // visibility error message.
+            // `discovery.ignore` error message.
             let mut args = serde_json::json!({ "name": name });
             if *all {
                 args["include_hidden"] = serde_json::json!(true);

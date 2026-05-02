@@ -251,7 +251,7 @@ The TUI exposes the same surface via `:model`, `:model all`, `:provider`,
 
 Hidden discovered models cannot be selected by ambiguous name. Pass
 `--all` (CLI) or `:model all <name>` (TUI) to opt in for one call, or
-edit the provider's `discovery.visibility` rules to opt in permanently.
+edit the provider's `discovery.ignore` rules to opt in permanently.
 
 ## Clients
 

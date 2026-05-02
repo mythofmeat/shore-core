@@ -111,8 +111,8 @@ pub(super) async fn handle_generation(
                 &effective_config.dirs.data,
                 name,
                 // App-level defaults are user configuration, not a
-                // discovery-cache selection — visibility still applies
-                // for safety, but a misspelled default should surface.
+                // discovery-cache selection — `discovery.ignore` still
+                // applies for safety, but a misspelled default should surface.
                 true,
             )
             .map_err(|e| e.to_string())?,

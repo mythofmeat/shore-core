@@ -201,8 +201,8 @@ pub async fn refresh_provider_models(ctx: &CommandContext, args: &Value) -> Comm
 /// Static models are always returned, even when the discovery cache is
 /// missing. This preserves the manual escape hatch from Phase 0.
 ///
-/// Visibility filtering (Phase 6): discovered models matched by the
-/// provider's `discovery.visibility` rules are placed in `hidden`
+/// Ignore filtering (Phase 6): discovered models matched by the
+/// provider's `discovery.ignore` rules are placed in `hidden`
 /// instead of `discovered`. Pass `include_hidden = true` to fold them
 /// back into the main `discovered` list. Static models are not
 /// filtered — manual catalog entries are always intentional.
@@ -549,10 +549,10 @@ model_id = "kimi-k2"
         assert_eq!(out["cache"]["model_count"], 0);
     }
 
-    // ── visibility filtering ────────────────────────────────────────────
+    // ── ignore filtering ────────────────────────────────────────────────
 
-    fn build_ctx_with_visibility(tmp: &tempfile::TempDir, visibility: &[&str]) -> CommandContext {
-        let v: String = visibility.iter().map(|p| format!("  {:?},\n", p)).collect();
+    fn build_ctx_with_ignore(tmp: &tempfile::TempDir, ignore: &[&str]) -> CommandContext {
+        let v: String = ignore.iter().map(|p| format!("  {:?},\n", p)).collect();
         let toml_str = format!(
             r#"
 [providers.openrouter]
@@ -560,7 +560,7 @@ api_key_env = "OR_KEY"
 
 [providers.openrouter.discovery]
 enabled = true
-visibility = [
+ignore = [
 {v}]
 "#,
         );
@@ -576,9 +576,9 @@ visibility = [
     }
 
     #[test]
-    fn visibility_hides_matching_pattern() {
+    fn ignore_hides_matching_pattern() {
         let tmp = tempfile::tempdir().unwrap();
-        let ctx = build_ctx_with_visibility(&tmp, &["meta-llama/*"]);
+        let ctx = build_ctx_with_ignore(&tmp, &["meta-llama/*"]);
         cache_with_models(
             &ctx.data_dir,
             "openrouter",
@@ -607,9 +607,9 @@ visibility = [
     }
 
     #[test]
-    fn visibility_star_then_negate_shows_only_anthropic() {
+    fn ignore_star_then_negate_shows_only_anthropic() {
         let tmp = tempfile::tempdir().unwrap();
-        let ctx = build_ctx_with_visibility(&tmp, &["*", "!anthropic/*"]);
+        let ctx = build_ctx_with_ignore(&tmp, &["*", "!anthropic/*"]);
         cache_with_models(
             &ctx.data_dir,
             "openrouter",
@@ -632,10 +632,10 @@ visibility = [
     }
 
     #[test]
-    fn visibility_last_match_wins_at_command_level() {
+    fn ignore_last_match_wins_at_command_level() {
         // Hide all anthropic, then un-hide a single id. Last match wins.
         let tmp = tempfile::tempdir().unwrap();
-        let ctx = build_ctx_with_visibility(&tmp, &["anthropic/*", "!anthropic/claude-3.5-sonnet"]);
+        let ctx = build_ctx_with_ignore(&tmp, &["anthropic/*", "!anthropic/claude-3.5-sonnet"]);
         cache_with_models(
             &ctx.data_dir,
             "openrouter",
@@ -667,7 +667,7 @@ visibility = [
     #[test]
     fn hidden_models_remain_in_cache() {
         let tmp = tempfile::tempdir().unwrap();
-        let ctx = build_ctx_with_visibility(&tmp, &["meta-llama/*"]);
+        let ctx = build_ctx_with_ignore(&tmp, &["meta-llama/*"]);
         cache_with_models(
             &ctx.data_dir,
             "openrouter",
@@ -683,7 +683,7 @@ visibility = [
     #[test]
     fn include_hidden_returns_filtered_models_in_main_list() {
         let tmp = tempfile::tempdir().unwrap();
-        let ctx = build_ctx_with_visibility(&tmp, &["meta-llama/*"]);
+        let ctx = build_ctx_with_ignore(&tmp, &["meta-llama/*"]);
         cache_with_models(
             &ctx.data_dir,
             "openrouter",
@@ -701,11 +701,11 @@ visibility = [
     }
 
     #[test]
-    fn static_models_not_filtered_by_visibility() {
+    fn static_models_not_filtered_by_ignore() {
         // Even with a wildcard hide-all rule, manual `[chat.<provider>.<...>]`
         // entries must remain visible — they are intentional.
         let tmp = tempfile::tempdir().unwrap();
-        let mut ctx = build_ctx_with_visibility(&tmp, &["*"]);
+        let mut ctx = build_ctx_with_ignore(&tmp, &["*"]);
         let table: toml::Table = r#"
 [chat.openrouter.kimi]
 model_id = "kimi-k2"
@@ -733,7 +733,7 @@ model_id = "kimi-k2"
     #[test]
     fn list_providers_reports_hidden_count() {
         let tmp = tempfile::tempdir().unwrap();
-        let ctx = build_ctx_with_visibility(&tmp, &["meta-llama/*"]);
+        let ctx = build_ctx_with_ignore(&tmp, &["meta-llama/*"]);
         cache_with_models(
             &ctx.data_dir,
             "openrouter",

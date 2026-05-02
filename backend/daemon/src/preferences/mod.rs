@@ -498,9 +498,9 @@ pub fn find_static_model<'a>(
 /// catalog (static entries + discovery cache).
 ///
 /// `include_hidden = true`: a previously selected discovered model should
-/// keep resolving across restarts even if the current visibility list
-/// would now hide it. The user explicitly chose it; visibility filters
-/// scope listing, not restoration.
+/// keep resolving across restarts even if the current `discovery.ignore`
+/// list would now hide it. The user explicitly chose it; `discovery.ignore`
+/// scopes listing, not restoration.
 fn resolve_provider_model(
     config: &shore_config::LoadedConfig,
     data_dir: &Path,
