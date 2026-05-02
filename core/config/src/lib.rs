@@ -519,12 +519,7 @@ fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), Config
         "defaults.background.dreaming",
         app.defaults.background.dreaming.as_deref(),
     )?;
-    validate_profile_ref(
-        &catalog.embedding,
-        "defaults.embedding",
-        "embedding",
-        app.defaults.embedding.as_deref(),
-    )?;
+    validate_default_embedding(&catalog.embedding, app.defaults.embedding.as_deref())?;
     validate_profile_ref(
         &catalog.image_generation,
         "defaults.image_generation",
@@ -552,6 +547,34 @@ fn validate_profile_ref(
         }
     }
     Ok(())
+}
+
+/// Bundled local embedding model ids that resolve without a profile block.
+/// Keep in sync with `backend/llm/src/embed/local.rs::resolve_model`.
+const BUNDLED_LOCAL_EMBEDDING_IDS: &[&str] = &[
+    "bge-small-en-v1.5",
+    "bge-base-en-v1.5",
+    "bge-large-en-v1.5",
+    "all-minilm-l6-v2",
+    "nomic-embed-text-v1.5",
+];
+
+/// Validate `defaults.embedding`: accept either a configured `[embedding.*]`
+/// profile or one of the bundled local model ids (which resolve without a
+/// profile block — see `backend/daemon/src/memory/retrieval.rs`).
+fn validate_default_embedding(
+    profiles: &std::collections::BTreeMap<String, toml::Value>,
+    name: Option<&str>,
+) -> Result<(), ConfigError> {
+    let Some(name) = name else { return Ok(()) };
+    if profiles.contains_key(name) || BUNDLED_LOCAL_EMBEDDING_IDS.contains(&name) {
+        return Ok(());
+    }
+    Err(ConfigError::Validation(format!(
+        "defaults.embedding \"{name}\" not found in [embedding] profiles \
+         and is not a bundled local model id (one of: {})",
+        BUNDLED_LOCAL_EMBEDDING_IDS.join(", "),
+    )))
 }
 
 fn validate_daily_cron(expr: &str) -> Result<(), ConfigError> {
@@ -947,6 +970,19 @@ model_id = "openai/text-embedding-3-large"
         let msg = err.to_string();
         assert!(msg.contains("defaults.embedding"), "{msg}");
         assert!(msg.contains("missing-profile"), "{msg}");
+    }
+
+    #[test]
+    fn bundled_local_embedding_id_passes_without_profile() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults]
+embedding = "bge-large-en-v1.5"
+"#,
+        )]);
+        load_config(Some(&tmp.path().join("config.toml")))
+            .expect("bundled local id should validate without an [embedding.*] block");
     }
 
     #[test]
