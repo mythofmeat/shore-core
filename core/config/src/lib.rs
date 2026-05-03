@@ -342,7 +342,7 @@ fn parse_config_table(table: toml::Table, dirs: ShoreDirs) -> Result<LoadedConfi
         Some(&providers),
     )?;
 
-    validate_config(&app, &catalog)?;
+    validate_config(&app, &catalog, &providers)?;
 
     Ok(LoadedConfig {
         app,
@@ -492,33 +492,48 @@ fn create_default_config(config_dir: &Path) {
 }
 
 /// Validate cross-field config constraints.
-fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), ConfigError> {
-    // Validate model references exist in the catalog. heartbeat/dreaming
-    // resolve against chat+tools models; embedding/image_generation resolve
-    // against their respective profile maps. Without these checks a typo
-    // silently falls back to defaults.model (heartbeat) or surfaces only at
-    // tool-invocation time (dreaming/embedding/image_generation).
-    validate_model_ref(catalog, "defaults.model", app.defaults.model.as_deref())?;
-    validate_model_ref(
+fn validate_config(
+    app: &AppConfig,
+    catalog: &ModelCatalog,
+    providers: &ProviderRegistry,
+) -> Result<(), ConfigError> {
+    // Default-model references (chat) are advisory: an active model can be
+    // chosen at runtime via per-character preferences and the runtime
+    // resolver also accepts `provider:model_id` discovered IDs that the
+    // static catalog doesn't know about. We emit a warning for refs we
+    // can't resolve at config-load time, but don't block startup. Embedding
+    // and image_generation stay strict — embedding swaps invalidate vector
+    // stores, and image_generation profile shape is genuinely required.
+    warn_on_unresolvable_model_ref(
         catalog,
+        providers,
+        "defaults.model",
+        app.defaults.model.as_deref(),
+    );
+    warn_on_unresolvable_model_ref(
+        catalog,
+        providers,
         "defaults.background.model",
         app.defaults.background.model.as_deref(),
-    )?;
-    validate_model_ref(
+    );
+    warn_on_unresolvable_model_ref(
         catalog,
+        providers,
         "defaults.background.heartbeat",
         app.defaults.background.heartbeat.as_deref(),
-    )?;
-    validate_model_ref(
+    );
+    warn_on_unresolvable_model_ref(
         catalog,
+        providers,
         "defaults.background.compaction",
         app.defaults.background.compaction.as_deref(),
-    )?;
-    validate_model_ref(
+    );
+    warn_on_unresolvable_model_ref(
         catalog,
+        providers,
         "defaults.background.dreaming",
         app.defaults.background.dreaming.as_deref(),
-    )?;
+    );
     validate_default_embedding(&catalog.embedding, app.defaults.embedding.as_deref())?;
     validate_profile_ref(
         &catalog.image_generation,
@@ -599,20 +614,77 @@ fn validate_daily_cron(expr: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Validate that an optional model reference exists in the catalog.
-fn validate_model_ref(
+/// Emit a warning if an optional default-model reference can't be reconciled
+/// with the static catalog or the provider registry's discovery surface.
+///
+/// Resolves successfully (no warning) for:
+/// - names present in the static `[chat.*]` / `[tools.*]` catalog; or
+/// - `provider:model_id` syntax where the provider exists, is enabled, and
+///   has discovery enabled — the actual cache lookup is the runtime
+///   resolver's job (`backend/daemon/src/effective_catalog.rs`).
+///
+/// All other shapes log a `warn!` and return — the daemon still loads,
+/// because per-character preferences can override these defaults at runtime.
+fn warn_on_unresolvable_model_ref(
     catalog: &ModelCatalog,
+    providers: &ProviderRegistry,
     field: &str,
     name: Option<&str>,
-) -> Result<(), ConfigError> {
-    if let Some(name) = name {
-        if catalog.find_model(name).is_err() {
-            return Err(ConfigError::Validation(format!(
-                "{field} \"{name}\" not found in model catalog"
-            )));
+) {
+    let Some(name) = name else { return };
+
+    if catalog.find_model(name).is_ok() {
+        return;
+    }
+
+    if let Some((provider_key, model_id)) = name.split_once(':') {
+        if !provider_key.is_empty() && !model_id.is_empty() {
+            match providers.get(provider_key) {
+                Some(entry) if entry.enabled && entry.discovery.enabled => return,
+                Some(entry) if !entry.enabled => {
+                    warn!(
+                        field,
+                        name,
+                        provider = provider_key,
+                        "configured default model references a disabled provider; \
+                         per-character preferences can override at runtime"
+                    );
+                    return;
+                }
+                Some(_) => {
+                    warn!(
+                        field,
+                        name,
+                        provider = provider_key,
+                        "configured default model is a discovered ID but \
+                         [providers.{provider_key}.discovery] is disabled; enable \
+                         discovery or use a static [chat.{provider_key}.<alias>]"
+                    );
+                    return;
+                }
+                None => {
+                    warn!(
+                        field,
+                        name,
+                        provider = provider_key,
+                        "configured default model references provider \
+                         \"{provider_key}\" which is not configured under \
+                         [providers.{provider_key}]"
+                    );
+                    return;
+                }
+            }
         }
     }
-    Ok(())
+
+    warn!(
+        field,
+        name,
+        "configured default model \"{name}\" was not found in the static \
+         catalog and is not in provider:model_id form; the daemon will \
+         attempt runtime resolution and per-character preferences can \
+         override this without editing config"
+    );
 }
 
 /// Load character definition from `characters/{name}/workspace/SOUL.md`,
@@ -900,7 +972,10 @@ model_id = "google/gemini-flash"
     }
 
     #[test]
-    fn invalid_default_model_reference() {
+    fn unresolvable_default_model_warns_but_loads() {
+        // defaults.model is advisory: per-character preferences and the
+        // runtime resolver can supply a working model without restart, so a
+        // bad ref must not block daemon startup.
         let tmp = setup_config_dir(&[(
             "config.toml",
             r#"
@@ -908,18 +983,12 @@ model_id = "google/gemini-flash"
 model = "nonexistent-model"
 "#,
         )]);
-
-        let config_path = tmp.path().join("config.toml");
-        let err = load_config(Some(&config_path)).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("nonexistent-model"),
-            "Should mention the missing model: {msg}"
-        );
+        load_config(Some(&tmp.path().join("config.toml")))
+            .expect("unresolvable defaults.model should warn, not fail");
     }
 
     #[test]
-    fn invalid_default_heartbeat_reference() {
+    fn unresolvable_default_heartbeat_warns_but_loads() {
         let tmp = setup_config_dir(&[(
             "config.toml",
             r#"
@@ -930,16 +999,12 @@ heartbeat = "ghost-haiku"
 model_id = "claude-opus-4-6"
 "#,
         )]);
-        let err = load_config(Some(&tmp.path().join("config.toml"))).unwrap_err();
-        let msg = err.to_string();
-        // Legacy `defaults.heartbeat` is forwarded to `defaults.background.heartbeat`
-        // at parse time, so validation surfaces the new path.
-        assert!(msg.contains("defaults.background.heartbeat"), "{msg}");
-        assert!(msg.contains("ghost-haiku"), "{msg}");
+        load_config(Some(&tmp.path().join("config.toml")))
+            .expect("unresolvable heartbeat default should warn, not fail");
     }
 
     #[test]
-    fn invalid_default_dreaming_reference() {
+    fn unresolvable_default_dreaming_warns_but_loads() {
         let tmp = setup_config_dir(&[(
             "config.toml",
             r#"
@@ -950,8 +1015,65 @@ dreaming = "no-such-model"
 model_id = "claude-opus-4-6"
 "#,
         )]);
-        let err = load_config(Some(&tmp.path().join("config.toml"))).unwrap_err();
-        assert!(err.to_string().contains("defaults.background.dreaming"));
+        load_config(Some(&tmp.path().join("config.toml")))
+            .expect("unresolvable dreaming default should warn, not fail");
+    }
+
+    #[test]
+    fn discovered_model_id_passes_validation() {
+        // provider:model_id form should validate when the provider is
+        // configured and discovery is enabled, even if the model isn't in
+        // the static [chat.*] catalog. Cache lookup happens at runtime.
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults]
+model = "openrouter:anthropic/claude-opus-4.6"
+
+[providers.openrouter]
+api_key_env = "OPENROUTER_API_KEY"
+
+[providers.openrouter.discovery]
+enabled = true
+"#,
+        )]);
+        load_config(Some(&tmp.path().join("config.toml")))
+            .expect("discovered model id should validate when provider+discovery enabled");
+    }
+
+    #[test]
+    fn discovered_model_id_in_background_default_passes_validation() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults.background]
+heartbeat = "openrouter:anthropic/claude-opus-4.6"
+
+[providers.openrouter]
+api_key_env = "OPENROUTER_API_KEY"
+
+[providers.openrouter.discovery]
+enabled = true
+"#,
+        )]);
+        load_config(Some(&tmp.path().join("config.toml")))
+            .expect("discovered model id in background heartbeat should validate");
+    }
+
+    #[test]
+    fn discovered_model_id_with_unknown_provider_warns_but_loads() {
+        // Typo in the provider key (openroute vs openrouter): we want a
+        // warning, not a hard failure, since the user can correct it via
+        // preferences or fix the file without the daemon refusing to start.
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults]
+model = "openroute:anthropic/claude-opus-4.6"
+"#,
+        )]);
+        load_config(Some(&tmp.path().join("config.toml")))
+            .expect("unknown provider key should warn, not fail");
     }
 
     #[test]
