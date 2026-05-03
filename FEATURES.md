@@ -265,6 +265,8 @@ All clients connect to the daemon:
 
 No client owns authoritative character state.
 
+Streaming generation output (`StreamStart`/`StreamChunk`/`StreamEnd`) fans out to the issuing client and to the most recent client to send a real user message for that character (per-character lease, 60-minute idle expiry). So if you chat with a character on Matrix and then trigger a `:regen` from the TUI, the Matrix room sees the regenerated stream too. Non-streaming command output (`:status`, `:model`, …) stays with the issuing client.
+
 ## Matrix
 
 The Matrix bridge can connect Shore characters to Matrix rooms. Embedded homeserver support is built around conduwuit-compatible servers, with external homeservers also supported.

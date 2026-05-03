@@ -1022,3 +1022,342 @@ async fn pipeline_user_message_to_persisted_response() {
         "Should have broadcast at least one NewMessage"
     );
 }
+
+// ── Stream-fanout / per-character last-user-message lease ──────────────
+
+async fn register_extra_session(
+    handler: &MessageHandler,
+    id: u64,
+) -> tokio::sync::mpsc::Receiver<ServerMessage> {
+    let (tx, rx) = tokio::sync::mpsc::channel(16);
+    handler
+        .session_router
+        .register_session(
+            shore_swp_server::ClientInfo {
+                id,
+                client_type: "test-client".into(),
+                client_name: format!("test-{id}"),
+                capabilities: vec!["streaming".into()],
+                character: None,
+            },
+            tx,
+        )
+        .await;
+    rx
+}
+
+fn meta_for_session(character: Option<&str>, session_id: u64) -> RequestMeta {
+    RequestMeta {
+        session: shore_swp_server::SessionMeta {
+            client_id: shore_swp_server::ClientId(session_id),
+            session_id: shore_swp_server::SessionId(session_id),
+            client_type: "test-client".into(),
+            client_name: format!("test-{session_id}"),
+            capabilities: vec!["streaming".into()],
+            selected_character: character.map(str::to_string),
+        },
+        rid: None,
+        kind: shore_swp_server::RequestKind::Message,
+    }
+}
+
+fn abort_generation(handler: &mut MessageHandler, session_id: u64) {
+    if let Some(handle) = handler
+        .session_state_mut(shore_swp_server::SessionId(session_id))
+        .generation_handle
+        .take()
+    {
+        handle.abort();
+    }
+}
+
+#[tokio::test]
+async fn lease_set_on_user_message() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _push_rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    let body = shore_protocol::client_msg::ClientMessageBody {
+        rid: Some("r1".into()),
+        text: "hi".into(),
+        stream: false,
+        images: vec![],
+        image_data: vec![],
+        absence_seconds: None,
+        overrides: None,
+    };
+    handler
+        .handle_engine_message(
+            ClientMessage::Message(body),
+            test_request_meta(Some("Alice"), Some("r1")),
+        )
+        .await;
+
+    let lease = handler
+        .last_user_session
+        .get("Alice")
+        .copied()
+        .expect("user message must seed the lease");
+    assert_eq!(lease.session_id, shore_swp_server::SessionId(1));
+
+    abort_generation(&mut handler, 1);
+}
+
+#[tokio::test]
+async fn lease_not_updated_by_regen() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _push_rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    let regen = ClientMessage::Regen(Regen {
+        rid: Some("r1".into()),
+        stream: false,
+        guidance: None,
+    });
+    handler
+        .handle_engine_message(regen, test_request_meta(Some("Alice"), Some("r1")))
+        .await;
+
+    assert!(
+        !handler.last_user_session.contains_key("Alice"),
+        "Regen alone must not create a lease"
+    );
+
+    abort_generation(&mut handler, 1);
+}
+
+#[tokio::test]
+async fn resolve_lease_skips_self() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _push_rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    handler.last_user_session.insert(
+        "Alice".into(),
+        LastUserLease {
+            session_id: shore_swp_server::SessionId(1),
+            expires_at: Instant::now() + LEASE_TTL,
+        },
+    );
+
+    assert!(
+        handler
+            .resolve_lease_tx(shore_swp_server::SessionId(1), "Alice")
+            .await
+            .is_none(),
+        "Same-session lease must not fan out to itself"
+    );
+}
+
+#[tokio::test]
+async fn resolve_lease_evicts_expired() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _push_rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    let _rx_b = register_extra_session(&handler, 2).await;
+    handler.last_user_session.insert(
+        "Alice".into(),
+        LastUserLease {
+            session_id: shore_swp_server::SessionId(2),
+            expires_at: Instant::now() - Duration::from_secs(1),
+        },
+    );
+
+    assert!(
+        handler
+            .resolve_lease_tx(shore_swp_server::SessionId(1), "Alice")
+            .await
+            .is_none(),
+        "Expired lease must not be used"
+    );
+    assert!(
+        !handler.last_user_session.contains_key("Alice"),
+        "Expired lease must be evicted lazily"
+    );
+}
+
+#[tokio::test]
+async fn resolve_lease_evicts_disconnected_session() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _push_rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    handler.last_user_session.insert(
+        "Alice".into(),
+        LastUserLease {
+            session_id: shore_swp_server::SessionId(99),
+            expires_at: Instant::now() + LEASE_TTL,
+        },
+    );
+
+    assert!(
+        handler
+            .resolve_lease_tx(shore_swp_server::SessionId(1), "Alice")
+            .await
+            .is_none(),
+        "Lease pointing at unknown session must yield None"
+    );
+    assert!(
+        !handler.last_user_session.contains_key("Alice"),
+        "Stale lease must be evicted lazily"
+    );
+}
+
+#[tokio::test]
+async fn fanout_forwards_to_lease_holder_when_different_session() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _push_rx, mut rx_a) = make_handler(&tmp, &["Alice"]).await;
+    let mut rx_b = register_extra_session(&handler, 2).await;
+
+    handler.last_user_session.insert(
+        "Alice".into(),
+        LastUserLease {
+            session_id: shore_swp_server::SessionId(2),
+            expires_at: Instant::now() + LEASE_TTL,
+        },
+    );
+
+    let issuer_tx = handler
+        .session_router
+        .sender_for(shore_swp_server::SessionId(1))
+        .await
+        .unwrap();
+    let fan_tx = handler
+        .build_fanout_tx(shore_swp_server::SessionId(1), "Alice", issuer_tx)
+        .await;
+
+    let probe = ServerMessage::CommandOutput(SwpCommandOutput {
+        rid: None,
+        name: "probe".into(),
+        data: serde_json::json!({"ok": true}),
+    });
+    fan_tx.send(probe).await.unwrap();
+
+    let from_a = rx_a.recv().await.unwrap();
+    let from_b = rx_b.recv().await.unwrap();
+    assert!(matches!(from_a, ServerMessage::CommandOutput(ref o) if o.name == "probe"));
+    assert!(matches!(from_b, ServerMessage::CommandOutput(ref o) if o.name == "probe"));
+}
+
+#[tokio::test]
+async fn fanout_skips_lease_when_issuer_is_lease_holder() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _push_rx, mut rx_a) = make_handler(&tmp, &["Alice"]).await;
+    let mut rx_b = register_extra_session(&handler, 2).await;
+
+    handler.last_user_session.insert(
+        "Alice".into(),
+        LastUserLease {
+            session_id: shore_swp_server::SessionId(1),
+            expires_at: Instant::now() + LEASE_TTL,
+        },
+    );
+
+    let issuer_tx = handler
+        .session_router
+        .sender_for(shore_swp_server::SessionId(1))
+        .await
+        .unwrap();
+    let fan_tx = handler
+        .build_fanout_tx(shore_swp_server::SessionId(1), "Alice", issuer_tx)
+        .await;
+
+    let probe = ServerMessage::CommandOutput(SwpCommandOutput {
+        rid: None,
+        name: "probe".into(),
+        data: serde_json::json!({}),
+    });
+    fan_tx.send(probe).await.unwrap();
+
+    let from_a = rx_a.recv().await.unwrap();
+    assert!(matches!(from_a, ServerMessage::CommandOutput(_)));
+    assert!(
+        rx_b.try_recv().is_err(),
+        "Other session must not receive when issuer == lease holder"
+    );
+}
+
+#[tokio::test]
+async fn cross_session_user_message_transfers_lease() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _push_rx, _rx_a) = make_handler(&tmp, &["Alice"]).await;
+    let _rx_b = register_extra_session(&handler, 2).await;
+
+    let body_a = shore_protocol::client_msg::ClientMessageBody {
+        rid: Some("ra".into()),
+        text: "from a".into(),
+        stream: false,
+        images: vec![],
+        image_data: vec![],
+        absence_seconds: None,
+        overrides: None,
+    };
+    handler
+        .handle_engine_message(
+            ClientMessage::Message(body_a),
+            test_request_meta(Some("Alice"), Some("ra")),
+        )
+        .await;
+    abort_generation(&mut handler, 1);
+
+    let body_b = shore_protocol::client_msg::ClientMessageBody {
+        rid: Some("rb".into()),
+        text: "from b".into(),
+        stream: false,
+        images: vec![],
+        image_data: vec![],
+        absence_seconds: None,
+        overrides: None,
+    };
+    handler
+        .handle_engine_message(
+            ClientMessage::Message(body_b),
+            meta_for_session(Some("Alice"), 2),
+        )
+        .await;
+    abort_generation(&mut handler, 2);
+
+    let lease = handler
+        .last_user_session
+        .get("Alice")
+        .copied()
+        .expect("lease should still be set");
+    assert_eq!(
+        lease.session_id,
+        shore_swp_server::SessionId(2),
+        "Lease should transfer to the most recent user-message sender"
+    );
+}
+
+#[tokio::test]
+async fn all_clients_disconnected_clears_leases() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _push_rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+    let (route_tx, route_rx) = tokio::sync::mpsc::channel(4);
+    let route_rx = Arc::new(Mutex::new(route_rx));
+
+    handler.last_user_session.insert(
+        "Alice".into(),
+        LastUserLease {
+            session_id: shore_swp_server::SessionId(1),
+            expires_at: Instant::now() + LEASE_TTL,
+        },
+    );
+
+    let leases_clear: Arc<std::sync::Mutex<Option<bool>>> = Arc::new(std::sync::Mutex::new(None));
+    let probe = leases_clear.clone();
+
+    let handler_task = tokio::spawn(async move {
+        handler.run(route_rx).await;
+        *probe.lock().unwrap() = Some(handler.last_user_session.is_empty());
+    });
+
+    route_tx
+        .send(RoutedMessage::AllClientsDisconnected)
+        .await
+        .unwrap();
+    drop(route_tx);
+
+    handler_task.await.unwrap();
+    assert_eq!(
+        *leases_clear.lock().unwrap(),
+        Some(true),
+        "AllClientsDisconnected should clear all leases"
+    );
+}

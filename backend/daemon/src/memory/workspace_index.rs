@@ -711,9 +711,17 @@ mod tests {
         write_file(&ws, "b.md", "# B\n\nUnrelated content").await;
 
         let embedder = TopicEmbedder::new(&["completely-unrelated-topic"]);
-        let result = hybrid_search(&ws_str, true, "needle", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .unwrap();
+        let result = hybrid_search(
+            &ws_str,
+            true,
+            "needle",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.files[0].display_path, "a.md");
         assert!(result.files[0].lexical_score > 0);
@@ -728,9 +736,17 @@ mod tests {
         write_file(&ws, "b.md", "rust is fun").await;
 
         let embedder = TopicEmbedder::new(&["tea", "rust"]);
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .unwrap();
+        let _ = hybrid_search(
+            &ws_str,
+            true,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
         // Two embed calls so far: one for the docs (batch of 2), one for the query.
         let after_first = embedder.call_count.load(Ordering::SeqCst);
         let inputs_first = embedder.input_count.load(Ordering::SeqCst);
@@ -739,9 +755,17 @@ mod tests {
 
         // Modify only b.md.
         write_file(&ws, "b.md", "rust and tokio are fun").await;
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .unwrap();
+        let _ = hybrid_search(
+            &ws_str,
+            true,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
         let inputs_total = embedder.input_count.load(Ordering::SeqCst);
         // Second call should embed only the changed b.md (1 doc) + 1 query.
         assert_eq!(inputs_total - inputs_first, 2);
@@ -760,17 +784,33 @@ mod tests {
             .unwrap();
 
         let embedder = TopicEmbedder::new(&["tea"]);
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .unwrap();
+        let _ = hybrid_search(
+            &ws_str,
+            true,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
         let inputs_first = embedder.input_count.load(Ordering::SeqCst);
         // 1 text doc + 1 query embedding (binary file is skipped).
         assert_eq!(inputs_first, 2);
 
         // Re-run; the binary file should not trigger another embedding.
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .unwrap();
+        let _ = hybrid_search(
+            &ws_str,
+            true,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
         let inputs_total = embedder.input_count.load(Ordering::SeqCst);
         // Just one more query embedding; no doc re-embedding.
         assert_eq!(inputs_total - inputs_first, 1);
@@ -792,9 +832,17 @@ mod tests {
             .unwrap();
 
         let embedder = TopicEmbedder::new(&["xyzzy"]);
-        let result = hybrid_search(&ws_str, true, "xyzzy", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .unwrap();
+        let result = hybrid_search(
+            &ws_str,
+            true,
+            "xyzzy",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
         // The symlink target should not appear in results.
         for f in &result.files {
             assert_ne!(f.display_path, "link_to_secret.md");
@@ -810,9 +858,17 @@ mod tests {
         write_file(&ws, "secret.md", "secret_token_xyzzy").await;
 
         let embedder = TopicEmbedder::new(&["xyzzy"]);
-        let result = hybrid_search(&ws_str, true, "xyzzy", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .unwrap();
+        let result = hybrid_search(
+            &ws_str,
+            true,
+            "xyzzy",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
         // First search indexes the file and finds it.
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].display_path, "secret.md");
@@ -824,9 +880,17 @@ mod tests {
             .unwrap();
 
         // Run again; the stale embedding must be dropped so the file doesn't appear.
-        let result = hybrid_search(&ws_str, true, "xyzzy", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .unwrap();
+        let result = hybrid_search(
+            &ws_str,
+            true,
+            "xyzzy",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
         for f in &result.files {
             assert_ne!(f.display_path, "secret.md");
         }
@@ -844,9 +908,17 @@ mod tests {
         fs::write(ws.join("huge.md"), &big).await.unwrap();
 
         let embedder = TopicEmbedder::new(&["tea"]);
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .unwrap();
+        let _ = hybrid_search(
+            &ws_str,
+            true,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
         let inputs_first = embedder.input_count.load(Ordering::SeqCst);
         // 1 text doc + 1 query embedding; the oversize file is skipped.
         assert_eq!(inputs_first, 2);
@@ -863,9 +935,17 @@ mod tests {
         assert_eq!(entry.reason.as_deref(), Some("oversize"));
 
         // Second call: only the query should embed.
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .unwrap();
+        let _ = hybrid_search(
+            &ws_str,
+            true,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
         let inputs_total = embedder.input_count.load(Ordering::SeqCst);
         assert_eq!(inputs_total - inputs_first, 1);
     }
@@ -885,9 +965,17 @@ mod tests {
         fs::write(&idx, b"not json at all { [ }").await.unwrap();
 
         let embedder = TopicEmbedder::new(&["tea"]);
-        let result = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .expect("hybrid search recovers from corrupt index");
+        let result = hybrid_search(
+            &ws_str,
+            true,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .expect("hybrid search recovers from corrupt index");
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].display_path, "a.md");
 
@@ -914,7 +1002,16 @@ mod tests {
         let idx = locked.join("workspace_index.json");
 
         let embedder = TopicEmbedder::new(&["tea"]);
-        let result = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None).await;
+        let result = hybrid_search(
+            &ws_str,
+            true,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await;
 
         // Restore perms so TempDir can clean up regardless of outcome.
         let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700));
@@ -933,15 +1030,31 @@ mod tests {
         write_file(&ws, "b.md", "rust is fun").await;
 
         let embedder = TopicEmbedder::new(&["tea", "rust"]);
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .unwrap();
+        let _ = hybrid_search(
+            &ws_str,
+            true,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Delete b.md and re-run; the on-disk index must lose b.md.
         fs::remove_file(ws.join("b.md")).await.unwrap();
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
-            .await
-            .unwrap();
+        let _ = hybrid_search(
+            &ws_str,
+            true,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
 
         let raw = std::fs::read_to_string(&idx).expect("index persisted");
         let parsed: WorkspaceIndex = serde_json::from_str(&raw).expect("valid json");

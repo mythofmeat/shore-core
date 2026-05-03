@@ -37,6 +37,7 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 - Daemon config hot reload for runtime config inputs, with invalid-config rollback and protected workspace exclusions
 - Repository ownership layout: `core/`, `backend/`, `clients/`, `bridges/`, and `dev/`, with default Cargo members for faster local daemon/CLI builds
 - Matrix bridge `!command` surface mirrors the TUI's slash commands: `!regen`, `!cancel`, `!status`, `!character`, `!model`, `!provider`, `!setting`, `!memory`, `!compact`, `!delete`, `!edit`, `!sys`, `!reasoning`, `!speak`, plus `!help` for an in-room command list. Unknown `!cmd` still forwards to the daemon as a generic command so power users can hit handlers the TUI doesn't shortcut (`!log`, `!heartbeat_log`, `!model_info`, etc.)
+- Cross-client streaming: streaming generation output now also fans out to the most recent client to send a real user message for that character (per-character lease, 60-minute idle expiry). For example, regenerating from the TUI now streams into the active Matrix room when Matrix was the last to chat with the character. Non-streaming command output (`:status`, `:model`, …) stays with the issuing client.
 
 ### Changed
 - Dreams audit log moved from `workspace/memory/DREAMS.md` to `$XDG_DATA_HOME/shore/<Character>/DREAMS.md`. The log is daemon-written (the model itself no longer writes `DREAMS.md`) so it never bleeds into prompts or memory snapshots. Use `shore memory dreams` to inspect entries

@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub(crate) use images::{build_content, embed_image_data};
 pub(crate) use task::build_llm_messages;
@@ -156,6 +157,18 @@ struct SessionState {
     generation_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// Per-character record of the most recent client session to send a real
+/// `Message` (not Regen / Cancel / Command). Used to fan out streaming
+/// generation output to that client even when generation is triggered by a
+/// different session, so frontends stay in sync.
+#[derive(Clone, Copy)]
+struct LastUserLease {
+    session_id: SessionId,
+    expires_at: Instant,
+}
+
+const LEASE_TTL: Duration = Duration::from_secs(60 * 60);
+
 /// Internal daemon control messages handled on the same task as SWP commands.
 #[derive(Debug)]
 pub enum HandlerControl {
@@ -186,6 +199,7 @@ pub struct MessageHandler {
     pub tts_client: Option<TtsClient>,
     control_rx: mpsc::Receiver<HandlerControl>,
     sessions: HashMap<SessionId, SessionState>,
+    last_user_session: HashMap<String, LastUserLease>,
 }
 
 pub struct MessageHandlerDeps {
@@ -215,11 +229,60 @@ impl MessageHandler {
             tts_client: deps.tts_client,
             control_rx: deps.control_rx,
             sessions: HashMap::new(),
+            last_user_session: HashMap::new(),
         }
     }
 
     fn session_state_mut(&mut self, session_id: SessionId) -> &mut SessionState {
         self.sessions.entry(session_id).or_default()
+    }
+
+    /// Resolve the active lease holder's `direct_tx` for a character if the
+    /// lease is fresh, points at a connected session different from the
+    /// issuer, and has not expired. Lazily evicts stale entries.
+    async fn resolve_lease_tx(
+        &mut self,
+        issuer_session: SessionId,
+        char_name: &str,
+    ) -> Option<mpsc::Sender<ServerMessage>> {
+        let lease = *self.last_user_session.get(char_name)?;
+        if lease.session_id == issuer_session {
+            return None;
+        }
+        if Instant::now() >= lease.expires_at {
+            self.last_user_session.remove(char_name);
+            return None;
+        }
+        match self.session_router.sender_for(lease.session_id).await {
+            Some(tx) => Some(tx),
+            None => {
+                self.last_user_session.remove(char_name);
+                None
+            }
+        }
+    }
+
+    /// Build a fanout `direct_tx` that forwards every server message to both
+    /// the issuing session and the per-character lease holder (the most
+    /// recent client to send a real user message). When there is no eligible
+    /// lease holder, the returned sender is effectively just the issuer's.
+    async fn build_fanout_tx(
+        &mut self,
+        issuer_session: SessionId,
+        char_name: &str,
+        issuer_tx: mpsc::Sender<ServerMessage>,
+    ) -> mpsc::Sender<ServerMessage> {
+        let lease_tx = self.resolve_lease_tx(issuer_session, char_name).await;
+        let (fan_tx, mut fan_rx) = mpsc::channel::<ServerMessage>(256);
+        tokio::spawn(async move {
+            while let Some(msg) = fan_rx.recv().await {
+                if let Some(ref lease) = lease_tx {
+                    let _ = lease.send(msg.clone()).await;
+                }
+                let _ = issuer_tx.send(msg).await;
+            }
+        });
+        fan_tx
     }
 
     /// Run the message processing loop. Blocks until the route channel closes.
@@ -276,6 +339,7 @@ impl MessageHandler {
                     self.cancel_generation(session_id, None, "all clients disconnected")
                         .await;
                 }
+                self.last_user_session.clear();
             }
         }
     }
@@ -404,6 +468,16 @@ impl MessageHandler {
             _ => return,
         };
 
+        if !regen {
+            self.last_user_session.insert(
+                char_name.clone(),
+                LastUserLease {
+                    session_id: meta.session.session_id,
+                    expires_at: Instant::now() + LEASE_TTL,
+                },
+            );
+        }
+
         let rid = body
             .rid
             .clone()
@@ -459,7 +533,10 @@ impl MessageHandler {
             let session = self.session_state_mut(meta.session.session_id);
             session.reasoning_effort_override.clone()
         };
-        let gen = self.gen_context(meta.session.session_id, direct_tx.clone());
+        let fanout_tx = self
+            .build_fanout_tx(meta.session.session_id, &char_name, direct_tx)
+            .await;
+        let gen = self.gen_context(meta.session.session_id, fanout_tx.clone());
         let notifier = self.notifier.clone();
         let params = GenerationParams {
             request: meta.clone(),
@@ -485,7 +562,7 @@ impl MessageHandler {
             if let Err(e) = handle_generation(gen, params).await {
                 error!(error = %e, "Error processing engine message");
                 let err_msg = e.to_string();
-                let _ = direct_tx
+                let _ = fanout_tx
                     .send(
                         ServerMessage::Error(SwpError {
                             rid: None,
