@@ -257,11 +257,14 @@ pub fn active_anthropic_characters(
 ) -> Result<Vec<(String, CallRow)>, rusqlite::Error> {
     let (where_clause, values) = build_where(filter);
 
-    // Add anthropic provider condition.
+    // Match either native anthropic or OpenRouter-routed anthropic (model_id
+    // resolved to `anthropic/...` regardless of the custom provider key).
+    // Mirrors `pricing::is_anthropic_pricing`.
+    let anthropic_cond = "(provider = 'anthropic' OR model LIKE 'anthropic/%')";
     let provider_cond = if where_clause.is_empty() {
-        " WHERE provider = 'anthropic'".to_string()
+        format!(" WHERE {anthropic_cond}")
     } else {
-        format!("{where_clause} AND provider = 'anthropic'")
+        format!("{where_clause} AND {anthropic_cond}")
     };
 
     // Subquery: for each character, find the max id among matching Anthropic rows.
@@ -513,6 +516,58 @@ mod tests {
         let lines: Vec<&str> = tsv.lines().collect();
         assert!(lines[0].contains("ts\t")); // header
         assert_eq!(lines.len(), 4); // header + 3 rows
+    }
+
+    #[test]
+    fn active_anthropic_characters_includes_routed_provider() {
+        // Custom provider name (sdk = "anthropic", base_url = OpenRouter)
+        // with model_id resolved to `anthropic/...` must show up in cache
+        // health alongside native-anthropic rows.
+        let ledger = Ledger::open_in_memory().unwrap();
+        let base = CallRow {
+            ts: "2026-04-05T10:00:00Z".into(),
+            character: "aria".into(),
+            provider: "anthropic".into(),
+            model: "claude-opus-4-6".into(),
+            call_type: "message".into(),
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_tokens: 80,
+            cache_write_tokens: 20,
+            cache_ttl: None,
+            total_ms: 1500,
+            ttft_ms: 200,
+            finish_reason: "end_turn".into(),
+            thinking_enabled: true,
+            cache_state: Some("warm".into()),
+            cache_anomaly: None,
+            input_cost: None,
+            output_cost: None,
+            cache_read_cost: None,
+            cache_write_cost: None,
+            total_cost: None,
+        };
+        ledger.insert(&base).unwrap();
+
+        let mut routed = base.clone();
+        routed.ts = "2026-04-05T10:01:00Z".into();
+        routed.character = "kai".into();
+        routed.provider = "openrouter-anthropic".into();
+        routed.model = "anthropic/claude-opus-4.6".into();
+        ledger.insert(&routed).unwrap();
+
+        let mut other = base.clone();
+        other.ts = "2026-04-05T10:02:00Z".into();
+        other.character = "leo".into();
+        other.provider = "openai".into();
+        other.model = "gpt-4o".into();
+        ledger.insert(&other).unwrap();
+
+        let result = active_anthropic_characters(&ledger, &QueryFilter::default()).unwrap();
+        let chars: std::collections::HashSet<_> = result.iter().map(|(c, _)| c.clone()).collect();
+        assert!(chars.contains("aria"));
+        assert!(chars.contains("kai"));
+        assert!(!chars.contains("leo"));
     }
 
     #[test]

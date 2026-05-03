@@ -278,8 +278,11 @@ impl PricingEngine {
         let cache_read = pricing.cache_read_per_token * request.cache_read_tokens as f64;
 
         let mut cache_write = pricing.cache_write_per_token * request.cache_write_tokens as f64;
-        // Anthropic 1h cache writes cost 1.6× the 5-minute price
-        if request.provider == "anthropic" && request.cache_ttl.unwrap_or("1h") == "1h" {
+        // Anthropic 1h cache writes cost 1.6× the 5-minute price (covers both
+        // native anthropic and OpenRouter-routed anthropic via custom providers).
+        if is_anthropic_pricing(request.provider, request.model)
+            && request.cache_ttl.unwrap_or("1h") == "1h"
+        {
             cache_write *= ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER;
         }
 
@@ -322,14 +325,26 @@ impl PricingEngine {
 /// For most providers: `"{provider}/{model}"`.
 /// For openrouter: the model_id is already in OpenRouter format (e.g. `google/gemini-3.1-flash-lite-preview`).
 /// For anthropic: OpenRouter uses a dot for minor versions (e.g. `claude-opus-4.6` not `claude-opus-4-6`).
+/// Custom providers (e.g. `openrouter-anthropic`) whose chat config resolves a
+/// pre-formatted OpenRouter id like `anthropic/claude-opus-4.6` are detected
+/// by the `/` in the model column and pass through unchanged.
 pub fn to_openrouter_id(provider: &str, model: &str) -> String {
-    if provider == "openrouter" {
+    if provider == "openrouter" || model.contains('/') {
         model.to_string()
     } else if provider == "anthropic" {
         format!("anthropic/{}", normalize_anthropic_model(model))
     } else {
         format!("{provider}/{model}")
     }
+}
+
+/// Recognize a row that should be billed as Anthropic. Native anthropic uses
+/// the literal provider key; OpenRouter-routed Anthropic (regardless of
+/// custom provider name) carries an `anthropic/...` model id by the time it
+/// reaches the ledger. Mirrored in `query.rs` as the SQL fragment
+/// `(provider = 'anthropic' OR model LIKE 'anthropic/%')`.
+pub fn is_anthropic_pricing(provider: &str, model: &str) -> bool {
+    provider == "anthropic" || model.starts_with("anthropic/")
 }
 
 fn normalize_anthropic_model(model: &str) -> String {
@@ -435,6 +450,31 @@ mod tests {
     }
 
     #[test]
+    fn calculate_cost_1h_multiplier_applies_to_routed_anthropic() {
+        let engine = test_engine();
+        engine
+            .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
+            .unwrap();
+        // Provider is the user's custom name; model is the resolved
+        // OpenRouter id. The 1.6× multiplier must still apply.
+        let cost = engine
+            .calculate_cost(CostRequest {
+                provider: "openrouter-anthropic",
+                model: "anthropic/claude-opus-4.6",
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_tokens: 80,
+                cache_write_tokens: 20,
+                cache_ttl: Some("1h"),
+            })
+            .unwrap()
+            .unwrap();
+        // Same expectation as the native-anthropic 1h test:
+        // 20 tokens * 0.00001875 * 1.6 = 0.0006
+        assert!((cost.cache_write - 0.0006).abs() < 1e-10);
+    }
+
+    #[test]
     fn calculate_cost_with_none_cache_ttl_defaults_to_1h() {
         let engine = test_engine();
         engine
@@ -489,6 +529,37 @@ mod tests {
             to_openrouter_id("openrouter", "google/gemini-3.1-flash-lite-preview"),
             "google/gemini-3.1-flash-lite-preview"
         );
+    }
+
+    #[test]
+    fn model_id_passthrough_for_prefixed_models() {
+        // OpenRouter-routed Anthropic via custom provider name (e.g.
+        // [providers.openrouter-anthropic] sdk = "anthropic"): the chat
+        // config resolves model_id to `anthropic/<id>` before reaching the
+        // ledger, so it must pass through unchanged.
+        assert_eq!(
+            to_openrouter_id("openrouter-anthropic", "anthropic/claude-opus-4.6"),
+            "anthropic/claude-opus-4.6"
+        );
+        assert_eq!(
+            to_openrouter_id("openrouter", "anthropic/claude-opus-4.6"),
+            "anthropic/claude-opus-4.6"
+        );
+    }
+
+    #[test]
+    fn is_anthropic_pricing_recognizes_routed_calls() {
+        assert!(is_anthropic_pricing("anthropic", "claude-opus-4-6"));
+        assert!(is_anthropic_pricing(
+            "openrouter-anthropic",
+            "anthropic/claude-opus-4.6"
+        ));
+        assert!(is_anthropic_pricing(
+            "openrouter",
+            "anthropic/claude-opus-4.6"
+        ));
+        assert!(!is_anthropic_pricing("openai", "gpt-4o"));
+        assert!(!is_anthropic_pricing("openrouter", "openai/gpt-4o"));
     }
 
     #[test]
