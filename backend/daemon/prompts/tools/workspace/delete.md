@@ -1,0 +1,1 @@
+Move a file in your workspace or memory directory to a trash folder. Bare paths resolve under workspace/. Use `memory/...` to remove a durable memory file. The file is moved out of your workspace into a timestamped trash folder, not permanently erased. Refuses prompt-visible files (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md) and directories.

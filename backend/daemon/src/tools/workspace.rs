@@ -22,7 +22,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "read",
-            description: "Read the contents of a file in your workspace or memory directory. Paths without a prefix are resolved under workspace/. Use `memory/...` to access durable memory files. Returns the file content as text; use offset and limit for large files.",
+            description: crate::include_prompt!("../../prompts/tools/workspace/read.md"),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -45,7 +45,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "write",
-            description: "Write or overwrite a file in your workspace or memory directory. Bare paths resolve under workspace/. Use `memory/...` to write durable memory files. Parent directories are created automatically. Overwrites without confirmation.",
+            description: crate::include_prompt!("../../prompts/tools/workspace/write.md"),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -64,7 +64,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "edit",
-            description: "Edit an existing file by replacing specific text. Bare paths resolve under workspace/. Use `memory/...` to edit durable memory files. Each replacement must match the old_string exactly, including whitespace and newlines.",
+            description: crate::include_prompt!("../../prompts/tools/workspace/edit.md"),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -97,7 +97,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_files",
-            description: "List files and directories under a path in your workspace or memory directory. Bare paths resolve under workspace/. Use `memory/...` to inspect durable memory files. Returns each entry's name, type, and size.",
+            description: crate::include_prompt!("../../prompts/tools/workspace/list_files.md"),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -112,7 +112,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "search",
-            description: "Find files in your workspace and memory directory that match a query. Bare paths resolve under workspace/. Use `memory/...` to search durable memory files. By default uses hybrid ranking (semantic + lexical) so paraphrased queries still find the right file; pass `mode: \"lexical\"` for an exact substring match. Returns paths, line numbers, and short excerpts. Treat results as discovery only: excerpts are line-level snippets, so almost always follow up with `read` on the top files for full context, then chase any cross-references from there.",
+            description: crate::include_prompt!("../../prompts/tools/workspace/search.md"),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -140,7 +140,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "delete",
-            description: "Move a file in your workspace or memory directory to a trash folder. Bare paths resolve under workspace/. Use `memory/...` to remove a durable memory file. The file is moved out of your workspace into a timestamped trash folder, not permanently erased. Refuses prompt-visible files (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md) and directories.",
+            description: crate::include_prompt!("../../prompts/tools/workspace/delete.md"),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -155,7 +155,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "exec",
-            description: "Run an allowlisted host command. The command string is parsed into argv and executed directly; shell features like pipes, redirects, command substitution, and `;` chaining are not supported. Use this for search, git, and build/test commands when a file tool is awkward.",
+            description: crate::include_prompt!("../../prompts/tools/workspace/exec.md"),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -184,12 +184,24 @@ pub(super) fn description_for_memory_access(
     }
 
     match name {
-        "read" => Some("Read the contents of a file in your workspace. Paths without a prefix are resolved under workspace/. Returns the file content as text; use offset and limit for large files."),
-        "write" => Some("Write or overwrite a file in your workspace. Bare paths resolve under workspace/. Parent directories are created automatically. Overwrites without confirmation."),
-        "edit" => Some("Edit an existing workspace file by replacing specific text. Bare paths resolve under workspace/. Each replacement must match the old_string exactly, including whitespace and newlines."),
-        "list_files" => Some("List files and directories under a path in your workspace. Bare paths resolve under workspace/. Returns each entry's name, type, and size."),
-        "search" => Some("Find files in your workspace that match a query. Bare paths resolve under workspace/. By default uses hybrid ranking (semantic + lexical) so paraphrased queries still find the right file; pass `mode: \"lexical\"` for an exact substring match. Returns paths, line numbers, and short excerpts. Treat results as discovery only: almost always follow up with `read` on the top files for full context."),
-        "delete" => Some("Move a file in your workspace to a trash folder. Bare paths resolve under workspace/. The file is moved out of your workspace into a timestamped trash folder, not permanently erased. Refuses prompt-visible files (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md) and directories."),
+        "read" => Some(crate::include_prompt!(
+            "../../prompts/tools/workspace/no_memory/read.md"
+        )),
+        "write" => Some(crate::include_prompt!(
+            "../../prompts/tools/workspace/no_memory/write.md"
+        )),
+        "edit" => Some(crate::include_prompt!(
+            "../../prompts/tools/workspace/no_memory/edit.md"
+        )),
+        "list_files" => Some(crate::include_prompt!(
+            "../../prompts/tools/workspace/no_memory/list_files.md"
+        )),
+        "search" => Some(crate::include_prompt!(
+            "../../prompts/tools/workspace/no_memory/search.md"
+        )),
+        "delete" => Some(crate::include_prompt!(
+            "../../prompts/tools/workspace/no_memory/delete.md"
+        )),
         _ => None,
     }
 }

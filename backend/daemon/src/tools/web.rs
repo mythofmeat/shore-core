@@ -10,7 +10,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "web_search",
-            description: "Search the web and return a list of results with titles, URLs, and content snippets. Use it to gather more info about a topic, when you're uncertain about a fact, or whenever the conversation touches on recent events, specific people, products, or things that may have happened after your training cutoff. Don't hedge or caveat about whether you 'should' look something up — searching is free, so if it would help, just do it. Pair with `fetch_url` to read the full content of a result page when a snippet isn't enough.",
+            description: crate::include_prompt!("../../prompts/tools/web/web_search.md"),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -30,7 +30,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "fetch_url",
-            description: "Fetch and read the content of a web page, returning its text. Use when a `web_search` result looks relevant and you need the full context, when {{user}} pastes or mentions a URL you should actually read, or when you want to follow a specific page you already have in mind. Best paired with `web_search` to find candidate URLs first. Returns plain text; complex interactive pages, paywalled content, or heavily JS-rendered sites may return limited or no content.",
+            description: crate::include_prompt!("../../prompts/tools/web/fetch_url.md"),
             parameters: json!({
                 "type": "object",
                 "properties": {

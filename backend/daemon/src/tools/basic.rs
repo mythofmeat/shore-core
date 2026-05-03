@@ -16,7 +16,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "check_time",
-            description: "Return the current date and time in {{user}}'s local timezone. Use when the exact time matters — working out how long it's been since an event, whether it's late, day-of-week reasoning, or anchoring a timestamped memory. Returns a human-readable string like 'Friday, April 4th, 2026 at 4:34 PM'. Takes no parameters.",
+            description: crate::include_prompt!("../../prompts/tools/basic/check_time.md"),
             parameters: json!({
                 "type": "object",
                 "properties": {},
@@ -26,7 +26,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "roll_dice",
-            description: "Roll dice using standard dice notation, returning the individual rolls and their total. Use for anything that genuinely benefits from a random outcome — decisions, games, random prompts, divination-as-play — not as a substitute for simply making up a number when one isn't needed. Accepts `NdS[+/-M]` where N is the number of dice, S is the number of sides, and M is an optional modifier. Examples: `2d6`, `1d20+5`, `4d6-1`, or `d8` for a single die.",
+            description: crate::include_prompt!("../../prompts/tools/basic/roll_dice.md"),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -41,7 +41,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "set_next_wake",
-            description: "Schedule when your next heartbeat tick (a private moment while {{user}} is away) should occur. Call this at the end of a heartbeat tick to express your own sense of pacing — soon if you're mid-thought and want to continue, later if you're settled and content, whenever feels right. This tool is only meaningful during heartbeat ticks; calling it from a regular chat turn is rejected. Accepts hours from now (clamped between 1 and 48) and a short reason-note to your future self about why you chose this timing.",
+            description: crate::include_prompt!("../../prompts/tools/basic/set_next_wake.md"),
             parameters: json!({
                 "type": "object",
                 "properties": {

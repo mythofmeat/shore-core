@@ -1,0 +1,1 @@
+List files and directories under a path in your workspace or memory directory. Bare paths resolve under workspace/. Use `memory/...` to inspect durable memory files. Returns each entry's name, type, and size.

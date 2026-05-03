@@ -30,10 +30,8 @@ const HOURLY_MARKER_INTERVAL_SECS: f64 = 3600.0; // 1 hour
 /// This is intentionally minimal — character/user definitions, TOOLS.md, and
 /// the prompt-visible memory index are injected as separate system blocks by
 /// `assemble_prompt`.
-const BUILTIN_SYSTEM_TEMPLATE: &str = "\
-You are {{char}}, in conversation with {{user}}.
-This is a text conversation. Communicate directly rather than narrating actions or using roleplay formatting.
-Be consistent with established details and avoid fabricating memory.";
+const BUILTIN_SYSTEM_TEMPLATE: &str =
+    crate::include_prompt!("../../prompts/engine/builtin_system.md");
 
 /// A block of system prompt content with an identifying label.
 #[derive(Debug, Clone, PartialEq)]

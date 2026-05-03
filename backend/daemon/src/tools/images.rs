@@ -7,7 +7,7 @@ use tracing::info;
 pub fn tool_defs() -> Vec<ToolDef> {
     vec![ToolDef {
         name: "generate_image",
-        description: "Generate an image from a text description via a separate image-generation model, save it to your images directory, and send it to {{user}}. Be specific about subject, mood, and composition.",
+        description: crate::include_prompt!("../../prompts/tools/images/generate_image.md"),
         parameters: json!({
             "type": "object",
             "properties": {

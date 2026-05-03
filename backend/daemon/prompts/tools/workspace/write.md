@@ -1,0 +1,1 @@
+Write or overwrite a file in your workspace or memory directory. Bare paths resolve under workspace/. Use `memory/...` to write durable memory files. Parent directories are created automatically. Overwrites without confirmation.

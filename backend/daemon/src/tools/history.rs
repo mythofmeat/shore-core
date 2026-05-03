@@ -21,7 +21,7 @@ const EXCERPT_CHARS: usize = 360;
 pub fn tool_defs() -> Vec<ToolDef> {
     vec![ToolDef {
         name: "search_history",
-        description: "Search your own conversation history, including compacted older segments and the active conversation window. Use this when the user asks what you discussed before, when you need to verify a past exchange, or when the answer may be in the transcript rather than in curated memory files. Returns matching messages with role, timestamp, source, and a short excerpt. Excerpts are clipped — when the answer is non-trivial, follow up with another `search_history` for adjacent terms or `search`/`read` against memory to get the full picture.",
+        description: crate::include_prompt!("../../prompts/tools/history/search_history.md"),
         parameters: json!({
             "type": "object",
             "properties": {

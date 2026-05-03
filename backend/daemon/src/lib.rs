@@ -14,6 +14,7 @@ pub mod hot_reload;
 pub mod memory;
 pub mod notifications;
 pub mod preferences;
+pub mod prompts;
 pub mod runtime_state;
 mod sync;
 pub mod templates;
