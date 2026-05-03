@@ -189,18 +189,30 @@ claude --print
   --no-session-persistence
   --setting-sources ""
   --strict-mcp-config
-  --mcp-config <character-scoped MCP config>
+  --mcp-config '{"mcpServers":{"shore":{"type":"http","url":"<endpoint>"}}}'
   --tools ""
-  --allowedTools "<comma-separated list of mcp__<server>__<tool>>"
+  --allowedTools "<comma-separated list of mcp__shore__<tool>>"
   --model <model-id>
-  --system-prompt <SOUL+USER+AGENTS+TOOLS+HEARTBEAT+MEMORY +
-                   serialized prior conversation>
+  --system-prompt-file <tempfile containing rendered active prompt
+                        + serialized prior conversation transcript>
   --session-id <fresh UUID per call>
   [--effort low|medium|high|xhigh|max for thinking-capable models]
 ```
 
 Stdin: one or more `{"type":"user","message":{"role":"user","content":"..."}}`
 frames. Stdout: line-delimited JSON event stream as documented above.
+
+**MCP transport is HTTP** (probe 8 confirmed). Daemon mounts a per-
+session route; shore-llm passes the URL through `--mcp-config`'s
+inline JSON. No stdio bridge binary needed.
+
+**System prompt goes through `--system-prompt-file`** (probe 9
+confirmed). The `--system-prompt` flag exists too but the file
+variant is preferable: avoids `ARG_MAX` concerns at any scale,
+keeps the prompt out of `/proc/<pid>/cmdline`, and is verified
+working up to ≥100KB. The flag is undocumented in the standard
+`--help` output but appears in `--bare`'s description and is
+present in the binary.
 
 ## Recommended next step
 
