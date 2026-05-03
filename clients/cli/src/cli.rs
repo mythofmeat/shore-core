@@ -197,22 +197,6 @@ pub enum CliCommand {
         json: bool,
     },
 
-    /// Show or set the session's reasoning-effort override
-    /// (e.g. "low", "medium", "high", or "off" to force no reasoning).
-    Reasoning {
-        /// Effort value, or "off"/"none" to force reasoning off.
-        /// Omit to display the current override + config default.
-        value: Option<String>,
-
-        /// Clear the override and revert to the model's configured value
-        #[arg(long)]
-        reset: bool,
-
-        /// Output raw JSON
-        #[arg(long)]
-        json: bool,
-    },
-
     /// Show, query, or manage the memory system
     #[command(args_conflicts_with_subcommands = true)]
     Memory {
@@ -300,10 +284,10 @@ pub enum CliCommand {
         force: bool,
     },
 
-    /// Matrix bridge setup and management
-    Matrix {
+    /// External connector (bridge) setup and management
+    Connectors {
         #[command(subcommand)]
-        subcommand: MatrixCommand,
+        subcommand: ConnectorsCommand,
     },
 
     /// Generate shell completions
@@ -336,6 +320,15 @@ pub enum CompleteKind {
     Models,
     /// Discovered character names
     Characters,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConnectorsCommand {
+    /// Matrix bridge setup and management
+    Matrix {
+        #[command(subcommand)]
+        subcommand: MatrixCommand,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -567,7 +560,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         | CliCommand::Speak { .. }
         | CliCommand::Completions { .. }
         | CliCommand::Complete { .. }
-        | CliCommand::Matrix { .. }
+        | CliCommand::Connectors { .. }
         | CliCommand::Config {
             path: true,
             check: false,
@@ -710,20 +703,6 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Provider {
             subcommand: None, ..
         } => Some(("list_providers", json!({}))),
-
-        CliCommand::Reasoning { value, reset, .. } => {
-            if *reset {
-                Some(("set_reasoning_effort", json!({ "clear": true })))
-            } else {
-                match value.as_deref() {
-                    None => Some(("set_reasoning_effort", json!({}))),
-                    Some(v) => {
-                        // daemon normalises "off"/"none" into null internally
-                        Some(("set_reasoning_effort", json!({ "value": v })))
-                    }
-                }
-            }
-        }
 
         // Memory: subcommands (compact/changelog) or status/query.
         CliCommand::Memory {

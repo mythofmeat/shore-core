@@ -272,15 +272,30 @@ fn parse_edit(args: &str) -> MatrixInput {
 }
 
 fn parse_reasoning(args: &str) -> MatrixInput {
-    let a = if args.is_empty() {
-        serde_json::json!({})
-    } else {
-        match args.to_ascii_lowercase().as_str() {
-            "reset" => serde_json::json!({ "clear": true }),
-            _ => serde_json::json!({ "value": args }),
-        }
-    };
-    forward_command("set_reasoning_effort", a)
+    // Thin sugar over `!setting reasoning_effort …`: reasoning_effort
+    // lives in the same per-model preferences store as the rest of the
+    // sampler, so route through `set_model_setting` / `model_settings`.
+    if args.is_empty() {
+        return forward_command("model_settings", serde_json::json!({}));
+    }
+    if args.eq_ignore_ascii_case("reset") {
+        return forward_command(
+            "set_model_setting",
+            serde_json::json!({
+                "key": "reasoning_effort",
+                "value": serde_json::Value::Null,
+                "scope": "character",
+            }),
+        );
+    }
+    forward_command(
+        "set_model_setting",
+        serde_json::json!({
+            "key": "reasoning_effort",
+            "value": parse_setting_value_str("reasoning_effort", args),
+            "scope": "character",
+        }),
+    )
 }
 
 /// Map a `!setting` value string to the JSON shape the daemon's
@@ -789,15 +804,29 @@ mod tests {
 
     #[test]
     fn parse_reasoning_variants() {
+        // Bare `!reasoning` shows the effective sampler.
         let cmd = forward_command_only(parse_matrix_input("!reasoning"));
-        assert_eq!(cmd.name, "set_reasoning_effort");
+        assert_eq!(cmd.name, "model_settings");
         assert!(cmd.args.as_object().unwrap().is_empty());
 
+        // A value is stored under the reasoning_effort key on the
+        // active model's preferences (character scope).
         let cmd = forward_command_only(parse_matrix_input("!reasoning high"));
+        assert_eq!(cmd.name, "set_model_setting");
+        assert_eq!(cmd.args["key"], "reasoning_effort");
         assert_eq!(cmd.args["value"], "high");
+        assert_eq!(cmd.args["scope"], "character");
 
+        // Disable synonyms collapse to the "off" sentinel.
+        let cmd = forward_command_only(parse_matrix_input("!reasoning off"));
+        assert_eq!(cmd.name, "set_model_setting");
+        assert_eq!(cmd.args["value"], "off");
+
+        // `reset` clears the saved value (null → use config default).
         let cmd = forward_command_only(parse_matrix_input("!reasoning reset"));
-        assert_eq!(cmd.args["clear"], true);
+        assert_eq!(cmd.name, "set_model_setting");
+        assert_eq!(cmd.args["key"], "reasoning_effort");
+        assert!(cmd.args["value"].is_null());
     }
 
     #[test]

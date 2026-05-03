@@ -849,23 +849,43 @@ fn parse_command(app: &mut App, input: &str) -> Action {
         }
 
         "reasoning" => {
-            // :reasoning                 → show
-            // :reasoning reset           → clear override (revert to config)
-            // :reasoning off|none|null   → force no reasoning
+            // Thin sugar over `:setting reasoning_effort …`. All routes go
+            // through the same `set_model_setting` / `model_settings`
+            // path the rest of the sampler uses, so reasoning_effort
+            // behaves like temperature/top_p with no special storage.
+            //
+            // :reasoning                 → show effective sampler
+            // :reasoning reset           → clear saved value (revert to config)
+            // :reasoning off|none|…      → store the "off" sentinel
             // :reasoning <value>         → force value ("low", "medium", "high", …)
-            let args = if arg.is_empty() {
-                serde_json::json!({})
+            let cmd = if arg.is_empty() {
+                Command {
+                    rid: None,
+                    name: "model_settings".into(),
+                    args: serde_json::json!({}),
+                }
+            } else if arg.eq_ignore_ascii_case("reset") {
+                Command {
+                    rid: None,
+                    name: "set_model_setting".into(),
+                    args: serde_json::json!({
+                        "key": "reasoning_effort",
+                        "value": serde_json::Value::Null,
+                        "scope": "character",
+                    }),
+                }
             } else {
-                match arg.to_ascii_lowercase().as_str() {
-                    "reset" => serde_json::json!({ "clear": true }),
-                    _ => serde_json::json!({ "value": arg }),
+                Command {
+                    rid: None,
+                    name: "set_model_setting".into(),
+                    args: serde_json::json!({
+                        "key": "reasoning_effort",
+                        "value": parse_setting_value_str("reasoning_effort", arg),
+                        "scope": "character",
+                    }),
                 }
             };
-            Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-                rid: None,
-                name: "set_reasoning_effort".into(),
-                args,
-            })))
+            Action::Send(ConnCommand::Send(ClientMessage::Command(cmd)))
         }
 
         _ => {

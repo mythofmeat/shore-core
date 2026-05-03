@@ -27,9 +27,9 @@
 //! same model across discovered/manual entries.
 //!
 //! Phase 2 deliverable: load/save + merge resolver.
-//! Phase 3 wires this into the generation request path. Until Phase 3,
-//! the daemon's existing in-memory `active_model` / `reasoning_effort_override`
-//! continue to drive request resolution.
+//! Phase 3 wires this into the generation request path: preferences are
+//! the durable source of truth, with `active_model` cached on the
+//! session for the duration of a connection.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

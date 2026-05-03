@@ -38,8 +38,8 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     {
         return handle_create_character(name);
     }
-    if let CliCommand::Matrix { subcommand } = &cli.command {
-        return handle_matrix_command(subcommand, &cli).await;
+    if let CliCommand::Connectors { subcommand } = &cli.command {
+        return handle_connectors_command(subcommand, &cli).await;
     }
     if let CliCommand::Complete { kind } = &cli.command {
         // Any failure (daemon down, parse error) ends with empty stdout
@@ -98,36 +98,6 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     debug!(error = %e, "error draining pre-apply switch_model reply");
-                }
-            }
-        }
-    }
-
-    // Pre-apply the persisted reasoning_effort override (same reason as
-    // active_model above: one-shot CLI sessions would otherwise lose it).
-    if let Some(ov) = state::read_reasoning_effort_override() {
-        let args = match ov {
-            None => serde_json::json!({ "value": serde_json::Value::Null }),
-            Some(v) => serde_json::json!({ "value": v }),
-        };
-        if let Err(e) = conn.send_command("set_reasoning_effort", args).await {
-            debug!(error = %e, "failed to pre-apply reasoning_effort override");
-        } else {
-            match conn.recv().await {
-                Ok(ServerMessage::CommandOutput(_)) => {
-                    debug!("pre-applied reasoning_effort override");
-                }
-                Ok(ServerMessage::Error(err)) => {
-                    debug!(
-                        error = %err.message,
-                        "stale reasoning_effort state file, ignoring",
-                    );
-                }
-                Ok(other) => {
-                    debug!(?other, "unexpected reply to pre-apply set_reasoning_effort");
-                }
-                Err(e) => {
-                    debug!(error = %e, "error draining pre-apply set_reasoning_effort reply");
                 }
             }
         }
@@ -400,24 +370,6 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 output::format_command("switch_model", &data);
             }
         }
-        CliCommand::Reasoning { value, reset, json } => {
-            let args = if *reset {
-                serde_json::json!({ "clear": true })
-            } else if let Some(v) = value.as_deref() {
-                serde_json::json!({ "value": v })
-            } else {
-                serde_json::json!({})
-            };
-
-            conn.send_command("set_reasoning_effort", args).await?;
-            let data = recv_command_data(&mut conn).await?;
-            let _ = state::clear_reasoning_effort_override();
-            if *json {
-                println!("{}", serde_json::to_string_pretty(&data)?);
-            } else {
-                output::format_command("set_reasoning_effort", &data);
-            }
-        }
         other => {
             let json_mode = match other {
                 CliCommand::Model {
@@ -531,7 +483,21 @@ async fn handle_complete_query(
     Ok(())
 }
 
-/// Handle `shore matrix` subcommands by delegating to shore-matrix binary.
+/// Handle `shore connectors` subcommands. Today only Matrix exists, so
+/// this dispatches to its handler; new connectors get their own arms here.
+async fn handle_connectors_command(
+    subcommand: &crate::cli::ConnectorsCommand,
+    cli: &Cli,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match subcommand {
+        crate::cli::ConnectorsCommand::Matrix { subcommand } => {
+            handle_matrix_command(subcommand, cli).await
+        }
+    }
+}
+
+/// Handle `shore connectors matrix` subcommands by delegating to the
+/// `shore-matrix` binary.
 async fn handle_matrix_command(
     subcommand: &crate::cli::MatrixCommand,
     cli: &Cli,

@@ -46,12 +46,6 @@ pub struct CommandContext {
     /// Phase 3+ this is sourced from preferences, not from
     /// `runtime_state.json`; the field is kept as a session-level cache.
     pub active_model: Option<String>,
-    /// Per-session override for the resolved model's `reasoning_effort`.
-    /// `None` means "use the value from config/preferences"; `Some(v)`
-    /// patches the resolved chat model for every subsequent generation
-    /// on this session. Phase 3+ this only carries pending in-flight
-    /// state; durable storage lives in the preferences file.
-    pub reasoning_effort_override: Option<Option<String>>,
     /// Cumulative token usage for the session (shared with generation tasks).
     pub session_tokens: Arc<Mutex<SessionTokens>>,
     /// Shared autonomy manager for scheduler state.
@@ -95,7 +89,6 @@ pub async fn dispatch(
         "model_info" => state::model_info(ctx, &cmd.args),
         "switch_model" => state::switch_model(ctx, &cmd.args),
         "reset_model" => state::reset_model(ctx),
-        "set_reasoning_effort" => state::set_reasoning_effort(ctx, &cmd.args),
         "set_model_setting" => state::set_model_setting(ctx, &cmd.args),
         "model_settings" => state::model_settings(ctx, &cmd.args),
         "memory_changelog" => state::memory_changelog(engine, ctx, &cmd.args),
@@ -206,7 +199,6 @@ mod tests {
             data_dir: data_dir.clone(),
             character_name: Some("TestChar".into()),
             active_model: None,
-            reasoning_effort_override: None,
             session_tokens: Arc::new(Mutex::new(SessionTokens::default())),
             autonomy,
             llm_client: LedgerClient::new(shore_llm::LlmClient::new(), &data_dir.join("ledger.db"))

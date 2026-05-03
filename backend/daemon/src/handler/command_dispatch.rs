@@ -110,7 +110,6 @@ impl MessageHandler {
                 data_dir: self.cmd_ctx.data_dir.clone(),
                 character_name: None,
                 active_model: None,
-                reasoning_effort_override: None,
                 session_tokens: self.session_state_mut(session_id).session_tokens.clone(),
                 autonomy: self.cmd_ctx.autonomy.clone(),
                 llm_client: self.cmd_ctx.llm_client.clone(),
@@ -137,11 +136,10 @@ impl MessageHandler {
             cmd.name.as_str(),
             "list_characters" | "list_models" | "list_providers" | "list_provider_models"
         ) {
-            let (active_model, reasoning_effort_override, session_tokens) = {
+            let (active_model, session_tokens) = {
                 let session = self.session_state_mut(session_id);
                 (
                     session.active_model.clone(),
-                    session.reasoning_effort_override.clone(),
                     session.session_tokens.clone(),
                 )
             };
@@ -152,7 +150,6 @@ impl MessageHandler {
                 data_dir: self.cmd_ctx.data_dir.clone(),
                 character_name: None,
                 active_model,
-                reasoning_effort_override,
                 session_tokens,
                 autonomy: self.cmd_ctx.autonomy.clone(),
                 llm_client: self.cmd_ctx.llm_client.clone(),
@@ -162,7 +159,6 @@ impl MessageHandler {
             {
                 let session = self.session_state_mut(session_id);
                 session.active_model = ctx.active_model.clone();
-                session.reasoning_effort_override = ctx.reasoning_effort_override.clone();
             }
             return match result {
                 Ok(data) => {
@@ -240,13 +236,10 @@ impl MessageHandler {
             .map(|m| m.qualified_name.clone())
         };
 
-        let (reasoning_effort_override, session_tokens) = {
-            let session = self.session_state_mut(session_id);
-            (
-                session.reasoning_effort_override.clone(),
-                session.session_tokens.clone(),
-            )
-        };
+        let session_tokens = self
+            .session_state_mut(session_id)
+            .session_tokens
+            .clone();
 
         let mut cmd_ctx = CommandContext {
             config: effective_config,
@@ -255,7 +248,6 @@ impl MessageHandler {
             data_dir: self.cmd_ctx.data_dir.clone(),
             character_name: Some(char_name.clone()),
             active_model: persisted_active_model,
-            reasoning_effort_override,
             session_tokens,
             autonomy: self.cmd_ctx.autonomy.clone(),
             llm_client: self.cmd_ctx.llm_client.clone(),
@@ -276,12 +268,10 @@ impl MessageHandler {
         // The dispatcher only mirrors the post-command state into the
         // session cache.
         let active_model_after_command = cmd_ctx.active_model.clone();
-        let reasoning_effort_after_command = cmd_ctx.reasoning_effort_override.clone();
 
         {
             let session = self.session_state_mut(session_id);
             session.active_model = active_model_after_command.clone();
-            session.reasoning_effort_override = reasoning_effort_after_command;
         }
 
         if runtime_config_set {

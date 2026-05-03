@@ -348,7 +348,6 @@ mod tests {
             data_dir: data_dir.clone(),
             character_name: None,
             active_model: None,
-            reasoning_effort_override: None,
             session_tokens: Arc::new(Mutex::new(SessionTokens::default())),
             autonomy,
             llm_client: LedgerClient::new(shore_llm::LlmClient::new(), &data_dir.join("ledger.db"))

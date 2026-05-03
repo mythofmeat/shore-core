@@ -1194,27 +1194,6 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                     app.model.clear();
                     app.set_status("model reset to default");
                 }
-                "set_reasoning_effort" => {
-                    // Daemon returns `effective` as the value that will reach
-                    // the request; show that alongside a marker for "overridden"
-                    // vs "inherited from config" so the user can tell which is
-                    // in force without reading the config.
-                    let effective = match co.data.get("effective") {
-                        Some(v) if v.is_null() => "off".to_string(),
-                        Some(v) => v
-                            .as_str()
-                            .map(String::from)
-                            .unwrap_or_else(|| v.to_string()),
-                        None => "(unknown)".to_string(),
-                    };
-                    let overridden = co
-                        .data
-                        .get("override")
-                        .map(|v| !v.is_null())
-                        .unwrap_or(false);
-                    let tag = if overridden { "override" } else { "config" };
-                    app.set_status(format!("reasoning: {effective} ({tag})"));
-                }
                 "memory" => {
                     let summary = serde_json::to_string_pretty(&co.data)
                         .unwrap_or_else(|_| co.data.to_string());

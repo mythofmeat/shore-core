@@ -142,7 +142,6 @@ struct GenerationParams {
     /// not accept as input. `None` means fall back to the configured
     /// default at generation time.
     active_model: Option<shore_config::models::ResolvedModel>,
-    reasoning_effort_override: Option<Option<String>>,
     /// Phase 3+: per-model sampler overlay derived from the merged
     /// global+character preferences for the active `(provider, model_id)`.
     /// Empty `SamplerSettings` means "no preference overrides apply".
@@ -152,7 +151,6 @@ struct GenerationParams {
 #[derive(Default)]
 struct SessionState {
     active_model: Option<String>,
-    reasoning_effort_override: Option<Option<String>>,
     session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
     generation_handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -529,10 +527,6 @@ impl MessageHandler {
             };
             (resolved, overlay)
         };
-        let reasoning_effort_override = {
-            let session = self.session_state_mut(meta.session.session_id);
-            session.reasoning_effort_override.clone()
-        };
         let fanout_tx = self
             .build_fanout_tx(meta.session.session_id, &char_name, direct_tx)
             .await;
@@ -547,7 +541,6 @@ impl MessageHandler {
             effective_config,
             data_dir: self.cmd_ctx.data_dir.clone(),
             active_model,
-            reasoning_effort_override,
             sampler_overlay,
         };
 

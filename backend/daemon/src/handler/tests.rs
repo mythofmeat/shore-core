@@ -88,7 +88,6 @@ async fn make_handler(
         data_dir: data_dir.clone(),
         character_name: None,
         active_model: None,
-        reasoning_effort_override: None,
         session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
         autonomy: autonomy.clone(),
         llm_client: ledger_client.clone(),
@@ -445,7 +444,6 @@ async fn hot_reload_preserves_session_overrides() {
     {
         let session = handler.session_state_mut(SessionId(1));
         session.active_model = Some("manual-model".into());
-        session.reasoning_effort_override = Some(Some("low".into()));
     }
 
     let config_path = tmp.path().join("config").join("config.toml");
@@ -454,13 +452,6 @@ async fn hot_reload_preserves_session_overrides() {
 
     let session = handler.session_state_mut(SessionId(1));
     assert_eq!(session.active_model.as_deref(), Some("manual-model"));
-    assert_eq!(
-        session
-            .reasoning_effort_override
-            .as_ref()
-            .and_then(|v| v.as_deref()),
-        Some("low")
-    );
 }
 
 #[tokio::test]
@@ -604,7 +595,6 @@ async fn handle_engine_message_regen_builds_empty_body() {
             effective_config,
             data_dir,
             active_model: None,
-            reasoning_effort_override: None,
             sampler_overlay: crate::preferences::SamplerSettings::default(),
         },
     )
@@ -891,7 +881,6 @@ async fn make_handler_with_models(
         data_dir: data_dir.clone(),
         character_name: None,
         active_model: None,
-        reasoning_effort_override: None,
         session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
         autonomy: autonomy.clone(),
         llm_client: ledger_client.clone(),
@@ -966,7 +955,6 @@ async fn pipeline_user_message_to_persisted_response() {
             effective_config,
             data_dir: data_dir.clone(),
             active_model: None,
-            reasoning_effort_override: None,
             sampler_overlay: crate::preferences::SamplerSettings::default(),
         },
     )

@@ -41,7 +41,6 @@ pub(super) async fn handle_generation(
         effective_config,
         data_dir,
         active_model,
-        reasoning_effort_override,
         sampler_overlay,
     } = params;
     info!(
@@ -124,30 +123,17 @@ pub(super) async fn handle_generation(
         },
     };
     let resolved_base = &resolved_base_owned;
-    // Phase 3+: apply preference-derived sampler overlay first
-    // (durable per-model settings), then the per-session
-    // `reasoning_effort_override` (transient session state) on top.
-    // The transient override wins so existing `shore reasoning` flow
-    // remains a "change just for this turn" affordance until Phase 8
-    // routes it through the preferences store too.
     let resolved_owned;
-    let resolved: &shore_config::models::ResolvedModel =
-        if !sampler_overlay.is_empty() || reasoning_effort_override.is_some() {
-            let mut patched =
-                crate::preferences::apply_sampler_overlay(resolved_base, &sampler_overlay);
-            if let Some(new_effort) = reasoning_effort_override.as_ref() {
-                patched.reasoning_effort = new_effort.clone();
-            }
-            resolved_owned = patched;
-            &resolved_owned
-        } else {
-            resolved_base
-        };
+    let resolved: &shore_config::models::ResolvedModel = if !sampler_overlay.is_empty() {
+        resolved_owned = crate::preferences::apply_sampler_overlay(resolved_base, &sampler_overlay);
+        &resolved_owned
+    } else {
+        resolved_base
+    };
     debug!(
         model = %resolved.qualified_name,
         provider = %resolved.provider_key,
         reasoning_effort = ?resolved.reasoning_effort,
-        override_active = reasoning_effort_override.is_some(),
         sampler_overlay_active = !sampler_overlay.is_empty(),
         "model resolved"
     );
