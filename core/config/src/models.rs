@@ -26,6 +26,11 @@ pub enum Sdk {
     Openai,
     Gemini,
     Zai,
+    /// Routes through the local `claude` CLI subprocess, billing against
+    /// the user's Claude subscription via OAuth instead of an API key.
+    /// The underlying model is Anthropic, but the transport is a
+    /// subprocess driver rather than an HTTP client.
+    ClaudeCode,
 }
 
 impl<'de> Deserialize<'de> for Sdk {
@@ -39,6 +44,7 @@ impl<'de> Deserialize<'de> for Sdk {
             "openai" => Ok(Sdk::Openai),
             "gemini" => Ok(Sdk::Gemini),
             "zai" => Ok(Sdk::Zai),
+            "claude_code" | "claude-code" | "claudecode" => Ok(Sdk::ClaudeCode),
             "deepseek" | "zhipuai" => {
                 warn!(
                     "sdk = \"{s}\" is deprecated and now maps to \"openai\". \
@@ -48,7 +54,7 @@ impl<'de> Deserialize<'de> for Sdk {
             }
             other => Err(serde::de::Error::unknown_variant(
                 other,
-                &["anthropic", "openai", "gemini", "zai"],
+                &["anthropic", "openai", "gemini", "zai", "claude_code"],
             )),
         }
     }
@@ -62,6 +68,7 @@ impl Sdk {
             Sdk::Openai => "openai",
             Sdk::Gemini => "gemini",
             Sdk::Zai => "zai",
+            Sdk::ClaudeCode => "claude_code",
         }
     }
 
@@ -75,6 +82,7 @@ impl Sdk {
             "openai" => Some(Sdk::Openai),
             "gemini" => Some(Sdk::Gemini),
             "zai" => Some(Sdk::Zai),
+            "claude_code" => Some(Sdk::ClaudeCode),
             _ => None,
         }
     }
@@ -1398,6 +1406,22 @@ sdk = "anthropic"
         );
         // Should inherit OpenRouter's API key env
         assert_eq!(opus.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
+    }
+
+    #[test]
+    fn claude_code_sdk_accepts_three_spellings() {
+        // The wire form is `claude_code`; we also accept the dashed and
+        // run-together variants because the docs use them interchangeably
+        // and config-typo lockout is unfriendly.
+        for input in ["claude_code", "claude-code", "claudecode"] {
+            let toml = format!(r#"sdk = "{input}""#);
+            let parsed: ModelConfigFields = toml::from_str(&toml).unwrap();
+            assert_eq!(parsed.sdk, Some(Sdk::ClaudeCode), "input was {input:?}");
+        }
+        assert_eq!(Sdk::ClaudeCode.as_str(), "claude_code");
+        assert_eq!(Sdk::parse_wire("claude_code"), Some(Sdk::ClaudeCode));
+        // Dashed form is for config humans; wire form is canonical.
+        assert_eq!(Sdk::parse_wire("claude-code"), None);
     }
 
     #[test]

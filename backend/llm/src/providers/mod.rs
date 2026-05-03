@@ -1,4 +1,5 @@
 pub(crate) mod anthropic;
+pub(crate) mod claude_code;
 pub(crate) mod context;
 pub(crate) mod gemini;
 pub(crate) mod openai;
@@ -67,6 +68,7 @@ pub async fn stream(
         Sdk::Openai => openai::stream(client, request, &ctx).await,
         Sdk::Zai => zai::stream(client, request).await,
         Sdk::Gemini => gemini::stream(client, request).await,
+        Sdk::ClaudeCode => claude_code::stream(client, request).await,
     };
     if let Err(e) = &result {
         warn!(sdk = ?request.sdk, model = %request.model, error = %e, "streaming request failed");
@@ -92,6 +94,7 @@ pub async fn generate(
         Sdk::Openai => openai::generate(client, request, &ctx).await,
         Sdk::Zai => zai::generate(client, request).await,
         Sdk::Gemini => gemini::generate(client, request).await,
+        Sdk::ClaudeCode => claude_code::generate(client, request).await,
     };
     match &result {
         Ok(resp) => debug!(
@@ -171,7 +174,13 @@ mod tests {
         let client = reqwest::Client::new();
         // All SDK variants should route to real impls and fail on HTTP
         // (unreachable base_url), not panic.
-        for sdk in [Sdk::Anthropic, Sdk::Openai, Sdk::Zai, Sdk::Gemini] {
+        for sdk in [
+            Sdk::Anthropic,
+            Sdk::Openai,
+            Sdk::Zai,
+            Sdk::Gemini,
+            Sdk::ClaudeCode,
+        ] {
             let request = make_request(sdk);
             let result = stream(&client, &request).await;
             // Any error is fine (HTTP, connection) — we just confirm dispatch works.
