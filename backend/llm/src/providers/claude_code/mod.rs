@@ -9,8 +9,11 @@
 //! Pattern 3 (hybrid) is the target: long-lived `claude -p` subprocess
 //! per active conversation for faithful turn-pair preservation,
 //! fresh-spawn fallback for cold starts and post-compaction. Both
-//! paths are not yet implemented; this is the type-system-only
-//! scaffolding.
+//! paths are not yet implemented; the public stream/generate
+//! entry points still return a stub error. The stream-json parser
+//! lives in `parser` and is fixture-tested independently.
+
+mod parser;
 
 use tokio::io::DuplexStream;
 
