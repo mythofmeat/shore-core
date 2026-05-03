@@ -1,6 +1,7 @@
 #[cfg(test)]
 pub mod test_support;
 
+pub mod auto_discovery;
 pub mod autonomy;
 pub mod cache_keepalive;
 pub mod characters;

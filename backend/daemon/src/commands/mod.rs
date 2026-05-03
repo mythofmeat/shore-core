@@ -109,6 +109,7 @@ pub async fn dispatch(
         // Provider discovery
         "list_providers" => providers::list_providers(ctx),
         "refresh_provider_models" => providers::refresh_provider_models(ctx, &cmd.args).await,
+        "refresh_all_provider_models" => providers::refresh_all_provider_models(ctx).await,
         "list_provider_models" => providers::list_provider_models(ctx, &cmd.args),
 
         _ => Err((

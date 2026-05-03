@@ -138,10 +138,7 @@ impl MessageHandler {
         ) {
             let (active_model, session_tokens) = {
                 let session = self.session_state_mut(session_id);
-                (
-                    session.active_model.clone(),
-                    session.session_tokens.clone(),
-                )
+                (session.active_model.clone(), session.session_tokens.clone())
             };
             let ctx = CommandContext {
                 config: self.cmd_ctx.config.clone(),
@@ -236,10 +233,7 @@ impl MessageHandler {
             .map(|m| m.qualified_name.clone())
         };
 
-        let session_tokens = self
-            .session_state_mut(session_id)
-            .session_tokens
-            .clone();
+        let session_tokens = self.session_state_mut(session_id).session_tokens.clone();
 
         let mut cmd_ctx = CommandContext {
             config: effective_config,

@@ -25,6 +25,7 @@
 //! provider metadata.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -34,6 +35,11 @@ use tracing::{debug, warn};
 /// a smaller `version` are read on a best-effort basis; mismatched newer
 /// caches are treated as "no cache" and require a refresh.
 pub const CACHE_VERSION: u32 = 1;
+
+/// Default TTL for cached provider catalogs. The auto-discovery loop in
+/// the daemon refreshes any discovery-enabled provider whose cache is
+/// older than this (or absent).
+pub const REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 // ── DiscoveredModel ─────────────────────────────────────────────────────
 
@@ -149,6 +155,26 @@ pub fn read_cache(path: &Path) -> std::io::Result<Option<ProviderModelsCache>> {
             );
             Ok(None)
         }
+    }
+}
+
+/// Elapsed time since `fetched_at` (RFC3339). Returns `None` when the
+/// timestamp can't be parsed or sits in the future — callers treat
+/// `None` as "stale" so a corrupt timestamp triggers a refresh rather
+/// than silently leaving the cache untouched forever.
+pub fn cache_age(fetched_at: &str) -> Option<Duration> {
+    let parsed = chrono::DateTime::parse_from_rfc3339(fetched_at).ok()?;
+    let now = chrono::Utc::now();
+    let elapsed = now.signed_duration_since(parsed.with_timezone(&chrono::Utc));
+    elapsed.to_std().ok()
+}
+
+/// Cache is stale if `fetched_at` is unparseable or older than
+/// [`REFRESH_INTERVAL`].
+pub fn is_stale(cache: &ProviderModelsCache) -> bool {
+    match cache_age(&cache.fetched_at) {
+        Some(age) => age >= REFRESH_INTERVAL,
+        None => true,
     }
 }
 
@@ -556,6 +582,58 @@ mod tests {
     #[test]
     fn truncate_for_log_passes_short_bodies() {
         assert_eq!(truncate_for_log("hi"), "hi");
+    }
+
+    #[test]
+    fn cache_age_parses_rfc3339_and_returns_elapsed() {
+        let one_hour_ago = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        let age = cache_age(&one_hour_ago).expect("parses");
+        assert!(age >= Duration::from_secs(60 * 59));
+        assert!(age < Duration::from_secs(60 * 61));
+    }
+
+    #[test]
+    fn cache_age_returns_none_for_garbage() {
+        assert!(cache_age("not a timestamp").is_none());
+        assert!(cache_age("").is_none());
+    }
+
+    #[test]
+    fn is_stale_true_when_older_than_interval() {
+        let old = (chrono::Utc::now() - chrono::Duration::hours(48)).to_rfc3339();
+        let cache = ProviderModelsCache {
+            version: CACHE_VERSION,
+            provider_key: "p".into(),
+            fetched_at: old,
+            base_url: None,
+            models: vec![],
+        };
+        assert!(is_stale(&cache));
+    }
+
+    #[test]
+    fn is_stale_false_when_recent() {
+        let fresh = chrono::Utc::now().to_rfc3339();
+        let cache = ProviderModelsCache {
+            version: CACHE_VERSION,
+            provider_key: "p".into(),
+            fetched_at: fresh,
+            base_url: None,
+            models: vec![],
+        };
+        assert!(!is_stale(&cache));
+    }
+
+    #[test]
+    fn is_stale_true_when_timestamp_is_garbage() {
+        let cache = ProviderModelsCache {
+            version: CACHE_VERSION,
+            provider_key: "p".into(),
+            fetched_at: "not-a-timestamp".into(),
+            base_url: None,
+            models: vec![],
+        };
+        assert!(is_stale(&cache));
     }
 
     #[test]

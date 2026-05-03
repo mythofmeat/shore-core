@@ -469,6 +469,7 @@ async fn handle_complete_query(
     let (cmd, array_key) = match kind {
         CompleteKind::Models => ("list_models", "models"),
         CompleteKind::Characters => ("list_characters", "characters"),
+        CompleteKind::Providers => ("list_providers", "providers"),
     };
 
     conn.send_command(cmd, serde_json::json!({})).await?;

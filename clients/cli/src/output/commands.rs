@@ -221,6 +221,7 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "list_providers" => print_provider_list(data),
         "list_provider_models" => print_provider_models(data),
         "refresh_provider_models" => print_provider_refresh(data),
+        "refresh_all_provider_models" => print_provider_refresh_all(data),
         "memory" => print_memory(data),
         "compact" => print_compact_result(data),
         "memory_changelog" => print_changelog(data),
@@ -444,7 +445,6 @@ fn print_model_reset(data: &serde_json::Value) {
     let model = data["active"].as_str().unwrap_or("(none)");
     println!("Model reset to: {}", abbreviate_model(model));
 }
-
 
 /// Print detailed model info.
 fn print_model_info(data: &serde_json::Value) {
@@ -705,6 +705,74 @@ fn print_provider_refresh(data: &serde_json::Value) {
     let count = data["model_count"].as_u64().unwrap_or(0);
     let fetched = data["fetched_at"].as_str().unwrap_or("?");
     println!("Refreshed {provider}: {count} models (fetched {fetched})");
+}
+
+/// Print the result of `shore provider refresh` (no name) — one row per
+/// provider with ok/FAIL status, plus a `skipped` section listing every
+/// provider that was excluded with a reason.
+fn print_provider_refresh_all(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+    write_section_header(&mut out, "Provider refresh", "all", width);
+
+    let mut ok_count: u64 = 0;
+    let mut fail_count: u64 = 0;
+
+    if let Some(results) = data["results"].as_array() {
+        for r in results {
+            let provider = r["provider"].as_str().unwrap_or("?");
+            let ok = r["ok"].as_bool().unwrap_or(false);
+            if ok {
+                ok_count += 1;
+                let count = r["model_count"].as_u64().unwrap_or(0);
+                let fetched = r["fetched_at"].as_str().unwrap_or("?");
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::Green));
+                    let _ = write!(out, "  ok  ");
+                    let _ = crossterm::execute!(out, ResetColor);
+                } else {
+                    let _ = write!(out, "  ok  ");
+                }
+                let _ = writeln!(out, "{provider}: {count} models (fetched {fetched})");
+            } else {
+                fail_count += 1;
+                let err = r["error"].as_str().unwrap_or("unknown error");
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::Red));
+                    let _ = write!(out, "  FAIL");
+                    let _ = crossterm::execute!(out, ResetColor);
+                } else {
+                    let _ = write!(out, "  FAIL");
+                }
+                let _ = writeln!(out, " {provider}: {err}");
+            }
+        }
+    }
+
+    if let Some(skipped) = data["skipped"].as_array() {
+        if !skipped.is_empty() {
+            let _ = writeln!(out);
+            write_section_header(&mut out, "Skipped", "", width);
+            for s in skipped {
+                let provider = s["provider"].as_str().unwrap_or("?");
+                let reason = s["reason"].as_str().unwrap_or("?");
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                }
+                let _ = writeln!(out, "  {provider}: {reason}");
+                if use_color() {
+                    let _ = crossterm::execute!(out, ResetColor);
+                }
+            }
+        }
+    }
+
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Refreshed {ok_count} provider(s); {fail_count} failed."
+    );
 }
 
 /// Print character info.

@@ -7,7 +7,12 @@
 //! key names, env-var-set booleans, and public model metadata are
 //! surfaced. Refresh failures preserve whatever cache was on disk.
 
+use std::path::{Path, PathBuf};
+
 use serde_json::{json, Value};
+use shore_config::LoadedConfig;
+use shore_ledger::LedgerClient;
+use shore_llm::discovery::ProviderModelsCache;
 use shore_protocol::error::ErrorCode;
 use tracing::{info, warn};
 
@@ -104,13 +109,27 @@ pub fn list_providers(ctx: &CommandContext) -> CommandResult {
 
 // ── refresh_provider_models ────────────────────────────────────────────
 
+/// Outcome of a successful refresh: the cache that was written and the
+/// path it was written to. Used by both the single-provider and
+/// bulk-refresh command wrappers as well as the auto-discovery loop.
+pub(crate) struct RefreshOutcome {
+    pub cache: ProviderModelsCache,
+    pub cache_path: PathBuf,
+}
+
 /// Fetch the provider's discovery endpoint with the first usable key,
 /// then write the cache atomically. The cache is only updated on success
 /// — any failure leaves the previous cache untouched.
-pub async fn refresh_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult {
-    let provider = require_provider(args)?;
-
-    let entry = ctx.config.providers.get(provider).ok_or((
+///
+/// Decoupled from `CommandContext` so the auto-discovery background loop
+/// can call it with just the bits it needs.
+pub(crate) async fn refresh_one(
+    config: &LoadedConfig,
+    data_dir: &Path,
+    llm: &LedgerClient,
+    provider: &str,
+) -> Result<RefreshOutcome, (ErrorCode, String)> {
+    let entry = config.providers.get(provider).ok_or((
         ErrorCode::NotFound,
         format!("provider {provider:?} is not configured"),
     ))?;
@@ -154,7 +173,7 @@ pub async fn refresh_provider_models(ctx: &CommandContext, args: &Value) -> Comm
             ),
         ))?;
 
-    let http = ctx.llm_client.inner().http_client();
+    let http = llm.inner().http_client();
     info!(provider = %provider, base_url = %base_url, "Refreshing provider models");
 
     let models = match shore_llm::discovery::discover_openai_compatible(
@@ -169,7 +188,7 @@ pub async fn refresh_provider_models(ctx: &CommandContext, args: &Value) -> Comm
         }
     };
 
-    let cache = shore_llm::discovery::ProviderModelsCache {
+    let cache = ProviderModelsCache {
         version: shore_llm::discovery::CACHE_VERSION,
         provider_key: provider.to_string(),
         fetched_at: chrono::Utc::now().to_rfc3339(),
@@ -177,19 +196,82 @@ pub async fn refresh_provider_models(ctx: &CommandContext, args: &Value) -> Comm
         models,
     };
 
-    let path = shore_llm::discovery::cache_path(&ctx.data_dir, provider);
-    if let Err(e) = shore_llm::discovery::write_cache(&path, &cache) {
+    let cache_path = shore_llm::discovery::cache_path(data_dir, provider);
+    if let Err(e) = shore_llm::discovery::write_cache(&cache_path, &cache) {
         return Err((
             ErrorCode::InternalError,
             format!("failed to write provider cache: {e}"),
         ));
     }
 
+    Ok(RefreshOutcome { cache, cache_path })
+}
+
+/// JSON-args wrapper around [`refresh_one`] for the single-provider
+/// `shore provider refresh <name>` command path.
+pub async fn refresh_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult {
+    let provider = require_provider(args)?;
+    let outcome = refresh_one(&ctx.config, &ctx.data_dir, &ctx.llm_client, provider).await?;
     Ok(json!({
         "provider": provider,
-        "model_count": cache.models.len(),
-        "fetched_at": cache.fetched_at,
-        "cache_path": path.display().to_string(),
+        "model_count": outcome.cache.models.len(),
+        "fetched_at": outcome.cache.fetched_at,
+        "cache_path": outcome.cache_path.display().to_string(),
+    }))
+}
+
+// ── refresh_all_provider_models ────────────────────────────────────────
+
+/// Refresh every configured provider that is enabled and has discovery
+/// enabled. Per-provider failures are aggregated rather than aborting
+/// the batch — a missing key on one provider should not prevent others
+/// from refreshing.
+///
+/// Output shape:
+/// ```json
+/// {
+///   "results": [
+///     { "provider": "openrouter", "ok": true,  "model_count": 312, "fetched_at": "..." },
+///     { "provider": "openai",     "ok": false, "error": "no API key configured" }
+///   ],
+///   "skipped": [
+///     { "provider": "anthropic", "reason": "discovery disabled" }
+///   ]
+/// }
+/// ```
+pub async fn refresh_all_provider_models(ctx: &CommandContext) -> CommandResult {
+    let mut results: Vec<Value> = Vec::new();
+    let mut skipped: Vec<Value> = Vec::new();
+
+    for (name, entry) in ctx.config.providers.iter() {
+        if !entry.enabled {
+            skipped.push(json!({ "provider": name, "reason": "disabled" }));
+            continue;
+        }
+        if !entry.discovery.enabled {
+            skipped.push(json!({ "provider": name, "reason": "discovery disabled" }));
+            continue;
+        }
+
+        match refresh_one(&ctx.config, &ctx.data_dir, &ctx.llm_client, name).await {
+            Ok(outcome) => results.push(json!({
+                "provider": name,
+                "ok": true,
+                "model_count": outcome.cache.models.len(),
+                "fetched_at": outcome.cache.fetched_at,
+                "cache_path": outcome.cache_path.display().to_string(),
+            })),
+            Err((_code, message)) => results.push(json!({
+                "provider": name,
+                "ok": false,
+                "error": message,
+            })),
+        }
+    }
+
+    Ok(json!({
+        "results": results,
+        "skipped": skipped,
     }))
 }
 
@@ -1018,5 +1100,116 @@ enabled = true
         assert_eq!(cache.models[1].context_length, Some(200_000));
 
         std::env::remove_var(&unique);
+    }
+
+    // ── refresh_all_provider_models ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn refresh_all_skips_disabled_and_discovery_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = build_ctx_with_registry(
+            &tmp,
+            r#"
+[providers.alpha]
+enabled = false
+api_key_env = "ALPHA_KEY"
+
+[providers.beta]
+api_key_env = "BETA_KEY"
+base_url = "https://example.test/v1"
+
+[providers.beta.discovery]
+enabled = false
+"#,
+        );
+
+        let out = refresh_all_provider_models(&ctx).await.unwrap();
+        let skipped = out["skipped"].as_array().unwrap();
+        let reasons: std::collections::BTreeMap<&str, &str> = skipped
+            .iter()
+            .map(|s| {
+                (
+                    s["provider"].as_str().unwrap(),
+                    s["reason"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(reasons.get("alpha").copied(), Some("disabled"));
+        assert_eq!(reasons.get("beta").copied(), Some("discovery disabled"));
+        assert!(out["results"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn refresh_all_continues_after_one_provider_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good_key = format!("PROV_TEST_REFRESH_ALL_GOOD_{}", std::process::id());
+        let bad_key = format!("PROV_TEST_REFRESH_ALL_BAD_{}", std::process::id());
+        std::env::set_var(&good_key, "sk-fixture");
+        std::env::remove_var(&bad_key);
+
+        let body = serde_json::json!({
+            "object": "list",
+            "data": [{ "id": "good/m1", "object": "model" }]
+        });
+        let mock = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/v1/models"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(&body))
+            .mount(&mock)
+            .await;
+
+        let ctx = build_ctx_with_registry(
+            &tmp,
+            &format!(
+                r#"
+[providers.good]
+base_url = "{base}/v1"
+
+[[providers.good.keys]]
+name = "main"
+env = "{good_key}"
+
+[providers.good.discovery]
+enabled = true
+
+[providers.bad]
+base_url = "https://example.test/v1"
+
+[[providers.bad.keys]]
+name = "main"
+env = "{bad_key}"
+
+[providers.bad.discovery]
+enabled = true
+"#,
+                base = mock.uri()
+            ),
+        );
+
+        let out = refresh_all_provider_models(&ctx).await.unwrap();
+        let results = out["results"].as_array().unwrap();
+        let by_name: std::collections::BTreeMap<&str, &serde_json::Value> = results
+            .iter()
+            .map(|r| (r["provider"].as_str().unwrap(), r))
+            .collect();
+        assert_eq!(by_name["good"]["ok"], true);
+        assert_eq!(by_name["good"]["model_count"], 1);
+        assert_eq!(by_name["bad"]["ok"], false);
+        assert!(by_name["bad"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("API key"));
+        assert!(out["skipped"].as_array().unwrap().is_empty());
+
+        std::env::remove_var(&good_key);
+    }
+
+    #[tokio::test]
+    async fn refresh_all_empty_registry_returns_empty_lists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = build_ctx_with_registry(&tmp, "");
+        let out = refresh_all_provider_models(&ctx).await.unwrap();
+        assert!(out["results"].as_array().unwrap().is_empty());
+        assert!(out["skipped"].as_array().unwrap().is_empty());
     }
 }

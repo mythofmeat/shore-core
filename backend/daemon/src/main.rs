@@ -346,7 +346,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut msg_handler = MessageHandler::new(MessageHandlerDeps {
         registry: char_registry,
         cmd_ctx,
-        llm_client,
+        llm_client: llm_client.clone(),
         push_tx,
         session_router,
         autonomy: autonomy.clone(),
@@ -365,6 +365,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config_path.clone(),
         loaded.dirs.config.clone(),
         handler_control_tx,
+        shutdown_rx.clone(),
+    );
+
+    // ── Spawn provider auto-discovery loop ───────────────────────────
+    let auto_discovery_handle = shore_daemon::auto_discovery::spawn(
+        loaded.clone(),
+        loaded.dirs.data.clone(),
+        llm_client.clone(),
+        shore_llm::discovery::REFRESH_INTERVAL,
         shutdown_rx.clone(),
     );
 
@@ -402,6 +411,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(handle) = hot_reload_handle {
         let _ = tokio::time::timeout(shutdown_timeout, handle).await;
     }
+    let _ = tokio::time::timeout(shutdown_timeout, auto_discovery_handle).await;
     let _ = tokio::time::timeout(shutdown_timeout, handler_handle).await;
     let _ = tokio::time::timeout(shutdown_timeout, autonomy.shutdown()).await;
 

@@ -186,7 +186,9 @@ pub enum CliCommand {
     ///
     /// `shore provider`                  list providers + key/cache status
     /// `shore provider models <name>`    list discovered + static models
-    /// `shore provider refresh <name>`   re-fetch the provider's catalog
+    /// `shore provider refresh [name]`   re-fetch one provider's catalog,
+    ///                                   or every discovery-enabled
+    ///                                   provider when no name is given
     #[command(args_conflicts_with_subcommands = true)]
     Provider {
         #[command(subcommand)]
@@ -320,6 +322,8 @@ pub enum CompleteKind {
     Models,
     /// Discovered character names
     Characters,
+    /// Configured provider keys
+    Providers,
 }
 
 #[derive(Subcommand, Debug)]
@@ -419,9 +423,11 @@ pub enum ProviderCommand {
     },
 
     /// Re-fetch the provider's `/v1/models` catalog and update the cache.
+    /// Omit the name to refresh every discovery-enabled provider.
     Refresh {
-        /// Provider key to refresh
-        name: String,
+        /// Provider key to refresh. Omit to refresh all discovery-enabled
+        /// providers in one batch.
+        name: Option<String>,
 
         /// Output raw JSON
         #[arg(long)]
@@ -494,9 +500,10 @@ pub fn print_completions(shell: Shell) {
     }
 }
 
-/// Fish completions for the positional `name` arguments of `shore model`
-/// and `shore character`. Kept as a plain string so unit tests can assert
-/// exact content without depending on the clap-generated output above.
+/// Fish completions for the positional `name` arguments of `shore model`,
+/// `shore character`, and `shore provider {models,refresh}`. Kept as a
+/// plain string so unit tests can assert exact content without depending
+/// on the clap-generated output above.
 pub fn fish_dynamic_completions_footer() -> &'static str {
     // `shore complete <kind> 2>/dev/null` swallows daemon-down errors so
     // fish silently falls back to no suggestions rather than printing a
@@ -504,7 +511,8 @@ pub fn fish_dynamic_completions_footer() -> &'static str {
     "\n\
 # ── Dynamic completions (populated by the daemon) ────────────────────\n\
 complete -c shore -n \"__fish_shore_using_subcommand model\" -f -a \"(shore complete models 2>/dev/null)\"\n\
-complete -c shore -n \"__fish_shore_using_subcommand character\" -f -a \"(shore complete characters 2>/dev/null)\"\n"
+complete -c shore -n \"__fish_shore_using_subcommand character\" -f -a \"(shore complete characters 2>/dev/null)\"\n\
+complete -c shore -n \"__fish_shore_using_subcommand provider; and __fish_seen_subcommand_from models refresh\" -f -a \"(shore complete providers 2>/dev/null)\"\n"
 }
 
 /// Parse a CLI-supplied sampler value into the JSON shape the daemon
@@ -697,9 +705,13 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             json!({ "provider": name, "include_hidden": *all }),
         )),
         CliCommand::Provider {
-            subcommand: Some(ProviderCommand::Refresh { name, .. }),
+            subcommand: Some(ProviderCommand::Refresh { name: Some(n), .. }),
             ..
-        } => Some(("refresh_provider_models", json!({ "provider": name }))),
+        } => Some(("refresh_provider_models", json!({ "provider": n }))),
+        CliCommand::Provider {
+            subcommand: Some(ProviderCommand::Refresh { name: None, .. }),
+            ..
+        } => Some(("refresh_all_provider_models", json!({}))),
         CliCommand::Provider {
             subcommand: None, ..
         } => Some(("list_providers", json!({}))),
@@ -1311,7 +1323,19 @@ mod tests {
             CliCommand::Provider {
                 subcommand: Some(ProviderCommand::Refresh { name, .. }),
                 ..
-            } => assert_eq!(name, "openrouter"),
+            } => assert_eq!(name.as_deref(), Some("openrouter")),
+            other => panic!("expected Provider Refresh, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_provider_refresh_no_arg() {
+        let cli = parse(&["provider", "refresh"]);
+        match &cli.command {
+            CliCommand::Provider {
+                subcommand: Some(ProviderCommand::Refresh { name, .. }),
+                ..
+            } => assert!(name.is_none()),
             other => panic!("expected Provider Refresh, got: {other:?}"),
         }
     }
@@ -1798,7 +1822,7 @@ mod tests {
     fn provider_refresh_maps_to_command() {
         let cmd = CliCommand::Provider {
             subcommand: Some(ProviderCommand::Refresh {
-                name: "openrouter".into(),
+                name: Some("openrouter".into()),
                 json: false,
             }),
             json: false,
@@ -1806,6 +1830,33 @@ mod tests {
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "refresh_provider_models");
         assert_eq!(args["provider"], "openrouter");
+    }
+
+    #[test]
+    fn provider_refresh_no_arg_maps_to_refresh_all() {
+        let cmd = CliCommand::Provider {
+            subcommand: Some(ProviderCommand::Refresh {
+                name: None,
+                json: false,
+            }),
+            json: false,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "refresh_all_provider_models");
+        assert!(args.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fish_footer_includes_provider_completion() {
+        let footer = fish_dynamic_completions_footer();
+        assert!(
+            footer.contains("__fish_seen_subcommand_from models refresh"),
+            "footer should scope provider completion to `models refresh`: {footer}"
+        );
+        assert!(
+            footer.contains("shore complete providers"),
+            "footer should call `shore complete providers`: {footer}"
+        );
     }
 
     #[test]
@@ -2063,7 +2114,7 @@ mod tests {
             },
             CliCommand::Provider {
                 subcommand: Some(ProviderCommand::Refresh {
-                    name: "openrouter".into(),
+                    name: Some("openrouter".into()),
                     json: false,
                 }),
                 json: false,

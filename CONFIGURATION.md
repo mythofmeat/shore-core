@@ -206,12 +206,15 @@ ignore = [
 ```
 
 Discovered models populate the cache at
-`$XDG_DATA_HOME/shore/providers/<name>/models.json`. Run
-`shore provider refresh <name>` to update it. Hidden models stay in the
-cache but are filtered out of `shore model` and `shore provider models
-<name>` until `--all` (CLI) or `:model all` (TUI) is used. Manual
-`[chat.<provider>.<alias>]` entries are never filtered — they are
-intentional.
+`$XDG_DATA_HOME/shore/providers/<name>/models.json`. The daemon
+auto-refreshes any discovery-enabled provider whose cache is missing or
+older than 24h, both at startup and on a 24h cadence while running. Run
+`shore provider refresh <name>` (or `shore provider refresh` to fan out
+across every discovery-enabled provider) to force a refetch out of band.
+Hidden models stay in the cache but are filtered out of `shore model` and
+`shore provider models <name>` until `--all` (CLI) or `:model all` (TUI)
+is used. Manual `[chat.<provider>.<alias>]` entries are never filtered —
+they are intentional.
 
 ### Effective catalog and merge order
 

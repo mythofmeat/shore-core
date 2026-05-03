@@ -80,7 +80,6 @@ pub fn clear_active_model() -> std::io::Result<()> {
     }
 }
 
-
 /// Resolve the character name to display in output (transcript headers,
 /// status lines, etc.).
 ///

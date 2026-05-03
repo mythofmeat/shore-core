@@ -240,8 +240,18 @@ shore model setting --global top_p 0.9          # write to global prefs
 shore provider                      # list providers + key + cache status
 shore provider models <name>        # discovered + static for one provider
 shore provider models <name> --all  # also include hidden discovered models
-shore provider refresh <name>       # re-fetch /v1/models, rewrite cache
+shore provider refresh <name>       # re-fetch one provider's /v1/models
+shore provider refresh              # refresh every discovery-enabled provider
 ```
+
+The daemon also auto-refreshes any discovery-enabled provider whose cache
+is missing or older than 24h, both at startup and on a 24h cadence while
+running. Per-provider failures are logged and never block other providers
+or the daemon itself.
+
+Bash and Zsh completions stay static; Fish additionally completes provider
+names for `shore provider models <TAB>` and `shore provider refresh <TAB>`
+by querying the running daemon (silently empty when the daemon is down).
 
 `shore reasoning ...` keeps working and is internally routed through the
 shared sampler-preferences storage.

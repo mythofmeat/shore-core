@@ -553,4 +553,3 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
         },
     }))
 }
-
