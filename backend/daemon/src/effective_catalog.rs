@@ -474,6 +474,32 @@ base_url = "https://openrouter.ai/api/v1"
     }
 
     #[test]
+    fn discovered_anthropic_model_gets_default_cache_ttl() {
+        // Discovered models route through ResolvedModel::from_parts, so the
+        // SDK-conditional cache_ttl default applies to them too. A custom
+        // provider with sdk = "anthropic" (entry.sdk overrides the cache's
+        // hardcoded "openai") should produce a discovered model with
+        // cache_ttl = Some("1h").
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.my_anthropic_proxy]
+sdk = "anthropic"
+api_key_env = "MY_KEY"
+base_url = "https://example.test/v1"
+"#,
+            "",
+        );
+        write_cache_for(&tmp, "my_anthropic_proxy", &["claude-opus-4-6"]);
+
+        let m = find_effective_model(&loaded, tmp.path(), "claude-opus-4-6", false).unwrap();
+        assert_eq!(m.provider_key, "my_anthropic_proxy");
+        assert_eq!(m.sdk, shore_config::models::Sdk::Anthropic);
+        assert_eq!(m.cache_ttl.as_deref(), Some("1h"));
+    }
+
+    #[test]
     fn discovered_model_selectable_by_provider_prefix() {
         let tmp = tempfile::tempdir().unwrap();
         let loaded = make_loaded(

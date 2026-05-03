@@ -252,12 +252,24 @@ impl ResolvedModel {
         sdk_fallback: Sdk,
         fields: ModelConfigFields,
     ) -> Self {
+        let sdk = fields.sdk.clone().unwrap_or(sdk_fallback);
+
+        // Anthropic prompt caching is opt-in on the wire — `cache_control`
+        // blocks are only added when `cache_ttl` is `Some` and non-empty.
+        // Default to "1h" for the Anthropic SDK so users get caching without
+        // explicit config, matching the billing-side default in
+        // backend/ledger/src/pricing.rs. Set `cache_ttl = ""` to disable.
+        let cache_ttl = match (&sdk, fields.cache_ttl) {
+            (Sdk::Anthropic, None) => Some("1h".to_string()),
+            (_, other) => other,
+        };
+
         Self {
             name,
             qualified_name,
             category,
             provider_key,
-            sdk: fields.sdk.clone().unwrap_or(sdk_fallback),
+            sdk,
             model_id,
             api_key_env: fields.api_key_env,
             base_url: fields.base_url,
@@ -267,7 +279,7 @@ impl ResolvedModel {
             top_p: fields.top_p,
             reasoning_effort: fields.reasoning_effort,
             budget_tokens: fields.budget_tokens,
-            cache_ttl: fields.cache_ttl,
+            cache_ttl,
             keepalive_enabled: fields.keepalive_enabled,
             keepalive_ttl: fields.keepalive_ttl,
             keepalive_max_pings: fields.keepalive_max_pings,
@@ -766,6 +778,73 @@ model_id = "claude-opus-4-6"
         assert_eq!(opus.temperature, Some(1.0));
         assert_eq!(opus.max_tokens, Some(8192));
         assert_eq!(opus.max_context_tokens, Some(200_000));
+        // Anthropic SDK auto-enables prompt caching at 1h.
+        assert_eq!(opus.cache_ttl.as_deref(), Some("1h"));
+    }
+
+    #[test]
+    fn anthropic_sdk_auto_enables_cache_ttl_via_explicit_sdk_override() {
+        // Custom provider key with explicit `sdk = "anthropic"` — the
+        // hardcoded `"anthropic"` provider-key path isn't involved, so this
+        // pins that the default fires off the resolved SDK, not the key.
+        let table = parse_table(
+            r#"
+[my_anthropic_proxy]
+sdk = "anthropic"
+api_key_env = "MY_KEY"
+
+[my_anthropic_proxy.opus]
+model_id = "claude-opus-4-6"
+"#,
+        );
+        let models = parse_category("chat", &table, None).unwrap();
+        let opus = &models["chat.my_anthropic_proxy.opus"];
+        assert_eq!(opus.sdk, Sdk::Anthropic);
+        assert_eq!(opus.cache_ttl.as_deref(), Some("1h"));
+    }
+
+    #[test]
+    fn non_anthropic_sdk_does_not_get_default_cache_ttl() {
+        let table = parse_table(
+            r#"
+[openrouter.foo]
+model_id = "anthropic/claude-opus-4.6"
+"#,
+        );
+        let models = parse_category("chat", &table, None).unwrap();
+        let foo = &models["chat.openrouter.foo"];
+        // openrouter -> Sdk::Openai via hardcoded_defaults; no auto cache_ttl.
+        assert_eq!(foo.sdk, Sdk::Openai);
+        assert_eq!(foo.cache_ttl, None);
+    }
+
+    #[test]
+    fn explicit_empty_cache_ttl_disables_anthropic_caching() {
+        let table = parse_table(
+            r#"
+[anthropic.opus]
+model_id = "claude-opus-4-6"
+cache_ttl = ""
+"#,
+        );
+        let models = parse_category("chat", &table, None).unwrap();
+        let opus = &models["chat.anthropic.opus"];
+        // Explicit empty string survives — the runtime treats it as disabled.
+        assert_eq!(opus.cache_ttl.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn explicit_cache_ttl_overrides_anthropic_default() {
+        let table = parse_table(
+            r#"
+[anthropic.opus]
+model_id = "claude-opus-4-6"
+cache_ttl = "5m"
+"#,
+        );
+        let models = parse_category("chat", &table, None).unwrap();
+        let opus = &models["chat.anthropic.opus"];
+        assert_eq!(opus.cache_ttl.as_deref(), Some("5m"));
     }
 
     #[test]
