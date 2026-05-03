@@ -269,6 +269,8 @@ No client owns authoritative character state.
 
 The Matrix bridge can connect Shore characters to Matrix rooms. Embedded homeserver support is built around conduwuit-compatible servers, with external homeservers also supported.
 
+Messages prefixed with `!` are commands. The bridge mirrors the TUI's slash-command translation (`!regen`, `!cancel`, `!status`, `!character`, `!model`, `!provider`, `!setting`, `!memory`, `!compact`, `!delete`, `!edit`, `!sys`, `!reasoning`, `!speak`), plus `!bind [character]` for room↔character binding and `!help` for an in-room reference. Unknown `!cmd args` is forwarded to the daemon as a generic command so handlers without a TUI shortcut (`!log`, `!heartbeat_log`, `!model_info`, `!diagnostics`, etc.) still work.
+
 Matrix exists for convenience and mobile access; it is not a deeper protocol commitment.
 
 ## TTS

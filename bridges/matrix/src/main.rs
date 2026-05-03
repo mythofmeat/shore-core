@@ -557,19 +557,31 @@ async fn run_bridge_loop(
             Some(event) = matrix_rx.recv() => {
                 match event {
                     MatrixEvent::Message { room_id, text, .. } => {
-                        let input = parse_matrix_input(&text);
-                        match &input {
-                            MatrixInput::Command { name, args } if name == "bind" => {
+                        match parse_matrix_input(&text) {
+                            MatrixInput::Bind { character } => {
                                 handle_bind(
                                     &bot, &mut room_manager, &known_characters,
-                                    &room_id, args,
+                                    &room_id, character.as_deref(),
                                 ).await;
                             }
-                            _ => {
+                            MatrixInput::LocalReply(reply) => {
+                                bot.send_text(&room_id, &reply).await;
+                            }
+                            MatrixInput::Forward(msgs) => {
                                 active_room = Some(room_id);
-                                let swp_msg = input_to_swp(&input);
-                                if daemon_tx.send(ConnCommand::Send(swp_msg)).await.is_err() {
-                                    error!("daemon connection dropped");
+                                for msg in msgs {
+                                    if daemon_tx.send(ConnCommand::Send(msg)).await.is_err() {
+                                        error!("daemon connection dropped");
+                                        break;
+                                    }
+                                }
+                            }
+                            input @ (MatrixInput::Text(_) | MatrixInput::Image { .. }) => {
+                                active_room = Some(room_id);
+                                if let Some(swp_msg) = input_to_swp(&input) {
+                                    if daemon_tx.send(ConnCommand::Send(swp_msg)).await.is_err() {
+                                        error!("daemon connection dropped");
+                                    }
                                 }
                             }
                         }
@@ -580,9 +592,10 @@ async fn run_bridge_loop(
                             path,
                             caption: Some(body),
                         };
-                        let swp_msg = input_to_swp(&input);
-                        if daemon_tx.send(ConnCommand::Send(swp_msg)).await.is_err() {
-                            error!("daemon connection dropped");
+                        if let Some(swp_msg) = input_to_swp(&input) {
+                            if daemon_tx.send(ConnCommand::Send(swp_msg)).await.is_err() {
+                                error!("daemon connection dropped");
+                            }
                         }
                     }
                 }
@@ -631,13 +644,9 @@ async fn handle_bind(
     room_manager: &mut RoomManager,
     known_characters: &[String],
     room_id: &OwnedRoomId,
-    args: &serde_json::Value,
+    character: Option<&str>,
 ) {
-    let char_name = args
-        .get("text")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim();
+    let char_name = character.unwrap_or("").trim();
 
     if char_name.is_empty() {
         let mut lines = vec!["**Room bindings:**".to_string()];
