@@ -127,7 +127,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                     },
                     "path": {
                         "type": "string",
-                        "description": "Optional relative path to limit lexical search. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root. In hybrid/vector mode, providing this field forces a lexical-only fallback (the embedding index is workspace-wide and not path-scoped); the response will include `semantic_unavailable` so callers can see the fallback happened."
+                        "description": "Optional relative path to scope the search to a subtree. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root. Works in all modes — hybrid/vector queries are filtered to this subtree after ranking against the workspace-wide embedding index."
                     },
                     "max_results": {
                         "type": "number",
@@ -683,10 +683,15 @@ pub async fn handle_search(
     let path_str = input.get("path").and_then(|v| v.as_str());
     let path_scoped = !matches!(path_str, None | Some("") | Some("."));
 
-    if requested_hybrid && can_hybrid && !path_scoped {
+    if requested_hybrid && can_hybrid {
         let mode = match requested_mode {
             RequestedMode::Vector => HybridMode::Vector,
             _ => HybridMode::Hybrid,
+        };
+        let scope = if path_scoped {
+            Some(scope_prefix_for(workspace_dir, path_str.unwrap())?)
+        } else {
+            None
         };
         return handle_search_hybrid(
             input,
@@ -695,6 +700,7 @@ pub async fn handle_search(
             mode,
             embedder.unwrap(),
             workspace_index_path.unwrap(),
+            scope.as_deref(),
         )
         .await;
     }
@@ -703,18 +709,22 @@ pub async fn handle_search(
     if let Some(obj) = response.as_object_mut() {
         obj.insert("mode".into(), json!("lexical"));
         if requested_hybrid {
-            // The embedding index covers the whole workspace, so a path-
-            // scoped query falls back to lexical even when the embedder is
-            // available. Tell the caller which case applied.
-            let reason = if !can_hybrid {
-                "embedder not configured"
-            } else {
-                "path-scoped search runs lexical only"
-            };
-            obj.insert("semantic_unavailable".into(), json!(reason));
+            obj.insert(
+                "semantic_unavailable".into(),
+                json!("embedder not configured"),
+            );
         }
     }
     Ok(response)
+}
+
+/// Returns the workspace-relative display prefix used to scope a path-filtered
+/// hybrid search (e.g. `"workspace/notes"` → `"notes"`, `"memory/x"` →
+/// `"memory/x"`). The empty string means "no scope" and is filtered out by
+/// `hybrid_search`.
+fn scope_prefix_for(workspace_dir: &str, raw: &str) -> Result<String, ToolError> {
+    let resolved = resolve_list_path(workspace_dir, Some(raw))?;
+    Ok(display_path_for(workspace_dir, &resolved))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -890,6 +900,7 @@ async fn handle_search_hybrid(
     mode: HybridMode,
     embedder: &dyn Embedder,
     index_path: &Path,
+    path_filter: Option<&str>,
 ) -> Result<Value, ToolError> {
     let query = normalize_search_query(&input)?;
     let max_results = search_result_limit(&input);
@@ -901,6 +912,7 @@ async fn handle_search_hybrid(
         mode,
         embedder,
         index_path,
+        path_filter,
     )
     .await
     {
@@ -1783,7 +1795,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_with_path_scopes_to_lexical_even_with_embedder() {
+    async fn search_with_path_runs_hybrid_scoped_to_subtree() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
@@ -1795,7 +1807,7 @@ mod tests {
         .await
         .unwrap();
         handle_write(
-            json!({"path": "other/b.md", "content": "coffee break"}),
+            json!({"path": "other/b.md", "content": "tea ceremony"}),
             &ws_str,
         )
         .await
@@ -1814,11 +1826,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result["mode"], "lexical");
-        assert_eq!(
-            result["semantic_unavailable"],
-            "path-scoped search runs lexical only"
-        );
+        assert_eq!(result["mode"], "hybrid");
+        assert!(result.get("semantic_unavailable").is_none());
         let results = result["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["path"], "notes/a.md");

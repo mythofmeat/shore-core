@@ -124,6 +124,7 @@ pub async fn hybrid_search(
     mode: HybridMode,
     embedder: &dyn Embedder,
     index_path: &Path,
+    path_filter: Option<&str>,
 ) -> Result<HybridSearchResult, WorkspaceIndexError> {
     if workspace_dir.is_empty() {
         return Err(WorkspaceIndexError::NotConfigured);
@@ -150,12 +151,23 @@ pub async fn hybrid_search(
 
     // Drop entries whose files vanished or now live outside the walk.
     // Persist this even when no embed work runs, so deletions don't linger
-    // on disk indefinitely.
+    // on disk indefinitely. Computed from the unscoped walk so a path-
+    // scoped query doesn't prune entries outside its scope.
     let current: BTreeSet<String> = candidates.iter().map(|f| f.display_path.clone()).collect();
     let pre_prune = index.entries.len();
     index.entries.retain(|p, _| current.contains(p));
     if index.entries.len() != pre_prune {
         index_dirty = true;
+    }
+
+    // Scope the walk to the requested subtree. Embeddings stay cached
+    // workspace-wide; we just refresh + score within scope.
+    let scope_prefix = path_filter
+        .map(|p| p.trim_end_matches('/'))
+        .filter(|p| !p.is_empty());
+    if let Some(prefix) = scope_prefix {
+        let with_slash = format!("{prefix}/");
+        candidates.retain(|f| f.display_path == prefix || f.display_path.starts_with(&with_slash));
     }
 
     // Refresh per-file content + identify stale entries.
@@ -680,6 +692,7 @@ mod tests {
             HybridMode::Vector,
             &embedder,
             &idx,
+            None,
         )
         .await
         .unwrap();
@@ -698,7 +711,7 @@ mod tests {
         write_file(&ws, "b.md", "# B\n\nUnrelated content").await;
 
         let embedder = TopicEmbedder::new(&["completely-unrelated-topic"]);
-        let result = hybrid_search(&ws_str, true, "needle", HybridMode::Hybrid, &embedder, &idx)
+        let result = hybrid_search(&ws_str, true, "needle", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .unwrap();
 
@@ -715,7 +728,7 @@ mod tests {
         write_file(&ws, "b.md", "rust is fun").await;
 
         let embedder = TopicEmbedder::new(&["tea", "rust"]);
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .unwrap();
         // Two embed calls so far: one for the docs (batch of 2), one for the query.
@@ -726,7 +739,7 @@ mod tests {
 
         // Modify only b.md.
         write_file(&ws, "b.md", "rust and tokio are fun").await;
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .unwrap();
         let inputs_total = embedder.input_count.load(Ordering::SeqCst);
@@ -747,7 +760,7 @@ mod tests {
             .unwrap();
 
         let embedder = TopicEmbedder::new(&["tea"]);
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .unwrap();
         let inputs_first = embedder.input_count.load(Ordering::SeqCst);
@@ -755,7 +768,7 @@ mod tests {
         assert_eq!(inputs_first, 2);
 
         // Re-run; the binary file should not trigger another embedding.
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .unwrap();
         let inputs_total = embedder.input_count.load(Ordering::SeqCst);
@@ -779,7 +792,7 @@ mod tests {
             .unwrap();
 
         let embedder = TopicEmbedder::new(&["xyzzy"]);
-        let result = hybrid_search(&ws_str, true, "xyzzy", HybridMode::Hybrid, &embedder, &idx)
+        let result = hybrid_search(&ws_str, true, "xyzzy", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .unwrap();
         // The symlink target should not appear in results.
@@ -797,7 +810,7 @@ mod tests {
         write_file(&ws, "secret.md", "secret_token_xyzzy").await;
 
         let embedder = TopicEmbedder::new(&["xyzzy"]);
-        let result = hybrid_search(&ws_str, true, "xyzzy", HybridMode::Hybrid, &embedder, &idx)
+        let result = hybrid_search(&ws_str, true, "xyzzy", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .unwrap();
         // First search indexes the file and finds it.
@@ -811,7 +824,7 @@ mod tests {
             .unwrap();
 
         // Run again; the stale embedding must be dropped so the file doesn't appear.
-        let result = hybrid_search(&ws_str, true, "xyzzy", HybridMode::Hybrid, &embedder, &idx)
+        let result = hybrid_search(&ws_str, true, "xyzzy", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .unwrap();
         for f in &result.files {
@@ -831,7 +844,7 @@ mod tests {
         fs::write(ws.join("huge.md"), &big).await.unwrap();
 
         let embedder = TopicEmbedder::new(&["tea"]);
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .unwrap();
         let inputs_first = embedder.input_count.load(Ordering::SeqCst);
@@ -850,7 +863,7 @@ mod tests {
         assert_eq!(entry.reason.as_deref(), Some("oversize"));
 
         // Second call: only the query should embed.
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .unwrap();
         let inputs_total = embedder.input_count.load(Ordering::SeqCst);
@@ -872,7 +885,7 @@ mod tests {
         fs::write(&idx, b"not json at all { [ }").await.unwrap();
 
         let embedder = TopicEmbedder::new(&["tea"]);
-        let result = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+        let result = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .expect("hybrid search recovers from corrupt index");
         assert_eq!(result.files.len(), 1);
@@ -901,7 +914,7 @@ mod tests {
         let idx = locked.join("workspace_index.json");
 
         let embedder = TopicEmbedder::new(&["tea"]);
-        let result = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx).await;
+        let result = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None).await;
 
         // Restore perms so TempDir can clean up regardless of outcome.
         let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700));
@@ -920,13 +933,13 @@ mod tests {
         write_file(&ws, "b.md", "rust is fun").await;
 
         let embedder = TopicEmbedder::new(&["tea", "rust"]);
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .unwrap();
 
         // Delete b.md and re-run; the on-disk index must lose b.md.
         fs::remove_file(ws.join("b.md")).await.unwrap();
-        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx, None)
             .await
             .unwrap();
 
