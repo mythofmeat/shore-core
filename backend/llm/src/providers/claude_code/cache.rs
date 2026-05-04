@@ -4,6 +4,11 @@
 //! valid only while the recipe fingerprint is unchanged. The daemon
 //! keeps the MCP URL stable per `subprocess_key`; if any recipe input
 //! drifts, this module evicts and respawns.
+//!
+//! Turns for the same `subprocess_key` are serialized by the cached
+//! process mutex. That preserves the CLI's conversation-local context
+//! and avoids interleaving stdin frames; callers that want true
+//! parallelism should choose distinct subprocess keys.
 
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};

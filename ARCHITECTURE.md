@@ -136,6 +136,19 @@ the daemon rotates the per-turn ledger behind that session. Claude Code
 reported `total_cost_usd` is stored as would-be API cost for observability; it
 is not the user's actual subscription spend.
 
+The MCP listener is bearer-by-URL and loopback-only by default. A local process
+that can read the `claude` subprocess command line can see the `--mcp-config`
+URL and replay tool calls while that session is active, so the HTTP listener
+must not be exposed casually. Non-loopback `[daemon.http].bind_addr` values
+require `[daemon].unsafe_allow_remote_access = true`; `[daemon].allowed_hosts`
+does not filter the HTTP MCP listener.
+
+The provider writes system prompts to a temporary file and passes
+`--system-prompt-file` to avoid putting prompt text in argv. This is an
+undocumented Claude Code flag, so the ignored live tests and
+`dev/test-harness/claude_code/run.sh` are the guardrail for CLI compatibility
+across Claude Code upgrades.
+
 ## Config Runtime
 
 The daemon loads config at startup and keeps a runtime copy in the message

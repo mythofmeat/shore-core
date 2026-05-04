@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use shore_config::models::Sdk;
 use shore_config::{AGENTS_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE};
 use shore_protocol::types::{ContentBlock, Message, Role};
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::autonomy::parse_cache_ttl_secs;
 use crate::engine::prompt::{self, PromptParams};
@@ -611,6 +611,8 @@ fn splice_claude_code_tool_ledger(
     let existing = std::mem::take(&mut result.content_blocks);
     let mut spliced = Vec::new();
     let mut matched: HashSet<usize> = HashSet::new();
+    let mut emitted_tool_use_count = 0usize;
+    let mut unmatched_emitted_tool_uses = 0usize;
 
     if existing.is_empty() && !result.content.is_empty() {
         spliced.push(ContentBlock::Text {
@@ -621,6 +623,7 @@ fn splice_claude_code_tool_ledger(
     for block in existing {
         match block {
             ContentBlock::ToolUse { id, name, input } => {
+                emitted_tool_use_count += 1;
                 let bare_name = strip_mcp_tool_name(&name);
                 let match_idx = ledger_match(&ledger, &matched, &id, &bare_name, &input);
                 spliced.push(ContentBlock::ToolUse {
@@ -631,10 +634,23 @@ fn splice_claude_code_tool_ledger(
                 if let Some(i) = match_idx {
                     matched.insert(i);
                     spliced.push(ledger_tool_result_block(&ledger[i], &id));
+                } else {
+                    unmatched_emitted_tool_uses += 1;
                 }
             }
             other => spliced.push(other),
         }
+    }
+
+    let unmatched_ledger_count = ledger.len().saturating_sub(matched.len());
+    if unmatched_emitted_tool_uses > 0 || unmatched_ledger_count > 0 {
+        warn!(
+            ledger_count = ledger.len(),
+            emitted_tool_use_count,
+            unmatched_emitted_tool_uses,
+            unmatched_ledger_count,
+            "claude_code tool ledger mismatch; preserving emitted blocks and appending unmatched ledger entries"
+        );
     }
 
     for (i, entry) in ledger.iter().enumerate() {

@@ -79,6 +79,13 @@ and is currently required by `sdk = "claude_code"` so the local `claude` CLI can
 call back into Shore's MCP tool host. The default `127.0.0.1:0` binds an
 ephemeral loopback port and is the recommended setting.
 
+The HTTP listener is not authenticated and does not provide TLS. Keep
+`bind_addr` on loopback unless you are on a trusted private or overlay network
+and have set `[daemon].unsafe_allow_remote_access = true` intentionally. The
+`allowed_hosts` filter applies to the SWP listener, not this HTTP MCP listener;
+the `/mcp/<session-id>` URL should be treated as a bearer secret while a Claude
+Code turn is active.
+
 ## `[defaults]`
 
 ```toml
@@ -150,6 +157,11 @@ MCP listener. Client-visible streaming is emulated after the CLI turn completes,
 so text may arrive less progressively than direct HTTP providers. `shore usage`
 records Claude Code's reported `total_cost_usd` as would-be API cost; actual
 subscription spend remains the fixed Claude plan price.
+
+Shore passes the system prompt through Claude Code's `--system-prompt-file`
+flag to keep large prompts out of process arguments. That flag is an
+undocumented Claude Code surface, so provider live tests are the compatibility
+guard when upgrading the local `claude` CLI.
 
 Embedding profiles:
 

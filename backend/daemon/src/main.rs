@@ -47,7 +47,14 @@ struct StartupConfig {
     config_path: PathBuf,
     bind_addr: String,
     bind_addr_source: StartupValueSource,
-    remote_access_warnings: Vec<String>,
+    remote_access_warnings: Vec<RemoteAccessWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteAccessWarning {
+    addr: String,
+    bind_addr_source: StartupValueSource,
+    message: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +62,7 @@ enum StartupValueSource {
     Cli,
     Env,
     Config,
+    DaemonHttpConfig,
 }
 
 impl std::fmt::Display for StartupValueSource {
@@ -63,6 +71,7 @@ impl std::fmt::Display for StartupValueSource {
             StartupValueSource::Cli => "--addr",
             StartupValueSource::Env => "SHORE_ADDR",
             StartupValueSource::Config => "[daemon].addr",
+            StartupValueSource::DaemonHttpConfig => "[daemon.http].bind_addr",
         };
         f.write_str(label)
     }
@@ -156,9 +165,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for warning in remote_access_warnings {
         warn!(
-            addr = %addr,
-            bind_addr_source = %bind_addr_source,
-            warning = %warning,
+            addr = %warning.addr,
+            bind_addr_source = %warning.bind_addr_source,
+            warning = %warning.message,
             "Daemon remote access warning"
         );
     }
@@ -466,7 +475,7 @@ fn resolve_startup(cli: Cli, env_addr: Option<String>) -> Result<StartupConfig, 
         }
     })?;
     let (bind_addr, bind_addr_source) = resolve_listen_addr(cli.addr, env_addr, &loaded);
-    let remote_access_warnings = validate_remote_access_policy(
+    let mut remote_access_warnings: Vec<RemoteAccessWarning> = validate_remote_access_policy(
         &bind_addr,
         loaded.app.daemon.unsafe_allow_remote_access,
         &loaded.app.daemon.allowed_hosts,
@@ -475,7 +484,33 @@ fn resolve_startup(cli: Cli, env_addr: Option<String>) -> Result<StartupConfig, 
         addr: bind_addr.clone(),
         bind_addr_source,
         message,
-    })?;
+    })?
+    .into_iter()
+    .map(|message| RemoteAccessWarning {
+        addr: bind_addr.clone(),
+        bind_addr_source,
+        message,
+    })
+    .collect();
+    remote_access_warnings.extend(
+        validate_http_remote_access_policy(
+            loaded.app.daemon.http.enabled,
+            &loaded.app.daemon.http.bind_addr,
+            loaded.app.daemon.unsafe_allow_remote_access,
+            &loaded.app.daemon.allowed_hosts,
+        )
+        .map_err(|message| StartupError::RemoteAccessPolicy {
+            addr: loaded.app.daemon.http.bind_addr.clone(),
+            bind_addr_source: StartupValueSource::DaemonHttpConfig,
+            message,
+        })?
+        .into_iter()
+        .map(|message| RemoteAccessWarning {
+            addr: loaded.app.daemon.http.bind_addr.clone(),
+            bind_addr_source: StartupValueSource::DaemonHttpConfig,
+            message,
+        }),
+    );
 
     Ok(StartupConfig {
         loaded,
@@ -565,6 +600,36 @@ Set [daemon].unsafe_allow_remote_access = true to acknowledge unauthenticated re
     Ok(warnings)
 }
 
+fn validate_http_remote_access_policy(
+    enabled: bool,
+    addr: &str,
+    unsafe_allow_remote_access: bool,
+    allowed_hosts: &[String],
+) -> Result<Vec<String>, String> {
+    if !enabled || bind_addr_is_loopback(addr)? {
+        return Ok(Vec::new());
+    }
+
+    if !unsafe_allow_remote_access {
+        return Err(format!(
+            "Refusing to bind [daemon.http] to non-loopback address {addr}. \
+Set [daemon].unsafe_allow_remote_access = true to acknowledge unauthenticated remote MCP exposure. \
+The HTTP MCP listener has no authentication or TLS; its session URLs are bearer secrets."
+        ));
+    }
+
+    let mut warnings = vec![format!(
+        "[daemon.http] is bound to non-loopback address {addr}. The HTTP MCP listener has no authentication or TLS; keep it on trusted private or overlay networks and treat /mcp/<session-id> URLs as bearer secrets."
+    )];
+    if !allowed_hosts.is_empty() {
+        warnings.push(String::from(
+            "[daemon].allowed_hosts filters the SWP listener only; it does not restrict [daemon.http].bind_addr.",
+        ));
+    }
+
+    Ok(warnings)
+}
+
 fn bind_addr_is_loopback(addr: &str) -> Result<bool, String> {
     if let Ok(socket_addr) = addr.parse::<std::net::SocketAddr>() {
         return Ok(socket_addr.ip().is_loopback());
@@ -604,7 +669,8 @@ mod tests {
 
     use super::{
         epoch_timestamp, resolve_explicit_config_path, resolve_listen_addr, resolve_startup,
-        validate_remote_access_policy, Cli, StartupError, StartupValueSource,
+        validate_http_remote_access_policy, validate_remote_access_policy, Cli, StartupError,
+        StartupValueSource,
     };
     use clap::Parser;
     use tempfile::TempDir;
@@ -651,6 +717,29 @@ mod tests {
         let err = validate_remote_access_policy("not-an-address", false, &[])
             .expect_err("invalid address should fail validation");
         assert!(err.contains("Invalid daemon listen address"));
+    }
+
+    #[test]
+    fn http_remote_bind_requires_explicit_opt_in() {
+        let err = validate_http_remote_access_policy(true, "0.0.0.0:7321", false, &[])
+            .expect_err("remote http bind without opt-in should fail");
+        assert!(err.contains("[daemon.http]"));
+        assert!(err.contains("unsafe_allow_remote_access"));
+        assert!(err.contains("bearer secrets"));
+    }
+
+    #[test]
+    fn http_remote_bind_warns_that_swp_acl_does_not_apply() {
+        let warnings = validate_http_remote_access_policy(
+            true,
+            "0.0.0.0:7321",
+            true,
+            &[String::from("10.0.0.5")],
+        )
+        .unwrap();
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains("bearer secrets"));
+        assert!(warnings[1].contains("does not restrict [daemon.http]"));
     }
 
     #[test]
@@ -792,6 +881,42 @@ unsafe_allow_remote_access = true
                 bind_addr_source, ..
             } => {
                 assert_eq!(bind_addr_source, StartupValueSource::Env);
+            }
+            other => panic!("expected remote access policy error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_startup_reports_http_remote_access_source() {
+        let tmp = TempDir::new().unwrap();
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[daemon.http]
+enabled = true
+bind_addr = "0.0.0.0:7321"
+"#,
+        )
+        .unwrap();
+
+        let err = resolve_startup(
+            Cli {
+                config: Some(config_path),
+                addr: None,
+                instance_id: None,
+            },
+            None,
+        )
+        .expect_err("non-loopback [daemon.http] should enforce remote-access policy");
+
+        match err {
+            StartupError::RemoteAccessPolicy {
+                bind_addr_source, ..
+            } => {
+                assert_eq!(bind_addr_source, StartupValueSource::DaemonHttpConfig);
             }
             other => panic!("expected remote access policy error, got {other:?}"),
         }

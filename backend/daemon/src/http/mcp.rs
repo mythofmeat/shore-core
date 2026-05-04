@@ -28,7 +28,7 @@ use shore_protocol::types::ContentBlock;
 use tracing::{debug, warn};
 
 use crate::engine::mcp_session::{LedgerEntry, McpSession};
-use crate::tools::{dispatch_tool, ToolError};
+use crate::tools::dispatch_tool;
 
 use super::DaemonHttpState;
 
@@ -248,12 +248,6 @@ fn serialize_tool_value(value: &Value) -> String {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     }
-}
-
-/// Map a `ToolError` to a useful MCP error message.
-#[allow(dead_code)]
-fn format_tool_error(e: &ToolError) -> String {
-    e.to_string()
 }
 
 #[cfg(test)]

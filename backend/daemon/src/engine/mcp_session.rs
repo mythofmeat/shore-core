@@ -111,6 +111,10 @@ impl McpSession {
 #[derive(Debug, Default, Clone)]
 pub struct McpSessionRegistry {
     sessions: Arc<DashMap<String, Arc<McpSession>>>,
+    // Keyed URL ids are retained for the daemon process lifetime so a
+    // cached Claude Code subprocess can keep using the same MCP URL.
+    // Cardinality is bounded by active data-dir/character subprocess
+    // keys, not by request count.
     keyed_ids: Arc<DashMap<String, String>>,
 }
 
