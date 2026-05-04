@@ -157,11 +157,18 @@ fn tools_list_result(session: &McpSession) -> Value {
     json!({ "tools": tools })
 }
 
-async fn handle_tools_call(session: &Arc<McpSession>, id: Value, params: Value) -> axum::response::Response {
+async fn handle_tools_call(
+    session: &Arc<McpSession>,
+    id: Value,
+    params: Value,
+) -> axum::response::Response {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return Json(rpc_error(id, RPC_INVALID_PARAMS, "missing tool name")).into_response();
     };
-    let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
 
     if !session.allows(name) {
         return Json(rpc_error(
@@ -178,15 +185,20 @@ async fn handle_tools_call(session: &Arc<McpSession>, id: Value, params: Value) 
         "MCP tools/call dispatched"
     );
 
-    // Synthesize a tool_use_id from the JSON-RPC id when present so
-    // the engine can later pair this entry with the assistant
-    // turn's `tool_use` block. The CLI's `tool_use_id` lives only
-    // inside the stream-json output and is not visible here.
-    let tool_use_id = match &id {
-        Value::String(s) => s.clone(),
-        Value::Number(n) => format!("rpc-{n}"),
-        _ => format!("ledger-{}", session.ledger.lock().await.len()),
-    };
+    // Claude Code includes the assistant tool_use id in params._meta;
+    // use it so the engine can pair this ledger entry with the
+    // stream-json ToolUse block. The JSON-RPC id is only a progress
+    // token in current CLI builds.
+    let tool_use_id = params
+        .get("_meta")
+        .and_then(|m| m.get("claudecode/toolUseId"))
+        .and_then(Value::as_str)
+        .map(String::from)
+        .unwrap_or_else(|| match &id {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => format!("rpc-{n}"),
+            _ => format!("ledger-{}", uuid::Uuid::new_v4()),
+        });
 
     let dispatch_result = dispatch_tool(name, arguments.clone(), session.tool_ctx.as_ref()).await;
     let (content_blocks, is_error, response_payload) = match dispatch_result {
@@ -271,9 +283,7 @@ mod tests {
         fn llm_client(&self) -> Option<&shore_llm::LlmClient> {
             None
         }
-        fn image_gen_config(
-            &self,
-        ) -> Option<&crate::memory::compaction_impls::ImageGenConfig> {
+        fn image_gen_config(&self) -> Option<&crate::memory::compaction_impls::ImageGenConfig> {
             None
         }
         fn search_config(&self) -> &shore_config::app::SearchConfig {
@@ -283,7 +293,11 @@ mod tests {
 
     async fn spawn_test_listener(
         registry: McpSessionRegistry,
-    ) -> (Arc<DaemonHttpState>, tokio::task::JoinHandle<()>, watch::Sender<()>) {
+    ) -> (
+        Arc<DaemonHttpState>,
+        tokio::task::JoinHandle<()>,
+        watch::Sender<()>,
+    ) {
         let (tx, rx) = watch::channel(());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bind_addr = listener.local_addr().unwrap();
@@ -362,10 +376,7 @@ mod tests {
         let client = reqwest::Client::new();
         let resp = rpc(&client, &url, "tools/list", json!(2), json!({})).await;
         let tools = resp["result"]["tools"].as_array().unwrap();
-        let names: Vec<&str> = tools
-            .iter()
-            .filter_map(|t| t["name"].as_str())
-            .collect();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(names.contains(&"roll_dice"));
         assert!(names.contains(&"check_time"));
         assert!(!names.contains(&"memory"));
@@ -407,6 +418,37 @@ mod tests {
         assert_eq!(drained[0].tool_use_id, "call-1");
         assert_eq!(drained[0].name, "check_time");
         assert!(!drained[0].is_error);
+    }
+
+    #[tokio::test]
+    async fn tools_call_prefers_claude_code_tool_use_id_meta() {
+        let registry = McpSessionRegistry::new();
+        let guard = registry.allocate(
+            "s-meta".into(),
+            allowed(&["check_time"]),
+            tool_defs_for_test(),
+            Arc::new(ScriptedCtx::default()),
+        );
+        let (state, _h, _tx) = spawn_test_listener(registry.clone()).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let url = format!("{}/mcp/s-meta", state.base_url());
+        let client = reqwest::Client::new();
+        let _ = rpc(
+            &client,
+            &url,
+            "tools/call",
+            json!(2),
+            json!({
+                "name": "check_time",
+                "arguments": {},
+                "_meta": {"claudecode/toolUseId": "toolu_actual"}
+            }),
+        )
+        .await;
+
+        let drained = guard.drain().await;
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].tool_use_id, "toolu_actual");
     }
 
     #[tokio::test]

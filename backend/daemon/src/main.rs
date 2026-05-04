@@ -222,15 +222,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Bound here so it shares the SWP shutdown signal and the resolved
     // address can be threaded into MessageHandlerDeps below.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-    let http_listener = shore_daemon::http::spawn_listener(
-        &loaded.app.daemon.http,
-        shutdown_rx.clone(),
-    )
-    .await
-    .map_err(|source| StartupError::ServerRun {
-        addr: loaded.app.daemon.http.bind_addr.clone(),
-        source,
-    })?;
+    let http_listener =
+        shore_daemon::http::spawn_listener(&loaded.app.daemon.http, shutdown_rx.clone())
+            .await
+            .map_err(|source| StartupError::ServerRun {
+                addr: loaded.app.daemon.http.bind_addr.clone(),
+                source,
+            })?;
     let (http_state, http_handle) = match http_listener {
         Some((state, handle)) => (Some(state), Some(handle)),
         None => (None, None),

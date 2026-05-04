@@ -100,6 +100,9 @@ mod tests {
         // adding claude_code-specific branches.
         let err = classify_result_error("out of extra usage", true).unwrap();
         let kind = crate::credentials::classify_credential_failure("anthropic", &err);
-        assert_eq!(kind, crate::credentials::CredentialFailureKind::QuotaExhausted);
+        assert_eq!(
+            kind,
+            crate::credentials::CredentialFailureKind::QuotaExhausted
+        );
     }
 }

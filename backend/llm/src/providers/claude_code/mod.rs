@@ -192,9 +192,7 @@ mod tests {
             StreamEvent::Start {
                 model: "claude-sonnet-4-5".into(),
             },
-            StreamEvent::Text {
-                text: "hi".into(),
-            },
+            StreamEvent::Text { text: "hi".into() },
             StreamEvent::Thinking {
                 text: "thinking".into(),
             },

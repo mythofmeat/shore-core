@@ -36,6 +36,7 @@ struct ProviderConfig {
     allowed_tools: Vec<String>,
     effort: Option<String>,
     session_id: String,
+    subprocess_key: Option<String>,
 }
 
 impl ProviderConfig {
@@ -64,6 +65,7 @@ impl ProviderConfig {
             .unwrap_or_default();
         let effort = opts
             .get("effort")
+            .or_else(|| opts.get("reasoning_effort"))
             .and_then(Value::as_str)
             .map(String::from);
         let session_id = opts
@@ -71,11 +73,16 @@ impl ProviderConfig {
             .and_then(Value::as_str)
             .map(String::from)
             .unwrap_or_else(fallback_session_id);
+        let subprocess_key = opts
+            .get("subprocess_key")
+            .and_then(Value::as_str)
+            .map(String::from);
         Ok(Self {
             mcp_endpoint,
             allowed_tools,
             effort,
             session_id,
+            subprocess_key,
         })
     }
 }
@@ -110,6 +117,7 @@ pub(super) async fn run_fresh_spawn(request: &LlmRequest) -> Result<DriverOutput
     debug!(
         rid = request.rid.as_deref().unwrap_or("-"),
         model = %request.model,
+        subprocess_key = cfg.subprocess_key.as_deref().unwrap_or("-"),
         "claude_code: spawning subprocess (fresh-spawn)"
     );
     let mut child = cmd.spawn().map_err(|e| LlmError::Provider {
@@ -330,12 +338,9 @@ fn render_block(b: &Value) -> Option<String> {
             b.get("name").and_then(Value::as_str).unwrap_or(""),
             b.get("input").map(|i| i.to_string()).unwrap_or_default(),
         )),
-        "tool_result" => b.get("content").map(|c| {
-            format!(
-                "<tool_result>{}</tool_result>",
-                extract_tool_result_text(c)
-            )
-        }),
+        "tool_result" => b
+            .get("content")
+            .map(|c| format!("<tool_result>{}</tool_result>", extract_tool_result_text(c))),
         _ => None,
     }
 }

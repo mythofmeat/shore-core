@@ -124,6 +124,9 @@ struct GenContext {
     live_speak: Arc<AtomicBool>,
     /// TTS client (None if TTS is not configured).
     tts_client: Option<TtsClient>,
+    /// Optional daemon HTTP listener state used by providers that need
+    /// callback URLs into this daemon.
+    http: Option<Arc<crate::http::DaemonHttpState>>,
 }
 
 struct GenerationParams {

@@ -59,6 +59,20 @@ pub(super) async fn stream_with_credential_fallback(
     char_name: &str,
     thinking_enabled: bool,
 ) -> Result<StreamResult, LlmError> {
+    if matches!(resolved.sdk, shore_config::models::Sdk::ClaudeCode) {
+        request.api_key.clear();
+        return stream_with_retry(
+            ctx,
+            request,
+            resolved,
+            effective_config,
+            regen,
+            char_name,
+            thinking_enabled,
+        )
+        .await;
+    }
+
     let candidates = resolve_key_candidates(
         &resolved.provider_key,
         &effective_config.providers,

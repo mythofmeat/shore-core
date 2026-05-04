@@ -23,7 +23,7 @@
 
 use serde_json::json;
 use shore_config::models::{ResolvedModel, Sdk};
-use shore_llm::{LlmClient, types::LlmRequest};
+use shore_llm::{types::LlmRequest, LlmClient};
 
 fn live_request(user: &str) -> LlmRequest {
     let model = ResolvedModel {

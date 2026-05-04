@@ -212,9 +212,7 @@ mod tests {
         fn llm_client(&self) -> Option<&shore_llm::LlmClient> {
             None
         }
-        fn image_gen_config(
-            &self,
-        ) -> Option<&crate::memory::compaction_impls::ImageGenConfig> {
+        fn image_gen_config(&self) -> Option<&crate::memory::compaction_impls::ImageGenConfig> {
             None
         }
         fn search_config(&self) -> &shore_config::app::SearchConfig {
@@ -276,12 +274,7 @@ mod tests {
     #[tokio::test]
     async fn ledger_records_in_order_and_drains() {
         let reg = McpSessionRegistry::new();
-        let guard = reg.allocate(
-            "s2".into(),
-            HashSet::new(),
-            Vec::new(),
-            Arc::new(FakeCtx),
-        );
+        let guard = reg.allocate("s2".into(), HashSet::new(), Vec::new(), Arc::new(FakeCtx));
         for i in 0..3 {
             guard
                 .session()
