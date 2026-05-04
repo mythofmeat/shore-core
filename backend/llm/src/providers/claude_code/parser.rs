@@ -1,9 +1,3 @@
-// Module-level `dead_code` allow: the parser is currently only
-// exercised from its own unit tests. The Phase-B subprocess driver
-// will reach in and call `StreamJsonParser` from non-test code; at
-// that point this allow comes off.
-#![allow(dead_code)]
-
 //! Stream-json parser for the Claude Code CLI.
 //!
 //! Translates the line-delimited JSON event stream emitted by
@@ -206,7 +200,6 @@ impl StreamJsonParser {
     /// Returns the model id seen in the first `system init` event,
     /// if any. Used by the subprocess driver to populate
     /// `GenerateResponse.model`.
-    #[allow(dead_code)] // wired up by the Phase B subprocess driver
     pub(crate) fn model(&self) -> Option<&str> {
         self.model.as_deref()
     }

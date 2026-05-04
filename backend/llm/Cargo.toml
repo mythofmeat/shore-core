@@ -16,6 +16,8 @@ reqwest = { workspace = true }
 futures-util = { workspace = true }
 async-trait = { workspace = true }
 dashmap = { workspace = true }
+tempfile = { workspace = true }
+uuid = { workspace = true }
 
 [features]
 default = []
