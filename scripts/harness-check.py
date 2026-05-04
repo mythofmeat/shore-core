@@ -16,55 +16,18 @@ REQUIRED_FILES = [
     "AGENTS.md",
     "CLAUDE.md",
     "README.md",
-    "GOALS.md",
-    "FEATURES.md",
     "CONFIGURATION.md",
     "ARCHITECTURE.md",
-    "DECISIONS.md",
-    "docs/README.md",
-    "docs/HARNESS_ENGINEERING.md",
-    "docs/PLANS.md",
-    "docs/QUALITY_SCORE.md",
-    "docs/RELIABILITY.md",
-    "docs/OBSERVABILITY.md",
-    "docs/SECURITY.md",
-    "docs/dev-info/INVARIANTS.md",
-    "docs/dev-info/PROMPT_CACHING.md",
-    "docs/dev-info/QUIRKS.md",
-    "docs/design-docs/index.md",
-    "docs/product-specs/index.md",
-    "docs/exec-plans/README.md",
-    "docs/exec-plans/active/README.md",
-    "docs/exec-plans/completed/README.md",
-    "docs/exec-plans/tech-debt-tracker.md",
-    "docs/references/harness-engineering.md",
-    "dev/mcp/README.md",
+    "CHANGELOG.md",
     "dev/test-harness/src/lib.rs",
 ]
 
 AGENTS_REQUIRED_STRINGS = [
-    "GOALS.md",
-    "docs/README.md",
+    "README.md",
     "ARCHITECTURE.md",
-    "docs/HARNESS_ENGINEERING.md",
-    "docs/dev-info/INVARIANTS.md",
-    "docs/RELIABILITY.md",
-    "docs/OBSERVABILITY.md",
-    "docs/SECURITY.md",
-    "docs/QUALITY_SCORE.md",
+    "CONFIGURATION.md",
+    "CHANGELOG.md",
     "python3 scripts/harness-check.py",
-]
-
-DOC_INDEX_REQUIRED_STRINGS = [
-    "HARNESS_ENGINEERING.md",
-    "PLANS.md",
-    "QUALITY_SCORE.md",
-    "RELIABILITY.md",
-    "OBSERVABILITY.md",
-    "SECURITY.md",
-    "dev-info/INVARIANTS.md",
-    "exec-plans/README.md",
-    "references/harness-engineering.md",
 ]
 
 MAX_AGENTS_LINES = 120
@@ -90,7 +53,11 @@ def repo_files() -> list[Path]:
             text=True,
             capture_output=True,
         )
-        return [ROOT / line for line in proc.stdout.splitlines() if line]
+        return [
+            ROOT / line
+            for line in proc.stdout.splitlines()
+            if line and (ROOT / line).exists()
+        ]
     except (OSError, subprocess.CalledProcessError):
         files: list[Path] = []
         for path in ROOT.rglob("*"):
@@ -128,16 +95,6 @@ def check_agents_map(errors: list[str]) -> None:
     for needle in AGENTS_REQUIRED_STRINGS:
         if needle not in text:
             fail(errors, f"AGENTS.md must link or mention {needle}")
-
-
-def check_doc_index(errors: list[str]) -> None:
-    path = ROOT / "docs/README.md"
-    if not path.exists():
-        return
-    text = read_text(path)
-    for needle in DOC_INDEX_REQUIRED_STRINGS:
-        if needle not in text:
-            fail(errors, f"docs/README.md must link or mention {needle}")
 
 
 def check_conflict_markers(errors: list[str]) -> None:
@@ -227,7 +184,6 @@ def main() -> int:
     errors: list[str] = []
     check_required_files(errors)
     check_agents_map(errors)
-    check_doc_index(errors)
     check_conflict_markers(errors)
     check_architecture_workspace_members(errors)
     check_markdown_links(errors)

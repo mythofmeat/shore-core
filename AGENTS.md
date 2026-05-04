@@ -1,30 +1,26 @@
 # Agent Entry Map
 
-Shore is a daemon-centered AI character engine. Keep this file short: it is a
-map into the repo, not the full manual.
+Shore is a daemon-centered AI character engine. Keep this file short; it is a
+map, not a manual.
 
 ## Start Here
 
-- Product intent: [GOALS.md](GOALS.md)
-- Knowledge base map: [docs/README.md](docs/README.md)
-- Architecture map: [ARCHITECTURE.md](ARCHITECTURE.md)
-- Current behavior: [FEATURES.md](FEATURES.md)
-- Config surface: [CONFIGURATION.md](CONFIGURATION.md)
-- Architectural decisions: [DECISIONS.md](DECISIONS.md)
-- Correctness invariants: [docs/dev-info/INVARIANTS.md](docs/dev-info/INVARIANTS.md)
-- Harness practices: [docs/HARNESS_ENGINEERING.md](docs/HARNESS_ENGINEERING.md)
-- Observability: [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)
+- [README.md](README.md): product intent, quick start, repo layout.
+- [ARCHITECTURE.md](ARCHITECTURE.md): runtime model, invariants, security,
+  observability, and validation.
+- [CONFIGURATION.md](CONFIGURATION.md): config reference.
+- [CHANGELOG.md](CHANGELOG.md): release history.
 
-When docs and code disagree, inspect the code for behavior and `GOALS.md` for
-purpose. Then update the docs in the same change.
+When docs and code disagree, inspect the code for behavior and `README.md` for
+purpose. Then update the relevant kept doc in the same change.
 
-## Current Shape
+## Repo Shape
 
-- `core/` holds protocol, config, and shared SWP client crates.
-- `backend/` holds the daemon, SWP server, LLM, ledger, and diagnostics crates.
-- `clients/` holds CLI, TUI, Tauri GUI, and experimental Godot GUI surfaces.
-- `bridges/` holds external service bridges such as Matrix.
-- `dev/` holds MCP tooling and deterministic test harnesses.
+- `core/`: protocol, config, and shared SWP client crates.
+- `backend/`: daemon, SWP server, LLM, ledger, and diagnostics crates.
+- `clients/`: CLI, TUI, Tauri GUI, and experimental Godot GUI surfaces.
+- `bridges/`: external service bridges such as Matrix.
+- `dev/`: MCP tooling and deterministic test harnesses.
 
 The daemon owns character state. Clients observe and send commands; they do not
 fork authoritative state.
@@ -33,20 +29,18 @@ fork authoritative state.
 
 - Markdown memory under `characters/<Character>/workspace/memory/**/*.md` is the
   runtime long-term memory source of truth.
-- Protected prompt files activate from `active_prompt/`, not directly from the
-  editable workspace.
-- Edits to `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, and `HEARTBEAT.md`
-  must stay staged until compaction or reload.
+- Prompt-visible workspace files activate from `active_prompt/`, not directly
+  from the editable workspace.
+- Edits to `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`, and
+  `MEMORY.md` stay staged until compaction/reload.
+- Compaction may update workspace-root `MEMORY.md` with carry-forward
+  throughlines; dreaming may reorganize it later.
 - Unexpected Anthropic cache invalidation is a serious regression.
 - Workspace tools must prevent path traversal and symlink escape.
 - `exec` must not invoke a shell and must keep path-like arguments inside the
   character workspace.
 - Non-loopback daemon access must be explicit and must not be described as auth
   or TLS.
-
-Deeper rule sources live in [docs/dev-info/INVARIANTS.md](docs/dev-info/INVARIANTS.md),
-[docs/dev-info/PROMPT_CACHING.md](docs/dev-info/PROMPT_CACHING.md), and
-[docs/SECURITY.md](docs/SECURITY.md).
 
 ## Build And Test
 
@@ -58,7 +52,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release -p shore-daemon -p shore-cli -p shore-tui -p shore-matrix
 ```
 
-Focused examples:
+Focused checks:
 
 ```sh
 cargo test -p shore-daemon memory::deferred_edits
@@ -67,31 +61,17 @@ cargo test -p shore-daemon engine::prompt
 cargo test -p shore-daemon --test suite
 ```
 
-Live/provider checks use real credentials and may cost money. Use them only
-when provider behavior is in scope; see [docs/RELIABILITY.md](docs/RELIABILITY.md).
-
-## Agent Workflow
-
-- Start with the small map above, then open only the docs needed for the task.
-- For non-trivial work, keep an execution plan in
-  [docs/exec-plans/active](docs/exec-plans/active) using
-  [docs/PLANS.md](docs/PLANS.md).
-- Prefer deterministic harnesses in `dev/test-harness`, the MCP surface in
-  `dev/mcp`, and the diagnostics in [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)
-  for end-to-end checks.
-- Encode repeated review feedback as docs, tests, lints, or harness checks.
-- Update [docs/QUALITY_SCORE.md](docs/QUALITY_SCORE.md) when a change alters a
-  quality grade, known gap, or validation expectation.
+Live/provider checks use real credentials and may cost money. Use them only when
+provider behavior is in scope.
 
 ## Documentation Policy
 
-- User-visible behavior changes: update [FEATURES.md](FEATURES.md).
+- Current behavior and product intent: update [README.md](README.md).
 - Config changes: update [CONFIGURATION.md](CONFIGURATION.md).
-- Architecture/data-flow changes: update [ARCHITECTURE.md](ARCHITECTURE.md).
-- Correctness constraints: update [docs/dev-info/INVARIANTS.md](docs/dev-info/INVARIANTS.md).
-- Tradeoffs: update [DECISIONS.md](DECISIONS.md).
-- Sharp edges: update [docs/dev-info/QUIRKS.md](docs/dev-info/QUIRKS.md).
+- Runtime, architecture, invariants, security, observability, or validation
+  changes: update [ARCHITECTURE.md](ARCHITECTURE.md).
 - Patch-note worthy user changes: update [CHANGELOG.md](CHANGELOG.md).
+- Runtime prompt changes under `backend/daemon/prompts/**` are code changes.
 
-Run `python3 scripts/harness-check.py` before handing off a change that touches
+Run `python3 scripts/harness-check.py` before handing off changes that touch
 docs, architecture, tool surfaces, memory, prompt assembly, or agent guidance.

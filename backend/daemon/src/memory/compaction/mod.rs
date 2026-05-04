@@ -75,7 +75,7 @@ impl CompactionManager {
     /// at the tail.  Returns the index of the first retained message.
     /// Returns 0 if there aren't enough messages to compact anything.
     /// When `keep_turns == 0`, returns `messages.len()` so the caller
-    /// retains nothing and compacts everything (see QUIRKS.md).
+    /// retains nothing and compacts everything.
     fn find_turn_split(messages: &[ConversationMessage], keep_turns: usize) -> usize {
         if keep_turns == 0 {
             return messages.len();

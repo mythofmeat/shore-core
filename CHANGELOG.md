@@ -6,7 +6,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — OpenClawify
 
-See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidance.
+See `README.md`, `ARCHITECTURE.md`, and `CONFIGURATION.md` for current branch guidance.
 
 ### Added
 - Workspace `search` tool now uses hybrid (semantic + lexical) ranking by default so paraphrased queries find the right files; pass `mode: "lexical"` for the previous substring-only behavior or `mode: "vector"` for pure semantic similarity. Embeddings default to a local fastembed-rs model (BGE-small, no API key needed); a hosted OpenAI-compatible embedder can be configured via `[embedding.<profile>]` in TOML. Vectors are cached per character at `<data>/<Character>/workspace_index.json` and re-embedded incrementally on file change.
@@ -29,7 +29,7 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 - Markdown long-term memory under `characters/<Character>/workspace/memory/`
 - `active_prompt/` snapshots and deferred protected self-edit activation
 - Opt-in AI librarian dreaming with memory tools, data-backed machine state, `DREAMS.md`, and prompt-visible `MEMORY.md` indexing
-- Optional `[defaults].dreaming` model selector for private memory librarian passes
+- Optional `[defaults.background].dreaming` model selector for private memory librarian passes
 - Dreaming now reuses the cached chat request prefix when available, and `MEMORY.md` index edits activate at compaction instead of immediately changing the hot prompt prefix
 - Optional hybrid semantic+lexical markdown retrieval backed by a rebuildable index
 - Workspace file tools and sandboxed `exec`
@@ -48,7 +48,7 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 - Runtime memory source of truth moved from hidden SQLite/vector/RAG state to markdown files
 - Interiority naming standardized to heartbeat/autonomy
 - Compaction now writes markdown memory notes and activates staged protected edits without generating recap prompt files
-- Docs rewritten against `GOALS.md` and current branch behavior
+- Docs consolidated into `README.md`, `ARCHITECTURE.md`, and `CONFIGURATION.md`
 - Current docs now distinguish uploaded image vision from generated-image sending: uploaded attachment paths remain internal, while `generate_image` can create and send new images
 - Internal crates renamed for clearer roles: `shore-swp-client`, `shore-swp-server`, and `shore-llm`
 
@@ -83,7 +83,7 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 - `shore-mcp`: detach auto-spawned daemon via `setsid`, clamp `log_follow` seconds, exhaustive `run_cmd` match, unified `character_info` param shape, narrower spawn-on-discovery-miss, schemars alignment with rmcp
 
 ### Changed
-- User-facing documentation overhaul: rewritten `README.md`, new `FEATURES.md` and `CONFIGURATION.md`, synced example config
+- User-facing documentation overhaul: rewritten `README.md` and `CONFIGURATION.md`, synced example config
 - Revised live-testing policy in `CLAUDE.md` with structured rules distinguishing `shore-llm-client` internals from upstream code
 - Drop the `enabled` Cargo feature gate on `shore-mcp` in favor of a debug-only build
 - Replace `arboard` with a `wl-paste` shell-out for clipboard image paste

@@ -279,6 +279,7 @@ USER.md
 AGENTS.md
 TOOLS.md
 HEARTBEAT.md
+MEMORY.md     # optional/generated prompt-visible memory index
 memory/
 ```
 
@@ -393,7 +394,7 @@ mode = "auto" # auto, lexical, hybrid
 ```
 
 - `lexical` never calls embeddings.
-- `auto` uses hybrid retrieval when an embedding profile is configured and usable.
+- `auto` uses hybrid retrieval when an embedder is resolved and usable.
 - `hybrid` requests semantic+keyword ranking but falls back to lexical if embeddings fail.
 
 The hybrid index is rebuildable and non-authoritative.

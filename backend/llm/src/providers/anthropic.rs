@@ -530,8 +530,7 @@ fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
     // the cached prefix stable when the index is rewritten.
     //
     // Sliding breakpoints WITHOUT a system anchor are unreliable (intermittent
-    // full prefix rewrites despite identical content). See
-    // docs/dev-info/PROMPT_CACHING.md.
+    // full prefix rewrites despite identical content). See ARCHITECTURE.md.
     //
     // Overridable via SHORE_CACHE_DEPTH_TURNS and SHORE_CACHE_PINNED_POSITION
     // env vars (comma-separated) for debugging.
