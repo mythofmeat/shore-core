@@ -247,6 +247,7 @@ async fn e2e_conversation_milestone() {
         notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
         live_speak: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         tts_client: None,
+        http: None,
         control_rx,
     });
 
@@ -738,6 +739,7 @@ impl E2EHarness {
             notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
             live_speak: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tts_client: None,
+            http: None,
             control_rx,
         });
 

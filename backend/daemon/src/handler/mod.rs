@@ -195,6 +195,11 @@ pub struct MessageHandler {
     pub live_speak: Arc<AtomicBool>,
     /// TTS client (None if TTS is not configured).
     pub tts_client: Option<TtsClient>,
+    /// Daemon HTTP state, when the listener is enabled. Carries the
+    /// bind address (and, after M3, the MCP session registry) for
+    /// providers that need a callback URL into the daemon — currently
+    /// only `claude_code`.
+    pub http: Option<Arc<crate::http::DaemonHttpState>>,
     control_rx: mpsc::Receiver<HandlerControl>,
     sessions: HashMap<SessionId, SessionState>,
     last_user_session: HashMap<String, LastUserLease>,
@@ -210,6 +215,7 @@ pub struct MessageHandlerDeps {
     pub notifier: NotificationService,
     pub live_speak: Arc<AtomicBool>,
     pub tts_client: Option<TtsClient>,
+    pub http: Option<Arc<crate::http::DaemonHttpState>>,
     pub control_rx: mpsc::Receiver<HandlerControl>,
 }
 
@@ -225,6 +231,7 @@ impl MessageHandler {
             notifier: deps.notifier,
             live_speak: deps.live_speak,
             tts_client: deps.tts_client,
+            http: deps.http,
             control_rx: deps.control_rx,
             sessions: HashMap::new(),
             last_user_session: HashMap::new(),

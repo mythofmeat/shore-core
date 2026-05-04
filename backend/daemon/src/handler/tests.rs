@@ -107,6 +107,7 @@ async fn make_handler(
         notifier: NotificationService::new(Default::default()),
         live_speak: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         tts_client: None,
+        http: None,
         control_rx,
     });
 
@@ -900,6 +901,7 @@ async fn make_handler_with_models(
         notifier: NotificationService::new(Default::default()),
         live_speak: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         tts_client: None,
+        http: None,
         control_rx,
     });
 

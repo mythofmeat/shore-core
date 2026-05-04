@@ -174,6 +174,7 @@ impl TestHarness {
             notifier,
             live_speak: Arc::new(AtomicBool::new(false)),
             tts_client: None,
+            http: None,
             control_rx,
         });
 

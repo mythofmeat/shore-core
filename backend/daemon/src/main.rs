@@ -218,8 +218,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Registered daemon instance"
     );
 
-    // ── Shutdown signal (SIGINT / SIGTERM) ──────────────────────────
+    // ── Daemon HTTP listener (off unless [daemon.http].enabled) ──────
+    // Bound here so it shares the SWP shutdown signal and the resolved
+    // address can be threaded into MessageHandlerDeps below.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let http_listener = shore_daemon::http::spawn_listener(
+        &loaded.app.daemon.http,
+        shutdown_rx.clone(),
+    )
+    .await
+    .map_err(|source| StartupError::ServerRun {
+        addr: loaded.app.daemon.http.bind_addr.clone(),
+        source,
+    })?;
+    let (http_state, http_handle) = match http_listener {
+        Some((state, handle)) => (Some(state), Some(handle)),
+        None => (None, None),
+    };
+
     tokio::spawn(async move {
         let ctrl_c = tokio::signal::ctrl_c();
 
@@ -353,6 +369,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         notifier,
         live_speak,
         tts_client,
+        http: http_state.clone(),
         control_rx: handler_control_rx,
     });
 
@@ -409,6 +426,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(handle) = hot_reload_handle {
+        let _ = tokio::time::timeout(shutdown_timeout, handle).await;
+    }
+    if let Some(handle) = http_handle {
         let _ = tokio::time::timeout(shutdown_timeout, handle).await;
     }
     let _ = tokio::time::timeout(shutdown_timeout, auto_discovery_handle).await;

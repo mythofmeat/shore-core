@@ -39,6 +39,8 @@ libc = "0.2"
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
 which = "6"
+axum = "0.7"
+tower = "0.5"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 dashmap = "6"
 futures-util = "0.3"
