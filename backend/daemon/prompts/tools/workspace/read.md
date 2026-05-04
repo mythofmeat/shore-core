@@ -1,1 +1,1 @@
-Read the contents of a file in your workspace or memory directory. Paths without a prefix are resolved under workspace/. Use `memory/...` to access durable memory files. Returns the file content as text; use offset and limit for large files.
+Read the contents of a file. Returns the file content as text; use offset and limit for large files.

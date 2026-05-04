@@ -1,1 +1,1 @@
-Edit an existing file by replacing specific text. Bare paths resolve under workspace/. Use `memory/...` to edit durable memory files. Each replacement must match the old_string exactly, including whitespace and newlines.
+Edit an existing file by replacing specific text. Each replacement must match old_string exactly, including whitespace and newlines.

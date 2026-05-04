@@ -1,8 +1,7 @@
-//! Workspace filesystem tools — read, write, edit, list, exec.
+//! Workspace filesystem tools — read, write, edit, list, search, delete, exec.
 //!
 //! These tools give the assistant access to a real filesystem workspace
-//! (`{character}/workspace/`) and its memory directory (`{character}/workspace/memory/`),
-//! mirroring OpenClaw's model of agent-curated files.
+//! (`{character}/workspace/`), mirroring OpenClaw's model of agent-curated files.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -28,7 +27,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root."
+                        "description": "Relative path within your workspace."
                     },
                     "offset": {
                         "type": "number",
@@ -51,7 +50,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root."
+                        "description": "Relative path within your workspace."
                     },
                     "content": {
                         "type": "string",
@@ -70,7 +69,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root."
+                        "description": "Relative path within your workspace."
                     },
                     "edits": {
                         "type": "array",
@@ -103,7 +102,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative directory path. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root. Omit for workspace root."
+                        "description": "Relative directory path within your workspace. Omit for workspace root."
                     }
                 },
                 "required": []
@@ -127,7 +126,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                     },
                     "path": {
                         "type": "string",
-                        "description": "Optional relative path to scope the search to a subtree. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root. Works in all modes — hybrid/vector queries are filtered to this subtree after ranking against the workspace-wide embedding index."
+                        "description": "Optional relative path to scope the search to a subtree. Works in all modes — hybrid/vector queries are filtered to this subtree after ranking against the workspace-wide embedding index."
                     },
                     "max_results": {
                         "type": "number",
@@ -146,7 +145,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path to the file to remove. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root."
+                        "description": "Relative path to the file to remove, within your workspace."
                     }
                 },
                 "required": ["path"]

@@ -1,1 +1,1 @@
-List files and directories under a path in your workspace or memory directory. Bare paths resolve under workspace/. Use `memory/...` to inspect durable memory files. Returns each entry's name, type, and size.
+List files and directories under a path. Returns each entry's name, type, and size. Use this when you're looking for files by name, date, or directory structure — `search` is for fuzzy content matching, not exact-name lookups.
