@@ -223,6 +223,7 @@ mod tests {
                     output_tokens: 2,
                     cache_read_tokens: 0,
                     cache_creation_tokens: 0,
+                    ..Default::default()
                 },
                 timing: Timing {
                     total_ms: 100,
@@ -261,6 +262,7 @@ mod tests {
                         output_tokens: 1,
                         cache_read_tokens: 0,
                         cache_creation_tokens: 0,
+                        ..Default::default()
                     },
                     timing: Timing {
                         total_ms: 50,

@@ -47,7 +47,10 @@ pub(super) async fn persist_and_notify(
             let entry = shore_diagnostics::ApiCallEntry {
                 timestamp: chrono::Local::now().to_rfc3339(),
                 model: result.model.clone(),
-                provider: resolved.provider_key.clone(),
+                provider: request
+                    .provider_key
+                    .clone()
+                    .unwrap_or_else(|| resolved.provider_key.clone()),
                 input_tokens: result.usage.input_tokens,
                 output_tokens: result.usage.output_tokens,
                 cache_read_tokens: result.usage.cache_read_tokens,
@@ -55,6 +58,8 @@ pub(super) async fn persist_and_notify(
                 ttft_ms: result.timing.time_to_first_token_ms,
                 total_ms: result.timing.total_ms,
                 finish_reason: result.finish_reason.clone(),
+                total_cost_usd: result.usage.total_cost_usd,
+                rate_limit_info: result.usage.rate_limit_info.clone(),
                 error: None,
             };
             ctx.diagnostics

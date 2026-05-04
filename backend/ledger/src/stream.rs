@@ -185,6 +185,7 @@ mod tests {
                 output_tokens: 50,
                 cache_read_tokens: 80,
                 cache_creation_tokens: 20,
+                ..Default::default()
             },
             timing: Timing {
                 total_ms: 1500,
@@ -231,6 +232,7 @@ mod tests {
                 output_tokens: 50,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 500,
+                ..Default::default()
             },
             timing: Timing {
                 total_ms: 1500,

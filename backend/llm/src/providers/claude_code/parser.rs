@@ -17,9 +17,9 @@
 //!   records the tool roundtrip independently and splices it into
 //!   conversation history.
 //! - `result`: end-of-turn summary with `stop_reason`, `usage`,
-//!   `total_cost_usd`, `duration_ms`. Maps to `Done`.
-//! - `rate_limit_event`: quota/window state. Ignored here; surfaced
-//!   separately for telemetry once that work lands.
+//!   `total_cost_usd`, `modelUsage`, `duration_ms`. Maps to `Done`.
+//! - `rate_limit_event`: quota/window state. Stored on the next `Done`
+//!   event's usage telemetry.
 //!
 //! Tool-use blocks in `assistant` events are deliberately NOT
 //! emitted as `StreamEvent::ToolUse`. Under the claude_code path
@@ -63,6 +63,8 @@ pub(crate) struct StreamJsonParser {
     start_emitted: bool,
     /// Whether `Done` has been emitted yet.
     done_emitted: bool,
+    /// Most recent rate-limit state emitted before the result event.
+    rate_limit_info: Option<Value>,
 }
 
 impl StreamJsonParser {
@@ -93,7 +95,10 @@ impl StreamJsonParser {
             RawEvent::System(_) => ParseStep::default(),
             RawEvent::Assistant { message } => self.handle_assistant(message.content),
             RawEvent::User { .. } => ParseStep::default(),
-            RawEvent::RateLimitEvent => ParseStep::default(),
+            RawEvent::RateLimitEvent { rate_limit_info } => {
+                self.rate_limit_info = rate_limit_info;
+                ParseStep::default()
+            }
             RawEvent::Result(r) => self.handle_result(r),
             RawEvent::Unknown => ParseStep::default(),
         }
@@ -171,6 +176,9 @@ impl StreamJsonParser {
             output_tokens: raw.usage.output_tokens,
             cache_read_tokens: raw.usage.cache_read_input_tokens,
             cache_creation_tokens: raw.usage.cache_creation_input_tokens,
+            total_cost_usd: raw.total_cost_usd,
+            model_usage: raw.model_usage,
+            rate_limit_info: self.rate_limit_info.clone(),
         };
         let timing = Timing {
             total_ms: raw.duration_ms,
@@ -235,7 +243,10 @@ enum RawEvent {
         #[allow(dead_code)]
         message: Value,
     },
-    RateLimitEvent,
+    RateLimitEvent {
+        #[serde(default)]
+        rate_limit_info: Option<Value>,
+    },
     Result(RawResult),
     #[serde(other)]
     Unknown,
@@ -291,6 +302,10 @@ struct RawResult {
     usage: RawUsage,
     #[serde(default)]
     duration_ms: u32,
+    #[serde(default)]
+    total_cost_usd: Option<f64>,
+    #[serde(default, rename = "modelUsage")]
+    model_usage: Option<Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -437,6 +452,26 @@ mod tests {
         let step = parser.handle_line(line);
         assert!(step.events.is_empty());
         assert!(!step.done);
+    }
+
+    #[test]
+    fn result_carries_cost_model_usage_and_rate_limit_info() {
+        let mut parser = StreamJsonParser::new();
+        let _ = parser.handle_line(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","overageStatus":"rejected"}}"#,
+        );
+        let step = parser.handle_line(
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"ok","stop_reason":"end_turn","total_cost_usd":0.0042,"modelUsage":{"claude-sonnet-4-5":{"costUSD":0.0042}},"usage":{"input_tokens":2,"output_tokens":1},"duration_ms":7}"#,
+        );
+        assert!(step.done);
+        match &step.events[0] {
+            StreamEvent::Done { usage, .. } => {
+                assert_eq!(usage.total_cost_usd, Some(0.0042));
+                assert!(usage.model_usage.as_ref().unwrap()["claude-sonnet-4-5"].is_object());
+                assert_eq!(usage.rate_limit_info.as_ref().unwrap()["status"], "allowed");
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
     }
 
     #[test]

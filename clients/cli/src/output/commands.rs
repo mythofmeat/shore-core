@@ -1367,6 +1367,14 @@ pub fn print_usage(data: &serde_json::Value) {
                 }
             }
 
+            if let Some(max) = data.get("max_subscription").filter(|v| !v.is_null()) {
+                let calls = max["call_count"].as_u64().unwrap_or(0);
+                let would_be = max["would_be_api_cost"].as_f64().unwrap_or(0.0);
+                let badge = max["badge"].as_str().unwrap_or("Max subscription");
+                println!("\nClaude Code ({badge}):");
+                println!("  calls: {calls}  would-be API cost: ${would_be:.2}");
+            }
+
             if let Some(health) = data["cache_health"].as_array() {
                 if !health.is_empty() {
                     println!("\nCache Health (anthropic):");
@@ -1380,6 +1388,22 @@ pub fn print_usage(data: &serde_json::Value) {
                             "Cold".into()
                         };
                         println!("  {char_name:<8} \u{2014} {state_str}");
+                    }
+                }
+            }
+
+            if let Some(events) = data["rate_limit_events"].as_array() {
+                if !events.is_empty() {
+                    println!("\nClaude Code Rate Limits:");
+                    for event in events.iter().rev().take(5) {
+                        let info = &event["rate_limit_info"];
+                        let status = info["status"].as_str().unwrap_or("unknown");
+                        let overage = info["overageStatus"].as_str().unwrap_or("-");
+                        let resets = info["resetsAt"]
+                            .as_i64()
+                            .map(|ts| ts.to_string())
+                            .unwrap_or_else(|| "-".into());
+                        println!("  {status} (overage: {overage}, resetsAt: {resets})");
                     }
                 }
             }

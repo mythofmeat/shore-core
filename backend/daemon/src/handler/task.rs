@@ -311,6 +311,7 @@ pub(super) async fn handle_generation(
 
     let mut claude_code_session = None;
     if matches!(resolved.sdk, Sdk::ClaudeCode) {
+        request.provider_key = Some(Sdk::ClaudeCode.as_str().to_string());
         let http = ctx.http.as_ref().ok_or_else(|| {
             "claude_code requires [daemon.http].enabled = true so the local claude CLI can call back into shore tools"
                 .to_string()

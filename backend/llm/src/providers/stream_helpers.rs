@@ -43,16 +43,12 @@ pub(crate) fn build_done_event(
     total_ms: u32,
     ttft_ms: u32,
 ) -> String {
+    let usage_json = serde_json::to_value(usage).unwrap_or_else(|_| json!({}));
     json!({
         "type": "done",
         "content": content,
         "finish_reason": finish_reason,
-        "usage": {
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_read_tokens": usage.cache_read_tokens,
-            "cache_creation_tokens": usage.cache_creation_tokens,
-        },
+        "usage": usage_json,
         "timing": {
             "total_ms": total_ms,
             "time_to_first_token_ms": ttft_ms,
@@ -133,6 +129,7 @@ pub(crate) fn extract_gemini_usage(meta: Option<&Value>) -> Usage {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32,
         cache_creation_tokens: 0,
+        ..Default::default()
     }
 }
 
@@ -187,6 +184,7 @@ pub(crate) fn extract_openai_usage(u: &Value) -> Usage {
             .unwrap_or(0) as u32,
         cache_read_tokens: cached,
         cache_creation_tokens: 0,
+        ..Default::default()
     }
 }
 
@@ -278,6 +276,7 @@ mod tests {
             output_tokens: 50,
             cache_read_tokens: 25,
             cache_creation_tokens: 10,
+            ..Default::default()
         };
         let event = build_done_event("hello world", "end_turn", &usage, 1500, 200);
         let parsed: Value = serde_json::from_str(&event).unwrap();
@@ -310,6 +309,7 @@ mod tests {
             output_tokens: 0,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            ..Default::default()
         };
         // OpenRouter sends input_tokens=0 in message_start; must not overwrite.
         let raw = json!({"input_tokens": 0, "output_tokens": 42});
@@ -328,6 +328,7 @@ mod tests {
             output_tokens: 10,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            ..Default::default()
         };
         let raw = json!({"output_tokens": 99});
         merge_anthropic_usage(&mut usage, &raw);

@@ -134,7 +134,7 @@ pub(crate) fn record_call(
         };
 
     // Cost calculation (sync — cached pricing only, no fetch)
-    let cost = pricing
+    let priced_cost = pricing
         .calculate_cost(crate::pricing::CostRequest {
             provider,
             model,
@@ -146,6 +146,7 @@ pub(crate) fn record_call(
         })
         .ok()
         .flatten();
+    let total_cost_override = usage.total_cost_usd;
 
     let row = CallRow {
         ts,
@@ -164,11 +165,27 @@ pub(crate) fn record_call(
         thinking_enabled,
         cache_state,
         cache_anomaly,
-        input_cost: cost.as_ref().map(|c| c.input),
-        output_cost: cost.as_ref().map(|c| c.output),
-        cache_read_cost: cost.as_ref().map(|c| c.cache_read),
-        cache_write_cost: cost.as_ref().map(|c| c.cache_write),
-        total_cost: cost.as_ref().map(|c| c.total),
+        input_cost: if total_cost_override.is_some() {
+            None
+        } else {
+            priced_cost.as_ref().map(|c| c.input)
+        },
+        output_cost: if total_cost_override.is_some() {
+            None
+        } else {
+            priced_cost.as_ref().map(|c| c.output)
+        },
+        cache_read_cost: if total_cost_override.is_some() {
+            None
+        } else {
+            priced_cost.as_ref().map(|c| c.cache_read)
+        },
+        cache_write_cost: if total_cost_override.is_some() {
+            None
+        } else {
+            priced_cost.as_ref().map(|c| c.cache_write)
+        },
+        total_cost: total_cost_override.or_else(|| priced_cost.as_ref().map(|c| c.total)),
     };
 
     // Cache forensics: log response-side data for ALL cache events.
@@ -194,7 +211,7 @@ pub(crate) fn record_call(
         call_type = call_type.as_str(),
         input_tokens = usage.input_tokens,
         output_tokens = usage.output_tokens,
-        total_cost = cost.as_ref().map(|c| c.total),
+        total_cost = total_cost_override.or_else(|| priced_cost.as_ref().map(|c| c.total)),
         "LLM call recorded"
     );
     if let Err(e) = ledger.insert(&row) {
@@ -494,6 +511,7 @@ mod tests {
                     output_tokens: 50,
                     cache_read_tokens: 0,
                     cache_creation_tokens: 0,
+                    ..Default::default()
                 },
                 timing: &Timing {
                     total_ms: 1500,
@@ -508,6 +526,43 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].character, "aria");
         assert_eq!(rows[0].call_type, "message");
+    }
+
+    #[test]
+    fn record_uses_provider_total_cost_override() {
+        let (ledger, pricing, trackers) = test_parts();
+        record_call(
+            &ledger,
+            &pricing,
+            &trackers,
+            RecordCall {
+                provider: "claude_code",
+                model: "claude-sonnet-4-5",
+                call_type: CallType::Message,
+                character: "aria",
+                usage: &Usage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    total_cost_usd: Some(0.0042),
+                    ..Default::default()
+                },
+                timing: &Timing {
+                    total_ms: 1500,
+                    time_to_first_token_ms: 0,
+                },
+                finish_reason: "end_turn",
+                thinking_enabled: false,
+                cache_ttl: None,
+            },
+        );
+        let rows = ledger.recent(1).unwrap();
+        assert_eq!(rows[0].total_cost, Some(0.0042));
+        assert!(rows[0].input_cost.is_none());
+        assert!(rows[0].output_cost.is_none());
+        assert!(rows[0].cache_read_cost.is_none());
+        assert!(rows[0].cache_write_cost.is_none());
     }
 
     #[test]
@@ -527,6 +582,7 @@ mod tests {
                     output_tokens: 50,
                     cache_read_tokens: 0,
                     cache_creation_tokens: 500,
+                    ..Default::default()
                 },
                 timing: &Timing {
                     total_ms: 1500,
@@ -559,6 +615,7 @@ mod tests {
                     output_tokens: 50,
                     cache_read_tokens: 400,
                     cache_creation_tokens: 0,
+                    ..Default::default()
                 },
                 timing: &Timing {
                     total_ms: 1500,
@@ -583,6 +640,7 @@ mod tests {
                     output_tokens: 50,
                     cache_read_tokens: 0,
                     cache_creation_tokens: 0,
+                    ..Default::default()
                 },
                 timing: &Timing {
                     total_ms: 1500,
@@ -621,6 +679,7 @@ mod tests {
                     output_tokens: 50,
                     cache_read_tokens: 0,
                     cache_creation_tokens: 0,
+                    ..Default::default()
                 },
                 timing: &Timing {
                     total_ms: 500,
@@ -664,6 +723,7 @@ mod tests {
                     output_tokens: 50,
                     cache_read_tokens: 80,
                     cache_creation_tokens: 200,
+                    ..Default::default()
                 },
                 timing: &Timing {
                     total_ms: 1500,
@@ -696,6 +756,7 @@ mod tests {
                     output_tokens: 50,
                     cache_read_tokens: 0,
                     cache_creation_tokens: 0,
+                    ..Default::default()
                 },
                 timing: &Timing {
                     total_ms: 1500,
