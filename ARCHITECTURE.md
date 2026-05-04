@@ -1,24 +1,15 @@
 # Architecture
 
-Shore is a daemon-centered AI character engine. The daemon owns state; clients observe and send commands.
+Shore is a daemon-centered AI character engine. The daemon owns state; clients
+observe and send commands over SWP.
 
-## Workspace Layout
-
-The main Rust workspace is grouped by ownership:
-
-- `core/` — shared protocol, config, and SWP client crates
-- `backend/` — daemon runtime plus backend support crates
-- `clients/` — user-facing clients, including CLI, TUI, and Tauri GUI
-- `bridges/` — external service bridges
-- `dev/` — development tools and test harnesses
-
-`clients/gui-godot/rust` is intentionally outside the root Cargo workspace because
-it has Godot-specific tooling and produces a `shore_bridge` dynamic library.
+This file is the compact system manual: runtime shape, load-bearing invariants,
+security boundaries, observability, and validation expectations.
 
 ## Workspace Crates
 
 | Path | Crate | Role |
-| --- | --- |
+| --- | --- | --- |
 | `core/protocol` | `shore-protocol` | SWP wire types |
 | `core/config` | `shore-config` | config loading, model catalog, character paths |
 | `core/swp-client` | `shore-swp-client` | client connection/discovery helpers |
@@ -34,20 +25,24 @@ it has Godot-specific tooling and produces a `shore_bridge` dynamic library.
 | `dev/mcp` | `shore-mcp` | development/debug MCP surface |
 | `dev/test-harness` | `shore-test-harness` | integration harness and mock server |
 
+`clients/gui-godot/rust` is intentionally outside the root Cargo workspace
+because it has Godot-specific tooling and produces a `shore_bridge` dynamic
+library.
+
 ## State Model
 
 Authoritative state lives in the daemon:
 
 - active character
-- conversation log
-- message alternatives
+- conversation log and message alternatives
 - generation lifecycle
-- memory and compaction
+- memory and compaction state
 - heartbeat/autonomy scheduling
-- ledger/cost state
+- ledger/cost/cache state
 - tool execution
 
-Clients do not fork state. They attach, receive snapshots/events, and send SWP messages.
+Clients attach, receive snapshots/events, and send SWP messages. CLI, TUI, GUI,
+Matrix, and MCP must not become alternate sources of character truth.
 
 ## File Layout
 
@@ -63,7 +58,8 @@ $XDG_CONFIG_HOME/shore/
     AGENTS.md
     TOOLS.md
     HEARTBEAT.md
-    memory/
+    MEMORY.md     # optional/generated prompt-visible index
+    memory/       # markdown long-term memory
 ```
 
 Data:
@@ -79,199 +75,285 @@ $XDG_DATA_HOME/shore/<Character>/
     HEARTBEAT.md
     MEMORY.md
   compaction.json
-  segments/
   deferred_edits.jsonl
-  memory_index.json
+  segments/
+  dreams/
+  workspace_index.json
 ```
 
-Ledger:
+Global data:
 
 ```text
 $XDG_DATA_HOME/shore/ledger.db
+$XDG_DATA_HOME/shore/cache_forensics.jsonl
 ```
+
+## Runtime Flow
+
+Generation:
+
+1. Receive an SWP client message.
+2. Append the user message to `active.jsonl`.
+3. Assemble the prompt from `active_prompt/` and active conversation messages.
+4. Stream the LLM response.
+5. Run tool loops if the provider returns tool calls.
+6. Persist assistant/tool messages.
+7. Emit final stream metadata after persistence.
+8. Trigger compaction if thresholds require it.
+
+The final `StreamEnd` is emitted only after persistence, so immediate follow-up
+commands see durable state. During tool use, clients may see intermediate
+`StreamEnd(tool_use)` events; they should buffer one assistant turn across tool
+phases.
 
 ## Config Runtime
 
-The daemon loads config once at startup, then keeps a runtime copy in the
-message handler, command context, autonomy manager, and character registry.
-Manual `config_reset` and automatic hot reload both use the same reload
-application path: parse config from the resolved startup file, replace runtime
-config, invalidate merged per-character config caches, rescan character
-discovery, update autonomy runtime config, and push fresh history/config
-snapshots to connected sessions.
+The daemon loads config at startup and keeps a runtime copy in the message
+handler, command context, autonomy manager, and character registry.
 
-The filesystem watcher is runtime-only. It watches config TOML inputs, `.env`,
-`conf.d/`, and per-character `config.toml` overlays, but filters out
-`characters/<Character>/workspace/**` so ordinary prompt or memory edits do not
-become config reload triggers. Startup-owned settings such as socket binding,
-Matrix supervision, notifications, TTS connection setup, and startup diagnostics
-are logged as restart-required when they change.
+Manual `config_reset` and automatic hot reload use the same application path:
+parse config, replace runtime config, invalidate merged per-character config
+caches, rescan character discovery, update autonomy runtime config, and push
+fresh snapshots to connected sessions.
 
-## Prompt Assembly
+The watcher covers config TOML inputs, `.env`, `conf.d/`, and per-character
+`config.toml` overlays. It deliberately ignores
+`characters/<Character>/workspace/**` so prompt and memory edits keep their
+explicit compaction/reload boundary.
+
+Startup-owned settings such as daemon listener, Matrix supervision,
+notifications, TTS connection setup, and startup diagnostics require restart.
+
+## Prompt And Cache
 
 Prompt assembly reads prompt-visible files from `active_prompt/`, not directly
-from editable workspace files. `active_prompt/MEMORY.md` is refreshed from
-`workspace/MEMORY.md` at the same compaction/reload boundary as the
-protected prompt files.
+from editable workspace files.
 
 Normal chat uses:
 
-- `SOUL.md`
-- `USER.md`
-- `AGENTS.md`
-- `TOOLS.md`
-- `active_prompt/MEMORY.md`
+- active `SOUL.md`
+- active `USER.md`
+- active `AGENTS.md`
+- active `TOOLS.md`
+- active `MEMORY.md`
 - current conversation messages
-- capability/tool guidance
+- stable capability/tool guidance
 
-Heartbeat additionally uses `HEARTBEAT.md`.
+Heartbeat additionally uses active `HEARTBEAT.md` and heartbeat runtime
+affordances.
 
-This design makes character self-editing and memory-index maintenance compatible with Anthropic prompt caching: a workspace edit does not mutate the prompt prefix until compaction/reload.
-
-## Deferred Prompt Edits
-
-Prompt-visible files:
+Prompt-visible workspace files are:
 
 - `SOUL.md`
 - `USER.md`
 - `AGENTS.md`
 - `TOOLS.md`
 - `HEARTBEAT.md`
-- `workspace/MEMORY.md`
+- `MEMORY.md`
 
-When a model writes or edits one of these through workspace tools:
+When a model writes or edits one of these files through workspace tools, the
+workspace file changes immediately, but the path is queued in
+`deferred_edits.jsonl`. Normal prompt assembly keeps using the old snapshot until
+compaction/reload refreshes `active_prompt/` and clears the queue.
 
-1. the workspace file changes immediately
-2. a path is appended to `deferred_edits.jsonl`
-3. normal prompt assembly keeps using the old `active_prompt/` snapshot
-4. compaction/reload refreshes `active_prompt/` and clears the queue
-
-## Conversation Engine
-
-Messages are stored in `active.jsonl`. Compaction archives older messages into segment files and retains a configured number of recent turns.
-
-The generation flow:
-
-1. receive SWP client message
-2. append user message
-3. assemble prompt from active snapshot and active log
-4. stream LLM response
-5. run tool loop if the provider returns tool calls
-6. persist assistant/tool messages
-7. emit final stream metadata after persistence
-8. trigger compaction if thresholds require it
-
-The final `StreamEnd` is intentionally emitted after persistence so immediate follow-up commands see durable state.
+Unexpected Anthropic cache invalidation is a serious regression. Things that
+should not bust cache include ordinary workspace edits, ordinary markdown memory
+writes, tool loop bookkeeping, activity tracking, and image cache warmups.
+Expected cache breakpoints include compaction/reload, activating staged prompt
+edits, editing old conversation messages, changing model/provider/cache
+settings, and changing prompt templates or tool definitions in code.
 
 ## Memory
 
-Memory is markdown under `workspace/memory/`.
+Runtime long-term memory is markdown under:
 
-Components:
-
-- `markdown_store.rs` — filesystem store
-- `markdown_query.rs` — direct and LLM-assisted markdown Q&A
-- `retrieval.rs` — lexical and optional hybrid ranking over markdown memory
-- `workspace_index.rs` — whole-workspace embedding index that backs the
-  `search` tool's hybrid mode
-- `compaction/` — conversation summarization and memory writes
-- `deferred_edits.rs` — prompt snapshot activation boundary
-
-Embedding indexes are rebuildable caches:
-- `memory_index.json` (markdown memory only, used by older retrieval path)
-- `workspace_index.json` (whole workspace + memory namespace, used by the
-  `search` tool's hybrid/vector modes)
-
-Both are derivative — markdown files remain authoritative and either index
-can be deleted and rebuilt on next search.
-
-### Search Data Flow
-
-```
-search tool call
-  → tools/workspace.rs handle_search
-      → mode == "lexical" or no embedder: substring walk + line excerpts
-      → mode == "hybrid"|"vector":
-          memory/workspace_index.rs hybrid_search
-            → enumerate workspace + memory files (same security rules as
-              the lexical walker: skip symlinks, size cap, non-UTF8 skip)
-            → load + prune workspace_index.json
-            → embed stale text files via shore-llm Embedder trait
-            → embed query
-            → cosine + lexical fusion (default 0.45 / 0.55)
-          → file-level rank
-      → produce path + line excerpt for each top file
+```text
+characters/<Character>/workspace/memory/**/*.md
 ```
 
-The `Embedder` trait (`backend/llm/src/embed/`) is dyn-compatible so the
-process holds an `Arc<dyn Embedder>` chosen at startup. Implementations:
-`OpenAIEmbedder` (any OpenAI-compatible `/v1/embeddings`), `LocalEmbedder`
-(fastembed-rs / ONNX, default BGE-small). A process-wide cache avoids
-reloading the local model across requests.
+Curated markdown files are authoritative. SQLite/vector/RAG memory is not part
+of normal runtime memory. Optional semantic indexes are rebuildable ranking aids.
 
-## Tools
+`MEMORY.md` lives at the workspace root and is prompt-visible through
+`active_prompt/MEMORY.md`. It is a concise map of memory files, recent updates,
+and conversational throughlines. It is not the character definition, user
+profile, standing behavior, tool guide, or heartbeat guide.
 
-Tool definitions live under `backend/daemon/src/tools/`.
+Compaction turns older conversation material into durable markdown memory,
+archives compacted messages into `segments/`, retains configured recent turns,
+updates `MEMORY.md` with carry-forward throughlines, and activates deferred
+prompt edits. Dreaming may later reorganize the memory files and `MEMORY.md`.
 
-Tool categories drive private-mode filtering. Memory gates are enforced at both the visible tool list and dispatch layer.
+Dreaming is an opt-in scheduled AI librarian pass. When autonomy and
+`[memory.dreaming]` are enabled, the character privately uses memory/workspace
+tools to inspect, dedupe, consolidate, and mark stale or superseded memory.
+Dreaming may edit prompt-visible files; those edits follow the same deferred
+activation rule.
 
-Workspace tools resolve paths under the character workspace. `exec`:
+The dreams audit log lives at:
 
-- parses argv with `shell_words`
-- never invokes a shell
-- requires an allowlisted executable name
-- rejects executable paths
-- rejects path-like arguments outside the workspace
-- runs in the workspace or validated subdirectory
+```text
+$XDG_DATA_HOME/shore/<Character>/DREAMS.md
+```
+
+It is daemon-written and is not memory. Machine-readable dreaming state lives
+under `$XDG_DATA_HOME/shore/<Character>/dreams/`. Generated dreaming artifacts
+under legacy `.dreams/**`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**`
+are excluded from ordinary memory-source ingestion.
+
+Search is lexical or hybrid semantic+lexical. The workspace-wide hybrid index is
+stored at `<character_data_dir>/workspace_index.json`; markdown files remain
+authoritative and the index can be deleted and rebuilt.
+
+## Tools And Security
+
+Workspace tools operate inside `characters/<Character>/workspace/`.
+
+Rules:
+
+- Paths must stay inside the character workspace.
+- Symlink and traversal escapes are bugs.
+- `memory/...` access must respect memory read/write gates.
+- Private conversations suppress memory access.
+- Prompt-visible files cannot be deleted and edits are deferred.
+
+`exec` is intentionally narrow:
+
+- command strings are parsed to argv and executed directly
+- no shell is invoked
+- executable names are allowlisted
+- executable paths are rejected
+- path-like arguments must stay inside the character workspace
+- the command runs in the workspace or a validated subdirectory
+
+Remote daemon access is explicit. Non-loopback binding requires:
+
+```toml
+[daemon]
+unsafe_allow_remote_access = true
+allowed_hosts = ["100.64.0.2"]
+```
+
+`allowed_hosts` is a source-IP allowlist only. It is not authentication or TLS.
+Use a private overlay network such as Tailscale or WireGuard.
+
+Provider keys come from environment variables or `.env` in the config directory.
+Do not commit real keys, captured Authorization headers, or private profile
+data.
 
 ## Autonomy
 
-Autonomy is implemented as heartbeat state plus an async manager.
+Autonomy is implemented as heartbeat state plus an async manager. It is disabled
+by default.
 
 Heartbeat ticks:
 
-1. rebuild the latest prompt from disk
-2. inject the active `HEARTBEAT.md` plus runtime affordances
-3. run a bounded tool loop
-4. extract optional user-facing message
-5. schedule the next wake or fall back to the configured interval
+1. Rebuild the latest prompt from disk.
+2. Inject active `HEARTBEAT.md` plus runtime affordances.
+3. Run a bounded tool loop.
+4. Extract an optional user-facing `<sendMessage>`.
+5. Schedule the next wake or fall back to the configured interval.
 
-Dormancy stops autonomous LLM calls until user engagement resumes.
+Heartbeat does not force recap files or daily memory notes. Durable notes happen
+only when the character uses write-capable tools. Dormancy stops autonomous LLM
+calls until user engagement resumes. Cache keepalive is separate from heartbeat;
+it preserves Anthropic cache warmth and does not simulate autonomy.
 
-Cache keepalive is separate from heartbeat. It exists to preserve Anthropic cache warmth, not to simulate character autonomy.
+## Provider Boundary
 
-Dreaming is the scheduled memory librarian path. When autonomy and `[memory.dreaming]` are enabled, a due pass makes a private LLM call with memory workspace tools. The character lists, reads, searches, writes, and edits markdown memory files to organize durable notes, dedupe repeated material, separate long-term facts from daily/raw logs, and mark stale or superseded information. Dreaming may also write to the protected prompt files (`SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`); the deferred-edits machinery snapshots those files into `active_prompt/` at the next compaction/reload boundary, so writes do not invalidate the live prompt cache mid-pass.
+`shore-llm` owns provider-specific request construction, streaming, response
+parsing, retry behavior, content block handling, thinking/reasoning block
+translation, and cache breakpoint placement.
 
-`workspace/MEMORY.md` is the canonical index; `active_prompt/MEMORY.md` is the prompt-active copy. It orients the character with a map of memory files, recently updated files, and still-relevant conversational throughlines.
+Provider wire behavior should be verified with recorded or live provider
+responses before release when request formatting, streaming, tool use, thinking,
+or cache economics are in scope. Live checks may cost money.
 
-Compaction captures and preserves older conversation material into ordinary markdown memory files AND updates `MEMORY.md` with the conversational throughline so the next conversation can pick up where this one left off; dreaming reorganizes the index later. When the autonomy manager has a cached chat request, compaction reuses that prefix and appends only the carry-forward instruction (the trailing `role:"system"` message is wrapped to a `<system_instruction>` user turn by the Anthropic provider), preserving the live conversation's prompt cache for the compaction call itself.
+## Clients And Bridges
 
-The dreams audit log lives at `$XDG_DATA_HOME/shore/<Character>/DREAMS.md` (data dir, not workspace). It is daemon-written after every dreaming and compaction pass — the model itself does not write `DREAMS.md`. Machine-readable dreaming staging/debug state lives under `$XDG_DATA_HOME/shore/<Character>/dreams/`. Generated outputs under legacy `.dreams/**`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**` are excluded from ordinary memory-source ingestion.
+`shore-matrix` bridges Matrix rooms to SWP messages. Embedded mode manages a
+conduwuit-compatible homeserver; external mode connects to an existing Matrix
+server. Matrix is a client bridge, not a trusted state store.
 
-## LLM Provider Boundary
+`shore-mcp` is for development and agent-driven verification. It speaks to the
+daemon through the same SWP path as other clients. Its default profile is
+isolated; main-profile writes require explicit writable attachment.
 
-`shore-llm` owns provider-specific request construction, streaming, response parsing, retry behavior, and content block handling.
+## Observability
 
-Upstream crates should test business logic with the test harness, but provider wire behavior should be verified with recorded or live provider responses.
+Useful commands:
 
-## Matrix
+```sh
+RUST_LOG=shore_daemon=debug,shore_llm=debug,shore_swp_server=debug shore-daemon
+RUST_LOG=shore_cli=debug shore status
+shore status
+shore status --diagnostics
+shore usage
+shore usage --anomalies
+shore log --heartbeat
+shore memory dreams
+```
 
-`shore-matrix` bridges Matrix rooms to SWP messages. Embedded mode manages a conduwuit-compatible homeserver; external mode connects to an existing Matrix server.
+Persistent surfaces:
 
-Matrix is a client/bridge, not an alternate state store.
+| Surface | Location |
+| --- | --- |
+| Usage ledger | `$XDG_DATA_HOME/shore/ledger.db` |
+| Cache forensics | `$XDG_DATA_HOME/shore/cache_forensics.jsonl` |
+| Conversation log | `$XDG_DATA_HOME/shore/<Character>/active.jsonl` |
+| Compacted segments | `$XDG_DATA_HOME/shore/<Character>/segments/` |
+| Active prompt snapshot | `$XDG_DATA_HOME/shore/<Character>/active_prompt/` |
+| Deferred prompt edits | `$XDG_DATA_HOME/shore/<Character>/deferred_edits.jsonl` |
+| Dreaming state | `$XDG_DATA_HOME/shore/<Character>/dreams/` |
+| TUI log | `$XDG_DATA_HOME/shore/tui.log` |
 
-## MCP
+Enable cache forensics with:
 
-`shore-mcp` is primarily for development and agent-driven verification. It defaults to an isolated test profile and only writes to the real profile when explicitly attached with write permission.
+```toml
+[advanced]
+cache_forensics = true
+```
+
+Provider request bodies can include sensitive conversation context; do not paste
+private logs into docs or commits.
+
+## Validation
+
+Use the narrowest useful check first:
+
+```sh
+python3 scripts/harness-check.py
+cargo fmt --all --check
+cargo test -p shore-daemon engine::prompt
+cargo test -p shore-daemon tools::workspace
+cargo test -p shore-daemon memory::deferred_edits
+cargo test -p shore-daemon --test suite
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Release build gate:
+
+```sh
+cargo build --release -p shore-daemon -p shore-cli -p shore-tui -p shore-matrix
+```
+
+Before a release, also run relevant cache tests, live provider smoke tests if
+provider behavior changed, and Matrix live verification if Matrix behavior
+changed.
 
 ## Removed Runtime Architecture
 
-These are no longer the normal runtime memory architecture:
+These are no longer normal runtime architecture:
 
-- SQLite memory entries table
-- LanceDB/vector store as authoritative memory
+- authoritative SQLite memory entries table
+- LanceDB/vector store as memory source of truth
 - passive RAG prompt injection
 - separate collation pipeline
 - interactive memory shell
+- `character.md` as the active character definition path
+- compaction-generated recap prompt files
+- `memories/` as a runtime memory directory
 
-SQLite is still used for the usage ledger and may appear in migration tooling/history.
+SQLite is still used for the usage ledger and may appear in migration
+tooling/history.

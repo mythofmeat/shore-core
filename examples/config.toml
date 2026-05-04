@@ -57,7 +57,7 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 # enabled = false
 # frequency = "0 3 * * *"
 # max_tool_rounds = 12
-# Optional: set [defaults].dreaming to choose a specific model for this pass.
+# Optional: set [defaults.background].dreaming to choose a specific model.
 
 # ── Tool use ─────────────────────────────────────────────────────────────
 
@@ -107,8 +107,8 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 # keep_recent_turns = 2      # User turns to retain verbatim after compaction
 
 # Retrieval — controls semantic/lexical ranking for internal memory retrieval.
-# "auto" uses hybrid semantic+lexical search when an embedding profile is
-# configured and usable, otherwise lexical search.
+# "auto" uses hybrid semantic+lexical search when an embedder is resolved and
+# usable, otherwise lexical search.
 # [memory.retrieval]
 # mode = "auto"              # "auto", "lexical", or "hybrid"
 

@@ -57,8 +57,9 @@ pub struct MemoryFileOp {
 ///
 /// Expected format: a `<memory>` block containing one or more
 /// `<write path="...">` blocks. Legacy responses may include a `<recap>` block;
-/// compaction ignores it because MEMORY.md is now maintained as the memory
-/// index by dreaming and activated through the prompt snapshot boundary.
+/// compaction ignores it because current compaction writes markdown files
+/// directly, including workspace-root `MEMORY.md` when the model provides a
+/// carry-forward throughline.
 pub fn parse_compaction_response(raw: &str) -> Result<Vec<MemoryFileOp>, CompactionError> {
     debug!(response_len = raw.len(), "Parsing compaction LLM response");
 

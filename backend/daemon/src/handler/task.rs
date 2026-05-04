@@ -364,7 +364,7 @@ pub(super) async fn handle_generation(
     // Emit StreamEnd ONLY after persistence completes — clients that issue
     // an immediate follow-up command (e.g. `memory_compact` via shore-mcp)
     // would otherwise race the persist write and snapshot stale engine
-    // state. See QUIRKS.md (StreamEnd / persistence ordering).
+    // state. See ARCHITECTURE.md (runtime flow).
     shore_llm::stream::emit_stream_end(
         &ctx.direct_tx,
         request.rid.clone(),
