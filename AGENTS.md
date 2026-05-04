@@ -1,8 +1,5 @@
 # Agent Entry Map
 
-Shore is a daemon-centered AI character engine. Keep this file short; it is a
-map, not a manual.
-
 ## Start Here
 
 - [README.md](README.md): product intent, quick start, repo layout.
