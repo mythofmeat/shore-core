@@ -6,12 +6,11 @@
 //! and `dev/spikes/claude-code-probe/FINDINGS.md` for the empirical
 //! findings that drove it.
 //!
-//! Pattern 3 (hybrid) is the target: long-lived `claude -p` subprocess
-//! per active conversation for faithful turn-pair preservation,
-//! fresh-spawn fallback for cold starts and post-compaction. Only the
-//! fresh-spawn path is implemented in this commit; the long-lived
-//! cache lands in a follow-up.
+//! Pattern 3 (hybrid): long-lived `claude -p` subprocess per active
+//! conversation when `provider_options.subprocess_key` is present,
+//! fresh-spawn fallback otherwise.
 
+mod cache;
 mod driver;
 mod parser;
 mod quota;
@@ -38,7 +37,7 @@ pub async fn stream(
     _client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<DuplexStream, LlmError> {
-    let output = driver::run_fresh_spawn(request).await?;
+    let output = run_driver(request).await?;
     let (read_half, mut write_half) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
         for ev in output.events {
@@ -60,8 +59,22 @@ pub async fn generate(
     _client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<GenerateResponse, LlmError> {
-    let output = driver::run_fresh_spawn(request).await?;
+    let output = run_driver(request).await?;
     Ok(build_generate_response(output, &request.model))
+}
+
+async fn run_driver(request: &LlmRequest) -> Result<driver::DriverOutput, LlmError> {
+    if request
+        .provider_options
+        .as_ref()
+        .and_then(|opts| opts.get("subprocess_key"))
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+    {
+        cache::run_long_lived(request).await
+    } else {
+        driver::run_fresh_spawn(request).await
+    }
 }
 
 fn build_generate_response(output: driver::DriverOutput, request_model: &str) -> GenerateResponse {

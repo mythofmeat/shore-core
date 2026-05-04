@@ -325,12 +325,16 @@ pub(super) async fn handle_generation(
             .iter()
             .map(|name| format!("mcp__shore__{name}"))
             .collect();
-        let session_id = uuid::Uuid::new_v4().to_string();
+        let subprocess_key = format!("{}:{char_name}", data_dir.display());
         let tool_ctx =
             build_claude_code_tool_context(&ctx, &data_dir, &char_name, &effective_config)?;
-        let guard =
-            http.mcp_sessions
-                .allocate(session_id.clone(), allowed_bare, tool_defs, tool_ctx);
+        let guard = http.mcp_sessions.allocate_keyed(
+            subprocess_key.clone(),
+            allowed_bare,
+            tool_defs,
+            tool_ctx,
+        );
+        let session_id = guard.id().to_string();
         let mcp_endpoint = guard.endpoint(&http.base_url());
         let opts = request
             .provider_options
@@ -342,10 +346,7 @@ pub(super) async fn handle_generation(
         map.insert("mcp_endpoint".into(), json!(mcp_endpoint));
         map.insert("allowed_tools".into(), json!(allowed_for_cli));
         map.insert("session_id".into(), json!(session_id));
-        map.insert(
-            "subprocess_key".into(),
-            json!(format!("{}:{char_name}", data_dir.display())),
-        );
+        map.insert("subprocess_key".into(), json!(subprocess_key));
         if let Some(effort) = resolved.reasoning_effort.as_ref() {
             map.entry("effort").or_insert_with(|| json!(effort));
         }

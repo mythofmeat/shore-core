@@ -3,15 +3,15 @@
 //! Spawns the local `claude` CLI per request (fresh-spawn path), pipes
 //! a single user frame through stdin, parses the stream-json output via
 //! [`super::parser::StreamJsonParser`], and returns the accumulated
-//! events / blocks. The long-lived subprocess cache (pattern 3 hot
-//! path) is a follow-up commit; this file only implements fresh-spawn.
+//! events / blocks. The long-lived cache reuses the low-level helpers
+//! in this module but keeps the child process open between turns.
 
 use std::io::Write as _;
 
 use serde_json::{json, Value};
 use shore_protocol::types::ContentBlock;
 use tempfile::NamedTempFile;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 use tracing::debug;
 
@@ -31,16 +31,16 @@ pub(super) struct DriverOutput {
 
 /// Engine-supplied glue extracted from `LlmRequest.provider_options`.
 #[derive(Debug)]
-struct ProviderConfig {
-    mcp_endpoint: String,
-    allowed_tools: Vec<String>,
-    effort: Option<String>,
-    session_id: String,
-    subprocess_key: Option<String>,
+pub(super) struct ProviderConfig {
+    pub mcp_endpoint: String,
+    pub allowed_tools: Vec<String>,
+    pub effort: Option<String>,
+    pub session_id: String,
+    pub subprocess_key: Option<String>,
 }
 
 impl ProviderConfig {
-    fn from_request(request: &LlmRequest) -> Result<Self, LlmError> {
+    pub(super) fn from_request(request: &LlmRequest) -> Result<Self, LlmError> {
         let opts = request
             .provider_options
             .as_ref()
@@ -102,17 +102,11 @@ pub(super) async fn run_fresh_spawn(request: &LlmRequest) -> Result<DriverOutput
 
     // Tempfile is held open for the lifetime of the subprocess so the
     // CLI can read it before we drop it.
-    let prompt_file = render_system_prompt(request)?;
+    let prompt_text = render_system_prompt_text(request);
+    let prompt_file = write_system_prompt_file(&prompt_text)?;
     let user_frame = render_user_frame(request);
 
-    let recipe = CliRecipe {
-        model: request.model.clone(),
-        mcp_endpoint: cfg.mcp_endpoint,
-        allowed_tools: cfg.allowed_tools,
-        system_prompt_path: prompt_file.path().to_path_buf(),
-        session_id: cfg.session_id,
-        effort: cfg.effort,
-    };
+    let recipe = recipe_for_request(request, &cfg, prompt_file.path().to_path_buf());
     let mut cmd = recipe.into_command();
     debug!(
         rid = request.rid.as_deref().unwrap_or("-"),
@@ -134,7 +128,7 @@ pub(super) async fn run_fresh_spawn(request: &LlmRequest) -> Result<DriverOutput
         message: "failed to take child stderr".into(),
     })?;
 
-    let write_handle = tokio::spawn(write_user_frame(stdin, user_frame));
+    let write_handle = tokio::spawn(write_user_frame_and_close(stdin, user_frame));
     let read_handle = tokio::spawn(read_stream_json(stdout));
     let stderr_handle = tokio::spawn(drain_stderr(stderr));
 
@@ -172,6 +166,14 @@ pub(super) async fn run_fresh_spawn(request: &LlmRequest) -> Result<DriverOutput
     };
     output.stderr = stderr_text;
 
+    // Translate quota-shaped CLI errors into HttpStatus 429 before
+    // checking process status. Claude Code exits 1 for these, but the
+    // stream-json result event carries the typed 429 body we need for
+    // Shore's existing quota handling.
+    if let Some(err) = classify_output_error(&output) {
+        return Err(err);
+    }
+
     if !exit.success() {
         return Err(LlmError::Provider {
             message: format!(
@@ -184,38 +186,43 @@ pub(super) async fn run_fresh_spawn(request: &LlmRequest) -> Result<DriverOutput
         });
     }
 
-    // Translate quota-shaped CLI errors into HttpStatus 429 so the
-    // existing credential classifier picks them up as QuotaExhausted.
-    if let Some(StreamEvent::Done {
-        content,
-        finish_reason,
-        ..
-    }) = output.events.last()
-    {
-        if finish_reason == "error" {
-            if let Some(err) = quota::classify_result_error(content, true) {
-                return Err(err);
-            }
-            return Err(LlmError::Provider {
-                message: format!("claude CLI returned error: {content}"),
-            });
-        }
-    }
-
     drop(prompt_file);
     Ok(output)
 }
 
-async fn write_user_frame(mut stdin: ChildStdin, frame: String) -> std::io::Result<()> {
+pub(super) fn recipe_for_request(
+    request: &LlmRequest,
+    cfg: &ProviderConfig,
+    system_prompt_path: std::path::PathBuf,
+) -> CliRecipe {
+    CliRecipe {
+        model: request.model.clone(),
+        mcp_endpoint: cfg.mcp_endpoint.clone(),
+        allowed_tools: cfg.allowed_tools.clone(),
+        system_prompt_path,
+        session_id: cfg.session_id.clone(),
+        effort: cfg.effort.clone(),
+    }
+}
+
+pub(super) async fn write_user_frame_to(
+    stdin: &mut ChildStdin,
+    frame: String,
+) -> std::io::Result<()> {
     stdin.write_all(frame.as_bytes()).await?;
     stdin.write_all(b"\n").await?;
     stdin.flush().await?;
+    Ok(())
+}
+
+async fn write_user_frame_and_close(mut stdin: ChildStdin, frame: String) -> std::io::Result<()> {
+    write_user_frame_to(&mut stdin, frame).await?;
     // Closing stdin (drop on return) triggers --print to finish the
     // response and exit cleanly.
     Ok(())
 }
 
-async fn drain_stderr(stderr: ChildStderr) -> String {
+pub(super) async fn drain_stderr(stderr: ChildStderr) -> String {
     let mut reader = BufReader::new(stderr);
     let mut buf = String::new();
     let _ = reader.read_to_string(&mut buf).await;
@@ -223,9 +230,18 @@ async fn drain_stderr(stderr: ChildStderr) -> String {
 }
 
 async fn read_stream_json(stdout: ChildStdout) -> Result<DriverOutput, LlmError> {
+    let mut lines = BufReader::new(stdout).lines();
+    read_stream_json_lines(&mut lines).await
+}
+
+pub(super) async fn read_stream_json_lines<R>(
+    lines: &mut Lines<R>,
+) -> Result<DriverOutput, LlmError>
+where
+    R: AsyncBufRead + Unpin,
+{
     let mut p = parser::StreamJsonParser::new();
     let mut output = DriverOutput::default();
-    let mut lines = BufReader::new(stdout).lines();
 
     while let Some(line) = lines.next_line().await.map_err(|e| LlmError::Provider {
         message: format!("read from claude stdout: {e}"),
@@ -246,12 +262,37 @@ async fn read_stream_json(stdout: ChildStdout) -> Result<DriverOutput, LlmError>
     Ok(output)
 }
 
+pub(super) fn classify_output_error(output: &DriverOutput) -> Option<LlmError> {
+    let Some(StreamEvent::Done {
+        content,
+        finish_reason,
+        ..
+    }) = output.events.last()
+    else {
+        return None;
+    };
+    if finish_reason != "error" {
+        return None;
+    }
+    quota::classify_result_error(content, true).or_else(|| {
+        Some(LlmError::Provider {
+            message: format!("claude CLI returned error: {content}"),
+        })
+    })
+}
+
 /// Render `request.system` and history (everything before the trailing
 /// user message) into a temp file. The trailing user message goes
 /// through stdin as a stream-json frame; assistant frames in stdin are
 /// silently discarded by the CLI (FINDINGS.md §A) so prior turns must
 /// be flattened into the system prompt.
+#[cfg(test)]
 fn render_system_prompt(request: &LlmRequest) -> Result<NamedTempFile, LlmError> {
+    let text = render_system_prompt_text(request);
+    write_system_prompt_file(&text)
+}
+
+pub(super) fn render_system_prompt_text(request: &LlmRequest) -> String {
     let mut text = match request.system.as_ref() {
         Some(v) => extract_system_text(v),
         None => String::new(),
@@ -272,7 +313,10 @@ fn render_system_prompt(request: &LlmRequest) -> Result<NamedTempFile, LlmError>
         }
         text.push_str(&format!("<turn role=\"{role}\">\n{content_text}\n</turn>"));
     }
+    text
+}
 
+pub(super) fn write_system_prompt_file(text: &str) -> Result<NamedTempFile, LlmError> {
     let mut file = NamedTempFile::new().map_err(|e| LlmError::Provider {
         message: format!("create system prompt tempfile: {e}"),
     })?;
@@ -298,7 +342,7 @@ fn trailing_user_index(messages: &[Value]) -> usize {
 /// FINDINGS.md §A: `content` MUST be a content-block array even when
 /// the frame would otherwise be discarded. A bare string trips a JS
 /// error in Claude Code's input parser.
-fn render_user_frame(request: &LlmRequest) -> String {
+pub(super) fn render_user_frame(request: &LlmRequest) -> String {
     let user_text = match request.messages.last() {
         Some(m) if m.get("role").and_then(Value::as_str) == Some("user") => extract_message_text(m),
         _ => String::new(),

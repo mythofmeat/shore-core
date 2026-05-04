@@ -111,6 +111,7 @@ impl McpSession {
 #[derive(Debug, Default, Clone)]
 pub struct McpSessionRegistry {
     sessions: Arc<DashMap<String, Arc<McpSession>>>,
+    keyed_ids: Arc<DashMap<String, String>>,
 }
 
 impl McpSessionRegistry {
@@ -143,6 +144,27 @@ impl McpSessionRegistry {
             registry: self.clone(),
             session,
         }
+    }
+
+    /// Allocate a session whose URL id remains stable for a
+    /// long-lived Claude Code subprocess key. The active session
+    /// object is still per-turn and is removed by the returned guard;
+    /// only the key -> id mapping persists so the cached subprocess can
+    /// keep using the same `/mcp/<id>` URL on subsequent turns.
+    pub fn allocate_keyed(
+        &self,
+        key: String,
+        allowed_tools: HashSet<String>,
+        tool_defs: Vec<Value>,
+        tool_ctx: Arc<dyn ToolContext + Send + Sync>,
+    ) -> McpSessionGuard {
+        let id = self
+            .keyed_ids
+            .entry(key)
+            .or_insert_with(|| uuid::Uuid::new_v4().to_string())
+            .value()
+            .clone();
+        self.allocate(id, allowed_tools, tool_defs, tool_ctx)
     }
 
     /// Look up a session by id, returning `None` if unknown or
@@ -188,10 +210,17 @@ impl McpSessionGuard {
 
 impl Drop for McpSessionGuard {
     fn drop(&mut self) {
-        if self.registry.sessions.remove(&self.id).is_none() {
+        let should_remove = self
+            .registry
+            .sessions
+            .get(&self.id)
+            .is_some_and(|current| Arc::ptr_eq(current.value(), &self.session));
+        if should_remove {
+            self.registry.sessions.remove(&self.id);
+        } else {
             warn!(
                 session_id = %self.id,
-                "MCP session guard dropped, but session was already removed from registry"
+                "MCP session guard dropped, but session was already removed or replaced"
             );
         }
     }
@@ -252,6 +281,30 @@ mod tests {
             assert!(reg.get("drop-me").is_some());
         }
         assert!(reg.get("drop-me").is_none());
+    }
+
+    #[test]
+    fn keyed_allocation_reuses_url_id_across_turns() {
+        let reg = McpSessionRegistry::new();
+        let first_id = {
+            let g = reg.allocate_keyed(
+                "char:conversation".into(),
+                HashSet::new(),
+                Vec::new(),
+                Arc::new(FakeCtx),
+            );
+            g.id().to_string()
+        };
+        assert!(reg.get(&first_id).is_none());
+
+        let second = reg.allocate_keyed(
+            "char:conversation".into(),
+            HashSet::new(),
+            Vec::new(),
+            Arc::new(FakeCtx),
+        );
+        assert_eq!(second.id(), first_id);
+        assert!(reg.get(second.id()).is_some());
     }
 
     #[test]
