@@ -153,10 +153,11 @@ max_tokens = 4096
 
 Before using it, install Claude Code, run `claude auth login`, and verify with
 `shore config --check`. The provider supports Shore tools through the daemon's
-MCP listener. Client-visible streaming is emulated after the CLI turn completes,
-so text may arrive less progressively than direct HTTP providers. `shore usage`
-records Claude Code's reported `total_cost_usd` as would-be API cost; actual
-subscription spend remains the fixed Claude plan price.
+MCP listener. Client-visible streaming is buffered until the CLI turn completes,
+so TUI, Matrix, TTS, and other chunk-oriented clients should expect a silent
+gap followed by the completed response rather than progressive text deltas.
+`shore usage` records Claude Code's reported `total_cost_usd` as would-be API
+cost; actual subscription spend remains the fixed Claude plan price.
 
 Shore passes the system prompt through Claude Code's `--system-prompt-file`
 flag to keep large prompts out of process arguments. That flag is an

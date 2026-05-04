@@ -97,7 +97,7 @@ pub async fn dispatch(
         "memory" => state::memory(engine, ctx, &cmd.args).await,
         "compact" => state::compact(engine, ctx, &cmd.args).await,
         "config" => state::config(ctx, &cmd.args),
-        "config_check" => state::config_check(ctx),
+        "config_check" => state::config_check(ctx).await,
         "config_reset" => state::config_reset(ctx),
         "diagnostics" => state::diagnostics(ctx, &cmd.args),
         "heartbeat_log" => state::heartbeat_log(engine, ctx, &cmd.args),

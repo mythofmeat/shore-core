@@ -67,7 +67,11 @@ The live subprocess preserves user/assistant turn pairs and
 in-process `thinking` blocks across consecutive turns; the
 fresh-spawn path renders prior conversation as a transcript in
 the system prompt when no live subprocess exists yet (or a prior
-one died, or the character was just compacted/dreamed).
+one died, or the character was just compacted/dreamed). That
+fresh-spawn transcript is intentionally good-enough recovery, not
+equivalent to Claude Code's native structured turn history: tool
+records are visible as tagged text until the long-lived subprocess
+has rebuilt live context.
 
 Lifecycle (engine-owned, see Phase C):
 

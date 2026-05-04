@@ -160,9 +160,17 @@ async fn evict_idle() {
             continue;
         };
         if now.duration_since(proc.last_access) >= IDLE_EVICT_AFTER {
-            drop(proc);
-            global_cache().entries.remove(&key);
-            debug!(subprocess_key = %key, "evicted idle claude_code subprocess");
+            let removed = global_cache().entries.remove_if(&key, |_, current| {
+                Arc::ptr_eq(current, &entry) && Arc::strong_count(current) == 2
+            });
+            if removed.is_some() {
+                debug!(subprocess_key = %key, "evicted idle claude_code subprocess");
+            } else {
+                debug!(
+                    subprocess_key = %key,
+                    "skipped idle claude_code eviction because the entry became active"
+                );
+            }
         }
     }
 }

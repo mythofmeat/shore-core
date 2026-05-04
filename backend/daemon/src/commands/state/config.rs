@@ -1,13 +1,13 @@
 use serde_json::json;
 use shore_config::models::Sdk;
 use shore_protocol::error::ErrorCode;
-use std::process::Command;
+use tokio::process::Command;
 use tracing::info;
 
 use crate::commands::{CommandContext, CommandResult};
 
 /// Validate configuration and return warnings/info.
-pub fn config_check(ctx: &CommandContext) -> CommandResult {
+pub async fn config_check(ctx: &CommandContext) -> CommandResult {
     let mut warnings: Vec<String> = Vec::new();
     let mut info: Vec<String> = Vec::new();
 
@@ -94,6 +94,7 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
                 match Command::new(&path)
                     .args(["auth", "status", "--json"])
                     .output()
+                    .await
                 {
                     Ok(output) if output.status.success() => {
                         match serde_json::from_slice::<serde_json::Value>(&output.stdout) {

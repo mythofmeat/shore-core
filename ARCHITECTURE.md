@@ -132,9 +132,12 @@ before persistence.
 `shore-llm` keeps a long-lived subprocess cache keyed by `subprocess_key` when
 the daemon provides one, with fresh-spawn fallback for cold starts, dead
 children, and recipe changes. The MCP URL is stable per subprocess key while
-the daemon rotates the per-turn ledger behind that session. Claude Code
-reported `total_cost_usd` is stored as would-be API cost for observability; it
-is not the user's actual subscription spend.
+the daemon rotates the per-turn ledger behind that session. The daemon holds a
+per-key MCP session lock before dispatching to the provider, so concurrent turns
+for the same character cannot rebind the stable URL to a newer tool context
+while an older CLI run is still in flight. Claude Code reported
+`total_cost_usd` is stored as would-be API cost for observability; it is not the
+user's actual subscription spend.
 
 The MCP listener is bearer-by-URL and loopback-only by default. A local process
 that can read the `claude` subprocess command line can see the `--mcp-config`

@@ -11,6 +11,7 @@
 //! `QuotaExhausted` without special-casing.
 
 use crate::LlmError;
+use tracing::warn;
 
 /// Inspect a `result` event's text and `is_error` flag and decide
 /// whether the failure is quota-shaped enough to surface as a 429.
@@ -34,7 +35,21 @@ pub(super) fn classify_result_error(result_text: &str, is_error: bool) -> Option
             body: format!("quota exhausted (claude_code): {result_text}"),
         });
     }
+    warn!(
+        result = %truncate_for_log(result_text),
+        "claude_code result event was marked as an error but did not match quota heuristics"
+    );
     None
+}
+
+fn truncate_for_log(text: &str) -> String {
+    const MAX_CHARS: usize = 240;
+    let mut chars = text.chars();
+    let mut out: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        out.push_str("...");
+    }
+    out
 }
 
 fn mentions_quota(body_lc: &str) -> bool {
@@ -84,6 +99,11 @@ mod tests {
     #[test]
     fn benign_error_is_not_classified() {
         assert!(classify_result_error("tool 'frobnicate' not found", true).is_none());
+    }
+
+    #[test]
+    fn unclassified_error_still_returns_none() {
+        assert!(classify_result_error("unexpected CLI failure", true).is_none());
     }
 
     #[test]

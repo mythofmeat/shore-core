@@ -10,3 +10,5 @@
   and an ignored live test that exercises the real CLI and MCP tool path.
 - Added startup policy and documentation for non-loopback `[daemon.http]`
   exposure; the MCP listener is bearer-by-URL and has no auth or TLS.
+- Serialized Claude Code keyed MCP sessions before provider dispatch so
+  concurrent turns for one character cannot cross-wire tool callbacks.

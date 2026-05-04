@@ -10,10 +10,9 @@
 //! `ToolUse` + `ToolResult` ContentBlocks into the persisted
 //! assistant turn so future history rounds remain faithful.
 //!
-//! The session is allocated per-request in M3 / M4. The long-lived
-//! subprocess cache (M6) will keep the session alive across the
-//! full subprocess lifetime; for now, allocation lifetime equals
-//! one chat request.
+//! Keyed sessions reuse a stable URL id across turns for the same
+//! Claude Code subprocess, but the active session object and ledger
+//! are still per-turn.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -21,7 +20,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use serde_json::Value;
 use shore_protocol::types::ContentBlock;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::warn;
 
 use crate::tools::ToolContext;
@@ -116,6 +115,13 @@ pub struct McpSessionRegistry {
     // Cardinality is bounded by active data-dir/character subprocess
     // keys, not by request count.
     keyed_ids: Arc<DashMap<String, String>>,
+    // Per-key locks serialize MCP session rebinding before the LLM
+    // provider reaches its cached-subprocess mutex. Without this, two
+    // concurrent turns for the same subprocess key could overwrite the
+    // stable URL's active tool context while an older CLI run is still
+    // in flight. These locks share the same process-lifetime bound as
+    // keyed_ids.
+    keyed_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl McpSessionRegistry {
@@ -147,6 +153,7 @@ impl McpSessionRegistry {
             id,
             registry: self.clone(),
             session,
+            _key_lock: None,
         }
     }
 
@@ -155,20 +162,40 @@ impl McpSessionRegistry {
     /// object is still per-turn and is removed by the returned guard;
     /// only the key -> id mapping persists so the cached subprocess can
     /// keep using the same `/mcp/<id>` URL on subsequent turns.
-    pub fn allocate_keyed(
+    pub async fn allocate_keyed(
         &self,
         key: String,
         allowed_tools: HashSet<String>,
         tool_defs: Vec<Value>,
         tool_ctx: Arc<dyn ToolContext + Send + Sync>,
     ) -> McpSessionGuard {
+        let key_lock = self
+            .keyed_locks
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .value()
+            .clone();
+        let key_guard = key_lock.lock_owned().await;
         let id = self
             .keyed_ids
             .entry(key)
             .or_insert_with(|| uuid::Uuid::new_v4().to_string())
             .value()
             .clone();
-        self.allocate(id, allowed_tools, tool_defs, tool_ctx)
+        let session = Arc::new(McpSession {
+            id: id.clone(),
+            allowed_tools,
+            tool_defs,
+            tool_ctx,
+            ledger: Mutex::new(Vec::new()),
+        });
+        self.sessions.insert(id.clone(), session.clone());
+        McpSessionGuard {
+            id,
+            registry: self.clone(),
+            session,
+            _key_lock: Some(key_guard),
+        }
     }
 
     /// Look up a session by id, returning `None` if unknown or
@@ -185,6 +212,7 @@ pub struct McpSessionGuard {
     id: String,
     registry: McpSessionRegistry,
     session: Arc<McpSession>,
+    _key_lock: Option<OwnedMutexGuard<()>>,
 }
 
 impl McpSessionGuard {
@@ -287,28 +315,73 @@ mod tests {
         assert!(reg.get("drop-me").is_none());
     }
 
-    #[test]
-    fn keyed_allocation_reuses_url_id_across_turns() {
+    #[tokio::test]
+    async fn keyed_allocation_reuses_url_id_across_turns() {
         let reg = McpSessionRegistry::new();
         let first_id = {
-            let g = reg.allocate_keyed(
-                "char:conversation".into(),
-                HashSet::new(),
-                Vec::new(),
-                Arc::new(FakeCtx),
-            );
+            let g = reg
+                .allocate_keyed(
+                    "char:conversation".into(),
+                    HashSet::new(),
+                    Vec::new(),
+                    Arc::new(FakeCtx),
+                )
+                .await;
             g.id().to_string()
         };
         assert!(reg.get(&first_id).is_none());
 
-        let second = reg.allocate_keyed(
-            "char:conversation".into(),
-            HashSet::new(),
-            Vec::new(),
-            Arc::new(FakeCtx),
-        );
+        let second = reg
+            .allocate_keyed(
+                "char:conversation".into(),
+                HashSet::new(),
+                Vec::new(),
+                Arc::new(FakeCtx),
+            )
+            .await;
         assert_eq!(second.id(), first_id);
         assert!(reg.get(second.id()).is_some());
+    }
+
+    #[tokio::test]
+    async fn keyed_allocation_waits_for_active_turn_before_rebinding_session() {
+        let reg = McpSessionRegistry::new();
+        let first = reg
+            .allocate_keyed(
+                "char:conversation".into(),
+                ["memory".into()].into_iter().collect(),
+                make_tool_defs(),
+                Arc::new(FakeCtx),
+            )
+            .await;
+        let first_id = first.id().to_string();
+        let memory_only: HashSet<String> = ["memory".into()].into_iter().collect();
+        assert_eq!(reg.get(&first_id).unwrap().allowed_tools, memory_only);
+
+        let reg_for_task = reg.clone();
+        let pending = tokio::spawn(async move {
+            reg_for_task
+                .allocate_keyed(
+                    "char:conversation".into(),
+                    ["roll_dice".into()].into_iter().collect(),
+                    make_tool_defs(),
+                    Arc::new(FakeCtx),
+                )
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(
+            !pending.is_finished(),
+            "second allocation must wait while first turn owns the keyed session"
+        );
+        let roll_dice_only: HashSet<String> = ["roll_dice".into()].into_iter().collect();
+        assert_eq!(reg.get(&first_id).unwrap().allowed_tools, memory_only);
+
+        drop(first);
+        let second = pending.await.unwrap();
+        assert_eq!(second.id(), first_id);
+        assert_eq!(reg.get(&first_id).unwrap().allowed_tools, roll_dice_only);
     }
 
     #[test]

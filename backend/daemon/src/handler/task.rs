@@ -329,12 +329,10 @@ pub(super) async fn handle_generation(
         let subprocess_key = format!("{}:{char_name}", data_dir.display());
         let tool_ctx =
             build_claude_code_tool_context(&ctx, &data_dir, &char_name, &effective_config)?;
-        let guard = http.mcp_sessions.allocate_keyed(
-            subprocess_key.clone(),
-            allowed_bare,
-            tool_defs,
-            tool_ctx,
-        );
+        let guard = http
+            .mcp_sessions
+            .allocate_keyed(subprocess_key.clone(), allowed_bare, tool_defs, tool_ctx)
+            .await;
         let session_id = guard.id().to_string();
         let mcp_endpoint = guard.endpoint(&http.base_url());
         let opts = request

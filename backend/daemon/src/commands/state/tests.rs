@@ -395,12 +395,12 @@ async fn compact_empty_conversation_returns_error() {
     assert!(msg.contains("No messages"));
 }
 
-#[test]
-fn config_check_empty_catalog() {
+#[tokio::test]
+async fn config_check_empty_catalog() {
     let tmp = TempDir::new().unwrap();
     let (_engine, ctx, _rx) = make_ctx(&tmp);
 
-    let result = config_check(&ctx).unwrap();
+    let result = config_check(&ctx).await.unwrap();
     assert!(!result["valid"].as_bool().unwrap());
     let warnings = result["warnings"].as_array().unwrap();
     assert!(warnings
@@ -409,12 +409,12 @@ fn config_check_empty_catalog() {
     assert_eq!(result["chat_models"], 0);
 }
 
-#[test]
-fn config_check_with_models() {
+#[tokio::test]
+async fn config_check_with_models() {
     let tmp = TempDir::new().unwrap();
     let (_engine, ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
-    let result = config_check(&ctx).unwrap();
+    let result = config_check(&ctx).await.unwrap();
     assert_eq!(result["chat_models"], 2);
     let info = result["info"].as_array().unwrap();
     assert!(info
@@ -422,25 +422,25 @@ fn config_check_with_models() {
         .any(|i| i.as_str().unwrap().contains("2 chat model")));
 }
 
-#[test]
-fn config_check_claude_code_requires_http_listener() {
+#[tokio::test]
+async fn config_check_claude_code_requires_http_listener() {
     let tmp = TempDir::new().unwrap();
     let (_engine, ctx, _rx) = make_ctx_with_models(&tmp, claude_code_models());
 
-    let result = config_check(&ctx).unwrap();
+    let result = config_check(&ctx).await.unwrap();
     let warnings = result["warnings"].as_array().unwrap();
     assert!(warnings
         .iter()
         .any(|w| { w.as_str().unwrap().contains("[daemon.http].enabled = true") }));
 }
 
-#[test]
-fn config_check_claude_code_http_warning_clears_when_enabled() {
+#[tokio::test]
+async fn config_check_claude_code_http_warning_clears_when_enabled() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, claude_code_models());
     ctx.config.app.daemon.http.enabled = true;
 
-    let result = config_check(&ctx).unwrap();
+    let result = config_check(&ctx).await.unwrap();
     let warnings = result["warnings"].as_array().unwrap();
     assert!(!warnings
         .iter()
