@@ -5,8 +5,8 @@
 //! subprocess pointing at `http://<bind_addr>/mcp/<session-id>` and
 //! the CLI calls back into this listener for each tool invocation.
 //!
-//! M2 (this commit) lands the listener scaffold and a `/healthz`
-//! probe. M3 mounts the MCP routes on top.
+//! M3 mounts MCP routes under `/mcp/{session_id}` for tool calls
+//! that come back from the local `claude` subprocess.
 //!
 //! Configuration lives at `[daemon.http]` in `config.toml`:
 //!
@@ -15,6 +15,8 @@
 //! enabled = true
 //! bind_addr = "127.0.0.1:0"   # 0 = ephemeral, resolved at startup
 //! ```
+
+mod mcp;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -27,17 +29,23 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
+use crate::engine::mcp_session::McpSessionRegistry;
+
 /// Shared daemon HTTP state surfaced to other components.
 ///
 /// Engine code consults `bind_addr` to construct callback URLs for
-/// the `claude_code` provider. M3 will extend this struct with the
-/// per-request MCP session registry; M2 only carries the bind address.
+/// the `claude_code` provider, and registers per-request sessions in
+/// `mcp_sessions` so the HTTP listener can dispatch tool calls back
+/// into the daemon.
 #[derive(Debug, Clone)]
 pub struct DaemonHttpState {
     /// Resolved bind address. Always concrete — `127.0.0.1:0` configs
     /// are resolved to an ephemeral port before the listener is
     /// returned.
     pub bind_addr: SocketAddr,
+    /// Per-request MCP session registry. Empty until the engine
+    /// allocates a session for a `claude_code` chat request.
+    pub mcp_sessions: McpSessionRegistry,
 }
 
 impl DaemonHttpState {
@@ -67,7 +75,10 @@ pub async fn spawn_listener(
     }
     let listener = TcpListener::bind(&config.bind_addr).await?;
     let bind_addr = listener.local_addr()?;
-    let state = Arc::new(DaemonHttpState { bind_addr });
+    let state = Arc::new(DaemonHttpState {
+        bind_addr,
+        mcp_sessions: McpSessionRegistry::new(),
+    });
     info!(
         bind_addr = %bind_addr,
         "Daemon HTTP listener bound"
@@ -86,12 +97,11 @@ pub async fn spawn_listener(
     Ok(Some((state, handle)))
 }
 
-/// Construct the daemon HTTP router. Public so M3's MCP routes can
-/// be plugged in by extending this in-place rather than threading
-/// the listener through.
+/// Construct the daemon HTTP router with healthz + MCP routes.
 fn build_router(state: Arc<DaemonHttpState>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .merge(mcp::router())
         .with_state(state)
 }
 

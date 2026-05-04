@@ -1,4 +1,5 @@
 pub(crate) mod atomic;
+pub mod mcp_session;
 pub mod messages;
 pub mod prompt;
 pub mod segments;
