@@ -12,3 +12,7 @@
   exposure; the MCP listener is bearer-by-URL and has no auth or TLS.
 - Serialized Claude Code keyed MCP sessions before provider dispatch so
   concurrent turns for one character cannot cross-wire tool callbacks.
+- Moved Claude Code parser fixtures into tracked test data, repopulated
+  `StreamResult.tool_uses` from the MCP ledger splice, and routed background
+  heartbeat, compaction, dreaming, and keepalive calls through the same Claude
+  Code MCP session setup.

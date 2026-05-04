@@ -234,6 +234,7 @@ async fn e2e_conversation_milestone() {
         diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
             shore_diagnostics::Diagnostics::default(),
         )),
+        http: None,
     };
 
     let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);
@@ -726,6 +727,7 @@ impl E2EHarness {
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),
+            http: None,
         };
 
         let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);

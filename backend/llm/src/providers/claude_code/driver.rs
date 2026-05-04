@@ -186,7 +186,6 @@ pub(super) async fn run_fresh_spawn(request: &LlmRequest) -> Result<DriverOutput
         });
     }
 
-    drop(prompt_file);
     Ok(output)
 }
 

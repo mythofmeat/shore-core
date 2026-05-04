@@ -180,6 +180,7 @@ pub async fn memory_dream(
         cached_request.as_ref(),
         dry_run,
         force,
+        ctx.http.clone(),
     )
     .await
     {
@@ -340,6 +341,7 @@ pub async fn compact(
         model,
         ctx.config.providers.clone(),
         char_name.clone(),
+        ctx.http.clone(),
     );
     let conv_mgr = RealConversationManager::new(engine.character_dir());
 

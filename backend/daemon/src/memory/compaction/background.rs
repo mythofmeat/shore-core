@@ -16,6 +16,7 @@ pub async fn run_compaction(
     data_dir: &std::path::Path,
     notifier: &crate::notifications::NotificationService,
     cached_request: Option<shore_llm::types::LlmRequest>,
+    http: Option<std::sync::Arc<crate::http::DaemonHttpState>>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
     use crate::notifications::NotificationEvent;
@@ -81,6 +82,7 @@ pub async fn run_compaction(
         model,
         effective.providers.clone(),
         character.to_string(),
+        http,
     );
     let conv_mgr = RealConversationManager::new(&character_dir);
 

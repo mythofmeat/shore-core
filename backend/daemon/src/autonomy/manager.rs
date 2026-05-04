@@ -56,6 +56,7 @@ struct TickContext {
     loaded_config: Option<Arc<LoadedConfig>>,
     notifier: Option<NotificationService>,
     registry: Option<Arc<tokio::sync::Mutex<CharacterRegistry>>>,
+    http: Option<Arc<crate::http::DaemonHttpState>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +260,8 @@ pub struct AutonomyManager {
     notifier: Option<NotificationService>,
     /// Character engine registry for safe message persistence.
     registry: Option<Arc<tokio::sync::Mutex<CharacterRegistry>>>,
+    /// Optional daemon HTTP listener state for providers that need callbacks.
+    http: Option<Arc<crate::http::DaemonHttpState>>,
 }
 
 impl AutonomyManager {
@@ -280,6 +283,7 @@ impl AutonomyManager {
             loaded_config: None,
             notifier: None,
             registry: None,
+            http: None,
         }
     }
 
@@ -291,11 +295,13 @@ impl AutonomyManager {
         push_tx: broadcast::Sender<ServerMessage>,
         loaded_config: LoadedConfig,
         notifier: NotificationService,
+        http: Option<Arc<crate::http::DaemonHttpState>>,
     ) {
         self.llm_client = Some(llm_client);
         self.push_tx = Some(push_tx);
         self.loaded_config = Some(Arc::new(loaded_config));
         self.notifier = Some(notifier);
+        self.http = http;
     }
 
     /// Reload runtime autonomy and compaction configuration after `config_reset`.
@@ -401,6 +407,7 @@ impl AutonomyManager {
             .or_else(|| self.loaded_config.clone());
         let notifier = self.notifier.clone();
         let registry = self.registry.clone();
+        let http = self.http.clone();
 
         let tick_ctx = TickContext {
             state,
@@ -411,6 +418,7 @@ impl AutonomyManager {
             loaded_config,
             notifier,
             registry,
+            http,
         };
         let handle = tokio::spawn(async move {
             character_tick_loop(name, tick_ctx, shutdown_rx).await;
@@ -925,6 +933,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                 ctx.loaded_config.as_deref(),
                 ctx.notifier.as_ref(),
                 ctx.registry.as_ref(),
+                ctx.http.as_ref(),
             )
             .await;
         }
@@ -932,7 +941,13 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 
     // -- cache keepalive ping (async, outside lock) -------------------------
     if keepalive_action == CacheKeepaliveAction::Ping {
-        let pinged = execute_dormant_ping(character, &ctx.state, ctx.llm_client.as_ref()).await;
+        let pinged = execute_dormant_ping(
+            character,
+            &ctx.state,
+            ctx.llm_client.as_ref(),
+            ctx.http.as_ref(),
+        )
+        .await;
         let mut s = lock_state(&ctx.state);
         if pinged {
             // Ping actually sent and succeeded — confirm to the keepalive so
@@ -1001,6 +1016,7 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
         &ctx.data_dir,
         notifier,
         cached_request,
+        ctx.http.clone(),
     )
     .await
     {
@@ -1092,6 +1108,7 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
         cached_request.as_ref(),
         false,
         false,
+        ctx.http.clone(),
     )
     .await
     {
@@ -1360,6 +1377,7 @@ fn apply_heartbeat_model_override(
 /// generate() calls. Tool loop messages are ephemeral — only <sendMessage>
 /// output persists to active.jsonl. All activity is logged to the ring buffer
 /// for `shore log --heartbeat`.
+#[allow(clippy::too_many_arguments)]
 async fn execute_heartbeat_tick(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
@@ -1368,6 +1386,7 @@ async fn execute_heartbeat_tick(
     loaded_config: Option<&LoadedConfig>,
     notifier: Option<&NotificationService>,
     registry: Option<&Arc<tokio::sync::Mutex<CharacterRegistry>>>,
+    http: Option<&Arc<crate::http::DaemonHttpState>>,
 ) {
     let Some(client) = llm_client else { return };
 
@@ -1470,6 +1489,16 @@ async fn execute_heartbeat_tick(
             return;
         }
     };
+    let tool_ctx = Arc::new(tool_ctx);
+    let claude_code_session =
+        match crate::claude_code::prepare_request(&mut request, http, None, tool_ctx.clone()).await
+        {
+            Ok(session) => session,
+            Err(e) => {
+                error!(character, error = %e, "Heartbeat: failed to prepare claude_code request");
+                return;
+            }
+        };
     let max_normal_iterations = lc.app.behavior.autonomy.heartbeat.max_tool_rounds;
     let wrap_up_grace = lc.app.behavior.autonomy.heartbeat.wrap_up_grace_rounds;
     let total_iterations = max_normal_iterations.saturating_add(wrap_up_grace);
@@ -1533,13 +1562,18 @@ async fn execute_heartbeat_tick(
             CallType::ToolLoop
         };
 
-        let resp = match client.generate(&request, call_type, character, false).await {
+        let mut resp = match client.generate(&request, call_type, character, false).await {
             Ok(r) => r,
             Err(e) => {
                 error!(character, error = %e, iteration, "Heartbeat: LLM call failed");
                 break;
             }
         };
+        crate::claude_code::splice_generate_response_from_session(
+            &mut resp,
+            claude_code_session.as_ref(),
+        )
+        .await;
 
         info!(
             character,
@@ -1630,7 +1664,7 @@ async fn execute_heartbeat_tick(
                 )
             } else {
                 crate::content_util::dispatch_result_to_output(
-                    tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await,
+                    tool_system::dispatch_tool(name, input.clone(), tool_ctx.as_ref()).await,
                 )
             };
 
@@ -1879,12 +1913,13 @@ async fn execute_dormant_ping(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
     llm_client: Option<&LedgerClient>,
+    http: Option<&Arc<crate::http::DaemonHttpState>>,
 ) -> bool {
     let Some(client) = llm_client else {
         return false;
     };
 
-    let request = {
+    let mut request = {
         let s = lock_state(state);
         match &s.last_request {
             Some(req) => {
@@ -1893,6 +1928,10 @@ async fn execute_dormant_ping(
                 // Clear stale request ID — same reason as execute_heartbeat_tick.
                 ping.rid = None;
                 ping.forensic_character = Some(character.to_owned());
+                // Keepalive pings never consume tools. A cloned claude_code
+                // chat request may carry chat tool definitions, so strip them
+                // before allocating a one-off MCP session for the ping.
+                ping.tools = None;
                 // The cloned request includes the assistant's last response,
                 // so the conversation ends with an assistant message. Anthropic
                 // requires conversations to end with a user message. Append a
@@ -1909,12 +1948,31 @@ async fn execute_dormant_ping(
             }
         }
     };
+    let claude_code_session = match crate::claude_code::prepare_request(
+        &mut request,
+        http,
+        None,
+        crate::claude_code::empty_tool_context(),
+    )
+    .await
+    {
+        Ok(session) => session,
+        Err(e) => {
+            debug!(character, error = %e, "Dormant ping: failed to prepare claude_code request");
+            return false;
+        }
+    };
 
     match client
         .generate(&request, CallType::Keepalive, character, false)
         .await
     {
-        Ok(resp) => {
+        Ok(mut resp) => {
+            crate::claude_code::splice_generate_response_from_session(
+                &mut resp,
+                claude_code_session.as_ref(),
+            )
+            .await;
             info!(
                 character,
                 cache_read = resp.usage.cache_read_tokens,
@@ -2364,6 +2422,7 @@ mod tests {
             loaded_config: None,
             notifier: None,
             registry: None,
+            http: None,
         };
         tick_character("alice", &tick_ctx).await;
     }
@@ -2486,6 +2545,7 @@ mod tests {
             loaded_config: None,
             notifier: None,
             registry: None,
+            http: None,
         }
     }
 
@@ -3135,6 +3195,7 @@ api_key_env = "{heartbeat_env}"
             loaded_config: None,
             notifier: None,
             registry: None,
+            http: None,
         };
 
         tick_character("alice", &tick_ctx).await;

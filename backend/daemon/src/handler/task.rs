@@ -311,45 +311,17 @@ pub(super) async fn handle_generation(
 
     let mut claude_code_session = None;
     if matches!(resolved.sdk, Sdk::ClaudeCode) {
-        request.provider_key = Some(Sdk::ClaudeCode.as_str().to_string());
-        let http = ctx.http.as_ref().ok_or_else(|| {
-            "claude_code requires [daemon.http].enabled = true so the local claude CLI can call back into shore tools"
-                .to_string()
-        })?;
-        let tool_defs = request.tools.clone().unwrap_or_default();
-        let bare_tool_names: Vec<String> = tool_defs
-            .iter()
-            .filter_map(|d| d.get("name").and_then(Value::as_str).map(String::from))
-            .collect();
-        let allowed_bare: HashSet<String> = bare_tool_names.iter().cloned().collect();
-        let allowed_for_cli: Vec<String> = bare_tool_names
-            .iter()
-            .map(|name| format!("mcp__shore__{name}"))
-            .collect();
         let subprocess_key = format!("{}:{char_name}", data_dir.display());
         let tool_ctx =
             build_claude_code_tool_context(&ctx, &data_dir, &char_name, &effective_config)?;
-        let guard = http
-            .mcp_sessions
-            .allocate_keyed(subprocess_key.clone(), allowed_bare, tool_defs, tool_ctx)
-            .await;
-        let session_id = guard.id().to_string();
-        let mcp_endpoint = guard.endpoint(&http.base_url());
-        let opts = request
-            .provider_options
-            .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        if !opts.is_object() {
-            *opts = serde_json::Value::Object(serde_json::Map::new());
-        }
-        let map = opts.as_object_mut().expect("provider_options object");
-        map.insert("mcp_endpoint".into(), json!(mcp_endpoint));
-        map.insert("allowed_tools".into(), json!(allowed_for_cli));
-        map.insert("session_id".into(), json!(session_id));
-        map.insert("subprocess_key".into(), json!(subprocess_key));
-        if let Some(effort) = resolved.reasoning_effort.as_ref() {
-            map.entry("effort").or_insert_with(|| json!(effort));
-        }
-        claude_code_session = Some(guard);
+        claude_code_session = crate::claude_code::prepare_request(
+            &mut request,
+            ctx.http.as_ref(),
+            Some(subprocess_key),
+            tool_ctx,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     }
 
     info!(
@@ -495,6 +467,7 @@ pub(super) async fn handle_generation(
                 &data_dir,
                 &ctx.notifier,
                 cached_request,
+                ctx.http.clone(),
             )
             .await
             {
@@ -603,6 +576,7 @@ fn splice_claude_code_tool_ledger(
     ledger: Vec<crate::engine::mcp_session::LedgerEntry>,
 ) {
     if ledger.is_empty() {
+        result.tool_uses = tool_uses_from_blocks(&result.content_blocks);
         return;
     }
 
@@ -663,7 +637,22 @@ fn splice_claude_code_tool_ledger(
         spliced.push(ledger_tool_result_block(entry, &entry.tool_use_id));
     }
 
+    result.tool_uses = tool_uses_from_blocks(&spliced);
     result.content_blocks = spliced;
+}
+
+fn tool_uses_from_blocks(blocks: &[ContentBlock]) -> Vec<shore_llm::types::ToolUseEvent> {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { id, name, input } => Some(shore_llm::types::ToolUseEvent {
+                id: id.clone(),
+                name: strip_mcp_tool_name(name),
+                input: input.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 fn ledger_match(
@@ -832,6 +821,9 @@ mod tests {
             ContentBlock::ToolResult { tool_use_id, content, is_error } if tool_use_id == "toolu_1" && content == "3:22 PM" && !is_error
         ));
         assert!(matches!(&result.content_blocks[3], ContentBlock::Text { text } if text == "done"));
+        assert_eq!(result.tool_uses.len(), 1);
+        assert_eq!(result.tool_uses[0].id, "toolu_1");
+        assert_eq!(result.tool_uses[0].name, "check_time");
     }
 
     #[test]
@@ -857,6 +849,9 @@ mod tests {
             &result.content_blocks[2],
             ContentBlock::ToolResult { tool_use_id, content, .. } if tool_use_id == "rpc-2" && content == "file contents"
         ));
+        assert_eq!(result.tool_uses.len(), 1);
+        assert_eq!(result.tool_uses[0].id, "rpc-2");
+        assert_eq!(result.tool_uses[0].name, "read");
     }
 
     #[test]

@@ -329,6 +329,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         push_tx.clone(),
         loaded.clone(),
         notifier.clone(),
+        http_state.clone(),
     );
     autonomy.set_registry(char_registry.clone());
 
@@ -350,6 +351,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
         diagnostics: diagnostics.clone(),
+        http: http_state.clone(),
     };
 
     let live_speak = Arc::new(AtomicBool::new(false));

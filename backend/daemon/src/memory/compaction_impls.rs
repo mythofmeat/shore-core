@@ -6,6 +6,7 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 
 use chrono::Local;
 use serde_json::json;
@@ -147,6 +148,7 @@ pub struct RealCompactionLlm {
     /// users who configure provider-level keys.
     providers: ProviderRegistry,
     character: String,
+    http: Option<Arc<crate::http::DaemonHttpState>>,
 }
 
 impl RealCompactionLlm {
@@ -155,12 +157,14 @@ impl RealCompactionLlm {
         model: ResolvedModel,
         providers: ProviderRegistry,
         character: String,
+        http: Option<Arc<crate::http::DaemonHttpState>>,
     ) -> Self {
         Self {
             client,
             model,
             providers,
             character,
+            http,
         }
     }
 
@@ -224,18 +228,31 @@ impl CompactionLlm for RealCompactionLlm {
         Box::pin(async move {
             let msg_count = messages.len();
             let cached_prefix_used = cached_request.is_some();
-            let request = self.build_compaction_request(&system, messages, cached_request)?;
+            let mut request = self.build_compaction_request(&system, messages, cached_request)?;
+            let claude_code_session = crate::claude_code::prepare_request(
+                &mut request,
+                self.http.as_ref(),
+                None,
+                crate::claude_code::empty_tool_context(),
+            )
+            .await
+            .map_err(CompactionError::Llm)?;
 
             debug!(
                 system_len = system.len(),
                 msg_count, cached_prefix_used, "compaction: starting LLM summarize"
             );
             let t0 = std::time::Instant::now();
-            let resp = self
+            let mut resp = self
                 .client
                 .generate(&request, CallType::Compaction, &self.character, false)
                 .await
                 .map_err(|e| CompactionError::Llm(e.to_string()))?;
+            crate::claude_code::splice_generate_response_from_session(
+                &mut resp,
+                claude_code_session.as_ref(),
+            )
+            .await;
             debug!(elapsed = ?t0.elapsed(), content_len = resp.content.len(), "compaction: LLM summarize done");
 
             Ok(resp.extract_text())
@@ -420,6 +437,7 @@ mod tests {
             model,
             ProviderRegistry::default(),
             "alice".to_string(),
+            None,
         );
         let cached = shore_llm::types::LlmRequest {
             sdk: Sdk::Anthropic,

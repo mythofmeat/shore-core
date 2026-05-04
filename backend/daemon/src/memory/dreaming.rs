@@ -236,6 +236,7 @@ pub async fn dream_status(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_librarian_sweep(
     loaded_config: &LoadedConfig,
     data_dir: &Path,
@@ -244,6 +245,7 @@ pub async fn run_librarian_sweep(
     cached_request: Option<&LlmRequest>,
     dry_run: bool,
     force: bool,
+    http: Option<std::sync::Arc<crate::http::DaemonHttpState>>,
 ) -> Result<Option<DreamSweepResult>, DreamingError> {
     let cfg = &loaded_config.app.memory.dreaming;
     let memory_dir = character_memory_dir(&loaded_config.dirs.config, character);
@@ -266,10 +268,15 @@ pub async fn run_librarian_sweep(
         build_librarian_request(loaded_config, character, cached_request, dry_run, &ran_at).await?;
     request.forensic_character = Some(character.to_string());
     request.rid = None;
-    let tool_ctx =
+    let tool_ctx = std::sync::Arc::new(
         build_librarian_tool_context(loaded_config, data_dir, llm_client, character, dry_run)
             .await
-            .ok_or_else(|| DreamingError::Config("failed to build dreaming tool context".into()))?;
+            .ok_or_else(|| DreamingError::Config("failed to build dreaming tool context".into()))?,
+    );
+    let claude_code_session =
+        crate::claude_code::prepare_request(&mut request, http.as_ref(), None, tool_ctx.clone())
+            .await
+            .map_err(DreamingError::Llm)?;
 
     info!(
         character,
@@ -281,10 +288,11 @@ pub async fn run_librarian_sweep(
     let loop_result = run_private_librarian_loop(
         llm_client,
         &mut request,
-        &tool_ctx,
+        tool_ctx.as_ref(),
         character,
         cfg.max_tool_rounds,
         dry_run,
+        claude_code_session.as_ref(),
     )
     .await?;
 
@@ -825,14 +833,17 @@ async fn run_private_librarian_loop(
     character: &str,
     max_tool_rounds: u32,
     dry_run: bool,
+    claude_code_session: Option<&crate::engine::mcp_session::McpSessionGuard>,
 ) -> Result<LibrarianLoopResult, DreamingError> {
     let mut loop_result = LibrarianLoopResult::default();
 
     for iteration in 0..max_tool_rounds {
-        let resp = client
+        let mut resp = client
             .generate(request, CallType::Dreaming, character, false)
             .await
             .map_err(|e| DreamingError::Llm(e.to_string()))?;
+        crate::claude_code::splice_generate_response_from_session(&mut resp, claude_code_session)
+            .await;
         remember_final_report(&mut loop_result, &resp);
         push_assistant_response(request, &resp);
 
@@ -2384,6 +2395,7 @@ mod tests {
             None,
             false,
             true,
+            None,
         )
         .await
         .unwrap()
@@ -2466,6 +2478,7 @@ mod tests {
             Some(&cached_request),
             false,
             true,
+            None,
         )
         .await
         .unwrap()
@@ -2510,6 +2523,7 @@ mod tests {
             None,
             false,
             true,
+            None,
         )
         .await
         .unwrap()
@@ -2555,6 +2569,7 @@ mod tests {
             None,
             true,
             true,
+            None,
         )
         .await
         .unwrap()
@@ -2595,6 +2610,7 @@ mod tests {
             None,
             false,
             true,
+            None,
         )
         .await
         .unwrap()
@@ -2646,6 +2662,7 @@ mod tests {
             None,
             false,
             true,
+            None,
         )
         .await
         .unwrap()

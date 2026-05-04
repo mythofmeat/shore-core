@@ -5,6 +5,7 @@ pub mod auto_discovery;
 pub mod autonomy;
 pub mod cache_keepalive;
 pub mod characters;
+pub(crate) mod claude_code;
 pub mod commands;
 pub mod content_util;
 pub mod effective_catalog;

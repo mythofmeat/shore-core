@@ -41,6 +41,13 @@ pub(super) async fn run_long_lived(request: &LlmRequest) -> Result<DriverOutput,
         return driver::run_fresh_spawn(request).await;
     };
     start_evictor();
+    let key_lock = global_cache()
+        .key_locks
+        .entry(key.clone())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .value()
+        .clone();
+    let _key_guard = key_lock.lock_owned().await;
 
     let prompt_text = render_system_prompt_text(request);
     let fingerprint = RecipeFingerprint::from_request(request, &cfg, prompt_text.clone());
@@ -128,11 +135,13 @@ struct CachedSubprocess {
 
 struct SubprocessCache {
     entries: DashMap<String, Arc<Mutex<CachedSubprocess>>>,
+    key_locks: DashMap<String, Arc<Mutex<()>>>,
 }
 
 fn global_cache() -> &'static SubprocessCache {
     CACHE.get_or_init(|| SubprocessCache {
         entries: DashMap::new(),
+        key_locks: DashMap::new(),
     })
 }
 
@@ -433,6 +442,33 @@ done
 
         assert_eq!(done_content(&first), "turn1");
         assert_eq!(done_content(&second), "turn2");
+        let spawns = std::fs::read_to_string(&count_path).unwrap();
+        assert_eq!(spawns.lines().count(), 1);
+
+        global_cache().entries.remove(&key);
+        restore_path(old_path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn concurrent_same_key_calls_share_one_cached_subprocess() {
+        let _guard = ENV_LOCK.lock().await;
+        let temp = tempfile::tempdir().unwrap();
+        install_fake_claude(temp.path(), false);
+        let count_path = temp.path().join("spawns");
+        std::env::set_var("FAKE_CLAUDE_SPAWNS", &count_path);
+        let old_path = with_fake_path(temp.path());
+        let key = format!("test-cache-concurrent-{}", uuid::Uuid::new_v4());
+        let req = request_with_key(&key, "http://127.0.0.1:1/mcp/stable");
+
+        let (first, second) = tokio::join!(run_long_lived(&req), run_long_lived(&req));
+        let mut contents = vec![
+            done_content(&first.unwrap()),
+            done_content(&second.unwrap()),
+        ];
+        contents.sort();
+
+        assert_eq!(contents, vec!["turn1".to_string(), "turn2".to_string()]);
         let spawns = std::fs::read_to_string(&count_path).unwrap();
         assert_eq!(spawns.lines().count(), 1);
 

@@ -127,7 +127,9 @@ Before a Claude Code generation, the engine allocates an MCP session, injects
 `provider_options`, then dispatches to `shore-llm`. Tool calls happen inside the
 CLI's turn over HTTP MCP; the daemon records them in a per-turn ledger and
 splices synthetic `tool_use` and `tool_result` blocks into the assistant message
-before persistence.
+before persistence. Background tasks such as heartbeat, compaction, and dreaming
+use the same callback session mechanism around their non-streaming
+`generate()` calls.
 
 `shore-llm` keeps a long-lived subprocess cache keyed by `subprocess_key` when
 the daemon provides one, with fresh-spawn fallback for cold starts, dead

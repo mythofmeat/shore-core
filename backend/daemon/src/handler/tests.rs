@@ -94,6 +94,7 @@ async fn make_handler(
         diagnostics: Arc::new(std::sync::Mutex::new(
             shore_diagnostics::Diagnostics::default(),
         )),
+        http: None,
     };
 
     let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);
@@ -888,6 +889,7 @@ async fn make_handler_with_models(
         diagnostics: Arc::new(std::sync::Mutex::new(
             shore_diagnostics::Diagnostics::default(),
         )),
+        http: None,
     };
 
     let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);

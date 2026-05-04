@@ -539,9 +539,8 @@ mod tests {
     /// drifted and the parser needs an update.
     #[test]
     fn parses_probe6_vanilla_text_fixture() {
-        let fixture = include_str!(
-            "../../../../../dev/spikes/claude-code-probe/results/06-stream-json-shape.jsonl"
-        );
+        let fixture =
+            include_str!("../../../tests/fixtures/claude_code/06-stream-json-shape.jsonl");
         let lines: Vec<&str> = fixture.lines().collect();
         let (events, _, done) = run_lines(&lines);
         assert!(done, "fixture must include a result event");
@@ -554,9 +553,7 @@ mod tests {
     /// appear in the structured blocks.
     #[test]
     fn parses_probe3_mcp_tool_roundtrip_fixture() {
-        let fixture = include_str!(
-            "../../../../../dev/spikes/claude-code-probe/results/03-mcp-tool-call.jsonl"
-        );
+        let fixture = include_str!("../../../tests/fixtures/claude_code/03-mcp-tool-call.jsonl");
         let lines: Vec<&str> = fixture.lines().collect();
         let (events, blocks, done) = run_lines(&lines);
         assert!(done);
