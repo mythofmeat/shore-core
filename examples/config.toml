@@ -13,6 +13,10 @@
 # addr = "127.0.0.1:7320"       # Default listen address
 # unsafe_allow_remote_access = false  # Required for non-loopback binds
 # allowed_hosts = []                  # IP allowlist only; not auth/TLS
+#
+# [daemon.http]
+# enabled = false                     # Required for sdk = "claude_code"
+# bind_addr = "127.0.0.1:0"           # Ephemeral loopback port by default
 
 # ── Defaults ─────────────────────────────────────────────────────────────
 
@@ -208,11 +212,12 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 #   zhipuai    — sdk: zhipuai,    api_key_env: ZAI_API_KEY,        temp: 1.0, max_tokens: 8192, max_context: 200000
 #   zai        — sdk: zai,       api_key_env: ZAI_API_KEY,        temp: 1.0, max_tokens: 8192, max_context: 200000
 #   nanogpt    — sdk: openai,    api_key_env: NANOGPT_API_KEY,    temp: 1.0, max_tokens: 8192, max_context: 200000
+#   claude_code — sdk: claude_code, no api_key_env; uses local `claude auth login`
 #
 # Available fields (provider- or model-level):
 #
 #   — Auth & connection —
-#   sdk = "anthropic"                        # Wire protocol: anthropic, openai, gemini, deepseek, zhipuai, zai
+#   sdk = "anthropic"                        # Wire protocol: anthropic, openai, gemini, zai, claude_code
 #   api_key_env = "MY_API_KEY"               # Env var holding the API key
 #   base_url = "https://..."                 # Override the API base URL
 #   keepalive_enabled = false                # Keep the HTTP connection alive between requests
@@ -244,6 +249,11 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 
 [chat.anthropic.claude-sonnet]
 model_id = "claude-sonnet-4-6"
+
+# Claude Code / Max subscription transport. Requires [daemon.http].enabled=true
+# and a local `claude auth login`; no api_key_env is used.
+# [chat.claude_code.sonnet-max]
+# model_id = "claude-sonnet-4-5"
 
 # [chat.anthropic.claude-opus]
 # model_id = "claude-opus-4-6"

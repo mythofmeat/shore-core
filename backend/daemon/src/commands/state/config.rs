@@ -1,5 +1,7 @@
 use serde_json::json;
+use shore_config::models::Sdk;
 use shore_protocol::error::ErrorCode;
+use std::process::Command;
 use tracing::info;
 
 use crate::commands::{CommandContext, CommandResult};
@@ -63,6 +65,86 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
                     key_env, model.qualified_name
                 ));
             }
+        }
+    }
+
+    let claude_code_models: Vec<_> = ctx
+        .config
+        .models
+        .chat
+        .values()
+        .filter(|model| model.sdk == Sdk::ClaudeCode)
+        .collect();
+    if !claude_code_models.is_empty() {
+        info.push(format!(
+            "Claude Code provider configured for {} chat model(s)",
+            claude_code_models.len()
+        ));
+
+        if !ctx.config.app.daemon.http.enabled {
+            warnings.push(
+                "Claude Code models require [daemon.http].enabled = true so the local claude CLI can reach shore's MCP listener."
+                    .into(),
+            );
+        }
+
+        match which::which("claude") {
+            Ok(path) => {
+                info.push(format!("claude CLI found at {}", path.display()));
+                match Command::new(&path)
+                    .args(["auth", "status", "--json"])
+                    .output()
+                {
+                    Ok(output) if output.status.success() => {
+                        match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                            Ok(status) => {
+                                let logged_in = status
+                                    .get("loggedIn")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                                let auth_method =
+                                    status.get("authMethod").and_then(|v| v.as_str());
+                                if !logged_in {
+                                    warnings.push(
+                                        "claude CLI is installed but is not logged in; run `claude auth login`."
+                                            .into(),
+                                    );
+                                } else if auth_method != Some("claude.ai") {
+                                    warnings.push(
+                                        "claude CLI is logged in without claude.ai OAuth; run `claude auth login` for Max subscription usage."
+                                            .into(),
+                                    );
+                                } else {
+                                    let subscription = status
+                                        .get("subscriptionType")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("unknown");
+                                    info.push(format!(
+                                        "claude CLI OAuth login detected (subscription: {subscription})"
+                                    ));
+                                }
+                            }
+                            Err(e) => warnings.push(format!(
+                                "Could not parse `claude auth status --json` output: {e}"
+                            )),
+                        }
+                    }
+                    Ok(output) => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        warnings.push(format!(
+                            "`claude auth status --json` failed; run `claude auth login` ({})",
+                            stderr.trim()
+                        ));
+                    }
+                    Err(e) => warnings.push(format!(
+                        "Could not run `claude auth status --json`: {e}"
+                    )),
+                }
+            }
+            Err(_) => warnings.push(
+                "Claude Code models require the `claude` CLI on PATH; install Claude Code and run `claude auth login`."
+                    .into(),
+            ),
         }
     }
 

@@ -66,9 +66,18 @@ cache_ttl = "1h"
 addr = "127.0.0.1:7320"
 unsafe_allow_remote_access = false
 allowed_hosts = []
+
+[daemon.http]
+enabled = false
+bind_addr = "127.0.0.1:0"
 ```
 
 Non-loopback binds require `unsafe_allow_remote_access = true`. `allowed_hosts` is only a source-IP filter, not auth or TLS.
+
+`[daemon.http]` starts the daemon's local HTTP listener. It is off by default
+and is currently required by `sdk = "claude_code"` so the local `claude` CLI can
+call back into Shore's MCP tool host. The default `127.0.0.1:0` binds an
+ephemeral loopback port and is the recommended setting.
 
 ## `[defaults]`
 
@@ -118,6 +127,29 @@ model_id = "anthropic/claude-haiku-4-5"
 api_key_env = "OPENROUTER_API_KEY"
 base_url = "https://openrouter.ai/api/v1"
 ```
+
+### Claude Code / Max Subscription
+
+`sdk = "claude_code"` routes a chat model through the local `claude` CLI instead
+of a provider HTTP API. The CLI uses the user's local OAuth login, so there is
+no `api_key_env` for this model.
+
+```toml
+[daemon.http]
+enabled = true
+bind_addr = "127.0.0.1:0"
+
+[chat.claude_code.sonnet-max]
+model_id = "claude-sonnet-4-5"
+max_tokens = 4096
+```
+
+Before using it, install Claude Code, run `claude auth login`, and verify with
+`shore config --check`. The provider supports Shore tools through the daemon's
+MCP listener. Client-visible streaming is emulated after the CLI turn completes,
+so text may arrive less progressively than direct HTTP providers. `shore usage`
+records Claude Code's reported `total_cost_usd` as would-be API cost; actual
+subscription spend remains the fixed Claude plan price.
 
 Embedding profiles:
 

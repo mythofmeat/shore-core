@@ -683,6 +683,11 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
             base_url: Some("https://nano-gpt.com/api/v1".into()),
             ..base_provider_defaults()
         },
+        "claude_code" => ModelConfigFields {
+            sdk: Some(Sdk::ClaudeCode),
+            api_key_env: None,
+            ..base_provider_defaults()
+        },
         _ => ModelConfigFields::default(),
     };
     ProviderConfig { fields }
@@ -694,6 +699,7 @@ pub fn default_sdk(provider_key: &str) -> Sdk {
         "anthropic" => Sdk::Anthropic,
         "gemini" => Sdk::Gemini,
         "zai" => Sdk::Zai,
+        "claude_code" => Sdk::ClaudeCode,
         // Everything else (openrouter, xai, deepseek, zhipuai, custom)
         // defaults to OpenAI-compatible.
         _ => Sdk::Openai,
@@ -824,6 +830,22 @@ model_id = "anthropic/claude-opus-4.6"
         // openrouter -> Sdk::Openai via hardcoded_defaults; no auto cache_ttl.
         assert_eq!(foo.sdk, Sdk::Openai);
         assert_eq!(foo.cache_ttl, None);
+    }
+
+    #[test]
+    fn claude_code_provider_key_infers_sdk_without_api_key() {
+        let table = parse_table(
+            r#"
+[claude_code.sonnet-max]
+model_id = "claude-sonnet-4-5"
+"#,
+        );
+        let models = parse_category("chat", &table, None).unwrap();
+        let sonnet = &models["chat.claude_code.sonnet-max"];
+        assert_eq!(sonnet.sdk, Sdk::ClaudeCode);
+        assert_eq!(sonnet.provider_key, "claude_code");
+        assert_eq!(sonnet.api_key_env, None);
+        assert_eq!(sonnet.cache_ttl, None);
     }
 
     #[test]

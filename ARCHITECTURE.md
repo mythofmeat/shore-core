@@ -106,6 +106,36 @@ commands see durable state. During tool use, clients may see intermediate
 `StreamEnd(tool_use)` events; they should buffer one assistant turn across tool
 phases.
 
+### Claude Code Provider
+
+Models with `sdk = "claude_code"` use the local `claude` CLI as a subprocess
+transport instead of an HTTP API key. Shore still owns conversation state,
+tools, memory, ledger rows, and persistence.
+
+```text
+shore-daemon
+  ├─ SWP listener for clients
+  ├─ HTTP listener /mcp/<session-id>
+  │    └─ tools/list + tools/call -> daemon tool dispatch
+  └─ shore-llm request
+        └─ claude --print --input-format stream-json --mcp-config <daemon URL>
+```
+
+The daemon starts the HTTP listener only when `[daemon.http].enabled = true`.
+Before a Claude Code generation, the engine allocates an MCP session, injects
+`mcp_endpoint`, `allowed_tools`, `session_id`, and `subprocess_key` into
+`provider_options`, then dispatches to `shore-llm`. Tool calls happen inside the
+CLI's turn over HTTP MCP; the daemon records them in a per-turn ledger and
+splices synthetic `tool_use` and `tool_result` blocks into the assistant message
+before persistence.
+
+`shore-llm` keeps a long-lived subprocess cache keyed by `subprocess_key` when
+the daemon provides one, with fresh-spawn fallback for cold starts, dead
+children, and recipe changes. The MCP URL is stable per subprocess key while
+the daemon rotates the per-turn ledger behind that session. Claude Code
+reported `total_cost_usd` is stored as would-be API cost for observability; it
+is not the user's actual subscription spend.
+
 ## Config Runtime
 
 The daemon loads config at startup and keeps a runtime copy in the message
