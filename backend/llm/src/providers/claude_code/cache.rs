@@ -276,9 +276,8 @@ mod tests {
     use super::*;
     use serde_json::json;
     use shore_config::models::Sdk;
-    use std::sync::Mutex as StdMutex;
 
-    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn request(opts: serde_json::Value) -> LlmRequest {
         LlmRequest {
@@ -407,7 +406,7 @@ done
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn cache_hit_reuses_fake_subprocess() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let temp = tempfile::tempdir().unwrap();
         install_fake_claude(temp.path(), false);
         let count_path = temp.path().join("spawns");
@@ -431,7 +430,7 @@ done
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn recipe_mismatch_evicts_and_respawns() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let temp = tempfile::tempdir().unwrap();
         install_fake_claude(temp.path(), false);
         let count_path = temp.path().join("spawns");
@@ -457,7 +456,7 @@ done
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn dead_cached_subprocess_is_evicted_and_respawned() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let temp = tempfile::tempdir().unwrap();
         install_fake_claude(temp.path(), true);
         let count_path = temp.path().join("spawns");

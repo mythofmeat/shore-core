@@ -17,9 +17,10 @@
 //!    cargo test -p shore-llm --test claude_code_live -- --ignored --nocapture
 //!    ```
 //!
-//! The test sends a trivial user message, drives `claude` to
-//! completion against the spike's MCP server, and asserts that we get
-//! a non-empty response back.
+//! The tests drive `claude` to completion against the spike's MCP
+//! server. One smoke test asserts a non-empty text response; the MCP
+//! test forces the `ping` tool and checks the server log for the real
+//! `tools/call` roundtrip.
 
 use serde_json::json;
 use shore_config::models::{ResolvedModel, Sdk};
@@ -68,6 +69,10 @@ fn live_request(user: &str) -> LlmRequest {
     )
 }
 
+fn mcp_log_path() -> String {
+    std::env::var("MCP_HTTP_LOG").unwrap_or_else(|_| "/tmp/mcp-http.log".into())
+}
+
 #[tokio::test]
 #[ignore = "requires claude CLI on PATH, OAuth login, and the spike's mcp_http_server.py running"]
 async fn live_generate_returns_nonempty_response() {
@@ -93,4 +98,30 @@ async fn live_generate_returns_nonempty_response() {
         "no input token count reported"
     );
     assert_eq!(response.finish_reason, "end_turn");
+}
+
+#[tokio::test]
+#[ignore = "requires claude CLI on PATH, OAuth login, and the spike's mcp_http_server.py running"]
+async fn live_generate_invokes_mcp_ping_tool() {
+    let client = LlmClient::new();
+    let token = format!("shore-live-mcp-{}", std::process::id());
+    let request = live_request(&format!(
+        "Use the ping tool with message \"{token}\". Reply with only the exact tool response."
+    ));
+
+    let response = client
+        .generate(&request)
+        .await
+        .expect("generate against live claude CLI with MCP failed");
+
+    eprintln!("tool content: {}", response.content);
+    assert!(
+        response.content.contains(&format!("pong: {token}")),
+        "response did not include ping tool result: {}",
+        response.content
+    );
+
+    let log = std::fs::read_to_string(mcp_log_path()).expect("could not read MCP HTTP log");
+    assert!(log.contains("\"method\": \"tools/call\""));
+    assert!(log.contains(&token));
 }

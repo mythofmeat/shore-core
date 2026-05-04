@@ -266,16 +266,11 @@ mod tests {
 
     /// Test ToolContext that records dispatched calls and returns
     /// scripted responses for known tool names.
+    #[derive(Default)]
     struct ScriptedCtx {
         config: shore_config::app::SearchConfig,
     }
-    impl Default for ScriptedCtx {
-        fn default() -> Self {
-            Self {
-                config: shore_config::app::SearchConfig::default(),
-            }
-        }
-    }
+
     impl crate::tools::ToolContext for ScriptedCtx {
         fn image_dir(&self) -> &str {
             ""
