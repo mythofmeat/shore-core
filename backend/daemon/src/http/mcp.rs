@@ -200,7 +200,14 @@ async fn handle_tools_call(
             _ => format!("ledger-{}", uuid::Uuid::new_v4()),
         });
 
-    let dispatch_result = dispatch_tool(name, arguments.clone(), session.tool_ctx.as_ref()).await;
+    let dispatch_result = if name == "set_next_wake" {
+        match session.tool_ctx.schedule_next_wake(&arguments) {
+            Some(result) => result,
+            None => dispatch_tool(name, arguments.clone(), session.tool_ctx.as_ref()).await,
+        }
+    } else {
+        dispatch_tool(name, arguments.clone(), session.tool_ctx.as_ref()).await
+    };
     let (content_blocks, is_error, response_payload) = match dispatch_result {
         Ok(result) => {
             let text = serialize_tool_value(&result);
@@ -255,6 +262,7 @@ mod tests {
     use super::*;
     use crate::engine::mcp_session::McpSessionRegistry;
     use std::collections::HashSet;
+    use std::sync::Mutex as StdMutex;
     use std::time::Duration;
     use tokio::sync::watch;
 
@@ -263,6 +271,7 @@ mod tests {
     #[derive(Default)]
     struct ScriptedCtx {
         config: shore_config::app::SearchConfig,
+        wake_calls: Option<Arc<StdMutex<Vec<Value>>>>,
     }
 
     impl crate::tools::ToolContext for ScriptedCtx {
@@ -277,6 +286,14 @@ mod tests {
         }
         fn search_config(&self) -> &shore_config::app::SearchConfig {
             &self.config
+        }
+        fn schedule_next_wake(
+            &self,
+            input: &Value,
+        ) -> Option<Result<Value, crate::tools::ToolError>> {
+            let calls = self.wake_calls.as_ref()?;
+            calls.lock().unwrap().push(input.clone());
+            Some(Ok(json!("Scheduled next moment in 2.0 hours.")))
         }
     }
 
@@ -406,6 +423,49 @@ mod tests {
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].tool_use_id, "call-1");
         assert_eq!(drained[0].name, "check_time");
+        assert!(!drained[0].is_error);
+    }
+
+    #[tokio::test]
+    async fn tools_call_routes_set_next_wake_through_heartbeat_context() {
+        let registry = McpSessionRegistry::new();
+        let wake_calls = Arc::new(StdMutex::new(Vec::new()));
+        let guard = registry.allocate(
+            "s-wake".into(),
+            allowed(&["set_next_wake"]),
+            tool_defs_for_test(),
+            Arc::new(ScriptedCtx {
+                config: shore_config::app::SearchConfig::default(),
+                wake_calls: Some(wake_calls.clone()),
+            }),
+        );
+        let (state, _h, _tx) = spawn_test_listener(registry.clone()).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let url = format!("{}/mcp/s-wake", state.base_url());
+        let client = reqwest::Client::new();
+        let resp = rpc(
+            &client,
+            &url,
+            "tools/call",
+            json!("call-wake"),
+            json!({
+                "name": "set_next_wake",
+                "arguments": {"hours_from_now": 2.0, "reason": "continue later"}
+            }),
+        )
+        .await;
+
+        assert_eq!(resp["result"]["isError"], false);
+        assert_eq!(
+            resp["result"]["content"][0]["text"],
+            "Scheduled next moment in 2.0 hours."
+        );
+        assert_eq!(wake_calls.lock().unwrap().len(), 1);
+
+        let drained = guard.drain().await;
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].tool_use_id, "call-wake");
+        assert_eq!(drained[0].name, "set_next_wake");
         assert!(!drained[0].is_error);
     }
 

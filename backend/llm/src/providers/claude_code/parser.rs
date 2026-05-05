@@ -21,15 +21,11 @@
 //! - `rate_limit_event`: quota/window state. Stored on the next `Done`
 //!   event's usage telemetry.
 //!
-//! Tool-use blocks in `assistant` events are deliberately NOT
-//! emitted as `StreamEvent::ToolUse`. Under the claude_code path
-//! the CLI runs the tool loop internally via MCP; emitting
-//! `ToolUse` would prompt a duplicate dispatch via `run_tool_loop`.
-//! Tool visibility in conversation history is provided by the
-//! daemon's MCP listener ledger instead. The blocks DO appear in
-//! the structured `blocks` record so the engine can splice them
-//! into the persisted assistant turn alongside the MCP ledger
-//! entries.
+//! Tool-use blocks in `assistant` events are emitted as
+//! `StreamEvent::ToolUse` and recorded in `blocks`. The daemon's
+//! claude_code path skips the generic tool loop, because the CLI
+//! already ran tools internally via MCP; the emitted event preserves
+//! the original block order for streamed persistence.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -42,9 +38,7 @@ use shore_protocol::types::ContentBlock;
 pub(crate) struct ParseStep {
     /// Events to forward to the daemon, in order.
     pub events: Vec<StreamEvent>,
-    /// Structured blocks to append to the running content_blocks
-    /// record. Includes `tool_use` blocks that the StreamEvent
-    /// stream deliberately omits.
+    /// Structured blocks to append to the running content_blocks record.
     pub blocks: Vec<ContentBlock>,
     /// True iff this line was a `result` event — caller should
     /// stop reading.
@@ -154,10 +148,11 @@ impl StreamJsonParser {
                     step.blocks.push(ContentBlock::RedactedThinking { data });
                 }
                 RawAssistantBlock::ToolUse { id, name, input } => {
-                    // Deliberately not emitting StreamEvent::ToolUse —
-                    // the CLI handled this via MCP. Keep the block
-                    // in the record so the daemon's history can
-                    // show it when it splices the MCP ledger.
+                    step.events.push(StreamEvent::ToolUse {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: input.clone(),
+                    });
                     step.blocks.push(ContentBlock::ToolUse { id, name, input });
                 }
                 RawAssistantBlock::Unknown => {}
@@ -412,19 +407,22 @@ mod tests {
     }
 
     #[test]
-    fn tool_use_block_recorded_but_not_emitted_as_event() {
+    fn tool_use_block_recorded_and_emitted_as_event() {
         let line = r#"{"type":"assistant","message":{"role":"assistant","content":[
             {"type":"text","text":"calling ping"},
             {"type":"tool_use","id":"toolu_01","name":"mcp__shore__ping","input":{"message":"hi"}}
         ]}}"#;
         let mut parser = StreamJsonParser::new();
         let step = parser.handle_line(line);
-        let tool_use_events = step
-            .events
-            .iter()
-            .filter(|e| matches!(e, StreamEvent::ToolUse { .. }))
-            .count();
-        assert_eq!(tool_use_events, 0);
+        assert_eq!(step.events.len(), 2);
+        match &step.events[1] {
+            StreamEvent::ToolUse { id, name, input } => {
+                assert_eq!(id, "toolu_01");
+                assert_eq!(name, "mcp__shore__ping");
+                assert_eq!(input["message"], "hi");
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
         let tool_blocks = step
             .blocks
             .iter()
@@ -549,8 +547,8 @@ mod tests {
     }
 
     /// Captured fixture from probe 3 (MCP tool roundtrip).
-    /// Tool calls must NOT appear as StreamEvent::ToolUse but DO
-    /// appear in the structured blocks.
+    /// Tool calls must appear both as StreamEvent::ToolUse and in
+    /// the structured blocks so streamed history can preserve order.
     #[test]
     fn parses_probe3_mcp_tool_roundtrip_fixture() {
         let fixture = include_str!("../../../tests/fixtures/claude_code/03-mcp-tool-call.jsonl");
@@ -561,7 +559,7 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, StreamEvent::ToolUse { .. }))
             .count();
-        assert_eq!(tool_use_events, 0);
+        assert!(tool_use_events >= 1);
         let tool_use_blocks = blocks
             .iter()
             .filter(|b| matches!(b, ContentBlock::ToolUse { .. }))

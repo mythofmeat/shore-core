@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
 use tokio::sync::broadcast;
@@ -30,6 +30,7 @@ use crate::memory::retrieval::resolve_embedder;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
 use crate::tools::context::SharedToolContext;
+use crate::tools::{ToolContext, ToolError};
 use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
 use shore_config::{
@@ -57,6 +58,65 @@ struct TickContext {
     notifier: Option<NotificationService>,
     registry: Option<Arc<tokio::sync::Mutex<CharacterRegistry>>>,
     http: Option<Arc<crate::http::DaemonHttpState>>,
+}
+
+struct HeartbeatToolContext {
+    inner: SharedToolContext,
+    state: Arc<Mutex<AutonomyState>>,
+}
+
+impl ToolContext for HeartbeatToolContext {
+    fn image_dir(&self) -> &str {
+        self.inner.image_dir()
+    }
+    fn llm_client(&self) -> Option<&shore_llm::LlmClient> {
+        self.inner.llm_client()
+    }
+    fn image_gen_config(&self) -> Option<&crate::memory::compaction_impls::ImageGenConfig> {
+        self.inner.image_gen_config()
+    }
+    fn search_config(&self) -> &shore_config::app::SearchConfig {
+        self.inner.search_config()
+    }
+    fn character_name(&self) -> &str {
+        self.inner.character_name()
+    }
+    fn schedule_next_wake(&self, input: &Value) -> Option<Result<Value, ToolError>> {
+        Some(schedule_next_wake_in_state(self.state.as_ref(), input))
+    }
+    fn workspace_dir(&self) -> &str {
+        self.inner.workspace_dir()
+    }
+    fn character_data_dir(&self) -> &str {
+        self.inner.character_data_dir()
+    }
+    fn markdown_store(&self) -> Option<&crate::memory::markdown_store::MarkdownMemoryStore> {
+        self.inner.markdown_store()
+    }
+    fn memory_retrieval_config(&self) -> &shore_config::app::RetrievalConfig {
+        self.inner.memory_retrieval_config()
+    }
+    fn embedder(&self) -> Option<&dyn shore_llm::embed::Embedder> {
+        self.inner.embedder()
+    }
+    fn memory_index_path(&self) -> Option<&std::path::Path> {
+        self.inner.memory_index_path()
+    }
+    fn memory_access_allowed(&self) -> bool {
+        self.inner.memory_access_allowed()
+    }
+    fn memory_read_allowed(&self) -> bool {
+        self.inner.memory_read_allowed()
+    }
+    fn memory_write_allowed(&self) -> bool {
+        self.inner.memory_write_allowed()
+    }
+    fn config_dir(&self) -> &str {
+        self.inner.config_dir()
+    }
+    fn defer_edit(&self, path: &str) {
+        self.inner.defer_edit(path);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -762,6 +822,38 @@ const HEARTBEAT_LOOP_DEADLINE: Duration = Duration::from_secs(30 * 60); // 30 mi
 /// worse (no more keepalive, no more heartbeat, permanent silent failure).
 fn lock_state(m: &Mutex<AutonomyState>) -> std::sync::MutexGuard<'_, AutonomyState> {
     lock_or_recover("autonomy state mutex", m)
+}
+
+fn schedule_next_wake_in_state(
+    state: &Mutex<AutonomyState>,
+    input: &Value,
+) -> Result<Value, ToolError> {
+    let hours = input
+        .get("hours_from_now")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0);
+    let reason = input
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let clamped = hours.clamp(1.0, 48.0);
+    let now = Instant::now();
+    let when = now + Duration::from_secs_f64(clamped * 3600.0);
+
+    let mut s = lock_state(state);
+    s.heartbeat.schedule(when, now);
+    let scheduled = s.heartbeat.next_wake().unwrap_or(when);
+    s.cache_keepalive.set_next_wake(Some(scheduled));
+    s.heartbeat_log.push(
+        HeartbeatEventKind::ToolUse,
+        format!("set_next_wake: {clamped:.1}h - {reason}"),
+    );
+    s.mark_dirty();
+
+    Ok(json!(format!(
+        "Scheduled next moment in {clamped:.1} hours."
+    )))
 }
 
 async fn character_tick_loop(
@@ -1489,7 +1581,10 @@ async fn execute_heartbeat_tick(
             return;
         }
     };
-    let tool_ctx = Arc::new(tool_ctx);
+    let tool_ctx = Arc::new(HeartbeatToolContext {
+        inner: tool_ctx,
+        state: state.clone(),
+    });
     let claude_code_session =
         match crate::claude_code::prepare_request(&mut request, http, None, tool_ctx.clone()).await
         {
@@ -1643,25 +1738,10 @@ async fn execute_heartbeat_tick(
 
             // Intercept set_next_wake — handled inline, not dispatched.
             let (output_str, is_error) = if name.as_str() == "set_next_wake" {
-                let hours = input["hours_from_now"].as_f64().unwrap_or(1.0);
-                let reason = input["reason"].as_str().unwrap_or("").to_string();
-                let clamped = hours.clamp(1.0, 48.0);
-                let when = Instant::now() + Duration::from_secs_f64(clamped * 3600.0);
-                let now = Instant::now();
-                {
-                    let mut s = lock_state(state);
-                    s.heartbeat.schedule(when, now);
-                    s.cache_keepalive.set_next_wake(Some(when));
-                    s.heartbeat_log.push(
-                        HeartbeatEventKind::ToolUse,
-                        format!("set_next_wake: {clamped:.1}h — {reason}"),
-                    );
-                    s.mark_dirty();
-                }
-                (
-                    format!("Scheduled next moment in {clamped:.1} hours."),
-                    false,
-                )
+                crate::content_util::dispatch_result_to_output(schedule_next_wake_in_state(
+                    state.as_ref(),
+                    input,
+                ))
             } else {
                 crate::content_util::dispatch_result_to_output(
                     tool_system::dispatch_tool(name, input.clone(), tool_ctx.as_ref()).await,

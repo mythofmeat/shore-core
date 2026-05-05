@@ -94,6 +94,9 @@ pub trait ToolContext: Sync {
     fn character_name(&self) -> &str {
         ""
     }
+    fn schedule_next_wake(&self, _input: &Value) -> Option<Result<Value, ToolError>> {
+        None
+    }
 
     // Workspace directory for general filesystem tools
     fn workspace_dir(&self) -> &str {
@@ -414,10 +417,12 @@ pub fn dispatch_tool<'a>(
                 workspace::handle_exec(input, ctx.workspace_dir()).await
             }
             // set_next_wake is in the base tool set for cache stability but
-            // only handled during heartbeat ticks (intercepted in manager.rs).
-            "set_next_wake" => Err(ToolError::InvalidArgs(
-                "set_next_wake is only available during heartbeat ticks".into(),
-            )),
+            // only heartbeat-capable contexts are allowed to handle it.
+            "set_next_wake" => ctx.schedule_next_wake(&input).unwrap_or_else(|| {
+                Err(ToolError::InvalidArgs(
+                    "set_next_wake is only available during heartbeat ticks".into(),
+                ))
+            }),
             _ => Err(ToolError::NotImplemented(name.to_string())),
         }
     })

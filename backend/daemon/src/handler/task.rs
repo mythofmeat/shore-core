@@ -195,10 +195,14 @@ pub(super) async fn handle_generation(
         ctx.autonomy.notify_user_message(&char_name, turn_count);
     }
 
-    let (messages, has_prior_context) = {
+    let (messages, has_prior_context, history_rewrite_generation) = {
         let engine = engine_arc.lock().await;
         let has_prior = engine.segments().segment_count() > 0;
-        (engine.messages().to_vec(), has_prior)
+        (
+            engine.messages().to_vec(),
+            has_prior,
+            engine.history_rewrite_generation(),
+        )
     };
 
     let character_data_dir = data_dir.join(&char_name);
@@ -311,7 +315,8 @@ pub(super) async fn handle_generation(
 
     let mut claude_code_session = None;
     if matches!(resolved.sdk, Sdk::ClaudeCode) {
-        let subprocess_key = format!("{}:{char_name}", data_dir.display());
+        let subprocess_key =
+            claude_code_subprocess_key(&data_dir, &char_name, history_rewrite_generation);
         let tool_ctx =
             build_claude_code_tool_context(&ctx, &data_dir, &char_name, &effective_config)?;
         claude_code_session = crate::claude_code::prepare_request(
@@ -510,6 +515,13 @@ pub(super) async fn handle_generation(
     }
 
     Ok(())
+}
+
+fn claude_code_subprocess_key(data_dir: &Path, char_name: &str, history_generation: u64) -> String {
+    format!(
+        "{}:{char_name}:history-{history_generation}",
+        data_dir.display()
+    )
 }
 
 fn build_claude_code_tool_context(
@@ -873,5 +885,16 @@ mod tests {
             &result.content_blocks[1],
             ContentBlock::ToolResult { tool_use_id, content, .. } if tool_use_id == "toolu_actual" && content == "matches"
         ));
+    }
+
+    #[test]
+    fn claude_code_subprocess_key_rotates_with_history_generation() {
+        let data_dir = Path::new("/tmp/shore-data");
+        let first = claude_code_subprocess_key(data_dir, "alice", 0);
+        let rewritten = claude_code_subprocess_key(data_dir, "alice", 1);
+
+        assert_ne!(first, rewritten);
+        assert!(first.ends_with(":alice:history-0"));
+        assert!(rewritten.ends_with(":alice:history-1"));
     }
 }

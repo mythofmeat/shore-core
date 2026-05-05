@@ -55,6 +55,7 @@ pub struct ConversationEngine {
     messages: MessageStore,
     segments: SegmentReader,
     revision: u64,
+    history_rewrite_generation: u64,
     push_tx: broadcast::Sender<ServerMessage>,
 }
 
@@ -90,6 +91,7 @@ impl ConversationEngine {
             messages,
             segments,
             revision: 0,
+            history_rewrite_generation: 0,
             push_tx,
         })
     }
@@ -130,8 +132,21 @@ impl ConversationEngine {
         self.revision
     }
 
+    /// Generation that advances only when existing history is rewritten.
+    ///
+    /// Normal append-only turns keep long-lived provider subprocesses warm.
+    /// Regen, compaction reloads, edits, deletes, and resets must rotate any
+    /// provider state that may still remember discarded turns.
+    pub fn history_rewrite_generation(&self) -> u64 {
+        self.history_rewrite_generation
+    }
+
     fn advance_revision(&mut self) {
         self.revision = self.revision.saturating_add(1);
+    }
+
+    fn advance_history_rewrite_generation(&mut self) {
+        self.history_rewrite_generation = self.history_rewrite_generation.saturating_add(1);
     }
 
     // ── Message CRUD ────────────────────────────────────────────────────
@@ -163,6 +178,7 @@ impl ConversationEngine {
     pub fn edit_message(&mut self, msg_id: &str, new_content: &str) -> Result<(), EngineError> {
         debug!(character = %self.character_name, msg_id, "editing message");
         self.messages.edit(msg_id, new_content)?;
+        self.advance_history_rewrite_generation();
         self.advance_revision();
         self.broadcast_history();
         Ok(())
@@ -172,6 +188,7 @@ impl ConversationEngine {
     pub fn delete_message(&mut self, msg_id: &str) -> Result<(), EngineError> {
         debug!(character = %self.character_name, msg_id, "deleting message");
         self.messages.delete(msg_id)?;
+        self.advance_history_rewrite_generation();
         self.advance_revision();
         self.broadcast_history();
         Ok(())
@@ -182,6 +199,7 @@ impl ConversationEngine {
         let removed = self.messages.truncate_after_last_user_turn()?;
         if removed > 0 {
             debug!(character = %self.character_name, removed, "truncated after last user turn");
+            self.advance_history_rewrite_generation();
             self.advance_revision();
             self.broadcast_history();
         }
@@ -208,6 +226,7 @@ impl ConversationEngine {
     pub fn reset(&mut self) -> Result<(), EngineError> {
         info!(character = %self.character_name, "resetting conversation");
         self.messages.clear()?;
+        self.advance_history_rewrite_generation();
         self.advance_revision();
         self.broadcast_history();
         Ok(())
@@ -224,6 +243,7 @@ impl ConversationEngine {
             segments = self.segments.segment_count(),
             "engine reloaded"
         );
+        self.advance_history_rewrite_generation();
         self.advance_revision();
         self.broadcast_history();
         Ok(())
@@ -307,6 +327,34 @@ mod tests {
         assert_eq!(engine.messages().len(), 1);
         assert_eq!(engine.messages()[0].content, "Hello");
         assert_eq!(engine.message_count(), 1);
+        assert_eq!(
+            engine.history_rewrite_generation(),
+            0,
+            "append-only turns must not rotate long-lived provider state"
+        );
+    }
+
+    #[test]
+    fn history_rewrite_generation_advances_only_for_rewrites() {
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, _rx) = make_engine(&tmp);
+
+        engine
+            .append_message(make_msg("m1", Role::User, "Hello"))
+            .unwrap();
+        engine
+            .append_message(make_msg("m2", Role::Assistant, "Hi"))
+            .unwrap();
+        assert_eq!(engine.history_rewrite_generation(), 0);
+
+        engine.truncate_after_last_user_turn().unwrap();
+        assert_eq!(engine.history_rewrite_generation(), 1);
+
+        engine.edit_message("m1", "Hello again").unwrap();
+        assert_eq!(engine.history_rewrite_generation(), 2);
+
+        engine.delete_message("m1").unwrap();
+        assert_eq!(engine.history_rewrite_generation(), 3);
     }
 
     #[test]
