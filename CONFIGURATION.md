@@ -177,36 +177,31 @@ flag to keep large prompts out of process arguments. That flag is an
 undocumented Claude Code surface, so provider live tests are the compatibility
 guard when upgrading the local `claude` CLI.
 
-Embedding profiles:
+Embedding profiles. Shore only ships an OpenAI-compatible embedder; any
+endpoint that speaks `/v1/embeddings` works (OpenAI, Together, Voyage's
+compat endpoint, OpenRouter, or a self-hosted server like
+text-embedding-inference or llama.cpp's HTTP server).
 
 ```toml
-# Local ONNX-runtime embedder (no API key, runs offline). The model
-# downloads once into $XDG_CACHE_HOME/shore/models/ and is shared across
-# characters. Supported model_ids: bge-small-en-v1.5 (default, 384 dims,
-# ~33MB), bge-base-en-v1.5 (768 dims), bge-large-en-v1.5 (1024 dims),
-# all-minilm-l6-v2 (384 dims), nomic-embed-text-v1.5 (768 dims).
-[embedding.local-bge-small]
-provider = "local"
-model_id = "bge-small-en-v1.5"
-
-# Hosted OpenAI-compatible embedder.
+# Hosted OpenAI:
 [embedding.text-large]
-provider = "openai"
 model_id = "text-embedding-3-large"
 api_key_env = "OPENAI_API_KEY"
+
+# Self-hosted (e.g. text-embedding-inference). `api_key_env` still has
+# to point at a set variable; if your server doesn't validate keys, set
+# it to any non-empty value.
+[embedding.local-tei]
+model_id = "BAAI/bge-large-en-v1.5"
+api_key_env = "TEI_API_KEY"
+base_url = "http://127.0.0.1:8080/v1"
+dimensions = 1024
 ```
 
-When no `[embedding.*]` profile is configured at all, the daemon defaults
-to local `bge-small-en-v1.5` so the workspace `search` tool's hybrid mode
-works out of the box without API keys. Local embedding support is
-controlled by the `local-embeddings` Cargo feature on `shore-daemon`
-(default-on).
-
-You can also set `defaults.embedding` directly to one of the five bundled
-local model ids (`bge-small-en-v1.5`, `bge-base-en-v1.5`,
-`bge-large-en-v1.5`, `all-minilm-l6-v2`, `nomic-embed-text-v1.5`) without
-writing an `[embedding.*]` block. Profile blocks are only needed for
-hosted backends or to give a profile a custom name.
+When no `[embedding.*]` profile is configured (and `defaults.embedding`
+doesn't reference one), the workspace `search` tool's `hybrid` and
+`vector` modes degrade to lexical-only at the call site. Configure an
+embedding profile to enable semantic search.
 
 ## Providers
 

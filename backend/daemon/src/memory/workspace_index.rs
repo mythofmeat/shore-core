@@ -24,6 +24,8 @@ use tracing::warn;
 
 const MAX_EMBED_CHARS_PER_FILE: usize = 4_000;
 const SEARCH_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const EMBED_BATCH_MAX_ITEMS: usize = 32;
+const EMBED_BATCH_MAX_CHARS: usize = 96_000;
 
 /// Hard upper bound on files we will walk + track. Workspaces this large
 /// already smell like an indexing target the assistant shouldn't be scanning
@@ -255,11 +257,7 @@ pub async fn hybrid_search(
     }
 
     if !stale_docs.is_empty() {
-        let inputs: Vec<&str> = stale_docs.iter().map(String::as_str).collect();
-        let vectors = embedder
-            .embed(&inputs)
-            .await
-            .map_err(|e| WorkspaceIndexError::Embedder(e.to_string()))?;
+        let vectors = embed_documents(embedder, &stale_docs).await?;
         if vectors.len() != stale.len() {
             return Err(WorkspaceIndexError::EmbeddingCountMismatch {
                 got: vectors.len(),
@@ -520,6 +518,48 @@ fn document_for_embedding(path: &str, content: &str) -> String {
     format!("path: {path}\n\n{trimmed}")
 }
 
+async fn embed_documents(
+    embedder: &dyn Embedder,
+    docs: &[String],
+) -> Result<Vec<Vec<f32>>, WorkspaceIndexError> {
+    let mut vectors = Vec::with_capacity(docs.len());
+    let mut start = 0usize;
+
+    while start < docs.len() {
+        let mut end = start;
+        let mut batch_chars = 0usize;
+
+        while end < docs.len() && end - start < EMBED_BATCH_MAX_ITEMS {
+            let doc_chars = docs[end].chars().count();
+            if end > start && batch_chars.saturating_add(doc_chars) > EMBED_BATCH_MAX_CHARS {
+                break;
+            }
+            batch_chars = batch_chars.saturating_add(doc_chars);
+            end += 1;
+        }
+
+        if end == start {
+            end += 1;
+        }
+
+        let inputs: Vec<&str> = docs[start..end].iter().map(String::as_str).collect();
+        let batch_vectors = embedder
+            .embed(&inputs)
+            .await
+            .map_err(|e| WorkspaceIndexError::Embedder(e.to_string()))?;
+        if batch_vectors.len() != inputs.len() {
+            return Err(WorkspaceIndexError::EmbeddingCountMismatch {
+                got: batch_vectors.len(),
+                expected: inputs.len(),
+            });
+        }
+        vectors.extend(batch_vectors);
+        start = end;
+    }
+
+    Ok(vectors)
+}
+
 /// Tag stored in the persisted `hash` field. We no longer use it for
 /// freshness — that's `(size, mtime, model_id)` — but the field stays so
 /// older index files round-trip cleanly on read.
@@ -769,6 +809,36 @@ mod tests {
         let inputs_total = embedder.input_count.load(Ordering::SeqCst);
         // Second call should embed only the changed b.md (1 doc) + 1 query.
         assert_eq!(inputs_total - inputs_first, 2);
+    }
+
+    #[tokio::test]
+    async fn stale_documents_are_embedded_in_bounded_batches() {
+        let (_g, ws, idx) = setup();
+        let ws_str = ws.to_string_lossy().into_owned();
+
+        for i in 0..(EMBED_BATCH_MAX_ITEMS + 3) {
+            write_file(&ws, &format!("notes/{i}.md"), "tea in the garden").await;
+        }
+
+        let embedder = TopicEmbedder::new(&["tea"]);
+        let _ = hybrid_search(
+            &ws_str,
+            true,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Two document batches plus one query embedding.
+        assert_eq!(embedder.call_count.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            embedder.input_count.load(Ordering::SeqCst),
+            EMBED_BATCH_MAX_ITEMS + 4
+        );
     }
 
     #[tokio::test]

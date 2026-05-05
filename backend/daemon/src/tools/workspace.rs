@@ -987,6 +987,27 @@ fn best_line_excerpt(content: &str, q_lower: &str) -> (usize, String) {
             return (i + 1, excerpt_line(line, s, e));
         }
     }
+
+    let terms = search_excerpt_terms(q_lower);
+    if !terms.is_empty() {
+        let frequencies = term_line_frequencies(content, &terms);
+        if let Some((line_no, line, term)) =
+            best_term_matched_line(content, &terms, &frequencies, false)
+                .or_else(|| best_term_matched_line(content, &terms, &frequencies, true))
+        {
+            if let Some((s, e)) = find_case_insensitive_match(line, term) {
+                return (line_no, excerpt_line(line, s, e));
+            }
+            return (line_no, truncate_excerpt_line(line.trim()));
+        }
+    }
+
+    for (i, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            return (i + 1, truncate_excerpt_line(trimmed));
+        }
+    }
     for (i, line) in content.lines().enumerate() {
         let trimmed = line.trim();
         if !trimmed.is_empty() {
@@ -994,6 +1015,69 @@ fn best_line_excerpt(content: &str, q_lower: &str) -> (usize, String) {
         }
     }
     (1, String::new())
+}
+
+fn search_excerpt_terms(query_lower: &str) -> Vec<String> {
+    query_lower
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .filter(|t| t.len() >= 2)
+        .map(str::to_string)
+        .collect()
+}
+
+fn term_line_frequencies(content: &str, terms: &[String]) -> Vec<usize> {
+    terms
+        .iter()
+        .map(|term| {
+            content
+                .lines()
+                .filter(|line| line.to_lowercase().contains(term))
+                .count()
+                .max(1)
+        })
+        .collect()
+}
+
+fn best_term_matched_line<'a>(
+    content: &'a str,
+    terms: &'a [String],
+    frequencies: &[usize],
+    allow_heading: bool,
+) -> Option<(usize, &'a str, &'a str)> {
+    content
+        .lines()
+        .enumerate()
+        .filter_map(|(line_idx, line)| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if !allow_heading && trimmed.starts_with('#') {
+                return None;
+            }
+
+            let lower = trimmed.to_lowercase();
+            let mut best_term: Option<(&str, usize)> = None;
+            let mut line_score = 0usize;
+            for (idx, term) in terms.iter().enumerate() {
+                if lower.contains(term) {
+                    let term_score =
+                        100 / frequencies.get(idx).copied().unwrap_or(1).max(1) + term.len();
+                    line_score += term_score;
+                    let replace_best = match best_term {
+                        Some((_, score)) => term_score > score,
+                        None => true,
+                    };
+                    if replace_best {
+                        best_term = Some((term.as_str(), term_score));
+                    }
+                }
+            }
+
+            best_term.map(|(term, _)| (line_idx + 1, line, term, line_score))
+        })
+        .max_by(|a, b| a.3.cmp(&b.3).then_with(|| b.0.cmp(&a.0)))
+        .map(|(line_no, line, term, _)| (line_no, line, term))
 }
 
 fn truncate_excerpt_line(line: &str) -> String {
@@ -1550,6 +1634,16 @@ mod tests {
 
         assert!(excerpt.contains("Important Phrase"));
         assert!(!excerpt.contains("important phrase appears"));
+    }
+
+    #[test]
+    fn hybrid_excerpt_prefers_relevant_body_line_over_title() {
+        let content = "# Christine - Ren's mother\n\nBackground notes mention mother.\n\nMarch note: opioid relapse concerns and a no-contact boundary.";
+
+        let (line_no, excerpt) = best_line_excerpt(content, "christine mother opioid");
+
+        assert_eq!(line_no, 5);
+        assert!(excerpt.contains("opioid"));
     }
 
     #[tokio::test]

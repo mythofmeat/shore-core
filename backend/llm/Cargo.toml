@@ -19,20 +19,6 @@ dashmap = { workspace = true }
 tempfile = { workspace = true }
 uuid = { workspace = true }
 
-[features]
-default = []
-local-embeddings = ["dep:fastembed", "dep:dirs"]
-
-[dependencies.fastembed]
-version = "5"
-optional = true
-default-features = false
-features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"]
-
-[dependencies.dirs]
-workspace = true
-optional = true
-
 [dev-dependencies]
 tempfile = { workspace = true }
 toml = { workspace = true }

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Fixed hybrid workspace search to batch large embedding refreshes, validate
+  embedding response shapes, honor `[memory.retrieval].mode` when choosing the
+  default search mode, and return more useful body-line excerpts for semantic
+  hits.
+- Removed the bundled local ONNX embedder and the `local-embeddings` Cargo
+  feature. Embeddings now go through the OpenAI-compatible client only;
+  configure an `[embedding.<name>]` block pointing at a hosted or
+  self-hosted endpoint (e.g. text-embedding-inference, llama.cpp's
+  `/v1/embeddings`). When nothing is configured, hybrid/vector search
+  degrades to lexical-only.
 - Added the `claude_code` provider, which drives the local `claude` CLI through
   OAuth-backed Claude subscription usage while Shore hosts MCP tools in the
   daemon.

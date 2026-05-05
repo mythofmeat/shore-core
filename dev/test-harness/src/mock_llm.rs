@@ -225,6 +225,38 @@ impl Respond for ErrorResponder {
     }
 }
 
+struct EmbeddingResponder {
+    dimensions: usize,
+}
+
+impl Respond for EmbeddingResponder {
+    fn respond(&self, req: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&req.body).unwrap_or_else(|_| json!({}));
+        let input_count = match body.get("input") {
+            Some(Value::Array(inputs)) => inputs.len(),
+            Some(Value::String(_)) => 1,
+            _ => 0,
+        };
+        let zeros: Vec<f64> = vec![0.0; self.dimensions];
+        let data: Vec<Value> = (0..input_count)
+            .map(|idx| {
+                json!({
+                    "object": "embedding",
+                    "index": idx,
+                    "embedding": zeros.clone(),
+                })
+            })
+            .collect();
+        let response = json!({
+            "object": "list",
+            "data": data,
+            "model": "text-embedding-3-small",
+            "usage": { "prompt_tokens": 8, "total_tokens": 8 }
+        });
+        ResponseTemplate::new(200).set_body_json(&response)
+    }
+}
+
 // ── MockLlmServer ────────────────────────────────────────────────────────────
 
 pub struct MockLlmServer {
@@ -416,24 +448,13 @@ impl MockLlmServer {
 
     /// Enqueue an OpenAI-format embedding response (optional — won't panic if unused).
     ///
-    /// Returns a single embedding vector of `dimensions` zeros.  Matches
-    /// POST requests to `/embeddings` (the OpenAI-compatible embedding endpoint
-    /// called by `shore-llm`'s `embed()` function).
+    /// Returns one embedding vector of `dimensions` zeros per requested input.
+    /// Matches POST requests to `/embeddings` (the OpenAI-compatible embedding
+    /// endpoint called by `shore-llm`'s `embed()` function).
     pub async fn enqueue_embedding_optional(&self, dimensions: usize) {
-        let zeros: Vec<f64> = vec![0.0; dimensions];
-        let body = json!({
-            "object": "list",
-            "data": [{
-                "object": "embedding",
-                "index": 0,
-                "embedding": zeros
-            }],
-            "model": "text-embedding-3-small",
-            "usage": { "prompt_tokens": 8, "total_tokens": 8 }
-        });
         Mock::given(method("POST"))
             .and(path_regex("/embeddings"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .respond_with(EmbeddingResponder { dimensions })
             .up_to_n_times(100)
             .mount(&self.server)
             .await;

@@ -666,27 +666,60 @@ pub async fn embed(
 
     let response = super::check_response(response).await?;
 
-    let resp: Value = response.json().await.map_err(LlmError::Request)?;
+    let resp_text = response.text().await.map_err(LlmError::Request)?;
+    let resp: Value = serde_json::from_str(&resp_text).map_err(|e| LlmError::Provider {
+        message: format!(
+            "embedding response was not valid JSON: {e}; body preview: {}",
+            super::body_preview(&resp_text, 200)
+        ),
+    })?;
 
-    let embeddings = resp
+    parse_embedding_response(&resp, input.len())
+}
+
+fn parse_embedding_response(
+    resp: &Value,
+    expected_count: usize,
+) -> Result<Vec<Vec<f32>>, LlmError> {
+    let data = resp
         .get("data")
         .and_then(|d| d.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    item.get("embedding").and_then(|e| {
-                        e.as_array().map(|nums| {
-                            nums.iter()
-                                .filter_map(|n| n.as_f64().map(|f| f as f32))
-                                .collect()
-                        })
+        .ok_or_else(|| LlmError::Provider {
+            message: "embedding response missing data array".into(),
+        })?;
+
+    if data.len() != expected_count {
+        return Err(LlmError::Provider {
+            message: format!(
+                "embedding response returned {} vectors for {} inputs",
+                data.len(),
+                expected_count
+            ),
+        });
+    }
+
+    data.iter()
+        .enumerate()
+        .map(|(item_idx, item)| {
+            let nums =
+                item.get("embedding")
+                    .and_then(|e| e.as_array())
+                    .ok_or_else(|| LlmError::Provider {
+                        message: format!("embedding response item {item_idx} missing embedding array"),
+                    })?;
+
+            nums.iter()
+                .enumerate()
+                .map(|(num_idx, n)| {
+                    n.as_f64().map(|f| f as f32).ok_or_else(|| LlmError::Provider {
+                        message: format!(
+                            "embedding response item {item_idx} has non-numeric value at position {num_idx}"
+                        ),
                     })
                 })
                 .collect()
         })
-        .unwrap_or_default();
-
-    Ok(embeddings)
+        .collect()
 }
 
 // ── Image generation ────────────────────────────────────────────────
@@ -1148,6 +1181,50 @@ mod tests {
     fn test_translate_tools_none_and_empty() {
         assert!(translate_tools(&None).is_none());
         assert!(translate_tools(&Some(vec![])).is_none());
+    }
+
+    // ── embeddings ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_embedding_response_validates_count() {
+        let err = parse_embedding_response(
+            &json!({
+                "object": "list",
+                "data": [{
+                    "object": "embedding",
+                    "index": 0,
+                    "embedding": [0.0, 1.0]
+                }]
+            }),
+            2,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("returned 1 vectors for 2 inputs"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_embedding_response_rejects_malformed_vectors() {
+        let err = parse_embedding_response(
+            &json!({
+                "object": "list",
+                "data": [{
+                    "object": "embedding",
+                    "index": 0,
+                    "embedding": [0.0, "bad"]
+                }]
+            }),
+            1,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("non-numeric value"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── normalize_finish_reason & extract_usage ────────────────────────

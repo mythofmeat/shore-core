@@ -623,7 +623,7 @@ fn build_claude_code_tool_context(
             markdown_store_val: MarkdownMemoryStore::open_sync(memory_dir).ok(),
             memory_retrieval_config_val: effective_config.app.memory.retrieval.clone(),
             embedder_val: embedder,
-            memory_index_path_val: character_data_dir.join("memory_index.json"),
+            memory_index_path_val: character_data_dir.join("workspace_index.json"),
             memory_access_allowed_val: effective_config.app.behavior.tool_use.tools.memory(),
             memory_read_allowed_val: effective_config.app.behavior.tool_use.tools.memory_read(),
             memory_write_allowed_val: effective_config.app.behavior.tool_use.tools.memory_write(),

@@ -3,10 +3,6 @@ name = "shore-daemon"
 version = "0.1.0"
 edition = "2021"
 
-[features]
-default = ["local-embeddings"]
-local-embeddings = ["shore-llm/local-embeddings"]
-
 [dependencies]
 shore-protocol = { workspace = true }
 shore-swp-server = { workspace = true }

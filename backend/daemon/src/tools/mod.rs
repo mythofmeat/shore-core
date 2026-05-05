@@ -9,7 +9,7 @@ pub mod workspace;
 use crate::autonomy::manager::AutonomyManager;
 use crate::memory::compaction_impls::ImageGenConfig;
 use serde_json::Value;
-use shore_config::app::RetrievalConfig;
+use shore_config::app::{RetrievalConfig, RetrievalMode};
 use shore_llm::embed::Embedder;
 use shore_llm::LlmClient;
 use std::future::Future;
@@ -317,6 +317,32 @@ fn path_requests_memory_namespace(path: &str) -> bool {
 // Tool dispatch
 // ---------------------------------------------------------------------------
 
+fn default_search_mode(ctx: &dyn ToolContext, index_path_available: bool) -> &'static str {
+    match ctx.memory_retrieval_config().mode {
+        RetrievalMode::Lexical => "lexical",
+        RetrievalMode::Hybrid => "hybrid",
+        RetrievalMode::Auto => {
+            if ctx.embedder().is_some() && index_path_available {
+                "hybrid"
+            } else {
+                "lexical"
+            }
+        }
+    }
+}
+
+fn apply_default_search_mode(input: &mut Value, ctx: &dyn ToolContext, index_path_available: bool) {
+    if input.get("mode").is_some() {
+        return;
+    }
+    if let Some(obj) = input.as_object_mut() {
+        obj.insert(
+            "mode".into(),
+            serde_json::json!(default_search_mode(ctx, index_path_available)),
+        );
+    }
+}
+
 /// Dispatch a tool call by name to its handler.
 pub fn dispatch_tool<'a>(
     name: &'a str,
@@ -393,18 +419,23 @@ pub fn dispatch_tool<'a>(
             }
             "search" => {
                 ensure_workspace_memory_access(name, &input, ctx)?;
-                let cdd = ctx.character_data_dir();
-                let index_path = if cdd.is_empty() {
+                let fallback_index_path = if ctx.character_data_dir().is_empty() {
                     None
                 } else {
-                    Some(std::path::PathBuf::from(cdd).join("workspace_index.json"))
+                    Some(
+                        std::path::PathBuf::from(ctx.character_data_dir())
+                            .join("workspace_index.json"),
+                    )
                 };
+                let index_path = ctx.memory_index_path().or(fallback_index_path.as_deref());
+                let mut input = input;
+                apply_default_search_mode(&mut input, ctx, index_path.is_some());
                 workspace::handle_search(
                     input,
                     ctx.workspace_dir(),
                     ctx.memory_read_allowed(),
                     ctx.embedder(),
-                    index_path.as_deref(),
+                    index_path,
                 )
                 .await
             }
@@ -685,6 +716,48 @@ mod tests {
                 "fetch_url should reach handler"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_search_auto_without_embedder_uses_lexical() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        tokio::fs::write(ws.join("notes.md"), "tea time")
+            .await
+            .unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+        let ctx = TestToolContext::new().with_workspace_dir(&ws_str);
+
+        let result = dispatch_tool("search", serde_json::json!({"query": "tea"}), &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(result["mode"], "lexical");
+        assert!(result.get("semantic_unavailable").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_search_respects_lexical_retrieval_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        tokio::fs::write(ws.join("notes.md"), "tea time")
+            .await
+            .unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+        let ctx = TestToolContext::new()
+            .with_workspace_dir(&ws_str)
+            .with_retrieval_config(shore_config::app::RetrievalConfig {
+                mode: shore_config::app::RetrievalMode::Lexical,
+            });
+
+        let result = dispatch_tool("search", serde_json::json!({"query": "tea"}), &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(result["mode"], "lexical");
+        assert!(result.get("semantic_unavailable").is_none());
     }
 
     #[tokio::test]

@@ -1,8 +1,11 @@
 //! Embedding model abstraction.
 //!
 //! [`Embedder`] is dyn-compatible so call sites can hold an
-//! `Arc<dyn Embedder>` chosen at startup from config (local or hosted)
-//! without each consumer knowing the provider shape.
+//! `Arc<dyn Embedder>` chosen at startup from config without each consumer
+//! knowing the provider shape. The shipped impl is OpenAI-compatible,
+//! covering OpenAI, Together, Voyage's compat endpoint, OpenRouter, and
+//! any self-hosted server that speaks the same shape (e.g.
+//! text-embedding-inference, llama.cpp's `/v1/embeddings`).
 
 use std::sync::{Arc, OnceLock};
 
@@ -75,14 +78,8 @@ impl Embedder for OpenAIEmbedder {
     }
 }
 
-#[cfg(feature = "local-embeddings")]
-mod local;
-#[cfg(feature = "local-embeddings")]
-pub use local::{LocalEmbedder, LocalEmbedderError};
-
-/// Process-wide cache so a `LocalEmbedder` (which holds ~30MB of model
-/// weights) is loaded once and shared across requests, characters, and
-/// heartbeat ticks.
+/// Process-wide cache so an `Arc<dyn Embedder>` is loaded once and shared
+/// across requests, characters, and heartbeat ticks.
 ///
 /// Keyed by an opaque string the caller chooses — typically
 /// `"<provider>::<model_id>"` — so a config swap to a different model

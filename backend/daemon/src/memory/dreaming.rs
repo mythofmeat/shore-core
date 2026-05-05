@@ -817,7 +817,7 @@ async fn build_librarian_tool_context(
         .ok(),
         memory_retrieval_config_val: loaded_config.app.memory.retrieval.clone(),
         embedder_val: embedder,
-        memory_index_path_val: character_data_dir.join("memory_index.json"),
+        memory_index_path_val: character_data_dir.join("workspace_index.json"),
         memory_access_allowed_val: true,
         memory_read_allowed_val: true,
         memory_write_allowed_val: !dry_run,
