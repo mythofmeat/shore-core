@@ -5,9 +5,11 @@
 //! 1. Install the `claude` CLI (npm i -g @anthropic-ai/claude-code) and
 //!    log into your Pro/Max subscription with `claude /login`.
 //! 2. From the worktree root, start the spike's HTTP MCP server in
-//!    another shell:
+//!    another shell. The image test also needs the image spike server:
 //!    ```sh
 //!    python3 dev/spikes/claude-code-probe/mcp_http_server.py
+//!    MCP_HTTP_PORT=9997 MCP_HTTP_LOG=/tmp/mcp-image-http.log \
+//!      python3 dev/spikes/claude-code-probe/mcp_image_http_server.py
 //!    ```
 //!    It binds to 127.0.0.1:9998 by default. Override with
 //!    `MCP_HTTP_PORT=NNNN` if needed; the test reads the same env
@@ -131,33 +133,31 @@ async fn live_generate_invokes_mcp_ping_tool() {
 }
 
 #[tokio::test]
-async fn generate_rejects_image_input_before_cli_spawn() {
+#[ignore = "requires claude CLI on PATH, OAuth login, and mcp_image_http_server.py running on MCP_IMAGE_HTTP_PORT"]
+async fn live_generate_accepts_mcp_image_tool_result() {
     let client = LlmClient::new();
-    let red_pixel_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
-    let request = live_request_with_messages(vec![json!({
-        "role": "user",
-        "content": [
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": red_pixel_png
-                }
-            },
-            {"type": "text", "text": "What color is this image? Answer with one word."}
-        ]
-    })]);
+    let port = std::env::var("MCP_IMAGE_HTTP_PORT").unwrap_or_else(|_| "9997".into());
+    let provider_options = json!({
+        "mcp_endpoint": format!("http://127.0.0.1:{port}/mcp"),
+        "allowed_tools": ["mcp__shore__show_image"],
+    });
+    let mut request = live_request(
+        "Use show_image, inspect the image, and answer with the dominant color as one word.",
+    );
+    request.provider_options = Some(provider_options);
+    request.system = Some(json!(
+        "Use the show_image tool when asked about the attached image. Answer tersely."
+    ));
 
-    let err = client
+    let response = client
         .generate(&request)
         .await
-        .expect_err("claude_code image input should fail before spawning the CLI");
+        .expect("generate against live claude CLI with MCP image result failed");
 
-    let message = err.to_string();
     assert!(
-        message.contains("does not support image input"),
-        "{message}"
+        response.content.to_lowercase().contains("red"),
+        "expected red image answer, got: {}",
+        response.content
     );
 }
 

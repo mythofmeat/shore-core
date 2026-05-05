@@ -30,9 +30,11 @@ OpenRouter Anthropic model.
   forwards text/thinking deltas as they arrive. Completed final assistant text
   blocks are suppressed when they would duplicate partial chunks; tool-use
   blocks are still preserved from the final assistant event.
-- Image-bearing requests are rejected before spawning Claude Code with a clear
-  provider error. This avoids the current CLI behavior where non-text
-  stream-json content is accepted syntactically but not delivered to the model.
+- Current-turn image input is bridged through a private per-session Shore MCP
+  attachment tool. Raw stream-json image blocks are replaced with a text
+  pointer, and Claude Code calls the temporary tool to receive MCP image content
+  for that attachment. This avoids enabling Claude Code's built-in filesystem
+  `Read` tool.
 - Cold starts with prior Shore history synthesize a native Claude Code JSONL
   session file and spawn with `--resume <session_id>`, avoiding the old
   system-prompt transcript fallback for normal text/tool history. This path is
@@ -86,14 +88,21 @@ Anthropic/OpenRouter key because that could surprise the user with API spend.
 
 ### Image Input
 
-Image input remains non-parity in Claude Code CLI 2.1.128. Shore rejects
-image-bearing `claude_code` requests before spawning the CLI. A live red-pixel
-probe on 2026-05-05 showed that the CLI accepts Anthropic-style base64 image
-blocks syntactically but Claude cannot see the image. This matches the current
-official Claude Code SDK documentation, which says streaming JSON input is
-limited to text-only user messages:
+Direct stream-json image input remains non-parity in Claude Code CLI 2.1.128.
+A live red-pixel probe on 2026-05-05 showed that the CLI accepts
+Anthropic-style base64 image blocks syntactically but Claude cannot see the
+image. This matches the current official Claude Code SDK documentation, which
+says streaming JSON input is limited to text-only user messages:
 <https://docs.anthropic.com/en/docs/claude-code/sdk#input-formats>. The
 documented `--file` flag is not a local upload path; it expects Claude-hosted
 `file_id:relative_path` resources and requires
 `CLAUDE_CODE_SESSION_ACCESS_TOKEN`. There is no documented local
 `--image`/attach flag in the current `claude --help` surface.
+
+Shore works around this for current-turn attachments by exposing a private
+`shore_attached_image` MCP tool only when the active request contains image
+blocks. The tool returns MCP image content from the already encoded Shore image
+payload, so the model can inspect the image without reading arbitrary local
+paths. This is live-tested with a red PNG MCP image result. Older image
+attachments that appear only in flattened history are still not faithfully
+replayed as visual inputs.

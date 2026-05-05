@@ -166,9 +166,11 @@ subprocess death more faithfully than a flattened transcript. Set
 `provider_options.native_session_replay = false` only for diagnostics or if a
 future Claude Code release changes the private JSONL format.
 
-Image input remains a Claude Code parity gap in the current CLI. Shore rejects
-image-bearing `claude_code` requests before spawning the CLI because live
-testing and the official SDK docs show stream-json input is text-only.
+Current-turn image input is supported through Shore's Claude Code MCP session:
+the daemon exposes a private attachment tool for the request and the provider
+points Claude at that tool instead of sending raw stream-json image blocks.
+Direct stream-json image blocks are still a Claude Code CLI parity gap, and
+older image-only history is not replayed as visual context.
 
 Shore passes the system prompt through Claude Code's `--system-prompt-file`
 flag to keep large prompts out of process arguments. That flag is an

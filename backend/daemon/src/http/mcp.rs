@@ -27,7 +27,7 @@ use serde_json::{json, Value};
 use shore_protocol::types::ContentBlock;
 use tracing::{debug, warn};
 
-use crate::engine::mcp_session::{LedgerEntry, McpSession};
+use crate::engine::mcp_session::{ImageAttachment, LedgerEntry, McpSession};
 use crate::tools::dispatch_tool;
 
 use super::DaemonHttpState;
@@ -179,26 +179,21 @@ async fn handle_tools_call(
         .into_response();
     }
 
+    // Claude Code includes the assistant tool_use id in params._meta;
+    // use it so the engine can pair this ledger entry with the
+    // stream-json ToolUse block. The JSON-RPC id is only a progress
+    // token in current CLI builds.
+    let tool_use_id = tool_use_id_from_params(&id, &params);
+
+    if name == crate::claude_code::ATTACHED_IMAGE_TOOL {
+        return handle_attached_image_tool(session, id, arguments, tool_use_id).await;
+    }
+
     debug!(
         session_id = %session.id,
         tool = %name,
         "MCP tools/call dispatched"
     );
-
-    // Claude Code includes the assistant tool_use id in params._meta;
-    // use it so the engine can pair this ledger entry with the
-    // stream-json ToolUse block. The JSON-RPC id is only a progress
-    // token in current CLI builds.
-    let tool_use_id = params
-        .get("_meta")
-        .and_then(|m| m.get("claudecode/toolUseId"))
-        .and_then(Value::as_str)
-        .map(String::from)
-        .unwrap_or_else(|| match &id {
-            Value::String(s) => s.clone(),
-            Value::Number(n) => format!("rpc-{n}"),
-            _ => format!("ledger-{}", uuid::Uuid::new_v4()),
-        });
 
     let dispatch_result = if name == "set_next_wake" {
         match session.tool_ctx.schedule_next_wake(&arguments) {
@@ -246,6 +241,80 @@ async fn handle_tools_call(
         .await;
 
     Json(rpc_ok(id, response_payload)).into_response()
+}
+
+async fn handle_attached_image_tool(
+    session: &Arc<McpSession>,
+    id: Value,
+    arguments: Value,
+    tool_use_id: String,
+) -> axum::response::Response {
+    let index = arguments
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0);
+    let Some(attachment) = session.image_attachment(index).cloned() else {
+        let text = format!("no image attachment at index {index}");
+        session
+            .record(LedgerEntry {
+                tool_use_id: tool_use_id.clone(),
+                name: crate::claude_code::ATTACHED_IMAGE_TOOL.to_string(),
+                input: arguments,
+                content: vec![ContentBlock::Text { text: text.clone() }],
+                is_error: true,
+            })
+            .await;
+        return Json(rpc_ok(
+            id,
+            json!({
+                "content": [{"type": "text", "text": text}],
+                "isError": true,
+            }),
+        ))
+        .into_response();
+    };
+
+    session
+        .record(LedgerEntry {
+            tool_use_id,
+            name: crate::claude_code::ATTACHED_IMAGE_TOOL.to_string(),
+            input: arguments,
+            content: vec![ContentBlock::Text {
+                text: format!(
+                    "[image attachment {}: {}]",
+                    attachment.index, attachment.media_type
+                ),
+            }],
+            is_error: false,
+        })
+        .await;
+
+    Json(rpc_ok(id, image_attachment_payload(&attachment))).into_response()
+}
+
+fn image_attachment_payload(attachment: &ImageAttachment) -> Value {
+    json!({
+        "content": [{
+            "type": "image",
+            "data": attachment.data,
+            "mimeType": attachment.media_type,
+        }],
+        "isError": false,
+    })
+}
+
+fn tool_use_id_from_params(id: &Value, params: &Value) -> String {
+    params
+        .get("_meta")
+        .and_then(|m| m.get("claudecode/toolUseId"))
+        .and_then(Value::as_str)
+        .map(String::from)
+        .unwrap_or_else(|| match id {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => format!("rpc-{n}"),
+            _ => format!("ledger-{}", uuid::Uuid::new_v4()),
+        })
 }
 
 /// Render an arbitrary `serde_json::Value` as the MCP text payload.
@@ -498,6 +567,51 @@ mod tests {
         let drained = guard.drain().await;
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].tool_use_id, "toolu_actual");
+    }
+
+    #[tokio::test]
+    async fn tools_call_private_attachment_tool_returns_mcp_image_content() {
+        let registry = McpSessionRegistry::new();
+        let guard = registry.allocate_with_attachments(
+            "s-image".into(),
+            allowed(&[crate::claude_code::ATTACHED_IMAGE_TOOL]),
+            vec![json!({
+                "name": crate::claude_code::ATTACHED_IMAGE_TOOL,
+                "description": "image",
+                "input_schema": {"type": "object"}
+            })],
+            Arc::new(ScriptedCtx::default()),
+            vec![ImageAttachment {
+                index: 1,
+                media_type: "image/png".into(),
+                data: "abc123".into(),
+            }],
+        );
+        let (state, _h, _tx) = spawn_test_listener(registry.clone()).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let url = format!("{}/mcp/s-image", state.base_url());
+        let client = reqwest::Client::new();
+        let resp = rpc(
+            &client,
+            &url,
+            "tools/call",
+            json!(2),
+            json!({
+                "name": crate::claude_code::ATTACHED_IMAGE_TOOL,
+                "arguments": {"index": 1},
+                "_meta": {"claudecode/toolUseId": "toolu_image"}
+            }),
+        )
+        .await;
+
+        assert_eq!(resp["result"]["isError"], false);
+        assert_eq!(resp["result"]["content"][0]["type"], "image");
+        assert_eq!(resp["result"]["content"][0]["mimeType"], "image/png");
+        assert_eq!(resp["result"]["content"][0]["data"], "abc123");
+        let drained = guard.drain().await;
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].tool_use_id, "toolu_image");
+        assert_eq!(drained[0].name, crate::claude_code::ATTACHED_IMAGE_TOOL);
     }
 
     #[tokio::test]

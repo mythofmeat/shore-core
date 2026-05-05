@@ -37,6 +37,8 @@ use serde_json::Value;
 use crate::types::{StreamEvent, Timing, Usage};
 use shore_protocol::types::ContentBlock;
 
+const PRIVATE_ATTACHED_IMAGE_TOOL: &str = "mcp__shore__shore_attached_image";
+
 /// Outcome of feeding a single stream-json line into the parser.
 #[derive(Debug, Default)]
 pub(crate) struct ParseStep {
@@ -174,6 +176,9 @@ impl StreamJsonParser {
                     step.blocks.push(ContentBlock::RedactedThinking { data });
                 }
                 RawAssistantBlock::ToolUse { id, name, input } => {
+                    if name == PRIVATE_ATTACHED_IMAGE_TOOL {
+                        continue;
+                    }
                     step.events.push(StreamEvent::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
@@ -570,6 +575,17 @@ mod tests {
             .filter(|b| matches!(b, ContentBlock::ToolUse { .. }))
             .count();
         assert_eq!(tool_blocks, 1);
+    }
+
+    #[test]
+    fn private_attachment_tool_use_is_not_emitted_or_recorded() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[
+            {"type":"tool_use","id":"toolu_image","name":"mcp__shore__shore_attached_image","input":{"index":1}}
+        ]}}"#;
+        let mut parser = StreamJsonParser::new();
+        let step = parser.handle_line(line);
+        assert!(step.events.is_empty());
+        assert!(step.blocks.is_empty());
     }
 
     #[test]

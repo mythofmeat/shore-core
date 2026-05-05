@@ -32,11 +32,7 @@ pub(super) struct DriverOutput {
 }
 
 pub(super) fn ensure_supported_input(request: &LlmRequest) -> Result<(), LlmError> {
-    if request_has_image_input(request) {
-        return Err(LlmError::Provider {
-            message: "claude_code does not support image input: Claude Code CLI stream-json input is currently text-only".into(),
-        });
-    }
+    let _ = request;
     Ok(())
 }
 
@@ -546,8 +542,9 @@ fn render_current_turn_content(messages: &[Value]) -> Vec<Value> {
     }
 
     let mut content = Vec::new();
+    let mut image_index = 0usize;
     for msg in &messages[start..] {
-        let blocks = render_current_message_blocks(msg);
+        let blocks = render_current_message_blocks(msg, &mut image_index);
         if blocks.is_empty() {
             continue;
         }
@@ -562,7 +559,7 @@ fn render_current_turn_content(messages: &[Value]) -> Vec<Value> {
     content
 }
 
-fn render_current_message_blocks(message: &Value) -> Vec<Value> {
+fn render_current_message_blocks(message: &Value, image_index: &mut usize) -> Vec<Value> {
     match message_role(message) {
         Some("system") => {
             let text = extract_inline_system_text(message);
@@ -574,26 +571,31 @@ fn render_current_message_blocks(message: &Value) -> Vec<Value> {
                 ))]
             }
         }
-        _ => render_content_blocks_for_stdin(message.get("content")),
+        _ => render_content_blocks_for_stdin(message.get("content"), image_index),
     }
 }
 
-fn render_content_blocks_for_stdin(content: Option<&Value>) -> Vec<Value> {
+fn render_content_blocks_for_stdin(content: Option<&Value>, image_index: &mut usize) -> Vec<Value> {
     match content {
         Some(Value::String(s)) => vec![text_block(s)],
         Some(Value::Array(blocks)) => blocks
             .iter()
-            .filter_map(render_stdin_block)
+            .filter_map(|block| render_stdin_block(block, image_index))
             .collect::<Vec<_>>(),
         _ => Vec::new(),
     }
 }
 
-fn render_stdin_block(block: &Value) -> Option<Value> {
+fn render_stdin_block(block: &Value, image_index: &mut usize) -> Option<Value> {
     let ty = block.get("type").and_then(Value::as_str)?;
     match ty {
         "text" => block.get("text").and_then(Value::as_str).map(text_block),
-        "image" => Some(block.clone()),
+        "image" => {
+            *image_index += 1;
+            Some(text_block(format!(
+                "[Attached image {image_index}: call the mcp__shore__shore_attached_image tool with {{\"index\": {image_index}}} to inspect it before answering about the image.]",
+            )))
+        }
         "tool_use" | "tool_result" => render_block(block).map(text_block),
         _ => None,
     }
@@ -601,24 +603,6 @@ fn render_stdin_block(block: &Value) -> Option<Value> {
 
 fn text_block(text: impl Into<String>) -> Value {
     json!({ "type": "text", "text": text.into() })
-}
-
-fn request_has_image_input(request: &LlmRequest) -> bool {
-    request.messages.iter().any(message_has_image_block)
-}
-
-fn message_has_image_block(message: &Value) -> bool {
-    match message.get("content") {
-        Some(Value::Array(blocks)) => blocks.iter().any(|block| {
-            block.get("type").and_then(Value::as_str) == Some("image")
-                || block
-                    .get("source")
-                    .and_then(|source| source.get("media_type"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|media_type| media_type.starts_with("image/"))
-        }),
-        _ => false,
-    }
 }
 
 fn message_role(message: &Value) -> Option<&str> {
@@ -913,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn render_user_frame_preserves_current_turn_image_blocks() {
+    fn render_user_frame_replaces_current_turn_image_blocks_with_attachment_tool_instruction() {
         let image = json!({
             "type": "image",
             "source": {
@@ -940,7 +924,10 @@ mod tests {
             frame["message"]["content"][0]["text"],
             "What color is this?"
         );
-        assert_eq!(frame["message"]["content"][1], image);
+        let marker = frame["message"]["content"][1]["text"].as_str().unwrap();
+        assert!(marker.contains("Attached image 1"));
+        assert!(marker.contains("mcp__shore__shore_attached_image"));
+        assert!(marker.contains("\"index\": 1"));
     }
 
     #[test]
@@ -970,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn image_input_is_rejected_before_cli_spawn() {
+    fn image_input_is_supported_via_attachment_tool_instruction() {
         let req = make_request(
             vec![json!({
                 "role": "user",
@@ -986,14 +973,9 @@ mod tests {
             Some(json!({"mcp_endpoint": "http://127.0.0.1:7321/mcp/abc"})),
         );
 
-        let err = ensure_supported_input(&req).unwrap_err();
-
-        match err {
-            LlmError::Provider { message } => {
-                assert!(message.contains("does not support image input"));
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
+        ensure_supported_input(&req).unwrap();
+        let frame_str = render_user_frame(&req);
+        assert!(frame_str.contains("mcp__shore__shore_attached_image"));
     }
 
     #[test]

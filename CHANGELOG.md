@@ -29,8 +29,9 @@
 - Added progressive Claude Code client streaming via
   `--include-partial-messages`, including parser coverage for partial text
   chunks and a delayed-result forwarding test.
-- Rejected image-bearing Claude Code requests before spawning the CLI and
-  documented that Claude Code CLI 2.1.128 stream-json input remains text-only.
+- Added Claude Code current-turn image input via a private Shore MCP attachment
+  tool, avoiding broad Claude Code filesystem reads while working around the
+  CLI's text-only stream-json input.
 - Added native Claude Code session replay for cold starts with prior Shore
   history by writing Claude JSONL session files and spawning with `--resume`;
   the live suite verifies a token present only in replayed history survives.

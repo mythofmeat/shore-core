@@ -17,7 +17,7 @@ mod quota;
 mod recipe;
 mod session;
 
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use shore_protocol::types::ContentBlock;
 use tokio::io::DuplexStream;
 
@@ -101,7 +101,7 @@ fn request_with_partial_messages(request: &LlmRequest) -> LlmRequest {
             Value::Object(map) => Some(map),
             _ => None,
         })
-        .unwrap_or_else(Map::new);
+        .unwrap_or_default();
     opts.insert("include_partial_messages".into(), Value::Bool(true));
     cloned.provider_options = Some(Value::Object(opts));
     cloned
