@@ -19,3 +19,5 @@
 - Hardened Claude Code subprocess handling so partial streams without a final
   `result` event fail as incomplete, and chat MCP sessions are torn down as
   soon as their tool ledger is spliced.
+- Kept automatic post-turn compaction alive after one-shot CLI clients
+  disconnect, so Claude Code sessions survive the compaction/reload boundary.
