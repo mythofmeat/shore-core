@@ -23,8 +23,8 @@ use tracing::{debug, warn};
 
 use crate::providers::claude_code::driver::{
     self, classify_output_error, read_stream_json_lines, recipe_for_request,
-    render_system_prompt_text, render_user_frame, write_system_prompt_file, write_user_frame_to,
-    DriverOutput, ProviderConfig,
+    render_static_system_prompt_text, render_system_prompt_text, render_user_frame,
+    write_system_prompt_file, write_user_frame_to, DriverOutput, ProviderConfig,
 };
 use crate::types::LlmRequest;
 use crate::LlmError;
@@ -50,7 +50,7 @@ pub(super) async fn run_long_lived(request: &LlmRequest) -> Result<DriverOutput,
     let _key_guard = key_lock.lock_owned().await;
 
     let prompt_text = render_system_prompt_text(request);
-    let fingerprint = RecipeFingerprint::from_request(request, &cfg, prompt_text.clone());
+    let fingerprint = RecipeFingerprint::from_request(request, &cfg);
     let user_frame = render_user_frame(request);
 
     if let Some(entry) = global_cache().entries.get(&key).map(|r| r.value().clone()) {
@@ -74,7 +74,7 @@ pub(super) async fn run_long_lived(request: &LlmRequest) -> Result<DriverOutput,
     }
 
     global_cache().entries.remove(&key);
-    let proc = spawn_cached_process(request, &cfg, fingerprint).await?;
+    let proc = spawn_cached_process(request, &cfg, fingerprint, prompt_text).await?;
     let entry = Arc::new(Mutex::new(proc));
     global_cache().entries.insert(key.clone(), entry.clone());
 
@@ -102,21 +102,17 @@ struct RecipeFingerprint {
     mcp_endpoint: String,
     allowed_tools: Vec<String>,
     effort: Option<String>,
-    system_prompt_text: String,
+    static_system_prompt_text: String,
 }
 
 impl RecipeFingerprint {
-    fn from_request(
-        request: &LlmRequest,
-        cfg: &ProviderConfig,
-        system_prompt_text: String,
-    ) -> Self {
+    fn from_request(request: &LlmRequest, cfg: &ProviderConfig) -> Self {
         Self {
             model: request.model.clone(),
             mcp_endpoint: cfg.mcp_endpoint.clone(),
             allowed_tools: cfg.allowed_tools.clone(),
             effort: cfg.effort.clone(),
-            system_prompt_text,
+            static_system_prompt_text: render_static_system_prompt_text(request),
         }
     }
 }
@@ -188,8 +184,9 @@ async fn spawn_cached_process(
     request: &LlmRequest,
     cfg: &ProviderConfig,
     fingerprint: RecipeFingerprint,
+    prompt_text: String,
 ) -> Result<CachedSubprocess, LlmError> {
-    let prompt_file = write_system_prompt_file(&fingerprint.system_prompt_text)?;
+    let prompt_file = write_system_prompt_file(&prompt_text)?;
     let recipe = recipe_for_request(request, cfg, prompt_file.path().to_path_buf());
     let mut child = recipe
         .into_command()
@@ -408,8 +405,8 @@ done
         let c1 = ProviderConfig::from_request(&r1).unwrap();
         let c2 = ProviderConfig::from_request(&r2).unwrap();
         assert_eq!(
-            RecipeFingerprint::from_request(&r1, &c1, render_system_prompt_text(&r1)),
-            RecipeFingerprint::from_request(&r2, &c2, render_system_prompt_text(&r2))
+            RecipeFingerprint::from_request(&r1, &c1),
+            RecipeFingerprint::from_request(&r2, &c2)
         );
     }
 
@@ -420,8 +417,8 @@ done
         let c1 = ProviderConfig::from_request(&r1).unwrap();
         let c2 = ProviderConfig::from_request(&r2).unwrap();
         assert_ne!(
-            RecipeFingerprint::from_request(&r1, &c1, render_system_prompt_text(&r1)),
-            RecipeFingerprint::from_request(&r2, &c2, render_system_prompt_text(&r2))
+            RecipeFingerprint::from_request(&r1, &c1),
+            RecipeFingerprint::from_request(&r2, &c2)
         );
     }
 
@@ -439,6 +436,37 @@ done
 
         let first = run_long_lived(&req).await.unwrap();
         let second = run_long_lived(&req).await.unwrap();
+
+        assert_eq!(done_content(&first), "turn1");
+        assert_eq!(done_content(&second), "turn2");
+        let spawns = std::fs::read_to_string(&count_path).unwrap();
+        assert_eq!(spawns.lines().count(), 1);
+
+        global_cache().entries.remove(&key);
+        restore_path(old_path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn cache_hit_survives_growing_chat_history() {
+        let _guard = ENV_LOCK.lock().await;
+        let temp = tempfile::tempdir().unwrap();
+        install_fake_claude(temp.path(), false);
+        let count_path = temp.path().join("spawns");
+        std::env::set_var("FAKE_CLAUDE_SPAWNS", &count_path);
+        let old_path = with_fake_path(temp.path());
+        let key = format!("test-cache-history-{}", uuid::Uuid::new_v4());
+
+        let first_req = request_with_key(&key, "http://127.0.0.1:1/mcp/stable-history");
+        let mut second_req = request_with_key(&key, "http://127.0.0.1:1/mcp/stable-history");
+        second_req.messages = vec![
+            json!({"role": "user", "content": "hi"}),
+            json!({"role": "assistant", "content": "turn1"}),
+            json!({"role": "user", "content": "again"}),
+        ];
+
+        let first = run_long_lived(&first_req).await.unwrap();
+        let second = run_long_lived(&second_req).await.unwrap();
 
         assert_eq!(done_content(&first), "turn1");
         assert_eq!(done_content(&second), "turn2");

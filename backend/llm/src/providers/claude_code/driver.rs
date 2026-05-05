@@ -280,11 +280,10 @@ pub(super) fn classify_output_error(output: &DriverOutput) -> Option<LlmError> {
     })
 }
 
-/// Render `request.system` and history (everything before the trailing
-/// user message) into a temp file. The trailing user message goes
-/// through stdin as a stream-json frame; assistant frames in stdin are
-/// silently discarded by the CLI (FINDINGS.md §A) so prior turns must
-/// be flattened into the system prompt.
+/// Render `request.system` and prior history into a temp file. The current
+/// turn goes through stdin as a stream-json user frame; assistant frames in
+/// stdin are silently discarded by the CLI (FINDINGS.md §A), so prior turns
+/// must be flattened into the system prompt.
 #[cfg(test)]
 fn render_system_prompt(request: &LlmRequest) -> Result<NamedTempFile, LlmError> {
     let text = render_system_prompt_text(request);
@@ -292,12 +291,9 @@ fn render_system_prompt(request: &LlmRequest) -> Result<NamedTempFile, LlmError>
 }
 
 pub(super) fn render_system_prompt_text(request: &LlmRequest) -> String {
-    let mut text = match request.system.as_ref() {
-        Some(v) => extract_system_text(v),
-        None => String::new(),
-    };
+    let mut text = render_static_system_prompt_text(request);
 
-    let history_end = trailing_user_index(&request.messages);
+    let history_end = current_turn_start(&request.messages);
     for (i, msg) in request.messages.iter().enumerate() {
         if i >= history_end {
             break;
@@ -315,6 +311,13 @@ pub(super) fn render_system_prompt_text(request: &LlmRequest) -> String {
     text
 }
 
+pub(super) fn render_static_system_prompt_text(request: &LlmRequest) -> String {
+    match request.system.as_ref() {
+        Some(v) => extract_system_text(v),
+        None => String::new(),
+    }
+}
+
 pub(super) fn write_system_prompt_file(text: &str) -> Result<NamedTempFile, LlmError> {
     let mut file = NamedTempFile::new().map_err(|e| LlmError::Provider {
         message: format!("create system prompt tempfile: {e}"),
@@ -329,11 +332,31 @@ pub(super) fn write_system_prompt_file(text: &str) -> Result<NamedTempFile, LlmE
     Ok(file)
 }
 
-fn trailing_user_index(messages: &[Value]) -> usize {
-    messages
-        .iter()
-        .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-        .unwrap_or(messages.len())
+fn current_turn_start(messages: &[Value]) -> usize {
+    if messages.is_empty() {
+        return 0;
+    }
+
+    let mut trailing_system_start = messages.len();
+    while trailing_system_start > 0
+        && message_role(&messages[trailing_system_start - 1]) == Some("system")
+    {
+        trailing_system_start -= 1;
+    }
+
+    if trailing_system_start < messages.len() {
+        if trailing_system_start > 0
+            && message_role(&messages[trailing_system_start - 1]) == Some("user")
+        {
+            trailing_system_start - 1
+        } else {
+            trailing_system_start
+        }
+    } else if message_role(messages.last().expect("non-empty messages")) == Some("user") {
+        messages.len() - 1
+    } else {
+        messages.len()
+    }
 }
 
 /// Build the single stream-json frame to send through stdin.
@@ -342,10 +365,7 @@ fn trailing_user_index(messages: &[Value]) -> usize {
 /// the frame would otherwise be discarded. A bare string trips a JS
 /// error in Claude Code's input parser.
 pub(super) fn render_user_frame(request: &LlmRequest) -> String {
-    let user_text = match request.messages.last() {
-        Some(m) if m.get("role").and_then(Value::as_str) == Some("user") => extract_message_text(m),
-        _ => String::new(),
-    };
+    let user_text = render_current_turn_text(&request.messages);
     json!({
         "type": "user",
         "message": {
@@ -354,6 +374,47 @@ pub(super) fn render_user_frame(request: &LlmRequest) -> String {
         }
     })
     .to_string()
+}
+
+fn render_current_turn_text(messages: &[Value]) -> String {
+    let start = current_turn_start(messages);
+    if start >= messages.len() {
+        return String::new();
+    }
+
+    messages[start..]
+        .iter()
+        .filter_map(|msg| match message_role(msg) {
+            Some("system") => {
+                let text = extract_inline_system_text(msg);
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(format!("<system_instruction>{text}</system_instruction>"))
+                }
+            }
+            Some("user") => {
+                let text = extract_message_text(msg);
+                (!text.is_empty()).then_some(text)
+            }
+            _ => {
+                let text = extract_message_text(msg);
+                (!text.is_empty()).then_some(text)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn message_role(message: &Value) -> Option<&str> {
+    message.get("role").and_then(Value::as_str)
+}
+
+fn extract_inline_system_text(message: &Value) -> String {
+    message
+        .get("content")
+        .map(extract_system_text)
+        .unwrap_or_default()
 }
 
 fn extract_message_text(message: &Value) -> String {
@@ -524,6 +585,42 @@ mod tests {
     }
 
     #[test]
+    fn render_user_frame_merges_trailing_system_after_user() {
+        let req = make_request(
+            vec![
+                json!({"role": "user", "content": "first question"}),
+                json!({"role": "assistant", "content": "first answer"}),
+                json!({"role": "user", "content": "summarize now"}),
+                json!({"role": "system", "content": "use the compaction format"}),
+            ],
+            None,
+        );
+        let frame_str = render_user_frame(&req);
+        let frame: Value = serde_json::from_str(&frame_str).unwrap();
+        let text = frame["message"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("summarize now"));
+        assert!(text.contains("<system_instruction>use the compaction format</system_instruction>"));
+    }
+
+    #[test]
+    fn render_user_frame_sends_trailing_system_as_current_turn() {
+        let req = make_request(
+            vec![
+                json!({"role": "user", "content": "first question"}),
+                json!({"role": "assistant", "content": "first answer"}),
+                json!({"role": "system", "content": "heartbeat now"}),
+            ],
+            None,
+        );
+        let frame_str = render_user_frame(&req);
+        let frame: Value = serde_json::from_str(&frame_str).unwrap();
+        assert_eq!(
+            frame["message"]["content"][0]["text"],
+            "<system_instruction>heartbeat now</system_instruction>"
+        );
+    }
+
+    #[test]
     fn render_system_prompt_includes_history_turns() {
         let req = make_request(
             vec![
@@ -541,6 +638,26 @@ mod tests {
         assert!(
             !text.contains("second question"),
             "trailing user message goes through stdin, not the system prompt"
+        );
+    }
+
+    #[test]
+    fn render_system_prompt_keeps_history_before_trailing_system_turn() {
+        let req = make_request(
+            vec![
+                json!({"role": "user", "content": "first question"}),
+                json!({"role": "assistant", "content": "first answer"}),
+                json!({"role": "system", "content": "heartbeat now"}),
+            ],
+            None,
+        );
+        let file = render_system_prompt(&req).unwrap();
+        let text = std::fs::read_to_string(file.path()).unwrap();
+        assert!(text.contains("first question"));
+        assert!(text.contains("first answer"));
+        assert!(
+            !text.contains("heartbeat now"),
+            "trailing system instruction goes through stdin as current turn"
         );
     }
 
