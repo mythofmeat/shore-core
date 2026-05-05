@@ -21,3 +21,6 @@
   soon as their tool ledger is spliced.
 - Kept automatic post-turn compaction alive after one-shot CLI clients
   disconnect, so Claude Code sessions survive the compaction/reload boundary.
+- Auto-enabled the daemon HTTP MCP listener when a `claude_code` chat model is
+  configured, and documented remaining Claude Code parity gaps in
+  `docs/claude-code-parity.md`.

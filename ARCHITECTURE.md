@@ -121,15 +121,16 @@ shore-daemon
         └─ claude --print --input-format stream-json --mcp-config <daemon URL>
 ```
 
-The daemon starts the HTTP listener only when `[daemon.http].enabled = true`.
-Before a Claude Code generation, the engine allocates an MCP session, injects
-`mcp_endpoint`, `allowed_tools`, `session_id`, and `subprocess_key` into
-`provider_options`, then dispatches to `shore-llm`. Tool calls happen inside the
-CLI's turn over HTTP MCP; the daemon records them in a per-turn ledger and
-splices synthetic `tool_use` and `tool_result` blocks into the assistant message
-before persistence. Background tasks such as heartbeat, compaction, and dreaming
-use the same callback session mechanism around their non-streaming
-`generate()` calls.
+The daemon starts the HTTP listener when `[daemon.http].enabled = true` or when
+the loaded chat catalog contains a `claude_code` model. Before a Claude Code
+generation, the engine allocates an MCP session, injects `mcp_endpoint`,
+`allowed_tools`, `session_id`, and `subprocess_key` into `provider_options`,
+then dispatches to `shore-llm`. Tool calls happen inside the CLI's turn over
+HTTP MCP; the daemon records them in a per-turn ledger and splices synthetic
+`tool_use` and `tool_result` blocks into the assistant message before
+persistence. Background tasks such as heartbeat, compaction, and dreaming use
+the same callback session mechanism around their non-streaming `generate()`
+calls.
 
 `shore-llm` keeps a long-lived subprocess cache keyed by `subprocess_key` when
 the daemon provides one, with fresh-spawn fallback for cold starts, dead
@@ -153,6 +154,9 @@ The provider writes system prompts to a temporary file and passes
 undocumented Claude Code flag, so the ignored live tests and
 `dev/test-harness/claude_code/run.sh` are the guardrail for CLI compatibility
 across Claude Code upgrades.
+
+Known non-parity with direct Anthropic/OpenRouter API providers is tracked in
+`docs/claude-code-parity.md`.
 
 ## Config Runtime
 

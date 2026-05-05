@@ -75,7 +75,8 @@ bind_addr = "127.0.0.1:0"
 Non-loopback binds require `unsafe_allow_remote_access = true`. `allowed_hosts` is only a source-IP filter, not auth or TLS.
 
 `[daemon.http]` starts the daemon's local HTTP listener. It is off by default
-and is currently required by `sdk = "claude_code"` so the local `claude` CLI can
+for API providers and is auto-enabled at daemon startup when any
+`sdk = "claude_code"` chat model is configured, so the local `claude` CLI can
 call back into Shore's MCP tool host. The default `127.0.0.1:0` binds an
 ephemeral loopback port and is the recommended setting.
 
@@ -142,10 +143,6 @@ of a provider HTTP API. The CLI uses the user's local OAuth login, so there is
 no `api_key_env` for this model.
 
 ```toml
-[daemon.http]
-enabled = true
-bind_addr = "127.0.0.1:0"
-
 [chat.claude_code.sonnet-max]
 model_id = "claude-sonnet-4-5"
 max_tokens = 4096
@@ -153,13 +150,15 @@ max_tokens = 4096
 
 Before using it, install Claude Code, run `claude auth login`, and verify with
 `shore config --check`. The provider supports Shore tools through the daemon's
-MCP listener, so `[daemon.http].enabled = true` is mandatory for `claude_code`
-chat and background-task models. Client-visible streaming is buffered until the
-CLI turn completes, so TUI, Matrix, TTS, and other chunk-oriented clients should
-expect a silent gap followed by the completed response rather than progressive
-text deltas. `shore usage` records Claude Code's reported `total_cost_usd` as
-would-be API cost; actual subscription spend remains the fixed Claude plan
-price.
+MCP listener, which the daemon auto-enables on loopback when `claude_code`
+models are present. Client-visible streaming is buffered until the CLI turn
+completes, so TUI, Matrix, TTS, and other chunk-oriented clients should expect a
+silent gap followed by the completed response rather than progressive text
+deltas. `max_tokens`, `temperature`, `top_p`, and Anthropic prompt-cache knobs
+are not currently forwarded because the `claude` CLI does not expose matching
+flags for this OAuth-backed path; see `docs/claude-code-parity.md`. `shore
+usage` records Claude Code's reported `total_cost_usd` as would-be API cost;
+actual subscription spend remains the fixed Claude plan price.
 
 Shore passes the system prompt through Claude Code's `--system-prompt-file`
 flag to keep large prompts out of process arguments. That flag is an
