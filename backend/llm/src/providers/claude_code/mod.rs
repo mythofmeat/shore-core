@@ -16,9 +16,9 @@ mod parser;
 mod quota;
 mod recipe;
 
-use serde_json::json;
+use serde_json::{json, Map, Value};
 use shore_protocol::types::ContentBlock;
-use tokio::io::{AsyncWriteExt, DuplexStream};
+use tokio::io::DuplexStream;
 
 use crate::types::{GenerateResponse, LlmRequest, StreamEvent, Timing, Usage};
 use crate::LlmError;
@@ -27,27 +27,19 @@ use crate::providers::stream_helpers::{build_done_event, build_start_event};
 
 /// Streaming entry point.
 ///
-/// Spawns the CLI, parses stream-json output, then writes the events
-/// as NDJSON to a `DuplexStream`. The "streaming" here is materialized
-/// after the CLI completes — progressive deltas are not exposed
-/// because Claude Code's stream-json emits whole assistant blocks per
-/// event rather than text deltas. This matches the user direction
-/// that streaming is acceptable to lose given the cost savings.
+/// Spawns or reuses the CLI, enables Claude Code partial-message events, and
+/// forwards parsed Shore NDJSON events to the returned `DuplexStream` as they
+/// arrive.
 pub async fn stream(
     _client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<DuplexStream, LlmError> {
-    let output = run_driver(request).await?;
+    let request = request_with_partial_messages(request);
+    let _ = driver::ProviderConfig::from_request(&request)?;
     let (read_half, mut write_half) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
-        for ev in output.events {
-            let line = serialize_event(&ev);
-            if write_half.write_all(line.as_bytes()).await.is_err() {
-                break;
-            }
-            if write_half.write_all(b"\n").await.is_err() {
-                break;
-            }
+        if let Err(err) = run_driver_streaming(&request, &mut write_half).await {
+            tracing::warn!(error = %err, "claude_code stream task failed");
         }
         // Drop write_half on return so the reader sees EOF.
     });
@@ -75,6 +67,41 @@ async fn run_driver(request: &LlmRequest) -> Result<driver::DriverOutput, LlmErr
     } else {
         driver::run_fresh_spawn(request).await
     }
+}
+
+async fn run_driver_streaming<W>(
+    request: &LlmRequest,
+    writer: &mut W,
+) -> Result<driver::DriverOutput, LlmError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    if request
+        .provider_options
+        .as_ref()
+        .and_then(|opts| opts.get("subprocess_key"))
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+    {
+        cache::run_long_lived_streaming(request, writer).await
+    } else {
+        driver::run_fresh_spawn_streaming(request, writer).await
+    }
+}
+
+fn request_with_partial_messages(request: &LlmRequest) -> LlmRequest {
+    let mut cloned = request.clone();
+    let mut opts = cloned
+        .provider_options
+        .take()
+        .and_then(|v| match v {
+            Value::Object(map) => Some(map),
+            _ => None,
+        })
+        .unwrap_or_else(Map::new);
+    opts.insert("include_partial_messages".into(), Value::Bool(true));
+    cloned.provider_options = Some(Value::Object(opts));
+    cloned
 }
 
 fn build_generate_response(output: driver::DriverOutput, request_model: &str) -> GenerateResponse {
@@ -123,7 +150,7 @@ fn build_generate_response(output: driver::DriverOutput, request_model: &str) ->
     }
 }
 
-fn serialize_event(ev: &StreamEvent) -> String {
+pub(super) fn serialize_event(ev: &StreamEvent) -> String {
     match ev {
         StreamEvent::Start { model } => build_start_event(model),
         StreamEvent::Text { text } => json!({ "type": "text", "text": text }).to_string(),

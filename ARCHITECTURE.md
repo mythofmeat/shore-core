@@ -132,6 +132,12 @@ persistence. Background tasks such as heartbeat, compaction, and dreaming use
 the same callback session mechanism around their non-streaming `generate()`
 calls.
 
+Client streaming enables Claude Code's `--include-partial-messages` flag and
+forwards parsed Shore text/thinking events as each partial `stream_event`
+arrives. The final assistant event is still consumed for tool-use blocks and
+turn completion, but completed text/thinking blocks are not re-emitted when
+partials already covered them.
+
 `shore-llm` keeps a long-lived subprocess cache keyed by `subprocess_key` when
 the daemon provides one, with fresh-spawn fallback for cold starts, dead
 children, recipe changes, and subprocesses idle for at least one hour. The MCP

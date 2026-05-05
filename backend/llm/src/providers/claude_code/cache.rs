@@ -15,16 +15,16 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tempfile::NamedTempFile;
-use tokio::io::{AsyncBufReadExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::providers::claude_code::driver::{
-    self, classify_output_error, read_stream_json_lines, recipe_for_request,
-    render_static_system_prompt_text, render_system_prompt_text, render_user_frame,
-    write_system_prompt_file, write_user_frame_to, DriverOutput, ProviderConfig,
+    self, classify_output_error, read_stream_json_lines, read_stream_json_lines_forwarding,
+    recipe_for_request, render_static_system_prompt_text, render_system_prompt_text,
+    render_user_frame, write_system_prompt_file, write_user_frame_to, DriverOutput, ProviderConfig,
 };
 use crate::types::LlmRequest;
 use crate::LlmError;
@@ -96,12 +96,80 @@ pub(super) async fn run_long_lived(request: &LlmRequest) -> Result<DriverOutput,
     }
 }
 
+pub(super) async fn run_long_lived_streaming<W>(
+    request: &LlmRequest,
+    writer: &mut W,
+) -> Result<DriverOutput, LlmError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let cfg = ProviderConfig::from_request(request)?;
+    let Some(key) = cfg.subprocess_key.clone() else {
+        return driver::run_fresh_spawn_streaming(request, writer).await;
+    };
+    start_evictor();
+    let key_lock = global_cache()
+        .key_locks
+        .entry(key.clone())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .value()
+        .clone();
+    let _key_guard = key_lock.lock_owned().await;
+
+    let prompt_text = render_system_prompt_text(request);
+    let fingerprint = RecipeFingerprint::from_request(request, &cfg);
+    let user_frame = render_user_frame(request);
+
+    if let Some(entry) = global_cache().entries.get(&key).map(|r| r.value().clone()) {
+        let mut proc = entry.lock().await;
+        if proc.fingerprint == fingerprint {
+            match run_cached_turn_streaming(&mut proc, user_frame.clone(), writer).await {
+                Ok(output) => return Ok(output),
+                Err(CachedTurnError::Dead(reason)) => {
+                    warn!(subprocess_key = %key, reason = %reason, "claude_code cached subprocess died; respawning");
+                }
+                Err(CachedTurnError::Llm(err)) => {
+                    if is_quota_error(&err) {
+                        global_cache().entries.remove(&key);
+                    }
+                    return Err(err);
+                }
+            }
+        } else {
+            debug!(subprocess_key = %key, "claude_code recipe changed; respawning cached subprocess");
+        }
+    }
+
+    global_cache().entries.remove(&key);
+    let proc = spawn_cached_process(request, &cfg, fingerprint, prompt_text).await?;
+    let entry = Arc::new(Mutex::new(proc));
+    global_cache().entries.insert(key.clone(), entry.clone());
+
+    let mut proc = entry.lock().await;
+    match run_cached_turn_streaming(&mut proc, user_frame, writer).await {
+        Ok(output) => Ok(output),
+        Err(CachedTurnError::Dead(reason)) => {
+            global_cache().entries.remove(&key);
+            Err(LlmError::Provider {
+                message: format!("claude cached subprocess died before producing a turn: {reason}"),
+            })
+        }
+        Err(CachedTurnError::Llm(err)) => {
+            if is_quota_error(&err) {
+                global_cache().entries.remove(&key);
+            }
+            Err(err)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecipeFingerprint {
     model: String,
     mcp_endpoint: String,
     allowed_tools: Vec<String>,
     effort: Option<String>,
+    include_partial_messages: bool,
     static_system_prompt_text: String,
 }
 
@@ -112,6 +180,7 @@ impl RecipeFingerprint {
             mcp_endpoint: cfg.mcp_endpoint.clone(),
             allowed_tools: cfg.allowed_tools.clone(),
             effort: cfg.effort.clone(),
+            include_partial_messages: cfg.include_partial_messages,
             static_system_prompt_text: render_static_system_prompt_text(request),
         }
     }
@@ -246,6 +315,57 @@ async fn run_cached_turn(
         })?;
 
     let mut output = match read_stream_json_lines(&mut proc.stdout).await {
+        Ok(output) => output,
+        Err(LlmError::IncompleteStream) => {
+            return Err(CachedTurnError::Dead("stdout closed before result".into()));
+        }
+        Err(err) => return Err(CachedTurnError::Llm(err)),
+    };
+    output.stderr = proc.stderr.lock().await.clone();
+    if let Some(err) = classify_output_error(&output) {
+        return Err(CachedTurnError::Llm(err));
+    }
+    proc.turns = proc.turns.saturating_add(1);
+    proc.last_access = Instant::now();
+
+    if let Ok(Some(status)) = proc.child.try_wait() {
+        warn!(turns = proc.turns, status = %status, "cached claude subprocess exited after a completed turn");
+    }
+
+    Ok(output)
+}
+
+async fn run_cached_turn_streaming<W>(
+    proc: &mut CachedSubprocess,
+    user_frame: String,
+    writer: &mut W,
+) -> Result<DriverOutput, CachedTurnError>
+where
+    W: AsyncWrite + Unpin,
+{
+    if let Some(status) = proc.child.try_wait().map_err(|e| {
+        CachedTurnError::Llm(LlmError::Provider {
+            message: format!("failed to poll cached claude subprocess: {e}"),
+        })
+    })? {
+        return Err(CachedTurnError::Dead(format!(
+            "already exited with {status}"
+        )));
+    }
+
+    write_user_frame_to(&mut proc.stdin, user_frame)
+        .await
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                CachedTurnError::Dead(e.to_string())
+            } else {
+                CachedTurnError::Llm(LlmError::Provider {
+                    message: format!("write to cached claude stdin: {e}"),
+                })
+            }
+        })?;
+
+    let mut output = match read_stream_json_lines_forwarding(&mut proc.stdout, writer).await {
         Ok(output) => output,
         Err(LlmError::IncompleteStream) => {
             return Err(CachedTurnError::Dead("stdout closed before result".into()));

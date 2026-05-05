@@ -26,3 +26,6 @@
   `docs/claude-code-parity.md`.
 - Extended Claude Code cached subprocess idle retention to one hour so native
   conversation context survives ordinary pauses between turns.
+- Added progressive Claude Code client streaming via
+  `--include-partial-messages`, including parser coverage for partial text
+  chunks and a delayed-result forwarding test.

@@ -151,14 +151,13 @@ max_tokens = 4096
 Before using it, install Claude Code, run `claude auth login`, and verify with
 `shore config --check`. The provider supports Shore tools through the daemon's
 MCP listener, which the daemon auto-enables on loopback when `claude_code`
-models are present. Client-visible streaming is buffered until the CLI turn
-completes, so TUI, Matrix, TTS, and other chunk-oriented clients should expect a
-silent gap followed by the completed response rather than progressive text
-deltas. `max_tokens`, `temperature`, `top_p`, and Anthropic prompt-cache knobs
-are not currently forwarded because the `claude` CLI does not expose matching
-flags for this OAuth-backed path; see `docs/claude-code-parity.md`. `shore
-usage` records Claude Code's reported `total_cost_usd` as would-be API cost;
-actual subscription spend remains the fixed Claude plan price.
+models are present. Client-visible streaming uses Claude Code partial-message
+events for progressive text/thinking deltas. `max_tokens`, `temperature`,
+`top_p`, and Anthropic prompt-cache knobs are not currently forwarded because
+the `claude` CLI does not expose matching flags for this OAuth-backed path; see
+`docs/claude-code-parity.md`. `shore usage` records Claude Code's reported
+`total_cost_usd` as would-be API cost; actual subscription spend remains the
+fixed Claude plan price.
 
 Shore passes the system prompt through Claude Code's `--system-prompt-file`
 flag to keep large prompts out of process arguments. That flag is an

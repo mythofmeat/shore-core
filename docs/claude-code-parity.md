@@ -26,17 +26,12 @@ OpenRouter Anthropic model.
   `claude_code` chat model is configured.
 - Claude Code `total_cost_usd`, `modelUsage`, token usage, and
   `rate_limit_event` payloads are surfaced through normalized usage telemetry.
+- Client streaming consumes Claude Code `--include-partial-messages` events and
+  forwards text/thinking deltas as they arrive. Completed final assistant text
+  blocks are suppressed when they would duplicate partial chunks; tool-use
+  blocks are still preserved from the final assistant event.
 
 ## Known Non-Parity
-
-### Progressive Client Streaming
-
-Direct Anthropic/OpenRouter streaming emits chunks to clients as tokens arrive.
-Claude Code currently emits Shore stream events only after the CLI turn has
-completed, so clients see a quiet gap followed by the completed response. The
-CLI has an `--include-partial-messages` flag, but Shore does not yet consume
-that shape. Until that parser path is implemented, TUI, GUI, Matrix, and TTS
-surfaces should not rely on progressive deltas for `claude_code`.
 
 ### Sampler Controls
 
@@ -80,5 +75,9 @@ quota/auth failures come from the local OAuth session. Shore surfaces quota as
 429-shaped telemetry, but it does not automatically fall back to a paid
 Anthropic/OpenRouter key because that could surprise the user with API spend.
 
-### Image input
-Image input/multimodal chat parity looks weak: current Claude Code rendering is text/tool oriented.
+### Image Input
+
+Image input is still under test. The local CLI accepts Anthropic-style image
+content blocks over `--input-format stream-json`, but Shore's Claude Code
+renderer is currently text/tool oriented and needs explicit preservation of
+current-turn image blocks before this can be called parity.

@@ -11,7 +11,9 @@ use std::io::Write as _;
 use serde_json::{json, Value};
 use shore_protocol::types::ContentBlock;
 use tempfile::NamedTempFile;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines,
+};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 use tracing::debug;
 
@@ -37,6 +39,7 @@ pub(super) struct ProviderConfig {
     pub effort: Option<String>,
     pub session_id: String,
     pub subprocess_key: Option<String>,
+    pub include_partial_messages: bool,
 }
 
 impl ProviderConfig {
@@ -77,12 +80,17 @@ impl ProviderConfig {
             .get("subprocess_key")
             .and_then(Value::as_str)
             .map(String::from);
+        let include_partial_messages = opts
+            .get("include_partial_messages")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         Ok(Self {
             mcp_endpoint,
             allowed_tools,
             effort,
             session_id,
             subprocess_key,
+            include_partial_messages,
         })
     }
 }
@@ -189,6 +197,89 @@ pub(super) async fn run_fresh_spawn(request: &LlmRequest) -> Result<DriverOutput
     Ok(output)
 }
 
+/// Run a single fresh subprocess turn and forward parsed Shore stream events
+/// as soon as each Claude stream-json line arrives.
+pub(super) async fn run_fresh_spawn_streaming<W>(
+    request: &LlmRequest,
+    writer: &mut W,
+) -> Result<DriverOutput, LlmError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let cfg = ProviderConfig::from_request(request)?;
+
+    let prompt_text = render_system_prompt_text(request);
+    let prompt_file = write_system_prompt_file(&prompt_text)?;
+    let user_frame = render_user_frame(request);
+
+    let recipe = recipe_for_request(request, &cfg, prompt_file.path().to_path_buf());
+    let mut cmd = recipe.into_command();
+    debug!(
+        rid = request.rid.as_deref().unwrap_or("-"),
+        model = %request.model,
+        subprocess_key = cfg.subprocess_key.as_deref().unwrap_or("-"),
+        "claude_code: spawning subprocess (fresh-spawn streaming)"
+    );
+    let mut child = cmd.spawn().map_err(|e| LlmError::Provider {
+        message: format!("failed to spawn claude CLI: {e}"),
+    })?;
+
+    let stdin = child.stdin.take().ok_or_else(|| LlmError::Provider {
+        message: "failed to take child stdin".into(),
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| LlmError::Provider {
+        message: "failed to take child stdout".into(),
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| LlmError::Provider {
+        message: "failed to take child stderr".into(),
+    })?;
+
+    let write_handle = tokio::spawn(write_user_frame_and_close(stdin, user_frame));
+    let stderr_handle = tokio::spawn(drain_stderr(stderr));
+    let mut lines = BufReader::new(stdout).lines();
+    let read_result = read_stream_json_lines_forwarding(&mut lines, writer).await;
+    let _ = write_handle.await;
+    let stderr_text = stderr_handle.await.unwrap_or_default();
+    let exit = child.wait().await.map_err(|e| LlmError::Provider {
+        message: format!("failed to await child: {e}"),
+    })?;
+
+    let mut output = match read_result {
+        Ok(o) => o,
+        Err(LlmError::IncompleteStream) => {
+            return Err(LlmError::Provider {
+                message: format!(
+                    "claude CLI produced no stream-json events (exit {}): {}",
+                    exit.code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "<signal>".into()),
+                    stderr_text.trim()
+                ),
+            });
+        }
+        Err(e) => return Err(e),
+    };
+    output.stderr = stderr_text;
+
+    if let Some(err) = classify_output_error(&output) {
+        return Err(err);
+    }
+
+    if !exit.success() {
+        return Err(LlmError::Provider {
+            message: format!(
+                "claude CLI exited with {}: {}",
+                exit.code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "<signal>".into()),
+                output.stderr.trim()
+            ),
+        });
+    }
+
+    Ok(output)
+}
+
 pub(super) fn recipe_for_request(
     request: &LlmRequest,
     cfg: &ProviderConfig,
@@ -201,6 +292,7 @@ pub(super) fn recipe_for_request(
         system_prompt_path,
         session_id: cfg.session_id.clone(),
         effort: cfg.effort.clone(),
+        include_partial_messages: cfg.include_partial_messages,
     }
 }
 
@@ -239,6 +331,18 @@ pub(super) async fn read_stream_json_lines<R>(
 where
     R: AsyncBufRead + Unpin,
 {
+    let mut sink = tokio::io::sink();
+    read_stream_json_lines_forwarding(lines, &mut sink).await
+}
+
+pub(super) async fn read_stream_json_lines_forwarding<R, W>(
+    lines: &mut Lines<R>,
+    writer: &mut W,
+) -> Result<DriverOutput, LlmError>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut p = parser::StreamJsonParser::new();
     let mut output = DriverOutput::default();
     let mut saw_done = false;
@@ -247,6 +351,24 @@ where
         message: format!("read from claude stdout: {e}"),
     })? {
         let step = p.handle_line(&line);
+        for event in &step.events {
+            let line = super::serialize_event(event);
+            writer
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|e| LlmError::Provider {
+                    message: format!("write streamed claude event: {e}"),
+                })?;
+            writer
+                .write_all(b"\n")
+                .await
+                .map_err(|e| LlmError::Provider {
+                    message: format!("write streamed claude event newline: {e}"),
+                })?;
+            writer.flush().await.map_err(|e| LlmError::Provider {
+                message: format!("flush streamed claude event: {e}"),
+            })?;
+        }
         output.events.extend(step.events);
         output.blocks.extend(step.blocks);
         if step.done {
@@ -532,6 +654,20 @@ mod tests {
         assert_eq!(cfg.allowed_tools.len(), 2);
         assert_eq!(cfg.effort.as_deref(), Some("high"));
         assert_eq!(cfg.session_id, "explicit-session-id");
+        assert!(cfg.include_partial_messages);
+    }
+
+    #[test]
+    fn provider_config_can_disable_partial_messages_explicitly() {
+        let req = make_request(
+            vec![],
+            Some(json!({
+                "mcp_endpoint": "http://127.0.0.1:7321/mcp/abc",
+                "include_partial_messages": false,
+            })),
+        );
+        let cfg = ProviderConfig::from_request(&req).unwrap();
+        assert!(!cfg.include_partial_messages);
     }
 
     #[test]
@@ -560,6 +696,76 @@ mod tests {
         let err = read_stream_json_lines(&mut lines).await.unwrap_err();
 
         assert!(matches!(err, LlmError::IncompleteStream));
+    }
+
+    #[tokio::test]
+    async fn read_stream_json_lines_forwarding_emits_before_result() {
+        let (mut input_write, input_read) = tokio::io::duplex(1024);
+        let (mut event_write, event_read) = tokio::io::duplex(1024);
+
+        let producer = tokio::spawn(async move {
+            input_write
+                .write_all(
+                    concat!(
+                        r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}"#,
+                        "\n",
+                        r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}}}"#,
+                        "\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            input_write.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            input_write
+                .write_all(
+                    concat!(
+                        r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}}"#,
+                        "\n",
+                        r#"{"type":"result","subtype":"success","is_error":false,"result":"hello","stop_reason":"end_turn","usage":{},"duration_ms":300}"#,
+                        "\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let parser = tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(input_read).lines();
+            read_stream_json_lines_forwarding(&mut lines, &mut event_write).await
+        });
+
+        let mut event_lines = tokio::io::BufReader::new(event_read).lines();
+        let first = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            event_lines.next_line(),
+        )
+        .await
+        .expect("first event should arrive before final result")
+        .unwrap()
+        .unwrap();
+        let second = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            event_lines.next_line(),
+        )
+        .await
+        .expect("partial text should arrive before final result")
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&first).unwrap()["type"],
+            "start"
+        );
+        let second: Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(second["type"], "text");
+        assert_eq!(second["text"], "hel");
+
+        let output = parser.await.unwrap().unwrap();
+        producer.await.unwrap();
+        assert_eq!(output.events.len(), 4);
     }
 
     #[test]

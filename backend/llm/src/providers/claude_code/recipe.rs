@@ -29,6 +29,8 @@ pub(super) struct CliRecipe {
     pub session_id: String,
     /// Optional reasoning effort for thinking-capable models.
     pub effort: Option<String>,
+    /// Emit Anthropic-style partial stream events while the turn is running.
+    pub include_partial_messages: bool,
 }
 
 impl CliRecipe {
@@ -51,8 +53,11 @@ impl CliRecipe {
             .arg("--input-format")
             .arg("stream-json")
             .arg("--verbose")
-            .arg("--no-session-persistence")
-            .arg("--setting-sources")
+            .arg("--no-session-persistence");
+        if self.include_partial_messages {
+            cmd.arg("--include-partial-messages");
+        }
+        cmd.arg("--setting-sources")
             .arg("")
             .arg("--strict-mcp-config")
             .arg("--mcp-config")
@@ -98,6 +103,7 @@ mod tests {
             system_prompt_path: PathBuf::from("/tmp/sys.txt"),
             session_id: "11111111-2222-3333-4444-555555555555".into(),
             effort: Some("medium".into()),
+            include_partial_messages: false,
         }
     }
 
@@ -170,6 +176,18 @@ mod tests {
         let args = args_of(&cmd);
         let i = args.iter().position(|a| a == "--effort").unwrap();
         assert_eq!(args[i + 1], "medium");
+    }
+
+    #[test]
+    fn partial_messages_flag_is_gated() {
+        let mut r = sample_recipe();
+        assert!(!args_of(&r.clone().into_command())
+            .iter()
+            .any(|a| a == "--include-partial-messages"));
+        r.include_partial_messages = true;
+        assert!(args_of(&r.into_command())
+            .iter()
+            .any(|a| a == "--include-partial-messages"));
     }
 
     #[test]
