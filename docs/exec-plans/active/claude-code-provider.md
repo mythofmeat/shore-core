@@ -1,6 +1,7 @@
 # Claude Code as LLM Provider
 
-Status: implemented; live CLI smoke + MCP tool-call verified 2026-05-04
+Status: implemented; live CLI smoke, MCP tool-call, and multi-turn daemon
+soak verified 2026-05-05
 Owner: agent
 Started: 2026-05-04
 
@@ -267,8 +268,9 @@ the test harness, not a final-step integration check.
         MCP log.
   - [x] Long-lived subprocess cache behavior covered by fake-CLI
         cache-hit, mismatch, and dead-child tests.
-  - [ ] Full multi-turn daemon profile with memory write/read and
-        compaction-triggered teardown remains a manual soak check.
+  - [x] Full multi-turn daemon profile with memory write/read and
+        compaction-triggered teardown verified manually on 2026-05-05
+        against release binaries.
 - [x] `cargo fmt --all --check`, `cargo clippy --workspace
       --all-targets -- -D warnings`, `cargo test --workspace`.
 - [x] `python3 scripts/harness-check.py` (per AGENTS.md).
@@ -279,9 +281,11 @@ the test harness, not a final-step integration check.
   → unit-test inputs for the parser.
 - Daemon harness: `cargo test -p shore-daemon engine::mcp_session`.
 - `python3 scripts/harness-check.py` (per AGENTS.md).
-- One live `shore` session against a real character with at least
-  three turns and one tool call (memory write / search) on the
-  claude_code provider.
+- Live release-binary `shore` daemon soak against a throwaway character:
+  Claude Code wrote a durable `memory/...` file through Shore MCP, read
+  it back, automatic max-turn compaction completed and reloaded the
+  engine after the CLI disconnected, and the next Claude Code turn read
+  the same memory file after the compaction boundary.
 
 ## Decisions
 
