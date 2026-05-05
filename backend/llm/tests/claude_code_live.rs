@@ -5,9 +5,11 @@
 //! 1. Install the `claude` CLI (npm i -g @anthropic-ai/claude-code) and
 //!    log into your Pro/Max subscription with `claude /login`.
 //! 2. From the worktree root, start the spike's HTTP MCP server in
-//!    another shell:
+//!    another shell. The image test also needs the image spike server:
 //!    ```sh
 //!    python3 dev/spikes/claude-code-probe/mcp_http_server.py
+//!    MCP_HTTP_PORT=9997 MCP_HTTP_LOG=/tmp/mcp-image-http.log \
+//!      python3 dev/spikes/claude-code-probe/mcp_image_http_server.py
 //!    ```
 //!    It binds to 127.0.0.1:9998 by default. Override with
 //!    `MCP_HTTP_PORT=NNNN` if needed; the test reads the same env
@@ -27,6 +29,10 @@ use shore_config::models::{ResolvedModel, Sdk};
 use shore_llm::{types::LlmRequest, LlmClient};
 
 fn live_request(user: &str) -> LlmRequest {
+    live_request_with_messages(vec![json!({"role": "user", "content": user})])
+}
+
+fn live_request_with_messages(messages: Vec<serde_json::Value>) -> LlmRequest {
     let model = ResolvedModel {
         name: "live-test".into(),
         qualified_name: "chat.anthropic.live-test".into(),
@@ -62,7 +68,7 @@ fn live_request(user: &str) -> LlmRequest {
     LlmClient::build_request_with_resolved_key(
         &model,
         String::new(),
-        vec![json!({"role": "user", "content": user})],
+        messages,
         Some(json!("You are a terse assistant. Answer in one sentence.")),
         None,
         Some(provider_options),
@@ -124,4 +130,64 @@ async fn live_generate_invokes_mcp_ping_tool() {
     let log = std::fs::read_to_string(mcp_log_path()).expect("could not read MCP HTTP log");
     assert!(log.contains("\"method\": \"tools/call\""));
     assert!(log.contains(&token));
+}
+
+#[tokio::test]
+#[ignore = "requires claude CLI on PATH, OAuth login, and mcp_image_http_server.py running on MCP_IMAGE_HTTP_PORT"]
+async fn live_generate_accepts_mcp_image_tool_result() {
+    let client = LlmClient::new();
+    let port = std::env::var("MCP_IMAGE_HTTP_PORT").unwrap_or_else(|_| "9997".into());
+    let provider_options = json!({
+        "mcp_endpoint": format!("http://127.0.0.1:{port}/mcp"),
+        "allowed_tools": ["mcp__shore__show_image"],
+    });
+    let mut request = live_request(
+        "Use show_image, inspect the image, and answer with the dominant color as one word.",
+    );
+    request.provider_options = Some(provider_options);
+    request.system = Some(json!(
+        "Use the show_image tool when asked about the attached image. Answer tersely."
+    ));
+
+    let response = client
+        .generate(&request)
+        .await
+        .expect("generate against live claude CLI with MCP image result failed");
+
+    assert!(
+        response.content.to_lowercase().contains("red"),
+        "expected red image answer, got: {}",
+        response.content
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires claude CLI on PATH, OAuth login, and the spike's mcp_http_server.py running"]
+async fn live_generate_resumes_shore_written_native_session_history() {
+    let client = LlmClient::new();
+    let token = format!("shore-native-session-{}", std::process::id());
+    let mut request = live_request_with_messages(vec![
+        json!({"role": "user", "content": format!("Remember the token {token}.")}),
+        json!({"role": "assistant", "content": "I will remember it."}),
+        json!({"role": "user", "content": "What token did I ask you to remember? Reply with only the token."}),
+    ]);
+    let port = std::env::var("MCP_HTTP_PORT").unwrap_or_else(|_| "9998".into());
+    request.provider_options = Some(json!({
+        "mcp_endpoint": format!("http://127.0.0.1:{port}/mcp"),
+        "allowed_tools": [],
+        "session_id": "88888888-8888-4888-8888-888888888888",
+        "native_session_replay": true,
+    }));
+
+    let response = client
+        .generate(&request)
+        .await
+        .expect("generate against live claude CLI with native session replay failed");
+
+    eprintln!("native session response: {}", response.content);
+    assert!(
+        response.content.contains(&token),
+        "expected replayed history token {token}, got: {}",
+        response.content
+    );
 }

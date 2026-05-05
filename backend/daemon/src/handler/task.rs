@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
@@ -195,10 +195,14 @@ pub(super) async fn handle_generation(
         ctx.autonomy.notify_user_message(&char_name, turn_count);
     }
 
-    let (messages, has_prior_context) = {
+    let (messages, has_prior_context, history_rewrite_generation) = {
         let engine = engine_arc.lock().await;
         let has_prior = engine.segments().segment_count() > 0;
-        (engine.messages().to_vec(), has_prior)
+        (
+            engine.messages().to_vec(),
+            has_prior,
+            engine.history_rewrite_generation(),
+        )
     };
 
     let character_data_dir = data_dir.join(&char_name);
@@ -311,7 +315,8 @@ pub(super) async fn handle_generation(
 
     let mut claude_code_session = None;
     if matches!(resolved.sdk, Sdk::ClaudeCode) {
-        let subprocess_key = format!("{}:{char_name}", data_dir.display());
+        let subprocess_key =
+            claude_code_subprocess_key(&data_dir, &char_name, history_rewrite_generation);
         let tool_ctx =
             build_claude_code_tool_context(&ctx, &data_dir, &char_name, &effective_config)?;
         claude_code_session = crate::claude_code::prepare_request(
@@ -364,7 +369,7 @@ pub(super) async fn handle_generation(
         Vec::new()
     };
 
-    if let Some(session) = claude_code_session.as_ref() {
+    if let Some(session) = claude_code_session.take() {
         let ledger = session.drain().await;
         splice_claude_code_tool_ledger(&mut result, ledger);
     }
@@ -428,88 +433,146 @@ pub(super) async fn handle_generation(
         }
     }
 
-    {
-        let mut engine = engine_arc.lock().await;
+    let (turn_count, context_tokens, should_compact) = {
+        let engine = engine_arc.lock().await;
         let turn_count = engine.turn_count();
         let context_tokens = result.usage.input_tokens as usize
             + result.usage.cache_read_tokens as usize
             + result.usage.cache_creation_tokens as usize;
-        if ctx
-            .autonomy
-            .should_compact_now(&char_name, turn_count, context_tokens)
-        {
-            info!(
-                character = %char_name,
-                turn_count,
-                context_tokens,
-                "Running inline compaction"
-            );
-            let _ = ctx
-                .direct_tx
-                .send(
-                    shore_protocol::server_msg::ServerMessage::Phase(
-                        shore_protocol::server_msg::Phase {
-                            rid: None,
-                            phase: "compacting".into(),
-                            model: None,
-                        },
-                    )
-                    .with_rid(request.rid.clone()),
-                )
-                .await;
-
-            let cached_request = ctx.autonomy.cached_last_request(&char_name);
-
-            match crate::memory::compaction::run_compaction(
-                &char_name,
-                &effective_config,
-                &ctx.llm_client,
-                &data_dir,
-                &ctx.notifier,
-                cached_request,
-                ctx.http.clone(),
-            )
-            .await
-            {
-                Ok(retained_count) => {
-                    engine.reload().map_err(|e| e.to_string())?;
-
-                    // Apply deferred character self-edits now that the cache
-                    // has been bust by the engine reload.
-                    let character_data_dir = data_dir.join(&char_name);
-                    if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
-                        &character_data_dir,
-                        &effective_config.dirs.config,
-                        &char_name,
-                    ) {
-                        tracing::warn!(
-                            character = %char_name,
-                            error = %e,
-                            "Failed to apply deferred edits after inline compaction"
-                        );
-                    }
-
-                    ctx.autonomy
-                        .notify_compaction_complete(&char_name, retained_count);
-                    info!(
-                        character = %char_name,
-                        retained_count,
-                        "Inline compaction complete, engine reloaded"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        character = %char_name,
-                        error = %e,
-                        "Inline compaction failed"
-                    );
-                    ctx.autonomy.notify_compaction_failed(&char_name);
-                }
-            }
-        }
+        let should_compact =
+            ctx.autonomy
+                .should_compact_now(&char_name, turn_count, context_tokens);
+        (turn_count, context_tokens, should_compact)
+    };
+    if should_compact {
+        info!(
+            character = %char_name,
+            turn_count,
+            context_tokens,
+            "Scheduling inline compaction"
+        );
+        spawn_inline_compaction(
+            ctx.clone(),
+            engine_arc.clone(),
+            char_name.clone(),
+            effective_config.clone(),
+            data_dir.clone(),
+            request.rid.clone(),
+            ctx.autonomy.cached_last_request(&char_name),
+        );
     }
 
     Ok(())
+}
+
+fn spawn_inline_compaction(
+    ctx: GenContext,
+    engine_arc: Arc<tokio::sync::Mutex<crate::engine::ConversationEngine>>,
+    char_name: String,
+    effective_config: shore_config::LoadedConfig,
+    data_dir: PathBuf,
+    rid: Option<String>,
+    cached_request: Option<shore_llm::types::LlmRequest>,
+) {
+    tokio::spawn(async move {
+        run_inline_compaction(
+            ctx,
+            engine_arc,
+            char_name,
+            effective_config,
+            data_dir,
+            rid,
+            cached_request,
+        )
+        .await;
+    });
+}
+
+async fn run_inline_compaction(
+    ctx: GenContext,
+    engine_arc: Arc<tokio::sync::Mutex<crate::engine::ConversationEngine>>,
+    char_name: String,
+    effective_config: shore_config::LoadedConfig,
+    data_dir: PathBuf,
+    rid: Option<String>,
+    cached_request: Option<shore_llm::types::LlmRequest>,
+) {
+    let _ = ctx
+        .direct_tx
+        .send(
+            shore_protocol::server_msg::ServerMessage::Phase(shore_protocol::server_msg::Phase {
+                rid: None,
+                phase: "compacting".into(),
+                model: None,
+            })
+            .with_rid(rid),
+        )
+        .await;
+
+    match crate::memory::compaction::run_compaction(
+        &char_name,
+        &effective_config,
+        &ctx.llm_client,
+        &data_dir,
+        &ctx.notifier,
+        cached_request,
+        ctx.http.clone(),
+    )
+    .await
+    {
+        Ok(retained_count) => {
+            {
+                let mut engine = engine_arc.lock().await;
+                if let Err(e) = engine.reload() {
+                    tracing::warn!(
+                        character = %char_name,
+                        error = %e,
+                        "Inline compaction: engine reload failed"
+                    );
+                    ctx.autonomy.notify_compaction_failed(&char_name);
+                    return;
+                }
+            }
+
+            // Apply deferred character self-edits now that the cache
+            // has been busted by the engine reload.
+            let character_data_dir = data_dir.join(&char_name);
+            if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
+                &character_data_dir,
+                &effective_config.dirs.config,
+                &char_name,
+            ) {
+                tracing::warn!(
+                    character = %char_name,
+                    error = %e,
+                    "Failed to apply deferred edits after inline compaction"
+                );
+            }
+
+            ctx.autonomy
+                .notify_compaction_complete(&char_name, retained_count);
+            info!(
+                character = %char_name,
+                retained_count,
+                "Inline compaction complete, engine reloaded"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                character = %char_name,
+                error = %e,
+                "Inline compaction failed"
+            );
+            ctx.autonomy.notify_compaction_failed(&char_name);
+        }
+    }
+}
+
+fn claude_code_subprocess_key(data_dir: &Path, char_name: &str, history_generation: u64) -> String {
+    format!(
+        "{}:{char_name}:history-{history_generation}",
+        data_dir.display()
+    )
 }
 
 fn build_claude_code_tool_context(
@@ -873,5 +936,16 @@ mod tests {
             &result.content_blocks[1],
             ContentBlock::ToolResult { tool_use_id, content, .. } if tool_use_id == "toolu_actual" && content == "matches"
         ));
+    }
+
+    #[test]
+    fn claude_code_subprocess_key_rotates_with_history_generation() {
+        let data_dir = Path::new("/tmp/shore-data");
+        let first = claude_code_subprocess_key(data_dir, "alice", 0);
+        let rewritten = claude_code_subprocess_key(data_dir, "alice", 1);
+
+        assert_ne!(first, rewritten);
+        assert!(first.ends_with(":alice:history-0"));
+        assert!(rewritten.ends_with(":alice:history-1"));
     }
 }

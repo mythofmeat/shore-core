@@ -470,12 +470,15 @@ fn resolve_startup(cli: Cli, env_addr: Option<String>) -> Result<StartupConfig, 
     let config_path_for_errors = explicit_config_path
         .clone()
         .unwrap_or_else(default_config_path);
-    let loaded = load_config(explicit_config_path.as_deref()).map_err(|source| {
+    let mut loaded = load_config(explicit_config_path.as_deref()).map_err(|source| {
         StartupError::LoadConfig {
             path: config_path_for_errors.clone(),
             source: Box::new(source),
         }
     })?;
+    if claude_code_models_need_http(&loaded) && !loaded.app.daemon.http.enabled {
+        loaded.app.daemon.http.enabled = true;
+    }
     let (bind_addr, bind_addr_source) = resolve_listen_addr(cli.addr, env_addr, &loaded);
     let mut remote_access_warnings: Vec<RemoteAccessWarning> = validate_remote_access_policy(
         &bind_addr,
@@ -521,6 +524,14 @@ fn resolve_startup(cli: Cli, env_addr: Option<String>) -> Result<StartupConfig, 
         bind_addr_source,
         remote_access_warnings,
     })
+}
+
+fn claude_code_models_need_http(loaded: &LoadedConfig) -> bool {
+    loaded
+        .models
+        .chat
+        .values()
+        .any(|model| model.sdk == shore_config::models::Sdk::ClaudeCode)
 }
 
 fn resolve_explicit_config_path(
@@ -922,5 +933,34 @@ bind_addr = "0.0.0.0:7321"
             }
             other => panic!("expected remote access policy error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_startup_auto_enables_http_for_claude_code_models() {
+        let tmp = TempDir::new().unwrap();
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[chat.claude_code.sonnet]
+model_id = "claude-sonnet-4-5"
+"#,
+        )
+        .unwrap();
+
+        let startup = resolve_startup(
+            Cli {
+                config: Some(config_path),
+                addr: None,
+                instance_id: None,
+            },
+            None,
+        )
+        .unwrap();
+
+        assert!(startup.loaded.app.daemon.http.enabled);
+        assert_eq!(startup.loaded.app.daemon.http.bind_addr, "127.0.0.1:0");
     }
 }

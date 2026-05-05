@@ -20,16 +20,16 @@
 //!   `total_cost_usd`, `modelUsage`, `duration_ms`. Maps to `Done`.
 //! - `rate_limit_event`: quota/window state. Stored on the next `Done`
 //!   event's usage telemetry.
+//! - `stream_event`: Anthropic-style partial message events emitted when
+//!   `--include-partial-messages` is enabled. These produce live text and
+//!   thinking deltas; final `assistant` blocks for those same partials are
+//!   then used only as completion records and not re-emitted.
 //!
-//! Tool-use blocks in `assistant` events are deliberately NOT
-//! emitted as `StreamEvent::ToolUse`. Under the claude_code path
-//! the CLI runs the tool loop internally via MCP; emitting
-//! `ToolUse` would prompt a duplicate dispatch via `run_tool_loop`.
-//! Tool visibility in conversation history is provided by the
-//! daemon's MCP listener ledger instead. The blocks DO appear in
-//! the structured `blocks` record so the engine can splice them
-//! into the persisted assistant turn alongside the MCP ledger
-//! entries.
+//! Tool-use blocks in `assistant` events are emitted as
+//! `StreamEvent::ToolUse` and recorded in `blocks`. The daemon's
+//! claude_code path skips the generic tool loop, because the CLI
+//! already ran tools internally via MCP; the emitted event preserves
+//! the original block order for streamed persistence.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -37,14 +37,14 @@ use serde_json::Value;
 use crate::types::{StreamEvent, Timing, Usage};
 use shore_protocol::types::ContentBlock;
 
+const PRIVATE_ATTACHED_IMAGE_TOOL: &str = "mcp__shore__shore_attached_image";
+
 /// Outcome of feeding a single stream-json line into the parser.
 #[derive(Debug, Default)]
 pub(crate) struct ParseStep {
     /// Events to forward to the daemon, in order.
     pub events: Vec<StreamEvent>,
-    /// Structured blocks to append to the running content_blocks
-    /// record. Includes `tool_use` blocks that the StreamEvent
-    /// stream deliberately omits.
+    /// Structured blocks to append to the running content_blocks record.
     pub blocks: Vec<ContentBlock>,
     /// True iff this line was a `result` event — caller should
     /// stop reading.
@@ -65,6 +65,12 @@ pub(crate) struct StreamJsonParser {
     done_emitted: bool,
     /// Most recent rate-limit state emitted before the result event.
     rate_limit_info: Option<Value>,
+    /// TTFT from the first partial message_start event, if the CLI reports it.
+    ttft_ms: u32,
+    /// True after we have emitted partial text/thinking deltas. Completed
+    /// assistant blocks for text/thinking are cumulative and would duplicate
+    /// client-visible chunks, so skip those while preserving tool_use blocks.
+    partial_messages_seen: bool,
 }
 
 impl StreamJsonParser {
@@ -99,6 +105,7 @@ impl StreamJsonParser {
                 self.rate_limit_info = rate_limit_info;
                 ParseStep::default()
             }
+            RawEvent::StreamEvent { event, ttft_ms } => self.handle_stream_event(event, ttft_ms),
             RawEvent::Result(r) => self.handle_result(r),
             RawEvent::Unknown => ParseStep::default(),
         }
@@ -123,6 +130,10 @@ impl StreamJsonParser {
         for block in blocks {
             match block {
                 RawAssistantBlock::Text { text } => {
+                    if self.partial_messages_seen {
+                        step.blocks.push(ContentBlock::Text { text });
+                        continue;
+                    }
                     self.accumulated_text.push_str(&text);
                     step.events.push(StreamEvent::Text { text: text.clone() });
                     step.blocks.push(ContentBlock::Text { text });
@@ -131,6 +142,13 @@ impl StreamJsonParser {
                     thinking,
                     signature,
                 } => {
+                    if self.partial_messages_seen {
+                        step.blocks.push(ContentBlock::Thinking {
+                            thinking,
+                            signature,
+                        });
+                        continue;
+                    }
                     if !thinking.is_empty() {
                         step.events.push(StreamEvent::Thinking {
                             text: thinking.clone(),
@@ -149,19 +167,83 @@ impl StreamJsonParser {
                     });
                 }
                 RawAssistantBlock::RedactedThinking { data } => {
+                    if self.partial_messages_seen {
+                        step.blocks.push(ContentBlock::RedactedThinking { data });
+                        continue;
+                    }
                     step.events
                         .push(StreamEvent::RedactedThinking { data: data.clone() });
                     step.blocks.push(ContentBlock::RedactedThinking { data });
                 }
                 RawAssistantBlock::ToolUse { id, name, input } => {
-                    // Deliberately not emitting StreamEvent::ToolUse —
-                    // the CLI handled this via MCP. Keep the block
-                    // in the record so the daemon's history can
-                    // show it when it splices the MCP ledger.
+                    if name == PRIVATE_ATTACHED_IMAGE_TOOL {
+                        continue;
+                    }
+                    step.events.push(StreamEvent::ToolUse {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: input.clone(),
+                    });
                     step.blocks.push(ContentBlock::ToolUse { id, name, input });
                 }
                 RawAssistantBlock::Unknown => {}
             }
+        }
+        step
+    }
+
+    fn handle_stream_event(
+        &mut self,
+        event: RawPartialStreamEvent,
+        ttft_ms: Option<u32>,
+    ) -> ParseStep {
+        if let Some(ttft) = ttft_ms {
+            if self.ttft_ms == 0 {
+                self.ttft_ms = ttft;
+            }
+        }
+
+        let mut step = ParseStep::default();
+        match event {
+            RawPartialStreamEvent::MessageStart { message } => {
+                if self.model.is_none() {
+                    self.model = message.model;
+                }
+                if !self.start_emitted {
+                    if let Some(m) = self.model.clone() {
+                        step.events.push(StreamEvent::Start { model: m });
+                        self.start_emitted = true;
+                    }
+                }
+            }
+            RawPartialStreamEvent::ContentBlockDelta { delta, .. } => match delta {
+                RawPartialDelta::TextDelta { text } => {
+                    if !text.is_empty() {
+                        self.partial_messages_seen = true;
+                        self.accumulated_text.push_str(&text);
+                        step.events.push(StreamEvent::Text { text });
+                    }
+                }
+                RawPartialDelta::ThinkingDelta { thinking } => {
+                    if !thinking.is_empty() {
+                        self.partial_messages_seen = true;
+                        step.events.push(StreamEvent::Thinking { text: thinking });
+                    }
+                }
+                RawPartialDelta::SignatureDelta { signature } => {
+                    if !signature.is_empty() {
+                        self.partial_messages_seen = true;
+                        step.events
+                            .push(StreamEvent::ThinkingSignature { signature });
+                    }
+                }
+                RawPartialDelta::Unknown => {}
+            },
+            RawPartialStreamEvent::ContentBlockStart { .. }
+            | RawPartialStreamEvent::ContentBlockStop { .. }
+            | RawPartialStreamEvent::MessageDelta { .. }
+            | RawPartialStreamEvent::MessageStop
+            | RawPartialStreamEvent::Unknown => {}
         }
         step
     }
@@ -182,8 +264,7 @@ impl StreamJsonParser {
         };
         let timing = Timing {
             total_ms: raw.duration_ms,
-            // No direct TTFT analogue in stream-json output today.
-            time_to_first_token_ms: 0,
+            time_to_first_token_ms: self.ttft_ms,
         };
         // Prefer the streaming accumulator; fall back to the
         // result event's text if accumulator was empty (defensive
@@ -247,6 +328,11 @@ enum RawEvent {
         #[serde(default)]
         rate_limit_info: Option<Value>,
     },
+    StreamEvent {
+        event: RawPartialStreamEvent,
+        #[serde(default)]
+        ttft_ms: Option<u32>,
+    },
     Result(RawResult),
     #[serde(other)]
     Unknown,
@@ -285,6 +371,61 @@ enum RawAssistantBlock {
         name: String,
         #[serde(default)]
         input: Value,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RawPartialStreamEvent {
+    MessageStart {
+        message: RawPartialMessage,
+    },
+    ContentBlockStart {
+        #[allow(dead_code)]
+        index: Option<usize>,
+        #[allow(dead_code)]
+        content_block: Option<Value>,
+    },
+    ContentBlockDelta {
+        #[allow(dead_code)]
+        index: Option<usize>,
+        delta: RawPartialDelta,
+    },
+    ContentBlockStop {
+        #[allow(dead_code)]
+        index: Option<usize>,
+    },
+    MessageDelta {
+        #[allow(dead_code)]
+        delta: Value,
+    },
+    MessageStop,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPartialMessage {
+    #[serde(default)]
+    model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RawPartialDelta {
+    TextDelta {
+        #[serde(default)]
+        text: String,
+    },
+    ThinkingDelta {
+        #[serde(default)]
+        thinking: String,
+    },
+    SignatureDelta {
+        #[serde(default)]
+        signature: String,
     },
     #[serde(other)]
     Unknown,
@@ -412,25 +553,39 @@ mod tests {
     }
 
     #[test]
-    fn tool_use_block_recorded_but_not_emitted_as_event() {
+    fn tool_use_block_recorded_and_emitted_as_event() {
         let line = r#"{"type":"assistant","message":{"role":"assistant","content":[
             {"type":"text","text":"calling ping"},
             {"type":"tool_use","id":"toolu_01","name":"mcp__shore__ping","input":{"message":"hi"}}
         ]}}"#;
         let mut parser = StreamJsonParser::new();
         let step = parser.handle_line(line);
-        let tool_use_events = step
-            .events
-            .iter()
-            .filter(|e| matches!(e, StreamEvent::ToolUse { .. }))
-            .count();
-        assert_eq!(tool_use_events, 0);
+        assert_eq!(step.events.len(), 2);
+        match &step.events[1] {
+            StreamEvent::ToolUse { id, name, input } => {
+                assert_eq!(id, "toolu_01");
+                assert_eq!(name, "mcp__shore__ping");
+                assert_eq!(input["message"], "hi");
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
         let tool_blocks = step
             .blocks
             .iter()
             .filter(|b| matches!(b, ContentBlock::ToolUse { .. }))
             .count();
         assert_eq!(tool_blocks, 1);
+    }
+
+    #[test]
+    fn private_attachment_tool_use_is_not_emitted_or_recorded() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[
+            {"type":"tool_use","id":"toolu_image","name":"mcp__shore__shore_attached_image","input":{"index":1}}
+        ]}}"#;
+        let mut parser = StreamJsonParser::new();
+        let step = parser.handle_line(line);
+        assert!(step.events.is_empty());
+        assert!(step.blocks.is_empty());
     }
 
     #[test]
@@ -534,6 +689,63 @@ mod tests {
         assert!(step2.events.is_empty());
     }
 
+    #[test]
+    fn partial_stream_events_emit_live_deltas_without_final_duplicate_text() {
+        let (events, blocks, done) = run_lines(&[
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}"#,
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-sonnet-4-5"}},"ttft_ms":123}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}"#,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"hello","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":2},"duration_ms":500}"#,
+        ]);
+
+        assert!(done);
+        let text_chunks: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text_chunks, vec!["hel", "lo"]);
+        assert_eq!(
+            blocks,
+            vec![ContentBlock::Text {
+                text: "hello".into()
+            }]
+        );
+        match events.last().unwrap() {
+            StreamEvent::Done {
+                content, timing, ..
+            } => {
+                assert_eq!(content, "hello");
+                assert_eq!(timing.time_to_first_token_ms, 123);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn final_assistant_tool_use_is_preserved_after_partial_text() {
+        let (events, blocks, done) = run_lines(&[
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"calling "}}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[
+                {"type":"text","text":"calling "},
+                {"type":"tool_use","id":"toolu_01","name":"mcp__shore__lookup","input":{"q":"x"}}
+            ]}}"#,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"calling ","stop_reason":"tool_use","usage":{},"duration_ms":20}"#,
+        ]);
+
+        assert!(done);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::ToolUse { id, .. } if id == "toolu_01")));
+        assert!(blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolUse { id, .. } if id == "toolu_01")));
+    }
+
     /// Captured fixture from probe 6 (vanilla text turn). If this
     /// stops parsing cleanly the CLI's stream-json shape has
     /// drifted and the parser needs an update.
@@ -549,8 +761,8 @@ mod tests {
     }
 
     /// Captured fixture from probe 3 (MCP tool roundtrip).
-    /// Tool calls must NOT appear as StreamEvent::ToolUse but DO
-    /// appear in the structured blocks.
+    /// Tool calls must appear both as StreamEvent::ToolUse and in
+    /// the structured blocks so streamed history can preserve order.
     #[test]
     fn parses_probe3_mcp_tool_roundtrip_fixture() {
         let fixture = include_str!("../../../tests/fixtures/claude_code/03-mcp-tool-call.jsonl");
@@ -561,7 +773,7 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, StreamEvent::ToolUse { .. }))
             .count();
-        assert_eq!(tool_use_events, 0);
+        assert!(tool_use_events >= 1);
         let tool_use_blocks = blocks
             .iter()
             .filter(|b| matches!(b, ContentBlock::ToolUse { .. }))

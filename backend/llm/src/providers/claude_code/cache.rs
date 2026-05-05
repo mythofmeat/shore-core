@@ -15,21 +15,22 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tempfile::NamedTempFile;
-use tokio::io::{AsyncBufReadExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::providers::claude_code::driver::{
-    self, classify_output_error, read_stream_json_lines, recipe_for_request,
-    render_system_prompt_text, render_user_frame, write_system_prompt_file, write_user_frame_to,
-    DriverOutput, ProviderConfig,
+    self, classify_output_error, read_stream_json_lines, read_stream_json_lines_forwarding,
+    recipe_for_request, render_static_system_prompt_text, render_system_prompt_text,
+    render_user_frame, write_system_prompt_file, write_user_frame_to, DriverOutput, ProviderConfig,
 };
+use crate::providers::claude_code::session;
 use crate::types::LlmRequest;
 use crate::LlmError;
 
-const IDLE_EVICT_AFTER: Duration = Duration::from_secs(5 * 60);
+const IDLE_EVICT_AFTER: Duration = Duration::from_secs(60 * 60);
 const EVICT_EVERY: Duration = Duration::from_secs(60);
 
 static CACHE: OnceLock<SubprocessCache> = OnceLock::new();
@@ -49,8 +50,7 @@ pub(super) async fn run_long_lived(request: &LlmRequest) -> Result<DriverOutput,
         .clone();
     let _key_guard = key_lock.lock_owned().await;
 
-    let prompt_text = render_system_prompt_text(request);
-    let fingerprint = RecipeFingerprint::from_request(request, &cfg, prompt_text.clone());
+    let fingerprint = RecipeFingerprint::from_request(request, &cfg);
     let user_frame = render_user_frame(request);
 
     if let Some(entry) = global_cache().entries.get(&key).map(|r| r.value().clone()) {
@@ -74,12 +74,104 @@ pub(super) async fn run_long_lived(request: &LlmRequest) -> Result<DriverOutput,
     }
 
     global_cache().entries.remove(&key);
-    let proc = spawn_cached_process(request, &cfg, fingerprint).await?;
+    let native_session = session::prepare_native_session(request, &cfg)?;
+    let prompt_text = if native_session.is_some() {
+        render_static_system_prompt_text(request)
+    } else {
+        render_system_prompt_text(request)
+    };
+    let proc = spawn_cached_process(
+        request,
+        &cfg,
+        fingerprint,
+        prompt_text,
+        native_session.is_some(),
+    )
+    .await?;
     let entry = Arc::new(Mutex::new(proc));
     global_cache().entries.insert(key.clone(), entry.clone());
 
     let mut proc = entry.lock().await;
     match run_cached_turn(&mut proc, user_frame).await {
+        Ok(output) => Ok(output),
+        Err(CachedTurnError::Dead(reason)) => {
+            global_cache().entries.remove(&key);
+            Err(LlmError::Provider {
+                message: format!("claude cached subprocess died before producing a turn: {reason}"),
+            })
+        }
+        Err(CachedTurnError::Llm(err)) => {
+            if is_quota_error(&err) {
+                global_cache().entries.remove(&key);
+            }
+            Err(err)
+        }
+    }
+}
+
+pub(super) async fn run_long_lived_streaming<W>(
+    request: &LlmRequest,
+    writer: &mut W,
+) -> Result<DriverOutput, LlmError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let cfg = ProviderConfig::from_request(request)?;
+    let Some(key) = cfg.subprocess_key.clone() else {
+        return driver::run_fresh_spawn_streaming(request, writer).await;
+    };
+    start_evictor();
+    let key_lock = global_cache()
+        .key_locks
+        .entry(key.clone())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .value()
+        .clone();
+    let _key_guard = key_lock.lock_owned().await;
+
+    let fingerprint = RecipeFingerprint::from_request(request, &cfg);
+    let user_frame = render_user_frame(request);
+
+    if let Some(entry) = global_cache().entries.get(&key).map(|r| r.value().clone()) {
+        let mut proc = entry.lock().await;
+        if proc.fingerprint == fingerprint {
+            match run_cached_turn_streaming(&mut proc, user_frame.clone(), writer).await {
+                Ok(output) => return Ok(output),
+                Err(CachedTurnError::Dead(reason)) => {
+                    warn!(subprocess_key = %key, reason = %reason, "claude_code cached subprocess died; respawning");
+                }
+                Err(CachedTurnError::Llm(err)) => {
+                    if is_quota_error(&err) {
+                        global_cache().entries.remove(&key);
+                    }
+                    return Err(err);
+                }
+            }
+        } else {
+            debug!(subprocess_key = %key, "claude_code recipe changed; respawning cached subprocess");
+        }
+    }
+
+    global_cache().entries.remove(&key);
+    let native_session = session::prepare_native_session(request, &cfg)?;
+    let prompt_text = if native_session.is_some() {
+        render_static_system_prompt_text(request)
+    } else {
+        render_system_prompt_text(request)
+    };
+    let proc = spawn_cached_process(
+        request,
+        &cfg,
+        fingerprint,
+        prompt_text,
+        native_session.is_some(),
+    )
+    .await?;
+    let entry = Arc::new(Mutex::new(proc));
+    global_cache().entries.insert(key.clone(), entry.clone());
+
+    let mut proc = entry.lock().await;
+    match run_cached_turn_streaming(&mut proc, user_frame, writer).await {
         Ok(output) => Ok(output),
         Err(CachedTurnError::Dead(reason)) => {
             global_cache().entries.remove(&key);
@@ -102,21 +194,21 @@ struct RecipeFingerprint {
     mcp_endpoint: String,
     allowed_tools: Vec<String>,
     effort: Option<String>,
-    system_prompt_text: String,
+    include_partial_messages: bool,
+    native_session_replay: bool,
+    static_system_prompt_text: String,
 }
 
 impl RecipeFingerprint {
-    fn from_request(
-        request: &LlmRequest,
-        cfg: &ProviderConfig,
-        system_prompt_text: String,
-    ) -> Self {
+    fn from_request(request: &LlmRequest, cfg: &ProviderConfig) -> Self {
         Self {
             model: request.model.clone(),
             mcp_endpoint: cfg.mcp_endpoint.clone(),
             allowed_tools: cfg.allowed_tools.clone(),
             effort: cfg.effort.clone(),
-            system_prompt_text,
+            include_partial_messages: cfg.include_partial_messages,
+            native_session_replay: cfg.native_session_replay,
+            static_system_prompt_text: render_static_system_prompt_text(request),
         }
     }
 }
@@ -188,9 +280,16 @@ async fn spawn_cached_process(
     request: &LlmRequest,
     cfg: &ProviderConfig,
     fingerprint: RecipeFingerprint,
+    prompt_text: String,
+    resume_session: bool,
 ) -> Result<CachedSubprocess, LlmError> {
-    let prompt_file = write_system_prompt_file(&fingerprint.system_prompt_text)?;
-    let recipe = recipe_for_request(request, cfg, prompt_file.path().to_path_buf());
+    let prompt_file = write_system_prompt_file(&prompt_text)?;
+    let recipe = recipe_for_request(
+        request,
+        cfg,
+        prompt_file.path().to_path_buf(),
+        resume_session,
+    );
     let mut child = recipe
         .into_command()
         .spawn()
@@ -269,6 +368,57 @@ async fn run_cached_turn(
     Ok(output)
 }
 
+async fn run_cached_turn_streaming<W>(
+    proc: &mut CachedSubprocess,
+    user_frame: String,
+    writer: &mut W,
+) -> Result<DriverOutput, CachedTurnError>
+where
+    W: AsyncWrite + Unpin,
+{
+    if let Some(status) = proc.child.try_wait().map_err(|e| {
+        CachedTurnError::Llm(LlmError::Provider {
+            message: format!("failed to poll cached claude subprocess: {e}"),
+        })
+    })? {
+        return Err(CachedTurnError::Dead(format!(
+            "already exited with {status}"
+        )));
+    }
+
+    write_user_frame_to(&mut proc.stdin, user_frame)
+        .await
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                CachedTurnError::Dead(e.to_string())
+            } else {
+                CachedTurnError::Llm(LlmError::Provider {
+                    message: format!("write to cached claude stdin: {e}"),
+                })
+            }
+        })?;
+
+    let mut output = match read_stream_json_lines_forwarding(&mut proc.stdout, writer).await {
+        Ok(output) => output,
+        Err(LlmError::IncompleteStream) => {
+            return Err(CachedTurnError::Dead("stdout closed before result".into()));
+        }
+        Err(err) => return Err(CachedTurnError::Llm(err)),
+    };
+    output.stderr = proc.stderr.lock().await.clone();
+    if let Some(err) = classify_output_error(&output) {
+        return Err(CachedTurnError::Llm(err));
+    }
+    proc.turns = proc.turns.saturating_add(1);
+    proc.last_access = Instant::now();
+
+    if let Ok(Some(status)) = proc.child.try_wait() {
+        warn!(turns = proc.turns, status = %status, "cached claude subprocess exited after a completed turn");
+    }
+
+    Ok(output)
+}
+
 fn collect_stderr(
     stderr: tokio::process::ChildStderr,
     stderr_buf: Arc<Mutex<String>>,
@@ -326,6 +476,7 @@ mod tests {
             "allowed_tools": [],
             "session_id": "11111111-1111-1111-1111-111111111111",
             "subprocess_key": key,
+            "native_session_replay": false,
         }))
     }
 
@@ -408,8 +559,8 @@ done
         let c1 = ProviderConfig::from_request(&r1).unwrap();
         let c2 = ProviderConfig::from_request(&r2).unwrap();
         assert_eq!(
-            RecipeFingerprint::from_request(&r1, &c1, render_system_prompt_text(&r1)),
-            RecipeFingerprint::from_request(&r2, &c2, render_system_prompt_text(&r2))
+            RecipeFingerprint::from_request(&r1, &c1),
+            RecipeFingerprint::from_request(&r2, &c2)
         );
     }
 
@@ -420,8 +571,8 @@ done
         let c1 = ProviderConfig::from_request(&r1).unwrap();
         let c2 = ProviderConfig::from_request(&r2).unwrap();
         assert_ne!(
-            RecipeFingerprint::from_request(&r1, &c1, render_system_prompt_text(&r1)),
-            RecipeFingerprint::from_request(&r2, &c2, render_system_prompt_text(&r2))
+            RecipeFingerprint::from_request(&r1, &c1),
+            RecipeFingerprint::from_request(&r2, &c2)
         );
     }
 
@@ -439,6 +590,37 @@ done
 
         let first = run_long_lived(&req).await.unwrap();
         let second = run_long_lived(&req).await.unwrap();
+
+        assert_eq!(done_content(&first), "turn1");
+        assert_eq!(done_content(&second), "turn2");
+        let spawns = std::fs::read_to_string(&count_path).unwrap();
+        assert_eq!(spawns.lines().count(), 1);
+
+        global_cache().entries.remove(&key);
+        restore_path(old_path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn cache_hit_survives_growing_chat_history() {
+        let _guard = ENV_LOCK.lock().await;
+        let temp = tempfile::tempdir().unwrap();
+        install_fake_claude(temp.path(), false);
+        let count_path = temp.path().join("spawns");
+        std::env::set_var("FAKE_CLAUDE_SPAWNS", &count_path);
+        let old_path = with_fake_path(temp.path());
+        let key = format!("test-cache-history-{}", uuid::Uuid::new_v4());
+
+        let first_req = request_with_key(&key, "http://127.0.0.1:1/mcp/stable-history");
+        let mut second_req = request_with_key(&key, "http://127.0.0.1:1/mcp/stable-history");
+        second_req.messages = vec![
+            json!({"role": "user", "content": "hi"}),
+            json!({"role": "assistant", "content": "turn1"}),
+            json!({"role": "user", "content": "again"}),
+        ];
+
+        let first = run_long_lived(&first_req).await.unwrap();
+        let second = run_long_lived(&second_req).await.unwrap();
 
         assert_eq!(done_content(&first), "turn1");
         assert_eq!(done_content(&second), "turn2");

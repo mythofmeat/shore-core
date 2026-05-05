@@ -6,11 +6,19 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use serde_json::{json, Value};
+use shore_config::models::Sdk;
 use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
 use tokio::sync::Mutex;
 use tracing::{info, instrument};
 
 use super::GenContext;
+
+#[derive(Debug, Clone, PartialEq)]
+struct CompletedResponseMessage {
+    role: Role,
+    content_blocks: Vec<ContentBlock>,
+}
 
 /// Phase 12: Persist messages, record diagnostics, and send notifications.
 #[instrument(skip(ctx, engine_arc, result, request, tool_intermediate_messages), fields(char = char_name, model = %resolved.qualified_name))]
@@ -78,14 +86,7 @@ pub(super) async fn persist_and_notify(
             "Response complete"
         );
 
-        let content_blocks = if result.content_blocks.is_empty() && !result.content.is_empty() {
-            vec![ContentBlock::Text {
-                text: result.content.clone(),
-            }]
-        } else {
-            result.content_blocks.clone()
-        };
-        let content = derive_content_from_blocks(&content_blocks);
+        let response_messages = completed_response_messages(result, &request.sdk);
 
         // Include the assistant response in last_request so the
         // heartbeat system sees a complete conversation ending on an
@@ -98,16 +99,11 @@ pub(super) async fn persist_and_notify(
         // user has explicitly opted to preserve prior-turn thinking.
         {
             let mut full_request = request.clone();
-            let assistant_api_content: Vec<serde_json::Value> = content_blocks
-                .iter()
-                .filter_map(|block| {
-                    crate::content_util::content_block_to_request_json_for_sdk(block, &request.sdk)
-                })
-                .collect();
-            full_request.messages.push(serde_json::json!({
-                "role": "assistant",
-                "content": assistant_api_content,
-            }));
+            append_response_messages_to_request(
+                &mut full_request,
+                &response_messages,
+                &request.sdk,
+            );
             crate::content_util::maybe_strip_prior_thinking(
                 &mut full_request.messages,
                 preserve_prior_turn_thinking,
@@ -115,18 +111,21 @@ pub(super) async fn persist_and_notify(
             );
             ctx.autonomy.notify_last_request(char_name, full_request);
         }
-        let notify_content = content.clone();
-        let assistant_msg = Message {
-            msg_id: format!("m_{}", uuid::Uuid::new_v4()),
-            role: Role::Assistant,
-            content,
-            images: vec![],
-            content_blocks,
-            alt_index: None,
-            alt_count: None,
-            timestamp: chrono::Local::now().to_rfc3339(),
-        };
-        engine.append_message(assistant_msg)?;
+        let notify_content = notify_content_from_response_messages(&response_messages);
+        for response_msg in response_messages {
+            let content = derive_content_from_blocks(&response_msg.content_blocks);
+            let msg = Message {
+                msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+                role: response_msg.role,
+                content,
+                images: vec![],
+                content_blocks: response_msg.content_blocks,
+                alt_index: None,
+                alt_count: None,
+                timestamp: chrono::Local::now().to_rfc3339(),
+            };
+            engine.append_message(msg)?;
+        }
         ctx.autonomy
             .notify_assistant_message(char_name, engine.turn_count());
         notify_content
@@ -140,4 +139,213 @@ pub(super) async fn persist_and_notify(
     );
 
     Ok(())
+}
+
+fn completed_response_messages(
+    result: &shore_llm::types::StreamResult,
+    sdk: &Sdk,
+) -> Vec<CompletedResponseMessage> {
+    let content_blocks = content_blocks_for_result(result);
+    if matches!(sdk, Sdk::ClaudeCode) {
+        split_claude_code_response_blocks(content_blocks)
+    } else {
+        vec![CompletedResponseMessage {
+            role: Role::Assistant,
+            content_blocks,
+        }]
+    }
+}
+
+fn content_blocks_for_result(result: &shore_llm::types::StreamResult) -> Vec<ContentBlock> {
+    if result.content_blocks.is_empty() && !result.content.is_empty() {
+        vec![ContentBlock::Text {
+            text: result.content.clone(),
+        }]
+    } else {
+        result.content_blocks.clone()
+    }
+}
+
+fn split_claude_code_response_blocks(blocks: Vec<ContentBlock>) -> Vec<CompletedResponseMessage> {
+    let mut messages = Vec::new();
+    let mut assistant_blocks = Vec::new();
+
+    for block in blocks {
+        match block {
+            ContentBlock::ToolResult { .. } => {
+                if !assistant_blocks.is_empty() {
+                    messages.push(CompletedResponseMessage {
+                        role: Role::Assistant,
+                        content_blocks: std::mem::take(&mut assistant_blocks),
+                    });
+                }
+                messages.push(CompletedResponseMessage {
+                    role: Role::User,
+                    content_blocks: vec![block],
+                });
+            }
+            other => assistant_blocks.push(other),
+        }
+    }
+
+    if !assistant_blocks.is_empty() || messages.is_empty() {
+        messages.push(CompletedResponseMessage {
+            role: Role::Assistant,
+            content_blocks: assistant_blocks,
+        });
+    }
+
+    messages
+}
+
+fn append_response_messages_to_request(
+    request: &mut shore_llm::types::LlmRequest,
+    response_messages: &[CompletedResponseMessage],
+    sdk: &Sdk,
+) {
+    for message in response_messages {
+        let api_content: Vec<Value> = message
+            .content_blocks
+            .iter()
+            .filter_map(|block| {
+                crate::content_util::content_block_to_request_json_for_sdk(block, sdk)
+            })
+            .collect();
+        request.messages.push(json!({
+            "role": request_role(&message.role),
+            "content": api_content,
+        }));
+    }
+}
+
+fn request_role(role: &Role) -> &'static str {
+    match role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::System => "system",
+    }
+}
+
+fn notify_content_from_response_messages(messages: &[CompletedResponseMessage]) -> String {
+    let text = messages
+        .iter()
+        .filter(|message| message.role == Role::Assistant)
+        .map(|message| derive_content_from_blocks(&message.content_blocks))
+        .filter(|content| !content.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if text.is_empty() {
+        messages
+            .iter()
+            .map(|message| derive_content_from_blocks(&message.content_blocks))
+            .filter(|content| !content.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use shore_llm::types::{LlmRequest, StreamResult, Timing, Usage};
+
+    fn stream_result(content_blocks: Vec<ContentBlock>) -> StreamResult {
+        StreamResult {
+            content: derive_content_from_blocks(&content_blocks),
+            model: "claude-sonnet-4-5".into(),
+            finish_reason: "end_turn".into(),
+            usage: Usage::default(),
+            timing: Timing::default(),
+            tool_uses: vec![],
+            content_blocks,
+        }
+    }
+
+    fn request() -> LlmRequest {
+        LlmRequest {
+            sdk: Sdk::ClaudeCode,
+            model: "claude-sonnet-4-5".into(),
+            api_key: String::new(),
+            base_url: None,
+            messages: vec![json!({"role": "user", "content": "please use a tool"})],
+            system: None,
+            tools: None,
+            max_tokens: 1024,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: Some("claude_code".into()),
+            rid: None,
+            forensic_character: None,
+        }
+    }
+
+    #[test]
+    fn claude_code_tool_results_are_persisted_as_user_messages() {
+        let result = stream_result(vec![
+            ContentBlock::Text {
+                text: "Checking. ".into(),
+            },
+            ContentBlock::ToolUse {
+                id: "toolu_1".into(),
+                name: "read".into(),
+                input: json!({"path": "notes.txt"}),
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "toolu_1".into(),
+                content: "file contents".into(),
+                is_error: false,
+            },
+            ContentBlock::Text {
+                text: "Done.".into(),
+            },
+        ]);
+
+        let messages = completed_response_messages(&result, &Sdk::ClaudeCode);
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, Role::Assistant);
+        assert_eq!(messages[1].role, Role::User);
+        assert_eq!(messages[2].role, Role::Assistant);
+        assert!(matches!(
+            messages[0].content_blocks.last(),
+            Some(ContentBlock::ToolUse { id, .. }) if id == "toolu_1"
+        ));
+        assert!(matches!(
+            messages[1].content_blocks.as_slice(),
+            [ContentBlock::ToolResult { tool_use_id, .. }] if tool_use_id == "toolu_1"
+        ));
+    }
+
+    #[test]
+    fn claude_code_last_request_tool_pairs_survive_sanitizer() {
+        let result = stream_result(vec![
+            ContentBlock::ToolUse {
+                id: "toolu_1".into(),
+                name: "read".into(),
+                input: json!({"path": "notes.txt"}),
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "toolu_1".into(),
+                content: "file contents".into(),
+                is_error: false,
+            },
+            ContentBlock::Text {
+                text: "Done.".into(),
+            },
+        ]);
+        let messages = completed_response_messages(&result, &Sdk::ClaudeCode);
+        let mut req = request();
+
+        append_response_messages_to_request(&mut req, &messages, &Sdk::ClaudeCode);
+
+        assert!(shore_llm::sanitize::sanitize_tool_pairs(&req.messages).is_none());
+        assert_eq!(req.messages[1]["role"], "assistant");
+        assert_eq!(req.messages[2]["role"], "user");
+        assert_eq!(req.messages[2]["content"][0]["type"], "tool_result");
+    }
 }

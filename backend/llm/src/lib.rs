@@ -118,6 +118,17 @@ impl LlmClient {
         tools: Option<Vec<serde_json::Value>>,
         provider_options: Option<serde_json::Value>,
     ) -> Result<LlmRequest, LlmError> {
+        if matches!(model.sdk, shore_config::models::Sdk::ClaudeCode) {
+            return Ok(Self::build_request_with_resolved_key(
+                model,
+                String::new(),
+                messages,
+                system,
+                tools,
+                provider_options,
+            ));
+        }
+
         let api_key_env = model
             .api_key_env
             .as_deref()
@@ -162,6 +173,17 @@ impl LlmClient {
         tools: Option<Vec<serde_json::Value>>,
         provider_options: Option<serde_json::Value>,
     ) -> Result<LlmRequest, LlmError> {
+        if matches!(model.sdk, shore_config::models::Sdk::ClaudeCode) {
+            return Ok(Self::build_request_with_resolved_key(
+                model,
+                String::new(),
+                messages,
+                system,
+                tools,
+                provider_options,
+            ));
+        }
+
         let candidates =
             crate::credentials::resolve_key_candidates(&model.provider_key, registry, model);
 
@@ -477,6 +499,26 @@ mod tests {
     }
 
     #[test]
+    fn build_request_claude_code_needs_no_api_key() {
+        std::env::remove_var("LLM_API_KEY");
+
+        let model = test_model("sonnet-max", "claude_code", Sdk::ClaudeCode);
+
+        let req = LlmClient::build_request(
+            &model,
+            vec![serde_json::json!({"role": "user", "content": "Hi"})],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(req.sdk, Sdk::ClaudeCode);
+        assert_eq!(req.api_key, "");
+        assert_eq!(req.provider_key.as_deref(), Some("claude_code"));
+    }
+
+    #[test]
     fn build_request_with_provider_keys_uses_first_set_env() {
         // Regression pin: non-streaming callers (compaction, dreaming,
         // heartbeat) must honor `[providers.<name>].keys` and not only
@@ -597,6 +639,29 @@ sdk = "openai"
             }
             other => panic!("Expected MissingApiKey, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn build_request_with_provider_keys_claude_code_needs_no_api_key() {
+        use shore_config::providers::ProviderRegistry;
+
+        std::env::remove_var("LLM_API_KEY");
+        let model = test_model("sonnet-max", "claude_code", Sdk::ClaudeCode);
+
+        let req = LlmClient::build_request_with_provider_keys(
+            &model,
+            &ProviderRegistry::default(),
+            vec![serde_json::json!({"role": "user", "content": "Hi"})],
+            Some(serde_json::json!("system")),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(req.sdk, Sdk::ClaudeCode);
+        assert_eq!(req.provider_key.as_deref(), Some("claude_code"));
+        assert_eq!(req.api_key, "");
+        assert_eq!(req.messages[0]["content"], "Hi");
     }
 
     #[test]

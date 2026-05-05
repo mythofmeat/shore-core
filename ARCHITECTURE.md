@@ -121,25 +121,50 @@ shore-daemon
         └─ claude --print --input-format stream-json --mcp-config <daemon URL>
 ```
 
-The daemon starts the HTTP listener only when `[daemon.http].enabled = true`.
-Before a Claude Code generation, the engine allocates an MCP session, injects
-`mcp_endpoint`, `allowed_tools`, `session_id`, and `subprocess_key` into
-`provider_options`, then dispatches to `shore-llm`. Tool calls happen inside the
-CLI's turn over HTTP MCP; the daemon records them in a per-turn ledger and
-splices synthetic `tool_use` and `tool_result` blocks into the assistant message
-before persistence. Background tasks such as heartbeat, compaction, and dreaming
-use the same callback session mechanism around their non-streaming
-`generate()` calls.
+The daemon starts the HTTP listener when `[daemon.http].enabled = true` or when
+the loaded chat catalog contains a `claude_code` model. Before a Claude Code
+generation, the engine allocates an MCP session, injects `mcp_endpoint`,
+`allowed_tools`, `session_id`, and `subprocess_key` into `provider_options`,
+then dispatches to `shore-llm`. Tool calls happen inside the CLI's turn over
+HTTP MCP; the daemon records them in a per-turn ledger and splices synthetic
+`tool_use` and `tool_result` blocks into the assistant message before
+persistence. Background tasks such as heartbeat, compaction, and dreaming use
+the same callback session mechanism around their non-streaming `generate()`
+calls.
+
+Client streaming enables Claude Code's `--include-partial-messages` flag and
+forwards parsed Shore text/thinking events as each partial `stream_event`
+arrives. The final assistant event is still consumed for tool-use blocks and
+turn completion, but completed text/thinking blocks are not re-emitted when
+partials already covered them.
+
+Claude Code CLI 2.1.128 does not deliver Anthropic-style base64 stream-json
+image blocks to the model in live testing, and the official SDK documentation
+currently says stream-json input is text-only. For current-turn image
+attachments, Shore bridges the gap through a private per-session
+`shore_attached_image` MCP tool: the stdin image block becomes a text pointer,
+and the tool returns MCP image content from Shore's already encoded attachment
+payload. This keeps image input inside the daemon's MCP permission boundary and
+does not enable Claude Code's built-in filesystem `Read` tool.
 
 `shore-llm` keeps a long-lived subprocess cache keyed by `subprocess_key` when
 the daemon provides one, with fresh-spawn fallback for cold starts, dead
-children, and recipe changes. The MCP URL is stable per subprocess key while
-the daemon rotates the per-turn ledger behind that session. The daemon holds a
-per-key MCP session lock before dispatching to the provider, so concurrent turns
-for the same character cannot rebind the stable URL to a newer tool context
-while an older CLI run is still in flight. Claude Code reported
+children, recipe changes, and subprocesses idle for at least one hour. The MCP
+URL is stable per subprocess key while the daemon rotates the per-turn ledger
+behind that session. The daemon holds a per-key MCP session lock before
+dispatching to the provider, so concurrent turns for the same character cannot
+rebind the stable URL to a newer tool context while an older CLI run is still in
+flight. Claude Code reported
 `total_cost_usd` is stored as would-be API cost for observability; it is not the
 user's actual subscription spend.
+
+When a cold start has prior Shore history, the provider writes that history into
+Claude Code's native JSONL session format under `~/.claude/projects/<cwd-slug>/`
+and starts the CLI with `--resume <session_id>`. That gives the CLI structured
+conversation history after compaction, daemon restart, or subprocess death
+without replaying old turns through stdin. If the history is empty, or
+`provider_options.native_session_replay = false`, the provider falls back to the
+older transcript-in-system-prompt path with `--no-session-persistence`.
 
 The MCP listener is bearer-by-URL and loopback-only by default. A local process
 that can read the `claude` subprocess command line can see the `--mcp-config`
@@ -153,6 +178,9 @@ The provider writes system prompts to a temporary file and passes
 undocumented Claude Code flag, so the ignored live tests and
 `dev/test-harness/claude_code/run.sh` are the guardrail for CLI compatibility
 across Claude Code upgrades.
+
+Known non-parity with direct Anthropic/OpenRouter API providers is tracked in
+`docs/claude-code-parity.md`.
 
 ## Config Runtime
 

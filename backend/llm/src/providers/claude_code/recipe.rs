@@ -2,9 +2,11 @@
 //!
 //! The flag set is locked in by `dev/spikes/claude-code-probe/FINDINGS.md`.
 //! Every isolation flag (`--strict-mcp-config`, `--tools ""`,
-//! `--setting-sources ""`, `--no-session-persistence`) is mandatory; the
-//! permission gate (`--allowedTools`) is required for MCP tool calls to
-//! reach the server. Optional flags (`--effort`) are gated.
+//! `--setting-sources ""`) is mandatory; fresh subprocesses also use
+//! `--no-session-persistence`. Native session replay intentionally omits that
+//! flag and uses `--resume` after Shore has rewritten the target Claude JSONL
+//! file. The permission gate (`--allowedTools`) is required for MCP tool calls
+//! to reach the server. Optional flags (`--effort`) are gated.
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -29,6 +31,10 @@ pub(super) struct CliRecipe {
     pub session_id: String,
     /// Optional reasoning effort for thinking-capable models.
     pub effort: Option<String>,
+    /// Emit Anthropic-style partial stream events while the turn is running.
+    pub include_partial_messages: bool,
+    /// Resume from a Shore-written native Claude session file.
+    pub resume_session: bool,
 }
 
 impl CliRecipe {
@@ -50,9 +56,14 @@ impl CliRecipe {
             .arg("stream-json")
             .arg("--input-format")
             .arg("stream-json")
-            .arg("--verbose")
-            .arg("--no-session-persistence")
-            .arg("--setting-sources")
+            .arg("--verbose");
+        if !self.resume_session {
+            cmd.arg("--no-session-persistence");
+        }
+        if self.include_partial_messages {
+            cmd.arg("--include-partial-messages");
+        }
+        cmd.arg("--setting-sources")
             .arg("")
             .arg("--strict-mcp-config")
             .arg("--mcp-config")
@@ -64,9 +75,12 @@ impl CliRecipe {
             .arg("--model")
             .arg(&self.model)
             .arg("--system-prompt-file")
-            .arg(&self.system_prompt_path)
-            .arg("--session-id")
-            .arg(&self.session_id);
+            .arg(&self.system_prompt_path);
+        if self.resume_session {
+            cmd.arg("--resume").arg(&self.session_id);
+        } else {
+            cmd.arg("--session-id").arg(&self.session_id);
+        }
         if let Some(effort) = &self.effort {
             cmd.arg("--effort").arg(effort);
         }
@@ -98,6 +112,8 @@ mod tests {
             system_prompt_path: PathBuf::from("/tmp/sys.txt"),
             session_id: "11111111-2222-3333-4444-555555555555".into(),
             effort: Some("medium".into()),
+            include_partial_messages: false,
+            resume_session: false,
         }
     }
 
@@ -173,6 +189,18 @@ mod tests {
     }
 
     #[test]
+    fn partial_messages_flag_is_gated() {
+        let mut r = sample_recipe();
+        assert!(!args_of(&r.clone().into_command())
+            .iter()
+            .any(|a| a == "--include-partial-messages"));
+        r.include_partial_messages = true;
+        assert!(args_of(&r.into_command())
+            .iter()
+            .any(|a| a == "--include-partial-messages"));
+    }
+
+    #[test]
     fn system_prompt_file_points_at_path() {
         let cmd = sample_recipe().into_command();
         let args = args_of(&cmd);
@@ -190,6 +218,18 @@ mod tests {
         let i = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(args[i + 1], "claude-sonnet-4-5");
         let i = args.iter().position(|a| a == "--session-id").unwrap();
+        assert_eq!(args[i + 1], "11111111-2222-3333-4444-555555555555");
+    }
+
+    #[test]
+    fn native_resume_uses_resume_without_no_session_persistence() {
+        let mut r = sample_recipe();
+        r.resume_session = true;
+        let cmd = r.into_command();
+        let args = args_of(&cmd);
+        assert!(!args.iter().any(|a| a == "--no-session-persistence"));
+        assert!(!args.iter().any(|a| a == "--session-id"));
+        let i = args.iter().position(|a| a == "--resume").unwrap();
         assert_eq!(args[i + 1], "11111111-2222-3333-4444-555555555555");
     }
 

@@ -8,7 +8,7 @@ use shore_config::models::Sdk;
 use shore_llm::types::{GenerateResponse, LlmRequest};
 use shore_protocol::types::ContentBlock;
 
-use crate::engine::mcp_session::{LedgerEntry, McpSessionGuard};
+use crate::engine::mcp_session::{ImageAttachment, LedgerEntry, McpSessionGuard};
 use crate::http::DaemonHttpState;
 use crate::tools::ToolContext;
 
@@ -54,6 +54,11 @@ pub(crate) async fn prepare_request(
             .to_string()
     })?;
     let tool_defs = request.tools.clone().unwrap_or_default();
+    let image_attachments = collect_current_turn_image_attachments(request);
+    let mut tool_defs = tool_defs;
+    if !image_attachments.is_empty() {
+        tool_defs.push(attached_image_tool_def());
+    }
     let bare_tool_names: Vec<String> = tool_defs
         .iter()
         .filter_map(|d| d.get("name").and_then(Value::as_str).map(String::from))
@@ -67,14 +72,15 @@ pub(crate) async fn prepare_request(
     let subprocess_key_for_options = subprocess_key.clone();
     let guard = if let Some(key) = subprocess_key {
         http.mcp_sessions
-            .allocate_keyed(key, allowed_bare, tool_defs, tool_ctx)
+            .allocate_keyed(key, allowed_bare, tool_defs, tool_ctx, image_attachments)
             .await
     } else {
-        http.mcp_sessions.allocate(
+        http.mcp_sessions.allocate_with_attachments(
             uuid::Uuid::new_v4().to_string(),
             allowed_bare,
             tool_defs,
             tool_ctx,
+            image_attachments,
         )
     };
 
@@ -98,6 +104,91 @@ pub(crate) async fn prepare_request(
     Ok(Some(guard))
 }
 
+pub(crate) const ATTACHED_IMAGE_TOOL: &str = "shore_attached_image";
+
+fn attached_image_tool_def() -> Value {
+    json!({
+        "name": ATTACHED_IMAGE_TOOL,
+        "description": "Inspect a current user-provided image attachment by one-based index. Use this when the prompt refers to an attached image.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "index": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "The one-based image attachment index from the current user message."
+                }
+            },
+            "required": ["index"]
+        }
+    })
+}
+
+fn collect_current_turn_image_attachments(request: &LlmRequest) -> Vec<ImageAttachment> {
+    let start = current_turn_start(&request.messages);
+    request.messages[start..]
+        .iter()
+        .flat_map(|message| {
+            message
+                .get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(image_attachment_from_block)
+        .enumerate()
+        .map(|(i, (media_type, data))| ImageAttachment {
+            index: i + 1,
+            media_type,
+            data,
+        })
+        .collect()
+}
+
+fn image_attachment_from_block(block: &Value) -> Option<(String, String)> {
+    if block.get("type").and_then(Value::as_str) != Some("image") {
+        return None;
+    }
+    let source = block.get("source")?;
+    let media_type = source.get("media_type").and_then(Value::as_str)?;
+    if !media_type.starts_with("image/") {
+        return None;
+    }
+    let data = source.get("data").and_then(Value::as_str)?;
+    Some((media_type.to_string(), data.to_string()))
+}
+
+fn current_turn_start(messages: &[Value]) -> usize {
+    if messages.is_empty() {
+        return 0;
+    }
+
+    let mut trailing_system_start = messages.len();
+    while trailing_system_start > 0
+        && message_role(&messages[trailing_system_start - 1]) == Some("system")
+    {
+        trailing_system_start -= 1;
+    }
+
+    if trailing_system_start < messages.len() {
+        if trailing_system_start > 0
+            && message_role(&messages[trailing_system_start - 1]) == Some("user")
+        {
+            trailing_system_start - 1
+        } else {
+            trailing_system_start
+        }
+    } else if message_role(messages.last().expect("non-empty messages")) == Some("user") {
+        messages.len() - 1
+    } else {
+        messages.len()
+    }
+}
+
+fn message_role(message: &Value) -> Option<&str> {
+    message.get("role").and_then(Value::as_str)
+}
+
 pub(crate) async fn splice_generate_response_from_session(
     response: &mut GenerateResponse,
     session: Option<&McpSessionGuard>,
@@ -110,6 +201,10 @@ pub(crate) async fn splice_generate_response_from_session(
 }
 
 pub(crate) fn splice_generate_response(response: &mut GenerateResponse, ledger: Vec<LedgerEntry>) {
+    let ledger: Vec<LedgerEntry> = ledger
+        .into_iter()
+        .filter(|entry| entry.name != ATTACHED_IMAGE_TOOL)
+        .collect();
     if ledger.is_empty() {
         return;
     }
@@ -282,6 +377,41 @@ mod tests {
         assert_eq!(opts["subprocess_key"], "data:alice");
     }
 
+    #[tokio::test]
+    async fn prepare_request_adds_private_image_attachment_tool_for_current_images() {
+        let http = http_state();
+        let mut req = request(None);
+        req.messages = vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what color?"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "abc123"
+                    }
+                }
+            ]
+        })];
+
+        let guard = prepare_request(&mut req, Some(&http), None, empty_tool_context())
+            .await
+            .unwrap()
+            .unwrap();
+        let opts = req.provider_options.as_ref().unwrap();
+
+        assert_eq!(
+            opts["allowed_tools"],
+            json!(["mcp__shore__check_time", "mcp__shore__shore_attached_image"])
+        );
+        assert!(guard.session().allows(ATTACHED_IMAGE_TOOL));
+        let attachment = guard.session().image_attachment(1).unwrap();
+        assert_eq!(attachment.media_type, "image/png");
+        assert_eq!(attachment.data, "abc123");
+    }
+
     #[test]
     fn splice_generate_response_adds_tool_result_blocks() {
         let mut resp = GenerateResponse {
@@ -315,5 +445,35 @@ mod tests {
             ContentBlock::ToolResult { tool_use_id, content, is_error }
                 if tool_use_id == "toolu_1" && content == "noon" && !is_error
         ));
+    }
+
+    #[test]
+    fn splice_generate_response_omits_private_image_attachment_ledger() {
+        let mut resp = GenerateResponse {
+            content: "red".into(),
+            content_blocks: vec![ContentBlock::Text { text: "red".into() }],
+            finish_reason: "end_turn".into(),
+            usage: Usage::default(),
+            timing: Timing::default(),
+            model: "claude-sonnet-4-5".into(),
+        };
+
+        splice_generate_response(
+            &mut resp,
+            vec![LedgerEntry {
+                tool_use_id: "toolu_image".into(),
+                name: ATTACHED_IMAGE_TOOL.into(),
+                input: json!({"index": 1}),
+                content: vec![ContentBlock::Text {
+                    text: "[image attachment 1: image/png]".into(),
+                }],
+                is_error: false,
+            }],
+        );
+
+        assert_eq!(
+            resp.content_blocks,
+            vec![ContentBlock::Text { text: "red".into() }]
+        );
     }
 }

@@ -25,6 +25,17 @@ use tracing::warn;
 
 use crate::tools::ToolContext;
 
+/// Base64 image payload available only to one Claude Code MCP session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageAttachment {
+    /// One-based index advertised to the model.
+    pub index: usize,
+    /// MIME type expected by MCP image content, e.g. `image/png`.
+    pub media_type: String,
+    /// Base64-encoded image bytes.
+    pub data: String,
+}
+
 /// A single tool invocation observed during an MCP session, in the
 /// order the CLI made it. Drained by the engine and spliced into the
 /// persisted assistant turn after the LLM dispatch returns.
@@ -67,6 +78,9 @@ pub struct McpSession {
     pub tool_ctx: Arc<dyn ToolContext + Send + Sync>,
     /// Recorded tool calls, in CLI-emit order.
     pub ledger: Mutex<Vec<LedgerEntry>>,
+    /// Current-turn images exposed through Shore's private attachment
+    /// tool. These are per-session, never filesystem paths.
+    pub image_attachments: Vec<ImageAttachment>,
 }
 
 impl std::fmt::Debug for McpSession {
@@ -83,6 +97,13 @@ impl McpSession {
     /// Whether `name` (the bare tool name) is permitted in this session.
     pub fn allows(&self, name: &str) -> bool {
         self.allowed_tools.contains(name)
+    }
+
+    /// Look up a current-turn image attachment by its one-based index.
+    pub fn image_attachment(&self, index: usize) -> Option<&ImageAttachment> {
+        self.image_attachments
+            .iter()
+            .find(|attachment| attachment.index == index)
     }
 
     /// Tool definitions to advertise via MCP `tools/list`, filtered
@@ -141,12 +162,25 @@ impl McpSessionRegistry {
         tool_defs: Vec<Value>,
         tool_ctx: Arc<dyn ToolContext + Send + Sync>,
     ) -> McpSessionGuard {
+        self.allocate_with_attachments(id, allowed_tools, tool_defs, tool_ctx, Vec::new())
+    }
+
+    /// Allocate a new session with current-turn image attachments.
+    pub fn allocate_with_attachments(
+        &self,
+        id: String,
+        allowed_tools: HashSet<String>,
+        tool_defs: Vec<Value>,
+        tool_ctx: Arc<dyn ToolContext + Send + Sync>,
+        image_attachments: Vec<ImageAttachment>,
+    ) -> McpSessionGuard {
         let session = Arc::new(McpSession {
             id: id.clone(),
             allowed_tools,
             tool_defs,
             tool_ctx,
             ledger: Mutex::new(Vec::new()),
+            image_attachments,
         });
         self.sessions.insert(id.clone(), session.clone());
         McpSessionGuard {
@@ -168,6 +202,7 @@ impl McpSessionRegistry {
         allowed_tools: HashSet<String>,
         tool_defs: Vec<Value>,
         tool_ctx: Arc<dyn ToolContext + Send + Sync>,
+        image_attachments: Vec<ImageAttachment>,
     ) -> McpSessionGuard {
         let key_lock = self
             .keyed_locks
@@ -188,6 +223,7 @@ impl McpSessionRegistry {
             tool_defs,
             tool_ctx,
             ledger: Mutex::new(Vec::new()),
+            image_attachments,
         });
         self.sessions.insert(id.clone(), session.clone());
         McpSessionGuard {
@@ -325,6 +361,7 @@ mod tests {
                     HashSet::new(),
                     Vec::new(),
                     Arc::new(FakeCtx),
+                    Vec::new(),
                 )
                 .await;
             g.id().to_string()
@@ -337,6 +374,7 @@ mod tests {
                 HashSet::new(),
                 Vec::new(),
                 Arc::new(FakeCtx),
+                Vec::new(),
             )
             .await;
         assert_eq!(second.id(), first_id);
@@ -352,6 +390,7 @@ mod tests {
                 ["memory".into()].into_iter().collect(),
                 make_tool_defs(),
                 Arc::new(FakeCtx),
+                Vec::new(),
             )
             .await;
         let first_id = first.id().to_string();
@@ -366,6 +405,7 @@ mod tests {
                     ["roll_dice".into()].into_iter().collect(),
                     make_tool_defs(),
                     Arc::new(FakeCtx),
+                    Vec::new(),
                 )
                 .await
         });

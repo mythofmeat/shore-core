@@ -10,15 +10,14 @@
 //!
 //! Prerequisites:
 //!   - OPENROUTER_API_KEY env var set
-//!   - shore-llm built: `cd shore-llm && npm install && npm run build`
 //!
 //! Run with: `cargo test --test e2e -- --ignored`
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::json;
-use shore_config::app::{AppConfig, ServiceEntry, ServicesConfig};
+use shore_config::app::AppConfig;
 use shore_config::models::ModelCatalog;
 use shore_config::{LoadedConfig, ShoreDirs};
 use shore_daemon::characters::CharacterRegistry;
@@ -64,46 +63,28 @@ where
     }
 }
 
-/// Resolve the absolute path to shore-llm's dist/index.js.
-fn shore_llm_dist() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.join("../shore-llm/dist/index.js")
-}
-
 /// Check prerequisites for the E2E test. Returns an error message if not met.
 fn check_prerequisites() -> Option<String> {
     if std::env::var("OPENROUTER_API_KEY").is_err() {
         return Some("OPENROUTER_API_KEY not set".into());
-    }
-    let dist = shore_llm_dist();
-    if !dist.exists() {
-        return Some(format!(
-            "shore-llm not built: {} does not exist. Run: cd shore-llm && npm install && npm run build",
-            dist.display()
-        ));
     }
     None
 }
 
 /// Build a test LoadedConfig with temp directories, Haiku model, and optional
 /// image generation profile.
-fn build_test_config(tmp: &tempfile::TempDir, llm_socket: &Path) -> LoadedConfig {
-    build_test_config_inner(tmp, llm_socket, None)
+fn build_test_config(tmp: &tempfile::TempDir) -> LoadedConfig {
+    build_test_config_inner(tmp, None)
 }
 
 /// Build config with an image generation profile added to the catalog.
-fn build_test_config_with_image_gen(
-    tmp: &tempfile::TempDir,
-    llm_socket: &Path,
-    image_gen_toml: &str,
-) -> LoadedConfig {
+fn build_test_config_with_image_gen(tmp: &tempfile::TempDir, image_gen_toml: &str) -> LoadedConfig {
     let table: toml::Table = image_gen_toml.parse().unwrap();
-    build_test_config_inner(tmp, llm_socket, Some(&table))
+    build_test_config_inner(tmp, Some(&table))
 }
 
 fn build_test_config_inner(
     tmp: &tempfile::TempDir,
-    llm_socket: &Path,
     image_gen_table: Option<&toml::Table>,
 ) -> LoadedConfig {
     let config_dir = tmp.path().join("config");
@@ -122,21 +103,10 @@ fn build_test_config_inner(
     std::fs::create_dir_all(&data_dir).unwrap();
     std::fs::create_dir_all(&runtime_dir).unwrap();
 
-    let llm_dist = shore_llm_dist();
-
     let mut app = AppConfig::default();
     app.defaults.model = Some("haiku".into());
     app.behavior.tool_use.enabled = true;
     app.behavior.tool_use.max_iterations = 5;
-    app.services = ServicesConfig {
-        llm: ServiceEntry {
-            command: Some(format!(
-                "node {}",
-                llm_dist.canonicalize().unwrap().display()
-            )),
-            socket: Some(llm_socket.display().to_string()),
-        },
-    };
 
     let models_toml = r#"
 [openrouter]
@@ -171,7 +141,7 @@ temperature = 0.0
 }
 
 #[tokio::test]
-#[ignore = "Requires OPENROUTER_API_KEY and shore-llm built"]
+#[ignore = "Requires OPENROUTER_API_KEY"]
 async fn e2e_conversation_milestone() {
     // ── Prerequisites ──────────────────────────────────────────────────
     if let Some(msg) = check_prerequisites() {
@@ -179,8 +149,7 @@ async fn e2e_conversation_milestone() {
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let llm_socket = tmp.path().join("runtime").join("llm.sock");
-    let loaded = build_test_config(&tmp, &llm_socket);
+    let loaded = build_test_config(&tmp);
 
     let addr = {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -336,7 +305,7 @@ async fn e2e_conversation_milestone() {
     eprintln!("=== AC 2: Streaming Hello ===");
     conn.send_message("Hello", true).await.unwrap();
 
-    // Expect: History (from engine append) → StreamStart → StreamChunk(s) → StreamEnd → History (from engine append)
+    // Expect: History (from engine append) -> StreamStart -> StreamChunk(s) -> StreamEnd.
     let mut got_stream_start = false;
     let mut got_stream_chunks = 0u32;
     let stream_end_content: String;
@@ -389,12 +358,6 @@ async fn e2e_conversation_milestone() {
         "StreamEnd content should not be empty"
     );
 
-    // Drain the final History message (assistant message appended).
-    let _ = recv_until(&mut conn, CMD_TIMEOUT, |m| {
-        matches!(m, ServerMessage::History(_))
-    })
-    .await;
-
     // ── AC 4: Tool use — "What time is it?" triggers check_time ───────
     eprintln!("=== AC 4: Tool Use (check_time) ===");
     conn.send_message(
@@ -407,7 +370,6 @@ async fn e2e_conversation_milestone() {
     let mut got_tool_call = false;
     let mut got_tool_result = false;
     let mut tool_result_output = String::new();
-    let mut tool_stream_end = false;
 
     let deadline = tokio::time::Instant::now() + RECV_TIMEOUT;
     loop {
@@ -433,16 +395,14 @@ async fn e2e_conversation_milestone() {
                 );
             }
             ServerMessage::StreamEnd(end) => {
-                tool_stream_end = true;
                 eprintln!(
-                    "  StreamEnd: content_len={}, tokens=in:{}/out:{}",
+                    "  StreamEnd: content_len={}, is_final={}, tokens=in:{}/out:{}",
                     end.content.len(),
+                    end.is_final,
                     end.metadata.tokens.input,
                     end.metadata.tokens.output,
                 );
-                // If we got a StreamEnd after tool use, the loop completed.
-                // Wait a bit more in case there's another iteration.
-                if got_tool_result {
+                if end.is_final {
                     break;
                 }
             }
@@ -451,9 +411,6 @@ async fn e2e_conversation_milestone() {
             }
             ServerMessage::History(_) => {
                 // Expected — engine broadcasts on changes.
-                if tool_stream_end {
-                    break;
-                }
             }
             other => {
                 eprintln!("  (other: {:?})", std::mem::discriminant(other));
@@ -781,16 +738,15 @@ impl E2EHarness {
 }
 
 #[tokio::test]
-#[ignore = "Requires OPENROUTER_API_KEY and shore-llm built"]
+#[ignore = "Requires OPENROUTER_API_KEY"]
 async fn e2e_generate_image() {
     if let Some(msg) = check_prerequisites() {
         panic!("Skipping image gen E2E test: {msg}");
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let llm_socket = tmp.path().join("runtime").join("llm.sock");
     let ig_toml = image_gen_toml();
-    let loaded = build_test_config_with_image_gen(&tmp, &llm_socket, &ig_toml);
+    let loaded = build_test_config_with_image_gen(&tmp, &ig_toml);
 
     let mut harness = E2EHarness::start(loaded, tmp).await;
 
@@ -835,20 +791,20 @@ async fn e2e_generate_image() {
             }
             ServerMessage::StreamEnd(end) => {
                 eprintln!(
-                    "  StreamEnd: content_len={}, tokens=in:{}/out:{}",
+                    "  StreamEnd: content_len={}, is_final={}, tokens=in:{}/out:{}",
                     end.content.len(),
+                    end.is_final,
                     end.metadata.tokens.input,
                     end.metadata.tokens.output,
                 );
-                if got_tool_result {
+                if end.is_final && got_tool_result {
                     break;
                 }
             }
             ServerMessage::StreamStart(_) | ServerMessage::StreamChunk(_) => {}
             ServerMessage::History(_) => {
-                if got_tool_result {
-                    break;
-                }
+                // Expected while tool-use and tool-result messages persist;
+                // keep reading until the terminal StreamEnd.
             }
             ServerMessage::Error(e) => {
                 panic!("Received error from daemon: {} ({:?})", e.message, e.code);
@@ -875,18 +831,29 @@ async fn e2e_generate_image() {
     let image_path = result_json["path"]
         .as_str()
         .expect("Tool result should contain 'path' field");
-    assert!(
-        image_path.starts_with("generated/"),
-        "Image path should be under generated/: {image_path}"
-    );
     eprintln!("  Image saved to: {image_path}");
 
     // Verify the file actually exists on disk.
-    let full_path = harness
+    let generated_dir = harness
         .data_dir
         .join("TestChar")
         .join("images")
-        .join(image_path);
+        .join("generated");
+    let returned_path = PathBuf::from(image_path);
+    let full_path = if returned_path.is_absolute() {
+        returned_path
+    } else {
+        harness
+            .data_dir
+            .join("TestChar")
+            .join("images")
+            .join(returned_path)
+    };
+    assert!(
+        full_path.starts_with(&generated_dir),
+        "Image path should be under generated dir: {}",
+        full_path.display()
+    );
     assert!(
         full_path.exists(),
         "Generated image file should exist at: {}",
@@ -904,7 +871,7 @@ async fn e2e_generate_image() {
 // ── Web search E2E test ───────────────────────────────────────────────────
 
 #[tokio::test]
-#[ignore = "Requires OPENROUTER_API_KEY, TAVILY_API_KEY, and shore-llm built"]
+#[ignore = "Requires OPENROUTER_API_KEY and TAVILY_API_KEY"]
 async fn e2e_web_search() {
     if let Some(msg) = check_prerequisites() {
         panic!("Skipping web search E2E test: {msg}");
@@ -914,8 +881,7 @@ async fn e2e_web_search() {
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let llm_socket = tmp.path().join("runtime").join("llm.sock");
-    let loaded = build_test_config(&tmp, &llm_socket);
+    let loaded = build_test_config(&tmp);
 
     let mut harness = E2EHarness::start(loaded, tmp).await;
 
@@ -936,10 +902,9 @@ async fn e2e_web_search() {
     let mut tool_call_name = String::new();
     let mut got_tool_result = false;
     let mut tool_result_output = String::new();
-    let mut final_content = String::new();
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    loop {
+    let final_content = loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             panic!("Timed out waiting for web search response");
@@ -962,22 +927,21 @@ async fn e2e_web_search() {
                 );
             }
             ServerMessage::StreamEnd(end) => {
-                final_content = end.content.clone();
                 eprintln!(
-                    "  StreamEnd: content_len={}, tokens=in:{}/out:{}",
+                    "  StreamEnd: content_len={}, is_final={}, tokens=in:{}/out:{}",
                     end.content.len(),
+                    end.is_final,
                     end.metadata.tokens.input,
                     end.metadata.tokens.output,
                 );
-                if got_tool_result {
-                    break;
+                if end.is_final {
+                    break end.content.clone();
                 }
             }
             ServerMessage::StreamStart(_) | ServerMessage::StreamChunk(_) => {}
             ServerMessage::History(_) => {
-                if got_tool_result {
-                    break;
-                }
+                // Expected while tool-use and tool-result messages persist;
+                // keep reading until the terminal StreamEnd.
             }
             ServerMessage::Error(e) => {
                 panic!("Received error from daemon: {} ({:?})", e.message, e.code);
@@ -986,7 +950,7 @@ async fn e2e_web_search() {
                 eprintln!("  (other: {:?})", std::mem::discriminant(other));
             }
         }
-    }
+    };
 
     // ── Assertions ────────────────────────────────────────────────────
     assert!(got_tool_call, "LLM should have called a tool");

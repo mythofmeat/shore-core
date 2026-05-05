@@ -422,6 +422,54 @@ mod tests {
         )
     }
 
+    fn test_claude_code_compaction_model() -> ResolvedModel {
+        ResolvedModel::from_parts(
+            "sonnet-max".to_string(),
+            "chat.claude_code.sonnet-max".to_string(),
+            "chat".to_string(),
+            "claude_code".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            Sdk::ClaudeCode,
+            ModelConfigFields {
+                sdk: Some(Sdk::ClaudeCode),
+                max_tokens: Some(777),
+                reasoning_effort: Some("medium".to_string()),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn claude_code_compaction_request_does_not_require_api_key_env() {
+        std::env::remove_var("LLM_API_KEY");
+        let model = test_claude_code_compaction_model();
+        let ledger_tmp = TempDir::new().unwrap();
+        let llm = RealCompactionLlm::new(
+            LedgerClient::new(
+                shore_llm::LlmClient::new(),
+                &ledger_tmp.path().join("ledger.db"),
+            )
+            .unwrap(),
+            model,
+            ProviderRegistry::default(),
+            "alice".to_string(),
+            None,
+        );
+
+        let request = llm
+            .build_compaction_request(
+                "compaction system",
+                vec![json!({"role": "user", "content": "compact now"})],
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(request.sdk, Sdk::ClaudeCode);
+        assert_eq!(request.provider_key.as_deref(), Some("claude_code"));
+        assert_eq!(request.api_key, "");
+        assert_eq!(request.messages[0]["content"], "compact now");
+    }
+
     #[test]
     fn cached_compaction_request_keeps_prefix_but_uses_compaction_settings() {
         let api_key_env = format!("SHORE_TEST_COMPACTION_{}", uuid::Uuid::new_v4().simple());

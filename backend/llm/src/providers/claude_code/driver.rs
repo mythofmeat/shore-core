@@ -11,11 +11,13 @@ use std::io::Write as _;
 use serde_json::{json, Value};
 use shore_protocol::types::ContentBlock;
 use tempfile::NamedTempFile;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines,
+};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 use tracing::debug;
 
-use crate::providers::claude_code::{parser, quota, recipe::CliRecipe};
+use crate::providers::claude_code::{parser, quota, recipe::CliRecipe, session};
 use crate::providers::stream_helpers::extract_system_text;
 use crate::types::{LlmRequest, StreamEvent};
 use crate::LlmError;
@@ -29,6 +31,11 @@ pub(super) struct DriverOutput {
     pub stderr: String,
 }
 
+pub(super) fn ensure_supported_input(request: &LlmRequest) -> Result<(), LlmError> {
+    let _ = request;
+    Ok(())
+}
+
 /// Engine-supplied glue extracted from `LlmRequest.provider_options`.
 #[derive(Debug)]
 pub(super) struct ProviderConfig {
@@ -37,6 +44,8 @@ pub(super) struct ProviderConfig {
     pub effort: Option<String>,
     pub session_id: String,
     pub subprocess_key: Option<String>,
+    pub include_partial_messages: bool,
+    pub native_session_replay: bool,
 }
 
 impl ProviderConfig {
@@ -77,12 +86,22 @@ impl ProviderConfig {
             .get("subprocess_key")
             .and_then(Value::as_str)
             .map(String::from);
+        let include_partial_messages = opts
+            .get("include_partial_messages")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let native_session_replay = opts
+            .get("native_session_replay")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         Ok(Self {
             mcp_endpoint,
             allowed_tools,
             effort,
             session_id,
             subprocess_key,
+            include_partial_messages,
+            native_session_replay,
         })
     }
 }
@@ -98,15 +117,26 @@ fn fallback_session_id() -> String {
 
 /// Run a single subprocess turn against the locked recipe.
 pub(super) async fn run_fresh_spawn(request: &LlmRequest) -> Result<DriverOutput, LlmError> {
+    ensure_supported_input(request)?;
     let cfg = ProviderConfig::from_request(request)?;
 
     // Tempfile is held open for the lifetime of the subprocess so the
     // CLI can read it before we drop it.
-    let prompt_text = render_system_prompt_text(request);
+    let native_session = session::prepare_native_session(request, &cfg)?;
+    let prompt_text = if native_session.is_some() {
+        render_static_system_prompt_text(request)
+    } else {
+        render_system_prompt_text(request)
+    };
     let prompt_file = write_system_prompt_file(&prompt_text)?;
     let user_frame = render_user_frame(request);
 
-    let recipe = recipe_for_request(request, &cfg, prompt_file.path().to_path_buf());
+    let recipe = recipe_for_request(
+        request,
+        &cfg,
+        prompt_file.path().to_path_buf(),
+        native_session.is_some(),
+    );
     let mut cmd = recipe.into_command();
     debug!(
         rid = request.rid.as_deref().unwrap_or("-"),
@@ -189,10 +219,105 @@ pub(super) async fn run_fresh_spawn(request: &LlmRequest) -> Result<DriverOutput
     Ok(output)
 }
 
+/// Run a single fresh subprocess turn and forward parsed Shore stream events
+/// as soon as each Claude stream-json line arrives.
+pub(super) async fn run_fresh_spawn_streaming<W>(
+    request: &LlmRequest,
+    writer: &mut W,
+) -> Result<DriverOutput, LlmError>
+where
+    W: AsyncWrite + Unpin,
+{
+    ensure_supported_input(request)?;
+    let cfg = ProviderConfig::from_request(request)?;
+
+    let native_session = session::prepare_native_session(request, &cfg)?;
+    let prompt_text = if native_session.is_some() {
+        render_static_system_prompt_text(request)
+    } else {
+        render_system_prompt_text(request)
+    };
+    let prompt_file = write_system_prompt_file(&prompt_text)?;
+    let user_frame = render_user_frame(request);
+
+    let recipe = recipe_for_request(
+        request,
+        &cfg,
+        prompt_file.path().to_path_buf(),
+        native_session.is_some(),
+    );
+    let mut cmd = recipe.into_command();
+    debug!(
+        rid = request.rid.as_deref().unwrap_or("-"),
+        model = %request.model,
+        subprocess_key = cfg.subprocess_key.as_deref().unwrap_or("-"),
+        "claude_code: spawning subprocess (fresh-spawn streaming)"
+    );
+    let mut child = cmd.spawn().map_err(|e| LlmError::Provider {
+        message: format!("failed to spawn claude CLI: {e}"),
+    })?;
+
+    let stdin = child.stdin.take().ok_or_else(|| LlmError::Provider {
+        message: "failed to take child stdin".into(),
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| LlmError::Provider {
+        message: "failed to take child stdout".into(),
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| LlmError::Provider {
+        message: "failed to take child stderr".into(),
+    })?;
+
+    let write_handle = tokio::spawn(write_user_frame_and_close(stdin, user_frame));
+    let stderr_handle = tokio::spawn(drain_stderr(stderr));
+    let mut lines = BufReader::new(stdout).lines();
+    let read_result = read_stream_json_lines_forwarding(&mut lines, writer).await;
+    let _ = write_handle.await;
+    let stderr_text = stderr_handle.await.unwrap_or_default();
+    let exit = child.wait().await.map_err(|e| LlmError::Provider {
+        message: format!("failed to await child: {e}"),
+    })?;
+
+    let mut output = match read_result {
+        Ok(o) => o,
+        Err(LlmError::IncompleteStream) => {
+            return Err(LlmError::Provider {
+                message: format!(
+                    "claude CLI produced no stream-json events (exit {}): {}",
+                    exit.code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "<signal>".into()),
+                    stderr_text.trim()
+                ),
+            });
+        }
+        Err(e) => return Err(e),
+    };
+    output.stderr = stderr_text;
+
+    if let Some(err) = classify_output_error(&output) {
+        return Err(err);
+    }
+
+    if !exit.success() {
+        return Err(LlmError::Provider {
+            message: format!(
+                "claude CLI exited with {}: {}",
+                exit.code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "<signal>".into()),
+                output.stderr.trim()
+            ),
+        });
+    }
+
+    Ok(output)
+}
+
 pub(super) fn recipe_for_request(
     request: &LlmRequest,
     cfg: &ProviderConfig,
     system_prompt_path: std::path::PathBuf,
+    resume_session: bool,
 ) -> CliRecipe {
     CliRecipe {
         model: request.model.clone(),
@@ -201,6 +326,8 @@ pub(super) fn recipe_for_request(
         system_prompt_path,
         session_id: cfg.session_id.clone(),
         effort: cfg.effort.clone(),
+        include_partial_messages: cfg.include_partial_messages,
+        resume_session,
     }
 }
 
@@ -239,23 +366,55 @@ pub(super) async fn read_stream_json_lines<R>(
 where
     R: AsyncBufRead + Unpin,
 {
+    let mut sink = tokio::io::sink();
+    read_stream_json_lines_forwarding(lines, &mut sink).await
+}
+
+pub(super) async fn read_stream_json_lines_forwarding<R, W>(
+    lines: &mut Lines<R>,
+    writer: &mut W,
+) -> Result<DriverOutput, LlmError>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut p = parser::StreamJsonParser::new();
     let mut output = DriverOutput::default();
+    let mut saw_done = false;
 
     while let Some(line) = lines.next_line().await.map_err(|e| LlmError::Provider {
         message: format!("read from claude stdout: {e}"),
     })? {
         let step = p.handle_line(&line);
+        for event in &step.events {
+            let line = super::serialize_event(event);
+            writer
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|e| LlmError::Provider {
+                    message: format!("write streamed claude event: {e}"),
+                })?;
+            writer
+                .write_all(b"\n")
+                .await
+                .map_err(|e| LlmError::Provider {
+                    message: format!("write streamed claude event newline: {e}"),
+                })?;
+            writer.flush().await.map_err(|e| LlmError::Provider {
+                message: format!("flush streamed claude event: {e}"),
+            })?;
+        }
         output.events.extend(step.events);
         output.blocks.extend(step.blocks);
         if step.done {
+            saw_done = true;
             break;
         }
     }
     if let Some(m) = p.model() {
         output.model = m.to_string();
     }
-    if output.events.is_empty() {
+    if !saw_done {
         return Err(LlmError::IncompleteStream);
     }
     Ok(output)
@@ -280,11 +439,10 @@ pub(super) fn classify_output_error(output: &DriverOutput) -> Option<LlmError> {
     })
 }
 
-/// Render `request.system` and history (everything before the trailing
-/// user message) into a temp file. The trailing user message goes
-/// through stdin as a stream-json frame; assistant frames in stdin are
-/// silently discarded by the CLI (FINDINGS.md §A) so prior turns must
-/// be flattened into the system prompt.
+/// Render `request.system` and prior history into a temp file. The current
+/// turn goes through stdin as a stream-json user frame; assistant frames in
+/// stdin are silently discarded by the CLI (FINDINGS.md §A), so prior turns
+/// must be flattened into the system prompt.
 #[cfg(test)]
 fn render_system_prompt(request: &LlmRequest) -> Result<NamedTempFile, LlmError> {
     let text = render_system_prompt_text(request);
@@ -292,12 +450,9 @@ fn render_system_prompt(request: &LlmRequest) -> Result<NamedTempFile, LlmError>
 }
 
 pub(super) fn render_system_prompt_text(request: &LlmRequest) -> String {
-    let mut text = match request.system.as_ref() {
-        Some(v) => extract_system_text(v),
-        None => String::new(),
-    };
+    let mut text = render_static_system_prompt_text(request);
 
-    let history_end = trailing_user_index(&request.messages);
+    let history_end = current_turn_start(&request.messages);
     for (i, msg) in request.messages.iter().enumerate() {
         if i >= history_end {
             break;
@@ -315,6 +470,13 @@ pub(super) fn render_system_prompt_text(request: &LlmRequest) -> String {
     text
 }
 
+pub(super) fn render_static_system_prompt_text(request: &LlmRequest) -> String {
+    match request.system.as_ref() {
+        Some(v) => extract_system_text(v),
+        None => String::new(),
+    }
+}
+
 pub(super) fn write_system_prompt_file(text: &str) -> Result<NamedTempFile, LlmError> {
     let mut file = NamedTempFile::new().map_err(|e| LlmError::Provider {
         message: format!("create system prompt tempfile: {e}"),
@@ -329,11 +491,31 @@ pub(super) fn write_system_prompt_file(text: &str) -> Result<NamedTempFile, LlmE
     Ok(file)
 }
 
-fn trailing_user_index(messages: &[Value]) -> usize {
-    messages
-        .iter()
-        .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-        .unwrap_or(messages.len())
+pub(super) fn current_turn_start(messages: &[Value]) -> usize {
+    if messages.is_empty() {
+        return 0;
+    }
+
+    let mut trailing_system_start = messages.len();
+    while trailing_system_start > 0
+        && message_role(&messages[trailing_system_start - 1]) == Some("system")
+    {
+        trailing_system_start -= 1;
+    }
+
+    if trailing_system_start < messages.len() {
+        if trailing_system_start > 0
+            && message_role(&messages[trailing_system_start - 1]) == Some("user")
+        {
+            trailing_system_start - 1
+        } else {
+            trailing_system_start
+        }
+    } else if message_role(messages.last().expect("non-empty messages")) == Some("user") {
+        messages.len() - 1
+    } else {
+        messages.len()
+    }
 }
 
 /// Build the single stream-json frame to send through stdin.
@@ -342,18 +524,96 @@ fn trailing_user_index(messages: &[Value]) -> usize {
 /// the frame would otherwise be discarded. A bare string trips a JS
 /// error in Claude Code's input parser.
 pub(super) fn render_user_frame(request: &LlmRequest) -> String {
-    let user_text = match request.messages.last() {
-        Some(m) if m.get("role").and_then(Value::as_str) == Some("user") => extract_message_text(m),
-        _ => String::new(),
-    };
+    let content = render_current_turn_content(&request.messages);
     json!({
         "type": "user",
         "message": {
             "role": "user",
-            "content": [{"type": "text", "text": user_text}],
+            "content": content,
         }
     })
     .to_string()
+}
+
+fn render_current_turn_content(messages: &[Value]) -> Vec<Value> {
+    let start = current_turn_start(messages);
+    if start >= messages.len() {
+        return vec![text_block("")];
+    }
+
+    let mut content = Vec::new();
+    let mut image_index = 0usize;
+    for msg in &messages[start..] {
+        let blocks = render_current_message_blocks(msg, &mut image_index);
+        if blocks.is_empty() {
+            continue;
+        }
+        if !content.is_empty() {
+            content.push(text_block("\n\n"));
+        }
+        content.extend(blocks);
+    }
+    if content.is_empty() {
+        content.push(text_block(""));
+    }
+    content
+}
+
+fn render_current_message_blocks(message: &Value, image_index: &mut usize) -> Vec<Value> {
+    match message_role(message) {
+        Some("system") => {
+            let text = extract_inline_system_text(message);
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![text_block(format!(
+                    "<system_instruction>{text}</system_instruction>"
+                ))]
+            }
+        }
+        _ => render_content_blocks_for_stdin(message.get("content"), image_index),
+    }
+}
+
+fn render_content_blocks_for_stdin(content: Option<&Value>, image_index: &mut usize) -> Vec<Value> {
+    match content {
+        Some(Value::String(s)) => vec![text_block(s)],
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| render_stdin_block(block, image_index))
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    }
+}
+
+fn render_stdin_block(block: &Value, image_index: &mut usize) -> Option<Value> {
+    let ty = block.get("type").and_then(Value::as_str)?;
+    match ty {
+        "text" => block.get("text").and_then(Value::as_str).map(text_block),
+        "image" => {
+            *image_index += 1;
+            Some(text_block(format!(
+                "[Attached image {image_index}: call the mcp__shore__shore_attached_image tool with {{\"index\": {image_index}}} to inspect it before answering about the image.]",
+            )))
+        }
+        "tool_use" | "tool_result" => render_block(block).map(text_block),
+        _ => None,
+    }
+}
+
+fn text_block(text: impl Into<String>) -> Value {
+    json!({ "type": "text", "text": text.into() })
+}
+
+fn message_role(message: &Value) -> Option<&str> {
+    message.get("role").and_then(Value::as_str)
+}
+
+fn extract_inline_system_text(message: &Value) -> String {
+    message
+        .get("content")
+        .map(extract_system_text)
+        .unwrap_or_default()
 }
 
 fn extract_message_text(message: &Value) -> String {
@@ -431,6 +691,22 @@ mod tests {
         }
     }
 
+    fn frame_content_text(frame: &Value) -> String {
+        frame["message"]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|block| {
+                if block["type"] == "text" {
+                    block["text"].as_str()
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
     #[test]
     fn provider_config_requires_options() {
         let req = make_request(vec![], None);
@@ -469,6 +745,34 @@ mod tests {
         assert_eq!(cfg.allowed_tools.len(), 2);
         assert_eq!(cfg.effort.as_deref(), Some("high"));
         assert_eq!(cfg.session_id, "explicit-session-id");
+        assert!(cfg.include_partial_messages);
+        assert!(cfg.native_session_replay);
+    }
+
+    #[test]
+    fn provider_config_can_disable_partial_messages_explicitly() {
+        let req = make_request(
+            vec![],
+            Some(json!({
+                "mcp_endpoint": "http://127.0.0.1:7321/mcp/abc",
+                "include_partial_messages": false,
+            })),
+        );
+        let cfg = ProviderConfig::from_request(&req).unwrap();
+        assert!(!cfg.include_partial_messages);
+    }
+
+    #[test]
+    fn provider_config_can_disable_native_session_replay_explicitly() {
+        let req = make_request(
+            vec![],
+            Some(json!({
+                "mcp_endpoint": "http://127.0.0.1:7321/mcp/abc",
+                "native_session_replay": false,
+            })),
+        );
+        let cfg = ProviderConfig::from_request(&req).unwrap();
+        assert!(!cfg.native_session_replay);
     }
 
     #[test]
@@ -482,6 +786,91 @@ mod tests {
         // `--session-id`.
         uuid::Uuid::parse_str(&cfg.session_id)
             .unwrap_or_else(|e| panic!("not a uuid: {} ({e})", cfg.session_id));
+    }
+
+    #[tokio::test]
+    async fn read_stream_json_lines_requires_result_event() {
+        let input = concat!(
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"partial"}]}}"#,
+            "\n",
+        );
+        let mut lines = tokio::io::BufReader::new(input.as_bytes()).lines();
+
+        let err = read_stream_json_lines(&mut lines).await.unwrap_err();
+
+        assert!(matches!(err, LlmError::IncompleteStream));
+    }
+
+    #[tokio::test]
+    async fn read_stream_json_lines_forwarding_emits_before_result() {
+        let (mut input_write, input_read) = tokio::io::duplex(1024);
+        let (mut event_write, event_read) = tokio::io::duplex(1024);
+
+        let producer = tokio::spawn(async move {
+            input_write
+                .write_all(
+                    concat!(
+                        r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}"#,
+                        "\n",
+                        r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}}}"#,
+                        "\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            input_write.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            input_write
+                .write_all(
+                    concat!(
+                        r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}}"#,
+                        "\n",
+                        r#"{"type":"result","subtype":"success","is_error":false,"result":"hello","stop_reason":"end_turn","usage":{},"duration_ms":300}"#,
+                        "\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let parser = tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(input_read).lines();
+            read_stream_json_lines_forwarding(&mut lines, &mut event_write).await
+        });
+
+        let mut event_lines = tokio::io::BufReader::new(event_read).lines();
+        let first = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            event_lines.next_line(),
+        )
+        .await
+        .expect("first event should arrive before final result")
+        .unwrap()
+        .unwrap();
+        let second = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            event_lines.next_line(),
+        )
+        .await
+        .expect("partial text should arrive before final result")
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&first).unwrap()["type"],
+            "start"
+        );
+        let second: Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(second["type"], "text");
+        assert_eq!(second["text"], "hel");
+
+        let output = parser.await.unwrap().unwrap();
+        producer.await.unwrap();
+        assert_eq!(output.events.len(), 4);
     }
 
     #[test]
@@ -508,6 +897,88 @@ mod tests {
     }
 
     #[test]
+    fn render_user_frame_replaces_current_turn_image_blocks_with_attachment_tool_instruction() {
+        let image = json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "iVBORw0KGgo="
+            }
+        });
+        let req = make_request(
+            vec![json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What color is this?"},
+                    image.clone(),
+                ]
+            })],
+            None,
+        );
+
+        let frame_str = render_user_frame(&req);
+        let frame: Value = serde_json::from_str(&frame_str).unwrap();
+
+        assert_eq!(
+            frame["message"]["content"][0]["text"],
+            "What color is this?"
+        );
+        let marker = frame["message"]["content"][1]["text"].as_str().unwrap();
+        assert!(marker.contains("Attached image 1"));
+        assert!(marker.contains("mcp__shore__shore_attached_image"));
+        assert!(marker.contains("\"index\": 1"));
+    }
+
+    #[test]
+    fn render_user_frame_does_not_copy_history_images_into_current_turn() {
+        let image = json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "iVBORw0KGgo="
+            }
+        });
+        let req = make_request(
+            vec![
+                json!({"role": "user", "content": [image]}),
+                json!({"role": "assistant", "content": "It is red."}),
+                json!({"role": "user", "content": "What did you say?"}),
+            ],
+            None,
+        );
+
+        let frame_str = render_user_frame(&req);
+        let frame: Value = serde_json::from_str(&frame_str).unwrap();
+
+        assert_eq!(frame["message"]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(frame["message"]["content"][0]["text"], "What did you say?");
+    }
+
+    #[test]
+    fn image_input_is_supported_via_attachment_tool_instruction() {
+        let req = make_request(
+            vec![json!({
+                "role": "user",
+                "content": [{
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgo="
+                    }
+                }]
+            })],
+            Some(json!({"mcp_endpoint": "http://127.0.0.1:7321/mcp/abc"})),
+        );
+
+        ensure_supported_input(&req).unwrap();
+        let frame_str = render_user_frame(&req);
+        assert!(frame_str.contains("mcp__shore__shore_attached_image"));
+    }
+
+    #[test]
     fn render_user_frame_handles_assistant_at_end() {
         // Defensive: if the last message is somehow assistant, the
         // user frame should be empty rather than echoing assistant text.
@@ -521,6 +992,42 @@ mod tests {
         let frame_str = render_user_frame(&req);
         let frame: Value = serde_json::from_str(&frame_str).unwrap();
         assert_eq!(frame["message"]["content"][0]["text"], "");
+    }
+
+    #[test]
+    fn render_user_frame_merges_trailing_system_after_user() {
+        let req = make_request(
+            vec![
+                json!({"role": "user", "content": "first question"}),
+                json!({"role": "assistant", "content": "first answer"}),
+                json!({"role": "user", "content": "summarize now"}),
+                json!({"role": "system", "content": "use the compaction format"}),
+            ],
+            None,
+        );
+        let frame_str = render_user_frame(&req);
+        let frame: Value = serde_json::from_str(&frame_str).unwrap();
+        let text = frame_content_text(&frame);
+        assert!(text.contains("summarize now"));
+        assert!(text.contains("<system_instruction>use the compaction format</system_instruction>"));
+    }
+
+    #[test]
+    fn render_user_frame_sends_trailing_system_as_current_turn() {
+        let req = make_request(
+            vec![
+                json!({"role": "user", "content": "first question"}),
+                json!({"role": "assistant", "content": "first answer"}),
+                json!({"role": "system", "content": "heartbeat now"}),
+            ],
+            None,
+        );
+        let frame_str = render_user_frame(&req);
+        let frame: Value = serde_json::from_str(&frame_str).unwrap();
+        assert_eq!(
+            frame["message"]["content"][0]["text"],
+            "<system_instruction>heartbeat now</system_instruction>"
+        );
     }
 
     #[test]
@@ -541,6 +1048,26 @@ mod tests {
         assert!(
             !text.contains("second question"),
             "trailing user message goes through stdin, not the system prompt"
+        );
+    }
+
+    #[test]
+    fn render_system_prompt_keeps_history_before_trailing_system_turn() {
+        let req = make_request(
+            vec![
+                json!({"role": "user", "content": "first question"}),
+                json!({"role": "assistant", "content": "first answer"}),
+                json!({"role": "system", "content": "heartbeat now"}),
+            ],
+            None,
+        );
+        let file = render_system_prompt(&req).unwrap();
+        let text = std::fs::read_to_string(file.path()).unwrap();
+        assert!(text.contains("first question"));
+        assert!(text.contains("first answer"));
+        assert!(
+            !text.contains("heartbeat now"),
+            "trailing system instruction goes through stdin as current turn"
         );
     }
 
