@@ -166,3 +166,34 @@ async fn live_generate_image_block_documents_current_cli_non_parity() {
         response.content
     );
 }
+
+#[tokio::test]
+#[ignore = "requires claude CLI on PATH, OAuth login, and the spike's mcp_http_server.py running"]
+async fn live_generate_resumes_shore_written_native_session_history() {
+    let client = LlmClient::new();
+    let token = format!("shore-native-session-{}", std::process::id());
+    let mut request = live_request_with_messages(vec![
+        json!({"role": "user", "content": format!("Remember the token {token}.")}),
+        json!({"role": "assistant", "content": "I will remember it."}),
+        json!({"role": "user", "content": "What token did I ask you to remember? Reply with only the token."}),
+    ]);
+    let port = std::env::var("MCP_HTTP_PORT").unwrap_or_else(|_| "9998".into());
+    request.provider_options = Some(json!({
+        "mcp_endpoint": format!("http://127.0.0.1:{port}/mcp"),
+        "allowed_tools": [],
+        "session_id": "88888888-8888-4888-8888-888888888888",
+        "native_session_replay": true,
+    }));
+
+    let response = client
+        .generate(&request)
+        .await
+        .expect("generate against live claude CLI with native session replay failed");
+
+    eprintln!("native session response: {}", response.content);
+    assert!(
+        response.content.contains(&token),
+        "expected replayed history token {token}, got: {}",
+        response.content
+    );
+}

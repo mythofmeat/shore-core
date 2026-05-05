@@ -33,6 +33,10 @@ OpenRouter Anthropic model.
 - Current-turn Shore image blocks are preserved in the Claude Code stdin frame
   instead of being flattened away, so the provider will forward the same
   Anthropic-style base64 image shape used by other Claude-family paths.
+- Cold starts with prior Shore history synthesize a native Claude Code JSONL
+  session file and spawn with `--resume <session_id>`, avoiding the old
+  system-prompt transcript fallback for normal text/tool history. This path is
+  live-tested with a token present only in replayed history.
 
 ## Known Non-Parity
 
@@ -52,23 +56,25 @@ and the OAuth subscription path is billed as a flat plan rather than per API
 call. Shore records the CLI's reported token counts and would-be API cost, but
 cannot force the same `cache_ttl` placement semantics as the Anthropic API.
 
-### Fresh-Spawn History Fidelity
-
-Long-lived Claude Code subprocesses preserve live conversation context while
-they remain alive. Shore keeps idle chat subprocesses alive for at least one
-hour, but after daemon restart, compaction, dreaming reload, recipe change, or
-subprocess death, Shore rehydrates history by flattening prior turns into the
-system prompt transcript. Text, tool names, inputs, and results remain visible,
-but this is not identical to replaying the Anthropic API's native structured
-message history, especially for signed thinking blocks.
-
 ### CLI Isolation Surface
 
 The cleanest Claude Code isolation flag, `--bare`, disables OAuth, so Shore
 cannot use it for subscription-backed `claude_code` calls. The provider instead
 uses `--setting-sources ""`, `--strict-mcp-config`, `--tools ""`,
-`--no-session-persistence`, and per-session MCP URLs. This keeps Shore's tools
-authoritative, but it is not byte-for-byte the same as direct API isolation.
+`--no-session-persistence` for fresh non-resume starts, and per-session MCP
+URLs. Native session replay intentionally omits `--no-session-persistence` for
+the resumed subprocess after Shore has rewritten the target session JSONL. This
+keeps Shore's tools authoritative, but it is not byte-for-byte the same as
+direct API isolation.
+
+### Native Session Replay Limits
+
+The JSONL replay path is intentionally synthetic. It maps Shore user/system and
+assistant messages into the Claude Code session shape that `--resume` accepts,
+but Claude Code may change this undocumented format, and signed thinking blocks
+from older history are only as faithful as the persisted Shore blocks allow.
+The provider keeps the previous system-prompt transcript fallback available via
+`provider_options.native_session_replay = false`.
 
 ### API-Key Fallback
 

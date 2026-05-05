@@ -17,7 +17,7 @@ use tokio::io::{
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 use tracing::debug;
 
-use crate::providers::claude_code::{parser, quota, recipe::CliRecipe};
+use crate::providers::claude_code::{parser, quota, recipe::CliRecipe, session};
 use crate::providers::stream_helpers::extract_system_text;
 use crate::types::{LlmRequest, StreamEvent};
 use crate::LlmError;
@@ -40,6 +40,7 @@ pub(super) struct ProviderConfig {
     pub session_id: String,
     pub subprocess_key: Option<String>,
     pub include_partial_messages: bool,
+    pub native_session_replay: bool,
 }
 
 impl ProviderConfig {
@@ -84,6 +85,10 @@ impl ProviderConfig {
             .get("include_partial_messages")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        let native_session_replay = opts
+            .get("native_session_replay")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         Ok(Self {
             mcp_endpoint,
             allowed_tools,
@@ -91,6 +96,7 @@ impl ProviderConfig {
             session_id,
             subprocess_key,
             include_partial_messages,
+            native_session_replay,
         })
     }
 }
@@ -110,11 +116,21 @@ pub(super) async fn run_fresh_spawn(request: &LlmRequest) -> Result<DriverOutput
 
     // Tempfile is held open for the lifetime of the subprocess so the
     // CLI can read it before we drop it.
-    let prompt_text = render_system_prompt_text(request);
+    let native_session = session::prepare_native_session(request, &cfg)?;
+    let prompt_text = if native_session.is_some() {
+        render_static_system_prompt_text(request)
+    } else {
+        render_system_prompt_text(request)
+    };
     let prompt_file = write_system_prompt_file(&prompt_text)?;
     let user_frame = render_user_frame(request);
 
-    let recipe = recipe_for_request(request, &cfg, prompt_file.path().to_path_buf());
+    let recipe = recipe_for_request(
+        request,
+        &cfg,
+        prompt_file.path().to_path_buf(),
+        native_session.is_some(),
+    );
     let mut cmd = recipe.into_command();
     debug!(
         rid = request.rid.as_deref().unwrap_or("-"),
@@ -208,11 +224,21 @@ where
 {
     let cfg = ProviderConfig::from_request(request)?;
 
-    let prompt_text = render_system_prompt_text(request);
+    let native_session = session::prepare_native_session(request, &cfg)?;
+    let prompt_text = if native_session.is_some() {
+        render_static_system_prompt_text(request)
+    } else {
+        render_system_prompt_text(request)
+    };
     let prompt_file = write_system_prompt_file(&prompt_text)?;
     let user_frame = render_user_frame(request);
 
-    let recipe = recipe_for_request(request, &cfg, prompt_file.path().to_path_buf());
+    let recipe = recipe_for_request(
+        request,
+        &cfg,
+        prompt_file.path().to_path_buf(),
+        native_session.is_some(),
+    );
     let mut cmd = recipe.into_command();
     debug!(
         rid = request.rid.as_deref().unwrap_or("-"),
@@ -284,6 +310,7 @@ pub(super) fn recipe_for_request(
     request: &LlmRequest,
     cfg: &ProviderConfig,
     system_prompt_path: std::path::PathBuf,
+    resume_session: bool,
 ) -> CliRecipe {
     CliRecipe {
         model: request.model.clone(),
@@ -293,6 +320,7 @@ pub(super) fn recipe_for_request(
         session_id: cfg.session_id.clone(),
         effort: cfg.effort.clone(),
         include_partial_messages: cfg.include_partial_messages,
+        resume_session,
     }
 }
 
@@ -456,7 +484,7 @@ pub(super) fn write_system_prompt_file(text: &str) -> Result<NamedTempFile, LlmE
     Ok(file)
 }
 
-fn current_turn_start(messages: &[Value]) -> usize {
+pub(super) fn current_turn_start(messages: &[Value]) -> usize {
     if messages.is_empty() {
         return 0;
     }
@@ -705,6 +733,7 @@ mod tests {
         assert_eq!(cfg.effort.as_deref(), Some("high"));
         assert_eq!(cfg.session_id, "explicit-session-id");
         assert!(cfg.include_partial_messages);
+        assert!(cfg.native_session_replay);
     }
 
     #[test]
@@ -718,6 +747,19 @@ mod tests {
         );
         let cfg = ProviderConfig::from_request(&req).unwrap();
         assert!(!cfg.include_partial_messages);
+    }
+
+    #[test]
+    fn provider_config_can_disable_native_session_replay_explicitly() {
+        let req = make_request(
+            vec![],
+            Some(json!({
+                "mcp_endpoint": "http://127.0.0.1:7321/mcp/abc",
+                "native_session_replay": false,
+            })),
+        );
+        let cfg = ProviderConfig::from_request(&req).unwrap();
+        assert!(!cfg.native_session_replay);
     }
 
     #[test]

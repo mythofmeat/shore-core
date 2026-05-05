@@ -159,6 +159,13 @@ the `claude` CLI does not expose matching flags for this OAuth-backed path; see
 `total_cost_usd` as would-be API cost; actual subscription spend remains the
 fixed Claude plan price.
 
+By default, cold Claude Code starts with prior Shore history rewrite a native
+Claude Code JSONL session file and launch with `--resume <session_id>`. This
+preserves structured conversation context across compaction, daemon restart, or
+subprocess death more faithfully than a flattened transcript. Set
+`provider_options.native_session_replay = false` only for diagnostics or if a
+future Claude Code release changes the private JSONL format.
+
 Image input remains a Claude Code parity gap in the current CLI. Shore preserves
 current-turn image blocks in the provider frame, but live testing shows the CLI
 does not deliver those base64 images to the model.

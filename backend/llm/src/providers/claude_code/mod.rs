@@ -15,6 +15,7 @@ mod driver;
 mod parser;
 mod quota;
 mod recipe;
+mod session;
 
 use serde_json::{json, Map, Value};
 use shore_protocol::types::ContentBlock;

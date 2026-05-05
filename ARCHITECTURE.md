@@ -155,6 +155,14 @@ flight. Claude Code reported
 `total_cost_usd` is stored as would-be API cost for observability; it is not the
 user's actual subscription spend.
 
+When a cold start has prior Shore history, the provider writes that history into
+Claude Code's native JSONL session format under `~/.claude/projects/<cwd-slug>/`
+and starts the CLI with `--resume <session_id>`. That gives the CLI structured
+conversation history after compaction, daemon restart, or subprocess death
+without replaying old turns through stdin. If the history is empty, or
+`provider_options.native_session_replay = false`, the provider falls back to the
+older transcript-in-system-prompt path with `--no-session-persistence`.
+
 The MCP listener is bearer-by-URL and loopback-only by default. A local process
 that can read the `claude` subprocess command line can see the `--mcp-config`
 URL and replay tool calls while that session is active, so the HTTP listener

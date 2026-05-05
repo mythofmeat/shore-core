@@ -26,6 +26,7 @@ use crate::providers::claude_code::driver::{
     recipe_for_request, render_static_system_prompt_text, render_system_prompt_text,
     render_user_frame, write_system_prompt_file, write_user_frame_to, DriverOutput, ProviderConfig,
 };
+use crate::providers::claude_code::session;
 use crate::types::LlmRequest;
 use crate::LlmError;
 
@@ -49,7 +50,6 @@ pub(super) async fn run_long_lived(request: &LlmRequest) -> Result<DriverOutput,
         .clone();
     let _key_guard = key_lock.lock_owned().await;
 
-    let prompt_text = render_system_prompt_text(request);
     let fingerprint = RecipeFingerprint::from_request(request, &cfg);
     let user_frame = render_user_frame(request);
 
@@ -74,7 +74,20 @@ pub(super) async fn run_long_lived(request: &LlmRequest) -> Result<DriverOutput,
     }
 
     global_cache().entries.remove(&key);
-    let proc = spawn_cached_process(request, &cfg, fingerprint, prompt_text).await?;
+    let native_session = session::prepare_native_session(request, &cfg)?;
+    let prompt_text = if native_session.is_some() {
+        render_static_system_prompt_text(request)
+    } else {
+        render_system_prompt_text(request)
+    };
+    let proc = spawn_cached_process(
+        request,
+        &cfg,
+        fingerprint,
+        prompt_text,
+        native_session.is_some(),
+    )
+    .await?;
     let entry = Arc::new(Mutex::new(proc));
     global_cache().entries.insert(key.clone(), entry.clone());
 
@@ -116,7 +129,6 @@ where
         .clone();
     let _key_guard = key_lock.lock_owned().await;
 
-    let prompt_text = render_system_prompt_text(request);
     let fingerprint = RecipeFingerprint::from_request(request, &cfg);
     let user_frame = render_user_frame(request);
 
@@ -141,7 +153,20 @@ where
     }
 
     global_cache().entries.remove(&key);
-    let proc = spawn_cached_process(request, &cfg, fingerprint, prompt_text).await?;
+    let native_session = session::prepare_native_session(request, &cfg)?;
+    let prompt_text = if native_session.is_some() {
+        render_static_system_prompt_text(request)
+    } else {
+        render_system_prompt_text(request)
+    };
+    let proc = spawn_cached_process(
+        request,
+        &cfg,
+        fingerprint,
+        prompt_text,
+        native_session.is_some(),
+    )
+    .await?;
     let entry = Arc::new(Mutex::new(proc));
     global_cache().entries.insert(key.clone(), entry.clone());
 
@@ -170,6 +195,7 @@ struct RecipeFingerprint {
     allowed_tools: Vec<String>,
     effort: Option<String>,
     include_partial_messages: bool,
+    native_session_replay: bool,
     static_system_prompt_text: String,
 }
 
@@ -181,6 +207,7 @@ impl RecipeFingerprint {
             allowed_tools: cfg.allowed_tools.clone(),
             effort: cfg.effort.clone(),
             include_partial_messages: cfg.include_partial_messages,
+            native_session_replay: cfg.native_session_replay,
             static_system_prompt_text: render_static_system_prompt_text(request),
         }
     }
@@ -254,9 +281,15 @@ async fn spawn_cached_process(
     cfg: &ProviderConfig,
     fingerprint: RecipeFingerprint,
     prompt_text: String,
+    resume_session: bool,
 ) -> Result<CachedSubprocess, LlmError> {
     let prompt_file = write_system_prompt_file(&prompt_text)?;
-    let recipe = recipe_for_request(request, cfg, prompt_file.path().to_path_buf());
+    let recipe = recipe_for_request(
+        request,
+        cfg,
+        prompt_file.path().to_path_buf(),
+        resume_session,
+    );
     let mut child = recipe
         .into_command()
         .spawn()
@@ -443,6 +476,7 @@ mod tests {
             "allowed_tools": [],
             "session_id": "11111111-1111-1111-1111-111111111111",
             "subprocess_key": key,
+            "native_session_replay": false,
         }))
     }
 

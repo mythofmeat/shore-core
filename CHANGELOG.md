@@ -32,3 +32,6 @@
 - Preserved current-turn image blocks in Claude Code stdin rendering and added
   live-test coverage documenting that Claude Code CLI 2.1.128 still does not
   deliver those images to the model.
+- Added native Claude Code session replay for cold starts with prior Shore
+  history by writing Claude JSONL session files and spawning with `--resume`;
+  the live suite verifies a token present only in replayed history survives.
