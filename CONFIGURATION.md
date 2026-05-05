@@ -159,6 +159,10 @@ the `claude` CLI does not expose matching flags for this OAuth-backed path; see
 `total_cost_usd` as would-be API cost; actual subscription spend remains the
 fixed Claude plan price.
 
+Image input remains a Claude Code parity gap in the current CLI. Shore preserves
+current-turn image blocks in the provider frame, but live testing shows the CLI
+does not deliver those base64 images to the model.
+
 Shore passes the system prompt through Claude Code's `--system-prompt-file`
 flag to keep large prompts out of process arguments. That flag is an
 undocumented Claude Code surface, so provider live tests are the compatibility

@@ -489,45 +489,79 @@ fn current_turn_start(messages: &[Value]) -> usize {
 /// the frame would otherwise be discarded. A bare string trips a JS
 /// error in Claude Code's input parser.
 pub(super) fn render_user_frame(request: &LlmRequest) -> String {
-    let user_text = render_current_turn_text(&request.messages);
+    let content = render_current_turn_content(&request.messages);
     json!({
         "type": "user",
         "message": {
             "role": "user",
-            "content": [{"type": "text", "text": user_text}],
+            "content": content,
         }
     })
     .to_string()
 }
 
-fn render_current_turn_text(messages: &[Value]) -> String {
+fn render_current_turn_content(messages: &[Value]) -> Vec<Value> {
     let start = current_turn_start(messages);
     if start >= messages.len() {
-        return String::new();
+        return vec![text_block("")];
     }
 
-    messages[start..]
-        .iter()
-        .filter_map(|msg| match message_role(msg) {
-            Some("system") => {
-                let text = extract_inline_system_text(msg);
-                if text.is_empty() {
-                    None
-                } else {
-                    Some(format!("<system_instruction>{text}</system_instruction>"))
-                }
+    let mut content = Vec::new();
+    for msg in &messages[start..] {
+        let blocks = render_current_message_blocks(msg);
+        if blocks.is_empty() {
+            continue;
+        }
+        if !content.is_empty() {
+            content.push(text_block("\n\n"));
+        }
+        content.extend(blocks);
+    }
+    if content.is_empty() {
+        content.push(text_block(""));
+    }
+    content
+}
+
+fn render_current_message_blocks(message: &Value) -> Vec<Value> {
+    match message_role(message) {
+        Some("system") => {
+            let text = extract_inline_system_text(message);
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![text_block(format!(
+                    "<system_instruction>{text}</system_instruction>"
+                ))]
             }
-            Some("user") => {
-                let text = extract_message_text(msg);
-                (!text.is_empty()).then_some(text)
-            }
-            _ => {
-                let text = extract_message_text(msg);
-                (!text.is_empty()).then_some(text)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+        }
+        _ => render_content_blocks_for_stdin(message.get("content")),
+    }
+}
+
+fn render_content_blocks_for_stdin(content: Option<&Value>) -> Vec<Value> {
+    match content {
+        Some(Value::String(s)) => vec![text_block(s)],
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(render_stdin_block)
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    }
+}
+
+fn render_stdin_block(block: &Value) -> Option<Value> {
+    let ty = block.get("type").and_then(Value::as_str)?;
+    match ty {
+        "text" => block.get("text").and_then(Value::as_str).map(text_block),
+        "image" => Some(block.clone()),
+        "tool_use" | "tool_result" => render_block(block).map(text_block),
+        _ => None,
+    }
+}
+
+fn text_block(text: impl Into<String>) -> Value {
+    json!({ "type": "text", "text": text.into() })
 }
 
 fn message_role(message: &Value) -> Option<&str> {
@@ -614,6 +648,22 @@ mod tests {
             rid: None,
             forensic_character: None,
         }
+    }
+
+    fn frame_content_text(frame: &Value) -> String {
+        frame["message"]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|block| {
+                if block["type"] == "text" {
+                    block["text"].as_str()
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("")
     }
 
     #[test]
@@ -792,6 +842,63 @@ mod tests {
     }
 
     #[test]
+    fn render_user_frame_preserves_current_turn_image_blocks() {
+        let image = json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "iVBORw0KGgo="
+            }
+        });
+        let req = make_request(
+            vec![json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What color is this?"},
+                    image.clone(),
+                ]
+            })],
+            None,
+        );
+
+        let frame_str = render_user_frame(&req);
+        let frame: Value = serde_json::from_str(&frame_str).unwrap();
+
+        assert_eq!(
+            frame["message"]["content"][0]["text"],
+            "What color is this?"
+        );
+        assert_eq!(frame["message"]["content"][1], image);
+    }
+
+    #[test]
+    fn render_user_frame_does_not_copy_history_images_into_current_turn() {
+        let image = json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "iVBORw0KGgo="
+            }
+        });
+        let req = make_request(
+            vec![
+                json!({"role": "user", "content": [image]}),
+                json!({"role": "assistant", "content": "It is red."}),
+                json!({"role": "user", "content": "What did you say?"}),
+            ],
+            None,
+        );
+
+        let frame_str = render_user_frame(&req);
+        let frame: Value = serde_json::from_str(&frame_str).unwrap();
+
+        assert_eq!(frame["message"]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(frame["message"]["content"][0]["text"], "What did you say?");
+    }
+
+    #[test]
     fn render_user_frame_handles_assistant_at_end() {
         // Defensive: if the last message is somehow assistant, the
         // user frame should be empty rather than echoing assistant text.
@@ -820,7 +927,7 @@ mod tests {
         );
         let frame_str = render_user_frame(&req);
         let frame: Value = serde_json::from_str(&frame_str).unwrap();
-        let text = frame["message"]["content"][0]["text"].as_str().unwrap();
+        let text = frame_content_text(&frame);
         assert!(text.contains("summarize now"));
         assert!(text.contains("<system_instruction>use the compaction format</system_instruction>"));
     }

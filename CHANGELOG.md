@@ -29,3 +29,6 @@
 - Added progressive Claude Code client streaming via
   `--include-partial-messages`, including parser coverage for partial text
   chunks and a delayed-result forwarding test.
+- Preserved current-turn image blocks in Claude Code stdin rendering and added
+  live-test coverage documenting that Claude Code CLI 2.1.128 still does not
+  deliver those images to the model.

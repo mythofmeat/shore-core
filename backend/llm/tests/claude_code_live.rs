@@ -27,6 +27,10 @@ use shore_config::models::{ResolvedModel, Sdk};
 use shore_llm::{types::LlmRequest, LlmClient};
 
 fn live_request(user: &str) -> LlmRequest {
+    live_request_with_messages(vec![json!({"role": "user", "content": user})])
+}
+
+fn live_request_with_messages(messages: Vec<serde_json::Value>) -> LlmRequest {
     let model = ResolvedModel {
         name: "live-test".into(),
         qualified_name: "chat.anthropic.live-test".into(),
@@ -62,7 +66,7 @@ fn live_request(user: &str) -> LlmRequest {
     LlmClient::build_request_with_resolved_key(
         &model,
         String::new(),
-        vec![json!({"role": "user", "content": user})],
+        messages,
         Some(json!("You are a terse assistant. Answer in one sentence.")),
         None,
         Some(provider_options),
@@ -124,4 +128,41 @@ async fn live_generate_invokes_mcp_ping_tool() {
     let log = std::fs::read_to_string(mcp_log_path()).expect("could not read MCP HTTP log");
     assert!(log.contains("\"method\": \"tools/call\""));
     assert!(log.contains(&token));
+}
+
+#[tokio::test]
+#[ignore = "requires claude CLI on PATH, OAuth login, and the spike's mcp_http_server.py running"]
+async fn live_generate_image_block_documents_current_cli_non_parity() {
+    let client = LlmClient::new();
+    let red_pixel_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+    let request = live_request_with_messages(vec![json!({
+        "role": "user",
+        "content": [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": red_pixel_png
+                }
+            },
+            {"type": "text", "text": "What color is this image? Answer with one word."}
+        ]
+    })]);
+
+    let response = client
+        .generate(&request)
+        .await
+        .expect("generate against live claude CLI with image failed");
+
+    eprintln!("image response: {}", response.content);
+    let lower = response.content.to_lowercase();
+    assert!(
+        lower.contains("cannot see")
+            || lower.contains("can't see")
+            || lower.contains("no image")
+            || lower.contains("share the image"),
+        "Claude Code may have gained image support; reassess provider parity. Response: {}",
+        response.content
+    );
 }

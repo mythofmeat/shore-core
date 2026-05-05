@@ -30,6 +30,9 @@ OpenRouter Anthropic model.
   forwards text/thinking deltas as they arrive. Completed final assistant text
   blocks are suppressed when they would duplicate partial chunks; tool-use
   blocks are still preserved from the final assistant event.
+- Current-turn Shore image blocks are preserved in the Claude Code stdin frame
+  instead of being flattened away, so the provider will forward the same
+  Anthropic-style base64 image shape used by other Claude-family paths.
 
 ## Known Non-Parity
 
@@ -77,7 +80,10 @@ Anthropic/OpenRouter key because that could surprise the user with API spend.
 
 ### Image Input
 
-Image input is still under test. The local CLI accepts Anthropic-style image
-content blocks over `--input-format stream-json`, but Shore's Claude Code
-renderer is currently text/tool oriented and needs explicit preservation of
-current-turn image blocks before this can be called parity.
+Image input remains non-parity in Claude Code CLI 2.1.128. Shore now preserves
+current-turn Anthropic-style base64 image blocks, and the CLI accepts that
+stream-json frame syntactically, but a live red-pixel probe on 2026-05-05
+returned that Claude could not see the image. The documented `--file` flag is
+not a local upload path; it expects Claude-hosted `file_id:relative_path`
+resources and requires `CLAUDE_CODE_SESSION_ACCESS_TOKEN`. There is no
+documented local `--image`/attach flag in the current `claude --help` surface.
