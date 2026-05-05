@@ -89,7 +89,11 @@ Anthropic/OpenRouter key because that could surprise the user with API spend.
 Image input remains non-parity in Claude Code CLI 2.1.128. Shore now preserves
 current-turn Anthropic-style base64 image blocks, and the CLI accepts that
 stream-json frame syntactically, but a live red-pixel probe on 2026-05-05
-returned that Claude could not see the image. The documented `--file` flag is
-not a local upload path; it expects Claude-hosted `file_id:relative_path`
-resources and requires `CLAUDE_CODE_SESSION_ACCESS_TOKEN`. There is no
-documented local `--image`/attach flag in the current `claude --help` surface.
+returned that Claude could not see the image. This matches the current
+official Claude Code SDK documentation, which says streaming JSON input is
+limited to text-only user messages:
+<https://docs.anthropic.com/en/docs/claude-code/sdk#input-formats>. The
+documented `--file` flag is not a local upload path; it expects Claude-hosted
+`file_id:relative_path` resources and requires
+`CLAUDE_CODE_SESSION_ACCESS_TOKEN`. There is no documented local
+`--image`/attach flag in the current `claude --help` surface.
