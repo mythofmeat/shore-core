@@ -29,7 +29,7 @@ use crate::providers::claude_code::driver::{
 use crate::types::LlmRequest;
 use crate::LlmError;
 
-const IDLE_EVICT_AFTER: Duration = Duration::from_secs(5 * 60);
+const IDLE_EVICT_AFTER: Duration = Duration::from_secs(60 * 60);
 const EVICT_EVERY: Duration = Duration::from_secs(60);
 
 static CACHE: OnceLock<SubprocessCache> = OnceLock::new();

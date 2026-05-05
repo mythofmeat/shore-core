@@ -57,11 +57,12 @@ cannot force the same `cache_ttl` placement semantics as the Anthropic API.
 ### Fresh-Spawn History Fidelity
 
 Long-lived Claude Code subprocesses preserve live conversation context while
-they remain alive. After daemon restart, compaction, dreaming reload, recipe
-change, or subprocess death, Shore rehydrates history by flattening prior
-turns into the system prompt transcript. Text, tool names, inputs, and results
-remain visible, but this is not identical to replaying the Anthropic API's
-native structured message history, especially for signed thinking blocks.
+they remain alive. Shore keeps idle chat subprocesses alive for at least one
+hour, but after daemon restart, compaction, dreaming reload, recipe change, or
+subprocess death, Shore rehydrates history by flattening prior turns into the
+system prompt transcript. Text, tool names, inputs, and results remain visible,
+but this is not identical to replaying the Anthropic API's native structured
+message history, especially for signed thinking blocks.
 
 ### CLI Isolation Surface
 

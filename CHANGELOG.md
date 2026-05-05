@@ -24,3 +24,5 @@
 - Auto-enabled the daemon HTTP MCP listener when a `claude_code` chat model is
   configured, and documented remaining Claude Code parity gaps in
   `docs/claude-code-parity.md`.
+- Extended Claude Code cached subprocess idle retention to one hour so native
+  conversation context survives ordinary pauses between turns.

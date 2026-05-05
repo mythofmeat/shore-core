@@ -134,11 +134,12 @@ calls.
 
 `shore-llm` keeps a long-lived subprocess cache keyed by `subprocess_key` when
 the daemon provides one, with fresh-spawn fallback for cold starts, dead
-children, and recipe changes. The MCP URL is stable per subprocess key while
-the daemon rotates the per-turn ledger behind that session. The daemon holds a
-per-key MCP session lock before dispatching to the provider, so concurrent turns
-for the same character cannot rebind the stable URL to a newer tool context
-while an older CLI run is still in flight. Claude Code reported
+children, recipe changes, and subprocesses idle for at least one hour. The MCP
+URL is stable per subprocess key while the daemon rotates the per-turn ledger
+behind that session. The daemon holds a per-key MCP session lock before
+dispatching to the provider, so concurrent turns for the same character cannot
+rebind the stable URL to a newer tool context while an older CLI run is still in
+flight. Claude Code reported
 `total_cost_usd` is stored as would-be API cost for observability; it is not the
 user's actual subscription spend.
 
