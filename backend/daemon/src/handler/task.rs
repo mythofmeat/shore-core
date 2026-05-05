@@ -369,7 +369,7 @@ pub(super) async fn handle_generation(
         Vec::new()
     };
 
-    if let Some(session) = claude_code_session.as_ref() {
+    if let Some(session) = claude_code_session.take() {
         let ledger = session.drain().await;
         splice_claude_code_tool_ledger(&mut result, ledger);
     }

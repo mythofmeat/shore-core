@@ -241,6 +241,7 @@ where
 {
     let mut p = parser::StreamJsonParser::new();
     let mut output = DriverOutput::default();
+    let mut saw_done = false;
 
     while let Some(line) = lines.next_line().await.map_err(|e| LlmError::Provider {
         message: format!("read from claude stdout: {e}"),
@@ -249,13 +250,14 @@ where
         output.events.extend(step.events);
         output.blocks.extend(step.blocks);
         if step.done {
+            saw_done = true;
             break;
         }
     }
     if let Some(m) = p.model() {
         output.model = m.to_string();
     }
-    if output.events.is_empty() {
+    if !saw_done {
         return Err(LlmError::IncompleteStream);
     }
     Ok(output)
@@ -543,6 +545,21 @@ mod tests {
         // `--session-id`.
         uuid::Uuid::parse_str(&cfg.session_id)
             .unwrap_or_else(|e| panic!("not a uuid: {} ({e})", cfg.session_id));
+    }
+
+    #[tokio::test]
+    async fn read_stream_json_lines_requires_result_event() {
+        let input = concat!(
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"partial"}]}}"#,
+            "\n",
+        );
+        let mut lines = tokio::io::BufReader::new(input.as_bytes()).lines();
+
+        let err = read_stream_json_lines(&mut lines).await.unwrap_err();
+
+        assert!(matches!(err, LlmError::IncompleteStream));
     }
 
     #[test]

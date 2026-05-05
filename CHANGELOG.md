@@ -16,3 +16,6 @@
   `StreamResult.tool_uses` from the MCP ledger splice, and routed background
   heartbeat, compaction, dreaming, and keepalive calls through the same Claude
   Code MCP session setup.
+- Hardened Claude Code subprocess handling so partial streams without a final
+  `result` event fail as incomplete, and chat MCP sessions are torn down as
+  soon as their tool ledger is spliced.
