@@ -31,6 +31,15 @@ pub(super) struct DriverOutput {
     pub stderr: String,
 }
 
+pub(super) fn ensure_supported_input(request: &LlmRequest) -> Result<(), LlmError> {
+    if request_has_image_input(request) {
+        return Err(LlmError::Provider {
+            message: "claude_code does not support image input: Claude Code CLI stream-json input is currently text-only".into(),
+        });
+    }
+    Ok(())
+}
+
 /// Engine-supplied glue extracted from `LlmRequest.provider_options`.
 #[derive(Debug)]
 pub(super) struct ProviderConfig {
@@ -112,6 +121,7 @@ fn fallback_session_id() -> String {
 
 /// Run a single subprocess turn against the locked recipe.
 pub(super) async fn run_fresh_spawn(request: &LlmRequest) -> Result<DriverOutput, LlmError> {
+    ensure_supported_input(request)?;
     let cfg = ProviderConfig::from_request(request)?;
 
     // Tempfile is held open for the lifetime of the subprocess so the
@@ -222,6 +232,7 @@ pub(super) async fn run_fresh_spawn_streaming<W>(
 where
     W: AsyncWrite + Unpin,
 {
+    ensure_supported_input(request)?;
     let cfg = ProviderConfig::from_request(request)?;
 
     let native_session = session::prepare_native_session(request, &cfg)?;
@@ -592,6 +603,24 @@ fn text_block(text: impl Into<String>) -> Value {
     json!({ "type": "text", "text": text.into() })
 }
 
+fn request_has_image_input(request: &LlmRequest) -> bool {
+    request.messages.iter().any(message_has_image_block)
+}
+
+fn message_has_image_block(message: &Value) -> bool {
+    match message.get("content") {
+        Some(Value::Array(blocks)) => blocks.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("image")
+                || block
+                    .get("source")
+                    .and_then(|source| source.get("media_type"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|media_type| media_type.starts_with("image/"))
+        }),
+        _ => false,
+    }
+}
+
 fn message_role(message: &Value) -> Option<&str> {
     message.get("role").and_then(Value::as_str)
 }
@@ -938,6 +967,33 @@ mod tests {
 
         assert_eq!(frame["message"]["content"].as_array().unwrap().len(), 1);
         assert_eq!(frame["message"]["content"][0]["text"], "What did you say?");
+    }
+
+    #[test]
+    fn image_input_is_rejected_before_cli_spawn() {
+        let req = make_request(
+            vec![json!({
+                "role": "user",
+                "content": [{
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgo="
+                    }
+                }]
+            })],
+            Some(json!({"mcp_endpoint": "http://127.0.0.1:7321/mcp/abc"})),
+        );
+
+        let err = ensure_supported_input(&req).unwrap_err();
+
+        match err {
+            LlmError::Provider { message } => {
+                assert!(message.contains("does not support image input"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     #[test]

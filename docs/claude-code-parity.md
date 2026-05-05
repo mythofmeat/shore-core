@@ -30,9 +30,9 @@ OpenRouter Anthropic model.
   forwards text/thinking deltas as they arrive. Completed final assistant text
   blocks are suppressed when they would duplicate partial chunks; tool-use
   blocks are still preserved from the final assistant event.
-- Current-turn Shore image blocks are preserved in the Claude Code stdin frame
-  instead of being flattened away, so the provider will forward the same
-  Anthropic-style base64 image shape used by other Claude-family paths.
+- Image-bearing requests are rejected before spawning Claude Code with a clear
+  provider error. This avoids the current CLI behavior where non-text
+  stream-json content is accepted syntactically but not delivered to the model.
 - Cold starts with prior Shore history synthesize a native Claude Code JSONL
   session file and spawn with `--resume <session_id>`, avoiding the old
   system-prompt transcript fallback for normal text/tool history. This path is
@@ -86,10 +86,10 @@ Anthropic/OpenRouter key because that could surprise the user with API spend.
 
 ### Image Input
 
-Image input remains non-parity in Claude Code CLI 2.1.128. Shore now preserves
-current-turn Anthropic-style base64 image blocks, and the CLI accepts that
-stream-json frame syntactically, but a live red-pixel probe on 2026-05-05
-returned that Claude could not see the image. This matches the current
+Image input remains non-parity in Claude Code CLI 2.1.128. Shore rejects
+image-bearing `claude_code` requests before spawning the CLI. A live red-pixel
+probe on 2026-05-05 showed that the CLI accepts Anthropic-style base64 image
+blocks syntactically but Claude cannot see the image. This matches the current
 official Claude Code SDK documentation, which says streaming JSON input is
 limited to text-only user messages:
 <https://docs.anthropic.com/en/docs/claude-code/sdk#input-formats>. The

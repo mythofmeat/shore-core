@@ -35,6 +35,7 @@ pub async fn stream(
     _client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<DuplexStream, LlmError> {
+    driver::ensure_supported_input(request)?;
     let request = request_with_partial_messages(request);
     let _ = driver::ProviderConfig::from_request(&request)?;
     let (read_half, mut write_half) = tokio::io::duplex(64 * 1024);
@@ -57,6 +58,7 @@ pub async fn generate(
 }
 
 async fn run_driver(request: &LlmRequest) -> Result<driver::DriverOutput, LlmError> {
+    driver::ensure_supported_input(request)?;
     if request
         .provider_options
         .as_ref()

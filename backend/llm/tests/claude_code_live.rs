@@ -131,8 +131,7 @@ async fn live_generate_invokes_mcp_ping_tool() {
 }
 
 #[tokio::test]
-#[ignore = "requires claude CLI on PATH, OAuth login, and the spike's mcp_http_server.py running"]
-async fn live_generate_image_block_documents_current_cli_non_parity() {
+async fn generate_rejects_image_input_before_cli_spawn() {
     let client = LlmClient::new();
     let red_pixel_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
     let request = live_request_with_messages(vec![json!({
@@ -150,20 +149,15 @@ async fn live_generate_image_block_documents_current_cli_non_parity() {
         ]
     })]);
 
-    let response = client
+    let err = client
         .generate(&request)
         .await
-        .expect("generate against live claude CLI with image failed");
+        .expect_err("claude_code image input should fail before spawning the CLI");
 
-    eprintln!("image response: {}", response.content);
-    let lower = response.content.to_lowercase();
+    let message = err.to_string();
     assert!(
-        lower.contains("cannot see")
-            || lower.contains("can't see")
-            || lower.contains("no image")
-            || lower.contains("share the image"),
-        "Claude Code may have gained image support; reassess provider parity. Response: {}",
-        response.content
+        message.contains("does not support image input"),
+        "{message}"
     );
 }
 

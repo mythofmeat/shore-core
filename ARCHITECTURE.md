@@ -138,11 +138,11 @@ arrives. The final assistant event is still consumed for tool-use blocks and
 turn completion, but completed text/thinking blocks are not re-emitted when
 partials already covered them.
 
-Current-turn image blocks are preserved in the stdin frame in the same
-Anthropic-style base64 shape Shore uses for other Claude-family providers.
-Claude Code CLI 2.1.128 does not yet deliver those images to the model in live
-testing, so image input remains a tracked parity gap rather than a supported
-Claude Code feature.
+Image-bearing requests are rejected before spawning Claude Code. Claude Code
+CLI 2.1.128 does not deliver Anthropic-style base64 stream-json image blocks to
+the model in live testing, and the official SDK documentation currently says
+stream-json input is text-only, so image input remains a tracked parity gap
+rather than a supported Claude Code feature.
 
 `shore-llm` keeps a long-lived subprocess cache keyed by `subprocess_key` when
 the daemon provides one, with fresh-spawn fallback for cold starts, dead
