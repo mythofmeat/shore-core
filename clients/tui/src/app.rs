@@ -783,26 +783,34 @@ impl App {
             .retain(|e| !matches!(e, ConversationEntry::System { .. }));
     }
 
-    /// Static command names for completion.
-    const COMMANDS: &'static [&'static str] = &[
-        "cancel",
-        "character",
-        "clear",
-        "compact",
-        "delete",
-        "edit",
-        "help",
-        "image",
-        "memory",
-        "model",
-        "provider",
-        "quit",
-        "regen",
-        "setting",
-        "speak",
-        "status",
-        "sys",
+    /// Static commands and their descriptions, shown in the palette.
+    const COMMANDS: &'static [(&'static str, &'static str)] = &[
+        ("cancel", "Stop the current generation"),
+        ("character", "Switch active character"),
+        ("clear", "Clear system messages from view"),
+        ("compact", "Summarize and shrink the conversation"),
+        ("delete", "Delete a message by reference"),
+        ("edit", "Edit a previous message"),
+        ("help", "Show keyboard shortcuts"),
+        ("image", "Attach an image to the next message"),
+        ("memory", "Search saved memory entries"),
+        ("model", "Switch the active model"),
+        ("provider", "Refresh provider model cache"),
+        ("quit", "Exit the TUI"),
+        ("regen", "Regenerate the last assistant reply"),
+        ("setting", "View or change sampler settings"),
+        ("speak", "Toggle TTS or replay the last message"),
+        ("status", "Show connection and session status"),
+        ("sys", "Inject a system instruction"),
     ];
+
+    /// Look up the description for a top-level command. Returns `None`
+    /// for argument candidates (e.g. `model gpt-4o`).
+    pub fn command_description(name: &str) -> Option<&'static str> {
+        Self::COMMANDS
+            .iter()
+            .find_map(|(n, d)| (*n == name).then_some(*d))
+    }
 
     /// Sampler keys accepted by `:setting <key> <value>`. Mirrors the
     /// daemon's `SAMPLER_KEYS` constant.
@@ -824,7 +832,7 @@ impl App {
 
         if input.is_empty() {
             // Show all commands
-            self.completion.candidates = Self::COMMANDS.iter().map(|s| s.to_string()).collect();
+            self.completion.candidates = Self::COMMANDS.iter().map(|(n, _)| n.to_string()).collect();
             return;
         }
 
@@ -836,8 +844,8 @@ impl App {
             // Completing the command name
             self.completion.candidates = Self::COMMANDS
                 .iter()
-                .filter(|c| c.starts_with(cmd))
-                .map(|s| s.to_string())
+                .filter(|(n, _)| n.starts_with(cmd))
+                .map(|(n, _)| n.to_string())
                 .collect();
         } else {
             // Completing arguments

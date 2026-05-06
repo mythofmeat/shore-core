@@ -1074,8 +1074,13 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
+    // Two-column layout: name left-aligned to `name_col`, optional
+    // description after a >=2-space gap. Width pads to area.width so
+    // the selected-row highlight reaches the right edge.
     let candidate_rows = (area.height as usize).saturating_sub(lines.len());
     let row_width = area.width as usize;
+    let name_col: usize = 12; // 3-space prefix + longest command (9 chars) + slack
+
     for (i, c) in app
         .completion
         .candidates
@@ -1084,19 +1089,49 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
     {
         let selected = app.completion.selected == Some(i);
-        let raw = format!("   {c}");
-        let used = unicode_width::UnicodeWidthStr::width(raw.as_str());
-        let padded = if used < row_width {
-            format!("{raw}{}", " ".repeat(row_width - used))
+        let desc = App::command_description(c);
+
+        let name_text = format!("   {c}");
+        let name_w = unicode_width::UnicodeWidthStr::width(name_text.as_str());
+
+        let (gap, desc_text) = if let Some(d) = desc {
+            let gap = name_col.saturating_sub(name_w).max(2);
+            (" ".repeat(gap), d.to_string())
         } else {
-            raw
+            (String::new(), String::new())
         };
-        let style = if selected {
-            Style::default().fg(Color::Black).bg(Color::Yellow)
+
+        let used = name_w
+            + unicode_width::UnicodeWidthStr::width(gap.as_str())
+            + unicode_width::UnicodeWidthStr::width(desc_text.as_str());
+        let trailing = if used < row_width {
+            " ".repeat(row_width - used)
         } else {
-            Style::default().fg(Color::White)
+            String::new()
         };
-        lines.push(Line::from(Span::styled(padded, style)));
+
+        if selected {
+            // One span so the yellow bg fills the entire row uniformly.
+            let full = format!("{name_text}{gap}{desc_text}{trailing}");
+            lines.push(Line::from(Span::styled(
+                full,
+                Style::default().fg(Color::Black).bg(Color::Yellow),
+            )));
+        } else if desc.is_some() {
+            // Two-tone: bright name, dim description.
+            lines.push(Line::from(vec![
+                Span::styled(name_text, Style::default().fg(Color::White)),
+                Span::raw(gap),
+                Span::styled(desc_text, Style::default().fg(Color::DarkGray)),
+                Span::raw(trailing),
+            ]));
+        } else {
+            // Argument candidate (no description) — single span.
+            lines.push(Line::from(Span::styled(
+                format!("{name_text}{trailing}"),
+                Style::default().fg(Color::White),
+            )));
+        }
     }
 
     let paragraph = Paragraph::new(Text::from(lines));
@@ -1553,6 +1588,60 @@ mod scenario_tests {
         // Up acts like Ctrl+K.
         h.press(KeyCode::Up);
         assert_eq!(h.app.completion.selected, Some(total - 1));
+    }
+
+    /// Each top-level command renders alongside its description; the
+    /// argument candidates (e.g. `model` submenu) do NOT pick up a
+    /// description because they aren't top-level command names.
+    #[test]
+    fn scenario_command_palette_descriptions() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        // Open palette — every top-level command appears with its desc.
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        let f = h.render("palette open");
+
+        // Spot-check several commands have both name and description on
+        // the same row of the framebuffer.
+        for (cmd, desc) in [
+            ("compact", "Summarize and shrink the conversation"),
+            ("regen", "Regenerate the last assistant reply"),
+            ("quit", "Exit the TUI"),
+            ("help", "Show keyboard shortcuts"),
+        ] {
+            let row = f
+                .lines()
+                .find(|l| l.contains(cmd) && l.contains(desc))
+                .unwrap_or_else(|| {
+                    panic!("expected row with `{cmd}` + `{desc}`; full frame:\n{f}")
+                });
+            // Description should appear after the command name on the row.
+            let cmd_pos = row.find(cmd).unwrap();
+            let desc_pos = row.find(desc).unwrap();
+            assert!(
+                desc_pos > cmd_pos,
+                "description should follow command name on row: {row}"
+            );
+        }
+
+        // Now switch into the model submenu — argument candidates should
+        // NOT carry a description (e.g. nothing like "Switch the active
+        // model" appearing next to the candidate text).
+        h.app.model_names = vec!["alpha-1".into(), "beta-2".into()];
+        h.press_mod(KeyModifiers::NONE, KeyCode::Backspace); // close
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.type_str("model ");
+        let f = h.render("model submenu");
+        assert!(
+            f.contains("alpha-1") || f.contains("model alpha-1"),
+            "model candidate visible"
+        );
+        assert!(
+            !f.contains("Switch the active model"),
+            "argument candidates should not carry parent-command desc"
+        );
     }
 
     /// Argument-completion contexts render a dim header above the
