@@ -85,7 +85,6 @@ fn parse_bang_command(name: &str, args: &str) -> MatrixInput {
         // Translated daemon commands
         "character" => parse_character(args),
         "model" => parse_model(args),
-        "provider" => parse_provider(args),
         "setting" => parse_setting(args),
         "status" => forward_command("status", serde_json::json!({})),
         "memory" => {
@@ -172,27 +171,6 @@ fn parse_model(args: &str) -> MatrixInput {
                 args: serde_json::json!({}),
             }),
         ])
-    }
-}
-
-fn parse_provider(args: &str) -> MatrixInput {
-    if args.is_empty() {
-        forward_command("list_providers", serde_json::json!({}))
-    } else if let Some(("refresh", name)) = args.split_once(' ') {
-        let name = name.trim();
-        if name.is_empty() {
-            MatrixInput::LocalReply("usage: `!provider refresh <name>`".into())
-        } else {
-            forward_command(
-                "refresh_provider_models",
-                serde_json::json!({ "provider": name }),
-            )
-        }
-    } else {
-        forward_command(
-            "list_provider_models",
-            serde_json::json!({ "provider": args }),
-        )
     }
 }
 
@@ -345,7 +323,6 @@ fn help_text() -> String {
         "- `!status` — show daemon/character status",
         "- `!character [name]` — list characters or switch",
         "- `!model [name|all|reset]` — list/switch models",
-        "- `!provider [name|refresh <name>]` — list providers or refresh model cache",
         "- `!setting [<key> <value>|reset <key>]` — view or change sampler settings",
         "- `!reasoning [value|reset]` — set reasoning effort",
         "- `!memory <query>` — search character memory",
@@ -677,20 +654,6 @@ mod tests {
             }
             _ => panic!("expected switch_model"),
         }
-    }
-
-    #[test]
-    fn parse_provider_variants() {
-        let cmd = forward_command_only(parse_matrix_input("!provider"));
-        assert_eq!(cmd.name, "list_providers");
-
-        let cmd = forward_command_only(parse_matrix_input("!provider openai"));
-        assert_eq!(cmd.name, "list_provider_models");
-        assert_eq!(cmd.args["provider"], "openai");
-
-        let cmd = forward_command_only(parse_matrix_input("!provider refresh openai"));
-        assert_eq!(cmd.name, "refresh_provider_models");
-        assert_eq!(cmd.args["provider"], "openai");
     }
 
     #[test]
