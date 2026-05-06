@@ -1985,6 +1985,31 @@ fn append_wrap_up_nudge(request: &mut LlmRequest) {
 // Dormant ping executor
 // ---------------------------------------------------------------------------
 
+/// Build a keepalive ping request from the most recent real request.
+///
+/// The ping MUST be byte-identical to the cached request in every field that
+/// participates in the prompt cache prefix (tools, system, model, and the
+/// original message sequence) — any divergence forces a cache write at 2.0×
+/// instead of a cache read at 0.1×, defeating the entire keepalive subsystem.
+///
+/// The only permitted differences:
+/// - `max_tokens = 1` (we don't want generation, just a cache touch)
+/// - `rid = None` (don't reuse a stale request ID)
+/// - `forensic_character` set for logging
+/// - one extra user message appended (Anthropic requires conversations to end
+///   with a user turn; the cloned request ends on an assistant message)
+fn build_keepalive_ping(req: &LlmRequest, character: &str) -> LlmRequest {
+    let mut ping = req.clone();
+    ping.max_tokens = 1;
+    ping.rid = None;
+    ping.forensic_character = Some(character.to_owned());
+    ping.messages.push(serde_json::json!({
+        "role": "user",
+        "content": "."
+    }));
+    ping
+}
+
 /// Send a minimal API call (max_tokens=1) to keep the prompt cache warm
 /// while the character is dormant (no user activity).
 ///
@@ -2003,26 +2028,7 @@ async fn execute_dormant_ping(
     let mut request = {
         let s = lock_state(state);
         match &s.last_request {
-            Some(req) => {
-                let mut ping = req.clone();
-                ping.max_tokens = 1;
-                // Clear stale request ID — same reason as execute_heartbeat_tick.
-                ping.rid = None;
-                ping.forensic_character = Some(character.to_owned());
-                // Keepalive pings never consume tools. A cloned claude_code
-                // chat request may carry chat tool definitions, so strip them
-                // before allocating a one-off MCP session for the ping.
-                ping.tools = None;
-                // The cloned request includes the assistant's last response,
-                // so the conversation ends with an assistant message. Anthropic
-                // requires conversations to end with a user message. Append a
-                // minimal user turn so the ping is a valid API request.
-                ping.messages.push(serde_json::json!({
-                    "role": "user",
-                    "content": "."
-                }));
-                ping
-            }
+            Some(req) => build_keepalive_ping(req, character),
             None => {
                 debug!(character, "Dormant ping: no cached request, skipping");
                 return false;
@@ -3292,6 +3298,59 @@ api_key_env = "{heartbeat_env}"
         assert!(
             s.compaction_triggered,
             "compaction_triggered should prevent double-fire"
+        );
+    }
+
+    /// The cache-prefix invariant: a keepalive ping must be byte-identical
+    /// to the cached request in every field that participates in Anthropic's
+    /// prompt-cache prefix (tools, system, model, message prefix). Any
+    /// divergence flips a 0.1× cache read into a 2.0× cache write — a
+    /// 20× cost increase that defeats the entire keepalive subsystem.
+    ///
+    /// Regression guard: this exact bug was fixed in commit addada6 and
+    /// silently re-introduced two months later in cea94c0.
+    #[test]
+    fn keepalive_ping_preserves_cache_prefix() {
+        let mut original = empty_request();
+        original.model = "claude-sonnet-4-6".into();
+        original.system = Some(json!([{"type": "text", "text": "you are a character"}]));
+        original.tools = Some(vec![
+            json!({"name": "memory", "description": "x", "input_schema": {}}),
+            json!({"name": "schedule", "description": "y", "input_schema": {}}),
+        ]);
+        original.messages.push(json!({"role": "user", "content": "hello"}));
+        original
+            .messages
+            .push(json!({"role": "assistant", "content": "hi back"}));
+
+        let ping = build_keepalive_ping(&original, "alice");
+
+        assert_eq!(
+            ping.tools, original.tools,
+            "tools must be preserved — stripping them invalidates the cache prefix"
+        );
+        assert_eq!(ping.system, original.system, "system prompt must be preserved");
+        assert_eq!(ping.model, original.model, "model must be preserved");
+        assert_eq!(
+            &ping.messages[..original.messages.len()],
+            &original.messages[..],
+            "the original message sequence must be preserved as a prefix"
+        );
+
+        // Documented diffs:
+        assert_eq!(ping.max_tokens, 1, "ping must request only 1 token");
+        assert_eq!(
+            ping.messages.len(),
+            original.messages.len() + 1,
+            "ping appends exactly one user turn"
+        );
+        let last = ping.messages.last().unwrap();
+        assert_eq!(last["role"], "user", "ping must end with a user turn");
+        assert_eq!(ping.rid, None, "ping must not reuse the cached request ID");
+        assert_eq!(
+            ping.forensic_character.as_deref(),
+            Some("alice"),
+            "ping must carry the character name for forensics"
         );
     }
 }
