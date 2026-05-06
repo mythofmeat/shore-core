@@ -1514,6 +1514,44 @@ mod scenario_tests {
         );
     }
 
+    /// Ctrl+J / Ctrl+K (and Down / Up) cycle the candidate selection
+    /// forward and backward.
+    #[test]
+    fn scenario_command_palette_navigation_keys() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.render("palette open");
+        let total = h.app.completion.candidates.len();
+        assert!(total >= 3, "need >=3 candidates for cycle test");
+
+        // Ctrl+J advances forward (None → 0).
+        h.press_mod(KeyModifiers::CONTROL, KeyCode::Char('j'));
+        assert_eq!(h.app.completion.selected, Some(0));
+
+        // Ctrl+J again → 1.
+        h.press_mod(KeyModifiers::CONTROL, KeyCode::Char('j'));
+        assert_eq!(h.app.completion.selected, Some(1));
+
+        // Ctrl+K reverses → 0.
+        h.press_mod(KeyModifiers::CONTROL, KeyCode::Char('k'));
+        assert_eq!(h.app.completion.selected, Some(0));
+
+        // Ctrl+K from 0 wraps to the last candidate.
+        h.press_mod(KeyModifiers::CONTROL, KeyCode::Char('k'));
+        assert_eq!(h.app.completion.selected, Some(total - 1));
+
+        // Down acts like Ctrl+J (wraps back to 0 from last).
+        h.press(KeyCode::Down);
+        assert_eq!(h.app.completion.selected, Some(0));
+
+        // Up acts like Ctrl+K.
+        h.press(KeyCode::Up);
+        assert_eq!(h.app.completion.selected, Some(total - 1));
+    }
+
     /// Argument-completion contexts render a dim header above the
     /// candidate list so the user knows what they're picking.
     #[test]

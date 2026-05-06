@@ -963,6 +963,19 @@ impl App {
         });
         self.apply_completion();
     }
+
+    /// Cycle to the previous completion candidate.
+    pub fn prev_completion(&mut self) {
+        let len = self.completion.candidates.len();
+        if len == 0 {
+            return;
+        }
+        self.completion.selected = Some(match self.completion.selected {
+            Some(0) | None => len - 1,
+            Some(i) => i - 1,
+        });
+        self.apply_completion();
+    }
 }
 
 #[cfg(test)]

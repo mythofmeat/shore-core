@@ -430,9 +430,20 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
             Action::Redraw
         }
 
-        // Tab — cycle completions
-        (KeyModifiers::NONE, KeyCode::Tab) => {
+        // Tab / Ctrl+J / Down — next completion
+        (KeyModifiers::NONE, KeyCode::Tab)
+        | (KeyModifiers::CONTROL, KeyCode::Char('j'))
+        | (KeyModifiers::NONE, KeyCode::Down) => {
             app.next_completion();
+            Action::Redraw
+        }
+
+        // Shift+Tab / Ctrl+K / Up — previous completion
+        (KeyModifiers::SHIFT, KeyCode::BackTab)
+        | (KeyModifiers::NONE, KeyCode::BackTab)
+        | (KeyModifiers::CONTROL, KeyCode::Char('k'))
+        | (KeyModifiers::NONE, KeyCode::Up) => {
+            app.prev_completion();
             Action::Redraw
         }
 
