@@ -418,6 +418,24 @@ pub enum ConnectionStatus {
     Connected,
 }
 
+/// Whether the palette is showing the top-level command list or a
+/// child picker scoped to a specific command (`:model`, `:character`).
+#[derive(Default, Clone)]
+pub enum PaletteMode {
+    #[default]
+    Top,
+    Submenu(SubmenuState),
+}
+
+/// Per-submenu state. `cmd_text` doubles as the live filter while in
+/// submenu mode; saved fields restore the parent input on Esc.
+#[derive(Clone)]
+pub struct SubmenuState {
+    pub parent: String,
+    pub saved_cmd_text: String,
+    pub saved_cmd_cursor: usize,
+}
+
 /// Completion state for the command palette.
 #[derive(Default)]
 pub struct CompletionState {
@@ -429,6 +447,8 @@ pub struct CompletionState {
     /// to a known command (e.g. "model", "setting key"). `None` for the
     /// top-level command list.
     pub header: Option<String>,
+    /// Top vs. submenu picker.
+    pub mode: PaletteMode,
 }
 
 impl CompletionState {
@@ -437,6 +457,7 @@ impl CompletionState {
         self.candidates.clear();
         self.selected = None;
         self.header = None;
+        self.mode = PaletteMode::Top;
     }
 }
 
@@ -462,6 +483,7 @@ pub struct App {
     pub character_name: String,
     pub characters: Vec<CharacterInfo>,
     pub model_names: Vec<String>,
+    pub active_model_names: Vec<String>,
     pub show_model_list: bool,
     pub model: String,
     pub tokens: TokenCounts,
@@ -515,6 +537,7 @@ impl Default for App {
             character_name: String::new(),
             characters: Vec::new(),
             model_names: Vec::new(),
+            active_model_names: Vec::new(),
             show_model_list: false,
             model: String::new(),
             tokens: TokenCounts {
@@ -783,6 +806,49 @@ impl App {
             .retain(|e| !matches!(e, ConversationEntry::System { .. }));
     }
 
+    /// Canonical parent name for commands whose arguments are picked
+    /// via a submenu rather than typed inline.
+    pub fn canonical_submenu_parent(name: &str) -> Option<&'static str> {
+        match name {
+            "model" => Some("model"),
+            "character" | "characters" => Some("character"),
+            _ => None,
+        }
+    }
+
+    pub fn is_submenu_open(&self, parent: &str) -> bool {
+        matches!(&self.completion.mode, PaletteMode::Submenu(s) if s.parent == parent)
+    }
+
+    pub fn set_active_model(&mut self, model: Option<&str>) {
+        match model.filter(|m| !m.is_empty()) {
+            Some(model) => {
+                self.model = model.to_string();
+                self.active_model_names = vec![model.to_string()];
+            }
+            None => {
+                self.model.clear();
+                self.active_model_names.clear();
+            }
+        }
+    }
+
+    pub fn model_identifier_matches(active: &str, candidate: &str) -> bool {
+        if active == candidate {
+            return true;
+        }
+        active.ends_with(&format!(".{candidate}"))
+            || active.ends_with(&format!(":{candidate}"))
+            || active.ends_with(&format!("/{candidate}"))
+    }
+
+    pub fn is_active_model_candidate(&self, candidate: &str) -> bool {
+        self.active_model_names
+            .iter()
+            .any(|active| Self::model_identifier_matches(active, candidate))
+            || (!self.model.is_empty() && Self::model_identifier_matches(&self.model, candidate))
+    }
+
     /// Static commands and their descriptions, shown in the palette.
     const COMMANDS: &'static [(&'static str, &'static str)] = &[
         ("cancel", "Stop the current generation"),
@@ -795,7 +861,6 @@ impl App {
         ("image", "Attach an image to the next message"),
         ("memory", "Search saved memory entries"),
         ("model", "Switch the active model"),
-        ("provider", "Refresh provider model cache"),
         ("quit", "Exit the TUI"),
         ("regen", "Regenerate the last assistant reply"),
         ("setting", "View or change sampler settings"),
@@ -826,13 +891,20 @@ impl App {
 
     /// Update completion candidates based on current command input.
     pub fn update_completions(&mut self) {
-        let input = &self.input.cmd_text;
         self.completion.selected = None;
         self.completion.header = None;
 
+        if matches!(self.completion.mode, PaletteMode::Submenu(_)) {
+            self.update_submenu_candidates();
+            return;
+        }
+
+        let input = &self.input.cmd_text;
+
         if input.is_empty() {
             // Show all commands
-            self.completion.candidates = Self::COMMANDS.iter().map(|(n, _)| n.to_string()).collect();
+            self.completion.candidates =
+                Self::COMMANDS.iter().map(|(n, _)| n.to_string()).collect();
             return;
         }
 
@@ -926,18 +998,6 @@ impl App {
                         self.completion.candidates = candidates;
                     }
                 }
-                "provider" => {
-                    // `:provider [<name>]` and `:provider refresh <name>`.
-                    // Provider names aren't cached client-side yet, so
-                    // only suggest the `refresh` subcommand.
-                    let trimmed = arg.trim();
-                    if trimmed.is_empty() || "refresh".starts_with(&trimmed.to_lowercase()) {
-                        self.completion.header = Some("provider subcommand".into());
-                        self.completion.candidates = vec!["provider refresh".into()];
-                    } else {
-                        self.completion.candidates.clear();
-                    }
-                }
                 _ => {
                     self.completion.candidates.clear();
                 }
@@ -946,7 +1006,12 @@ impl App {
     }
 
     /// Apply the currently selected completion to the command input.
+    /// In submenu mode this is a no-op — candidates are bare names that
+    /// shouldn't be spliced into the filter on Tab.
     pub fn apply_completion(&mut self) {
+        if matches!(self.completion.mode, PaletteMode::Submenu(_)) {
+            return;
+        }
         if let Some(idx) = self.completion.selected {
             if let Some(text) = self.completion.candidates.get(idx) {
                 self.input.cmd_text = text.clone();
@@ -958,6 +1023,82 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Build candidates for a submenu picker. Reads the parent name out
+    /// of `completion.mode` and uses `cmd_text` as a case-insensitive
+    /// prefix filter.
+    fn update_submenu_candidates(&mut self) {
+        let parent = match &self.completion.mode {
+            PaletteMode::Submenu(s) => s.parent.clone(),
+            _ => return,
+        };
+        let filter = self.input.cmd_text.to_lowercase();
+        match parent.as_str() {
+            "model" => {
+                let mut candidates: Vec<String> = self
+                    .model_names
+                    .iter()
+                    .filter(|n| filter.is_empty() || n.to_lowercase().starts_with(&filter))
+                    .cloned()
+                    .collect();
+                if filter.is_empty() || "reset".starts_with(&filter) {
+                    candidates.push("reset".into());
+                }
+                self.completion.candidates = candidates;
+            }
+            "character" => {
+                self.completion.candidates = self
+                    .characters
+                    .iter()
+                    .filter(|c| filter.is_empty() || c.name.to_lowercase().starts_with(&filter))
+                    .map(|c| c.name.clone())
+                    .collect();
+            }
+            _ => self.completion.candidates.clear(),
+        }
+    }
+
+    /// Enter a submenu picker for the given parent command. Saves the
+    /// current `cmd_text`/cursor for restoration on Esc, clears the
+    /// input so the filter starts empty, and rebuilds candidates.
+    pub fn enter_submenu(&mut self, parent: &str) {
+        let saved_cmd_text = self.input.cmd_text.clone();
+        let saved_cmd_cursor = self.input.cmd_cursor;
+        self.completion.mode = PaletteMode::Submenu(SubmenuState {
+            parent: parent.to_string(),
+            saved_cmd_text,
+            saved_cmd_cursor,
+        });
+        self.input.cmd_text.clear();
+        self.input.cmd_cursor = 0;
+        self.update_completions();
+    }
+
+    /// Pop a submenu picker back to the top-level command list,
+    /// restoring the parent input text.
+    pub fn exit_submenu(&mut self) {
+        if let PaletteMode::Submenu(s) = std::mem::take(&mut self.completion.mode) {
+            self.input.cmd_text = s.saved_cmd_text;
+            self.input.cmd_cursor = s.saved_cmd_cursor;
+        }
+        self.update_completions();
+    }
+
+    /// Apply the currently selected submenu candidate. Returns the full
+    /// command string (e.g. `"model gpt-4o"`) for the caller to feed
+    /// into `parse_command`. Clears completion state and exits command
+    /// mode as a side effect.
+    pub fn apply_submenu(&mut self) -> Option<String> {
+        let parent = match &self.completion.mode {
+            PaletteMode::Submenu(s) => s.parent.clone(),
+            _ => return None,
+        };
+        let idx = self.completion.selected?;
+        let chosen = self.completion.candidates.get(idx)?.clone();
+        self.completion.clear();
+        self.input.exit_command_mode();
+        Some(format!("{parent} {chosen}"))
     }
 
     /// Cycle to the next completion candidate.

@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, ConversationEntry, InputMode, StreamBlock};
+use crate::app::{App, ConversationEntry, InputMode, PaletteMode, StreamBlock};
 use crate::images;
 use crate::markdown;
 
@@ -19,7 +19,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let show_completions =
         app.input.mode == InputMode::Command && !app.completion.candidates.is_empty();
     let completion_height = if show_completions {
-        let header_lines = if app.completion.header.is_some() { 1 } else { 0 };
+        let header_lines = if app.completion.header.is_some() {
+            1
+        } else {
+            0
+        };
         let n = app.completion.candidates.len() as u16;
         (header_lines + n).min(15)
     } else {
@@ -789,25 +793,67 @@ fn render_images(
     }
 }
 
+fn compact_model_label(model: &str, area_width: u16) -> String {
+    let max_chars = ((area_width as usize) / 2).clamp(12, 36);
+    let chars: Vec<char> = model.chars().collect();
+    if chars.len() <= max_chars {
+        return model.to_string();
+    }
+    if max_chars <= 3 {
+        return chars.into_iter().take(max_chars).collect();
+    }
+    let keep = max_chars - 3;
+    let left = keep / 2;
+    let right = keep - left;
+    let prefix: String = chars.iter().take(left).collect();
+    let suffix: String = chars
+        .iter()
+        .skip(chars.len().saturating_sub(right))
+        .collect();
+    format!("{prefix}...{suffix}")
+}
+
+fn active_model_title(app: &App, area_width: u16) -> Option<String> {
+    let model = app.model.trim();
+    if model.is_empty() {
+        None
+    } else {
+        Some(format!(
+            " model: {} ",
+            compact_model_label(model, area_width)
+        ))
+    }
+}
+
 /// Render the input area.
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     if app.input.mode == InputMode::Command {
-        // Command palette mode: show ":" prefix with command text
-        let display = format!(":{}", app.input.cmd_text);
+        // Top vs. submenu: title and prefix differ.
+        let (title, prefix): (String, &str) = match &app.completion.mode {
+            PaletteMode::Top => (" [COMMAND] ".to_string(), ":"),
+            PaletteMode::Submenu(s) => (format!(" [{}] ", s.parent), ""),
+        };
+        let display = format!("{prefix}{}", app.input.cmd_text);
+        let mut block = Block::default()
+            .borders(Borders::TOP)
+            .title(title)
+            .border_style(Style::default().fg(Color::Yellow));
+        if let Some(label) = active_model_title(app, area.width) {
+            block = block.title(
+                Line::from(Span::styled(label, Style::default().fg(Color::DarkGray)))
+                    .right_aligned(),
+            );
+        }
         let paragraph = Paragraph::new(display.as_str())
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .title(" [COMMAND] ")
-                    .border_style(Style::default().fg(Color::Yellow)),
-            )
+            .block(block)
             .wrap(Wrap { trim: false });
 
         frame.render_widget(paragraph, area);
 
-        // Cursor after the ":" prefix + cmd_cursor
-        let cursor_x =
-            1 + unicode_width::UnicodeWidthStr::width(&app.input.cmd_text[..app.input.cmd_cursor])
+        // Cursor after the prefix + cmd_cursor.
+        let prefix_w = unicode_width::UnicodeWidthStr::width(prefix) as u16;
+        let cursor_x = prefix_w
+            + unicode_width::UnicodeWidthStr::width(&app.input.cmd_text[..app.input.cmd_cursor])
                 as u16;
         frame.set_cursor_position((area.x + cursor_x, area.y + 1));
         return;
@@ -880,20 +926,33 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::TOP)
         .title(mode_label)
         .border_style(Style::default().fg(border_color));
+    let mut indicators: Vec<(String, Color)> = Vec::new();
     if img_count > 0 {
-        let label = if img_count == 1 {
-            " 1 image ".to_string()
-        } else {
-            format!(" {} images ", img_count)
-        };
-        block = block.title(
-            Line::from(Span::styled(label, Style::default().fg(Color::Magenta))).right_aligned(),
-        );
+        indicators.push((
+            if img_count == 1 {
+                "1 image".to_string()
+            } else {
+                format!("{img_count} images")
+            },
+            Color::Magenta,
+        ));
     }
     if app.live_speak {
-        block = block.title(
-            Line::from(Span::styled(" [TTS] ", Style::default().fg(Color::Cyan))).right_aligned(),
-        );
+        indicators.push(("TTS".to_string(), Color::Cyan));
+    }
+    if let Some(label) = active_model_title(app, area.width) {
+        indicators.push((label.trim().to_string(), Color::DarkGray));
+    }
+    if !indicators.is_empty() {
+        let mut spans = vec![Span::raw(" ")];
+        for (i, (label, color)) in indicators.into_iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+            }
+            spans.push(Span::styled(label, Style::default().fg(color)));
+        }
+        spans.push(Span::raw(" "));
+        block = block.title(Line::from(spans).right_aligned());
     }
     let paragraph = Paragraph::new(input_content)
         .block(block)
@@ -1002,10 +1061,6 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::White),
         )),
         Line::from(Span::styled(
-            "    :provider       list providers / refresh discovery",
-            Style::default().fg(Color::White),
-        )),
-        Line::from(Span::styled(
             "    :setting        view/set sampler settings (temperature, ...)",
             Style::default().fg(Color::White),
         )),
@@ -1083,6 +1138,19 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
     // Keeps descriptions in a single column aligned across all rows.
     let name_col: usize = 18;
 
+    // In a submenu picker, the candidate matching the daemon's active
+    // model / character gets a dim "(active)" marker so the user can
+    // see what's currently in effect.
+    let active_value: Option<&str> = match &app.completion.mode {
+        PaletteMode::Submenu(s) => match s.parent.as_str() {
+            "model" => Some(app.model.as_str()),
+            "character" => Some(app.character_name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    };
+    const ACTIVE_MARKER: &str = "  ● active";
+
     for (i, c) in app
         .completion
         .candidates
@@ -1092,6 +1160,10 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
     {
         let selected = app.completion.selected == Some(i);
         let desc = App::command_description(c);
+        let is_active = match &app.completion.mode {
+            PaletteMode::Submenu(s) if s.parent == "model" => app.is_active_model_candidate(c),
+            _ => active_value.is_some_and(|v| !v.is_empty() && v == c),
+        };
 
         let name_text = format!("   {c}");
         let name_w = unicode_width::UnicodeWidthStr::width(name_text.as_str());
@@ -1099,6 +1171,8 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
         let (gap, desc_text) = if let Some(d) = desc {
             let gap = name_col.saturating_sub(name_w).max(2);
             (" ".repeat(gap), d.to_string())
+        } else if is_active {
+            (String::new(), ACTIVE_MARKER.to_string())
         } else {
             (String::new(), String::new())
         };
@@ -1124,6 +1198,13 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(vec![
                 Span::styled(name_text, Style::default().fg(Color::White)),
                 Span::raw(gap),
+                Span::styled(desc_text, Style::default().fg(Color::DarkGray)),
+                Span::raw(trailing),
+            ]));
+        } else if is_active {
+            // Submenu candidate that matches the active value — dim marker.
+            lines.push(Line::from(vec![
+                Span::styled(name_text, Style::default().fg(Color::White)),
                 Span::styled(desc_text, Style::default().fg(Color::DarkGray)),
                 Span::raw(trailing),
             ]));
@@ -1316,6 +1397,7 @@ mod scenario_tests {
 
         // Input area shows INSERT mode
         assert!(f.contains("[INSERT]"), "default mode is INSERT");
+        assert!(f.contains("model: gpt-4"), "active model is visible");
     }
 
     // ── Scenario: type, send, stream, complete ──────────────────────────────
@@ -1476,14 +1558,23 @@ mod scenario_tests {
             "completion list renders below input row"
         );
 
-        // Tab to select
+        // Tab completes a submenu parent by entering the picker directly.
         h.press(KeyCode::Tab);
         let f = h.render("after tab completion");
-        assert!(f.contains(":model"), "completion applied");
+        assert!(f.contains("[model]"), "model submenu opened");
 
-        // Escape to cancel
+        // Escape first pops back to the top-level command palette.
         h.press(KeyCode::Esc);
         let f = h.render("after escape");
+        assert!(
+            f.contains("[COMMAND]"),
+            "top-level command palette restored"
+        );
+        assert!(f.contains(":model"), "parent command restored");
+
+        // Escape again cancels command mode.
+        h.press(KeyCode::Esc);
+        let f = h.render("after second escape");
         assert!(
             !f.contains("COMMAND"),
             "command palette hidden after escape"
@@ -1512,9 +1603,7 @@ mod scenario_tests {
         // remain enumerable. We look for the row containing the input
         // border title on the right side.
         fn input_row(h: &mut Harness, label: &str) -> u16 {
-            h.terminal
-                .draw(|frame| draw(frame, &mut h.app))
-                .unwrap();
+            h.terminal.draw(|frame| draw(frame, &mut h.app)).unwrap();
             let buf = h.terminal.backend().buffer();
             let area = buf.area;
             for y in 0..area.height {
@@ -1522,9 +1611,7 @@ mod scenario_tests {
                 for x in 0..area.width {
                     row.push_str(buf[(x, y)].symbol());
                 }
-                if row.contains("[COMMAND]")
-                    || row.contains("[INSERT]")
-                    || row.contains("[NORMAL]")
+                if row.contains("[COMMAND]") || row.contains("[INSERT]") || row.contains("[NORMAL]")
                 {
                     eprintln!("{label}: input border at row {y}: {row}");
                     return y;
@@ -1644,6 +1731,145 @@ mod scenario_tests {
             !f.contains("Switch the active model"),
             "argument candidates should not carry parent-command desc"
         );
+    }
+
+    /// Pressing Enter on `:model` opens the model submenu picker:
+    /// title becomes `[model]`, candidates are bare model names with
+    /// no `model ` prefix, and cmd_text is empty (filter starts fresh).
+    #[test]
+    fn scenario_command_palette_submenu_enter() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+        h.app.model_names = vec!["alpha-1".into(), "beta-2".into()];
+
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.type_str("model");
+        h.press(KeyCode::Enter);
+        let f = h.render("model submenu open");
+
+        assert!(
+            matches!(h.app.completion.mode, crate::app::PaletteMode::Submenu(_)),
+            "completion mode should be Submenu after Enter"
+        );
+        assert!(
+            f.contains("[model]"),
+            "input title should show [model] breadcrumb; frame:\n{f}"
+        );
+        // Candidates are bare names — no "model " prefix.
+        assert!(
+            h.app.completion.candidates.iter().any(|c| c == "alpha-1"),
+            "submenu candidates contain bare model name"
+        );
+        assert!(
+            !h.app
+                .completion
+                .candidates
+                .iter()
+                .any(|c| c.starts_with("model ")),
+            "submenu candidates should not carry the parent prefix"
+        );
+        assert!(
+            h.app.input.cmd_text.is_empty(),
+            "filter starts empty; current cmd_text = {:?}",
+            h.app.input.cmd_text
+        );
+    }
+
+    /// Space on a parent name also opens the submenu (does not insert
+    /// a literal space into cmd_text).
+    #[test]
+    fn scenario_command_palette_submenu_space_trigger() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+        h.app.model_names = vec!["foo".into()];
+
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.type_str("model");
+        h.press_mod(KeyModifiers::NONE, KeyCode::Char(' '));
+        h.render("after space");
+
+        assert!(
+            matches!(h.app.completion.mode, crate::app::PaletteMode::Submenu(_)),
+            "Space on `:model` should open submenu, not insert a space"
+        );
+        assert!(
+            h.app.input.cmd_text.is_empty(),
+            "Space should not have been inserted into cmd_text"
+        );
+    }
+
+    /// Inside a submenu, typing filters candidates; Esc pops back to
+    /// Top with cmd_text restored to the parent command name.
+    #[test]
+    fn scenario_command_palette_submenu_filter_and_esc() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+        h.app.model_names = vec!["alpha-1".into(), "beta-2".into(), "alpha-2".into()];
+
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.type_str("model");
+        h.press(KeyCode::Enter);
+        h.render("submenu opened");
+
+        // Filter to "alpha".
+        h.type_str("alpha");
+        h.render("filtered");
+
+        let names: Vec<&str> = h
+            .app
+            .completion
+            .candidates
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        assert!(
+            names.iter().all(|n| n.starts_with("alpha") || *n == "reset"),
+            "filter should keep only alpha-prefixed model names (+synthetic reset if matching); got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| *n == "alpha-1") && names.iter().any(|n| *n == "alpha-2"),
+            "both alpha-* models survive the filter"
+        );
+
+        // Esc → pop back to Top, cmd_text restored to "model".
+        h.press(KeyCode::Esc);
+        h.render("after esc");
+        assert!(
+            matches!(h.app.completion.mode, crate::app::PaletteMode::Top),
+            "Esc should pop submenu back to Top"
+        );
+        assert_eq!(
+            h.app.input.cmd_text, "model",
+            "parent cmd_text should be restored after Esc"
+        );
+    }
+
+    /// `apply_submenu` returns the full command string for a selected
+    /// candidate and resets palette state.
+    #[test]
+    fn submenu_apply_returns_full_command() {
+        let mut app = App::default();
+        app.model_names = vec!["gpt-4o".into(), "claude-sonnet-4-6".into()];
+
+        app.input.enter_command_mode();
+        app.input.cmd_text = "model".into();
+        app.input.cmd_cursor = 5;
+
+        app.enter_submenu("model");
+        // Pre: candidates rebuilt to bare model names + reset.
+        assert!(app.completion.candidates.contains(&"gpt-4o".to_string()));
+        // Cycle to first candidate.
+        app.next_completion();
+        let chosen = app.completion.candidates[app.completion.selected.unwrap()].clone();
+
+        let cmd = app.apply_submenu().expect("apply_submenu yields a command");
+        assert_eq!(cmd, format!("model {chosen}"));
+        assert!(app.completion.candidates.is_empty());
+        assert!(matches!(app.completion.mode, crate::app::PaletteMode::Top));
+        assert_ne!(app.input.mode, InputMode::Command, "command mode exited");
     }
 
     /// Argument-completion contexts render a dim header above the

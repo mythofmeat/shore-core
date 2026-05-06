@@ -612,11 +612,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> UiEffect {
             if let Some(private) = config.get("private").and_then(|v| v.as_bool()) {
                 app.is_private = private;
             }
-            if let Some(model) = config.get("active_model").and_then(|v| v.as_str()) {
-                app.model = model.to_string();
-            } else {
-                app.model.clear();
-            }
+            app.set_active_model(config.get("active_model").and_then(|v| v.as_str()));
 
             // Load any history from the handshake
             app.entries.clear();
@@ -774,6 +770,28 @@ fn transmit_image_ref(
     }
 }
 
+fn active_model_candidate_name(active: &str, model: &serde_json::Value) -> Option<String> {
+    let name = model.get("name").and_then(|v| v.as_str())?;
+    let mut identifiers = vec![name];
+    if let Some(qualified) = model.get("qualified_name").and_then(|v| v.as_str()) {
+        identifiers.push(qualified);
+    }
+    if let Some(model_id) = model.get("model_id").and_then(|v| v.as_str()) {
+        identifiers.push(model_id);
+        if let Some(provider) = model.get("provider").and_then(|v| v.as_str()) {
+            let provider_model = format!("{provider}:{model_id}");
+            if App::model_identifier_matches(active, &provider_model) {
+                return Some(name.to_string());
+            }
+        }
+    }
+
+    identifiers
+        .into_iter()
+        .any(|identifier| App::model_identifier_matches(active, identifier))
+        .then(|| name.to_string())
+}
+
 pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffect {
     match &msg {
         ServerMessage::AudioStart(_) | ServerMessage::AudioError(_) => {
@@ -833,7 +851,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
             }
 
             let keep_bottom = app.auto_scroll;
-            app.model = end.metadata.model.clone();
+            app.set_active_model(Some(&end.metadata.model));
             app.tokens = end.metadata.tokens.clone();
 
             if !end.content.is_empty() {
@@ -915,7 +933,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
         ServerMessage::Phase(phase) => {
             app.stream.phase = phase.phase;
             if let Some(model) = phase.model {
-                app.model = model;
+                app.set_active_model(Some(&model));
             }
             RedrawEffect::Immediate
         }
@@ -984,13 +1002,24 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                     if let Some(character) = co.data.get("character").and_then(|v| v.as_str()) {
                         app.character_name = character.to_string();
                     }
-                    if let Some(model) = co.data.get("active_model").and_then(|v| v.as_str()) {
-                        app.model = model.to_string();
-                    }
+                    app.set_active_model(co.data.get("active_model").and_then(|v| v.as_str()));
                 }
                 "list_characters" => {
                     if let Some(chars) = co.data.get("characters").and_then(|v| v.as_array()) {
                         let active = co.data.get("active").and_then(|v| v.as_str()).unwrap_or("");
+                        app.characters = chars
+                            .iter()
+                            .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
+                            .map(|name| shore_protocol::types::CharacterInfo {
+                                name: name.to_string(),
+                            })
+                            .collect();
+
+                        if app.is_submenu_open("character") {
+                            app.update_completions();
+                            return UiEffect::redraw(RedrawEffect::Immediate);
+                        }
+
                         let list = chars
                             .iter()
                             .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
@@ -1017,10 +1046,10 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                     if let Some(name) = co.data.get("character").and_then(|v| v.as_str()) {
                         app.character_name = name.to_string();
                     }
-                    if let Some(model) = co.data.get("active_model").and_then(|v| v.as_str()) {
-                        app.model = model.to_string();
-                    } else if co.data.get("active_model").is_some_and(|v| v.is_null()) {
-                        app.model.clear();
+                    if co.data.get("active_model").is_some_and(|v| v.is_null()) {
+                        app.set_active_model(None);
+                    } else {
+                        app.set_active_model(co.data.get("active_model").and_then(|v| v.as_str()));
                     }
                     if let Some(private) = co.data.get("private").and_then(|v| v.as_bool()) {
                         app.is_private = private;
@@ -1037,6 +1066,32 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                             .collect();
                         // Cache model names for tab completion
                         app.model_names = names.iter().map(|n| n.to_string()).collect();
+                        let active = co
+                            .data
+                            .get("active")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty());
+                        if let Some(active) = active {
+                            app.set_active_model(Some(active));
+                        }
+
+                        let active_for_matching = active
+                            .or_else(|| (!app.model.is_empty()).then_some(app.model.as_str()));
+                        if let Some(active) = active_for_matching {
+                            let active_names: Vec<String> = models
+                                .iter()
+                                .filter_map(|m| active_model_candidate_name(active, m))
+                                .collect();
+                            if !active_names.is_empty() {
+                                app.active_model_names = active_names;
+                            }
+                        }
+
+                        if app.is_submenu_open("model") {
+                            app.update_completions();
+                            return UiEffect::redraw(RedrawEffect::Immediate);
+                        }
+
                         // Only show the list if the user explicitly requested it
                         if app.show_model_list {
                             app.show_model_list = false;
@@ -1103,95 +1158,12 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                         .and_then(|v| v.as_str())
                         .or_else(|| co.data.get("qualified_name").and_then(|v| v.as_str()));
                     if let Some(name) = name {
-                        app.model = name.to_string();
+                        app.set_active_model(Some(name));
                         app.set_status(format!("model: {name}"));
                     }
                 }
-                "list_providers" => {
-                    if let Some(providers) = co.data.get("providers").and_then(|v| v.as_array()) {
-                        let lines: Vec<String> = providers
-                            .iter()
-                            .map(|p| {
-                                let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                                let enabled =
-                                    p.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-                                let cache_count = p
-                                    .get("cache")
-                                    .and_then(|c| c.get("models"))
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0);
-                                let suffix = if enabled { "" } else { " [disabled]" };
-                                format!("  {name:<16}{cache_count} models{suffix}")
-                            })
-                            .collect();
-                        app.entries.push(ConversationEntry::System {
-                            content: format!("Providers:\n{}", lines.join("\n")),
-                            count: 1,
-                            timestamp: String::new(),
-                        });
-                        if app.auto_scroll {
-                            app.scroll_to_bottom();
-                        }
-                    }
-                }
-                "list_provider_models" => {
-                    let provider = co
-                        .data
-                        .get("provider")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let mut sections: Vec<String> = Vec::new();
-                    for (label, key) in [
-                        ("static", "static"),
-                        ("discovered", "discovered"),
-                        ("hidden", "hidden"),
-                    ] {
-                        let arr = co.data.get(key).and_then(|v| v.as_array());
-                        if let Some(arr) = arr {
-                            if !arr.is_empty() {
-                                let lines: Vec<String> = arr
-                                    .iter()
-                                    .map(|m| {
-                                        let id = m
-                                            .get("model_id")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("?");
-                                        format!("    {id}")
-                                    })
-                                    .collect();
-                                sections.push(format!("  {label}:\n{}", lines.join("\n")));
-                            }
-                        }
-                    }
-                    let body = if sections.is_empty() {
-                        "  (no models)".to_string()
-                    } else {
-                        sections.join("\n")
-                    };
-                    app.entries.push(ConversationEntry::System {
-                        content: format!("Provider — {provider}\n{body}"),
-                        count: 1,
-                        timestamp: String::new(),
-                    });
-                    if app.auto_scroll {
-                        app.scroll_to_bottom();
-                    }
-                }
-                "refresh_provider_models" => {
-                    let provider = co
-                        .data
-                        .get("provider")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let count = co
-                        .data
-                        .get("model_count")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    app.set_status(format!("refreshed {provider}: {count} models"));
-                }
                 "reset_model" => {
-                    app.model.clear();
+                    app.set_active_model(None);
                     app.set_status("model reset to default");
                 }
                 "memory" => {
@@ -1246,9 +1218,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
             if let Some(private) = hist.config.get("private").and_then(|v| v.as_bool()) {
                 app.is_private = private;
             }
-            if let Some(model) = hist.config.get("active_model").and_then(|v| v.as_str()) {
-                app.model = model.to_string();
-            }
+            app.set_active_model(hist.config.get("active_model").and_then(|v| v.as_str()));
             if let Some(selected) = hist.selected_character {
                 app.character_name = selected;
             }
@@ -1275,7 +1245,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
 #[cfg(test)]
 mod redraw_tests {
     use super::*;
-    use shore_protocol::server_msg::{StreamChunk, StreamEnd};
+    use shore_protocol::server_msg::{CommandOutput, StreamChunk, StreamEnd};
     use shore_protocol::types::{StreamMetadata, TimingInfo, TokenCounts};
 
     fn metadata() -> StreamMetadata {
@@ -1292,6 +1262,75 @@ mod redraw_tests {
                 ttft_ms: 1,
             },
         }
+    }
+
+    #[test]
+    fn list_models_refreshes_open_model_submenu() {
+        let mut app = App::default();
+        app.input.enter_command_mode();
+        app.enter_submenu("model");
+        assert_eq!(app.completion.candidates, vec!["reset"]);
+
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::CommandOutput(CommandOutput {
+                rid: None,
+                name: "list_models".into(),
+                data: serde_json::json!({
+                    "active": "chat.anthropic.beta",
+                    "models": [
+                        {
+                            "name": "alpha",
+                            "qualified_name": "chat.anthropic.alpha",
+                            "provider": "anthropic",
+                            "model_id": "alpha"
+                        },
+                        {
+                            "name": "beta",
+                            "qualified_name": "chat.anthropic.beta",
+                            "provider": "anthropic",
+                            "model_id": "beta"
+                        }
+                    ]
+                }),
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::Immediate);
+        assert_eq!(app.completion.candidates, vec!["alpha", "beta", "reset"]);
+        assert!(app.is_active_model_candidate("beta"));
+        assert!(!app.entries.iter().any(|entry| {
+            matches!(entry, ConversationEntry::System { content, .. } if content.contains("Models:"))
+        }));
+    }
+
+    #[test]
+    fn list_characters_refreshes_open_character_submenu_without_printing() {
+        let mut app = App::default();
+        app.input.enter_command_mode();
+        app.enter_submenu("character");
+        assert!(app.completion.candidates.is_empty());
+
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::CommandOutput(CommandOutput {
+                rid: None,
+                name: "list_characters".into(),
+                data: serde_json::json!({
+                    "characters": [
+                        { "name": "qifei" },
+                        { "name": "debug" }
+                    ]
+                }),
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::Immediate);
+        assert_eq!(app.completion.candidates, vec!["qifei", "debug"]);
+        assert_eq!(app.characters.len(), 2);
+        assert!(!app.entries.iter().any(|entry| {
+            matches!(entry, ConversationEntry::System { content, .. } if content.contains("Characters:"))
+        }));
     }
 
     #[test]

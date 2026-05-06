@@ -4,7 +4,7 @@ use shore_protocol::client_msg::{
 };
 use tracing::debug;
 
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, PaletteMode};
 use crate::connection::ConnCommand;
 
 /// Action resulting from a key press.
@@ -421,6 +421,10 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
 }
 
 fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
+    if matches!(app.completion.mode, PaletteMode::Submenu(_)) {
+        return handle_submenu_mode(app, key);
+    }
+
     match (key.modifiers, key.code) {
         // Cancel
         (KeyModifiers::NONE, KeyCode::Esc) => {
@@ -430,28 +434,57 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
             Action::Redraw
         }
 
-        // Tab / Ctrl+J / Down — next completion
-        (KeyModifiers::NONE, KeyCode::Tab)
-        | (KeyModifiers::CONTROL, KeyCode::Char('j'))
-        | (KeyModifiers::NONE, KeyCode::Down) => {
+        // Tab completes the selected candidate; submenu parents open
+        // their picker immediately.
+        (KeyModifiers::NONE, KeyCode::Tab) => {
+            app.next_completion();
+            enter_completed_submenu(app).unwrap_or(Action::Redraw)
+        }
+
+        // Ctrl+J / Down — next completion without accepting it as a command.
+        (KeyModifiers::CONTROL, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
             app.next_completion();
             Action::Redraw
         }
 
-        // Shift+Tab / Ctrl+K / Up — previous completion
-        (KeyModifiers::SHIFT, KeyCode::BackTab)
-        | (KeyModifiers::NONE, KeyCode::BackTab)
-        | (KeyModifiers::CONTROL, KeyCode::Char('k'))
-        | (KeyModifiers::NONE, KeyCode::Up) => {
+        // Shift+Tab / BackTab accepts the previous completion.
+        (KeyModifiers::SHIFT, KeyCode::BackTab) | (KeyModifiers::NONE, KeyCode::BackTab) => {
+            app.prev_completion();
+            enter_completed_submenu(app).unwrap_or(Action::Redraw)
+        }
+
+        // Ctrl+K / Up — previous completion without accepting it as a command.
+        (KeyModifiers::CONTROL, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => {
             app.prev_completion();
             Action::Redraw
         }
 
-        // Execute command
+        // Execute command — or, if cmd_text is a submenu parent name,
+        // open the submenu picker instead of submitting.
         (KeyModifiers::NONE, KeyCode::Enter) => {
-            app.completion.clear();
-            let text = app.input.take_cmd_text();
-            parse_command(app, &text)
+            let trimmed = app.input.cmd_text.trim().to_string();
+            if let Some(parent) = App::canonical_submenu_parent(&trimmed) {
+                app.enter_submenu(parent);
+                submenu_fetch_action(parent)
+            } else {
+                app.completion.clear();
+                let text = app.input.take_cmd_text();
+                parse_command(app, &text)
+            }
+        }
+
+        // Space — if cmd_text is a submenu parent, enter the submenu;
+        // otherwise insert the space normally.
+        (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(' ')) => {
+            let trimmed = app.input.cmd_text.trim().to_string();
+            if let Some(parent) = App::canonical_submenu_parent(&trimmed) {
+                app.enter_submenu(parent);
+                submenu_fetch_action(parent)
+            } else {
+                app.input.cmd_insert_char(' ');
+                app.update_completions();
+                Action::Redraw
+            }
         }
 
         // Backspace — if empty, cancel
@@ -475,6 +508,95 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
 
         _ => Action::None,
     }
+}
+
+fn enter_completed_submenu(app: &mut App) -> Option<Action> {
+    let trimmed = app.input.cmd_text.trim();
+    let parent = App::canonical_submenu_parent(trimmed)?;
+    app.input.cmd_text = parent.to_string();
+    app.input.cmd_cursor = parent.len();
+    app.enter_submenu(parent);
+    Some(submenu_fetch_action(parent))
+}
+
+/// Submenu picker keys: filter typing, navigation, and Enter to apply
+/// the selected candidate. Esc / empty-Backspace pops back to Top.
+fn handle_submenu_mode(app: &mut App, key: KeyEvent) -> Action {
+    match (key.modifiers, key.code) {
+        // Pop back to top-level palette.
+        (KeyModifiers::NONE, KeyCode::Esc) => {
+            app.exit_submenu();
+            Action::Redraw
+        }
+
+        // Tab / Ctrl+J / Down — next candidate.
+        (KeyModifiers::NONE, KeyCode::Tab)
+        | (KeyModifiers::CONTROL, KeyCode::Char('j'))
+        | (KeyModifiers::NONE, KeyCode::Down) => {
+            app.next_completion();
+            Action::Redraw
+        }
+
+        // Shift+Tab / Ctrl+K / Up — previous candidate.
+        (KeyModifiers::SHIFT, KeyCode::BackTab)
+        | (KeyModifiers::NONE, KeyCode::BackTab)
+        | (KeyModifiers::CONTROL, KeyCode::Char('k'))
+        | (KeyModifiers::NONE, KeyCode::Up) => {
+            app.prev_completion();
+            Action::Redraw
+        }
+
+        // Apply selected candidate via parse_command.
+        (KeyModifiers::NONE, KeyCode::Enter) => {
+            // If nothing is explicitly selected, fall to the first
+            // candidate so Enter is always actionable when the list
+            // is non-empty.
+            if app.completion.selected.is_none() && !app.completion.candidates.is_empty() {
+                app.completion.selected = Some(0);
+            }
+            if let Some(cmd) = app.apply_submenu() {
+                parse_command(app, &cmd)
+            } else {
+                Action::Redraw
+            }
+        }
+
+        // Backspace pops out of the submenu when the filter is empty;
+        // otherwise it deletes a filter character.
+        (_, KeyCode::Backspace) => {
+            if app.input.cmd_text.is_empty() {
+                app.exit_submenu();
+            } else {
+                app.input.cmd_backspace();
+                app.update_completions();
+            }
+            Action::Redraw
+        }
+
+        // Filter input.
+        (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
+            app.input.cmd_insert_char(c);
+            app.update_completions();
+            Action::Redraw
+        }
+
+        _ => Action::None,
+    }
+}
+
+/// Fetch the candidate list for a submenu so the picker isn't empty
+/// the first time the user opens it (and to refresh stale entries).
+fn submenu_fetch_action(parent: &str) -> Action {
+    let name = match parent {
+        "model" => "list_models",
+        "character" => "list_characters",
+        _ => return Action::Redraw,
+    };
+    Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+        rid: None,
+        name: name.into(),
+        args: serde_json::json!({}),
+    })))
 }
 
 /// Parse a command string and return the appropriate action.
@@ -515,7 +637,7 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             Action::Redraw
         }
 
-        "character" => {
+        "character" | "characters" => {
             if arg.is_empty() {
                 // List characters
                 Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
@@ -577,39 +699,6 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                         args: serde_json::json!({}),
                     })),
                 ])
-            }
-        }
-
-        // `:provider` lists providers; `:provider <name>` shows that
-        // provider's discovered + static models; `:provider refresh
-        // <name>` re-fetches the cache. Surface for users who manage
-        // many keys / catalogs without dropping to the CLI.
-        "provider" => {
-            let trimmed = arg.trim();
-            if trimmed.is_empty() {
-                Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-                    rid: None,
-                    name: "list_providers".into(),
-                    args: serde_json::json!({}),
-                })))
-            } else if let Some(("refresh", name)) = trimmed.split_once(' ') {
-                let name = name.trim();
-                if name.is_empty() {
-                    app.set_status("usage: :provider refresh <name>");
-                    Action::Redraw
-                } else {
-                    Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-                        rid: None,
-                        name: "refresh_provider_models".into(),
-                        args: serde_json::json!({ "provider": name }),
-                    })))
-                }
-            } else {
-                Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-                    rid: None,
-                    name: "list_provider_models".into(),
-                    args: serde_json::json!({ "provider": trimmed }),
-                })))
             }
         }
 
@@ -1095,6 +1184,47 @@ mod tests {
             }
             _ => panic!("expected single switch_character send"),
         }
+    }
+
+    #[test]
+    fn tab_completion_enters_submenu_parent() {
+        let mut app = App::default();
+        app.input.enter_command_mode();
+        for c in "chara".chars() {
+            app.input.cmd_insert_char(c);
+        }
+        app.update_completions();
+
+        let action = handle_key(&mut app, make_key(KeyModifiers::NONE, KeyCode::Tab));
+        assert!(
+            matches!(app.completion.mode, PaletteMode::Submenu(_)),
+            "Tab on a submenu parent should enter the child picker"
+        );
+        assert_eq!(app.input.cmd_text, "");
+        match action {
+            Action::Send(ConnCommand::Send(ClientMessage::Command(cmd))) => {
+                assert_eq!(cmd.name, "list_characters");
+            }
+            _ => panic!("expected list_characters fetch"),
+        }
+    }
+
+    #[test]
+    fn provider_command_is_not_a_tui_shortcut() {
+        let mut app = App::default();
+        app.input.enter_command_mode();
+        app.update_completions();
+        assert!(!app.completion.candidates.iter().any(|c| c == "provider"));
+
+        let action = parse_command(&mut app, "provider refresh openai");
+        assert!(matches!(action, Action::Redraw));
+        assert!(app.entries.iter().any(|entry| {
+            matches!(
+                entry,
+                crate::app::ConversationEntry::System { content, .. }
+                    if content == "unknown command: provider"
+            )
+        }));
     }
 
     #[test]
