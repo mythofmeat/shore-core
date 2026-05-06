@@ -1,8 +1,8 @@
 //! Conversation history search tool.
 //!
 //! Searches both compacted segment files and the current active conversation
-//! window for the character. This is intentionally separate from markdown
-//! memory search: memories are curated files, while history is the transcript.
+//! window for the character. This is intentionally separate from filesystem
+//! search: history is transcript data, not workspace files.
 
 use std::path::PathBuf;
 
@@ -36,7 +36,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
             },
             "required": ["query"]
         }),
-        category: ToolCategory::MemoryRead,
+        category: ToolCategory::Other,
     }]
 }
 

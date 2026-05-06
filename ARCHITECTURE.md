@@ -281,14 +281,17 @@ The dreams audit log lives at:
 $XDG_DATA_HOME/shore/<Character>/DREAMS.md
 ```
 
-It is daemon-written and is not memory. Machine-readable dreaming state lives
-under `$XDG_DATA_HOME/shore/<Character>/dreams/`. Generated dreaming artifacts
-under legacy `.dreams/**`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**`
-are excluded from ordinary memory-source ingestion.
+It is daemon-written and is not memory. Machine-readable dreaming state,
+staged outputs, and legacy diagnostic reports live under
+`$XDG_DATA_HOME/shore/<Character>/dreams/`. Legacy workspace artifacts under
+`.dreams/**`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**` are excluded
+from ordinary memory-source ingestion.
 
 Search is lexical or hybrid semantic+lexical. The workspace-wide hybrid index is
 stored at `<character_data_dir>/workspace_index.json`; markdown files remain
-authoritative and the index can be deleted and rebuilt.
+authoritative and the index can be deleted and rebuilt. Search/index walks the
+whole workspace tree (including `memory/`) with configurable file-size, file
+count, and total-byte limits.
 
 ## Tools And Security
 
@@ -298,8 +301,9 @@ Rules:
 
 - Paths must stay inside the character workspace.
 - Symlink and traversal escapes are bugs.
-- `memory/...` access must respect memory read/write gates.
-- Private conversations suppress memory access.
+- Workspace file tools treat `memory/...` as a normal workspace subdirectory.
+- Private conversations hide `search_history` and `exec`, and still suppress
+  prompt-visible memory index injection.
 - Prompt-visible files cannot be deleted and edits are deferred.
 
 `exec` is intentionally narrow:

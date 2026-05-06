@@ -27,6 +27,7 @@ const MAX_INDEX_FILES: usize = 40;
 const MAX_RECENT_INDEX_FILES: usize = 12;
 const MAX_INDEX_THROUGHLINES: usize = 16;
 const DREAM_DATA_DIR: &str = "dreams";
+const DREAM_REPORTS_DIR: &str = "reports";
 const DREAM_STATE_FILE: &str = "state.json";
 const DREAM_STATE_REL: &str = "dreams/state.json";
 const LEGACY_DREAM_STATE_REL: &str = ".dreams/state.json";
@@ -212,7 +213,7 @@ struct DeepPhaseOutput {
     rejected: Vec<DreamRejection>,
 }
 
-type PhaseReportPaths<'a> = (&'a str, &'a str, &'a str);
+type PhaseReportPaths<'a> = (&'a Path, &'a Path, &'a Path);
 
 pub async fn dream_status(
     data_dir: &Path,
@@ -497,9 +498,18 @@ pub async fn run_legacy_diagnostic_sweep(
     let candidates_path = dream_dir.join(&candidates_file);
     let signals_path = dream_dir.join(&signals_file);
     let promotions_path = dream_dir.join(&promotions_file);
-    let light_report_rel = format!("dreaming/light/{day}.md");
-    let rem_report_rel = format!("dreaming/rem/{day}.md");
-    let deep_report_rel = format!("dreaming/deep/{day}.md");
+    let light_report_path = dream_dir
+        .join(DREAM_REPORTS_DIR)
+        .join("light")
+        .join(format!("{day}.md"));
+    let rem_report_path = dream_dir
+        .join(DREAM_REPORTS_DIR)
+        .join("rem")
+        .join(format!("{day}.md"));
+    let deep_report_path = dream_dir
+        .join(DREAM_REPORTS_DIR)
+        .join("deep")
+        .join(format!("{day}.md"));
 
     let would_write_paths = vec![
         candidates_path.display().to_string(),
@@ -510,9 +520,9 @@ pub async fn run_legacy_diagnostic_sweep(
             .display()
             .to_string(),
         memory_index_path.display().to_string(),
-        memory_dir.join(&light_report_rel).display().to_string(),
-        memory_dir.join(&rem_report_rel).display().to_string(),
-        memory_dir.join(&deep_report_rel).display().to_string(),
+        light_report_path.display().to_string(),
+        rem_report_path.display().to_string(),
+        deep_report_path.display().to_string(),
     ];
 
     let initial_phase_summaries = phase_summaries(
@@ -563,9 +573,9 @@ pub async fn run_legacy_diagnostic_sweep(
     write_data_json(&character_data_dir, &promotions_path, &deep).await?;
     append_dream_diary(data_dir, character, &ran_at, &light, &rem, &deep).await?;
     write_phase_reports(
-        &store,
+        &character_data_dir,
         &ran_at,
-        (&light_report_rel, &rem_report_rel, &deep_report_rel),
+        (&light_report_path, &rem_report_path, &deep_report_path),
         &light,
         &rem,
         &deep,
@@ -610,7 +620,11 @@ pub async fn run_legacy_diagnostic_sweep(
         paths_written,
         would_write_paths: Vec::new(),
         staged_path: Some(candidates_path.display().to_string()),
-        dreams_path: Some(memory_dir.join("DREAMS.md").display().to_string()),
+        dreams_path: Some(
+            crate::memory::dreams_log::dreams_log_path(data_dir, character)
+                .display()
+                .to_string(),
+        ),
         memory_path: Some(memory_index_path.display().to_string()),
         inspected: Vec::new(),
         changed: Vec::new(),
@@ -783,7 +797,7 @@ async fn build_librarian_tool_context(
     data_dir: &Path,
     llm_client: &LedgerClient,
     character: &str,
-    dry_run: bool,
+    _dry_run: bool,
 ) -> Option<SharedToolContext> {
     let character_data_dir = data_dir.join(character);
     let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
@@ -818,9 +832,6 @@ async fn build_librarian_tool_context(
         memory_retrieval_config_val: loaded_config.app.memory.retrieval.clone(),
         embedder_val: embedder,
         memory_index_path_val: character_data_dir.join("workspace_index.json"),
-        memory_access_allowed_val: true,
-        memory_read_allowed_val: true,
-        memory_write_allowed_val: !dry_run,
         config_dir_val: loaded_config.dirs.config.to_string_lossy().into_owned(),
         character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
     })
@@ -1509,7 +1520,10 @@ fn phase_summaries(
             rejected_count: 0,
             paths: paths
                 .iter()
-                .filter(|path| path.contains("candidates-") || path.contains("dreaming/light/"))
+                .filter(|path| {
+                    path.contains("candidates-")
+                        || path.contains(&format!("{DREAM_DATA_DIR}/{DREAM_REPORTS_DIR}/light/"))
+                })
                 .cloned()
                 .collect(),
         },
@@ -1525,7 +1539,10 @@ fn phase_summaries(
             rejected_count: 0,
             paths: paths
                 .iter()
-                .filter(|path| path.contains("phase-signals-") || path.contains("dreaming/rem/"))
+                .filter(|path| {
+                    path.contains("phase-signals-")
+                        || path.contains(&format!("{DREAM_DATA_DIR}/{DREAM_REPORTS_DIR}/rem/"))
+                })
                 .cloned()
                 .collect(),
         },
@@ -1544,7 +1561,7 @@ fn phase_summaries(
                 .filter(|path| {
                     path.contains("promotions-")
                         || path.ends_with("MEMORY.md")
-                        || path.contains("dreaming/deep/")
+                        || path.contains(&format!("{DREAM_DATA_DIR}/{DREAM_REPORTS_DIR}/deep/"))
                 })
                 .cloned()
                 .collect(),
@@ -1679,6 +1696,22 @@ async fn write_data_json<T: Serialize>(
         .map_err(|e| DreamingError::Io(e.to_string()))
 }
 
+async fn write_data_markdown(
+    character_data_dir: &Path,
+    path: &Path,
+    content: &str,
+) -> Result<(), DreamingError> {
+    ensure_data_write_path(character_data_dir, path).await?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| DreamingError::Io(e.to_string()))?;
+    }
+    fs::write(path, content)
+        .await
+        .map_err(|e| DreamingError::Io(e.to_string()))
+}
+
 async fn append_dream_diary(
     data_dir: &Path,
     character: &str,
@@ -1790,7 +1823,7 @@ async fn append_dream_diary(
 }
 
 async fn write_phase_reports(
-    store: &MarkdownMemoryStore,
+    character_data_dir: &Path,
     ran_at: &str,
     report_paths: PhaseReportPaths<'_>,
     light: &LightPhaseOutput,
@@ -1842,18 +1875,9 @@ async fn write_phase_reports(
         }
     }
 
-    store
-        .write(light_report_rel, &light_report)
-        .await
-        .map_err(|e| DreamingError::Memory(e.to_string()))?;
-    store
-        .write(rem_report_rel, &rem_report)
-        .await
-        .map_err(|e| DreamingError::Memory(e.to_string()))?;
-    store
-        .write(deep_report_rel, &deep_report)
-        .await
-        .map_err(|e| DreamingError::Memory(e.to_string()))
+    write_data_markdown(character_data_dir, light_report_rel, &light_report).await?;
+    write_data_markdown(character_data_dir, rem_report_rel, &rem_report).await?;
+    write_data_markdown(character_data_dir, deep_report_rel, &deep_report).await
 }
 
 async fn write_memory_index(

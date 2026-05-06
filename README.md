@@ -26,7 +26,7 @@ For release history, read [CHANGELOG.md](CHANGELOG.md).
   maintain memory, use tools, schedule the next wake, and optionally message the
   user.
 - **Tool-rich conversations.** Characters can inspect and edit workspace files,
-  search memory/history, use web/image/time/activity tools, and run narrow
+  search workspace/history, use web/image/time/activity tools, and run narrow
   workspace commands.
 - **Budget awareness.** Usage and cost are recorded in SQLite; Anthropic prompt
   cache behavior is treated as load-bearing.

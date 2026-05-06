@@ -1,12 +1,12 @@
 //! Workspace-wide embedding index + hybrid search.
 //!
-//! Walks the same paths the lexical `search` tool walks (workspace root +
-//! optionally the memory namespace) with identical security rules
+//! Walks the same paths the lexical `search` tool walks (workspace root)
+//! with identical security rules
 //! (symlink skip, size cap, non-UTF8 skip), embeds every text file once,
 //! and stores vectors in a JSON index under the character data directory.
 //!
 //! Subsequent searches reuse cached vectors and only re-embed files whose
-//! content hash, size, or mtime changed.
+//! size, mtime, embedding model, or embedding character cap changed.
 //!
 //! Non-text and oversized files are recorded with `embedded: false` and a
 //! skip reason so the walker doesn't churn on them every query.
@@ -18,22 +18,13 @@ use std::time::SystemTime;
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use shore_config::app::{RetrievalBinaryMode, RetrievalConfig};
 use shore_llm::embed::Embedder;
 use tokio::sync::Mutex;
 use tracing::warn;
 
-const MAX_EMBED_CHARS_PER_FILE: usize = 4_000;
-const SEARCH_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const EMBED_BATCH_MAX_ITEMS: usize = 32;
 const EMBED_BATCH_MAX_CHARS: usize = 96_000;
-
-/// Hard upper bound on files we will walk + track. Workspaces this large
-/// already smell like an indexing target the assistant shouldn't be scanning
-/// per query; emitting a warn at the cap keeps the symptom visible.
-const MAX_INDEXED_FILES: usize = 50_000;
-/// Hard upper bound on cumulative file bytes pulled into the walk before
-/// stopping. Keeps memory bounded regardless of workspace shape.
-const MAX_TOTAL_INDEXED_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceIndexError {
@@ -47,10 +38,11 @@ pub enum WorkspaceIndexError {
 
 /// One file's place in the persisted index.
 ///
-/// Freshness is decided by `(size, modified_at_secs, model_id)`. The `hash`
-/// field is informational — older index files used a SHA256 here; new
-/// entries store a `mtime:{secs}:{size}` tag so the format stays
-/// backwards-compatible without paying the per-call hash cost.
+/// Freshness is decided by `(size, modified_at_secs, model_id,
+/// max_embed_chars_per_file)`. The `hash` field is informational — older
+/// index files used a SHA256 here; new entries store a `mtime:{secs}:{size}`
+/// tag so the format stays backwards-compatible without paying the per-call
+/// hash cost.
 ///
 /// `embedded: false` entries record *why* the file was skipped so future
 /// walks can short-circuit without re-reading the file.
@@ -60,6 +52,8 @@ pub(crate) struct IndexedEntry {
     pub size: u64,
     pub modified_at_secs: i64,
     pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_embed_chars_per_file: Option<usize>,
     pub embedded: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -121,7 +115,7 @@ impl HybridMode {
 /// not block each other.
 pub async fn hybrid_search(
     workspace_dir: &str,
-    include_memory: bool,
+    retrieval_config: &RetrievalConfig,
     query: &str,
     mode: HybridMode,
     embedder: &dyn Embedder,
@@ -147,7 +141,7 @@ pub async fn hybrid_search(
     let mut index = load_index(index_path);
     let model_id = embedder.model_id().to_string();
 
-    let mut candidates = enumerate_files(workspace_dir, include_memory).await;
+    let mut candidates = enumerate_files(workspace_dir, retrieval_config).await;
     let mut skipped_binary_or_large = 0usize;
     let mut index_dirty = false;
 
@@ -174,10 +168,10 @@ pub async fn hybrid_search(
 
     // Refresh per-file content + identify stale entries.
     //
-    // Freshness is `(size, mtime, model_id)` only — no SHA256. The narrow
-    // miss case is editors that preserve mtime on a content change; agent
-    // edits via `write` / `edit` always bump mtime so this is acceptable
-    // and self-corrects on any later real edit.
+    // Freshness is `(size, mtime, model_id, max_embed_chars_per_file)` only —
+    // no SHA256. The narrow miss case is editors that preserve mtime on a
+    // content change; agent edits via `write` / `edit` always bump mtime so
+    // this is acceptable and self-corrects on any later real edit.
     //
     // `stale` captures `(path, size, mtime)` per file that needs a fresh
     // embedding so the writeback after `embedder.embed(...)` doesn't have
@@ -194,6 +188,7 @@ pub async fn hybrid_search(
                     size: file.size,
                     modified_at_secs: file.modified_at_secs,
                     model_id: model_id.clone(),
+                    max_embed_chars_per_file: Some(retrieval_config.max_embed_chars_per_file),
                     embedded: false,
                     reason: Some("oversize".into()),
                     embedding: Vec::new(),
@@ -208,6 +203,7 @@ pub async fn hybrid_search(
                 && e.size == file.size
                 && e.modified_at_secs == file.modified_at_secs
                 && e.model_id == model_id
+                && e.max_embed_chars_per_file == Some(retrieval_config.max_embed_chars_per_file)
         });
 
         let bytes = match tokio::fs::read(&file.fs_path).await {
@@ -224,13 +220,22 @@ pub async fn hybrid_search(
             Ok(text) => {
                 if !fresh {
                     stale.push((file.display_path.clone(), file.size, file.modified_at_secs));
-                    stale_docs.push(document_for_embedding(&file.display_path, &text));
+                    stale_docs.push(document_for_embedding(
+                        &file.display_path,
+                        &text,
+                        retrieval_config.max_embed_chars_per_file,
+                    ));
                 }
                 file.content = Some(text);
             }
             Err(_) => {
                 skipped_binary_or_large += 1;
-                file.skip_reason = Some("non-utf8".into());
+                let reason = match retrieval_config.binary {
+                    RetrievalBinaryMode::Skip => "non-utf8",
+                    RetrievalBinaryMode::Metadata => "binary-metadata-only",
+                    RetrievalBinaryMode::TryEmbed => "binary-embedding-unsupported",
+                };
+                file.skip_reason = Some(reason.into());
                 index.entries.insert(
                     file.display_path.clone(),
                     IndexedEntry {
@@ -238,8 +243,9 @@ pub async fn hybrid_search(
                         size: file.size,
                         modified_at_secs: file.modified_at_secs,
                         model_id: model_id.clone(),
+                        max_embed_chars_per_file: Some(retrieval_config.max_embed_chars_per_file),
                         embedded: false,
-                        reason: Some("non-utf8".into()),
+                        reason: Some(reason.into()),
                         embedding: Vec::new(),
                     },
                 );
@@ -272,6 +278,7 @@ pub async fn hybrid_search(
                     size,
                     modified_at_secs: mtime,
                     model_id: model_id.clone(),
+                    max_embed_chars_per_file: Some(retrieval_config.max_embed_chars_per_file),
                     embedded: true,
                     reason: None,
                     embedding,
@@ -366,18 +373,21 @@ struct FileCandidate {
     skip_reason: Option<String>,
 }
 
-async fn enumerate_files(workspace_dir: &str, include_memory: bool) -> Vec<FileCandidate> {
+async fn enumerate_files(
+    workspace_dir: &str,
+    retrieval_config: &RetrievalConfig,
+) -> Vec<FileCandidate> {
     let mut pending = vec![PathBuf::from(workspace_dir)];
     let mut out: Vec<FileCandidate> = Vec::new();
     let mut total_bytes: u64 = 0;
     let mut cap_hit: Option<&'static str> = None;
 
     while let Some(path) = pending.pop() {
-        if out.len() >= MAX_INDEXED_FILES {
+        if out.len() >= retrieval_config.max_indexed_files {
             cap_hit.get_or_insert("file count");
             break;
         }
-        if total_bytes >= MAX_TOTAL_INDEXED_BYTES {
+        if total_bytes >= retrieval_config.max_total_indexed_bytes {
             cap_hit.get_or_insert("byte total");
             break;
         }
@@ -392,9 +402,6 @@ async fn enumerate_files(workspace_dir: &str, include_memory: bool) -> Vec<FileC
         }
 
         if meta.is_dir() {
-            if !include_memory && is_root_memory_dir(workspace_dir, &path) {
-                continue;
-            }
             let mut read_dir = match tokio::fs::read_dir(&path).await {
                 Ok(rd) => rd,
                 Err(_) => continue,
@@ -418,7 +425,7 @@ async fn enumerate_files(workspace_dir: &str, include_memory: bool) -> Vec<FileC
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let skip_reason = if size > SEARCH_MAX_FILE_BYTES {
+        let skip_reason = if size > retrieval_config.max_file_bytes {
             Some("oversize".to_string())
         } else {
             None
@@ -461,18 +468,6 @@ fn display_path_for(workspace_dir: &str, path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn is_root_memory_dir(workspace_dir: &str, path: &Path) -> bool {
-    let Ok(rel) = path.strip_prefix(Path::new(workspace_dir)) else {
-        return false;
-    };
-    let mut components = rel.components();
-    matches!(
-        (components.next(), components.next()),
-        (Some(std::path::Component::Normal(first)), None)
-            if first == std::ffi::OsStr::new("memory")
-    )
-}
-
 fn lexical_score(path: &str, content: &str, q_lower: &str, terms: &[&str]) -> usize {
     let path_lower = path.to_lowercase();
     let content_lower = content.to_lowercase();
@@ -513,8 +508,8 @@ fn tokenize_query(query: &str) -> Vec<&str> {
         .collect()
 }
 
-fn document_for_embedding(path: &str, content: &str) -> String {
-    let trimmed: String = content.chars().take(MAX_EMBED_CHARS_PER_FILE).collect();
+fn document_for_embedding(path: &str, content: &str, max_embed_chars_per_file: usize) -> String {
+    let trimmed: String = content.chars().take(max_embed_chars_per_file).collect();
     format!("path: {path}\n\n{trimmed}")
 }
 
@@ -561,8 +556,8 @@ async fn embed_documents(
 }
 
 /// Tag stored in the persisted `hash` field. We no longer use it for
-/// freshness — that's `(size, mtime, model_id)` — but the field stays so
-/// older index files round-trip cleanly on read.
+/// freshness — that's `(size, mtime, model_id, max_embed_chars_per_file)` —
+/// but the field stays so older index files round-trip cleanly on read.
 fn skip_tag(size: u64, mtime_secs: i64) -> String {
     format!("mtime:{mtime_secs}:{size}")
 }
@@ -727,7 +722,7 @@ mod tests {
         let embedder = TopicEmbedder::new(&["tea", "garden", "tax"]);
         let result = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "growing tea in the garden",
             HybridMode::Vector,
             &embedder,
@@ -753,7 +748,7 @@ mod tests {
         let embedder = TopicEmbedder::new(&["completely-unrelated-topic"]);
         let result = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "needle",
             HybridMode::Hybrid,
             &embedder,
@@ -778,7 +773,7 @@ mod tests {
         let embedder = TopicEmbedder::new(&["tea", "rust"]);
         let _ = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "tea",
             HybridMode::Hybrid,
             &embedder,
@@ -797,7 +792,7 @@ mod tests {
         write_file(&ws, "b.md", "rust and tokio are fun").await;
         let _ = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "tea",
             HybridMode::Hybrid,
             &embedder,
@@ -812,6 +807,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn embed_char_cap_change_reindexes_unchanged_files() {
+        let (_g, ws, idx) = setup();
+        let ws_str = ws.to_string_lossy().into_owned();
+
+        write_file(
+            &ws,
+            "a.md",
+            "tea appears early, while rust appears after the short cap",
+        )
+        .await;
+
+        let embedder = TopicEmbedder::new(&["tea", "rust"]);
+        let mut retrieval_config = RetrievalConfig {
+            max_embed_chars_per_file: 5,
+            ..RetrievalConfig::default()
+        };
+        let _ = hybrid_search(
+            &ws_str,
+            &retrieval_config,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
+        let inputs_first = embedder.input_count.load(Ordering::SeqCst);
+        assert_eq!(inputs_first, 2);
+
+        retrieval_config.max_embed_chars_per_file = 100;
+        let _ = hybrid_search(
+            &ws_str,
+            &retrieval_config,
+            "tea",
+            HybridMode::Hybrid,
+            &embedder,
+            &idx,
+            None,
+        )
+        .await
+        .unwrap();
+        let inputs_total = embedder.input_count.load(Ordering::SeqCst);
+        assert_eq!(inputs_total - inputs_first, 2);
+
+        let raw = std::fs::read_to_string(&idx).expect("index persisted");
+        let parsed: WorkspaceIndex = serde_json::from_str(&raw).expect("valid json");
+        let entry = parsed.entries.get("a.md").expect("a.md tracked in index");
+        assert_eq!(entry.max_embed_chars_per_file, Some(100));
+    }
+
+    #[tokio::test]
     async fn stale_documents_are_embedded_in_bounded_batches() {
         let (_g, ws, idx) = setup();
         let ws_str = ws.to_string_lossy().into_owned();
@@ -823,7 +870,7 @@ mod tests {
         let embedder = TopicEmbedder::new(&["tea"]);
         let _ = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "tea",
             HybridMode::Hybrid,
             &embedder,
@@ -856,7 +903,7 @@ mod tests {
         let embedder = TopicEmbedder::new(&["tea"]);
         let _ = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "tea",
             HybridMode::Hybrid,
             &embedder,
@@ -872,7 +919,7 @@ mod tests {
         // Re-run; the binary file should not trigger another embedding.
         let _ = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "tea",
             HybridMode::Hybrid,
             &embedder,
@@ -904,7 +951,7 @@ mod tests {
         let embedder = TopicEmbedder::new(&["xyzzy"]);
         let result = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "xyzzy",
             HybridMode::Hybrid,
             &embedder,
@@ -930,7 +977,7 @@ mod tests {
         let embedder = TopicEmbedder::new(&["xyzzy"]);
         let result = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "xyzzy",
             HybridMode::Hybrid,
             &embedder,
@@ -952,7 +999,7 @@ mod tests {
         // Run again; the stale embedding must be dropped so the file doesn't appear.
         let result = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "xyzzy",
             HybridMode::Hybrid,
             &embedder,
@@ -974,13 +1021,13 @@ mod tests {
         write_file(&ws, "small.md", "tea time").await;
         // Just over the 2 MiB cap.
         fs::create_dir_all(&ws).await.unwrap();
-        let big = vec![b'a'; (SEARCH_MAX_FILE_BYTES + 1) as usize];
+        let big = vec![b'a'; (RetrievalConfig::default().max_file_bytes + 1) as usize];
         fs::write(ws.join("huge.md"), &big).await.unwrap();
 
         let embedder = TopicEmbedder::new(&["tea"]);
         let _ = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "tea",
             HybridMode::Hybrid,
             &embedder,
@@ -1007,7 +1054,7 @@ mod tests {
         // Second call: only the query should embed.
         let _ = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "tea",
             HybridMode::Hybrid,
             &embedder,
@@ -1037,7 +1084,7 @@ mod tests {
         let embedder = TopicEmbedder::new(&["tea"]);
         let result = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "tea",
             HybridMode::Hybrid,
             &embedder,
@@ -1074,7 +1121,7 @@ mod tests {
         let embedder = TopicEmbedder::new(&["tea"]);
         let result = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "tea",
             HybridMode::Hybrid,
             &embedder,
@@ -1102,7 +1149,7 @@ mod tests {
         let embedder = TopicEmbedder::new(&["tea", "rust"]);
         let _ = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "tea",
             HybridMode::Hybrid,
             &embedder,
@@ -1116,7 +1163,7 @@ mod tests {
         fs::remove_file(ws.join("b.md")).await.unwrap();
         let _ = hybrid_search(
             &ws_str,
-            true,
+            &RetrievalConfig::default(),
             "tea",
             HybridMode::Hybrid,
             &embedder,

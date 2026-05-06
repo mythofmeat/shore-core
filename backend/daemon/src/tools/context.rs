@@ -35,9 +35,6 @@ pub(crate) struct SharedToolContext {
     pub(crate) memory_retrieval_config_val: RetrievalConfig,
     pub(crate) embedder_val: Option<Arc<dyn Embedder>>,
     pub(crate) memory_index_path_val: std::path::PathBuf,
-    pub(crate) memory_access_allowed_val: bool,
-    pub(crate) memory_read_allowed_val: bool,
-    pub(crate) memory_write_allowed_val: bool,
     pub(crate) config_dir_val: String,
     pub(crate) character_data_dir_val: String,
 }
@@ -75,15 +72,6 @@ impl ToolContext for SharedToolContext {
     }
     fn memory_index_path(&self) -> Option<&std::path::Path> {
         Some(&self.memory_index_path_val)
-    }
-    fn memory_access_allowed(&self) -> bool {
-        self.memory_access_allowed_val
-    }
-    fn memory_read_allowed(&self) -> bool {
-        self.memory_read_allowed_val
-    }
-    fn memory_write_allowed(&self) -> bool {
-        self.memory_write_allowed_val
     }
     fn config_dir(&self) -> &str {
         &self.config_dir_val

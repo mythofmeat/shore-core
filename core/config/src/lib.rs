@@ -863,7 +863,12 @@ model_id = "claude-opus-4-6"
             ConfigDuration::from_secs(1800)
         );
         assert!(!loaded.app.behavior.tool_use.tools.roll_dice());
-        assert!(loaded.app.behavior.tool_use.tools.memory());
+        assert!(loaded
+            .app
+            .behavior
+            .tool_use
+            .tools
+            .is_enabled("search_history"));
         assert_eq!(loaded.app.advanced.max_retries, Some(5));
         assert!(!loaded.app.daemon.unsafe_allow_remote_access);
 

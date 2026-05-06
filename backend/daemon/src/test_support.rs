@@ -61,9 +61,6 @@ pub struct TestToolContext {
     pub retrieval_config_val: RetrievalConfig,
     pub embedder_val: Option<Arc<dyn Embedder>>,
     pub memory_index_path_val: Option<std::path::PathBuf>,
-    pub memory_access_allowed_val: bool,
-    pub memory_read_allowed_val: bool,
-    pub memory_write_allowed_val: bool,
     pub workspace_dir_val: String,
     pub character_data_dir_val: String,
 }
@@ -81,9 +78,6 @@ impl TestToolContext {
             retrieval_config_val: RetrievalConfig::default(),
             embedder_val: None,
             memory_index_path_val: None,
-            memory_access_allowed_val: true,
-            memory_read_allowed_val: true,
-            memory_write_allowed_val: true,
             workspace_dir_val: String::new(),
             character_data_dir_val: String::new(),
         }
@@ -105,26 +99,6 @@ impl TestToolContext {
     /// Set a markdown memory store.
     pub fn with_markdown_store(mut self, store: MarkdownMemoryStore) -> Self {
         self.markdown_store_val = Some(store);
-        self
-    }
-
-    /// Allow or deny memory access for dispatch-layer tests.
-    pub fn with_memory_access_allowed(mut self, allowed: bool) -> Self {
-        self.memory_access_allowed_val = allowed;
-        self.memory_read_allowed_val = allowed;
-        self.memory_write_allowed_val = allowed;
-        self
-    }
-
-    /// Allow or deny memory read access for dispatch-layer tests.
-    pub fn with_memory_read_allowed(mut self, allowed: bool) -> Self {
-        self.memory_read_allowed_val = allowed;
-        self
-    }
-
-    /// Allow or deny memory write access for dispatch-layer tests.
-    pub fn with_memory_write_allowed(mut self, allowed: bool) -> Self {
-        self.memory_write_allowed_val = allowed;
         self
     }
 
@@ -182,15 +156,6 @@ impl ToolContext for TestToolContext {
     }
     fn memory_index_path(&self) -> Option<&std::path::Path> {
         self.memory_index_path_val.as_deref()
-    }
-    fn memory_access_allowed(&self) -> bool {
-        self.memory_access_allowed_val
-    }
-    fn memory_read_allowed(&self) -> bool {
-        self.memory_read_allowed_val
-    }
-    fn memory_write_allowed(&self) -> bool {
-        self.memory_write_allowed_val
     }
     fn workspace_dir(&self) -> &str {
         &self.workspace_dir_val
