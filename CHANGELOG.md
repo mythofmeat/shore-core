@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Switched compaction `<write path="...">` ops to workspace-rooted paths so the
+  scheme matches the runtime workspace tools. The model now writes
+  `memory/people/foo.md` instead of `people/foo.md`; `MEMORY.md` continues to
+  land at the workspace root. Compaction-generated paths must start with
+  `memory/` (or be `MEMORY.md`); other workspace files (`SOUL.md`, `USER.md`,
+  …) remain off-limits to compaction.
 - Fixed hybrid workspace search to batch large embedding refreshes, validate
   embedding response shapes, honor `[memory.retrieval].mode` when choosing the
   default search mode, and return more useful body-line excerpts for semantic
