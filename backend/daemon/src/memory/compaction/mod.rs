@@ -34,8 +34,10 @@ struct CompactionWriteState {
 }
 
 enum CompactionWriteTarget {
-    Markdown { path: String },
-    MemoryIndex { path: PathBuf },
+    /// Resolved absolute path inside the character workspace. Both
+    /// memory entries (memory/...) and the workspace-root MEMORY.md
+    /// land here.
+    WorkspaceFile { path: PathBuf },
 }
 
 fn truncate_chars(text: &str, limit: usize) -> String {
@@ -246,7 +248,10 @@ impl CompactionManager {
         let total = entries.len();
         let mut context = String::new();
         for entry in entries.into_iter().take(EXISTING_MEMORY_CONTEXT_MAX_FILES) {
-            context.push_str(&format!("<file path=\"{}\">\n", escape_attr(&entry.path)));
+            context.push_str(&format!(
+                "<file path=\"memory/{}\">\n",
+                escape_attr(&entry.path)
+            ));
             context.push_str(&truncate_chars(
                 &entry.content,
                 EXISTING_MEMORY_CONTEXT_MAX_CHARS_PER_FILE,
@@ -280,19 +285,33 @@ impl CompactionManager {
     }
 
     fn write_allowed_path(path: &str) -> bool {
-        let normalized = path
-            .trim()
-            .trim_start_matches("./")
-            .replace('\\', "/")
-            .to_lowercase();
+        let normalized = path.trim().trim_start_matches("./").replace('\\', "/");
+        let lower = normalized.to_lowercase();
+
+        // MEMORY.md (workspace root) is intentionally allowed: compaction's
+        // job includes updating the conversational throughline.
+        if lower == "memory.md" {
+            return true;
+        }
+
+        // All other compaction writes must live under memory/. This keeps the
+        // protected workspace-root files (SOUL.md, USER.md, AGENTS.md, etc.)
+        // out of compaction's reach.
+        let Some(rest) = normalized.strip_prefix("memory/") else {
+            return false;
+        };
+        if rest.is_empty() {
+            return false;
+        }
+
         // Block dreaming-generated artifacts so compaction doesn't stomp on
-        // them. MEMORY.md is intentionally allowed: compaction's job is to
-        // update the conversational throughline before the cache is rotated.
-        !(normalized == "dreams.md"
-            || normalized == "dreams"
-            || normalized == "dreams/"
-            || normalized.starts_with(".dreams/")
-            || normalized.starts_with("dreaming/"))
+        // them. The filter applies to the path inside memory/.
+        let rest_lower = rest.to_lowercase();
+        !(rest_lower == "dreams.md"
+            || rest_lower == "dreams"
+            || rest_lower == "dreams/"
+            || rest_lower.starts_with(".dreams/")
+            || rest_lower.starts_with("dreaming/"))
     }
 
     fn filter_file_ops(file_ops: Vec<MemoryFileOp>) -> Vec<MemoryFileOp> {
@@ -316,15 +335,23 @@ impl CompactionManager {
             == Some(crate::memory::deferred_edits::MEMORY_INDEX_DEFERRED_PATH)
     }
 
+    fn workspace_dir_from_store(store: &MarkdownMemoryStore) -> Result<PathBuf, CompactionError> {
+        store
+            .base_dir()
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| {
+                CompactionError::MarkdownStore(format!(
+                    "memory store has no workspace parent: {}",
+                    store.base_dir().display()
+                ))
+            })
+    }
+
     fn workspace_memory_index_path(
         store: &MarkdownMemoryStore,
     ) -> Result<PathBuf, CompactionError> {
-        let workspace_dir = store.base_dir().parent().ok_or_else(|| {
-            CompactionError::MarkdownStore(format!(
-                "memory store has no workspace parent: {}",
-                store.base_dir().display()
-            ))
-        })?;
+        let workspace_dir = Self::workspace_dir_from_store(store)?;
         Ok(workspace_dir.join(crate::memory::deferred_edits::MEMORY_INDEX_FILE))
     }
 
@@ -474,48 +501,45 @@ impl CompactionManager {
         let mut markdown_elapsed = std::time::Duration::ZERO;
         let mut memory_index_updated = false;
 
+        let workspace_dir = Self::workspace_dir_from_store(store)?;
+        let workspace_dir_str = workspace_dir.to_string_lossy().into_owned();
+
         for op in &file_ops {
-            if Self::is_memory_index_path(&op.path) {
-                let index_path = Self::workspace_memory_index_path(store)?;
-                let previous_content = Self::read_optional_workspace_file(&index_path).await?;
-                created.push(CompactionWriteState {
-                    display_path: crate::memory::deferred_edits::MEMORY_INDEX_FILE.to_string(),
-                    target: CompactionWriteTarget::MemoryIndex {
-                        path: index_path.clone(),
-                    },
-                    previous_content,
-                });
-
-                let md_started = std::time::Instant::now();
-                if let Err(e) = Self::write_workspace_file(&index_path, &op.content).await {
-                    Self::rollback_compaction(&created, store).await;
-                    return Err(e);
-                }
-                memory_index_updated = true;
-                debug!(path = %index_path.display(), elapsed = ?md_started.elapsed(), "compaction: workspace memory index written");
-                markdown_elapsed += md_started.elapsed();
+            let is_index = Self::is_memory_index_path(&op.path);
+            let resolved = if is_index {
+                Self::workspace_memory_index_path(store)?
             } else {
-                let previous_content = match store.read(&op.path).await {
-                    Ok(entry) => Some(entry.content),
-                    Err(crate::memory::markdown_store::MarkdownStoreError::NotFound(_)) => None,
-                    Err(e) => return Err(CompactionError::MarkdownStore(e.to_string())),
-                };
-                created.push(CompactionWriteState {
-                    display_path: op.path.clone(),
-                    target: CompactionWriteTarget::Markdown {
-                        path: op.path.clone(),
-                    },
-                    previous_content,
-                });
+                crate::tools::workspace::resolve_path(&workspace_dir_str, &op.path)
+                    .map_err(|e| CompactionError::MarkdownStore(e.to_string()))?
+            };
 
-                let md_started = std::time::Instant::now();
-                if let Err(e) = store.write(&op.path, &op.content).await {
-                    Self::rollback_compaction(&created, store).await;
-                    return Err(CompactionError::MarkdownStore(e.to_string()));
-                }
-                debug!(path = %op.path, elapsed = ?md_started.elapsed(), "compaction: markdown entry written");
-                markdown_elapsed += md_started.elapsed();
+            let previous_content = Self::read_optional_workspace_file(&resolved).await?;
+            let display_path = if is_index {
+                crate::memory::deferred_edits::MEMORY_INDEX_FILE.to_string()
+            } else {
+                op.path.clone()
+            };
+            created.push(CompactionWriteState {
+                display_path: display_path.clone(),
+                target: CompactionWriteTarget::WorkspaceFile {
+                    path: resolved.clone(),
+                },
+                previous_content,
+            });
+
+            let md_started = std::time::Instant::now();
+            if let Err(e) = Self::write_workspace_file(&resolved, &op.content).await {
+                Self::rollback_compaction(&created).await;
+                return Err(e);
             }
+            if is_index {
+                memory_index_updated = true;
+                debug!(path = %resolved.display(), elapsed = ?md_started.elapsed(), "compaction: workspace memory index written");
+            } else {
+                info!(path = %op.path, resolved = %resolved.display(), bytes = op.content.len(), "compaction: wrote memory entry");
+                debug!(path = %op.path, elapsed = ?md_started.elapsed(), "compaction: memory entry written");
+            }
+            markdown_elapsed += md_started.elapsed();
         }
 
         // Archive compacted messages and retain recent context.
@@ -533,7 +557,7 @@ impl CompactionManager {
         {
             Ok(id) => id,
             Err(e) => {
-                Self::rollback_compaction(&created, store).await;
+                Self::rollback_compaction(&created).await;
                 return Err(e);
             }
         };
@@ -606,46 +630,26 @@ impl CompactionManager {
 
     /// Compensating-delete rollback for a failed compaction.
     ///
-    /// Iterates the created list in reverse and removes each resource:
-    /// - markdown memory files
-    /// - workspace-root MEMORY.md writes
-    ///
-    /// Errors during cleanup are logged at WARN level and skipped so that
-    /// rollback continues regardless of individual failures.
-    async fn rollback_compaction(
-        created: &[CompactionWriteState],
-        markdown_store: &MarkdownMemoryStore,
-    ) {
+    /// Iterates the created list in reverse: restores prior content if the
+    /// file existed before compaction, otherwise deletes the file. Errors
+    /// during cleanup are logged at WARN level and skipped so rollback
+    /// continues regardless of individual failures.
+    async fn rollback_compaction(created: &[CompactionWriteState]) {
         use tracing::warn;
         for state in created.iter().rev() {
-            match &state.target {
-                CompactionWriteTarget::Markdown { path } => match &state.previous_content {
-                    Some(previous) => {
-                        if let Err(e) = markdown_store.write(path, previous).await {
-                            warn!(path = %path, error = %e, "rollback: failed to restore markdown entry");
-                        }
+            let CompactionWriteTarget::WorkspaceFile { path } = &state.target;
+            match &state.previous_content {
+                Some(previous) => {
+                    if let Err(e) = Self::write_workspace_file(path, previous).await {
+                        warn!(path = %path.display(), display = %state.display_path, error = %e, "rollback: failed to restore compaction write");
                     }
-                    None => match markdown_store.delete(path).await {
-                        Ok(()) => {}
-                        Err(crate::memory::markdown_store::MarkdownStoreError::NotFound(_)) => {}
-                        Err(e) => {
-                            warn!(path = %path, error = %e, "rollback: failed to delete markdown entry");
-                        }
-                    },
-                },
-                CompactionWriteTarget::MemoryIndex { path } => match &state.previous_content {
-                    Some(previous) => {
-                        if let Err(e) = Self::write_workspace_file(path, previous).await {
-                            warn!(path = %path.display(), error = %e, "rollback: failed to restore workspace memory index");
-                        }
+                }
+                None => match tokio::fs::remove_file(path).await {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        warn!(path = %path.display(), display = %state.display_path, error = %e, "rollback: failed to delete compaction write");
                     }
-                    None => match tokio::fs::remove_file(path).await {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => {
-                            warn!(path = %path.display(), error = %e, "rollback: failed to delete workspace memory index");
-                        }
-                    },
                 },
             }
         }
@@ -906,14 +910,14 @@ mod tests {
 
     fn make_xml_response() -> String {
         r#"<memory>
-<write path="daily/2026-03-25.md">
+<write path="memory/daily/2026-03-25.md">
 # Conversation on 2026-03-25
 
 - User discussed their day
 - They mentioned having a busy morning
 </write>
 
-<write path="preferences/beverages.md">
+<write path="memory/preferences/beverages.md">
 # Beverage Preferences
 
 - User prefers tea over coffee
@@ -994,7 +998,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_existing_memory_context_reads_markdown_files() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
         store
@@ -1197,7 +1201,7 @@ mod tests {
         let mgr = CompactionManager::new(make_config_with_keep(2));
         let messages = make_messages(10);
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
         let data_dir = tmp.path().join("data");
@@ -1244,6 +1248,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_compact_writes_workspace_rooted_paths_without_double_nesting() {
+        // Regression: a model that emits <write path="memory/people/foo.md">
+        // must produce <workspace>/memory/people/foo.md, NOT
+        // <workspace>/memory/memory/people/foo.md.
+        let llm = MockLlm {
+            response: r#"<memory>
+<write path="memory/people/foo.md"># Foo
+
+- Likes tea.
+</write>
+</memory>"#
+                .to_string(),
+        };
+        let conv_mgr = MockConversationMgr::new("new-conv-rooted");
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
+            .await
+            .unwrap();
+
+        let result = mgr
+            .compact(
+                "conv-rooted",
+                &make_messages(10),
+                "",
+                false,
+                DEFAULT_COMPACT_SYSTEM,
+                DEFAULT_COMPACT_PROMPT,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &conv_mgr,
+                Some(&store),
+                false,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let CompactionOutcome::Compacted(result) = result else {
+            panic!("Expected Compacted outcome");
+        };
+        assert!(result
+            .memory_files_written
+            .iter()
+            .any(|p| p == "memory/people/foo.md"));
+
+        // The file must land at <workspace>/memory/people/foo.md.
+        assert!(tmp
+            .path()
+            .join("memory")
+            .join("people")
+            .join("foo.md")
+            .is_file());
+        // It must NOT land at the double-nested path that the bug produced.
+        assert!(!tmp
+            .path()
+            .join("memory")
+            .join("memory")
+            .join("people")
+            .join("foo.md")
+            .exists());
+        // The store-relative read uses the path as it sits inside memory/.
+        assert!(store.read("people/foo.md").await.is_ok());
+    }
+
+    #[tokio::test]
     async fn test_compact_writes_memory_index_but_refuses_generated_paths() {
         let llm = MockLlm {
             response: r#"<memory>
@@ -1253,9 +1326,12 @@ mod tests {
 - Carry-forward note from compaction.
 </write>
 <write path="DREAMS.md"># Bad dream diary overwrite</write>
-<write path=".dreams/candidates.md">bad staged output</write>
-<write path="dreaming/rem/today.md">bad phase report</write>
-<write path="notes/ok.md"># OK
+<write path="memory/.dreams/candidates.md">bad staged output</write>
+<write path="memory/dreaming/rem/today.md">bad phase report</write>
+<write path="SOUL.md"># Bad protected-file overwrite</write>
+<write path="workspace/USER.md"># Bad protected-file overwrite</write>
+<write path="topics/foo.md"># Bare path with no memory/ prefix</write>
+<write path="memory/notes/ok.md"># OK
 
 - Real note
 </write>
@@ -1265,7 +1341,7 @@ mod tests {
         let conv_mgr = MockConversationMgr::new("new-conv-filter");
         let mgr = CompactionManager::new(make_config_with_keep(2));
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
         let data_dir = tmp.path().join("data");
@@ -1298,8 +1374,21 @@ mod tests {
         assert!(result
             .memory_files_written
             .iter()
-            .any(|p| p == "notes/ok.md"));
-        assert!(!result.memory_files_written.iter().any(|p| p == "DREAMS.md"));
+            .any(|p| p == "memory/notes/ok.md"));
+        // Rejected ops must not appear in the written list.
+        for rejected in [
+            "DREAMS.md",
+            "memory/.dreams/candidates.md",
+            "memory/dreaming/rem/today.md",
+            "SOUL.md",
+            "workspace/USER.md",
+            "topics/foo.md",
+        ] {
+            assert!(
+                !result.memory_files_written.iter().any(|p| p == rejected),
+                "expected {rejected} to be filtered out of compaction writes"
+            );
+        }
         let memory = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
         assert!(memory.contains("Carry-forward note"));
         assert!(
@@ -1318,6 +1407,13 @@ mod tests {
         // DREAMS.md must not be created in the workspace memory store; the
         // daemon-controlled dreams log lives in data_dir.
         assert!(store.read("DREAMS.md").await.is_err());
+        // Bare/protected paths must not have written to the workspace either.
+        let workspace_dir = tmp.path();
+        assert!(!workspace_dir.join("SOUL.md").exists());
+        assert!(!workspace_dir.join("USER.md").exists());
+        assert!(!workspace_dir.join("topics/foo.md").exists());
+        // The accepted memory-rooted note lands at workspace/memory/notes/ok.md.
+        assert!(store.read("notes/ok.md").await.is_ok());
     }
 
     #[tokio::test]
@@ -1327,7 +1423,7 @@ mod tests {
         let mgr = CompactionManager::new(make_config_with_keep(2));
         let messages = make_messages(10);
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
         store
@@ -1374,7 +1470,7 @@ mod tests {
         let mgr = CompactionManager::new(make_config_with_keep(2));
         let messages = make_messages(10);
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
 
@@ -1439,7 +1535,7 @@ mod tests {
         let conv_mgr = MockConversationMgr::new("new-conv-2");
         let mgr = CompactionManager::new(make_config_with_keep(3));
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
 
@@ -1486,7 +1582,7 @@ mod tests {
         let conv_mgr = MockConversationMgr::new("new-conv-zero");
         let mgr = CompactionManager::new(make_config_with_keep(2));
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
 
@@ -1530,7 +1626,7 @@ mod tests {
         let conv_mgr = MockConversationMgr::new("new-conv-override");
         let mgr = CompactionManager::new(make_config_with_keep(2));
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
 
@@ -1572,7 +1668,7 @@ mod tests {
         let (conv_mgr, entered_rx, release_tx) = BlockingConversationMgr::new("new-conv-3");
         let mgr = CompactionManager::new(make_config_with_keep(2));
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
 
@@ -1635,7 +1731,7 @@ mod tests {
         let conv_mgr = MockConversationMgr::new("new-conv-1");
         let mgr = CompactionManager::new(CompactionConfig::default());
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
 
@@ -1671,7 +1767,7 @@ mod tests {
         let conv_mgr = MockConversationMgr::new("new-conv-1");
         let mgr = CompactionManager::new(make_config_with_keep(2));
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
 
@@ -1702,6 +1798,12 @@ mod tests {
                 assert_eq!(r.message_count, 6);
                 assert_eq!(r.retained_count, 4);
                 assert_eq!(r.file_ops_preview.len(), 2);
+                assert!(
+                    r.file_ops_preview
+                        .iter()
+                        .all(|op| op.path.starts_with("memory/")),
+                    "dry run preview paths should reflect the workspace-rooted path scheme"
+                );
             }
             _ => panic!("Expected DryRun outcome"),
         }
@@ -1718,7 +1820,7 @@ mod tests {
         let conv_mgr = MockConversationMgr::new("new-conv-1");
         let mgr = CompactionManager::new(CompactionConfig::default());
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
 
@@ -1753,7 +1855,7 @@ mod tests {
         let conv_mgr = MockConversationMgr::new("new-conv-1");
         let mgr = CompactionManager::new(make_config_with_keep(10));
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
 
@@ -1853,7 +1955,7 @@ mod tests {
         let conv_mgr = FailingConversationMgr;
         let mgr = CompactionManager::new(make_config_with_keep(2));
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
             .await
             .unwrap();
 

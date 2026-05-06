@@ -19,7 +19,7 @@ async fn compaction_harness_3turns() -> TestHarness {
 fn compaction_llm_response(topic: &str) -> String {
     format!(
         r#"<memory>
-<write path="topics/{topic}.md">
+<write path="memory/topics/{topic}.md">
 # {topic}
 
 - User and assistant discussed {topic}

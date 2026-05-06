@@ -4,7 +4,7 @@ You have access to your memories directory. Use the <memory> section below to wr
 
 Guidelines:
 - Prefer updating existing files over creating new ones. Use the existing memory snapshot below to merge new information into the right files.
-- Use clear filenames and folder structure (e.g., people/{{user}}.md, topics/gaming/doom.md).
+- Use clear filenames and folder structure (e.g., memory/people/{{user}}.md, memory/topics/gaming/doom.md).
 - Each file should have a heading and bullet points.
 - Include timestamps or session context when relevant.
 - If {{user}} corrected previous information, update the file rather than appending.
@@ -13,10 +13,10 @@ Guidelines:
 
 Your response MUST contain a <memory> block containing zero or more <write> operations.
 
-Each <write> creates or overwrites a single memory file. The path is relative to your memories directory (or workspace root for MEMORY.md). The content is pure markdown — no YAML frontmatter.
+Each <write> creates or overwrites a single file. The content is pure markdown — no YAML frontmatter.
 
 <memory>
-<write path="people/{{user}}.md">
+<write path="memory/people/{{user}}.md">
 # {{user}}
 
 - Likes tea (mentioned on 2026-04-22)
@@ -31,8 +31,8 @@ Each <write> creates or overwrites a single memory file. The path is relative to
 - Picked up where last session left off on the Doom speedrun project.
 
 ## Recent files
-- people/{{user}}.md
-- topics/gaming/doom.md
+- memory/people/{{user}}.md
+- memory/topics/gaming/doom.md
 </write>
 </memory>
 

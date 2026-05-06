@@ -210,7 +210,10 @@ pub(super) fn description_for_memory_access(
 // Path resolution
 // ---------------------------------------------------------------------------
 
-fn resolve_roots(workspace_dir: &str, relative: &str) -> Result<(PathBuf, String), ToolError> {
+pub(crate) fn resolve_roots(
+    workspace_dir: &str,
+    relative: &str,
+) -> Result<(PathBuf, String), ToolError> {
     if workspace_dir.is_empty() {
         return Err(ToolError::InvalidArgs("workspace not configured".into()));
     }
@@ -237,7 +240,7 @@ fn resolve_roots(workspace_dir: &str, relative: &str) -> Result<(PathBuf, String
     Ok((root, stripped))
 }
 
-fn resolve_path(workspace_dir: &str, relative: &str) -> Result<PathBuf, ToolError> {
+pub(crate) fn resolve_path(workspace_dir: &str, relative: &str) -> Result<PathBuf, ToolError> {
     let (base, stripped) = resolve_roots(workspace_dir, relative)?;
     if stripped.is_empty() {
         return Err(ToolError::InvalidArgs("path is empty".into()));
