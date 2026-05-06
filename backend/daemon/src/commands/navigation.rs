@@ -28,23 +28,10 @@ pub fn list_characters(engine: &ConversationEngine, ctx: &CommandContext) -> Com
 /// List characters without requiring an active engine (for use before
 /// character resolution, e.g. when multiple characters are available).
 pub fn list_characters_standalone(ctx: &CommandContext) -> CommandResult {
-    let mut characters: Vec<CharacterInfo> =
-        shore_config::discover_characters(&ctx.config.dirs.config)
-            .into_iter()
-            .map(|name| CharacterInfo { name })
-            .collect();
-
-    // Also check data dir for characters that have data but no config dir.
-    if let Ok(entries) = std::fs::read_dir(&ctx.data_dir) {
-        for entry in entries.flatten() {
-            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !characters.iter().any(|c| c.name == name) {
-                    characters.push(CharacterInfo { name });
-                }
-            }
-        }
-    }
+    let characters: Vec<CharacterInfo> = shore_config::discover_characters(&ctx.config.dirs.config)
+        .into_iter()
+        .map(|name| CharacterInfo { name })
+        .collect();
 
     debug!(count = characters.len(), "Listed characters (standalone)");
     Ok(json!({ "characters": characters }))
@@ -258,6 +245,34 @@ mod tests {
         assert!(names.contains(&"TestChar"));
         assert!(names.contains(&"Alice"));
         assert!(names.contains(&"Bob"));
+    }
+
+    #[test]
+    fn standalone_list_characters_ignores_data_only_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
+
+        let qifei_dir = tmp
+            .path()
+            .join("config")
+            .join("characters")
+            .join("qifei")
+            .join("workspace");
+        std::fs::create_dir_all(&qifei_dir).unwrap();
+        std::fs::write(qifei_dir.join("SOUL.md"), "Qifei").unwrap();
+
+        for name in ["debug", "providers", "matrix-server", "matrix-store"] {
+            std::fs::create_dir_all(tmp.path().join(name)).unwrap();
+        }
+
+        let result = list_characters_standalone(&ctx).unwrap();
+        let names: Vec<&str> = result["characters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["qifei"]);
     }
 
     #[test]

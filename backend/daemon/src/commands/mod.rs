@@ -265,12 +265,13 @@ mod tests {
 
         // Create a character directory so list_characters finds something.
         let char_dir = tmp.path().join("config").join("characters").join("alice");
-        std::fs::create_dir_all(&char_dir).unwrap();
-        std::fs::write(
-            char_dir.join("definition.toml"),
-            "[character]\nname = \"Alice\"\n",
-        )
-        .unwrap();
+        let workspace_dir = char_dir.join("workspace");
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        std::fs::write(workspace_dir.join("SOUL.md"), "Alice").unwrap();
+
+        // Data-only directories are cache/runtime state, not character
+        // definitions, and should not leak into connector menus.
+        std::fs::create_dir_all(tmp.path().join("debug")).unwrap();
 
         let (_engine, ctx, _rx) = make_ctx(&tmp);
 
@@ -283,7 +284,13 @@ mod tests {
         let result = dispatch_characterless(&ctx, &cmd);
         assert!(result.is_ok());
         let data = result.unwrap();
-        assert!(data["characters"].is_array());
+        let names: Vec<&str> = data["characters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["alice"]);
     }
 
     #[test]
