@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use serde_json::{json, Value};
+use shore_config::app::RetrievalConfig;
 use shore_llm::embed::Embedder;
 
 use crate::memory::workspace_index::{self, HybridMode};
@@ -174,37 +175,6 @@ pub fn tool_defs() -> Vec<ToolDef> {
     ]
 }
 
-pub(super) fn description_for_memory_access(
-    name: &str,
-    memory_namespace_available: bool,
-) -> Option<&'static str> {
-    if memory_namespace_available {
-        return None;
-    }
-
-    match name {
-        "read" => Some(crate::include_prompt!(
-            "../../prompts/tools/workspace/no_memory/read.md"
-        )),
-        "write" => Some(crate::include_prompt!(
-            "../../prompts/tools/workspace/no_memory/write.md"
-        )),
-        "edit" => Some(crate::include_prompt!(
-            "../../prompts/tools/workspace/no_memory/edit.md"
-        )),
-        "list_files" => Some(crate::include_prompt!(
-            "../../prompts/tools/workspace/no_memory/list_files.md"
-        )),
-        "search" => Some(crate::include_prompt!(
-            "../../prompts/tools/workspace/no_memory/search.md"
-        )),
-        "delete" => Some(crate::include_prompt!(
-            "../../prompts/tools/workspace/no_memory/delete.md"
-        )),
-        _ => None,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Path resolution
 // ---------------------------------------------------------------------------
@@ -313,7 +283,6 @@ fn truncate_chars(text: &str, limit: usize) -> String {
 
 const SEARCH_DEFAULT_MAX_RESULTS: usize = 20;
 const SEARCH_MAX_RESULTS: usize = 100;
-const SEARCH_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const SEARCH_EXCERPT_CHARS: usize = 1_200;
 
 fn normalize_search_query(input: &Value) -> Result<String, ToolError> {
@@ -346,18 +315,6 @@ fn display_path_for(workspace_dir: &str, path: &Path) -> String {
         return normalized;
     }
     path.to_string_lossy().replace('\\', "/")
-}
-
-fn is_root_memory_dir(workspace_dir: &str, path: &Path) -> bool {
-    let Ok(rel) = path.strip_prefix(Path::new(workspace_dir)) else {
-        return false;
-    };
-    let mut components = rel.components();
-    matches!(
-        (components.next(), components.next()),
-        (Some(std::path::Component::Normal(first)), None)
-            if first == std::ffi::OsStr::new("memory")
-    )
 }
 
 fn find_case_insensitive_match(line: &str, query_lower: &str) -> Option<(usize, usize)> {
@@ -687,10 +644,11 @@ pub async fn handle_list_files(input: Value, workspace_dir: &str) -> Result<Valu
 pub async fn handle_search(
     input: Value,
     workspace_dir: &str,
-    include_memory: bool,
+    retrieval_config: Option<&RetrievalConfig>,
     embedder: Option<&dyn Embedder>,
     workspace_index_path: Option<&Path>,
 ) -> Result<Value, ToolError> {
+    let retrieval_config = retrieval_config.cloned().unwrap_or_default();
     let requested_mode = parse_search_mode(input.get("mode"))?;
     let requested_hybrid = !matches!(requested_mode, RequestedMode::Lexical);
     let can_hybrid = embedder.is_some() && workspace_index_path.is_some();
@@ -710,7 +668,7 @@ pub async fn handle_search(
         return handle_search_hybrid(
             input,
             workspace_dir,
-            include_memory,
+            &retrieval_config,
             mode,
             embedder.unwrap(),
             workspace_index_path.unwrap(),
@@ -719,7 +677,7 @@ pub async fn handle_search(
         .await;
     }
 
-    let mut response = handle_search_lexical(input, workspace_dir, include_memory).await?;
+    let mut response = handle_search_lexical(input, workspace_dir, &retrieval_config).await?;
     if let Some(obj) = response.as_object_mut() {
         obj.insert("mode".into(), json!("lexical"));
         if requested_hybrid {
@@ -768,7 +726,7 @@ fn parse_search_mode(raw: Option<&Value>) -> Result<RequestedMode, ToolError> {
 async fn handle_search_lexical(
     input: Value,
     workspace_dir: &str,
-    include_memory: bool,
+    retrieval_config: &RetrievalConfig,
 ) -> Result<Value, ToolError> {
     if workspace_dir.is_empty() {
         return Err(ToolError::InvalidArgs("workspace not configured".into()));
@@ -812,10 +770,6 @@ async fn handle_search_lexical(
         }
 
         if meta.is_dir() {
-            if !include_memory && is_root_memory_dir(workspace_dir, &path) {
-                continue;
-            }
-
             let mut entries = Vec::new();
             let mut read_dir = match tokio::fs::read_dir(&path).await {
                 Ok(read_dir) => read_dir,
@@ -832,7 +786,7 @@ async fn handle_search_lexical(
             continue;
         }
 
-        if meta.len() > SEARCH_MAX_FILE_BYTES {
+        if meta.len() > retrieval_config.max_file_bytes {
             skipped_binary_or_large += 1;
             continue;
         }
@@ -854,9 +808,12 @@ async fn handle_search_lexical(
             Ok(bytes) => bytes,
             Err(_) => continue,
         };
-        let Ok(content) = String::from_utf8(bytes) else {
-            skipped_binary_or_large += 1;
-            continue;
+        let content = match String::from_utf8(bytes) {
+            Ok(content) => content,
+            Err(_) => {
+                skipped_binary_or_large += 1;
+                continue;
+            }
         };
 
         searched_files += 1;
@@ -910,7 +867,7 @@ async fn handle_search_lexical(
 async fn handle_search_hybrid(
     input: Value,
     workspace_dir: &str,
-    include_memory: bool,
+    retrieval_config: &RetrievalConfig,
     mode: HybridMode,
     embedder: &dyn Embedder,
     index_path: &Path,
@@ -921,7 +878,7 @@ async fn handle_search_hybrid(
 
     let result = match workspace_index::hybrid_search(
         workspace_dir,
-        include_memory,
+        retrieval_config,
         &query,
         mode,
         embedder,
@@ -933,7 +890,7 @@ async fn handle_search_hybrid(
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "hybrid search failed; falling back to lexical");
-            let mut lex = handle_search_lexical(input, workspace_dir, include_memory).await?;
+            let mut lex = handle_search_lexical(input, workspace_dir, retrieval_config).await?;
             if let Some(obj) = lex.as_object_mut() {
                 obj.insert("mode".into(), json!("lexical"));
                 obj.insert("semantic_unavailable".into(), json!(e.to_string()));
@@ -1668,7 +1625,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = handle_search(json!({"query": "tea"}), &ws_str, true, None, None)
+        let result = handle_search(json!({"query": "tea"}), &ws_str, None, None, None)
             .await
             .unwrap();
         let results = result["results"].as_array().unwrap();
@@ -1711,7 +1668,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = handle_search(json!({"query": "tea"}), &ws_str, true, None, None)
+        let result = handle_search(json!({"query": "tea"}), &ws_str, None, None, None)
             .await
             .unwrap();
         let results = result["results"].as_array().unwrap();
@@ -1740,7 +1697,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = handle_search(json!({"query": "absent"}), &ws_str, true, None, None)
+        let result = handle_search(json!({"query": "absent"}), &ws_str, None, None, None)
             .await
             .unwrap();
         assert_eq!(result["count"], 0);
@@ -1769,7 +1726,7 @@ mod tests {
         let result = handle_search(
             json!({"query": "german shepherd"}),
             &ws_str,
-            true,
+            None,
             None,
             None,
         )
@@ -1807,31 +1764,12 @@ mod tests {
         std::os::unix::fs::symlink(&secret, ws.join("link_to_secret.md")).unwrap();
         std::os::unix::fs::symlink(&outside_dir, ws.join("outside_dir")).unwrap();
 
-        let result = handle_search(json!({"query": "xyzzy"}), &ws_str, true, None, None)
+        let result = handle_search(json!({"query": "xyzzy"}), &ws_str, None, None, None)
             .await
             .unwrap();
         assert_eq!(result["count"], 0, "symlinked file content must not leak");
         let results = result["results"].as_array().unwrap();
         assert!(results.is_empty());
-    }
-
-    #[tokio::test]
-    async fn search_skips_memory_when_memory_not_included() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ws = tmp.path().join("workspace");
-        let ws_str = ws.to_string_lossy().to_string();
-
-        handle_write(
-            json!({"path": "memory/people/ren.md", "content": "Ren likes tea."}),
-            &ws_str,
-        )
-        .await
-        .unwrap();
-
-        let result = handle_search(json!({"query": "tea"}), &ws_str, false, None, None)
-            .await
-            .unwrap();
-        assert_eq!(result["count"], 0);
     }
 
     #[tokio::test]
@@ -1847,7 +1785,7 @@ mod tests {
         let result = handle_search(
             json!({"query": "tea", "mode": "hybrid"}),
             &ws_str,
-            true,
+            None,
             None,
             None,
         )
@@ -1873,7 +1811,7 @@ mod tests {
         let result = handle_search(
             json!({"query": "tea", "mode": "lexical"}),
             &ws_str,
-            true,
+            None,
             None,
             None,
         )
@@ -1927,7 +1865,7 @@ mod tests {
         let result = handle_search(
             json!({"query": "tea", "path": "notes/"}),
             &ws_str,
-            true,
+            None,
             Some(&embedder),
             Some(&idx),
         )
@@ -1954,7 +1892,7 @@ mod tests {
         let result = handle_search(
             json!({"query": "tea", "mode": "magic"}),
             &ws_str,
-            true,
+            None,
             None,
             None,
         )

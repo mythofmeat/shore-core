@@ -102,15 +102,6 @@ impl ToolContext for HeartbeatToolContext {
     fn memory_index_path(&self) -> Option<&std::path::Path> {
         self.inner.memory_index_path()
     }
-    fn memory_access_allowed(&self) -> bool {
-        self.inner.memory_access_allowed()
-    }
-    fn memory_read_allowed(&self) -> bool {
-        self.inner.memory_read_allowed()
-    }
-    fn memory_write_allowed(&self) -> bool {
-        self.inner.memory_write_allowed()
-    }
     fn config_dir(&self) -> &str {
         self.inner.config_dir()
     }
@@ -1916,9 +1907,6 @@ async fn build_tool_context(
         memory_retrieval_config_val: config.app.memory.retrieval.clone(),
         embedder_val: embedder,
         memory_index_path_val: char_dir.join("workspace_index.json"),
-        memory_access_allowed_val: config.app.behavior.tool_use.tools.memory(),
-        memory_read_allowed_val: config.app.behavior.tool_use.tools.memory_read(),
-        memory_write_allowed_val: config.app.behavior.tool_use.tools.memory_write(),
         config_dir_val: config.dirs.config.to_string_lossy().into_owned(),
         character_data_dir_val: char_dir.to_string_lossy().into_owned(),
     })

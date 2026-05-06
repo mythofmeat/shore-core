@@ -93,15 +93,6 @@ impl ToolContext for HandlerToolContext {
     fn memory_index_path(&self) -> Option<&std::path::Path> {
         self.inner.memory_index_path()
     }
-    fn memory_access_allowed(&self) -> bool {
-        self.inner.memory_access_allowed()
-    }
-    fn memory_read_allowed(&self) -> bool {
-        self.inner.memory_read_allowed()
-    }
-    fn memory_write_allowed(&self) -> bool {
-        self.inner.memory_write_allowed()
-    }
     fn config_dir(&self) -> &str {
         self.inner.config_dir()
     }

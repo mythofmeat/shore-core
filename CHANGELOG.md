@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Removed runtime memory-gate behavior (`memory`, `memory_read`,
+  `memory_write`) so workspace tools treat `memory/...` as ordinary workspace
+  paths. Private mode now hides only `search_history` and `exec`, and legacy
+  memory gate keys are inert compatibility toggles.
+- Expanded `[memory.retrieval]` with workspace indexing/search bounds
+  (`max_file_bytes`, `max_indexed_files`, `max_total_indexed_bytes`,
+  `max_embed_chars_per_file`) plus configurable binary handling (`skip`,
+  `metadata`, `try_embed`), and made workspace indexing operate over the full
+  workspace tree.
+- Moved legacy diagnostic dream phase reports from workspace
+  `memory/dreaming/**` into data-dir
+  `$XDG_DATA_HOME/shore/<Character>/dreams/reports/**` so generated artifacts
+  stay out of user memory files.
 - Added SillyTavern-style alternates for regenerated assistant replies: regen
   now preserves prior alternatives, activates the newest response, and lets CLI
   users switch with `shore alt prev`, `shore alt 2`, or `shore alt list`.

@@ -104,7 +104,14 @@ minimum_heartbeat_latency      = "2h"
 max_tool_rounds                  = 0
 
 [behavior.tool_use.tools]
-memory = false
+search_history = false
+read = false
+write = false
+edit = false
+list_files = false
+search = false
+delete = false
+exec = false
 
 [advanced]
 api_payload_logging = true

@@ -366,9 +366,6 @@ enabled = true
 max_iterations = 10
 
 [behavior.tool_use.tools]
-memory = true
-memory_read = true
-memory_write = true
 web_search = true
 fetch_url = true
 generate_image = true
@@ -380,21 +377,20 @@ write = true
 edit = true
 list_files = true
 search = true
+delete = true
 search_history = true
 exec = true
 ```
 
 All tools default to enabled. Set `enabled = false` to disable tool use entirely.
 
-Memory gates:
-
-- `memory = false` blocks `memory/...` workspace paths and disables conversation history search.
-- `memory_read = false` blocks `read`, `list_files`, and `search` access to `memory/...` paths and disables `search_history`.
-- `memory_write = false` blocks `write` and `edit` access to `memory/...` paths.
-- `exec` is hidden when memory read/write access is not both enabled.
+- In private conversations, `search_history` and `exec` are hidden.
+- Workspace file tools (`read`, `write`, `edit`, `list_files`, `search`, `delete`) treat `memory/...` as an ordinary workspace subdirectory.
 
 Legacy config keys such as `memory_search` and `memory_list` may still parse as
 tool toggles, but they are compatibility keys and are not registered LLM tools.
+Legacy keys like `memory`, `memory_read`, and `memory_write` are also inert; use
+tool-name toggles directly (`search_history = false`, `read = false`, etc.).
 There is no `send_image` toggle for uploaded attachments; generated-image
 sending is controlled by `generate_image`.
 
@@ -444,11 +440,25 @@ The dreams audit log lives at `$XDG_DATA_HOME/shore/<Character>/DREAMS.md` (data
 ```toml
 [memory.retrieval]
 mode = "auto" # auto, lexical, hybrid
+max_file_bytes = 2097152
+max_indexed_files = 50000
+max_total_indexed_bytes = 1073741824
+max_embed_chars_per_file = 4000
+binary = "skip" # skip, metadata, try_embed
 ```
 
 - `lexical` never calls embeddings.
 - `auto` uses hybrid retrieval when an embedder is resolved and usable.
 - `hybrid` requests semantic+keyword ranking but falls back to lexical if embeddings fail.
+- Lexical and hybrid both scan the workspace tree (including `memory/`) for
+  text files.
+- `max_file_bytes` controls the per-file size cap for lexical/hybrid search.
+- `max_indexed_files` and `max_total_indexed_bytes` bound workspace index walks.
+- `max_embed_chars_per_file` limits how much text from each file is embedded.
+- `binary` controls non-UTF8 handling for indexing:
+  - `skip`: skip binary files.
+  - `metadata`: track binary files as skipped metadata only.
+  - `try_embed`: reserve space for future binary embedders; current OpenAI-compatible text embedders still record these as unsupported.
 
 The hybrid index is rebuildable and non-authoritative.
 

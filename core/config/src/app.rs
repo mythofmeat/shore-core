@@ -435,30 +435,13 @@ pub struct ToolToggles(BTreeMap<String, bool>);
 impl ToolToggles {
     /// Check whether a tool is enabled by name. Absent keys default to enabled.
     pub fn is_enabled(&self, name: &str) -> bool {
-        let enabled = self.0.get(name).copied().unwrap_or(true);
-        if is_memory_tool_name(name) && name != "memory" && !self.memory_group_enabled() {
-            return false;
-        }
-        enabled
+        self.0.get(name).copied().unwrap_or(true)
     }
 
     pub fn set(&mut self, tool: &str, enabled: bool) {
         self.0.insert(tool.to_string(), enabled);
     }
 
-    fn memory_group_enabled(&self) -> bool {
-        self.0.get("memory").copied().unwrap_or(true)
-    }
-
-    pub fn memory(&self) -> bool {
-        self.memory_group_enabled()
-    }
-    pub fn memory_read(&self) -> bool {
-        self.is_enabled("memory_read")
-    }
-    pub fn memory_write(&self) -> bool {
-        self.is_enabled("memory_write")
-    }
     pub fn generate_image(&self) -> bool {
         self.is_enabled("generate_image")
     }
@@ -477,21 +460,6 @@ impl ToolToggles {
     pub fn activity_heatmap(&self) -> bool {
         self.is_enabled("activity_heatmap")
     }
-}
-
-fn is_memory_tool_name(name: &str) -> bool {
-    matches!(
-        name,
-        "memory"
-            | "memory_read"
-            | "memory_write"
-            // Legacy config keys from the removed standalone memory tools.
-            // They remain gate-aware so old config files keep predictable
-            // behavior, but they are not registered LLM tool names.
-            | "memory_search"
-            | "memory_list"
-            | "search_history"
-    )
 }
 
 // ── [behavior.tool_use.search] ───────────────────────────────────────────
@@ -613,21 +581,60 @@ pub enum RetrievalMode {
     Hybrid,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalBinaryMode {
+    #[default]
+    Skip,
+    Metadata,
+    TryEmbed,
+}
+
+serde_default!(default_retrieval_max_file_bytes -> u64 { 2 * 1024 * 1024 });
+serde_default!(default_retrieval_max_indexed_files -> usize { 50_000 });
+serde_default!(default_retrieval_max_total_indexed_bytes -> u64 { 1024 * 1024 * 1024 });
+serde_default!(default_retrieval_max_embed_chars_per_file -> usize { 4_000 });
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RetrievalConfig {
-    /// Memory search mode. `auto` uses hybrid semantic+lexical retrieval when
+    /// Workspace search mode. `auto` uses hybrid semantic+lexical retrieval when
     /// an embedding profile is configured and usable, then falls back to
     /// lexical search. `lexical` never calls embeddings. `hybrid` requests
     /// hybrid retrieval but still falls back to lexical on transient failures.
     #[serde(default)]
     pub mode: RetrievalMode,
+
+    /// Maximum file size (bytes) eligible for lexical/hybrid search.
+    #[serde(default = "default_retrieval_max_file_bytes")]
+    pub max_file_bytes: u64,
+
+    /// Hard cap on total files walked for workspace indexing.
+    #[serde(default = "default_retrieval_max_indexed_files")]
+    pub max_indexed_files: usize,
+
+    /// Hard cap on cumulative bytes walked for workspace indexing.
+    #[serde(default = "default_retrieval_max_total_indexed_bytes")]
+    pub max_total_indexed_bytes: u64,
+
+    /// Maximum chars from each file fed to the embedder.
+    #[serde(default = "default_retrieval_max_embed_chars_per_file")]
+    pub max_embed_chars_per_file: usize,
+
+    /// Binary-file handling policy for workspace indexing.
+    #[serde(default)]
+    pub binary: RetrievalBinaryMode,
 }
 
 impl Default for RetrievalConfig {
     fn default() -> Self {
         Self {
             mode: RetrievalMode::Auto,
+            max_file_bytes: default_retrieval_max_file_bytes(),
+            max_indexed_files: default_retrieval_max_indexed_files(),
+            max_total_indexed_bytes: default_retrieval_max_total_indexed_bytes(),
+            max_embed_chars_per_file: default_retrieval_max_embed_chars_per_file(),
+            binary: RetrievalBinaryMode::Skip,
         }
     }
 }
@@ -1013,8 +1020,15 @@ mod tests {
         assert!(config.behavior.tool_use.enabled);
         assert!(config.memory.compaction.enabled);
         assert_eq!(config.memory.retrieval.mode, RetrievalMode::Auto);
+        assert_eq!(config.memory.retrieval.max_file_bytes, 2 * 1024 * 1024);
+        assert_eq!(config.memory.retrieval.max_indexed_files, 50_000);
+        assert_eq!(
+            config.memory.retrieval.max_total_indexed_bytes,
+            1024 * 1024 * 1024
+        );
+        assert_eq!(config.memory.retrieval.max_embed_chars_per_file, 4_000);
+        assert_eq!(config.memory.retrieval.binary, RetrievalBinaryMode::Skip);
         // Tool toggles default to true.
-        assert!(config.behavior.tool_use.tools.is_enabled("memory"));
         assert!(config.behavior.tool_use.tools.is_enabled("roll_dice"));
         // Advanced retry fields default to None.
         assert!(config.advanced.editor.is_none());
@@ -1027,9 +1041,22 @@ mod tests {
         let toml_str = r#"
 [memory.retrieval]
 mode = "hybrid"
+max_file_bytes = 12345
+max_indexed_files = 999
+max_total_indexed_bytes = 777777
+max_embed_chars_per_file = 222
+binary = "metadata"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.memory.retrieval.mode, RetrievalMode::Hybrid);
+        assert_eq!(config.memory.retrieval.max_file_bytes, 12345);
+        assert_eq!(config.memory.retrieval.max_indexed_files, 999);
+        assert_eq!(config.memory.retrieval.max_total_indexed_bytes, 777777);
+        assert_eq!(config.memory.retrieval.max_embed_chars_per_file, 222);
+        assert_eq!(
+            config.memory.retrieval.binary,
+            RetrievalBinaryMode::Metadata
+        );
     }
 
     #[test]
@@ -1042,8 +1069,7 @@ web_search = false
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(!config.behavior.tool_use.tools.roll_dice());
         assert!(!config.behavior.tool_use.tools.web_search());
-        assert!(config.behavior.tool_use.tools.memory());
-        assert!(config.behavior.tool_use.tools.is_enabled("memory"));
+        assert!(config.behavior.tool_use.tools.is_enabled("search_history"));
         assert!(!config.behavior.tool_use.tools.is_enabled("roll_dice"));
     }
 
@@ -1391,35 +1417,24 @@ homeserver = "https://matrix.example.com"
         let mut toggles = ToolToggles::default();
 
         // Default: all enabled.
-        assert!(toggles.memory());
+        assert!(toggles.is_enabled("search_history"));
+        assert!(toggles.is_enabled("roll_dice"));
 
-        // Disable memory.
-        toggles.set("memory", false);
-        assert!(!toggles.memory());
-        assert!(!toggles.memory_read());
-        assert!(!toggles.memory_write());
-        assert!(!toggles.is_enabled("memory_search"));
-        assert!(!toggles.is_enabled("memory_list"));
+        // Disable one tool toggle.
+        toggles.set("search_history", false);
         assert!(!toggles.is_enabled("search_history"));
 
         // Re-enable.
-        toggles.set("memory", true);
-        assert!(toggles.memory());
-        assert!(toggles.is_enabled("memory_search"));
+        toggles.set("search_history", true);
         assert!(toggles.is_enabled("search_history"));
     }
 
     #[test]
-    fn tool_toggles_parent_memory_overrides_child_tools() {
+    fn tool_toggles_unknown_legacy_key_is_independent() {
         let mut toggles = ToolToggles::default();
         toggles.set("memory_search", false);
-        assert!(toggles.memory());
         assert!(!toggles.is_enabled("memory_search"));
-        assert!(toggles.memory_read());
-
-        toggles.set("memory_search", true);
-        toggles.set("memory", false);
-        assert!(!toggles.is_enabled("memory_search"));
+        assert!(toggles.is_enabled("search_history"));
     }
 
     #[test]

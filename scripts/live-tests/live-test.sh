@@ -125,7 +125,14 @@ enabled = true
 max_iterations = 3
 
 [behavior.tool_use.tools]
-memory = false
+search_history = false
+read = false
+write = false
+edit = false
+list_files = false
+search = false
+delete = false
+exec = false
 send_image = false
 generate_image = false
 web_search = false
