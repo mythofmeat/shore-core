@@ -840,6 +840,9 @@ impl App {
         active.ends_with(&format!(".{candidate}"))
             || active.ends_with(&format!(":{candidate}"))
             || active.ends_with(&format!("/{candidate}"))
+            || candidate.ends_with(&format!(".{active}"))
+            || candidate.ends_with(&format!(":{active}"))
+            || candidate.ends_with(&format!("/{active}"))
     }
 
     pub fn is_active_model_candidate(&self, candidate: &str) -> bool {
@@ -1057,6 +1060,20 @@ impl App {
             }
             _ => self.completion.candidates.clear(),
         }
+
+        self.completion.selected = match parent.as_str() {
+            "model" => self
+                .completion
+                .candidates
+                .iter()
+                .position(|c| self.is_active_model_candidate(c)),
+            "character" => self
+                .completion
+                .candidates
+                .iter()
+                .position(|c| !self.character_name.is_empty() && c == &self.character_name),
+            _ => None,
+        };
     }
 
     /// Enter a submenu picker for the given parent command. Saves the

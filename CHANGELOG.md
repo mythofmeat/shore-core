@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Refined the TUI command picker so model and character submenus mark the
+  active row consistently, scroll the selected item into view, and keep the
+  active model out of the input border.
 - Switched compaction `<write path="...">` ops to workspace-rooted paths so the
   scheme matches the runtime workspace tools. The model now writes
   `memory/people/foo.md` instead of `people/foo.md`; `MEMORY.md` continues to

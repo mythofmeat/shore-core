@@ -260,6 +260,17 @@ fn list_models_with_profiles() {
     assert_eq!(models.len(), 2);
     assert_eq!(models[0]["name"], "claude-sonnet");
     assert_eq!(models[1]["name"], "gpt-4o");
+    assert_eq!(result["active"], "chat.anthropic.claude-sonnet");
+}
+
+#[test]
+fn list_models_reports_config_default_as_active() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.config.app.defaults.model = Some("gpt-4o".into());
+
+    let result = list_models(&ctx).unwrap();
+    assert_eq!(result["active"], "chat.openrouter.gpt-4o");
 }
 
 #[test]

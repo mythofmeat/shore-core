@@ -8,6 +8,7 @@ use shore_swp_server::{HandshakeProvider, HelloSnapshot, HistorySnapshot};
 use tokio::sync::Mutex;
 
 use crate::characters::CharacterRegistry;
+use crate::preferences;
 use crate::runtime_state::load_active_model;
 
 pub fn build_handshake_provider(registry: Arc<Mutex<CharacterRegistry>>) -> HandshakeProvider {
@@ -50,11 +51,11 @@ pub async fn build_session_history_snapshot(
             .as_deref()
             .map(|name| registry.effective_config(name).clone())
             .unwrap_or_else(|| registry.global_config().clone());
-        let active_model = active_model.or_else(|| {
-            selected_character
-                .as_deref()
-                .and_then(|name| load_active_model(&effective_config.dirs.data.join(name)))
-        });
+        let active_model = resolve_snapshot_active_model(
+            &effective_config,
+            selected_character.as_deref(),
+            active_model,
+        );
         let engine = selected_character
             .as_deref()
             .and_then(|name| registry.get_or_create(name).ok());
@@ -95,7 +96,45 @@ fn history_config_snapshot(
     active_model: Option<String>,
 ) -> serde_json::Value {
     json!({
-        "active_model": active_model.or_else(|| config.app.defaults.model.clone()),
+        "active_model": active_model
+            .or_else(|| config.app.defaults.model.clone())
+            .or_else(|| config.models.first_chat_model().map(|m| m.qualified_name.clone())),
         "private": false,
     })
+}
+
+fn resolve_snapshot_active_model(
+    config: &LoadedConfig,
+    selected_character: Option<&str>,
+    active_model: Option<String>,
+) -> Option<String> {
+    if active_model.is_some() {
+        return active_model;
+    }
+
+    let character = selected_character?;
+
+    let (global_prefs, char_prefs) = preferences::load_for_character(&config.dirs.data, character)
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                error = %e,
+                character,
+                "Failed to load preferences for handshake snapshot; using defaults"
+            );
+            (
+                preferences::ModelPreferences::default(),
+                preferences::ModelPreferences::default(),
+            )
+        });
+    let legacy = load_active_model(&config.dirs.data.join(character));
+
+    preferences::resolve_active_for_character(
+        config,
+        &config.dirs.data,
+        &global_prefs,
+        &char_prefs,
+        legacy.as_deref(),
+        config.app.defaults.model.as_deref(),
+    )
+    .map(|m| m.qualified_name)
 }

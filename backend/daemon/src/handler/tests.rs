@@ -15,6 +15,18 @@ async fn make_handler(
     broadcast::Receiver<ServerMessage>,
     tokio::sync::mpsc::Receiver<ServerMessage>,
 ) {
+    make_basic_handler_with_models(tmp, chars, shore_config::models::ModelCatalog::default()).await
+}
+
+async fn make_basic_handler_with_models(
+    tmp: &TempDir,
+    chars: &[&str],
+    models: shore_config::models::ModelCatalog,
+) -> (
+    MessageHandler,
+    broadcast::Receiver<ServerMessage>,
+    tokio::sync::mpsc::Receiver<ServerMessage>,
+) {
     let config_dir = tmp.path().join("config");
     let data_dir = tmp.path().join("data");
     std::fs::create_dir_all(&data_dir).unwrap();
@@ -53,7 +65,7 @@ async fn make_handler(
 
     let loaded_config = shore_config::LoadedConfig::new_for_test(
         shore_config::app::AppConfig::default(),
-        shore_config::models::ModelCatalog::default(),
+        models,
         shore_config::ShoreDirs {
             config: config_dir.clone(),
             data: data_dir.clone(),
@@ -115,6 +127,18 @@ async fn make_handler(
     (handler, push_rx, direct_rx)
 }
 
+fn sample_models() -> shore_config::models::ModelCatalog {
+    let toml_str = r#"
+[anthropic.claude-sonnet]
+model_id = "claude-sonnet-4-20250514"
+
+[openrouter.gpt-4o]
+model_id = "gpt-4o"
+"#;
+    let table: toml::Table = toml_str.parse().unwrap();
+    shore_config::models::ModelCatalog::from_sections(Some(&table), None, None, None).unwrap()
+}
+
 fn test_request_meta(character: Option<&str>, rid: Option<&str>) -> RequestMeta {
     RequestMeta {
         session: shore_swp_server::SessionMeta {
@@ -148,6 +172,69 @@ async fn dispatch_command_valid_character() {
         "Expected CommandOutput, got {:?}",
         result
     );
+}
+
+#[tokio::test]
+async fn list_models_reports_effective_active_model_for_selected_character() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) =
+        make_handler_with_models(&tmp, &["Alice"], sample_models()).await;
+
+    let mut prefs = crate::preferences::ModelPreferences::default();
+    prefs.selected.provider = Some("openrouter".into());
+    prefs.selected.model_id = Some("gpt-4o".into());
+    crate::preferences::save_preferences(
+        &crate::preferences::character_preferences_path(&handler.cmd_ctx.data_dir, "Alice"),
+        &prefs,
+    )
+    .unwrap();
+
+    let cmd = Command {
+        rid: None,
+        name: "list_models".into(),
+        args: serde_json::json!({}),
+    };
+
+    let result = handler
+        .dispatch_command(&cmd, &test_request_meta(Some("Alice"), None))
+        .await;
+    match result {
+        ServerMessage::CommandOutput(output) => {
+            assert_eq!(output.name, "list_models");
+            assert_eq!(output.data["active"], "chat.openrouter.gpt-4o");
+        }
+        other => panic!("Expected CommandOutput, got {:?}", other),
+    }
+
+    let session = handler.session_state_mut(shore_swp_server::SessionId(1));
+    assert_eq!(
+        session.active_model.as_deref(),
+        Some("chat.openrouter.gpt-4o")
+    );
+}
+
+#[tokio::test]
+async fn history_snapshot_reports_effective_active_model_for_selected_character() {
+    let tmp = TempDir::new().unwrap();
+    let (handler, _rx, _direct_rx) =
+        make_handler_with_models(&tmp, &["Alice"], sample_models()).await;
+
+    let mut prefs = crate::preferences::ModelPreferences::default();
+    prefs.selected.provider = Some("openrouter".into());
+    prefs.selected.model_id = Some("gpt-4o".into());
+    crate::preferences::save_preferences(
+        &crate::preferences::character_preferences_path(&handler.cmd_ctx.data_dir, "Alice"),
+        &prefs,
+    )
+    .unwrap();
+
+    let snapshot = crate::handshake::build_session_history_snapshot(
+        handler.registry.clone(),
+        Some("Alice".into()),
+        None,
+    )
+    .await;
+    assert_eq!(snapshot.config["active_model"], "chat.openrouter.gpt-4o");
 }
 
 #[tokio::test]

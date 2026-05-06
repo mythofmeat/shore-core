@@ -1095,7 +1095,6 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                         // Only show the list if the user explicitly requested it
                         if app.show_model_list {
                             app.show_model_list = false;
-                            let active = &app.model;
                             let hidden_count = co
                                 .data
                                 .get("hidden_count")
@@ -1116,7 +1115,11 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                                         m.get("source").and_then(|v| v.as_str()).unwrap_or("");
                                     let hidden =
                                         m.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
-                                    let marker = if n == active { "*" } else { " " };
+                                    let marker = if app.is_active_model_candidate(n) {
+                                        "*"
+                                    } else {
+                                        " "
+                                    };
                                     let tag = if hidden {
                                         format!(" [{source}, hidden]")
                                     } else if !source.is_empty() {

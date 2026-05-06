@@ -126,6 +126,7 @@ pub fn list_models_with_args(ctx: &CommandContext, args: &Value) -> CommandResul
     let entries =
         effective_catalog::list_effective_models(&ctx.config, &ctx.data_dir, include_hidden);
     let models: Vec<Value> = entries.iter().map(effective_model_to_json).collect();
+    let active = list_models_active_name(ctx, &entries);
 
     let hidden_count = if include_hidden {
         entries.iter().filter(|e| e.hidden).count()
@@ -138,10 +139,47 @@ pub fn list_models_with_args(ctx: &CommandContext, args: &Value) -> CommandResul
 
     Ok(json!({
         "models": models,
-        "active": ctx.active_model,
+        "active": active,
         "include_hidden": include_hidden,
         "hidden_count": hidden_count,
     }))
+}
+
+fn list_models_active_name(ctx: &CommandContext, entries: &[EffectiveModel]) -> Option<String> {
+    if let Some(active) = ctx.active_model.as_deref().filter(|s| !s.is_empty()) {
+        return effective_catalog::find_effective_model(&ctx.config, &ctx.data_dir, active, true)
+            .map(|m| m.qualified_name)
+            .or_else(|_| {
+                ctx.config
+                    .models
+                    .find_model(active)
+                    .map(|m| m.qualified_name.clone())
+            })
+            .ok()
+            .or_else(|| Some(active.to_string()));
+    }
+
+    if let Some(default) = ctx
+        .config
+        .app
+        .defaults
+        .model
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
+        return effective_catalog::find_effective_model(&ctx.config, &ctx.data_dir, default, true)
+            .map(|m| m.qualified_name)
+            .or_else(|_| {
+                ctx.config
+                    .models
+                    .find_model(default)
+                    .map(|m| m.qualified_name.clone())
+            })
+            .ok()
+            .or_else(|| Some(default.to_string()));
+    }
+
+    entries.first().map(|e| e.resolved.qualified_name.clone())
 }
 
 fn effective_model_to_json(entry: &EffectiveModel) -> Value {

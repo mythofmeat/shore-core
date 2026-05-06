@@ -793,38 +793,6 @@ fn render_images(
     }
 }
 
-fn compact_model_label(model: &str, area_width: u16) -> String {
-    let max_chars = ((area_width as usize) / 2).clamp(12, 36);
-    let chars: Vec<char> = model.chars().collect();
-    if chars.len() <= max_chars {
-        return model.to_string();
-    }
-    if max_chars <= 3 {
-        return chars.into_iter().take(max_chars).collect();
-    }
-    let keep = max_chars - 3;
-    let left = keep / 2;
-    let right = keep - left;
-    let prefix: String = chars.iter().take(left).collect();
-    let suffix: String = chars
-        .iter()
-        .skip(chars.len().saturating_sub(right))
-        .collect();
-    format!("{prefix}...{suffix}")
-}
-
-fn active_model_title(app: &App, area_width: u16) -> Option<String> {
-    let model = app.model.trim();
-    if model.is_empty() {
-        None
-    } else {
-        Some(format!(
-            " model: {} ",
-            compact_model_label(model, area_width)
-        ))
-    }
-}
-
 /// Render the input area.
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     if app.input.mode == InputMode::Command {
@@ -834,16 +802,10 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
             PaletteMode::Submenu(s) => (format!(" [{}] ", s.parent), ""),
         };
         let display = format!("{prefix}{}", app.input.cmd_text);
-        let mut block = Block::default()
+        let block = Block::default()
             .borders(Borders::TOP)
             .title(title)
             .border_style(Style::default().fg(Color::Yellow));
-        if let Some(label) = active_model_title(app, area.width) {
-            block = block.title(
-                Line::from(Span::styled(label, Style::default().fg(Color::DarkGray)))
-                    .right_aligned(),
-            );
-        }
         let paragraph = Paragraph::new(display.as_str())
             .block(block)
             .wrap(Wrap { trim: false });
@@ -939,9 +901,6 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     }
     if app.live_speak {
         indicators.push(("TTS".to_string(), Color::Cyan));
-    }
-    if let Some(label) = active_model_title(app, area.width) {
-        indicators.push((label.trim().to_string(), Color::DarkGray));
     }
     if !indicators.is_empty() {
         let mut spans = vec![Span::raw(" ")];
@@ -1113,6 +1072,20 @@ fn draw_help(frame: &mut Frame, area: Rect) {
 /// the input. Uses the chunk's full width; selected row gets a yellow
 /// highlight; an optional dim header labels the current submenu context
 /// (e.g. "model", "setting key").
+fn completion_window_start(
+    selected: Option<usize>,
+    visible_rows: usize,
+    total_rows: usize,
+) -> usize {
+    if visible_rows == 0 || total_rows <= visible_rows {
+        return 0;
+    }
+    selected
+        .map(|idx| idx.saturating_add(1).saturating_sub(visible_rows))
+        .unwrap_or(0)
+        .min(total_rows - visible_rows)
+}
+
 fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 || app.completion.candidates.is_empty() {
         return;
@@ -1151,13 +1124,21 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
     };
     const ACTIVE_MARKER: &str = "  ● active";
 
-    for (i, c) in app
+    let window_start = completion_window_start(
+        app.completion.selected,
+        candidate_rows,
+        app.completion.candidates.len(),
+    );
+
+    for (offset, c) in app
         .completion
         .candidates
         .iter()
+        .skip(window_start)
         .take(candidate_rows)
         .enumerate()
     {
+        let i = window_start + offset;
         let selected = app.completion.selected == Some(i);
         let desc = App::command_description(c);
         let is_active = match &app.completion.mode {
@@ -1231,6 +1212,7 @@ mod scenario_tests {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use shore_protocol::types::CharacterInfo;
 
     const W: u16 = 80;
     const H: u16 = 30;
@@ -1397,7 +1379,10 @@ mod scenario_tests {
 
         // Input area shows INSERT mode
         assert!(f.contains("[INSERT]"), "default mode is INSERT");
-        assert!(f.contains("model: gpt-4"), "active model is visible");
+        assert!(
+            !f.contains("model:"),
+            "active model should stay out of the input border"
+        );
     }
 
     // ── Scenario: type, send, stream, complete ──────────────────────────────
@@ -1776,6 +1761,90 @@ mod scenario_tests {
         );
     }
 
+    #[test]
+    fn scenario_command_palette_submenu_active_markers() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.enter_command_mode();
+        h.app.model_names = vec!["alpha".into(), "beta".into()];
+        h.app.set_active_model(Some("chat.anthropic.beta"));
+
+        h.app.enter_submenu("model");
+        let f = h.render("active model marker");
+        assert!(
+            f.lines()
+                .any(|l| l.contains("beta") && l.contains("active")),
+            "active model row should be marked like the active character; frame:\n{f}"
+        );
+
+        h.app.characters = vec![
+            CharacterInfo {
+                name: "Alice".into(),
+            },
+            CharacterInfo { name: "Bob".into() },
+        ];
+        h.app.character_name = "Alice".into();
+        h.app.enter_submenu("character");
+        let f = h.render("active character marker");
+        assert!(
+            f.lines()
+                .any(|l| l.contains("Alice") && l.contains("active")),
+            "active character row should still be marked; frame:\n{f}"
+        );
+    }
+
+    #[test]
+    fn scenario_command_palette_submenu_scrolls_selected_item_into_view() {
+        let mut h = Harness::with_size(60, 20);
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+        h.app.model_names = (0..20).map(|i| format!("model-{i:02}")).collect();
+
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.type_str("model");
+        h.press(KeyCode::Enter);
+
+        for _ in 0..18 {
+            h.press(KeyCode::Down);
+        }
+        assert_eq!(h.app.completion.selected, Some(17));
+
+        let f = h.render("submenu scrolled to selected model");
+        assert!(
+            f.contains("model-17"),
+            "selected item should be visible after scrolling; frame:\n{f}"
+        );
+        assert!(
+            !f.contains("model-00"),
+            "top rows should scroll out once selection moves below the viewport; frame:\n{f}"
+        );
+    }
+
+    #[test]
+    fn scenario_model_submenu_opens_on_active_model_even_when_offscreen() {
+        let mut h = Harness::with_size(60, 20);
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+        h.app.model_names = (0..20).map(|i| format!("model-{i:02}")).collect();
+        h.app.set_active_model(Some("chat.provider.model-17"));
+
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.type_str("model");
+        h.press(KeyCode::Enter);
+
+        assert_eq!(h.app.completion.selected, Some(17));
+        let f = h.render("submenu opened on active model");
+        assert!(
+            f.lines()
+                .any(|l| l.contains("model-17") && l.contains("active")),
+            "active model should be selected and visible immediately; frame:\n{f}"
+        );
+        assert!(
+            !f.contains("model-00"),
+            "picker should scroll away from the top to show the active model; frame:\n{f}"
+        );
+    }
+
     /// Space on a parent name also opens the submenu (does not insert
     /// a literal space into cmd_text).
     #[test]
@@ -1830,7 +1899,7 @@ mod scenario_tests {
             "filter should keep only alpha-prefixed model names (+synthetic reset if matching); got {names:?}"
         );
         assert!(
-            names.iter().any(|n| *n == "alpha-1") && names.iter().any(|n| *n == "alpha-2"),
+            names.contains(&"alpha-1") && names.contains(&"alpha-2"),
             "both alpha-* models survive the filter"
         );
 
@@ -1851,8 +1920,10 @@ mod scenario_tests {
     /// candidate and resets palette state.
     #[test]
     fn submenu_apply_returns_full_command() {
-        let mut app = App::default();
-        app.model_names = vec!["gpt-4o".into(), "claude-sonnet-4-6".into()];
+        let mut app = App {
+            model_names: vec!["gpt-4o".into(), "claude-sonnet-4-6".into()],
+            ..App::default()
+        };
 
         app.input.enter_command_mode();
         app.input.cmd_text = "model".into();

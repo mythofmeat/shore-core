@@ -93,11 +93,13 @@ impl MessageHandler {
             "dispatching command"
         );
         let session_id = meta.session.session_id;
-        // `list_characters` and `list_models` both read from the global
-        // config and never touch a character engine, so they bypass the
-        // character-resolution step below. This lets `shore complete
-        // models` succeed even on a multi-character config where no
-        // character has been selected yet. Provider listing commands
+        // `list_characters` reads from the global config and never touches
+        // a character engine, so it bypasses character resolution. `list_models`
+        // stays characterless only when no session character is selected; once
+        // a character is selected, it must flow through the character-aware path
+        // below so its `active` field matches preferences/default resolution.
+        // This still lets `shore complete models` succeed on a multi-character
+        // config before a character has been selected. Provider listing commands
         // (`list_providers`, `list_provider_models`) are similarly
         // characterless and sync.
         //
@@ -134,10 +136,12 @@ impl MessageHandler {
             .with_rid(meta.rid.clone());
         }
 
-        if matches!(
-            cmd.name.as_str(),
-            "list_characters" | "list_models" | "list_providers" | "list_provider_models"
-        ) {
+        let characterless_list_models =
+            cmd.name == "list_models" && meta.session.selected_character.is_none();
+        if cmd.name == "list_characters"
+            || characterless_list_models
+            || matches!(cmd.name.as_str(), "list_providers" | "list_provider_models")
+        {
             let (active_model, session_tokens) = {
                 let session = self.session_state_mut(session_id);
                 (session.active_model.clone(), session.session_tokens.clone())
