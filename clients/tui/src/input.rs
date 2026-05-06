@@ -426,8 +426,7 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
         (KeyModifiers::NONE, KeyCode::Esc) => {
             debug!("Input: Command → Normal (cancelled)");
             app.input.exit_command_mode();
-            app.completion.candidates.clear();
-            app.completion.selected = None;
+            app.completion.clear();
             Action::Redraw
         }
 
@@ -439,8 +438,7 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
 
         // Execute command
         (KeyModifiers::NONE, KeyCode::Enter) => {
-            app.completion.candidates.clear();
-            app.completion.selected = None;
+            app.completion.clear();
             let text = app.input.take_cmd_text();
             parse_command(app, &text)
         }
@@ -449,8 +447,7 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
         (_, KeyCode::Backspace) => {
             if app.input.cmd_text.is_empty() {
                 app.input.exit_command_mode();
-                app.completion.candidates.clear();
-                app.completion.selected = None;
+                app.completion.clear();
             } else {
                 app.input.cmd_backspace();
                 app.update_completions();

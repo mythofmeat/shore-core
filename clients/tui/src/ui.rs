@@ -12,25 +12,39 @@ use crate::markdown;
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
-    // Main layout: conversation | input
+    // Main layout: conversation | input | completions (only when active)
     let input_content_width = size.width as usize;
     let input_height = (app.input.visual_line_count(input_content_width) as u16 + 1).min(8);
 
+    let show_completions =
+        app.input.mode == InputMode::Command && !app.completion.candidates.is_empty();
+    let completion_height = if show_completions {
+        let header_lines = if app.completion.header.is_some() { 1 } else { 0 };
+        let n = app.completion.candidates.len() as u16;
+        (header_lines + n).min(15)
+    } else {
+        0
+    };
+
+    let mut constraints = vec![
+        Constraint::Min(3),               // conversation
+        Constraint::Length(input_height), // input
+    ];
+    if show_completions {
+        constraints.push(Constraint::Length(completion_height));
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),               // conversation
-            Constraint::Length(input_height), // input
-        ])
+        .constraints(constraints)
         .split(size);
 
     draw_conversation(frame, &mut *app, chunks[0]);
 
     draw_input(frame, app, chunks[1]);
 
-    // Draw completion popup over conversation area when in command mode
-    if app.input.mode == InputMode::Command && !app.completion.candidates.is_empty() {
-        draw_completions(frame, app, chunks[1]);
+    if show_completions {
+        draw_completions_inline(frame, app, chunks[2]);
     }
 
     if app.show_help {
@@ -1040,62 +1054,50 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     frame.render_widget(popup, popup_area);
 }
 
-/// Render completion candidates as a popup above the input area.
-fn draw_completions(frame: &mut Frame, app: &App, input_area: Rect) {
-    let candidates = &app.completion.candidates;
-    let max_visible = 8u16;
-    let count = (candidates.len() as u16).min(max_visible);
-    if count == 0 {
+/// Render completion candidates inline in their own layout chunk below
+/// the input. Uses the chunk's full width; selected row gets a yellow
+/// highlight; an optional dim header labels the current submenu context
+/// (e.g. "model", "setting key").
+fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 || app.completion.candidates.is_empty() {
         return;
     }
 
-    // Calculate max width from candidates
-    let max_width = candidates
-        .iter()
-        .take(max_visible as usize)
-        .map(|c| c.len() as u16)
-        .max()
-        .unwrap_or(10)
-        + 4; // padding + borders
-    let width = max_width.min(input_area.width);
-    let height = count + 2; // borders
+    let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Position above the input area
-    let y = input_area.y.saturating_sub(height);
-    let popup_area = Rect::new(input_area.x, y, width, height);
+    if let Some(header) = &app.completion.header {
+        lines.push(Line::from(Span::styled(
+            format!("  {header}"),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        )));
+    }
 
-    // Build lines with highlighting
-    let lines: Vec<Line<'static>> = candidates
+    let candidate_rows = (area.height as usize).saturating_sub(lines.len());
+    for (i, c) in app
+        .completion
+        .candidates
         .iter()
-        .take(max_visible as usize)
+        .take(candidate_rows)
         .enumerate()
-        .map(|(i, c)| {
-            let selected = app.completion.selected == Some(i);
-            if selected {
-                Line::from(Span::styled(
-                    format!(" {c} "),
-                    Style::default().fg(Color::Black).bg(Color::Yellow),
-                ))
-            } else {
-                Line::from(Span::styled(
-                    format!(" {c} "),
-                    Style::default().fg(Color::White),
-                ))
-            }
-        })
-        .collect();
+    {
+        let selected = app.completion.selected == Some(i);
+        if selected {
+            lines.push(Line::from(Span::styled(
+                format!(" ▌ {c}"),
+                Style::default().fg(Color::Black).bg(Color::Yellow),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                format!("   {c}"),
+                Style::default().fg(Color::White),
+            )));
+        }
+    }
 
-    // Clear background and render
-    let popup = Paragraph::new(Text::from(lines))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
-        .style(Style::default().bg(Color::Rgb(40, 40, 40)));
-
-    frame.render_widget(ratatui::widgets::Clear, popup_area);
-    frame.render_widget(popup, popup_area);
+    let paragraph = Paragraph::new(Text::from(lines));
+    frame.render_widget(paragraph, area);
 }
 
 // ── Test harness ────────────────────────────────────────────────────────────
@@ -1416,6 +1418,24 @@ mod scenario_tests {
         // Should show completion for 'model'
         assert!(f.contains("model"), "model completion visible");
 
+        // The input row should sit *above* the candidate row — i.e.
+        // [COMMAND] line index < line containing the "model" candidate.
+        let cmd_line = f
+            .lines()
+            .position(|l| l.contains("[COMMAND]"))
+            .expect("command line present");
+        let cand_line = f
+            .lines()
+            .enumerate()
+            .skip(cmd_line + 1)
+            .find(|(_, l)| l.contains("model"))
+            .map(|(i, _)| i)
+            .expect("model candidate present below input");
+        assert!(
+            cand_line > cmd_line,
+            "completion list renders below input row"
+        );
+
         // Tab to select
         h.press(KeyCode::Tab);
         let f = h.render("after tab completion");
@@ -1427,6 +1447,94 @@ mod scenario_tests {
         assert!(
             !f.contains("COMMAND"),
             "command palette hidden after escape"
+        );
+    }
+
+    /// When the menu closes, the input area must return to the bottom of
+    /// the terminal (collapse back to the 2-chunk layout).
+    #[test]
+    fn scenario_command_palette_input_returns_to_bottom() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        // Fill conversation so blank rows aren't trimmed by the harness —
+        // we need stable row indices to compare layout positions.
+        for i in 0..20 {
+            h.app.entries.push(ConversationEntry::User {
+                content: format!("hello {i}"),
+                images: vec![],
+                timestamp: format!("t{i}"),
+            });
+        }
+
+        // Read the underlying backend buffer directly so empty rows
+        // remain enumerable. We look for the row containing the input
+        // border title on the right side.
+        fn input_row(h: &mut Harness, label: &str) -> u16 {
+            h.terminal
+                .draw(|frame| draw(frame, &mut h.app))
+                .unwrap();
+            let buf = h.terminal.backend().buffer();
+            let area = buf.area;
+            for y in 0..area.height {
+                let mut row = String::new();
+                for x in 0..area.width {
+                    row.push_str(buf[(x, y)].symbol());
+                }
+                if row.contains("[COMMAND]")
+                    || row.contains("[INSERT]")
+                    || row.contains("[NORMAL]")
+                {
+                    eprintln!("{label}: input border at row {y}: {row}");
+                    return y;
+                }
+            }
+            panic!("{label}: no input border row found");
+        }
+
+        let baseline = input_row(&mut h, "baseline normal mode");
+
+        // Open command mode and type to populate candidates.
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.type_str("mod");
+        let raised = input_row(&mut h, "command mode with candidates");
+        assert!(
+            raised < baseline,
+            "input row should be raised when completions visible \
+             (raised={raised}, baseline={baseline})"
+        );
+
+        // Close with Esc — input should snap back to baseline row.
+        h.press(KeyCode::Esc);
+        let restored = input_row(&mut h, "after esc");
+        assert_eq!(
+            restored, baseline,
+            "input row should return to the bottom after menu closes"
+        );
+    }
+
+    /// Argument-completion contexts render a dim header above the
+    /// candidate list so the user knows what they're picking.
+    #[test]
+    fn scenario_command_palette_submenu_header() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        // Type `:setting ` (with trailing space) → header "setting key".
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.type_str("setting ");
+        let f = h.render("setting submenu");
+
+        assert!(
+            f.contains("setting key"),
+            "submenu header 'setting key' visible above candidates"
+        );
+        // And at least one sampler key candidate is visible.
+        assert!(
+            f.contains("temperature"),
+            "first sampler key candidate visible"
         );
     }
 

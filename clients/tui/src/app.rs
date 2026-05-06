@@ -425,6 +425,19 @@ pub struct CompletionState {
     pub candidates: Vec<String>,
     /// Currently selected index (None = no selection).
     pub selected: Option<usize>,
+    /// Section header shown above candidates when completing arguments
+    /// to a known command (e.g. "model", "setting key"). `None` for the
+    /// top-level command list.
+    pub header: Option<String>,
+}
+
+impl CompletionState {
+    /// Reset the menu to a hidden state.
+    pub fn clear(&mut self) {
+        self.candidates.clear();
+        self.selected = None;
+        self.header = None;
+    }
 }
 
 /// An image in the conversation, with its position in the rendered line list.
@@ -807,6 +820,7 @@ impl App {
     pub fn update_completions(&mut self) {
         let input = &self.input.cmd_text;
         self.completion.selected = None;
+        self.completion.header = None;
 
         if input.is_empty() {
             // Show all commands
@@ -830,6 +844,7 @@ impl App {
             let arg = input.split_once(' ').map(|x| x.1).unwrap_or("").trim();
             match cmd {
                 "character" => {
+                    self.completion.header = Some("character".into());
                     self.completion.candidates = self
                         .characters
                         .iter()
@@ -841,6 +856,7 @@ impl App {
                         .collect();
                 }
                 "model" => {
+                    self.completion.header = Some("model".into());
                     let mut candidates: Vec<String> = self
                         .model_names
                         .iter()
@@ -855,6 +871,7 @@ impl App {
                     self.completion.candidates = candidates;
                 }
                 "image" => {
+                    self.completion.header = Some("image action".into());
                     self.completion.candidates = ["clear"]
                         .iter()
                         .filter(|s| s.starts_with(&arg.to_lowercase()))
@@ -871,6 +888,7 @@ impl App {
                     if has_second {
                         // `:setting reset <key>` — complete the key list.
                         if head == "reset" {
+                            self.completion.header = Some("setting key".into());
                             let key_arg = arg.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                             self.completion.candidates = Self::SETTING_KEYS
                                 .iter()
@@ -885,6 +903,7 @@ impl App {
                             self.completion.candidates.clear();
                         }
                     } else {
+                        self.completion.header = Some("setting key".into());
                         let mut candidates: Vec<String> = Self::SETTING_KEYS
                             .iter()
                             .filter(|k| {
@@ -905,6 +924,7 @@ impl App {
                     // only suggest the `refresh` subcommand.
                     let trimmed = arg.trim();
                     if trimmed.is_empty() || "refresh".starts_with(&trimmed.to_lowercase()) {
+                        self.completion.header = Some("provider subcommand".into());
                         self.completion.candidates = vec!["provider refresh".into()];
                     } else {
                         self.completion.candidates.clear();
