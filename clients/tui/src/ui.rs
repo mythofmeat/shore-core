@@ -1075,6 +1075,7 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let candidate_rows = (area.height as usize).saturating_sub(lines.len());
+    let row_width = area.width as usize;
     for (i, c) in app
         .completion
         .candidates
@@ -1083,17 +1084,19 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
     {
         let selected = app.completion.selected == Some(i);
-        if selected {
-            lines.push(Line::from(Span::styled(
-                format!(" ▌ {c}"),
-                Style::default().fg(Color::Black).bg(Color::Yellow),
-            )));
+        let raw = format!("   {c}");
+        let used = unicode_width::UnicodeWidthStr::width(raw.as_str());
+        let padded = if used < row_width {
+            format!("{raw}{}", " ".repeat(row_width - used))
         } else {
-            lines.push(Line::from(Span::styled(
-                format!("   {c}"),
-                Style::default().fg(Color::White),
-            )));
-        }
+            raw
+        };
+        let style = if selected {
+            Style::default().fg(Color::Black).bg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::from(Span::styled(padded, style)));
     }
 
     let paragraph = Paragraph::new(Text::from(lines));
