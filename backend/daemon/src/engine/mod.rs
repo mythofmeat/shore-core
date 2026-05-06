@@ -38,6 +38,9 @@ pub enum EngineError {
     #[error("message not found: {0}")]
     MessageNotFound(String),
 
+    #[error("{0}")]
+    InvalidAlt(String),
+
     #[error("character not found: {0}")]
     CharacterNotFound(String),
 }
@@ -206,20 +209,60 @@ impl ConversationEngine {
         Ok(removed)
     }
 
-    /// Set swipe state on a message.
-    pub fn set_swipe(&mut self, msg_id: &str, index: u32, count: u32) -> Result<(), EngineError> {
-        self.messages.set_swipe(msg_id, index, count)?;
+    /// Clone messages through the last real user turn for regeneration prompts.
+    pub fn messages_through_last_user_turn(&self) -> Vec<Message> {
+        self.messages.messages_through_last_user_turn()
+    }
+
+    /// Capture existing alternatives for the response being regenerated.
+    pub fn pending_regen_alt(&self) -> Option<messages::PendingAlt> {
+        self.messages.pending_regen_alt()
+    }
+
+    /// Replace the current response tail after a successful regeneration.
+    pub fn replace_after_last_user_turn(
+        &mut self,
+        new_messages: Vec<Message>,
+    ) -> Result<usize, EngineError> {
+        let removed = self.messages.replace_after_last_user_turn(new_messages)?;
+        debug!(
+            character = %self.character_name,
+            removed,
+            "replaced tail after last user turn"
+        );
+        self.advance_history_rewrite_generation();
+        self.advance_revision();
+        self.broadcast_history();
+        Ok(removed)
+    }
+
+    /// Set alternate-response state on a message.
+    pub fn set_alt(&mut self, msg_id: &str, index: u32, count: u32) -> Result<(), EngineError> {
+        self.messages.set_alt(msg_id, index, count)?;
         self.advance_revision();
         self.broadcast_history();
         Ok(())
     }
 
-    /// Add a swipe candidate to a message.
-    pub fn add_swipe_candidate(&mut self, msg_id: &str) -> Result<u32, EngineError> {
-        let count = self.messages.add_swipe_candidate(msg_id)?;
+    /// Add an alternate-response candidate to a message.
+    pub fn add_alt_candidate(&mut self, msg_id: &str) -> Result<u32, EngineError> {
+        let count = self.messages.add_alt_candidate(msg_id)?;
         self.advance_revision();
         self.broadcast_history();
         Ok(count)
+    }
+
+    /// Select a stored alternate response.
+    pub fn select_alt(
+        &mut self,
+        msg_id: &str,
+        index: u32,
+    ) -> Result<messages::AltSelection, EngineError> {
+        let selection = self.messages.select_alt(msg_id, index)?;
+        self.advance_history_rewrite_generation();
+        self.advance_revision();
+        self.broadcast_history();
+        Ok(selection)
     }
 
     /// Clear all messages from the active conversation and broadcast.
@@ -304,6 +347,7 @@ mod tests {
             },
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".to_string(),
         }
     }

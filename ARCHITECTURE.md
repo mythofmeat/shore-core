@@ -106,6 +106,15 @@ commands see durable state. During tool use, clients may see intermediate
 `StreamEnd(tool_use)` events; they should buffer one assistant turn across tool
 phases.
 
+Regeneration uses the same prompt assembly path, but the prompt view stops at
+the last real user turn so the model does not see the response being
+regenerated. The daemon does not rewrite `active.jsonl` until the replacement
+response has completed; then it atomically replaces the assistant/tool tail and
+stores the old and new visible assistant bodies as selectable alternate
+responses on the active assistant message. Selecting a prior alternate rewrites
+the active tail to that response and advances the history rewrite generation, so
+stateful providers do not keep remembering the discarded active response.
+
 ### Claude Code Provider
 
 Models with `sdk = "claude_code"` use the local `claude` CLI as a subprocess

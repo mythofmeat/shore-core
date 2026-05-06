@@ -424,6 +424,7 @@ fn push_message_delivers_content() {
             content_blocks: vec![],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-03-25T14:30:00Z".into(),
         },
     };

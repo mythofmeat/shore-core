@@ -77,7 +77,41 @@ pub struct Message {
     pub alt_index: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alt_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternatives: Vec<MessageAlternative>,
     pub timestamp: String,
+}
+
+/// Stored alternate body for a regenerated assistant message.
+///
+/// `Message` keeps the currently selected alternative in its top-level
+/// `content`/`content_blocks` fields so existing clients and prompt assembly
+/// keep reading the active response. `alternatives` stores every selectable
+/// candidate, including the active one.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct MessageAlternative {
+    #[serde(default)]
+    pub content: String,
+    #[serde(default)]
+    pub images: Vec<ImageRef>,
+    #[serde(default)]
+    pub content_blocks: Vec<ContentBlock>,
+    #[serde(default)]
+    pub timestamp: String,
+}
+
+impl MessageAlternative {
+    /// Ensure `content` and `content_blocks` are consistent after
+    /// deserialization, matching [`Message::normalize`].
+    pub fn normalize(&mut self) {
+        if self.content_blocks.is_empty() && !self.content.is_empty() {
+            self.content_blocks = vec![ContentBlock::Text {
+                text: self.content.clone(),
+            }];
+        } else if !self.content_blocks.is_empty() {
+            self.content = derive_content_from_blocks(&self.content_blocks);
+        }
+    }
 }
 
 impl Message {
@@ -95,6 +129,16 @@ impl Message {
         } else if !self.content_blocks.is_empty() {
             // Canonical: derive content from blocks.
             self.content = derive_content_from_blocks(&self.content_blocks);
+        }
+
+        for alt in &mut self.alternatives {
+            alt.normalize();
+        }
+        if !self.alternatives.is_empty() {
+            let count = self.alternatives.len() as u32;
+            self.alt_count = Some(count);
+            let index = self.alt_index.unwrap_or(count.saturating_sub(1));
+            self.alt_index = Some(index.min(count.saturating_sub(1)));
         }
     }
 
@@ -272,6 +316,7 @@ mod tests {
             content_blocks: blocks,
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         }
     }

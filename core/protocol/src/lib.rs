@@ -125,6 +125,7 @@ mod tests {
                 content_blocks: vec![],
                 alt_index: None,
                 alt_count: None,
+                alternatives: vec![],
                 timestamp: "2026-01-01T00:00:00Z".into(),
             }],
             config: json!({}),
@@ -292,6 +293,7 @@ mod tests {
                 content_blocks: vec![],
                 alt_index: None,
                 alt_count: None,
+                alternatives: vec![],
                 timestamp: "2026-01-01T00:00:01Z".into(),
             },
         });
@@ -371,16 +373,26 @@ mod tests {
                 data: None,
             }],
             content_blocks: vec![],
-            alt_index: Some(1),
-            alt_count: Some(3),
+            alt_index: Some(0),
+            alt_count: Some(1),
+            alternatives: vec![MessageAlternative {
+                content: "response".into(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "response".into(),
+                }],
+                timestamp: "2026-01-01T00:00:00Z".into(),
+            }],
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let (json, back) = round_trip(&msg);
-        assert_eq!(json["alt_index"], 1);
-        assert_eq!(json["alt_count"], 3);
+        assert_eq!(json["alt_index"], 0);
+        assert_eq!(json["alt_count"], 1);
+        assert_eq!(json["alternatives"][0]["content"], "response");
         assert_eq!(json["images"][0]["path"], "/img/a.png");
-        assert_eq!(back.alt_index, Some(1));
-        assert_eq!(back.alt_count, Some(3));
+        assert_eq!(back.alt_index, Some(0));
+        assert_eq!(back.alt_count, Some(1));
+        assert_eq!(back.alternatives.len(), 1);
     }
 
     #[test]
@@ -393,11 +405,13 @@ mod tests {
             content_blocks: vec![],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let json = serde_json::to_value(&msg).unwrap();
         assert!(json.get("alt_index").is_none());
         assert!(json.get("alt_count").is_none());
+        assert!(json.get("alternatives").is_none());
     }
 
     #[test]
@@ -613,6 +627,7 @@ mod tests {
             ],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let json = serde_json::to_value(&msg).unwrap();
@@ -638,6 +653,7 @@ mod tests {
             content_blocks: vec![],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let json = serde_json::to_value(&msg).unwrap();

@@ -135,6 +135,7 @@ pub async fn run_tool_loop(
             content_blocks: assistant_blocks,
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: chrono::Local::now().to_rfc3339(),
         });
 
@@ -276,6 +277,7 @@ pub async fn run_tool_loop(
             content_blocks: tool_result_blocks,
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: chrono::Local::now().to_rfc3339(),
         });
 

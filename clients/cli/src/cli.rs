@@ -64,6 +64,21 @@ pub enum CliCommand {
         guidance: Option<String>,
     },
 
+    /// List or select alternate responses for the latest assistant message
+    Alt {
+        /// Selector: list, prev, next, last, first, or 1-based alternate position
+        #[arg(allow_hyphen_values = true)]
+        selector: Option<String>,
+
+        /// Assistant message reference (defaults to latest assistant)
+        #[arg(long = "ref", allow_hyphen_values = true)]
+        msg_ref: Option<String>,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Speak a message aloud via TTS, or toggle live-speak mode (on/off)
     Speak {
         /// Message reference (last, -1, 3, etc.) or "on"/"off" for live mode
@@ -555,6 +570,30 @@ fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
     }
 }
 
+pub(crate) fn alt_command_to_swp(
+    selector: Option<&str>,
+    msg_ref: Option<&str>,
+) -> (&'static str, serde_json::Value) {
+    use serde_json::json;
+
+    let mut args = serde_json::Map::new();
+    if let Some(msg_ref) = msg_ref {
+        args.insert("ref".into(), json!(msg_ref));
+    }
+
+    match selector.unwrap_or("list") {
+        "" | "list" => ("list_alternatives", serde_json::Value::Object(args)),
+        selector => {
+            if let Ok(position) = selector.parse::<u32>() {
+                args.insert("position".into(), json!(position));
+            } else {
+                args.insert("direction".into(), json!(selector));
+            }
+            ("alt", serde_json::Value::Object(args))
+        }
+    }
+}
+
 /// Map a CLI command to its SWP command name and JSON args.
 ///
 /// Returns `None` for `Send` and `Regen` which use dedicated SWP message types
@@ -581,6 +620,10 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             message,
             ..
         } => Some(("inject_system", json!({ "text": message.join(" ") }))),
+
+        CliCommand::Alt {
+            selector, msg_ref, ..
+        } => Some(alt_command_to_swp(selector.as_deref(), msg_ref.as_deref())),
 
         // Character: list/switch/new handled locally, --info goes to daemon.
         CliCommand::Character { name, info, .. } => {
@@ -881,6 +924,42 @@ mod tests {
         }
     }
 
+    // ── Alt ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_alt_defaults_to_list() {
+        let cli = parse(&["alt"]);
+        match &cli.command {
+            CliCommand::Alt {
+                selector,
+                msg_ref,
+                json,
+            } => {
+                assert!(selector.is_none());
+                assert!(msg_ref.is_none());
+                assert!(!json);
+            }
+            other => panic!("expected Alt, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_alt_position_with_ref_and_json() {
+        let cli = parse(&["alt", "2", "--ref", "-1", "--json"]);
+        match &cli.command {
+            CliCommand::Alt {
+                selector,
+                msg_ref,
+                json,
+            } => {
+                assert_eq!(selector.as_deref(), Some("2"));
+                assert_eq!(msg_ref.as_deref(), Some("-1"));
+                assert!(*json);
+            }
+            other => panic!("expected Alt, got: {other:?}"),
+        }
+    }
+
     // ── Log ──────────────────────────────────────────────────────────
 
     #[test]
@@ -1024,6 +1103,12 @@ mod tests {
             }
             other => panic!("expected Log Delete, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn log_swipe_is_not_a_subcommand() {
+        let result = Cli::try_parse_from(["shore", "log", "swipe", "prev"]);
+        assert!(result.is_err());
     }
 
     // ── Character ────────────────────────────────────────────────────
@@ -1910,6 +1995,31 @@ mod tests {
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "delete");
         assert_eq!(args["refs"], "m1");
+    }
+
+    #[test]
+    fn alt_position_maps_to_alt_command() {
+        let cmd = CliCommand::Alt {
+            selector: Some("2".into()),
+            msg_ref: Some("last".into()),
+            json: false,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "alt");
+        assert_eq!(args["position"], 2);
+        assert_eq!(args["ref"], "last");
+    }
+
+    #[test]
+    fn alt_list_maps_to_list_alternatives_command() {
+        let cmd = CliCommand::Alt {
+            selector: Some("list".into()),
+            msg_ref: None,
+            json: false,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "list_alternatives");
+        assert!(args.as_object().unwrap().is_empty());
     }
 
     #[test]

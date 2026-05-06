@@ -16,6 +16,8 @@ For release history, read [CHANGELOG.md](CHANGELOG.md).
 
 - **One daemon, many clients.** CLI, TUI, GUI, MCP, and Matrix all talk to the
   same daemon state.
+- **Repairable replies.** Regenerating an assistant response is non-destructive:
+  old and new responses are kept as selectable alternates.
 - **Markdown memory.** Long-term memory lives under each character's
   `workspace/memory/` as ordinary git-diffable files.
 - **Cache-safe prompt edits.** Character self-edits to prompt-visible files are

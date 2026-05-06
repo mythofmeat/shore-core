@@ -161,6 +161,7 @@ pub fn merge_tool_loop_messages(messages: &[Message]) -> Vec<Message> {
             content_blocks: merged_blocks,
             alt_index: last_assistant.alt_index,
             alt_count: last_assistant.alt_count,
+            alternatives: last_assistant.alternatives.clone(),
             timestamp: last_assistant.timestamp.clone(),
         });
     }
@@ -184,6 +185,7 @@ mod tests {
             content_blocks: blocks,
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         }
     }

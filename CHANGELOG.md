@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added SillyTavern-style alternates for regenerated assistant replies: regen
+  now preserves prior alternatives, activates the newest response, and lets CLI
+  users switch with `shore alt prev`, `shore alt 2`, or `shore alt list`.
+  The TUI exposes `:alt` as a picker with instant local preview before Enter
+  persists the selected alternate.
 - Refined the TUI command picker so model and character submenus mark the
   active row consistently, scroll the selected item into view, and keep the
   active model out of the input border.

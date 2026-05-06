@@ -149,6 +149,21 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         CliCommand::Speak { arg } => {
             handle_speak(&mut conn, arg.as_deref()).await?;
         }
+        CliCommand::Alt {
+            selector,
+            msg_ref,
+            json,
+        } => {
+            let (name, args) =
+                crate::cli::alt_command_to_swp(selector.as_deref(), msg_ref.as_deref());
+            conn.send_command(name, args).await?;
+            let data = recv_command_data(&mut conn).await?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            } else {
+                output::format_command(name, &data);
+            }
+        }
         CliCommand::Character {
             name,
             info: false,

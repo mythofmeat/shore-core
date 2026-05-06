@@ -11,6 +11,7 @@ use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{debug, info, instrument, warn};
 
 use crate::autonomy::parse_cache_ttl_secs;
+use crate::engine::messages::PendingAlt;
 use crate::engine::prompt::{self, PromptParams};
 use crate::handler::generation::{run_tool_phase, thinking_enabled_from_request};
 use crate::handler::images::{embed_image_data, ingest_images};
@@ -66,10 +67,13 @@ pub(super) async fn handle_generation(
             .map_err(|e| e.to_string())?
     };
 
+    let mut regen_alt: Option<PendingAlt> = None;
     {
         let mut engine = engine_arc.lock().await;
         if regen {
-            engine.truncate_after_last_user_turn()?;
+            regen_alt = Some(engine.pending_regen_alt().unwrap_or(PendingAlt {
+                alternatives: Vec::new(),
+            }));
         } else if !body.text.is_empty() || !body.images.is_empty() || !body.image_data.is_empty() {
             let (images, mut content_blocks) =
                 ingest_images(&data_dir, &char_name, &body.images, &body.image_data);
@@ -86,6 +90,7 @@ pub(super) async fn handle_generation(
                 content_blocks,
                 alt_index: None,
                 alt_count: None,
+                alternatives: vec![],
                 timestamp: chrono::Local::now().to_rfc3339(),
             };
             engine.append_message(user_msg.clone())?;
@@ -198,10 +203,20 @@ pub(super) async fn handle_generation(
     let (messages, has_prior_context, history_rewrite_generation) = {
         let engine = engine_arc.lock().await;
         let has_prior = engine.segments().segment_count() > 0;
+        let base_history_rewrite_generation = engine.history_rewrite_generation();
+        let history_rewrite_generation = if regen {
+            base_history_rewrite_generation.saturating_add(1)
+        } else {
+            base_history_rewrite_generation
+        };
         (
-            engine.messages().to_vec(),
+            if regen {
+                engine.messages_through_last_user_turn()
+            } else {
+                engine.messages().to_vec()
+            },
             has_prior,
-            engine.history_rewrite_generation(),
+            history_rewrite_generation,
         )
     };
 
@@ -384,6 +399,7 @@ pub(super) async fn handle_generation(
         tool_intermediate_messages,
         wall_clock_start,
         effective_config.app.memory.thinking.preserve_prior_turns,
+        regen_alt,
     )
     .await?;
 

@@ -530,6 +530,7 @@ mod tests {
             content_blocks: vec![],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".to_string(),
         }
     }
@@ -704,6 +705,7 @@ mod tests {
             }],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         assert_eq!(estimate_message_tokens(&msg), 0);
@@ -735,6 +737,7 @@ mod tests {
             ],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let tokens = estimate_message_tokens(&msg);
@@ -762,6 +765,7 @@ mod tests {
             ],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let tokens = estimate_message_tokens(&msg);
@@ -789,6 +793,7 @@ mod tests {
             }],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         assert!(estimate_message_tokens(&msg) > 0);
@@ -808,6 +813,7 @@ mod tests {
             }],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         assert_eq!(estimate_message_tokens(&msg), 5);
@@ -828,6 +834,7 @@ mod tests {
             }],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let recent_msg = make_msg(Role::User, "Recent");
@@ -900,6 +907,7 @@ mod tests {
             }],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: timestamp.to_string(),
         }
     }
@@ -1363,6 +1371,7 @@ mod tests {
             }],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         }
     }
@@ -1380,6 +1389,7 @@ mod tests {
             }],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
         }
     }

@@ -24,7 +24,7 @@ use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{info, instrument};
 use tracing_subscriber::EnvFilter;
 
-use app::{App, ConnectionStatus, ConversationEntry, InputState, StreamBlock};
+use app::{AltChoice, App, ConnectionStatus, ConversationEntry, InputState, StreamBlock};
 use connection::{ConnCommand, ConnEvent};
 use input::Action;
 
@@ -1187,6 +1187,64 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                         app.set_status(format!("deleted {count} message(s)"));
                     }
                 }
+                "list_alternatives" => {
+                    let msg_id = co
+                        .data
+                        .get("ref")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string);
+                    let choices = co
+                        .data
+                        .get("alternatives")
+                        .and_then(|v| v.as_array())
+                        .map(|items| {
+                            items
+                                .iter()
+                                .map(|item| AltChoice {
+                                    index: item.get("index").and_then(|v| v.as_u64()).unwrap_or(0)
+                                        as u32,
+                                    position: item
+                                        .get("position")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0)
+                                        as u32,
+                                    active: item
+                                        .get("active")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false),
+                                    content: item
+                                        .get("content")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    images: item
+                                        .get("images")
+                                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                                        .unwrap_or_default(),
+                                    timestamp: item
+                                        .get("timestamp")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    app.populate_alt_picker(msg_id, choices);
+                }
+                "alt" => {
+                    let position = co
+                        .data
+                        .get("position")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let count = co
+                        .data
+                        .get("alt_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    app.set_status(format!("alt {position}/{count}"));
+                }
                 "compact" => {
                     let status = co
                         .data
@@ -1203,6 +1261,9 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
         }
 
         ServerMessage::Error(err) => {
+            if app.alt_picker.is_some() {
+                app.cancel_alt_picker();
+            }
             app.set_status(format!("error: {:?} - {}", err.code, err.message));
             RedrawEffect::Immediate
         }

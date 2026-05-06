@@ -12,6 +12,8 @@ use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, R
 use tokio::sync::Mutex;
 use tracing::{info, instrument};
 
+use crate::engine::messages::{MessageStore, PendingAlt};
+
 use super::GenContext;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,13 +35,10 @@ pub(super) async fn persist_and_notify(
     tool_intermediate_messages: Vec<Message>,
     wall_clock_start: Instant,
     preserve_prior_turn_thinking: bool,
+    regen_alt: Option<PendingAlt>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let notify_content = {
         let mut engine = engine_arc.lock().await;
-
-        for msg in tool_intermediate_messages {
-            engine.append_message(msg)?;
-        }
 
         // Track cumulative token usage.
         {
@@ -112,19 +111,15 @@ pub(super) async fn persist_and_notify(
             ctx.autonomy.notify_last_request(char_name, full_request);
         }
         let notify_content = notify_content_from_response_messages(&response_messages);
-        for response_msg in response_messages {
-            let content = derive_content_from_blocks(&response_msg.content_blocks);
-            let msg = Message {
-                msg_id: format!("m_{}", uuid::Uuid::new_v4()),
-                role: response_msg.role,
-                content,
-                images: vec![],
-                content_blocks: response_msg.content_blocks,
-                alt_index: None,
-                alt_count: None,
-                timestamp: chrono::Local::now().to_rfc3339(),
-            };
-            engine.append_message(msg)?;
+        let mut generated_messages = tool_intermediate_messages;
+        generated_messages.extend(response_messages.into_iter().map(message_from_response));
+        if let Some(pending) = regen_alt {
+            MessageStore::attach_generated_alt(&mut generated_messages, pending.alternatives);
+            engine.replace_after_last_user_turn(generated_messages)?;
+        } else {
+            for msg in generated_messages {
+                engine.append_message(msg)?;
+            }
         }
         ctx.autonomy
             .notify_assistant_message(char_name, engine.turn_count());
@@ -139,6 +134,21 @@ pub(super) async fn persist_and_notify(
     );
 
     Ok(())
+}
+
+fn message_from_response(response_msg: CompletedResponseMessage) -> Message {
+    let content = derive_content_from_blocks(&response_msg.content_blocks);
+    Message {
+        msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+        role: response_msg.role,
+        content,
+        images: vec![],
+        content_blocks: response_msg.content_blocks,
+        alt_index: None,
+        alt_count: None,
+        alternatives: vec![],
+        timestamp: chrono::Local::now().to_rfc3339(),
+    }
 }
 
 fn completed_response_messages(

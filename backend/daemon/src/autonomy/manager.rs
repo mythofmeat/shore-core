@@ -1805,6 +1805,7 @@ async fn execute_heartbeat_tick(
             content_blocks,
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: chrono::Local::now().to_rfc3339(),
         };
 
@@ -2101,6 +2102,7 @@ mod tests {
             }],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: chrono::Local::now().to_rfc3339(),
         }
     }
@@ -2827,6 +2829,7 @@ mod tests {
                 ],
                 alt_index: None,
                 alt_count: None,
+                alternatives: vec![],
                 timestamp: chrono::Local::now().to_rfc3339(),
             })
             .unwrap();

@@ -1,9 +1,26 @@
 use std::path::{Path, PathBuf};
 
-use shore_protocol::types::Message;
+use shore_protocol::types::{
+    derive_content_from_blocks_with, ContentBlock, Message, MessageAlternative, Role,
+};
 use tracing::info;
 
 use super::EngineError;
+
+/// Alternatives captured before a regeneration replaces the active response.
+#[derive(Debug, Clone)]
+pub struct PendingAlt {
+    pub alternatives: Vec<MessageAlternative>,
+}
+
+/// Result of selecting a stored alternate response.
+#[derive(Debug, Clone)]
+pub struct AltSelection {
+    pub msg_id: String,
+    pub alt_index: u32,
+    pub alt_count: u32,
+    pub content: String,
+}
 
 /// In-memory message store backed by a JSONL file on disk.
 ///
@@ -97,6 +114,15 @@ impl MessageStore {
         self.persist()
     }
 
+    /// Clone conversation messages through the last real user turn.
+    ///
+    /// Regeneration prompts use this view so the provider does not see the
+    /// assistant response currently being regenerated.
+    pub fn messages_through_last_user_turn(&self) -> Vec<Message> {
+        let keep = self.last_real_user_turn_keep_index();
+        self.messages[..keep].to_vec()
+    }
+
     /// The file path this store persists to.
     pub fn path(&self) -> &Path {
         &self.path
@@ -169,25 +195,35 @@ impl MessageStore {
     /// tool-result messages that followed the last genuine user input.
     /// Returns the number of messages removed.
     pub fn truncate_after_last_user_turn(&mut self) -> Result<usize, EngineError> {
-        use shore_protocol::types::{ContentBlock, Role};
-        let keep = self
-            .messages
-            .iter()
-            .rposition(|m| {
-                m.role == Role::User
-                    && (m.content_blocks.is_empty()
-                        || !m
-                            .content_blocks
-                            .iter()
-                            .all(|b| matches!(b, ContentBlock::ToolResult { .. })))
-            })
-            .map_or(0, |i| i + 1);
+        let keep = self.last_real_user_turn_keep_index();
         let removed = self.messages.len() - keep;
         if removed > 0 {
             info!(removed, "Truncating messages after last user turn");
             self.messages.truncate(keep);
             self.persist()?;
         }
+        Ok(removed)
+    }
+
+    /// Replace every message after the last real user turn with `new_messages`.
+    ///
+    /// Used after a successful regeneration: old assistant/tool output becomes
+    /// stored alternate responses, while the active conversation tail is
+    /// atomically replaced by the newly generated raw response messages.
+    pub fn replace_after_last_user_turn(
+        &mut self,
+        new_messages: Vec<Message>,
+    ) -> Result<usize, EngineError> {
+        let keep = self.last_real_user_turn_keep_index();
+        let removed = self.messages.len() - keep;
+        info!(
+            removed,
+            added = new_messages.len(),
+            "Replacing messages after last user turn"
+        );
+        self.messages.truncate(keep);
+        self.messages.extend(new_messages);
+        self.persist()?;
         Ok(removed)
     }
 
@@ -203,27 +239,22 @@ impl MessageStore {
         self.persist()
     }
 
-    /// Set the active swipe alternative for a message.
+    /// Set the active alternate response for a message.
     /// Updates `alt_index` to `index` and ensures `alt_count >= index + 1`.
-    pub fn set_swipe(&mut self, msg_id: &str, index: u32, count: u32) -> Result<(), EngineError> {
+    pub fn set_alt(&mut self, msg_id: &str, index: u32, count: u32) -> Result<(), EngineError> {
         let msg = self
             .messages
             .iter_mut()
             .find(|m| m.msg_id == msg_id)
             .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_string()))?;
-        info!(
-            msg_id,
-            alt_index = index,
-            alt_count = count,
-            "Setting swipe"
-        );
+        info!(msg_id, alt_index = index, alt_count = count, "Setting alt");
         msg.alt_index = Some(index);
         msg.alt_count = Some(count);
         self.persist()
     }
 
-    /// Increment the swipe alt_count for a message and return the new count.
-    pub fn add_swipe_candidate(&mut self, msg_id: &str) -> Result<u32, EngineError> {
+    /// Increment the alt_count for a message and return the new count.
+    pub fn add_alt_candidate(&mut self, msg_id: &str) -> Result<u32, EngineError> {
         let msg = self
             .messages
             .iter_mut()
@@ -233,9 +264,114 @@ impl MessageStore {
         msg.alt_count = Some(new_count);
         // Point to the newest candidate.
         msg.alt_index = Some(new_count - 1);
-        info!(msg_id, alt_count = new_count, "Added swipe candidate");
+        info!(msg_id, alt_count = new_count, "Added alt candidate");
         self.persist()?;
         Ok(new_count)
+    }
+
+    /// Capture the selectable alternatives for the assistant response that a
+    /// regeneration is about to replace.
+    pub fn pending_regen_alt(&self) -> Option<PendingAlt> {
+        let keep = self.last_real_user_turn_keep_index();
+        let tail = &self.messages[keep..];
+        let merged = shore_protocol::merge::merge_tool_loop_messages(tail);
+        let active = merged.iter().rev().find(|m| m.role == Role::Assistant)?;
+
+        let mut alternatives = active.alternatives.clone();
+        let current = alternative_from_message(active);
+        if alternatives.is_empty() {
+            alternatives.push(current);
+        } else {
+            let idx = active
+                .alt_index
+                .unwrap_or_else(|| alternatives.len().saturating_sub(1) as u32)
+                .min(alternatives.len().saturating_sub(1) as u32) as usize;
+            alternatives[idx] = current;
+        }
+
+        Some(PendingAlt { alternatives })
+    }
+
+    /// Attach `prior` plus the active generated response as alternatives on
+    /// the last assistant message in `messages`.
+    pub fn attach_generated_alt(
+        messages: &mut [Message],
+        mut prior: Vec<MessageAlternative>,
+    ) -> Option<(u32, u32)> {
+        let merged = shore_protocol::merge::merge_tool_loop_messages(messages);
+        let active = merged.iter().rev().find(|m| m.role == Role::Assistant)?;
+        let active_msg_id = active.msg_id.clone();
+        let new_alt = alternative_from_message(active);
+        let alt_index = prior.len() as u32;
+        prior.push(new_alt);
+        let alt_count = prior.len() as u32;
+
+        let target = messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.role == Role::Assistant && m.msg_id == active_msg_id)?;
+        target.alt_index = Some(alt_index);
+        target.alt_count = Some(alt_count);
+        target.alternatives = prior;
+        Some((alt_index, alt_count))
+    }
+
+    /// Select a stored alternate response on a message.
+    pub fn select_alt(&mut self, msg_id: &str, index: u32) -> Result<AltSelection, EngineError> {
+        let merged = shore_protocol::merge::merge_tool_loop_messages(&self.messages);
+        let target = merged
+            .iter()
+            .find(|m| m.msg_id == msg_id)
+            .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_string()))?;
+        let alt_count = target.alternatives.len() as u32;
+        if alt_count == 0 {
+            return Err(EngineError::InvalidAlt(format!(
+                "message {msg_id} has no alternate responses"
+            )));
+        }
+        if index >= alt_count {
+            return Err(EngineError::InvalidAlt(format!(
+                "alternate index {} out of range (message has {} alternate response(s))",
+                index + 1,
+                alt_count
+            )));
+        }
+
+        let current_index = target.alt_index.unwrap_or(0);
+        if current_index == index {
+            return Ok(AltSelection {
+                msg_id: target.msg_id.clone(),
+                alt_index: index,
+                alt_count,
+                content: target.content.clone(),
+            });
+        }
+
+        let selected = message_from_alternative(target, index);
+        let keep = self.last_real_user_turn_keep_index();
+        let tail_merged = shore_protocol::merge::merge_tool_loop_messages(&self.messages[keep..]);
+        let is_current_tail = tail_merged
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+            .is_some_and(|m| m.msg_id == msg_id);
+
+        if is_current_tail {
+            self.messages.truncate(keep);
+            self.messages.push(selected.clone());
+        } else if let Some(raw) = self.messages.iter_mut().find(|m| m.msg_id == msg_id) {
+            *raw = selected.clone();
+        } else {
+            return Err(EngineError::MessageNotFound(msg_id.to_string()));
+        }
+
+        self.persist()?;
+        Ok(AltSelection {
+            msg_id: selected.msg_id,
+            alt_index: index,
+            alt_count,
+            content: selected.content,
+        })
     }
 
     /// Write all messages to the JSONL file (full rewrite).
@@ -256,6 +392,70 @@ impl MessageStore {
         super::atomic::atomic_write(&self.path, buf.as_bytes())?;
         Ok(())
     }
+
+    fn last_real_user_turn_keep_index(&self) -> usize {
+        self.messages
+            .iter()
+            .rposition(is_real_user_turn)
+            .map_or(0, |i| i + 1)
+    }
+}
+
+fn is_real_user_turn(m: &Message) -> bool {
+    m.role == Role::User
+        && (m.content_blocks.is_empty()
+            || !m
+                .content_blocks
+                .iter()
+                .all(|b| matches!(b, ContentBlock::ToolResult { .. })))
+}
+
+fn alternative_from_message(msg: &Message) -> MessageAlternative {
+    let mut content_blocks: Vec<ContentBlock> = msg
+        .content_blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } if !text.trim().is_empty() => {
+                Some(ContentBlock::Text { text: text.clone() })
+            }
+            _ => None,
+        })
+        .collect();
+    let mut content = derive_content_from_blocks_with(&content_blocks, false);
+    if content.is_empty() && !msg.content.trim().is_empty() {
+        content = msg.content.clone();
+        content_blocks = vec![ContentBlock::Text {
+            text: msg.content.clone(),
+        }];
+    }
+
+    MessageAlternative {
+        content,
+        images: msg.images.clone(),
+        content_blocks,
+        timestamp: msg.timestamp.clone(),
+    }
+}
+
+fn message_from_alternative(template: &Message, index: u32) -> Message {
+    let alt = template.alternatives[index as usize].clone();
+    let mut msg = Message {
+        msg_id: template.msg_id.clone(),
+        role: Role::Assistant,
+        content: alt.content,
+        images: alt.images,
+        content_blocks: alt.content_blocks,
+        alt_index: Some(index),
+        alt_count: Some(template.alternatives.len() as u32),
+        alternatives: template.alternatives.clone(),
+        timestamp: if alt.timestamp.is_empty() {
+            template.timestamp.clone()
+        } else {
+            alt.timestamp
+        },
+    };
+    msg.normalize();
+    msg
 }
 
 #[cfg(test)]
@@ -280,6 +480,7 @@ mod tests {
             },
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".to_string(),
         }
     }
@@ -368,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn swipe_candidate_management() {
+    fn alt_candidate_management() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("conv.jsonl");
         let mut store = MessageStore::new(path.clone());
@@ -377,25 +578,70 @@ mod tests {
             .append(make_msg("m1", Role::Assistant, "Response A"))
             .unwrap();
 
-        // Set initial swipe state.
-        store.set_swipe("m1", 0, 1).unwrap();
+        // Set initial alternate state.
+        store.set_alt("m1", 0, 1).unwrap();
         assert_eq!(store.messages()[0].alt_index, Some(0));
         assert_eq!(store.messages()[0].alt_count, Some(1));
 
-        // Add a swipe candidate.
-        let count = store.add_swipe_candidate("m1").unwrap();
+        // Add an alternate candidate.
+        let count = store.add_alt_candidate("m1").unwrap();
         assert_eq!(count, 2);
         assert_eq!(store.messages()[0].alt_index, Some(1));
         assert_eq!(store.messages()[0].alt_count, Some(2));
 
         // Switch back to first.
-        store.set_swipe("m1", 0, 2).unwrap();
+        store.set_alt("m1", 0, 2).unwrap();
         assert_eq!(store.messages()[0].alt_index, Some(0));
 
         // Persisted.
         let reloaded = MessageStore::load(path).unwrap();
         assert_eq!(reloaded.messages()[0].alt_index, Some(0));
         assert_eq!(reloaded.messages()[0].alt_count, Some(2));
+    }
+
+    #[test]
+    fn regen_alts_preserve_and_select_prior_alternatives() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+        let mut store = MessageStore::new(path.clone());
+
+        store.append(make_msg("u1", Role::User, "Prompt")).unwrap();
+        store
+            .append(make_msg("a1", Role::Assistant, "First answer"))
+            .unwrap();
+
+        let prompt_messages = store.messages_through_last_user_turn();
+        assert_eq!(prompt_messages.len(), 1);
+        assert_eq!(prompt_messages[0].msg_id, "u1");
+
+        let pending = store.pending_regen_alt().unwrap();
+        assert_eq!(pending.alternatives.len(), 1);
+        assert_eq!(pending.alternatives[0].content, "First answer");
+
+        let mut regenerated = vec![make_msg("a2", Role::Assistant, "Second answer")];
+        let (alt_index, alt_count) =
+            MessageStore::attach_generated_alt(&mut regenerated, pending.alternatives).unwrap();
+        assert_eq!((alt_index, alt_count), (1, 2));
+
+        store.replace_after_last_user_turn(regenerated).unwrap();
+        let active = &store.messages()[1];
+        assert_eq!(active.msg_id, "a2");
+        assert_eq!(active.content, "Second answer");
+        assert_eq!(active.alt_index, Some(1));
+        assert_eq!(active.alt_count, Some(2));
+        assert_eq!(active.alternatives[0].content, "First answer");
+        assert_eq!(active.alternatives[1].content, "Second answer");
+
+        let selected = store.select_alt("a2", 0).unwrap();
+        assert_eq!(selected.content, "First answer");
+        assert_eq!(store.messages().len(), 2);
+        assert_eq!(store.messages()[1].content, "First answer");
+        assert_eq!(store.messages()[1].alt_index, Some(0));
+
+        let reloaded = MessageStore::load(path).unwrap();
+        assert_eq!(reloaded.messages()[1].content, "First answer");
+        assert_eq!(reloaded.messages()[1].alternatives.len(), 2);
+        assert_eq!(reloaded.messages()[1].alt_index, Some(0));
     }
 
     #[test]
@@ -528,6 +774,7 @@ mod tests {
             }],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".to_string(),
         };
         tool_msg.content = "5 results found".to_string();

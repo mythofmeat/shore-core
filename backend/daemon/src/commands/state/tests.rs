@@ -106,6 +106,7 @@ fn make_msg(id: &str, role: Role, content: &str) -> Message {
         content_blocks: vec![],
         alt_index: None,
         alt_count: None,
+        alternatives: vec![],
         timestamp: "2026-01-01T00:00:00Z".to_string(),
     }
 }

@@ -97,6 +97,26 @@ pub enum ConversationEntry {
     },
 }
 
+#[derive(Clone, Debug)]
+pub struct AltChoice {
+    pub index: u32,
+    pub position: u32,
+    pub active: bool,
+    pub content: String,
+    pub images: Vec<ImageRef>,
+    pub timestamp: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AltPickerState {
+    pub target_ref: Option<String>,
+    pub msg_id: Option<String>,
+    pub choices: Vec<AltChoice>,
+    pub selected: usize,
+    pub original_entries: Vec<ConversationEntry>,
+    pub loading: bool,
+}
+
 /// A segment of streaming content, preserving interleaving order.
 #[derive(Clone, Debug)]
 pub enum StreamBlock {
@@ -478,6 +498,7 @@ pub struct App {
     pub stream: StreamState,
     pub input: InputState,
     pub completion: CompletionState,
+    pub alt_picker: Option<AltPickerState>,
     pub scroll_offset: u16,
     pub connection_status: ConnectionStatus,
     pub character_name: String,
@@ -532,6 +553,7 @@ impl Default for App {
             stream: StreamState::default(),
             input: InputState::default(),
             completion: CompletionState::default(),
+            alt_picker: None,
             scroll_offset: 0,
             connection_status: ConnectionStatus::Disconnected,
             character_name: String::new(),
@@ -684,24 +706,15 @@ impl App {
     /// appear immediately. Mirrors what StreamStart does on receipt, so it is
     /// idempotent when the real StreamStart lands.
     //
-    // Truncate everything *after* the last User entry — not from the last
-    // Assistant entry. When the user deletes the last assistant and then
-    // regenerates, there is a trailing User entry with no Assistant after it;
-    // a last-Assistant truncation would wipe that user message. Keeping up to
-    // and including the last User correctly scrubs prior assistant/tool/
-    // thinking output regardless of whether a trailing assistant exists.
+    // Keep the previous assistant visible while the replacement streams.
+    // The daemon now makes regeneration non-destructive by storing the old
+    // reply as an alternate response; the History refresh after persistence
+    // swaps the active visible response.
     pub fn begin_regen_optimistic(&mut self) {
         self.stream.reset();
         self.stream.active = true;
         self.stream.regen = true;
         self.spinner_frame = 0;
-        if let Some(pos) = self
-            .entries
-            .iter()
-            .rposition(|e| matches!(e, ConversationEntry::User { .. }))
-        {
-            self.entries.truncate(pos + 1);
-        }
         self.scroll_to_bottom();
     }
 
@@ -806,6 +819,151 @@ impl App {
             .retain(|e| !matches!(e, ConversationEntry::System { .. }));
     }
 
+    pub fn start_alt_picker(&mut self, target_ref: Option<String>) {
+        if self.alt_picker.is_some() {
+            self.cancel_alt_picker();
+        }
+        self.alt_picker = Some(AltPickerState {
+            target_ref,
+            msg_id: None,
+            choices: Vec::new(),
+            selected: 0,
+            original_entries: self.entries.clone(),
+            loading: true,
+        });
+    }
+
+    pub fn populate_alt_picker(&mut self, msg_id: Option<String>, choices: Vec<AltChoice>) {
+        if choices.is_empty() {
+            if let Some(picker) = self.alt_picker.take() {
+                self.entries = picker.original_entries;
+                self.history_version = self.history_version.wrapping_add(1);
+            }
+            self.set_status("no alternate responses");
+            return;
+        }
+
+        if self.alt_picker.is_none() {
+            self.alt_picker = Some(AltPickerState {
+                target_ref: msg_id.clone(),
+                msg_id: msg_id.clone(),
+                choices: Vec::new(),
+                selected: 0,
+                original_entries: self.entries.clone(),
+                loading: false,
+            });
+        }
+
+        if let Some(picker) = self.alt_picker.as_mut() {
+            picker.msg_id = msg_id;
+            picker.selected = choices.iter().position(|alt| alt.active).unwrap_or(0);
+            picker.choices = choices;
+            picker.loading = false;
+        }
+        self.preview_alt_selection();
+    }
+
+    pub fn next_alt(&mut self) {
+        let Some(picker) = self.alt_picker.as_mut() else {
+            return;
+        };
+        if picker.loading || picker.choices.is_empty() {
+            return;
+        }
+        picker.selected = (picker.selected + 1) % picker.choices.len();
+        self.preview_alt_selection();
+    }
+
+    pub fn prev_alt(&mut self) {
+        let Some(picker) = self.alt_picker.as_mut() else {
+            return;
+        };
+        if picker.loading || picker.choices.is_empty() {
+            return;
+        }
+        picker.selected = match picker.selected {
+            0 => picker.choices.len() - 1,
+            n => n - 1,
+        };
+        self.preview_alt_selection();
+    }
+
+    pub fn cancel_alt_picker(&mut self) {
+        if let Some(picker) = self.alt_picker.take() {
+            self.entries = picker.original_entries;
+            self.history_version = self.history_version.wrapping_add(1);
+        }
+    }
+
+    pub fn selected_alt_command_args(&self) -> Option<serde_json::Value> {
+        let picker = self.alt_picker.as_ref()?;
+        if picker.loading {
+            return None;
+        }
+        let choice = picker.choices.get(picker.selected)?;
+        let mut args = serde_json::Map::new();
+        args.insert("index".into(), serde_json::json!(choice.index));
+        if let Some(msg_id) = picker.msg_id.as_deref().or(picker.target_ref.as_deref()) {
+            args.insert("ref".into(), serde_json::json!(msg_id));
+        }
+        Some(serde_json::Value::Object(args))
+    }
+
+    pub fn close_alt_picker_after_confirm(&mut self) {
+        self.alt_picker = None;
+    }
+
+    fn preview_alt_selection(&mut self) {
+        let Some(picker) = self.alt_picker.as_ref() else {
+            return;
+        };
+        if picker.loading {
+            return;
+        }
+        let Some(choice) = picker.choices.get(picker.selected).cloned() else {
+            return;
+        };
+        let msg_id = picker.msg_id.clone();
+        let original_entries = picker.original_entries.clone();
+
+        self.entries = original_entries;
+        let target_idx = msg_id
+            .as_deref()
+            .and_then(|target| {
+                self.entries.iter().position(|entry| {
+                    matches!(
+                        entry,
+                        ConversationEntry::Assistant {
+                            msg_id: Some(id),
+                            ..
+                        } if id == target
+                    )
+                })
+            })
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .rposition(|entry| matches!(entry, ConversationEntry::Assistant { .. }))
+            });
+
+        if let Some(idx) = target_idx {
+            if let ConversationEntry::Assistant {
+                content,
+                images,
+                timestamp,
+                metadata,
+                ..
+            } = &mut self.entries[idx]
+            {
+                *content = choice.content;
+                *images = choice.images;
+                *timestamp = choice.timestamp;
+                *metadata = None;
+                self.history_version = self.history_version.wrapping_add(1);
+            }
+        }
+    }
+
     /// Canonical parent name for commands whose arguments are picked
     /// via a submenu rather than typed inline.
     pub fn canonical_submenu_parent(name: &str) -> Option<&'static str> {
@@ -869,6 +1027,7 @@ impl App {
         ("setting", "View or change sampler settings"),
         ("speak", "Toggle TTS or replay the last message"),
         ("status", "Show connection and session status"),
+        ("alt", "Choose an alternate response"),
         ("sys", "Inject a system instruction"),
     ];
 
@@ -1295,5 +1454,72 @@ mod tests {
             app.entries[1],
             ConversationEntry::Assistant { .. }
         ));
+    }
+
+    #[test]
+    fn alt_picker_previews_and_cancels() {
+        let mut app = App::default();
+        app.entries.push(ConversationEntry::Assistant {
+            msg_id: Some("a1".into()),
+            content: "first".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+            metadata: None,
+        });
+
+        app.start_alt_picker(None);
+        app.populate_alt_picker(
+            Some("a1".into()),
+            vec![
+                AltChoice {
+                    index: 0,
+                    position: 1,
+                    active: true,
+                    content: "first".into(),
+                    images: vec![],
+                    timestamp: "t1".into(),
+                },
+                AltChoice {
+                    index: 1,
+                    position: 2,
+                    active: false,
+                    content: "second".into(),
+                    images: vec![],
+                    timestamp: "t2".into(),
+                },
+            ],
+        );
+        app.next_alt();
+        assert!(matches!(
+            &app.entries[0],
+            ConversationEntry::Assistant { content, .. } if content == "second"
+        ));
+
+        app.cancel_alt_picker();
+        assert!(matches!(
+            &app.entries[0],
+            ConversationEntry::Assistant { content, .. } if content == "first"
+        ));
+    }
+
+    #[test]
+    fn alt_picker_command_uses_selected_index() {
+        let mut app = App::default();
+        app.start_alt_picker(Some("last".into()));
+        app.populate_alt_picker(
+            Some("a1".into()),
+            vec![AltChoice {
+                index: 3,
+                position: 4,
+                active: false,
+                content: "fourth".into(),
+                images: vec![],
+                timestamp: "t4".into(),
+            }],
+        );
+
+        let args = app.selected_alt_command_args().unwrap();
+        assert_eq!(args["index"], 3);
+        assert_eq!(args["ref"], "a1");
     }
 }

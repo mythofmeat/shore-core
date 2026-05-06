@@ -52,6 +52,39 @@ fn resolve_ref(messages: &[Message], reference: &str) -> Result<String, (ErrorCo
     Ok(reference.to_string())
 }
 
+fn resolve_assistant_ref(
+    messages: &[Message],
+    reference: Option<&str>,
+) -> Result<String, (ErrorCode, String)> {
+    match reference {
+        None | Some("last") | Some("latest") => messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+            .map(|m| m.msg_id.clone())
+            .ok_or_else(|| {
+                (
+                    ErrorCode::NotFound,
+                    "No assistant messages in conversation".into(),
+                )
+            }),
+        Some(reference) => {
+            let msg_id = resolve_ref(messages, reference)?;
+            let msg = messages
+                .iter()
+                .find(|m| m.msg_id == msg_id)
+                .ok_or_else(|| (ErrorCode::NotFound, format!("Message not found: {msg_id}")))?;
+            if msg.role != Role::Assistant {
+                return Err((
+                    ErrorCode::InvalidRequest,
+                    "Alternate response selection only applies to assistant messages".into(),
+                ));
+            }
+            Ok(msg_id)
+        }
+    }
+}
+
 /// Get a single message by index or reference.
 ///
 /// Refs resolve against the merged (client-visible) message list.
@@ -185,6 +218,146 @@ pub fn delete(
     Ok(json!({ "deleted": deleted }))
 }
 
+/// List stored alternate responses for an assistant message.
+///
+/// Args:
+/// - `ref` (optional): message ref, defaulting to the latest assistant message.
+pub fn list_alternatives(
+    engine: &ConversationEngine,
+    _ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
+    let raw_ref = args.get("ref").and_then(|v| v.as_str());
+    let msg_id = resolve_assistant_ref(&merged, raw_ref)?;
+    let msg = merged
+        .iter()
+        .find(|m| m.msg_id == msg_id)
+        .ok_or_else(|| (ErrorCode::NotFound, format!("Message not found: {msg_id}")))?;
+
+    let alt_count = msg.alternatives.len() as u32;
+    let current = msg.alt_index.unwrap_or(0).min(alt_count.saturating_sub(1));
+    let alternatives: Vec<serde_json::Value> = msg
+        .alternatives
+        .iter()
+        .enumerate()
+        .map(|(index, alt)| {
+            let mut images = alt.images.clone();
+            crate::handler::embed_image_data(&mut images);
+            json!({
+                "index": index as u32,
+                "position": index as u32 + 1,
+                "active": index as u32 == current,
+                "content": alt.content.clone(),
+                "images": images,
+                "timestamp": alt.timestamp.clone(),
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "ref": msg_id,
+        "alt_index": msg.alt_index,
+        "position": msg.alt_index.map(|i| i + 1),
+        "alt_count": alt_count,
+        "alternatives": alternatives,
+    }))
+}
+
+/// Select a stored alternate response on an assistant message.
+///
+/// Args:
+/// - `ref` (optional): message ref, defaulting to the latest assistant message.
+/// - `direction`: `prev`, `next`, `first`, or `last`.
+/// - `position`: 1-based alternative position.
+/// - `index`: 0-based alternative index for programmatic callers.
+pub fn alt(
+    engine: &mut ConversationEngine,
+    _ctx: &mut CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
+    let raw_ref = args.get("ref").and_then(|v| v.as_str());
+    let msg_id = resolve_assistant_ref(&merged, raw_ref)?;
+    let msg = merged
+        .iter()
+        .find(|m| m.msg_id == msg_id)
+        .ok_or_else(|| (ErrorCode::NotFound, format!("Message not found: {msg_id}")))?;
+
+    let alt_count = msg.alternatives.len() as u32;
+    if alt_count == 0 {
+        return Err((
+            ErrorCode::InvalidRequest,
+            format!("message {msg_id} has no alternate responses"),
+        ));
+    }
+    let current = msg.alt_index.unwrap_or(0).min(alt_count.saturating_sub(1));
+    let target = resolve_alt_target(args, current, alt_count)?;
+
+    let selection = engine.select_alt(&msg_id, target).map_err(engine_err)?;
+    debug!(
+        msg_id = %selection.msg_id,
+        alt_index = selection.alt_index,
+        alt_count = selection.alt_count,
+        "Alternate response selected"
+    );
+    Ok(json!({
+        "ref": selection.msg_id,
+        "alt_index": selection.alt_index,
+        "position": selection.alt_index + 1,
+        "alt_count": selection.alt_count,
+        "content": selection.content,
+    }))
+}
+
+fn resolve_alt_target(
+    args: &serde_json::Value,
+    current: u32,
+    count: u32,
+) -> Result<u32, (ErrorCode, String)> {
+    if let Some(index) = args.get("index").and_then(|v| v.as_u64()) {
+        let index = index as u32;
+        if index >= count {
+            return Err((
+                ErrorCode::InvalidRequest,
+                format!(
+                    "alternate index {} out of range (message has {} alternate response(s))",
+                    index + 1,
+                    count
+                ),
+            ));
+        }
+        return Ok(index);
+    }
+
+    if let Some(position) = args.get("position").and_then(|v| v.as_u64()) {
+        if position == 0 || position > count as u64 {
+            return Err((
+                ErrorCode::InvalidRequest,
+                format!(
+                    "alternate position {position} out of range (message has {count} alternate response(s))"
+                ),
+            ));
+        }
+        return Ok(position as u32 - 1);
+    }
+
+    match args
+        .get("direction")
+        .and_then(|v| v.as_str())
+        .unwrap_or("next")
+    {
+        "prev" | "previous" => Ok(current.saturating_sub(1)),
+        "next" => Ok((current + 1).min(count.saturating_sub(1))),
+        "first" => Ok(0),
+        "last" => Ok(count.saturating_sub(1)),
+        other => Err((
+            ErrorCode::InvalidRequest,
+            format!("unknown alt direction: {other}"),
+        )),
+    }
+}
+
 /// Inject a system-role instruction into the conversation.
 ///
 /// This allows mid-conversation behavioral correction (e.g. "stop using
@@ -212,6 +385,7 @@ pub fn inject_system(
         }],
         alt_index: None,
         alt_count: None,
+        alternatives: vec![],
         timestamp: chrono::Local::now().to_rfc3339(),
     };
 
@@ -292,6 +466,7 @@ mod tests {
             content_blocks: vec![],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".to_string(),
         }
     }
@@ -488,6 +663,87 @@ mod tests {
 
         let msg = rx.try_recv().unwrap();
         assert!(matches!(msg, ServerMessage::History(_)));
+    }
+
+    #[test]
+    fn alt_selects_previous_alternative() {
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
+
+        engine
+            .append_message(make_msg("u1", Role::User, "Prompt"))
+            .unwrap();
+        let mut msg = make_msg("a2", Role::Assistant, "Second answer");
+        msg.content_blocks = vec![ContentBlock::Text {
+            text: "Second answer".into(),
+        }];
+        msg.alt_index = Some(1);
+        msg.alt_count = Some(2);
+        msg.alternatives = vec![
+            shore_protocol::types::MessageAlternative {
+                content: "First answer".into(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "First answer".into(),
+                }],
+                timestamp: "2026-01-01T00:00:00Z".into(),
+            },
+            shore_protocol::types::MessageAlternative {
+                content: "Second answer".into(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "Second answer".into(),
+                }],
+                timestamp: "2026-01-01T00:00:01Z".into(),
+            },
+        ];
+        engine.append_message(msg).unwrap();
+
+        let result = alt(&mut engine, &mut ctx, &json!({"direction": "prev"})).unwrap();
+        assert_eq!(result["position"], 1);
+        assert_eq!(result["alt_count"], 2);
+        assert_eq!(engine.messages()[1].content, "First answer");
+        assert_eq!(engine.messages()[1].alt_index, Some(0));
+    }
+
+    #[test]
+    fn list_alternatives_returns_active_marker() {
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, ctx, _rx) = make_ctx(&tmp);
+
+        engine
+            .append_message(make_msg("u1", Role::User, "Prompt"))
+            .unwrap();
+        let mut msg = make_msg("a2", Role::Assistant, "Second answer");
+        msg.alt_index = Some(1);
+        msg.alt_count = Some(2);
+        msg.alternatives = vec![
+            shore_protocol::types::MessageAlternative {
+                content: "First answer".into(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "First answer".into(),
+                }],
+                timestamp: "2026-01-01T00:00:00Z".into(),
+            },
+            shore_protocol::types::MessageAlternative {
+                content: "Second answer".into(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "Second answer".into(),
+                }],
+                timestamp: "2026-01-01T00:00:01Z".into(),
+            },
+        ];
+        engine.append_message(msg).unwrap();
+
+        let result = list_alternatives(&engine, &ctx, &json!({})).unwrap();
+        assert_eq!(result["ref"], "a2");
+        assert_eq!(result["alt_count"], 2);
+        assert_eq!(result["alternatives"][0]["position"], 1);
+        assert_eq!(result["alternatives"][0]["active"], false);
+        assert_eq!(result["alternatives"][1]["content"], "Second answer");
+        assert_eq!(result["alternatives"][1]["active"], true);
     }
 
     // ── resolve_ref tests ───────────────────────────────────────────

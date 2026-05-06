@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, ConversationEntry, InputMode, PaletteMode, StreamBlock};
+use crate::app::{AltChoice, App, ConversationEntry, InputMode, PaletteMode, StreamBlock};
 use crate::images;
 use crate::markdown;
 
@@ -12,12 +12,13 @@ use crate::markdown;
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
-    // Main layout: conversation | input | completions (only when active)
+    // Main layout: conversation | input | picker (only when active)
     let input_content_width = size.width as usize;
     let input_height = (app.input.visual_line_count(input_content_width) as u16 + 1).min(8);
 
     let show_completions =
         app.input.mode == InputMode::Command && !app.completion.candidates.is_empty();
+    let show_alt_picker = app.alt_picker.is_some();
     let completion_height = if show_completions {
         let header_lines = if app.completion.header.is_some() {
             1
@@ -29,6 +30,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         0
     };
+    let alt_picker_height = if let Some(picker) = &app.alt_picker {
+        if picker.loading {
+            2
+        } else {
+            (picker.choices.len() as u16 + 1).min(12)
+        }
+    } else {
+        0
+    };
 
     let mut constraints = vec![
         Constraint::Min(3),               // conversation
@@ -36,6 +46,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ];
     if show_completions {
         constraints.push(Constraint::Length(completion_height));
+    } else if show_alt_picker {
+        constraints.push(Constraint::Length(alt_picker_height));
     }
 
     let chunks = Layout::default()
@@ -49,6 +61,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if show_completions {
         draw_completions_inline(frame, app, chunks[2]);
+    } else if show_alt_picker {
+        draw_alt_picker_inline(frame, app, chunks[2]);
     }
 
     if app.show_help {
@@ -1032,6 +1046,10 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::White),
         )),
         Line::from(Span::styled(
+            "    :alt           choose alternate response",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
             "    :quit           exit",
             Style::default().fg(Color::White),
         )),
@@ -1200,6 +1218,103 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
 
     let paragraph = Paragraph::new(Text::from(lines));
     frame.render_widget(paragraph, area);
+}
+
+fn alt_preview_text(choice: &AltChoice, max_width: usize) -> String {
+    let compact = choice
+        .content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if compact.is_empty() {
+        return "(empty)".into();
+    }
+    let mut out = String::new();
+    let mut width = 0usize;
+    for ch in compact.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + w > max_width.saturating_sub(3) {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+        width += w;
+    }
+    out
+}
+
+fn draw_alt_picker_inline(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(picker) = &app.alt_picker else {
+        return;
+    };
+    if area.height == 0 {
+        return;
+    }
+
+    let row_width = area.width as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let title = picker
+        .msg_id
+        .as_deref()
+        .or(picker.target_ref.as_deref())
+        .map(|msg_id| format!("  alternates for {msg_id}"))
+        .unwrap_or_else(|| "  alternates".to_string());
+    lines.push(Line::from(Span::styled(
+        title,
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
+    )));
+
+    if picker.loading {
+        lines.push(Line::from(Span::styled(
+            "  loading alternates...",
+            Style::default().fg(Color::White),
+        )));
+        frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        return;
+    }
+
+    let visible_rows = (area.height as usize).saturating_sub(1);
+    let window_start =
+        completion_window_start(Some(picker.selected), visible_rows, picker.choices.len());
+
+    for (offset, choice) in picker
+        .choices
+        .iter()
+        .skip(window_start)
+        .take(visible_rows)
+        .enumerate()
+    {
+        let i = window_start + offset;
+        let selected = i == picker.selected;
+        let active = if choice.active { "*" } else { " " };
+        let prefix = format!("  {active} {:>2}  ", choice.position);
+        let prefix_width = unicode_width::UnicodeWidthStr::width(prefix.as_str());
+        let preview_width = row_width.saturating_sub(prefix_width).max(8);
+        let preview = alt_preview_text(choice, preview_width);
+        let used = prefix_width + unicode_width::UnicodeWidthStr::width(preview.as_str());
+        let trailing = if used < row_width {
+            " ".repeat(row_width - used)
+        } else {
+            String::new()
+        };
+        let row = format!("{prefix}{preview}{trailing}");
+
+        if selected {
+            lines.push(Line::from(Span::styled(
+                row,
+                Style::default().fg(Color::Black).bg(Color::Yellow),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                row,
+                Style::default().fg(Color::White),
+            )));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
 // ── Test harness ────────────────────────────────────────────────────────────
@@ -2509,6 +2624,7 @@ mod scenario_tests {
             content_blocks: vec![ContentBlock::Text { text: reply.into() }],
             alt_index: None,
             alt_count: None,
+            alternatives: vec![],
             timestamp: "t2".into(),
         };
         let history_msgs = vec![
@@ -2522,6 +2638,7 @@ mod scenario_tests {
                 }],
                 alt_index: None,
                 alt_count: None,
+                alternatives: vec![],
                 timestamp: "t1".into(),
             },
             persisted_assistant,
@@ -2657,6 +2774,7 @@ mod scenario_tests {
                 }],
                 alt_index: None,
                 alt_count: None,
+                alternatives: vec![],
                 timestamp: "t1".into(),
             },
             Message {
@@ -2669,6 +2787,7 @@ mod scenario_tests {
                 }],
                 alt_index: None,
                 alt_count: None,
+                alternatives: vec![],
                 timestamp: "t2".into(),
             },
         ];

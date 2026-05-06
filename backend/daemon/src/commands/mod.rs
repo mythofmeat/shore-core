@@ -84,6 +84,8 @@ pub async fn dispatch(
         "get" => conversation::get(engine, ctx, &cmd.args),
         "edit" => conversation::edit(engine, ctx, &cmd.args),
         "delete" => conversation::delete(engine, ctx, &cmd.args),
+        "alt" => conversation::alt(engine, ctx, &cmd.args),
+        "list_alternatives" => conversation::list_alternatives(engine, ctx, &cmd.args),
         "inject_system" => conversation::inject_system(engine, ctx, &cmd.args),
 
         // State
@@ -159,6 +161,7 @@ pub fn engine_err(e: EngineError) -> (ErrorCode, String) {
         EngineError::MessageNotFound(_) | EngineError::CharacterNotFound(_) => {
             (ErrorCode::NotFound, e.to_string())
         }
+        EngineError::InvalidAlt(_) => (ErrorCode::InvalidRequest, e.to_string()),
         _ => (ErrorCode::InternalError, e.to_string()),
     }
 }

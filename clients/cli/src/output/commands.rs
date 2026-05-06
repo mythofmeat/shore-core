@@ -231,6 +231,8 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "config_reset" => print_config_reset(data),
         "edit" => print_edit_confirmation(data),
         "delete" => print_delete_confirmation(data),
+        "alt" => print_alt_confirmation(data),
+        "list_alternatives" => print_alt_list(data),
         "inject_system" => println!("System instruction injected."),
         "diagnostics" => print_diagnostics(data),
         "usage" => print_usage(data),
@@ -361,6 +363,61 @@ fn print_delete_confirmation(data: &serde_json::Value) {
     } else if let Some(id) = data["deleted"].as_str() {
         println!("Deleted message {id}");
     }
+}
+
+/// Print alternate-response selection confirmation.
+fn print_alt_confirmation(data: &serde_json::Value) {
+    let msg_ref = data["ref"].as_str().unwrap_or("?");
+    let position = data["position"].as_u64().unwrap_or(0);
+    let count = data["alt_count"].as_u64().unwrap_or(0);
+    println!("Selected alternate {position}/{count} for {msg_ref}");
+}
+
+fn alt_preview(content: &str, max_width: usize) -> String {
+    let compact = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.len() <= max_width {
+        return compact;
+    }
+    let end = compact
+        .char_indices()
+        .take_while(|(idx, _)| *idx <= max_width.saturating_sub(3))
+        .last()
+        .map(|(idx, ch)| idx + ch.len_utf8())
+        .unwrap_or(0);
+    format!("{}...", &compact[..end])
+}
+
+/// Print alternate-response list.
+fn print_alt_list(data: &serde_json::Value) {
+    let msg_ref = data["ref"].as_str().unwrap_or("?");
+    let alternatives = data["alternatives"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if alternatives.is_empty() {
+        println!("No alternate responses for {msg_ref}.");
+        return;
+    }
+
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+    write_section_header(&mut out, "Alternates", msg_ref, width);
+    let preview_width = width.saturating_sub(14).max(24);
+    for alt in alternatives {
+        let position = alt["position"].as_u64().unwrap_or(0);
+        let count = data["alt_count"]
+            .as_u64()
+            .unwrap_or(alternatives.len() as u64);
+        let marker = if alt["active"].as_bool().unwrap_or(false) {
+            "*"
+        } else {
+            " "
+        };
+        let preview = alt_preview(alt["content"].as_str().unwrap_or(""), preview_width);
+        let _ = writeln!(out, "  {marker} {position}/{count}  {preview}");
+    }
+    let _ = writeln!(out);
 }
 
 /// Print model list.

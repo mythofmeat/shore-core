@@ -74,6 +74,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         _ => {}
     }
 
+    if app.alt_picker.is_some() {
+        return handle_alt_picker_mode(app, key);
+    }
+
     match app.input.mode {
         InputMode::Normal => handle_normal_mode(app, key),
         InputMode::Insert => handle_insert_mode(app, key),
@@ -584,6 +588,43 @@ fn handle_submenu_mode(app: &mut App, key: KeyEvent) -> Action {
     }
 }
 
+fn handle_alt_picker_mode(app: &mut App, key: KeyEvent) -> Action {
+    match (key.modifiers, key.code) {
+        (KeyModifiers::NONE, KeyCode::Esc) => {
+            app.cancel_alt_picker();
+            Action::Redraw
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
+            app.next_alt();
+            Action::Redraw
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => {
+            app.prev_alt();
+            Action::Redraw
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) | (KeyModifiers::NONE, KeyCode::PageUp) => {
+            app.scroll_up(10);
+            Action::Redraw
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('d')) | (KeyModifiers::NONE, KeyCode::PageDown) => {
+            app.scroll_down(10);
+            Action::Redraw
+        }
+        (KeyModifiers::NONE, KeyCode::Enter) => {
+            let Some(args) = app.selected_alt_command_args() else {
+                return Action::Redraw;
+            };
+            app.close_alt_picker_after_confirm();
+            Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                rid: None,
+                name: "alt".into(),
+                args,
+            })))
+        }
+        _ => Action::None,
+    }
+}
+
 /// Fetch the candidate list for a submenu so the picker isn't empty
 /// the first time the user opens it (and to refresh stale entries).
 fn submenu_fetch_action(parent: &str) -> Action {
@@ -845,6 +886,31 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 } else {
                     Some(arg.to_string())
                 },
+            });
+            Action::Send(ConnCommand::Send(msg))
+        }
+
+        "alt" => {
+            let mut parts = arg.split_whitespace();
+            let first = parts.next();
+            let msg_ref = match first {
+                None | Some("list") => parts.next(),
+                Some(other) => Some(other),
+            };
+            if parts.next().is_some() {
+                app.set_status("usage: :alt [ref]");
+                return Action::Redraw;
+            }
+            let target_ref = msg_ref.map(ToString::to_string);
+            app.start_alt_picker(target_ref.clone());
+            let mut args = serde_json::Map::new();
+            if let Some(msg_ref) = target_ref {
+                args.insert("ref".into(), serde_json::json!(msg_ref));
+            }
+            let msg = ClientMessage::Command(Command {
+                rid: None,
+                name: "list_alternatives".into(),
+                args: serde_json::Value::Object(args),
             });
             Action::Send(ConnCommand::Send(msg))
         }
@@ -1236,6 +1302,31 @@ mod tests {
                 assert_eq!(cmd.args["refs"], "last");
             }
             _ => panic!("expected single delete send"),
+        }
+    }
+
+    #[test]
+    fn alt_command_sends_list_request_and_opens_picker() {
+        let mut app = App::default();
+        match parse_command(&mut app, "alt") {
+            Action::Send(ConnCommand::Send(ClientMessage::Command(cmd))) => {
+                assert_eq!(cmd.name, "list_alternatives");
+                assert!(cmd.args.as_object().unwrap().is_empty());
+                assert!(app.alt_picker.is_some());
+            }
+            _ => panic!("expected alt list command send"),
+        }
+    }
+
+    #[test]
+    fn alt_command_accepts_message_ref() {
+        let mut app = App::default();
+        match parse_command(&mut app, "alt -2") {
+            Action::Send(ConnCommand::Send(ClientMessage::Command(cmd))) => {
+                assert_eq!(cmd.name, "list_alternatives");
+                assert_eq!(cmd.args["ref"], "-2");
+            }
+            _ => panic!("expected alt list command send"),
         }
     }
 
