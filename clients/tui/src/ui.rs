@@ -1079,7 +1079,9 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
     // the selected-row highlight reaches the right edge.
     let candidate_rows = (area.height as usize).saturating_sub(lines.len());
     let row_width = area.width as usize;
-    let name_col: usize = 12; // 3-space prefix + longest command (9 chars) + slack
+    // 3-space prefix + longest command name (9: "character") + 6-space gap.
+    // Keeps descriptions in a single column aligned across all rows.
+    let name_col: usize = 18;
 
     for (i, c) in app
         .completion
