@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::event_handler::Ctx;
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
@@ -18,6 +20,7 @@ pub struct BotConfig {
     pub password: Option<String>,
     pub device_id: Option<String>,
     pub store_path: String,
+    pub config_dir: PathBuf,
 }
 
 /// Events from Matrix forwarded to the bridge loop.
@@ -41,6 +44,7 @@ pub enum MatrixEvent {
 /// The Matrix bot client.
 pub struct MatrixBot {
     pub client: Client,
+    config_dir: PathBuf,
 }
 
 impl MatrixBot {
@@ -94,7 +98,13 @@ impl MatrixBot {
         client.add_event_handler(Self::on_stripped_member);
         client.add_event_handler(Self::on_room_message);
 
-        Ok((Self { client }, rx))
+        Ok((
+            Self {
+                client,
+                config_dir: config.config_dir.clone(),
+            },
+            rx,
+        ))
     }
 
     /// Start the Matrix sync loop in the background.
@@ -155,9 +165,9 @@ impl MatrixBot {
 
     /// Upload character avatar and set display name on the Matrix profile.
     ///
-    /// Looks for `avatar.{png,jpg,jpeg,webp}` in the standard shore data
-    /// directory (`~/.local/share/shore/<character>/`). Always sets the
-    /// display name to the character name.
+    /// Looks for `avatar.{png,jpg,jpeg,webp}` in the character config
+    /// directory (`<config>/characters/<character>/`). Always sets the display
+    /// name to the character name.
     pub async fn sync_avatar(&self, character: &str) {
         // Set display name to character name
         if let Err(e) = self
@@ -171,11 +181,7 @@ impl MatrixBot {
             info!("display name set to {character}");
         }
 
-        // Look for avatar image in standard data directory
-        let char_dir = shore_config::data_dir().join(character);
-
-        for ext in &["png", "jpg", "jpeg", "webp"] {
-            let path = char_dir.join(format!("avatar.{ext}"));
+        for path in avatar_candidates(&self.config_dir, character) {
             if path.exists() {
                 match tokio::fs::read(&path).await {
                     Ok(data) => {
@@ -259,5 +265,36 @@ impl MatrixBot {
             }
             _ => {}
         }
+    }
+}
+
+/// Candidate character avatar files, in lookup priority order.
+pub fn avatar_candidates(config_dir: &Path, character: &str) -> Vec<PathBuf> {
+    let char_dir = shore_config::character_config_dir(config_dir, character);
+    ["png", "jpg", "jpeg", "webp"]
+        .into_iter()
+        .map(|ext| char_dir.join(format!("avatar.{ext}")))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::avatar_candidates;
+    use std::path::PathBuf;
+
+    #[test]
+    fn avatar_candidates_use_character_config_dir() {
+        let config_dir = PathBuf::from("/home/user/.config/shore");
+        let paths = avatar_candidates(&config_dir, "qifei");
+
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/home/user/.config/shore/characters/qifei/avatar.png"),
+                PathBuf::from("/home/user/.config/shore/characters/qifei/avatar.jpg"),
+                PathBuf::from("/home/user/.config/shore/characters/qifei/avatar.jpeg"),
+                PathBuf::from("/home/user/.config/shore/characters/qifei/avatar.webp"),
+            ]
+        );
     }
 }

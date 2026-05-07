@@ -31,7 +31,7 @@ pub struct CharacterPaths {
     pub provision_file: PathBuf,
     /// $XDG_DATA_HOME/shore/{character}/matrix/crypto_store/
     pub crypto_store: PathBuf,
-    /// $XDG_DATA_HOME/shore/{character}/ (for avatar lookup)
+    /// $XDG_DATA_HOME/shore/{character}/
     pub character_dir: PathBuf,
 }
 

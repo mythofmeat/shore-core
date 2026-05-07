@@ -51,14 +51,16 @@ cache_ttl = "1h"
 Create a character workspace:
 
 ```text
-~/.config/shore/characters/Alice/workspace/
-  SOUL.md       # character identity
-  USER.md       # what this character knows about the user
-  AGENTS.md     # standing operating guidance
-  TOOLS.md      # tool-use guidance
-  HEARTBEAT.md  # heartbeat-only guidance
-  MEMORY.md     # optional/generated prompt-visible memory index
-  memory/       # markdown long-term memory
+~/.config/shore/characters/Alice/
+  avatar.png    # optional Matrix profile avatar
+  workspace/
+    SOUL.md       # character identity
+    USER.md       # what this character knows about the user
+    AGENTS.md     # standing operating guidance
+    TOOLS.md      # tool-use guidance
+    HEARTBEAT.md  # heartbeat-only guidance
+    MEMORY.md     # optional/generated prompt-visible memory index
+    memory/       # markdown long-term memory
 ```
 
 Minimal `SOUL.md`:

@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use shore_matrix::bot::avatar_candidates;
 use shore_matrix::homeserver::{generate_token, HealthStatus, HomeserverConfig, HomeserverManager};
 use shore_matrix::provision::{CharacterPaths, ProvisionState};
 
@@ -816,25 +817,25 @@ fn e2e_encryption_verification_types() {
 // Avatar sync path verification
 // ---------------------------------------------------------------------------
 
-/// Verifies avatar file discovery paths match the XDG convention.
+/// Verifies avatar file discovery paths match the character config convention.
 #[test]
 fn avatar_sync_path_resolution() {
-    let base = PathBuf::from("/home/user/.local/share");
+    let config_dir = PathBuf::from("/home/user/.config/shore");
 
     for character in &["alice", "Bob", "charlie-v2"] {
-        let char_dir = base.join("shore").join(character);
+        let char_dir = config_dir.join("characters").join(character);
+        let paths = avatar_candidates(&config_dir, character);
 
-        // The bot looks for avatar.{png,jpg,jpeg,webp}
-        for ext in &["png", "jpg", "jpeg", "webp"] {
-            let avatar_path = char_dir.join(format!("avatar.{ext}"));
-            assert!(
-                avatar_path
-                    .to_str()
-                    .unwrap()
-                    .contains(&format!("shore/{character}/avatar.{ext}")),
-                "avatar path for {character}.{ext} is wrong: {avatar_path:?}"
-            );
-        }
+        assert_eq!(
+            paths,
+            vec![
+                char_dir.join("avatar.png"),
+                char_dir.join("avatar.jpg"),
+                char_dir.join("avatar.jpeg"),
+                char_dir.join("avatar.webp"),
+            ],
+            "avatar paths for {character} are wrong"
+        );
     }
 }
 

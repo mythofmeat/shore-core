@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed Matrix avatar sync to read character avatars from
+  `characters/<Character>/avatar.{png,jpg,jpeg,webp}` in the Shore config
+  directory.
 - Added a SillyTavern JSONL history importer and made `search_history` search
   stored alternate assistant replies, not just the currently selected body.
 - Removed runtime memory-gate behavior (`memory`, `memory_read`,
