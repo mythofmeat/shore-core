@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shore_protocol::types::{Message, Role};
 
 use crate::engine::messages::MessageStore;

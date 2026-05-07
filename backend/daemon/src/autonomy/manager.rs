@@ -3306,7 +3306,9 @@ api_key_env = "{heartbeat_env}"
             json!({"name": "memory", "description": "x", "input_schema": {}}),
             json!({"name": "schedule", "description": "y", "input_schema": {}}),
         ]);
-        original.messages.push(json!({"role": "user", "content": "hello"}));
+        original
+            .messages
+            .push(json!({"role": "user", "content": "hello"}));
         original
             .messages
             .push(json!({"role": "assistant", "content": "hi back"}));
@@ -3317,7 +3319,10 @@ api_key_env = "{heartbeat_env}"
             ping.tools, original.tools,
             "tools must be preserved — stripping them invalidates the cache prefix"
         );
-        assert_eq!(ping.system, original.system, "system prompt must be preserved");
+        assert_eq!(
+            ping.system, original.system,
+            "system prompt must be preserved"
+        );
         assert_eq!(ping.model, original.model, "model must be preserved");
         assert_eq!(
             &ping.messages[..original.messages.len()],
