@@ -4,7 +4,9 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{AltChoice, App, ConversationEntry, InputMode, PaletteMode, StreamBlock};
+use crate::app::{
+    AltChoice, App, ConversationEntry, InputMode, PaletteMode, StreamBlock, ValueEditorKind,
+};
 use crate::images;
 use crate::markdown;
 
@@ -16,10 +18,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let input_content_width = size.width as usize;
     let input_height = (app.input.visual_line_count(input_content_width) as u16 + 1).min(8);
 
+    let show_value_editor = app.input.mode == InputMode::Command && app.is_value_editor_open();
     let show_completions =
         app.input.mode == InputMode::Command && !app.completion.candidates.is_empty();
     let show_alt_picker = app.alt_picker.is_some();
-    let completion_height = if show_completions {
+    let completion_height = if show_value_editor {
+        4
+    } else if show_completions {
         let header_lines = if app.completion.header.is_some() {
             1
         } else {
@@ -44,7 +49,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Min(3),               // conversation
         Constraint::Length(input_height), // input
     ];
-    if show_completions {
+    if show_value_editor || show_completions {
         constraints.push(Constraint::Length(completion_height));
     } else if show_alt_picker {
         constraints.push(Constraint::Length(alt_picker_height));
@@ -59,7 +64,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     draw_input(frame, app, chunks[1]);
 
-    if show_completions {
+    if show_value_editor {
+        draw_value_editor(frame, app, chunks[2]);
+    } else if show_completions {
         draw_completions_inline(frame, app, chunks[2]);
     } else if show_alt_picker {
         draw_alt_picker_inline(frame, app, chunks[2]);
@@ -814,6 +821,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         let (title, prefix): (String, &str) = match &app.completion.mode {
             PaletteMode::Top => (" [COMMAND] ".to_string(), ":"),
             PaletteMode::Submenu(s) => (format!(" [{}] ", s.parent), ""),
+            PaletteMode::ValueEditor(s) => (format!(" [{}] ", s.key), ""),
         };
         let display = format!("{prefix}{}", app.input.cmd_text);
         let block = Block::default()
@@ -1034,7 +1042,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::White),
         )),
         Line::from(Span::styled(
-            "    :setting        view/set sampler settings (temperature, ...)",
+            "    :setting        view/set sampler settings (picker on Enter)",
             Style::default().fg(Color::White),
         )),
         Line::from(Span::styled(
@@ -1132,14 +1140,6 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
     // In a submenu picker, the candidate matching the daemon's active
     // model / character gets a dim "(active)" marker so the user can
     // see what's currently in effect.
-    let active_value: Option<&str> = match &app.completion.mode {
-        PaletteMode::Submenu(s) => match s.parent.as_str() {
-            "model" => Some(app.model.as_str()),
-            "character" => Some(app.character_name.as_str()),
-            _ => None,
-        },
-        _ => None,
-    };
     const ACTIVE_MARKER: &str = "  ● active";
 
     let window_start = completion_window_start(
@@ -1161,7 +1161,14 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
         let desc = App::command_description(c);
         let is_active = match &app.completion.mode {
             PaletteMode::Submenu(s) if s.parent == "model" => app.is_active_model_candidate(c),
-            _ => active_value.is_some_and(|v| !v.is_empty() && v == c),
+            PaletteMode::Submenu(s) if s.parent == "character" => {
+                !app.character_name.is_empty() && app.character_name == *c
+            }
+            PaletteMode::Submenu(s) if s.parent.starts_with("setting:") => s
+                .parent
+                .strip_prefix("setting:")
+                .is_some_and(|key| app.is_effective_setting_candidate(key, c)),
+            _ => false,
         };
 
         let name_text = format!("   {c}");
@@ -1218,6 +1225,91 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
 
     let paragraph = Paragraph::new(Text::from(lines));
     frame.render_widget(paragraph, area);
+}
+
+fn draw_value_editor(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let PaletteMode::ValueEditor(state) = &app.completion.mode else {
+        return;
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("  {}", state.key),
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
+    )));
+
+    match &state.kind {
+        ValueEditorKind::Slider {
+            min,
+            max,
+            current,
+            typed,
+            ..
+        } => {
+            let value_text = typed
+                .clone()
+                .unwrap_or_else(|| App::format_slider_number(*current));
+            let value_width = unicode_width::UnicodeWidthStr::width(value_text.as_str());
+            let row_width = area.width as usize;
+            let rail_width = row_width.saturating_sub(value_width + 8).clamp(8, 48);
+            let ratio = if max > min {
+                ((*current - *min) / (*max - *min)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let thumb = ((rail_width.saturating_sub(1)) as f64 * ratio).round() as usize;
+            let mut rail = String::with_capacity(rail_width + 2);
+            rail.push('[');
+            for idx in 0..rail_width {
+                rail.push(if idx == thumb { '●' } else { '─' });
+            }
+            rail.push(']');
+
+            let rail_width_with_brackets = unicode_width::UnicodeWidthStr::width(rail.as_str());
+            let gap = row_width
+                .saturating_sub(2 + rail_width_with_brackets + value_width)
+                .max(1);
+            let value_style = if typed.is_some() {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::ITALIC)
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            lines.push(Line::from(vec![
+                Span::raw(format!("  {rail}")),
+                Span::raw(" ".repeat(gap)),
+                Span::styled(value_text, value_style),
+            ]));
+
+            let min_label = App::format_slider_number(*min);
+            let max_label = App::format_slider_number(*max);
+            let label_gap = rail_width.saturating_sub(
+                unicode_width::UnicodeWidthStr::width(min_label.as_str())
+                    + unicode_width::UnicodeWidthStr::width(max_label.as_str()),
+            );
+            lines.push(Line::from(Span::styled(
+                format!("  {min_label}{}{}", "─".repeat(label_gap.max(1)), max_label),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
+    lines.push(Line::from(Span::styled(
+        "  ←/→ adjust · type to set · Enter apply · Esc cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let visible = lines
+        .into_iter()
+        .take(area.height as usize)
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(Text::from(visible)), area);
 }
 
 fn alt_preview_text(choice: &AltChoice, max_width: usize) -> String {
@@ -1323,10 +1415,13 @@ fn draw_alt_picker_inline(frame: &mut Frame, app: &App, area: Rect) {
 mod scenario_tests {
     use super::*;
     use crate::app::{App, ConnectionStatus, ConversationEntry, InputMode};
+    use crate::connection::ConnCommand;
     use crate::input;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use shore_protocol::client_msg::ClientMessage;
+    use shore_protocol::server_msg::{CommandOutput, ServerMessage};
     use shore_protocol::types::CharacterInfo;
 
     const W: u16 = 80;
@@ -1380,18 +1475,26 @@ mod scenario_tests {
 
         /// Press a key with no modifiers.
         fn press(&mut self, code: KeyCode) {
-            self.press_mod(KeyModifiers::NONE, code);
+            let _ = self.press_action(code);
+        }
+
+        fn press_action(&mut self, code: KeyCode) -> input::Action {
+            self.press_mod_action(KeyModifiers::NONE, code)
         }
 
         /// Press a key with modifiers.
         fn press_mod(&mut self, mods: KeyModifiers, code: KeyCode) {
+            let _ = self.press_mod_action(mods, code);
+        }
+
+        fn press_mod_action(&mut self, mods: KeyModifiers, code: KeyCode) -> input::Action {
             let ev = Event::Key(KeyEvent {
                 code,
                 modifiers: mods,
                 kind: KeyEventKind::Press,
                 state: KeyEventState::NONE,
             });
-            input::handle_event(&mut self.app, ev);
+            input::handle_event(&mut self.app, ev)
         }
 
         /// Type a string (handles shift for uppercase automatically).
@@ -1479,6 +1582,59 @@ mod scenario_tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         }
+    }
+
+    fn sampler_settings_output() -> ServerMessage {
+        ServerMessage::CommandOutput(CommandOutput {
+            rid: None,
+            name: "model_settings".into(),
+            data: serde_json::json!({
+                "model": "test/provider-model",
+                "provider": "test",
+                "model_id": "provider-model",
+                "effective_sampler": {
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "reasoning_effort": "medium",
+                    "thinking_enabled": true,
+                    "budget_tokens": 2048,
+                    "max_tokens": 4096,
+                    "cache_ttl": "1h"
+                },
+                "scopes": {
+                    "temperature": "character_model",
+                    "top_p": "static_default",
+                    "reasoning_effort": "static_default",
+                    "thinking_enabled": "static_default",
+                    "budget_tokens": "static_default",
+                    "max_tokens": "static_default",
+                    "cache_ttl": "static_default"
+                }
+            }),
+        })
+    }
+
+    fn sent_command(action: input::Action) -> shore_protocol::client_msg::Command {
+        match action {
+            input::Action::Send(ConnCommand::Send(ClientMessage::Command(cmd))) => cmd,
+            _ => panic!("expected command send"),
+        }
+    }
+
+    fn open_setting_menu_with_snapshot(h: &mut Harness) {
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.type_str("setting");
+        let cmd = sent_command(h.press_action(KeyCode::Enter));
+        assert_eq!(cmd.name, "model_settings");
+        crate::handle_server_message(&mut h.app, sampler_settings_output());
+    }
+
+    fn assert_set_model_setting(action: input::Action, key: &str, value: serde_json::Value) {
+        let cmd = sent_command(action);
+        assert_eq!(cmd.name, "set_model_setting");
+        assert_eq!(cmd.args["key"], key);
+        assert_eq!(cmd.args["value"], value);
+        assert_eq!(cmd.args["scope"], "character");
     }
 
     // ── Scenario: empty state ───────────────────────────────────────────────
@@ -2075,11 +2231,243 @@ mod scenario_tests {
             f.contains("setting key"),
             "submenu header 'setting key' visible above candidates"
         );
-        // And at least one sampler key candidate is visible.
+        // The request has not returned yet, so the picker stays disabled.
         assert!(
-            f.contains("temperature"),
-            "first sampler key candidate visible"
+            f.contains("loading sampler settings..."),
+            "loading row visible until settings arrive"
         );
+    }
+
+    #[test]
+    fn setting_enter_opens_submenu_and_model_settings_refreshes_rows() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        open_setting_menu_with_snapshot(&mut h);
+        let f = h.render("setting submenu with values");
+
+        assert!(matches!(
+            h.app.completion.mode,
+            crate::app::PaletteMode::Submenu(_)
+        ));
+        assert!(f.contains("setting key"), "setting header visible");
+        assert!(
+            f.contains("temperature = 0.7"),
+            "effective temperature should render next to its key; frame:\n{f}"
+        );
+    }
+
+    #[test]
+    fn setting_reasoning_effort_opens_value_submenu_preselected() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        open_setting_menu_with_snapshot(&mut h);
+        h.type_str("reasoning");
+        h.press(KeyCode::Enter);
+
+        match &h.app.completion.mode {
+            crate::app::PaletteMode::Submenu(s) => {
+                assert_eq!(s.parent, "setting:reasoning_effort");
+            }
+            _ => panic!("expected reasoning_effort submenu"),
+        }
+        let selected = h.app.completion.selected.expect("current value selected");
+        assert_eq!(h.app.completion.candidates[selected], "medium");
+    }
+
+    #[test]
+    fn setting_temperature_opens_slider_at_effective_value() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        open_setting_menu_with_snapshot(&mut h);
+        h.type_str("temperature");
+        h.press(KeyCode::Enter);
+        let f = h.render("temperature slider");
+
+        assert!(matches!(
+            h.app.completion.mode,
+            crate::app::PaletteMode::ValueEditor(_)
+        ));
+        assert!(f.contains("temperature"));
+        assert!(f.contains("●"), "slider thumb should render; frame:\n{f}");
+        assert!(
+            f.contains("0.7"),
+            "effective value should render; frame:\n{f}"
+        );
+    }
+
+    #[test]
+    fn setting_temperature_slider_right_increments() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        open_setting_menu_with_snapshot(&mut h);
+        h.type_str("temperature");
+        h.press(KeyCode::Enter);
+        h.press(KeyCode::Right);
+        let f = h.render("temperature slider incremented");
+
+        assert!(
+            f.contains("0.8"),
+            "Right should increment by 0.1; frame:\n{f}"
+        );
+    }
+
+    #[test]
+    fn setting_temperature_typed_value_dispatches_command() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        open_setting_menu_with_snapshot(&mut h);
+        h.type_str("temperature");
+        h.press(KeyCode::Enter);
+        h.type_str("1.25");
+        let action = h.press_action(KeyCode::Enter);
+
+        assert_set_model_setting(action, "temperature", serde_json::json!(1.25));
+    }
+
+    #[test]
+    fn setting_temperature_waits_for_snapshot_before_slider_apply() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.type_str("setting");
+        let cmd = sent_command(h.press_action(KeyCode::Enter));
+        assert_eq!(cmd.name, "model_settings");
+
+        h.type_str("temperature");
+        let blocked = h.press_action(KeyCode::Enter);
+        assert!(
+            matches!(blocked, input::Action::Redraw),
+            "Enter should not dispatch before sampler settings load"
+        );
+        match &h.app.completion.mode {
+            crate::app::PaletteMode::Submenu(s) => assert_eq!(s.parent, "setting"),
+            _ => panic!("expected to stay in setting submenu while loading"),
+        }
+
+        crate::handle_server_message(&mut h.app, sampler_settings_output());
+        h.press(KeyCode::Enter);
+        assert!(matches!(
+            h.app.completion.mode,
+            crate::app::PaletteMode::ValueEditor(_)
+        ));
+        let action = h.press_action(KeyCode::Enter);
+
+        assert_set_model_setting(action, "temperature", serde_json::json!(0.7));
+    }
+
+    #[test]
+    fn setting_reasoning_effort_waits_for_snapshot_before_submenu() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.type_str("setting");
+        let cmd = sent_command(h.press_action(KeyCode::Enter));
+        assert_eq!(cmd.name, "model_settings");
+
+        h.type_str("reasoning");
+        let blocked = h.press_action(KeyCode::Enter);
+        assert!(matches!(blocked, input::Action::Redraw));
+        match &h.app.completion.mode {
+            crate::app::PaletteMode::Submenu(s) => assert_eq!(s.parent, "setting"),
+            _ => panic!("expected to stay in setting submenu while loading"),
+        }
+
+        crate::handle_server_message(&mut h.app, sampler_settings_output());
+        h.press(KeyCode::Enter);
+        match &h.app.completion.mode {
+            crate::app::PaletteMode::Submenu(s) => {
+                assert_eq!(s.parent, "setting:reasoning_effort");
+            }
+            _ => panic!("expected reasoning_effort submenu after settings load"),
+        }
+        let selected = h.app.completion.selected.expect("current value selected");
+        assert_eq!(h.app.completion.candidates[selected], "medium");
+    }
+
+    #[test]
+    fn setting_cache_ttl_custom_value_dispatches_command() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        open_setting_menu_with_snapshot(&mut h);
+        h.type_str("cache");
+        h.press(KeyCode::Enter);
+        h.type_str("15m");
+        assert!(
+            h.app
+                .completion
+                .candidates
+                .iter()
+                .any(|candidate| candidate == "Custom: 15m"),
+            "custom cache TTL row should appear"
+        );
+        let action = h.press_action(KeyCode::Enter);
+
+        assert_set_model_setting(action, "cache_ttl", serde_json::json!("15m"));
+    }
+
+    #[test]
+    fn setting_cache_ttl_picker_does_not_offer_off() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        open_setting_menu_with_snapshot(&mut h);
+        h.type_str("cache");
+        h.press(KeyCode::Enter);
+
+        assert!(
+            !h.app
+                .completion
+                .candidates
+                .iter()
+                .any(|candidate| candidate == "off"),
+            "cache_ttl picker should use reset to clear overrides, not an off TTL"
+        );
+
+        h.type_str("off");
+        assert!(
+            !h.app
+                .completion
+                .candidates
+                .iter()
+                .any(|candidate| candidate == "Custom: off"),
+            "cache_ttl picker should not offer off as a custom TTL"
+        );
+    }
+
+    #[test]
+    fn setting_reset_picker_dispatches_reset_command() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        open_setting_menu_with_snapshot(&mut h);
+        h.type_str("reset");
+        h.press(KeyCode::Enter);
+        match &h.app.completion.mode {
+            crate::app::PaletteMode::Submenu(s) => assert_eq!(s.parent, "setting:reset"),
+            _ => panic!("expected setting reset submenu"),
+        }
+        h.type_str("temperature");
+        let action = h.press_action(KeyCode::Enter);
+
+        assert_set_model_setting(action, "temperature", serde_json::Value::Null);
     }
 
     // ── Scenario: scroll during stream ──────────────────────────────────────

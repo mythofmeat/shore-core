@@ -19,12 +19,16 @@ use crossterm::ExecutableCommand;
 use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{info, instrument};
 use tracing_subscriber::EnvFilter;
 
-use app::{AltChoice, App, ConnectionStatus, ConversationEntry, InputState, StreamBlock};
+use app::{
+    AltChoice, App, ConnectionStatus, ConversationEntry, EffectiveSamplerSnapshot, InputState,
+    StreamBlock,
+};
 use connection::{ConnCommand, ConnEvent};
 use input::Action;
 
@@ -307,6 +311,14 @@ async fn send_conn_commands(
     for cmd in cmds {
         let _ = cmd_tx.send(cmd).await;
     }
+}
+
+fn model_settings_conn_command() -> ConnCommand {
+    ConnCommand::Send(ClientMessage::Command(Command {
+        rid: None,
+        name: "model_settings".into(),
+        args: serde_json::json!({}),
+    }))
 }
 
 async fn handle_conn_event_and_send(
@@ -600,6 +612,8 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> UiEffect {
             ..
         } => {
             app.connection_status = ConnectionStatus::Connected;
+            app.effective_sampler = None;
+            app.sampler_settings_loading = false;
             app.characters = characters.clone();
 
             if let Some(selected) = selected_character {
@@ -628,6 +642,8 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> UiEffect {
         ConnEvent::Disconnected(reason) => {
             app.connection_status = ConnectionStatus::Connecting;
             app.stream.reset(); // clear stale streaming state
+            app.effective_sampler = None;
+            app.sampler_settings_loading = false;
             app.set_status(format!("reconnecting: {reason}"));
             UiEffect::redraw(RedrawEffect::Immediate)
         }
@@ -1040,6 +1056,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                     if let Some(name) = co.data.get("character").and_then(|v| v.as_str()) {
                         app.character_name = name.to_string();
                     }
+                    app.effective_sampler = None;
                     if co.data.get("active_model").is_some_and(|v| v.is_null()) {
                         app.set_active_model(None);
                     } else {
@@ -1143,6 +1160,18 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                         }
                     }
                 }
+                "model_settings" => {
+                    app.sampler_settings_loading = false;
+                    app.effective_sampler = None;
+                    if let Some(snapshot) = EffectiveSamplerSnapshot::from_model_settings(&co.data)
+                        .filter(|snapshot| app.sampler_snapshot_matches_active_model(snapshot))
+                    {
+                        app.effective_sampler = Some(snapshot);
+                    }
+                    if app.is_setting_palette_open() {
+                        app.update_completions();
+                    }
+                }
                 "switch_model" => {
                     // Daemon returns `active` (the user-supplied alias) and
                     // `qualified_name` (provider/model_id). Prefer the
@@ -1158,10 +1187,35 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                         app.set_active_model(Some(name));
                         app.set_status(format!("model: {name}"));
                     }
+                    app.effective_sampler = None;
                 }
                 "reset_model" => {
                     app.set_active_model(None);
+                    app.effective_sampler = None;
                     app.set_status("model reset to default");
+                }
+                "set_model_setting" => {
+                    app.effective_sampler = None;
+                    app.sampler_settings_loading = true;
+                    let key = co
+                        .data
+                        .get("key")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("setting");
+                    let value_is_null = co
+                        .data
+                        .get("value")
+                        .map(|value| value.is_null())
+                        .unwrap_or(true);
+                    if value_is_null {
+                        app.set_status(format!("reset {key}"));
+                    } else {
+                        app.set_status(format!("setting {key} updated"));
+                    }
+                    return UiEffect {
+                        cmds: vec![model_settings_conn_command()],
+                        redraw: RedrawEffect::Immediate,
+                    };
                 }
                 "memory" => {
                     let summary = serde_json::to_string_pretty(&co.data)
@@ -1258,6 +1312,10 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
             if app.alt_picker.is_some() {
                 app.cancel_alt_picker();
             }
+            app.sampler_settings_loading = false;
+            if app.is_setting_palette_open() {
+                app.update_completions();
+            }
             app.set_status(format!("error: {:?} - {}", err.code, err.message));
             RedrawEffect::Immediate
         }
@@ -1277,6 +1335,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                 app.is_private = private;
             }
             app.set_active_model(hist.config.get("active_model").and_then(|v| v.as_str()));
+            app.effective_sampler = None;
             if let Some(selected) = hist.selected_character {
                 app.character_name = selected;
             }
@@ -1303,7 +1362,10 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
 #[cfg(test)]
 mod redraw_tests {
     use super::*;
-    use shore_protocol::server_msg::{CommandOutput, StreamChunk, StreamEnd};
+    use shore_protocol::error::ErrorCode;
+    use shore_protocol::server_msg::{
+        CommandOutput, Error as CommandError, StreamChunk, StreamEnd,
+    };
     use shore_protocol::types::{StreamMetadata, TimingInfo, TokenCounts};
 
     fn metadata() -> StreamMetadata {
@@ -1388,6 +1450,137 @@ mod redraw_tests {
         assert_eq!(app.characters.len(), 2);
         assert!(!app.entries.iter().any(|entry| {
             matches!(entry, ConversationEntry::System { content, .. } if content.contains("Characters:"))
+        }));
+    }
+
+    #[test]
+    fn model_settings_refreshes_open_setting_submenu() {
+        let mut app = App::default();
+        app.input.enter_command_mode();
+        app.enter_submenu("setting");
+        assert_eq!(
+            app.completion.candidates,
+            vec!["loading sampler settings..."]
+        );
+
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::CommandOutput(CommandOutput {
+                rid: None,
+                name: "model_settings".into(),
+                data: serde_json::json!({
+                    "effective_sampler": {
+                        "temperature": 0.7,
+                        "top_p": 0.95,
+                        "reasoning_effort": "medium",
+                        "thinking_enabled": true,
+                        "budget_tokens": 2048,
+                        "max_tokens": 4096,
+                        "cache_ttl": "1h"
+                    },
+                    "scopes": {
+                        "temperature": "character_model",
+                        "top_p": "static_default",
+                        "reasoning_effort": "static_default",
+                        "thinking_enabled": "static_default",
+                        "budget_tokens": "static_default",
+                        "max_tokens": "static_default",
+                        "cache_ttl": "static_default"
+                    }
+                }),
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::Immediate);
+        assert!(app
+            .completion
+            .candidates
+            .contains(&"temperature = 0.7".into()));
+        assert_eq!(app.completion.selected, Some(0));
+    }
+
+    #[test]
+    fn model_settings_error_refreshes_open_setting_submenu() {
+        let mut app = App::default();
+        app.input.enter_command_mode();
+        app.enter_submenu("setting");
+        assert_eq!(
+            app.completion.candidates,
+            vec!["loading sampler settings..."]
+        );
+
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::Error(CommandError {
+                rid: None,
+                code: ErrorCode::InvalidRequest,
+                message: "No model specified and no active model set".into(),
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::Immediate);
+        assert!(!app.sampler_settings_loading);
+        assert_eq!(
+            app.completion.candidates,
+            vec!["sampler settings unavailable"]
+        );
+        assert_eq!(app.completion.selected, None);
+    }
+
+    #[test]
+    fn model_settings_for_inactive_model_is_ignored() {
+        let mut app = App::default();
+        app.set_active_model(Some("chat.test.current"));
+        app.sampler_settings_loading = true;
+
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::CommandOutput(CommandOutput {
+                rid: None,
+                name: "model_settings".into(),
+                data: serde_json::json!({
+                    "model": "chat.test.previous",
+                    "effective_sampler": {
+                        "temperature": 0.7
+                    },
+                    "scopes": {
+                        "temperature": "character_model"
+                    }
+                }),
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::Immediate);
+        assert!(!app.sampler_settings_loading);
+        assert!(app.effective_sampler.is_none());
+    }
+
+    #[test]
+    fn set_model_setting_response_requests_settings_refresh() {
+        let mut app = App::default();
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::CommandOutput(CommandOutput {
+                rid: None,
+                name: "set_model_setting".into(),
+                data: serde_json::json!({
+                    "key": "temperature",
+                    "value": 0.8,
+                    "scope": "character"
+                }),
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::Immediate);
+        assert_eq!(effect.cmds.len(), 1);
+        match &effect.cmds[0] {
+            ConnCommand::Send(ClientMessage::Command(cmd)) => {
+                assert_eq!(cmd.name, "model_settings");
+            }
+            _ => panic!("expected model_settings command"),
+        }
+        assert!(app.entries.iter().any(|entry| {
+            matches!(entry, ConversationEntry::System { content, .. } if content == "setting temperature updated")
         }));
     }
 

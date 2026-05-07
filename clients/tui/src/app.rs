@@ -438,13 +438,14 @@ pub enum ConnectionStatus {
     Connected,
 }
 
-/// Whether the palette is showing the top-level command list or a
-/// child picker scoped to a specific command (`:model`, `:character`).
+/// Whether the palette is showing the top-level command list, a child
+/// picker scoped to a command, or a focused value editor.
 #[derive(Default, Clone)]
 pub enum PaletteMode {
     #[default]
     Top,
     Submenu(SubmenuState),
+    ValueEditor(ValueEditorState),
 }
 
 /// Per-submenu state. `cmd_text` doubles as the live filter while in
@@ -454,6 +455,120 @@ pub struct SubmenuState {
     pub parent: String,
     pub saved_cmd_text: String,
     pub saved_cmd_cursor: usize,
+}
+
+/// Per-value-editor state. The saved fields restore the parent command
+/// input on Esc, matching submenu cancellation semantics.
+#[derive(Clone)]
+pub struct ValueEditorState {
+    pub key: String,
+    pub kind: ValueEditorKind,
+    pub saved_cmd_text: String,
+    pub saved_cmd_cursor: usize,
+}
+
+#[derive(Clone)]
+pub enum ValueEditorKind {
+    Slider {
+        min: f64,
+        max: f64,
+        step: f64,
+        current: f64,
+        typed: Option<String>,
+        dirty: bool,
+    },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EffectiveSamplerField {
+    pub value: Option<String>,
+    pub scope: Option<String>,
+}
+
+/// Effective sampler values plus their provenance scopes, as returned by
+/// the daemon's `model_settings` command.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EffectiveSamplerSnapshot {
+    pub model: Option<String>,
+    pub temperature: EffectiveSamplerField,
+    pub top_p: EffectiveSamplerField,
+    pub reasoning_effort: EffectiveSamplerField,
+    pub thinking_enabled: EffectiveSamplerField,
+    pub budget_tokens: EffectiveSamplerField,
+    pub max_tokens: EffectiveSamplerField,
+    pub cache_ttl: EffectiveSamplerField,
+}
+
+impl EffectiveSamplerSnapshot {
+    pub fn from_model_settings(data: &serde_json::Value) -> Option<Self> {
+        let sampler = data.get("effective_sampler")?;
+        let scopes = data.get("scopes");
+        Some(Self {
+            model: data
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string),
+            temperature: Self::field(sampler, scopes, "temperature"),
+            top_p: Self::field(sampler, scopes, "top_p"),
+            reasoning_effort: Self::field(sampler, scopes, "reasoning_effort"),
+            thinking_enabled: Self::field(sampler, scopes, "thinking_enabled"),
+            budget_tokens: Self::field(sampler, scopes, "budget_tokens"),
+            max_tokens: Self::field(sampler, scopes, "max_tokens"),
+            cache_ttl: Self::field(sampler, scopes, "cache_ttl"),
+        })
+    }
+
+    fn field(
+        sampler: &serde_json::Value,
+        scopes: Option<&serde_json::Value>,
+        key: &str,
+    ) -> EffectiveSamplerField {
+        EffectiveSamplerField {
+            value: sampler
+                .get(key)
+                .map(Self::display_json_value)
+                .or_else(|| Some("unset".into())),
+            scope: scopes
+                .and_then(|s| s.get(key))
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string),
+        }
+    }
+
+    fn display_json_value(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::Null => "unset".into(),
+            serde_json::Value::Bool(v) => v.to_string(),
+            serde_json::Value::Number(v) => v.to_string(),
+            serde_json::Value::String(v) => v.clone(),
+            other => other.to_string(),
+        }
+    }
+
+    pub fn field_for_key(&self, key: &str) -> Option<&EffectiveSamplerField> {
+        match key {
+            "temperature" => Some(&self.temperature),
+            "top_p" => Some(&self.top_p),
+            "reasoning_effort" => Some(&self.reasoning_effort),
+            "thinking_enabled" => Some(&self.thinking_enabled),
+            "budget_tokens" => Some(&self.budget_tokens),
+            "max_tokens" => Some(&self.max_tokens),
+            "cache_ttl" => Some(&self.cache_ttl),
+            _ => None,
+        }
+    }
+
+    pub fn display_value(&self, key: &str) -> Option<&str> {
+        self.field_for_key(key).and_then(|f| f.value.as_deref())
+    }
+
+    pub fn scope(&self, key: &str) -> Option<&str> {
+        self.field_for_key(key).and_then(|f| f.scope.as_deref())
+    }
+
+    pub fn numeric_value(&self, key: &str) -> Option<f64> {
+        self.display_value(key)?.parse().ok()
+    }
 }
 
 /// Completion state for the command palette.
@@ -507,6 +622,8 @@ pub struct App {
     pub active_model_names: Vec<String>,
     pub show_model_list: bool,
     pub model: String,
+    pub effective_sampler: Option<EffectiveSamplerSnapshot>,
+    pub sampler_settings_loading: bool,
     pub tokens: TokenCounts,
     pub is_private: bool,
     pub should_quit: bool,
@@ -562,6 +679,8 @@ impl Default for App {
             active_model_names: Vec::new(),
             show_model_list: false,
             model: String::new(),
+            effective_sampler: None,
+            sampler_settings_loading: false,
             tokens: TokenCounts {
                 input: 0,
                 output: 0,
@@ -970,6 +1089,7 @@ impl App {
         match name {
             "model" => Some("model"),
             "character" | "characters" => Some("character"),
+            "setting" => Some("setting"),
             _ => None,
         }
     }
@@ -978,7 +1098,30 @@ impl App {
         matches!(&self.completion.mode, PaletteMode::Submenu(s) if s.parent == parent)
     }
 
+    pub fn is_setting_palette_open(&self) -> bool {
+        matches!(
+            &self.completion.mode,
+            PaletteMode::Submenu(s) if s.parent == "setting" || s.parent.starts_with("setting:")
+        ) || matches!(&self.completion.mode, PaletteMode::ValueEditor(s) if Self::is_setting_key(&s.key))
+    }
+
+    pub fn is_value_editor_open(&self) -> bool {
+        matches!(self.completion.mode, PaletteMode::ValueEditor(_))
+    }
+
     pub fn set_active_model(&mut self, model: Option<&str>) {
+        let next = model.filter(|m| !m.is_empty());
+        let current = (!self.model.is_empty()).then_some(self.model.as_str());
+        let changed = match (current, next) {
+            (Some(current), Some(next)) => !Self::model_identifier_matches(current, next),
+            (None, None) => false,
+            _ => true,
+        };
+        if changed {
+            self.effective_sampler = None;
+            self.sampler_settings_loading = false;
+        }
+
         match model.filter(|m| !m.is_empty()) {
             Some(model) => {
                 self.model = model.to_string();
@@ -989,6 +1132,16 @@ impl App {
                 self.active_model_names.clear();
             }
         }
+    }
+
+    pub fn sampler_snapshot_matches_active_model(
+        &self,
+        snapshot: &EffectiveSamplerSnapshot,
+    ) -> bool {
+        let Some(snapshot_model) = snapshot.model.as_deref() else {
+            return true;
+        };
+        self.model.is_empty() || self.is_active_model_candidate(snapshot_model)
     }
 
     pub fn model_identifier_matches(active: &str, candidate: &str) -> bool {
@@ -1050,6 +1203,142 @@ impl App {
         "cache_ttl",
     ];
 
+    fn is_setting_key(key: &str) -> bool {
+        Self::SETTING_KEYS.contains(&key)
+    }
+
+    fn setting_row_label(&self, key: &str) -> String {
+        match self
+            .effective_sampler
+            .as_ref()
+            .and_then(|snapshot| snapshot.display_value(key))
+        {
+            Some(value) => format!("{key} = {value}"),
+            None => key.to_string(),
+        }
+    }
+
+    fn setting_key_from_row(row: &str) -> &str {
+        row.split_once(" = ").map(|(key, _)| key).unwrap_or(row)
+    }
+
+    fn setting_scope_is_override(&self, key: &str) -> bool {
+        self.effective_sampler
+            .as_ref()
+            .and_then(|snapshot| snapshot.scope(key))
+            .is_some_and(|scope| scope != "static_default")
+    }
+
+    fn setting_editor_blocked_row(&self) -> Option<&'static str> {
+        if self.sampler_settings_loading {
+            Some("loading sampler settings...")
+        } else if self.effective_sampler.is_none() {
+            Some("sampler settings unavailable")
+        } else {
+            None
+        }
+    }
+
+    fn setting_editors_ready(&self) -> bool {
+        self.setting_editor_blocked_row().is_none()
+    }
+
+    pub fn is_effective_setting_candidate(&self, key: &str, candidate: &str) -> bool {
+        let Some(current) = self
+            .effective_sampler
+            .as_ref()
+            .and_then(|snapshot| snapshot.display_value(key))
+        else {
+            return false;
+        };
+        if candidate == "reset" {
+            return false;
+        }
+        let value = candidate
+            .strip_prefix("Custom: ")
+            .unwrap_or(candidate)
+            .trim();
+        current == value
+    }
+
+    fn current_slider_value(&self, key: &str, fallback: f64) -> f64 {
+        self.effective_sampler
+            .as_ref()
+            .and_then(|snapshot| snapshot.numeric_value(key))
+            .unwrap_or(fallback)
+    }
+
+    fn slider_kind_for_setting(&self, key: &str) -> Option<ValueEditorKind> {
+        match key {
+            "temperature" => Some(ValueEditorKind::Slider {
+                min: 0.0,
+                max: 2.0,
+                step: 0.1,
+                current: Self::quantize_slider_value(
+                    0.0,
+                    2.0,
+                    0.1,
+                    self.current_slider_value("temperature", 1.0),
+                ),
+                typed: None,
+                dirty: false,
+            }),
+            "top_p" => Some(ValueEditorKind::Slider {
+                min: 0.0,
+                max: 1.0,
+                step: 0.05,
+                current: Self::quantize_slider_value(
+                    0.0,
+                    1.0,
+                    0.05,
+                    self.current_slider_value("top_p", 0.95),
+                ),
+                typed: None,
+                dirty: false,
+            }),
+            _ => None,
+        }
+    }
+
+    fn refresh_value_editor_from_effective_sampler(&mut self) {
+        let (key, should_refresh) = match &self.completion.mode {
+            PaletteMode::ValueEditor(state) => match &state.kind {
+                ValueEditorKind::Slider { dirty, .. } => (state.key.clone(), !*dirty),
+            },
+            _ => return,
+        };
+
+        if !should_refresh {
+            return;
+        }
+
+        if let Some(kind) = self.slider_kind_for_setting(&key) {
+            if let PaletteMode::ValueEditor(state) = &mut self.completion.mode {
+                state.kind = kind;
+            }
+        }
+    }
+
+    pub fn format_slider_number(value: f64) -> String {
+        let mut text = format!("{value:.2}");
+        while text.contains('.') && text.ends_with('0') {
+            text.pop();
+        }
+        if text.ends_with('.') {
+            text.push('0');
+        }
+        text
+    }
+
+    fn quantize_slider_value(min: f64, max: f64, step: f64, value: f64) -> f64 {
+        let clamped = value.clamp(min, max);
+        if step <= 0.0 {
+            return clamped;
+        }
+        let steps = ((clamped - min) / step).round();
+        (min + steps * step).clamp(min, max)
+    }
+
     /// Update completion candidates based on current command input.
     pub fn update_completions(&mut self) {
         self.completion.selected = None;
@@ -1057,6 +1346,11 @@ impl App {
 
         if matches!(self.completion.mode, PaletteMode::Submenu(_)) {
             self.update_submenu_candidates();
+            return;
+        }
+        if matches!(self.completion.mode, PaletteMode::ValueEditor(_)) {
+            self.refresh_value_editor_from_effective_sampler();
+            self.completion.candidates.clear();
             return;
         }
 
@@ -1170,7 +1464,7 @@ impl App {
     /// In submenu mode this is a no-op — candidates are bare names that
     /// shouldn't be spliced into the filter on Tab.
     pub fn apply_completion(&mut self) {
-        if matches!(self.completion.mode, PaletteMode::Submenu(_)) {
+        if !matches!(self.completion.mode, PaletteMode::Top) {
             return;
         }
         if let Some(idx) = self.completion.selected {
@@ -1194,7 +1488,31 @@ impl App {
             PaletteMode::Submenu(s) => s.parent.clone(),
             _ => return,
         };
-        let filter = self.input.cmd_text.to_lowercase();
+        let raw_filter = self.input.cmd_text.trim();
+        let filter = raw_filter.to_lowercase();
+        self.completion.header = match parent.as_str() {
+            "setting" | "setting:reset" => Some("setting key".into()),
+            parent if parent.starts_with("setting:") => Some("setting value".into()),
+            _ => None,
+        };
+
+        if matches!(
+            parent.as_str(),
+            "setting"
+                | "setting:reasoning_effort"
+                | "setting:thinking_enabled"
+                | "setting:cache_ttl"
+                | "setting:max_tokens"
+                | "setting:budget_tokens"
+                | "setting:reset"
+        ) {
+            if let Some(row) = self.setting_editor_blocked_row() {
+                self.completion.candidates = vec![row.to_string()];
+                self.completion.selected = None;
+                return;
+            }
+        }
+
         match parent.as_str() {
             "model" => {
                 let mut candidates: Vec<String> = self
@@ -1216,6 +1534,51 @@ impl App {
                     .map(|c| c.name.clone())
                     .collect();
             }
+            "setting" => {
+                let mut candidates: Vec<String> = Self::SETTING_KEYS
+                    .iter()
+                    .filter(|key| filter.is_empty() || key.starts_with(&filter))
+                    .map(|key| self.setting_row_label(key))
+                    .collect();
+                if filter.is_empty() || "reset".starts_with(&filter) {
+                    candidates.push("reset".into());
+                }
+                self.completion.candidates = candidates;
+            }
+            "setting:reasoning_effort" => {
+                self.completion.candidates = Self::filtered_presets(
+                    &["low", "medium", "high", "xhigh", "max", "off", "reset"],
+                    &filter,
+                );
+            }
+            "setting:thinking_enabled" => {
+                self.completion.candidates =
+                    Self::filtered_presets(&["true", "false", "reset"], &filter);
+            }
+            "setting:cache_ttl" => {
+                let mut candidates = Self::filtered_presets(&["5m", "1h", "reset"], &filter);
+                if !raw_filter.is_empty() && !raw_filter.eq_ignore_ascii_case("off") {
+                    candidates.push(format!("Custom: {raw_filter}"));
+                }
+                self.completion.candidates = candidates;
+            }
+            "setting:max_tokens" | "setting:budget_tokens" => {
+                let mut candidates = Self::filtered_presets(
+                    &["1024", "2048", "4096", "8192", "16384", "32768", "reset"],
+                    &filter,
+                );
+                if raw_filter.parse::<u32>().is_ok() {
+                    candidates.push(format!("Custom: {raw_filter}"));
+                }
+                self.completion.candidates = candidates;
+            }
+            "setting:reset" => {
+                self.completion.candidates = Self::SETTING_KEYS
+                    .iter()
+                    .filter(|key| filter.is_empty() || key.starts_with(&filter))
+                    .map(|key| (*key).to_string())
+                    .collect();
+            }
             _ => self.completion.candidates.clear(),
         }
 
@@ -1230,18 +1593,77 @@ impl App {
                 .candidates
                 .iter()
                 .position(|c| !self.character_name.is_empty() && c == &self.character_name),
+            "setting" => self.completion.candidates.iter().position(|c| {
+                let key = Self::setting_key_from_row(c);
+                self.setting_scope_is_override(key)
+            }),
+            "setting:reasoning_effort"
+            | "setting:thinking_enabled"
+            | "setting:cache_ttl"
+            | "setting:max_tokens"
+            | "setting:budget_tokens" => {
+                let key = parent.strip_prefix("setting:").unwrap_or_default();
+                self.completion
+                    .candidates
+                    .iter()
+                    .position(|c| self.is_effective_setting_candidate(key, c))
+            }
             _ => None,
         };
+    }
+
+    fn filtered_presets(presets: &[&str], filter: &str) -> Vec<String> {
+        presets
+            .iter()
+            .filter(|preset| filter.is_empty() || preset.starts_with(filter))
+            .map(|preset| (*preset).to_string())
+            .collect()
     }
 
     /// Enter a submenu picker for the given parent command. Saves the
     /// current `cmd_text`/cursor for restoration on Esc, clears the
     /// input so the filter starts empty, and rebuilds candidates.
     pub fn enter_submenu(&mut self, parent: &str) {
+        if parent == "setting" {
+            self.sampler_settings_loading = true;
+        }
         let saved_cmd_text = self.input.cmd_text.clone();
         let saved_cmd_cursor = self.input.cmd_cursor;
         self.completion.mode = PaletteMode::Submenu(SubmenuState {
             parent: parent.to_string(),
+            saved_cmd_text,
+            saved_cmd_cursor,
+        });
+        self.input.cmd_text.clear();
+        self.input.cmd_cursor = 0;
+        self.update_completions();
+    }
+
+    fn saved_palette_input(&self) -> (String, usize) {
+        match &self.completion.mode {
+            PaletteMode::Submenu(s) => (s.saved_cmd_text.clone(), s.saved_cmd_cursor),
+            PaletteMode::ValueEditor(s) => (s.saved_cmd_text.clone(), s.saved_cmd_cursor),
+            PaletteMode::Top => (self.input.cmd_text.clone(), self.input.cmd_cursor),
+        }
+    }
+
+    pub fn switch_submenu(&mut self, parent: &str) {
+        let (saved_cmd_text, saved_cmd_cursor) = self.saved_palette_input();
+        self.completion.mode = PaletteMode::Submenu(SubmenuState {
+            parent: parent.to_string(),
+            saved_cmd_text,
+            saved_cmd_cursor,
+        });
+        self.input.cmd_text.clear();
+        self.input.cmd_cursor = 0;
+        self.update_completions();
+    }
+
+    pub fn enter_value_editor(&mut self, key: &str, kind: ValueEditorKind) {
+        let (saved_cmd_text, saved_cmd_cursor) = self.saved_palette_input();
+        self.completion.mode = PaletteMode::ValueEditor(ValueEditorState {
+            key: key.to_string(),
+            kind,
             saved_cmd_text,
             saved_cmd_cursor,
         });
@@ -1260,6 +1682,96 @@ impl App {
         self.update_completions();
     }
 
+    pub fn exit_value_editor(&mut self) {
+        if let PaletteMode::ValueEditor(s) = std::mem::take(&mut self.completion.mode) {
+            self.input.cmd_text = s.saved_cmd_text;
+            self.input.cmd_cursor = s.saved_cmd_cursor;
+        }
+        self.update_completions();
+    }
+
+    pub fn adjust_value_editor(&mut self, direction: f64) {
+        let PaletteMode::ValueEditor(state) = &mut self.completion.mode else {
+            return;
+        };
+        match &mut state.kind {
+            ValueEditorKind::Slider {
+                min,
+                max,
+                step,
+                current,
+                typed,
+                dirty,
+            } => {
+                *current =
+                    Self::quantize_slider_value(*min, *max, *step, *current + *step * direction);
+                *typed = None;
+                *dirty = true;
+            }
+        }
+    }
+
+    pub fn type_value_editor_char(&mut self, c: char) {
+        let PaletteMode::ValueEditor(state) = &mut self.completion.mode else {
+            return;
+        };
+        match &mut state.kind {
+            ValueEditorKind::Slider { typed, dirty, .. } => {
+                typed.get_or_insert_with(String::new).push(c);
+                *dirty = true;
+            }
+        }
+    }
+
+    pub fn backspace_value_editor(&mut self) {
+        let PaletteMode::ValueEditor(state) = &mut self.completion.mode else {
+            return;
+        };
+        match &mut state.kind {
+            ValueEditorKind::Slider { typed, dirty, .. } => {
+                if let Some(value) = typed {
+                    value.pop();
+                    if value.is_empty() {
+                        *typed = None;
+                    }
+                    *dirty = true;
+                }
+            }
+        }
+    }
+
+    pub fn apply_value_editor(&mut self) -> Option<String> {
+        let state = match &self.completion.mode {
+            PaletteMode::ValueEditor(state) => state.clone(),
+            _ => return None,
+        };
+        if Self::is_setting_key(&state.key) && !self.setting_editors_ready() {
+            return None;
+        }
+        let value = match state.kind {
+            ValueEditorKind::Slider {
+                min,
+                max,
+                current,
+                typed,
+                ..
+            } => {
+                if let Some(typed) = typed {
+                    let parsed = typed.parse::<f64>().ok()?;
+                    if !(min..=max).contains(&parsed) {
+                        return None;
+                    }
+                    typed
+                } else {
+                    Self::format_slider_number(current)
+                }
+            }
+        };
+        self.completion.clear();
+        self.input.exit_command_mode();
+        Some(format!("setting {} {value}", state.key))
+    }
+
     /// Apply the currently selected submenu candidate. Returns the full
     /// command string (e.g. `"model gpt-4o"`) for the caller to feed
     /// into `parse_command`. Clears completion state and exits command
@@ -1271,6 +1783,48 @@ impl App {
         };
         let idx = self.completion.selected?;
         let chosen = self.completion.candidates.get(idx)?.clone();
+        if parent == "setting" {
+            if !self.setting_editors_ready() {
+                return None;
+            }
+            let key = Self::setting_key_from_row(&chosen).to_string();
+            if key == "reset" {
+                self.switch_submenu("setting:reset");
+                return None;
+            }
+            if let Some(kind) = self.slider_kind_for_setting(&key) {
+                self.enter_value_editor(&key, kind);
+                return None;
+            }
+            self.switch_submenu(&format!("setting:{key}"));
+            return None;
+        }
+
+        if parent == "setting:reset" {
+            if !self.setting_editors_ready() {
+                return None;
+            }
+            self.completion.clear();
+            self.input.exit_command_mode();
+            return Some(format!("setting reset {chosen}"));
+        }
+
+        if let Some(key) = parent.strip_prefix("setting:") {
+            if !self.setting_editors_ready() {
+                return None;
+            }
+            let value = chosen
+                .strip_prefix("Custom: ")
+                .unwrap_or(chosen.as_str())
+                .trim();
+            self.completion.clear();
+            self.input.exit_command_mode();
+            if value == "reset" {
+                return Some(format!("setting reset {key}"));
+            }
+            return Some(format!("setting {key} {value}"));
+        }
+
         self.completion.clear();
         self.input.exit_command_mode();
         Some(format!("{parent} {chosen}"))

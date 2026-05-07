@@ -425,6 +425,9 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
 }
 
 fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
+    if matches!(app.completion.mode, PaletteMode::ValueEditor(_)) {
+        return handle_value_editor_mode(app, key);
+    }
     if matches!(app.completion.mode, PaletteMode::Submenu(_)) {
         return handle_submenu_mode(app, key);
     }
@@ -588,6 +591,48 @@ fn handle_submenu_mode(app: &mut App, key: KeyEvent) -> Action {
     }
 }
 
+fn handle_value_editor_mode(app: &mut App, key: KeyEvent) -> Action {
+    match (key.modifiers, key.code) {
+        (KeyModifiers::NONE, KeyCode::Esc) => {
+            app.exit_value_editor();
+            Action::Redraw
+        }
+
+        (KeyModifiers::NONE, KeyCode::Left) | (KeyModifiers::CONTROL, KeyCode::Char('h')) => {
+            app.adjust_value_editor(-1.0);
+            Action::Redraw
+        }
+
+        (KeyModifiers::NONE, KeyCode::Right) | (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
+            app.adjust_value_editor(1.0);
+            Action::Redraw
+        }
+
+        (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c))
+            if c.is_ascii_digit() || c == '.' || c == '-' =>
+        {
+            app.type_value_editor_char(c);
+            Action::Redraw
+        }
+
+        (_, KeyCode::Backspace) => {
+            app.backspace_value_editor();
+            Action::Redraw
+        }
+
+        (KeyModifiers::NONE, KeyCode::Enter) => {
+            if let Some(cmd) = app.apply_value_editor() {
+                parse_command(app, &cmd)
+            } else {
+                app.set_status("invalid value");
+                Action::Redraw
+            }
+        }
+
+        _ => Action::None,
+    }
+}
+
 fn handle_alt_picker_mode(app: &mut App, key: KeyEvent) -> Action {
     match (key.modifiers, key.code) {
         (KeyModifiers::NONE, KeyCode::Esc) => {
@@ -631,6 +676,7 @@ fn submenu_fetch_action(parent: &str) -> Action {
     let name = match parent {
         "model" => "list_models",
         "character" => "list_characters",
+        "setting" => "model_settings",
         _ => return Action::Redraw,
     };
     Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
