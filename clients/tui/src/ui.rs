@@ -1054,7 +1054,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::White),
         )),
         Line::from(Span::styled(
-            "    :memory  :compact  :regen  :status",
+            "    :memory  :compact  :regen",
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(""),

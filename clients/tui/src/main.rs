@@ -998,12 +998,6 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                         }
                     }
                 }
-                "status" => {
-                    if let Some(character) = co.data.get("character").and_then(|v| v.as_str()) {
-                        app.character_name = character.to_string();
-                    }
-                    app.set_active_model(co.data.get("active_model").and_then(|v| v.as_str()));
-                }
                 "list_characters" => {
                     if let Some(chars) = co.data.get("characters").and_then(|v| v.as_array()) {
                         let active = co.data.get("active").and_then(|v| v.as_str()).unwrap_or("");

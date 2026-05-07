@@ -728,18 +728,11 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 if include_hidden {
                     args["include_hidden"] = serde_json::json!(true);
                 }
-                Action::SendMulti(vec![
-                    ConnCommand::Send(ClientMessage::Command(Command {
-                        rid: None,
-                        name: "switch_model".into(),
-                        args,
-                    })),
-                    ConnCommand::Send(ClientMessage::Command(Command {
-                        rid: None,
-                        name: "status".into(),
-                        args: serde_json::json!({}),
-                    })),
-                ])
+                Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
+                    name: "switch_model".into(),
+                    args,
+                })))
             }
         }
 
@@ -786,13 +779,6 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 Action::Redraw
             }
         }
-
-        "status" => Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-            rid: None,
-
-            name: "status".into(),
-            args: serde_json::json!({}),
-        }))),
 
         "memory" => {
             if arg.is_empty() {

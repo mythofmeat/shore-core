@@ -1026,7 +1026,6 @@ impl App {
         ("regen", "Regenerate the last assistant reply"),
         ("setting", "View or change sampler settings"),
         ("speak", "Toggle TTS or replay the last message"),
-        ("status", "Show connection and session status"),
         ("alt", "Choose an alternate response"),
         ("sys", "Inject a system instruction"),
     ];
