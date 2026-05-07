@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added a SillyTavern JSONL history importer and made `search_history` search
+  stored alternate assistant replies, not just the currently selected body.
 - Removed runtime memory-gate behavior (`memory`, `memory_read`,
   `memory_write`) so workspace tools treat `memory/...` as ordinary workspace
   paths. Private mode now hides only `search_history` and `exec`, and legacy

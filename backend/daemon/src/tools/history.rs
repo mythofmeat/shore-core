@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shore_protocol::types::{Message, Role};
 
 use crate::engine::messages::MessageStore;
@@ -106,16 +106,41 @@ fn push_matches(
         if results.len() >= max_results {
             return;
         }
-        if !message.content.to_lowercase().contains(query_lower) {
-            continue;
+
+        if message.content.to_lowercase().contains(query_lower) {
+            results.push(json!({
+                "msg_id": message.msg_id,
+                "role": role_label(&message.role),
+                "timestamp": message.timestamp,
+                "source": source,
+                "excerpt": excerpt_for(&message.content, query),
+            }));
         }
-        results.push(json!({
-            "msg_id": message.msg_id,
-            "role": role_label(&message.role),
-            "timestamp": message.timestamp,
-            "source": source,
-            "excerpt": excerpt_for(&message.content, query),
-        }));
+
+        for (index, alternative) in message.alternatives.iter().enumerate() {
+            if results.len() >= max_results {
+                return;
+            }
+            if alternative.content == message.content
+                || !alternative.content.to_lowercase().contains(query_lower)
+            {
+                continue;
+            }
+            let alt_source = format!("{source}:alt:{index}");
+            results.push(json!({
+                "msg_id": message.msg_id,
+                "role": role_label(&message.role),
+                "timestamp": if alternative.timestamp.is_empty() {
+                    &message.timestamp
+                } else {
+                    &alternative.timestamp
+                },
+                "source": alt_source,
+                "alternative_index": index,
+                "alternative_count": message.alternatives.len(),
+                "excerpt": excerpt_for(&alternative.content, query),
+            }));
+        }
     }
 }
 
@@ -184,7 +209,7 @@ pub async fn handle_search_history(
 mod tests {
     use super::*;
     use crate::test_support::TestToolContext;
-    use shore_protocol::types::ContentBlock;
+    use shore_protocol::types::{ContentBlock, MessageAlternative};
 
     fn msg(id: &str, role: Role, content: &str) -> Message {
         Message {
@@ -240,5 +265,46 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0]["msg_id"], "old");
         assert_eq!(hits[1]["msg_id"], "active");
+    }
+
+    #[tokio::test]
+    async fn search_history_finds_stored_alternatives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let character_dir = tmp.path();
+
+        let mut active = msg("active", Role::Assistant, "Tea came up again today.");
+        active.alt_index = Some(0);
+        active.alt_count = Some(2);
+        active.alternatives = vec![
+            MessageAlternative {
+                content: active.content.clone(),
+                images: vec![],
+                content_blocks: active.content_blocks.clone(),
+                timestamp: active.timestamp.clone(),
+            },
+            MessageAlternative {
+                content: "Coffee came up in a regenerated reply.".to_string(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "Coffee came up in a regenerated reply.".to_string(),
+                }],
+                timestamp: "2026-01-01T00:01:00Z".to_string(),
+            },
+        ];
+        std::fs::write(
+            character_dir.join("active.jsonl"),
+            format!("{}\n", active.serialize_for_storage().unwrap()),
+        )
+        .unwrap();
+
+        let ctx = TestToolContext::new().with_character_data_dir(character_dir.to_str().unwrap());
+        let result = handle_search_history(json!({"query": "coffee"}), &ctx)
+            .await
+            .unwrap();
+        let hits = result["results"].as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["msg_id"], "active");
+        assert_eq!(hits[0]["source"], "active:alt:1");
+        assert_eq!(hits[0]["alternative_index"], 1);
     }
 }
