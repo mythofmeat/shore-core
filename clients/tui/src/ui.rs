@@ -271,44 +271,6 @@ fn indent_lines(src: Vec<Line<'static>>) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// Pre-wrap raw text so each line fits within `max_width` columns.
-/// Preserves code blocks, headings, and blockquotes as-is.
-/// Regular text lines are word-wrapped before markdown rendering,
-/// so ratatui's Wrap won't break them (which would lose the indent).
-fn pre_wrap_text(text: &str, max_width: usize) -> String {
-    let mut result = String::new();
-    let mut in_code_block = false;
-
-    for line in text.lines() {
-        if line.starts_with("```") {
-            in_code_block = !in_code_block;
-            if !result.is_empty() {
-                result.push('\n');
-            }
-            result.push_str(line);
-            continue;
-        }
-
-        // Don't wrap inside code blocks, headings, or blockquotes
-        if in_code_block || line.starts_with('#') || line.starts_with("> ") {
-            if !result.is_empty() {
-                result.push('\n');
-            }
-            result.push_str(line);
-            continue;
-        }
-
-        for wrapped in word_wrap(line, max_width) {
-            if !result.is_empty() {
-                result.push('\n');
-            }
-            result.push_str(&wrapped);
-        }
-    }
-
-    result
-}
-
 /// Render the assistant name header for an in-progress streamed turn.
 /// A single turn can span multiple phases (tool_use → final), so this
 /// header is emitted exactly once by the caller.
@@ -362,9 +324,7 @@ fn render_streaming_content(lines: &mut Vec<Line<'static>>, app: &App, content_w
             }
             StreamBlock::Text(s) => {
                 if !s.is_empty() {
-                    lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
-                        s, wrap_w,
-                    ))));
+                    lines.extend(indent_lines(markdown::render_markdown_wrapped(s, wrap_w)));
                     lines.push(Line::from(""));
                 }
             }
@@ -538,9 +498,9 @@ fn build_conversation_lines(
                 )));
                 lines.push(Line::from(""));
                 let wrap_w = content_width.saturating_sub(2) as usize;
-                lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
+                lines.extend(indent_lines(markdown::render_markdown_wrapped(
                     content, wrap_w,
-                ))));
+                )));
                 render_images(
                     &mut lines,
                     images,
@@ -582,9 +542,9 @@ fn build_conversation_lines(
                     content_width,
                 );
                 let wrap_w = content_width.saturating_sub(2) as usize;
-                lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
+                lines.extend(indent_lines(markdown::render_markdown_wrapped(
                     content, wrap_w,
-                ))));
+                )));
                 render_images(
                     &mut lines,
                     images,
