@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Improved `shore-tui` markdown rendering with CommonMark/GFM parsing for
+  headings, lists, task markers, tables, strikethrough, rules, code, and other
+  chat transcript formatting.
+- Fixed `shore-tui` image display for remote daemon connections by embedding
+  image bytes in history/log snapshots and live generated-image events instead
+  of relying on daemon-local filesystem paths.
 - Fixed Matrix avatar sync to read character avatars from
   `characters/<Character>/avatar.{png,jpg,jpeg,webp}` in the Shore config
   directory.
