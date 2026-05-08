@@ -5,7 +5,7 @@
 
 use base64::Engine as _;
 use serde_json::{json, Value};
-use shore_protocol::types::{ContentBlock, ImageRef};
+use shore_protocol::types::{ContentBlock, ImageRef, Message};
 use tracing::{info, warn};
 
 /// Detect MIME type from file extension.
@@ -183,18 +183,38 @@ pub(super) fn ingest_images(
 /// Called before sending Messages over the wire so clients can display images
 /// without needing filesystem access to the server's paths.
 pub(crate) fn embed_image_data(images: &mut [ImageRef]) {
-    use base64::Engine;
     for img in images {
         if img.data.is_some() {
             continue;
         }
-        match std::fs::read(&img.path) {
-            Ok(bytes) => {
-                img.data = Some(base64::engine::general_purpose::STANDARD.encode(&bytes));
-            }
-            Err(e) => {
-                warn!(path = %img.path, error = %e, "Failed to read image for wire embedding");
-            }
+        if let Some(data) = image_data_for_path(&img.path) {
+            img.data = Some(data);
+        }
+    }
+}
+
+/// Populate `data` on every image in a message and its alternate responses.
+pub(crate) fn embed_message_image_data(message: &mut Message) {
+    embed_image_data(&mut message.images);
+    for alt in &mut message.alternatives {
+        embed_image_data(&mut alt.images);
+    }
+}
+
+/// Populate `data` on every image in a message slice before SWP transmission.
+pub(crate) fn embed_messages_image_data(messages: &mut [Message]) {
+    for message in messages {
+        embed_message_image_data(message);
+    }
+}
+
+/// Read and base64-encode an image path for SWP transmission.
+pub(crate) fn image_data_for_path(path: &str) -> Option<String> {
+    match std::fs::read(path) {
+        Ok(bytes) => Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+        Err(e) => {
+            warn!(path = %path, error = %e, "Failed to read image for wire embedding");
+            None
         }
     }
 }
@@ -345,6 +365,72 @@ mod tests {
         assert_no_path_instruction_blocks(
             &content_blocks,
             &[&images[0].path, &src_path_str, "attachments/"],
+        );
+    }
+
+    #[test]
+    fn embed_image_data_reads_files_for_wire_transfer() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let img_path = tmp.path().join("wire.jpg");
+        let bytes = make_jpeg(8, 8);
+        std::fs::write(&img_path, &bytes).unwrap();
+
+        let encoded = image_data_for_path(img_path.to_str().unwrap()).unwrap();
+        assert_eq!(STANDARD.decode(encoded).unwrap(), bytes);
+    }
+
+    #[test]
+    fn embed_message_image_data_includes_alternatives() {
+        use shore_protocol::types::{ContentBlock, ImageRef, MessageAlternative, Role};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let top_path = tmp.path().join("top.jpg");
+        let alt_path = tmp.path().join("alt.jpg");
+        let top_bytes = make_jpeg(8, 8);
+        let alt_bytes = make_jpeg(9, 9);
+        std::fs::write(&top_path, &top_bytes).unwrap();
+        std::fs::write(&alt_path, &alt_bytes).unwrap();
+
+        let mut message = Message {
+            msg_id: "m1".into(),
+            role: Role::Assistant,
+            content: "hello".into(),
+            images: vec![ImageRef {
+                path: top_path.to_string_lossy().to_string(),
+                caption: None,
+                data: None,
+            }],
+            content_blocks: vec![ContentBlock::Text {
+                text: "hello".into(),
+            }],
+            alt_index: None,
+            alt_count: None,
+            alternatives: vec![MessageAlternative {
+                content: "alt".into(),
+                images: vec![ImageRef {
+                    path: alt_path.to_string_lossy().to_string(),
+                    caption: None,
+                    data: None,
+                }],
+                content_blocks: vec![],
+                timestamp: "t".into(),
+            }],
+            timestamp: "t".into(),
+        };
+
+        embed_message_image_data(&mut message);
+
+        assert_eq!(
+            STANDARD
+                .decode(message.images[0].data.as_deref().unwrap())
+                .unwrap(),
+            top_bytes
+        );
+        assert_eq!(
+            STANDARD
+                .decode(message.alternatives[0].images[0].data.as_deref().unwrap())
+                .unwrap(),
+            alt_bytes
         );
     }
 

@@ -204,7 +204,7 @@ pub async fn run_tool_loop(
                                 rid: request.rid.clone(),
                                 path: path.to_string(),
                                 caption,
-                                data: None,
+                                data: crate::handler::image_data_for_path(path),
                             }))
                             .await;
                     }

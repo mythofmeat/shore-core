@@ -132,9 +132,7 @@ pub fn log(
         Some(n) => merged.into_iter().rev().take(n).rev().collect(),
         None => merged,
     };
-    for msg in &mut with_data {
-        crate::handler::embed_image_data(&mut msg.images);
-    }
+    crate::handler::embed_messages_image_data(&mut with_data);
 
     Ok(json!({ "messages": with_data }))
 }

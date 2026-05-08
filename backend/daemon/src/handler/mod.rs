@@ -24,7 +24,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub(crate) use images::{build_content, embed_image_data};
+pub(crate) use images::{
+    build_content, embed_image_data, embed_messages_image_data, image_data_for_path,
+};
 pub(crate) use task::build_llm_messages;
 use task::handle_generation;
 
