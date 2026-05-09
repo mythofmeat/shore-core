@@ -218,6 +218,7 @@ async fn e2e_conversation_milestone() {
         live_speak: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         tts_client: None,
         http: None,
+        mcp_registry: None,
         control_rx,
     });
 
@@ -699,6 +700,7 @@ impl E2EHarness {
             live_speak: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tts_client: None,
             http: None,
+            mcp_registry: None,
             control_rx,
         });
 

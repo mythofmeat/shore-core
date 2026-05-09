@@ -18,6 +18,7 @@ security boundaries, observability, and validation expectations.
 | `backend/llm` | `shore-llm` | provider request/stream handling |
 | `backend/ledger` | `shore-ledger` | usage, pricing, Anthropic cache tracking |
 | `backend/diagnostics` | `shore-diagnostics` | shared diagnostic formatting |
+| `backend/mcp-client` | `shore-mcp-client` | outbound MCP client + subprocess supervisor |
 | `clients/cli` | `shore-cli` | CLI client |
 | `clients/tui` | `shore-tui` | terminal UI |
 | `clients/gui/src-tauri` | `shore-gui` | Tauri desktop client |
