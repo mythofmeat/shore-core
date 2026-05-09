@@ -8,7 +8,15 @@ pub mod types;
 pub const SWP_V1: u32 = 1;
 
 /// Maximum newline-delimited SWP frame size in bytes.
-pub const MAX_WIRE_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+///
+/// Sized to accommodate image attachments after base64 expansion (~33% over
+/// the raw byte size) plus headroom for history snapshots that include
+/// multiple inline images. A 16MB cap, the previous value, was tight enough
+/// that a single ~12MB phone photo encoded to base64 would exceed it and the
+/// server would terminate the connection mid-upload with "Message exceeds
+/// maximum size". 128MB gives plenty of margin for any practical chat-image
+/// workload while still bounding worst-case memory use per frame.
+pub const MAX_WIRE_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
 
 #[cfg(test)]
 mod tests {
@@ -38,7 +46,7 @@ mod tests {
 
     #[test]
     fn wire_message_size_constant() {
-        assert_eq!(MAX_WIRE_MESSAGE_SIZE, 16 * 1024 * 1024);
+        assert_eq!(MAX_WIRE_MESSAGE_SIZE, 128 * 1024 * 1024);
     }
 
     // ── Client messages ───────────────────────────────────────────────
