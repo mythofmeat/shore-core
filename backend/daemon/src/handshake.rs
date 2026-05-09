@@ -67,14 +67,24 @@ pub async fn build_session_history_snapshot(
 
     match engine {
         Some(engine) => {
-            let engine = engine.lock().await;
             let History {
-                messages,
+                mut messages,
                 config: _,
                 selected_character,
                 revision,
                 ..
-            } = engine.history_snapshot(serde_json::json!({}));
+            } = {
+                let engine = engine.lock().await;
+                engine.history_snapshot(serde_json::json!({}))
+            };
+            // Embed image data after dropping the engine lock: the read is
+            // blocking I/O, and remote clients can't pull images from the
+            // daemon's local filesystem on their own. This is the only path
+            // that hands a fresh client (initial handshake, switch_character,
+            // post-reload re-push) a full snapshot — `broadcast_history` on
+            // append/edit/delete intentionally skips embedding because it
+            // would otherwise force lagging clients to disconnect.
+            crate::handler::embed_messages_image_data(&mut messages);
             HistorySnapshot {
                 messages,
                 config,

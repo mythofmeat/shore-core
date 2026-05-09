@@ -7,20 +7,35 @@ use tracing::{debug, warn};
 
 /// Render an image inline using the detected protocol, or fall back to text.
 ///
-/// `path` is the filesystem path to the image.
+/// `path` is the filesystem path to the image (used as a label and as a
+/// fallback when `data` is not provided).
 /// `caption` is an optional human-readable name.
-pub fn render_image(path: &str, caption: Option<&str>) {
+/// `data` is base64-encoded image bytes from the daemon, used when the CLI is
+/// connected to a remote daemon and the file path doesn't exist locally.
+pub fn render_image(path: &str, caption: Option<&str>, data: Option<&str>) {
     let label = caption.unwrap_or(path);
+
+    let bytes = match resolve_bytes(path, data) {
+        Some(bytes) => bytes,
+        None => {
+            debug!(
+                path,
+                "No local file and no embedded data, displaying as text"
+            );
+            println!("[img: {label}]");
+            return;
+        }
+    };
 
     match detect_protocol() {
         Some(ImageProtocol::Kitty) => {
-            if let Err(e) = render_kitty(path) {
+            if let Err(e) = render_kitty(&bytes) {
                 warn!(path, error = %e, "Kitty image render failed");
                 eprintln!("[img: {label}] (kitty render failed: {e})");
             }
         }
         Some(ImageProtocol::Iterm2) => {
-            if let Err(e) = render_iterm2(path, label) {
+            if let Err(e) = render_iterm2(&bytes, label) {
                 warn!(path, error = %e, "iTerm2 image render failed");
                 eprintln!("[img: {label}] (iterm2 render failed: {e})");
             }
@@ -32,13 +47,26 @@ pub fn render_image(path: &str, caption: Option<&str>) {
     }
 }
 
+/// Resolve image bytes from the embedded base64 payload (preferred for remote
+/// daemons) or fall back to reading the local filesystem path.
+fn resolve_bytes(path: &str, data: Option<&str>) -> Option<Vec<u8>> {
+    if let Some(b64) = data {
+        match base64::engine::general_purpose::STANDARD.decode(b64) {
+            Ok(bytes) => return Some(bytes),
+            Err(e) => {
+                warn!(path, error = %e, "failed to decode embedded image data; falling back to path");
+            }
+        }
+    }
+    fs::read(path).ok()
+}
+
 /// Render an image using the Kitty graphics protocol.
 ///
 /// Uses the "transmit and display" action with base64-encoded data,
 /// chunked into 4096-byte pieces per the protocol spec.
-fn render_kitty(path: &str) -> io::Result<()> {
-    let data = fs::read(path)?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+fn render_kitty(data: &[u8]) -> io::Result<()> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(data);
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
@@ -74,9 +102,8 @@ fn render_kitty(path: &str) -> io::Result<()> {
 }
 
 /// Render an image using the iTerm2 inline images protocol.
-fn render_iterm2(path: &str, name: &str) -> io::Result<()> {
-    let data = fs::read(path)?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+fn render_iterm2(data: &[u8], name: &str) -> io::Result<()> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(data);
     let name_b64 = base64::engine::general_purpose::STANDARD.encode(name);
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -200,5 +227,42 @@ mod tests {
     fn display_protocol_names() {
         assert_eq!(ImageProtocol::Kitty.to_string(), "kitty");
         assert_eq!(ImageProtocol::Iterm2.to_string(), "iterm2");
+    }
+
+    // ── resolve_bytes ────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_bytes_prefers_embedded_data_over_path() {
+        // When the daemon embeds image data, the CLI must use it instead of
+        // hitting the daemon's local filesystem path — that path may not
+        // exist on the CLI's host (remote daemon case).
+        let bytes = b"remote-embedded".to_vec();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let resolved = resolve_bytes("/nonexistent/remote/path.png", Some(&b64));
+        assert_eq!(resolved.as_deref(), Some(bytes.as_slice()));
+    }
+
+    #[test]
+    fn resolve_bytes_falls_back_to_path_when_data_absent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("local.png");
+        std::fs::write(&path, b"local-fs").unwrap();
+        let resolved = resolve_bytes(path.to_str().unwrap(), None);
+        assert_eq!(resolved.as_deref(), Some(b"local-fs".as_slice()));
+    }
+
+    #[test]
+    fn resolve_bytes_returns_none_when_neither_works() {
+        let resolved = resolve_bytes("/no/such/file.png", None);
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn resolve_bytes_falls_back_to_path_on_bad_base64() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("backup.png");
+        std::fs::write(&path, b"backup").unwrap();
+        let resolved = resolve_bytes(path.to_str().unwrap(), Some("not!valid!base64!"));
+        assert_eq!(resolved.as_deref(), Some(b"backup".as_slice()));
     }
 }

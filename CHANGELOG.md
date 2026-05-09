@@ -7,7 +7,12 @@
   chat transcript formatting.
 - Fixed `shore-tui` image display for remote daemon connections by embedding
   image bytes in history/log snapshots and live generated-image events instead
-  of relying on daemon-local filesystem paths.
+  of relying on daemon-local filesystem paths. Embedding now happens only at
+  the handshake/log paths so per-message broadcasts stay small and clients no
+  longer disconnect from broadcast-channel lag when sending images.
+- Fixed `shore` (CLI) image display for remote daemon connections by rendering
+  inline images from the daemon-embedded base64 payload before falling back to
+  the local filesystem path.
 - Fixed Matrix avatar sync to read character avatars from
   `characters/<Character>/avatar.{png,jpg,jpeg,webp}` in the Shore config
   directory.

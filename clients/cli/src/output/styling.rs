@@ -136,13 +136,13 @@ pub fn print_server_error(code: &str, message: &str) {
 
 /// Render an inline image from a SendImage server message.
 pub fn print_send_image(img: &SendImage) {
-    images::render_image(&img.path, img.caption.as_deref());
+    images::render_image(&img.path, img.caption.as_deref(), img.data.as_deref());
 }
 
 /// Render inline images from a message's image references.
 pub fn print_image_refs(refs: &[ImageRef]) {
     for img in refs {
-        images::render_image(&img.path, img.caption.as_deref());
+        images::render_image(&img.path, img.caption.as_deref(), img.data.as_deref());
     }
 }
 

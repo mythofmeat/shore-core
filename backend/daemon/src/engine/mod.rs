@@ -306,8 +306,17 @@ impl ConversationEngine {
     }
 
     pub fn history_snapshot(&self, config: serde_json::Value) -> History {
-        let mut merged = shore_protocol::merge::merge_tool_loop_messages(self.messages.messages());
-        crate::handler::embed_messages_image_data(&mut merged);
+        // Image data is intentionally NOT embedded here. This snapshot drives
+        // `broadcast_history`, which fires after every append/edit/delete —
+        // re-reading every image file from disk on each broadcast produced
+        // multi-MB messages that filled the broadcast channel and forced
+        // lagging clients to disconnect. Remote clients receive embedded data
+        // via the handshake snapshot (`build_session_history_snapshot`),
+        // `NewMessage` for new images, `SendImage` for tool-generated images,
+        // and explicit `log` / `list_alternatives` commands; later state
+        // changes never introduce new images, so the client's cache (keyed by
+        // path) is still valid.
+        let merged = shore_protocol::merge::merge_tool_loop_messages(self.messages.messages());
         History {
             rid: None,
             messages: merged,
@@ -445,14 +454,17 @@ mod tests {
     }
 
     #[test]
-    fn history_snapshot_embeds_image_data_for_remote_clients() {
-        use base64::Engine as _;
+    fn history_snapshot_does_not_embed_image_data() {
+        // Embedding here is a regression: it fires on every append/edit/delete
+        // via `broadcast_history`, balloons broadcast messages with multi-MB
+        // base64 payloads, and forces clients to disconnect on broadcast lag.
+        // Remote clients pick up image data through the handshake snapshot,
+        // `NewMessage`, and explicit log commands instead.
         use shore_protocol::types::ImageRef;
 
         let tmp = TempDir::new().unwrap();
         let img_path = tmp.path().join("remote-client-image.bin");
-        let bytes = b"image bytes visible over swp";
-        std::fs::write(&img_path, bytes).unwrap();
+        std::fs::write(&img_path, b"image bytes").unwrap();
 
         let (mut engine, _rx) = make_engine(&tmp);
         let mut msg = make_msg("m1", Role::Assistant, "an image");
@@ -464,12 +476,9 @@ mod tests {
         engine.append_message(msg).unwrap();
 
         let history = engine.history_snapshot(serde_json::json!({}));
-        let data = history.messages[0].images[0].data.as_deref().unwrap();
-        assert_eq!(
-            base64::engine::general_purpose::STANDARD
-                .decode(data)
-                .unwrap(),
-            bytes
+        assert!(
+            history.messages[0].images[0].data.is_none(),
+            "history_snapshot must not embed image data; embedding belongs in handshake/log paths"
         );
     }
 
