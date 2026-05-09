@@ -7,15 +7,13 @@
   chat transcript formatting.
 - Fixed `shore-tui` image display for remote daemon connections by embedding
   image bytes in history/log snapshots and live generated-image events instead
-  of relying on daemon-local filesystem paths. Embedding now happens only at
-  the handshake/log paths so per-message broadcasts stay small and clients no
-  longer disconnect from broadcast-channel lag when sending images.
+  of relying on daemon-local filesystem paths.
 - Fixed `shore` (CLI) image display for remote daemon connections by rendering
   inline images from the daemon-embedded base64 payload before falling back to
   the local filesystem path.
 - Raised the SWP wire-frame ceiling from 16MB to 128MB so phone-camera-sized
   image attachments (which expand ~33% when base64-encoded) no longer trip the
-  daemon's per-frame size guard and force the client to disconnect mid-upload.
+  per-frame size guard and force the client to disconnect mid-upload.
 - Fixed Matrix avatar sync to read character avatars from
   `characters/<Character>/avatar.{png,jpg,jpeg,webp}` in the Shore config
   directory.
