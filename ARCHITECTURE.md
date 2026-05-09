@@ -331,6 +331,49 @@ Provider keys come from environment variables or `.env` in the config directory.
 Do not commit real keys, captured Authorization headers, or private profile
 data.
 
+### Outbound MCP
+
+Shore can spawn external MCP servers and expose their tools to characters as
+namespaced names of the form `mcp__<server>__<tool>`. Configured under
+`[mcp.servers.<name>]`; see `CONFIGURATION.md` for the full reference.
+
+Implementation lives in two crates:
+
+- `backend/mcp-client` — thin `rmcp` wrapper. Per-server supervisor task
+  spawns the configured executable as a `TokioChildProcess`, performs the
+  MCP initialize handshake, calls `tools/list`, and waits on the running
+  service until it exits. Restart shape matches `backend/daemon/src/supervisor.rs`:
+  exponential backoff (1s, 2s, 4s, 8s, 16s, capped at 32s), 5 consecutive
+  failures before giving up. `kill_on_drop` and `cancellation_token` keep
+  child processes from leaking on daemon shutdown.
+- `backend/daemon/src/mcp` — registry + dispatch glue + policy. Owns a
+  `HashMap<server, ServerEntry>` where each entry holds a clone of the
+  supervisor handle plus the per-server `allowed_tools` allowlist and
+  `allow_destructive` flag. Routes `mcp__*` tool calls to the right server
+  via the `McpDispatch` trait surfaced through `ToolContext`.
+
+Privilege model is read-only by default with three layers:
+
+1. First-party MCP servers (`dev/mcp-servers/*`) don't expose write tools.
+2. Per-server `allowed_tools` allowlist in config — empty allowlist registers
+   nothing. Tool names not on the list are rejected at registration *and* at
+   dispatch time.
+3. Tools whose MCP `destructiveHint` annotation is `true` are refused unless
+   `allow_destructive = true` for that server. Re-checked at dispatch time so
+   a server upgrade flipping a tool's hint can't slip past the cached list.
+
+Per-character enablement uses Shore's existing config deep-merge: define
+servers globally with `enabled = false`, then override `enabled = true` under
+`characters/<Character>/config.toml`. The registry is constructed once at
+daemon startup against the *global* config; per-character filtering happens
+through the merged `effective_config` passed to each generation. Tool list is
+session-frozen — adding, removing, or re-enabling a server requires a daemon
+restart, which is intentional cache-discipline behavior.
+
+Outbound MCP is distinct from `backend/daemon/src/engine/mcp_session.rs` and
+`http/mcp.rs`, which expose Shore *to* external MCP clients (used by the
+`shore-mcp` debug binary and by the `claude_code` provider's callback).
+
 ## Autonomy
 
 Autonomy is implemented as heartbeat state plus an async manager. It is disabled

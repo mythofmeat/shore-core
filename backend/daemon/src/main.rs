@@ -324,18 +324,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Construct the outbound MCP registry. The registry is daemon-owned and
-    // shared across the message handler + autonomy manager. Spawning of
-    // configured MCP server subprocesses happens lazily inside the registry
-    // (eager-spawn, render-as-they-arrive — characters see whatever tools
-    // have completed handshake at the moment their session starts).
-    //
-    // For now this is an empty skeleton; real spawning lands once the
-    // shore-mcp-client supervisor is wired up.
-    let mcp_registry = if loaded.app.mcp.servers.is_empty() {
-        None
-    } else {
-        Some(Arc::new(shore_daemon::mcp::McpRegistry::empty()))
-    };
+    // shared across the message handler + autonomy manager. Spawning is
+    // eager: every enabled server's supervisor task starts immediately
+    // and characters see tools as they complete handshake. A misconfigured
+    // server logs and is dropped — the daemon continues without it.
+    let mcp_registry = shore_daemon::mcp::McpRegistry::start(&loaded.app.mcp, shutdown_rx.clone());
 
     // Provide the autonomy manager with resources for heartbeat/keepalive execution.
     autonomy.set_resources(

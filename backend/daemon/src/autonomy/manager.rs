@@ -1377,7 +1377,6 @@ fn rebuild_request_from_disk(
 
     let tool_defs = if config.app.behavior.tool_use.enabled {
         let extra = mcp_registry
-            .as_deref()
             .map(|r| r.dynamic_tool_defs())
             .unwrap_or_default();
         Some(tool_system::render_tool_defs(

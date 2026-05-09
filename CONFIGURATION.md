@@ -520,6 +520,48 @@ port = 6167
 admin_password = "change-me"
 ```
 
+## `[mcp.servers.*]`
+
+Outbound MCP servers — external processes Shore spawns and supervises so
+characters can call their tools. Each entry is a stdio MCP server identified
+by the table key, exposed to characters as namespaced tools named
+`mcp__<key>__<tool>`.
+
+```toml
+[mcp.servers.hello]
+command = "python3"
+args = ["/abs/path/to/dev/mcp-servers/hello/hello.py"]
+env = {}
+allowed_tools = ["say_hello"]
+allow_destructive = false
+enabled = true
+```
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `command` | required | Executable to spawn (absolute path or PATH-resolved binary). |
+| `args` | `[]` | Arguments passed to the executable. |
+| `env` | `{}` | Environment variables set on the spawned process. |
+| `allowed_tools` | `[]` | Allowlist of tool names (unprefixed) Shore will register. **Empty = no tools.** Adding a tool requires explicitly listing it here. |
+| `allow_destructive` | `false` | When `false`, tools whose MCP `destructiveHint` annotation is `true` are refused at registration and at dispatch. Set to `true` only with intent. |
+| `enabled` | `false` | Whether to spawn this server. Default off; set per-character via the deep-merge config layer to enable for one character only. |
+
+Per-character enablement uses Shore's existing config deep-merge — set
+`enabled = true` under `characters/<Character>/config.toml` to expose the
+server only to that character without changing the global file.
+
+The tool list is computed once per session and frozen — adding, removing, or
+enabling a server takes effect after a daemon restart. This is intentional
+and preserves Anthropic prompt-cache behavior.
+
+Misconfigured or crashing servers are restarted with exponential backoff
+(1s, 2s, 4s, 8s, 16s, capped at 32s) for up to 5 consecutive failures, then
+dropped. The daemon continues without them and logs a warning.
+
+Outbound MCP is distinct from `dev/mcp/`'s `shore-mcp` debug server, which
+exposes Shore *to* external MCP clients. The two share the underlying
+`rmcp` crate but otherwise don't overlap.
+
 ## Validation
 
 ```sh

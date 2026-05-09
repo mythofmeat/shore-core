@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Added outbound MCP client support so characters can call tools on external
+  MCP servers. New `[mcp.servers.<name>]` config section spawns and supervises
+  stdio MCP servers, exposing their tools as `mcp__<server>__<tool>`.
+  Read-only by default: tools are gated by a per-server `allowed_tools`
+  allowlist plus a `destructiveHint` refusal that requires explicit
+  `allow_destructive = true` opt-in. Per-character enablement is driven by
+  the existing config deep-merge — set `enabled = true` under a character's
+  `config.toml` to expose the server only to that character. The first-party
+  hello-world server in `dev/mcp-servers/hello/` provides an end-to-end
+  smoke test path. See `CONFIGURATION.md` for the full reference and
+  `ARCHITECTURE.md` for the privilege model and supervisor lifecycle.
 - Improved `shore-tui` markdown rendering with CommonMark/GFM parsing for
   headings, lists, task markers, tables, strikethrough, rules, code, and other
   chat transcript formatting.
