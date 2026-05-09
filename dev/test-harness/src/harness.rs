@@ -138,6 +138,7 @@ impl TestHarness {
             config.clone(),
             notifier.clone(),
             None,
+            None,
         );
         autonomy.set_registry(char_registry.clone());
 
@@ -177,6 +178,7 @@ impl TestHarness {
             live_speak: Arc::new(AtomicBool::new(false)),
             tts_client: None,
             http: None,
+            mcp_registry: None,
             control_rx,
         });
 

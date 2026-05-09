@@ -323,6 +323,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         llm_client.reconstruct_cache_state(&character, 3600);
     }
 
+    // Construct the outbound MCP registry. The registry is daemon-owned and
+    // shared across the message handler + autonomy manager. Spawning of
+    // configured MCP server subprocesses happens lazily inside the registry
+    // (eager-spawn, render-as-they-arrive — characters see whatever tools
+    // have completed handshake at the moment their session starts).
+    //
+    // For now this is an empty skeleton; real spawning lands once the
+    // shore-mcp-client supervisor is wired up.
+    let mcp_registry = if loaded.app.mcp.servers.is_empty() {
+        None
+    } else {
+        Some(Arc::new(shore_daemon::mcp::McpRegistry::empty()))
+    };
+
     // Provide the autonomy manager with resources for heartbeat/keepalive execution.
     autonomy.set_resources(
         llm_client.clone(),
@@ -330,6 +344,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loaded.clone(),
         notifier.clone(),
         http_state.clone(),
+        mcp_registry.clone(),
     );
     autonomy.set_registry(char_registry.clone());
 
@@ -379,6 +394,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         live_speak,
         tts_client,
         http: http_state.clone(),
+        mcp_registry,
         control_rx: handler_control_rx,
     });
 

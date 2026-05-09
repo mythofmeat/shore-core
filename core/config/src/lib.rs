@@ -1,5 +1,6 @@
 pub mod app;
 pub mod duration;
+pub mod mcp;
 pub mod models;
 pub mod providers;
 

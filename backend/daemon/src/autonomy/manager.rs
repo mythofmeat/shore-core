@@ -58,6 +58,7 @@ struct TickContext {
     notifier: Option<NotificationService>,
     registry: Option<Arc<tokio::sync::Mutex<CharacterRegistry>>>,
     http: Option<Arc<crate::http::DaemonHttpState>>,
+    mcp_registry: Option<Arc<crate::mcp::McpRegistry>>,
 }
 
 struct HeartbeatToolContext {
@@ -313,6 +314,8 @@ pub struct AutonomyManager {
     registry: Option<Arc<tokio::sync::Mutex<CharacterRegistry>>>,
     /// Optional daemon HTTP listener state for providers that need callbacks.
     http: Option<Arc<crate::http::DaemonHttpState>>,
+    /// Optional outbound MCP registry for character-driven external tools.
+    mcp_registry: Option<Arc<crate::mcp::McpRegistry>>,
 }
 
 impl AutonomyManager {
@@ -335,6 +338,7 @@ impl AutonomyManager {
             notifier: None,
             registry: None,
             http: None,
+            mcp_registry: None,
         }
     }
 
@@ -347,12 +351,14 @@ impl AutonomyManager {
         loaded_config: LoadedConfig,
         notifier: NotificationService,
         http: Option<Arc<crate::http::DaemonHttpState>>,
+        mcp_registry: Option<Arc<crate::mcp::McpRegistry>>,
     ) {
         self.llm_client = Some(llm_client);
         self.push_tx = Some(push_tx);
         self.loaded_config = Some(Arc::new(loaded_config));
         self.notifier = Some(notifier);
         self.http = http;
+        self.mcp_registry = mcp_registry;
     }
 
     /// Reload runtime autonomy and compaction configuration after `config_reset`.
@@ -459,6 +465,7 @@ impl AutonomyManager {
         let notifier = self.notifier.clone();
         let registry = self.registry.clone();
         let http = self.http.clone();
+        let mcp_registry = self.mcp_registry.clone();
 
         let tick_ctx = TickContext {
             state,
@@ -470,6 +477,7 @@ impl AutonomyManager {
             notifier,
             registry,
             http,
+            mcp_registry,
         };
         let handle = tokio::spawn(async move {
             character_tick_loop(name, tick_ctx, shutdown_rx).await;
@@ -1017,6 +1025,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                 ctx.notifier.as_ref(),
                 ctx.registry.as_ref(),
                 ctx.http.as_ref(),
+                ctx.mcp_registry.as_ref(),
             )
             .await;
         }
@@ -1284,6 +1293,7 @@ fn rebuild_request_from_disk(
     character: &str,
     data_dir: &Path,
     config: &LoadedConfig,
+    mcp_registry: Option<&Arc<crate::mcp::McpRegistry>>,
 ) -> Option<LlmRequest> {
     use crate::engine::messages::MessageStore;
     use crate::engine::prompt::{self, PromptParams};
@@ -1366,11 +1376,16 @@ fn rebuild_request_from_disk(
     );
 
     let tool_defs = if config.app.behavior.tool_use.enabled {
+        let extra = mcp_registry
+            .as_deref()
+            .map(|r| r.dynamic_tool_defs())
+            .unwrap_or_default();
         Some(tool_system::render_tool_defs(
             false,
             tool_toggles,
             character,
             &display_name,
+            &extra,
         ))
     } else {
         None
@@ -1470,6 +1485,7 @@ async fn execute_heartbeat_tick(
     notifier: Option<&NotificationService>,
     registry: Option<&Arc<tokio::sync::Mutex<CharacterRegistry>>>,
     http: Option<&Arc<crate::http::DaemonHttpState>>,
+    mcp_registry: Option<&Arc<crate::mcp::McpRegistry>>,
 ) {
     let Some(client) = llm_client else { return };
 
@@ -1481,7 +1497,7 @@ async fn execute_heartbeat_tick(
             None => {
                 drop(s);
                 let Some(config) = loaded_config else { return };
-                match rebuild_request_from_disk(character, data_dir, config) {
+                match rebuild_request_from_disk(character, data_dir, config, mcp_registry) {
                     Some(req) => {
                         // Persist the rebuilt request so keepalive pings can
                         // use it — without this, pings silently no-op after
@@ -2499,6 +2515,7 @@ mod tests {
             notifier: None,
             registry: None,
             http: None,
+            mcp_registry: None,
         };
         tick_character("alice", &tick_ctx).await;
     }
@@ -2622,6 +2639,7 @@ mod tests {
             notifier: None,
             registry: None,
             http: None,
+            mcp_registry: None,
         }
     }
 
@@ -2856,7 +2874,7 @@ api_key_env = "{api_key_env}"
             },
         );
 
-        let request = rebuild_request_from_disk("alice", &data_dir, &config).unwrap();
+        let request = rebuild_request_from_disk("alice", &data_dir, &config, None).unwrap();
         let assistant = request
             .messages
             .iter()
@@ -3273,6 +3291,7 @@ api_key_env = "{heartbeat_env}"
             notifier: None,
             registry: None,
             http: None,
+            mcp_registry: None,
         };
 
         tick_character("alice", &tick_ctx).await;

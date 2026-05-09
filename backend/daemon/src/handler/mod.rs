@@ -120,6 +120,8 @@ struct GenContext {
     /// Optional daemon HTTP listener state used by providers that need
     /// callback URLs into this daemon.
     http: Option<Arc<crate::http::DaemonHttpState>>,
+    /// Outbound MCP registry, when at least one server is configured.
+    mcp_registry: Option<Arc<crate::mcp::McpRegistry>>,
 }
 
 struct GenerationParams {
@@ -196,6 +198,8 @@ pub struct MessageHandler {
     /// providers that need a callback URL into the daemon — currently
     /// only `claude_code`.
     pub http: Option<Arc<crate::http::DaemonHttpState>>,
+    /// Outbound MCP registry, when at least one server is configured.
+    pub mcp_registry: Option<Arc<crate::mcp::McpRegistry>>,
     control_rx: mpsc::Receiver<HandlerControl>,
     sessions: HashMap<SessionId, SessionState>,
     last_user_session: HashMap<String, LastUserLease>,
@@ -212,6 +216,7 @@ pub struct MessageHandlerDeps {
     pub live_speak: Arc<AtomicBool>,
     pub tts_client: Option<TtsClient>,
     pub http: Option<Arc<crate::http::DaemonHttpState>>,
+    pub mcp_registry: Option<Arc<crate::mcp::McpRegistry>>,
     pub control_rx: mpsc::Receiver<HandlerControl>,
 }
 
@@ -228,6 +233,7 @@ impl MessageHandler {
             live_speak: deps.live_speak,
             tts_client: deps.tts_client,
             http: deps.http,
+            mcp_registry: deps.mcp_registry,
             control_rx: deps.control_rx,
             sessions: HashMap::new(),
             last_user_session: HashMap::new(),

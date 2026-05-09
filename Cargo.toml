@@ -15,6 +15,7 @@ members = [
     "bridges/matrix",
     "dev/mcp",
     "dev/test-harness",
+    "backend/mcp-client",
 ]
 default-members = [
     "core/protocol",
@@ -54,7 +55,10 @@ shore-ledger = { path = "backend/ledger" }
 shore-swp-server = { path = "backend/swp-server" }
 shore-daemon = { path = "backend/daemon" }
 shore-test-harness = { path = "dev/test-harness" }
+shore-mcp-client = { path = "backend/mcp-client" }
 rusqlite = { version = "0.37", features = ["bundled"] }
+rmcp = "1.4"
+schemars = "1"
 
 [profile.dev]
 debug = "line-tables-only"

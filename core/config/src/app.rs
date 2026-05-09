@@ -46,6 +46,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub tts: TtsConfig,
+
+    #[serde(default)]
+    pub mcp: crate::mcp::McpConfig,
 }
 
 // ── [daemon] ────────────────────────────────────────────────────────────

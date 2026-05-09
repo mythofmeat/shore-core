@@ -285,11 +285,17 @@ pub(super) async fn handle_generation(
 
     let tool_defs = if effective_config.app.behavior.tool_use.enabled {
         let toggles = &effective_config.app.behavior.tool_use.tools;
+        let extra = ctx
+            .mcp_registry
+            .as_deref()
+            .map(|r| r.dynamic_tool_defs())
+            .unwrap_or_default();
         Some(crate::tools::render_tool_defs(
             false,
             toggles,
             &char_name,
             &display_name,
+            &extra,
         ))
     } else {
         None

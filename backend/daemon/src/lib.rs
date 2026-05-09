@@ -14,6 +14,7 @@ pub mod handler;
 pub mod handshake;
 pub mod hot_reload;
 pub mod http;
+pub mod mcp;
 pub mod memory;
 pub mod notifications;
 pub mod preferences;

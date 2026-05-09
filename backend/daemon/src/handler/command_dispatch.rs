@@ -74,6 +74,7 @@ impl MessageHandler {
             live_speak: self.live_speak.clone(),
             tts_client: self.tts_client.clone(),
             http: self.http.clone(),
+            mcp_registry: self.mcp_registry.clone(),
         }
     }
 

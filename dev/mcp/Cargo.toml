@@ -26,8 +26,8 @@ which = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
-rmcp = { version = "1.4", features = ["server", "transport-io"] }
-schemars = "1"
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+schemars = { workspace = true }
 
 [dev-dependencies]
 shore-test-harness = { workspace = true }

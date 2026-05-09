@@ -121,6 +121,7 @@ async fn make_basic_handler_with_models(
         live_speak: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         tts_client: None,
         http: None,
+        mcp_registry: None,
         control_rx,
     });
 
@@ -992,6 +993,7 @@ async fn make_handler_with_models(
         live_speak: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         tts_client: None,
         http: None,
+        mcp_registry: None,
         control_rx,
     });
 

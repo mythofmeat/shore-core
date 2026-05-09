@@ -1,0 +1,22 @@
+[package]
+name = "shore-mcp-client"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Outbound MCP client for Shore — spawns and supervises external MCP server subprocesses."
+
+[dependencies]
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

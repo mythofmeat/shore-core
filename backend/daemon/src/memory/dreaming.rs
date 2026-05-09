@@ -782,7 +782,7 @@ fn build_librarian_tool_defs(character: &str, display_name: &str, dry_run: bool)
             )
         }
     };
-    tool_system::render_tool_defs(false, &toggles, character, display_name)
+    tool_system::render_tool_defs(false, &toggles, character, display_name, &[])
         .into_iter()
         .filter(|tool| {
             tool.get("name")

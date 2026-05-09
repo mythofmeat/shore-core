@@ -41,6 +41,17 @@ pub struct ToolDef {
     pub category: ToolCategory,
 }
 
+/// Runtime-defined tool. Used for tools discovered from external MCP servers,
+/// whose names and descriptions are only known after handshake. Owned strings
+/// because `&'static str` would force `Box::leak` for every restart.
+#[derive(Debug, Clone)]
+pub struct DynamicToolDef {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+    pub category: ToolCategory,
+}
+
 // ---------------------------------------------------------------------------
 // Tool error
 // ---------------------------------------------------------------------------
@@ -123,6 +134,14 @@ pub trait ToolContext: Sync {
     /// whose content should only become prompt-active at the next compaction
     /// boundary.
     fn defer_edit(&self, _path: &str) {}
+
+    /// Outbound MCP registry, when one has been configured. Returning `Some`
+    /// allows `dispatch_tool` to route `mcp__*` names to external servers
+    /// and lets `render_tool_defs` callers merge in dynamically-discovered
+    /// tools.
+    fn mcp_registry(&self) -> Option<&dyn crate::mcp::McpDispatch> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -153,13 +172,14 @@ pub fn render_tool_defs(
     toggles: &shore_config::app::ToolToggles,
     char_name: &str,
     user_name: &str,
+    extra: &[DynamicToolDef],
 ) -> Vec<Value> {
     use std::collections::HashMap;
     let mut vars: HashMap<String, String> = HashMap::new();
     vars.insert("char".into(), char_name.to_string());
     vars.insert("character_name".into(), char_name.to_string());
     vars.insert("user".into(), user_name.to_string());
-    available_tools(is_private, toggles)
+    let mut out: Vec<Value> = available_tools(is_private, toggles)
         .iter()
         .map(|t| {
             serde_json::json!({
@@ -168,7 +188,18 @@ pub fn render_tool_defs(
                 "input_schema": t.parameters.clone(),
             })
         })
-        .collect()
+        .collect();
+    for t in extra {
+        if !toggles.is_enabled(&t.name) {
+            continue;
+        }
+        out.push(serde_json::json!({
+            "name": t.name,
+            "description": crate::engine::prompt::render_template(&t.description, &vars),
+            "input_schema": t.parameters.clone(),
+        }));
+    }
+    out
 }
 
 /// Returns tool definitions available for the current privacy mode and tool toggles.
@@ -309,6 +340,10 @@ pub fn dispatch_tool<'a>(
                     "set_next_wake is only available during heartbeat ticks".into(),
                 ))
             }),
+            n if n.starts_with("mcp__") => match ctx.mcp_registry() {
+                Some(reg) => reg.dispatch(n, input).await,
+                None => Err(ToolError::NotImplemented(n.to_string())),
+            },
             _ => Err(ToolError::NotImplemented(name.to_string())),
         }
     })
@@ -329,7 +364,7 @@ mod tests {
         // {{user}} appears in check_time and must resolve, not ship
         // literal to the model.
         let toggles = ToolToggles::default();
-        let defs = render_tool_defs(false, &toggles, "qifei", "ren");
+        let defs = render_tool_defs(false, &toggles, "qifei", "ren", &[]);
         let check_time = defs
             .iter()
             .find(|d| d["name"] == "check_time")
@@ -349,7 +384,7 @@ mod tests {
     fn render_tool_defs_substitutes_char_placeholder() {
         // Future-proof guard: {{char}} also resolves through render_tool_defs.
         let toggles = ToolToggles::default();
-        let defs = render_tool_defs(false, &toggles, "qifei", "ren");
+        let defs = render_tool_defs(false, &toggles, "qifei", "ren", &[]);
         for def in &defs {
             let desc = def["description"].as_str().unwrap();
             assert!(
@@ -423,7 +458,7 @@ mod tests {
         toggles.set("memory_read", false);
         toggles.set("memory_write", false);
 
-        let defs = render_tool_defs(false, &toggles, "qifei", "ren");
+        let defs = render_tool_defs(false, &toggles, "qifei", "ren", &[]);
         let names: Vec<&str> = defs.iter().filter_map(|d| d["name"].as_str()).collect();
         assert!(names.contains(&"search_history"));
         assert!(names.contains(&"exec"));
