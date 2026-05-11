@@ -7,6 +7,8 @@ mod markdown;
 mod ui;
 
 use std::io;
+use std::io::Write;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
@@ -17,7 +19,8 @@ use crossterm::terminal::{
 };
 use crossterm::ExecutableCommand;
 use futures_util::StreamExt;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{CrosstermBackend, TestBackend};
+use ratatui::buffer::Buffer;
 use ratatui::Terminal;
 use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::server_msg::ServerMessage;
@@ -33,6 +36,15 @@ use connection::{ConnCommand, ConnEvent};
 use input::Action;
 
 const STREAM_FRAME_INTERVAL: Duration = Duration::from_millis(200);
+const ENV_TUI_FIXTURE: &str = "SHORE_TUI_FIXTURE";
+const ENV_TUI_FIXTURE_ROLE: &str = "SHORE_TUI_FIXTURE_ROLE";
+const ENV_TUI_FIXTURE_REPEAT: &str = "SHORE_TUI_FIXTURE_REPEAT";
+const ENV_TUI_FIXTURE_SCROLL: &str = "SHORE_TUI_FIXTURE_SCROLL";
+const ENV_TUI_FIXTURE_CHARACTER: &str = "SHORE_TUI_FIXTURE_CHARACTER";
+const ENV_TUI_FIXTURE_RENDER: &str = "SHORE_TUI_FIXTURE_RENDER";
+const ENV_TUI_RENDER_SIZE: &str = "SHORE_TUI_RENDER_SIZE";
+const ENV_TUI_DEBUG_FRAMES: &str = "SHORE_TUI_DEBUG_FRAMES";
+const ENV_TUI_DEBUG_NO_IMAGE_PROBE: &str = "SHORE_TUI_DEBUG_NO_IMAGE_PROBE";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RedrawEffect {
@@ -77,6 +89,29 @@ struct Cli {
 }
 
 fn main() -> io::Result<()> {
+    let cli = Cli::parse();
+    let debug = TuiDebugConfig::from_env()?;
+
+    if let Some((width, height)) = debug.render_size {
+        let mut app = debug.build_app()?;
+        let frame = render_app_to_string(&mut app, width, height)?;
+        print!("{frame}");
+        return Ok(());
+    }
+
+    if !debug.fixture_enabled() {
+        init_logging();
+    }
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to create tokio runtime");
+
+    rt.block_on(run_tui(cli, debug))
+}
+
+fn init_logging() {
     // TUI owns the terminal, so log to a file instead of stdout/stderr.
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
     let log_dir = std::path::Path::new(&runtime_dir).join("shore");
@@ -94,15 +129,269 @@ fn main() -> io::Result<()> {
         .with_ansi(false)
         .with_writer(std::sync::Mutex::new(log_file))
         .init();
+}
 
-    let cli = Cli::parse();
+#[derive(Clone, Debug, Default)]
+struct TuiDebugConfig {
+    fixture: Option<TuiFixtureConfig>,
+    render_size: Option<(u16, u16)>,
+    frame_dump_path: Option<PathBuf>,
+    no_image_probe: bool,
+}
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("failed to create tokio runtime");
+#[derive(Clone, Debug)]
+struct TuiFixtureConfig {
+    path: PathBuf,
+    role: FixtureRole,
+    repeat: usize,
+    scroll_offset: u16,
+    character_name: String,
+}
 
-    rt.block_on(run_tui(cli))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FixtureRole {
+    Assistant,
+    User,
+    System,
+}
+
+impl TuiDebugConfig {
+    fn from_env() -> io::Result<Self> {
+        Self::from_lookup(env_nonempty)
+    }
+
+    fn from_lookup<F>(mut lookup: F) -> io::Result<Self>
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        let fixture = match lookup(ENV_TUI_FIXTURE) {
+            Some(path) => Some(TuiFixtureConfig {
+                path: PathBuf::from(path),
+                role: parse_fixture_role(
+                    lookup(ENV_TUI_FIXTURE_ROLE)
+                        .as_deref()
+                        .unwrap_or("assistant"),
+                )?,
+                repeat: parse_usize_env(
+                    lookup(ENV_TUI_FIXTURE_REPEAT).as_deref(),
+                    ENV_TUI_FIXTURE_REPEAT,
+                    1,
+                )?,
+                scroll_offset: parse_u16_env(
+                    lookup(ENV_TUI_FIXTURE_SCROLL).as_deref(),
+                    ENV_TUI_FIXTURE_SCROLL,
+                    0,
+                )?,
+                character_name: lookup(ENV_TUI_FIXTURE_CHARACTER)
+                    .unwrap_or_else(|| "Fixture".to_string()),
+            }),
+            None => None,
+        };
+
+        let render_size = if let Some(value) = lookup(ENV_TUI_FIXTURE_RENDER) {
+            Some(parse_render_size(ENV_TUI_FIXTURE_RENDER, &value)?)
+        } else if let Some(value) = lookup(ENV_TUI_RENDER_SIZE) {
+            Some(parse_render_size(ENV_TUI_RENDER_SIZE, &value)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            fixture,
+            render_size,
+            frame_dump_path: lookup(ENV_TUI_DEBUG_FRAMES).map(PathBuf::from),
+            no_image_probe: lookup(ENV_TUI_DEBUG_NO_IMAGE_PROBE)
+                .as_deref()
+                .map(parse_bool_env)
+                .unwrap_or(false),
+        })
+    }
+
+    fn fixture_enabled(&self) -> bool {
+        self.fixture.is_some()
+    }
+
+    fn build_app(&self) -> io::Result<App> {
+        let app = if let Some(fixture) = &self.fixture {
+            fixture.build_app()?
+        } else {
+            App::default()
+        };
+        Ok(app)
+    }
+}
+
+impl TuiFixtureConfig {
+    fn build_app(&self) -> io::Result<App> {
+        let content = std::fs::read_to_string(&self.path)?;
+        let mut app = App {
+            connection_status: ConnectionStatus::Connected,
+            character_name: self.character_name.clone(),
+            ..App::default()
+        };
+
+        for idx in 0..self.repeat {
+            let timestamp = format!("fixture-{idx}");
+            match self.role {
+                FixtureRole::Assistant => app.entries.push(ConversationEntry::Assistant {
+                    msg_id: None,
+                    content: content.clone(),
+                    images: vec![],
+                    timestamp,
+                    metadata: None,
+                }),
+                FixtureRole::User => app.entries.push(ConversationEntry::User {
+                    content: content.clone(),
+                    images: vec![],
+                    timestamp,
+                }),
+                FixtureRole::System => app.entries.push(ConversationEntry::System {
+                    content: content.clone(),
+                    count: 1,
+                    timestamp,
+                }),
+            }
+        }
+
+        app.scroll_offset = self.scroll_offset;
+        app.auto_scroll = self.scroll_offset == 0;
+        Ok(app)
+    }
+}
+
+fn env_nonempty(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn parse_fixture_role(value: &str) -> io::Result<FixtureRole> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "assistant" => Ok(FixtureRole::Assistant),
+        "user" => Ok(FixtureRole::User),
+        "system" => Ok(FixtureRole::System),
+        other => Err(invalid_env_value(
+            ENV_TUI_FIXTURE_ROLE,
+            format!("expected assistant, user, or system; got {other:?}"),
+        )),
+    }
+}
+
+fn parse_usize_env(value: Option<&str>, name: &str, default: usize) -> io::Result<usize> {
+    match value {
+        Some(value) => value
+            .parse::<usize>()
+            .map_err(|_| {
+                invalid_env_value(name, format!("expected positive integer; got {value:?}"))
+            })
+            .and_then(|parsed| {
+                if parsed == 0 {
+                    Err(invalid_env_value(name, "must be greater than zero"))
+                } else {
+                    Ok(parsed)
+                }
+            }),
+        None => Ok(default),
+    }
+}
+
+fn parse_u16_env(value: Option<&str>, name: &str, default: u16) -> io::Result<u16> {
+    match value {
+        Some(value) => value
+            .parse::<u16>()
+            .map_err(|_| invalid_env_value(name, format!("expected integer; got {value:?}"))),
+        None => Ok(default),
+    }
+}
+
+fn parse_render_size(name: &str, value: &str) -> io::Result<(u16, u16)> {
+    let normalized = value.trim().replace('X', "x");
+    let (width, height) = normalized
+        .split_once('x')
+        .ok_or_else(|| invalid_env_value(name, format!("expected WIDTHxHEIGHT; got {value:?}")))?;
+    let width = width
+        .parse::<u16>()
+        .map_err(|_| invalid_env_value(name, "width must be an integer"))?;
+    let height = height
+        .parse::<u16>()
+        .map_err(|_| invalid_env_value(name, "height must be an integer"))?;
+    if width == 0 || height == 0 {
+        return Err(invalid_env_value(
+            name,
+            "width and height must be greater than zero",
+        ));
+    }
+    Ok((width, height))
+}
+
+fn parse_bool_env(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn invalid_env_value(name: &str, message: impl Into<String>) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{name}: {}", message.into()),
+    )
+}
+
+struct FrameDump {
+    path: PathBuf,
+    next_frame: u64,
+}
+
+impl FrameDump {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            next_frame: 1,
+        }
+    }
+
+    fn dump(&mut self, app: &mut App, width: u16, height: u16) -> io::Result<()> {
+        let frame = render_app_to_string(app, width, height)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        writeln!(
+            file,
+            "=== shore-tui frame {} ({}x{}) ===",
+            self.next_frame, width, height
+        )?;
+        file.write_all(frame.as_bytes())?;
+        if !frame.ends_with('\n') {
+            writeln!(file)?;
+        }
+        self.next_frame += 1;
+        Ok(())
+    }
+}
+
+fn render_app_to_string(app: &mut App, width: u16, height: u16) -> io::Result<String> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend)?;
+    terminal.draw(|frame| ui::draw(frame, app))?;
+    Ok(buffer_to_string(terminal.backend().buffer()))
+}
+
+fn buffer_to_string(buf: &Buffer) -> String {
+    let area = buf.area;
+    let mut text = String::new();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let cell = &buf[(x, y)];
+            text.push_str(cell.symbol());
+        }
+        let trimmed_len = text.trim_end().len();
+        text.truncate(trimmed_len);
+        text.push('\n');
+    }
+    text
 }
 
 /// Resolve the initial character: --character flag > SHORE_CHARACTER env > state file.
@@ -383,6 +672,7 @@ async fn handle_action(
     app: &mut App,
     cmd_tx: &tokio::sync::mpsc::Sender<ConnCommand>,
     action: Action,
+    send_enabled: bool,
 ) -> io::Result<bool> {
     match action {
         Action::Quit => {
@@ -395,11 +685,19 @@ async fn handle_action(
             Ok(true)
         }
         Action::Send(cmd) => {
-            let _ = cmd_tx.send(cmd).await;
+            if send_enabled {
+                let _ = cmd_tx.send(cmd).await;
+            } else {
+                app.set_status("fixture mode: command ignored");
+            }
             Ok(true)
         }
         Action::SendMulti(cmds) => {
-            send_conn_commands(cmd_tx, cmds).await;
+            if send_enabled {
+                send_conn_commands(cmd_tx, cmds).await;
+            } else {
+                app.set_status("fixture mode: command ignored");
+            }
             Ok(true)
         }
         Action::OpenInEditor => {
@@ -452,8 +750,8 @@ async fn handle_action(
     }
 }
 
-#[instrument(skip(cli))]
-async fn run_tui(cli: Cli) -> io::Result<()> {
+#[instrument(skip(cli, debug))]
+async fn run_tui(cli: Cli, debug: TuiDebugConfig) -> io::Result<()> {
     // Set up terminal
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
@@ -463,18 +761,33 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let character = resolve_character(cli.character);
-    info!(character = ?character, "TUI starting");
+    let fixture_mode = debug.fixture_enabled();
+    info!(character = ?character, fixture_mode, "TUI starting");
 
-    let mut app = App {
-        connection_status: ConnectionStatus::Connecting,
-        ..App::default()
+    let mut app = if fixture_mode {
+        debug.build_app()?
+    } else {
+        App {
+            connection_status: ConnectionStatus::Connecting,
+            ..App::default()
+        }
     };
     // Probe terminal for kitty graphics support (raw mode is now active).
-    app.image_cache.probe_protocol();
-    load_prefs(&mut app);
+    if !debug.no_image_probe && !fixture_mode {
+        app.image_cache.probe_protocol();
+    }
+    if !fixture_mode {
+        load_prefs(&mut app);
+    }
 
-    // Spawn connection manager
-    let (cmd_tx, mut event_rx) = connection::spawn_connection(cli.addr, cli.config, character);
+    // Spawn connection manager unless an offline fixture is driving the UI.
+    let (cmd_tx, mut event_rx) = if fixture_mode {
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::channel::<ConnCommand>(16);
+        let (_event_tx, event_rx) = tokio::sync::mpsc::channel::<ConnEvent>(1);
+        (cmd_tx, event_rx)
+    } else {
+        connection::spawn_connection(cli.addr, cli.config, character)
+    };
 
     let mut terminal_events = EventStream::new();
     let mut stream_frame = tokio::time::interval(STREAM_FRAME_INTERVAL);
@@ -482,7 +795,8 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     let mut needs_redraw = true;
     let mut deferred_stream_dirty = false;
     let mut needs_full_redraw = false;
-    let mut conn_events_open = true;
+    let mut conn_events_open = !fixture_mode;
+    let mut frame_dump = debug.frame_dump_path.clone().map(FrameDump::new);
 
     // Main event loop
     let result = loop {
@@ -492,6 +806,10 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                 needs_full_redraw = false;
             }
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
+            if let Some(dump) = &mut frame_dump {
+                let area = terminal.size()?;
+                dump.dump(&mut app, area.width, area.height)?;
+            }
             needs_redraw = false;
             deferred_stream_dirty = false;
         }
@@ -549,7 +867,13 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                 match terminal_event {
                     Some(Ok(ev)) => {
                         let action = input::handle_event(&mut app, ev);
-                        needs_redraw |= handle_action(&mut terminal, &mut app, &cmd_tx, action).await?;
+                        needs_redraw |= handle_action(
+                            &mut terminal,
+                            &mut app,
+                            &cmd_tx,
+                            action,
+                            !fixture_mode,
+                        ).await?;
                     }
                     Some(Err(e)) => return Err(e),
                     None => {
@@ -577,9 +901,11 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     };
 
     info!("TUI exiting");
-    // Save preferences and shutdown
-    save_prefs(&app);
-    let _ = cmd_tx.send(ConnCommand::Shutdown).await;
+    if !fixture_mode {
+        // Save preferences and shutdown
+        save_prefs(&app);
+        let _ = cmd_tx.send(ConnCommand::Shutdown).await;
+    }
 
     // Best-effort cleanup of paste-origin temp files.
     for path in &app.paste_temp_paths {
@@ -1382,6 +1708,127 @@ mod redraw_tests {
                 ttft_ms: 1,
             },
         }
+    }
+
+    fn debug_config_from(pairs: &[(&str, &str)]) -> io::Result<TuiDebugConfig> {
+        TuiDebugConfig::from_lookup(|name| {
+            pairs
+                .iter()
+                .find_map(|(key, value)| (*key == name).then(|| (*value).to_string()))
+        })
+    }
+
+    fn temp_path(label: &str, extension: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "shore-tui-{label}-{}-{nanos}.{extension}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn debug_config_parses_fixture_envvars() {
+        let cfg = debug_config_from(&[
+            (ENV_TUI_FIXTURE, "/tmp/example.md"),
+            (ENV_TUI_FIXTURE_ROLE, "user"),
+            (ENV_TUI_FIXTURE_REPEAT, "3"),
+            (ENV_TUI_FIXTURE_SCROLL, "7"),
+            (ENV_TUI_FIXTURE_CHARACTER, "DebugChar"),
+            (ENV_TUI_FIXTURE_RENDER, "72x18"),
+            (ENV_TUI_DEBUG_FRAMES, "/tmp/shore-tui.frames"),
+            (ENV_TUI_DEBUG_NO_IMAGE_PROBE, "true"),
+        ])
+        .unwrap();
+
+        let fixture = cfg.fixture.as_ref().expect("fixture");
+        assert_eq!(fixture.path, PathBuf::from("/tmp/example.md"));
+        assert_eq!(fixture.role, FixtureRole::User);
+        assert_eq!(fixture.repeat, 3);
+        assert_eq!(fixture.scroll_offset, 7);
+        assert_eq!(fixture.character_name, "DebugChar");
+        assert_eq!(cfg.render_size, Some((72, 18)));
+        assert_eq!(
+            cfg.frame_dump_path,
+            Some(PathBuf::from("/tmp/shore-tui.frames"))
+        );
+        assert!(cfg.no_image_probe);
+    }
+
+    #[test]
+    fn fixture_app_loads_markdown_without_daemon_state() {
+        let path = temp_path("fixture", "md");
+        std::fs::write(&path, "# Fixture\n\n- item").unwrap();
+
+        let cfg = debug_config_from(&[
+            (ENV_TUI_FIXTURE, path.to_str().unwrap()),
+            (ENV_TUI_FIXTURE_REPEAT, "2"),
+            (ENV_TUI_FIXTURE_SCROLL, "4"),
+        ])
+        .unwrap();
+        let app = cfg.build_app().unwrap();
+
+        assert!(matches!(app.connection_status, ConnectionStatus::Connected));
+        assert_eq!(app.character_name, "Fixture");
+        assert_eq!(app.entries.len(), 2);
+        assert_eq!(app.scroll_offset, 4);
+        assert!(!app.auto_scroll);
+        assert!(matches!(
+            &app.entries[0],
+            ConversationEntry::Assistant { content, .. } if content.contains("# Fixture")
+        ));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn fixture_render_outputs_real_tui_frame() {
+        let path = temp_path("render", "md");
+        std::fs::write(
+            &path,
+            "`inline code wraps across the pane`\n\n```rust\nfn main() {}\n```\n\n1. numbered\n- bullet",
+        )
+        .unwrap();
+
+        let cfg = debug_config_from(&[(ENV_TUI_FIXTURE, path.to_str().unwrap())]).unwrap();
+        let mut app = cfg.build_app().unwrap();
+        let frame = render_app_to_string(&mut app, 44, 18).unwrap();
+
+        assert!(frame.contains("Fixture"));
+        assert!(frame.contains("inline code"));
+        assert!(frame.contains("fn main()"));
+        assert!(frame.contains("1. numbered"));
+        assert!(frame.contains("- bullet"));
+        assert!(!frame.contains("```"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn frame_dump_writes_rendered_frames() {
+        let path = temp_path("frames", "txt");
+        let mut dump = FrameDump::new(path.clone());
+        let mut app = App {
+            connection_status: ConnectionStatus::Connected,
+            character_name: "Debug".into(),
+            ..App::default()
+        };
+        app.entries.push(ConversationEntry::Assistant {
+            msg_id: None,
+            content: "hello from dump".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+            metadata: None,
+        });
+
+        dump.dump(&mut app, 32, 12).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("shore-tui frame 1 (32x12)"));
+        assert!(contents.contains("hello from dump"));
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
