@@ -1,6 +1,6 @@
 //! Cache forensics — on-disk diagnostic log for every Anthropic cache event.
 //!
-//! Writes append-only JSONL to `{data_dir}/cache_forensics.jsonl`.
+//! Writes append-only JSONL to `{cache_dir}/cache_forensics.jsonl`.
 //! Enabled at startup via `enable()`.  Each Anthropic API call produces
 //! a "request" entry (breakpoint placement) and, if the response has
 //! cache_creation_tokens > 0, a "cache_write" entry.  Both share the
@@ -41,9 +41,9 @@ pub struct ResponseLog<'a> {
     pub cache_creation_tokens: u32,
 }
 
-/// Enable cache forensics.  Call once at startup with the data directory.
-pub fn enable(dir: PathBuf) {
-    let _ = FORENSIC_DIR.set(dir);
+/// Enable cache forensics.  Call once at startup with the cache directory.
+pub fn enable(cache_dir: PathBuf) {
+    let _ = FORENSIC_DIR.set(cache_dir);
 }
 
 /// Whether forensics is enabled.

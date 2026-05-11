@@ -119,7 +119,7 @@ pub(super) async fn handle_generation(
         None => match effective_config.app.defaults.model.as_deref() {
             Some(name) => crate::effective_catalog::find_effective_model(
                 &effective_config,
-                &effective_config.dirs.data,
+                &effective_config.dirs.cache,
                 name,
                 // App-level defaults are user configuration, not a
                 // discovery-cache selection — `discovery.ignore` still
@@ -639,7 +639,10 @@ fn build_claude_code_tool_context(
             markdown_store_val: MarkdownMemoryStore::open_sync(memory_dir).ok(),
             memory_retrieval_config_val: effective_config.app.memory.retrieval.clone(),
             embedder_val: embedder,
-            memory_index_path_val: character_data_dir.join("workspace_index.json"),
+            memory_index_path_val: crate::memory::workspace_index::index_path(
+                &effective_config.dirs.cache,
+                char_name,
+            ),
             config_dir_val: config_dir.to_string_lossy().into_owned(),
             character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
         },

@@ -245,7 +245,10 @@ pub(super) async fn run_tool_phase(
             markdown_store_val: MarkdownMemoryStore::open_sync(memory_dir).ok(),
             memory_retrieval_config_val: effective_config.app.memory.retrieval.clone(),
             embedder_val: embedder,
-            memory_index_path_val: character_data_dir.join("workspace_index.json"),
+            memory_index_path_val: crate::memory::workspace_index::index_path(
+                &effective_config.dirs.cache,
+                char_name,
+            ),
             config_dir_val: config_dir.to_string_lossy().into_owned(),
             character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
         },

@@ -78,14 +78,25 @@ $XDG_DATA_HOME/shore/<Character>/
   deferred_edits.jsonl
   segments/
   dreams/
-  workspace_index.json
+  images/
+    attachments/
+    generated/
 ```
 
 Global data:
 
 ```text
 $XDG_DATA_HOME/shore/ledger.db
-$XDG_DATA_HOME/shore/cache_forensics.jsonl
+```
+
+Cache:
+
+```text
+$XDG_CACHE_HOME/shore/cache_forensics.jsonl
+$XDG_CACHE_HOME/shore/providers/<Provider>/models.json
+$XDG_CACHE_HOME/shore/characters/<Character>/workspace_index.json
+$XDG_CACHE_HOME/shore/resized/
+$XDG_CACHE_HOME/shore/debug/api_logs/
 ```
 
 ## Runtime Flow
@@ -288,10 +299,10 @@ staged outputs, and legacy diagnostic reports live under
 from ordinary memory-source ingestion.
 
 Search is lexical or hybrid semantic+lexical. The workspace-wide hybrid index is
-stored at `<character_data_dir>/workspace_index.json`; markdown files remain
-authoritative and the index can be deleted and rebuilt. Search/index walks the
-whole workspace tree (including `memory/`) with configurable file-size, file
-count, and total-byte limits.
+stored at `$XDG_CACHE_HOME/shore/characters/<Character>/workspace_index.json`;
+markdown files remain authoritative and the index can be deleted and rebuilt.
+Search/index walks the whole workspace tree (including `memory/`) with
+configurable file-size, file count, and total-byte limits.
 
 ## Tools And Security
 
@@ -388,13 +399,28 @@ Persistent surfaces:
 | Surface | Location |
 | --- | --- |
 | Usage ledger | `$XDG_DATA_HOME/shore/ledger.db` |
-| Cache forensics | `$XDG_DATA_HOME/shore/cache_forensics.jsonl` |
 | Conversation log | `$XDG_DATA_HOME/shore/<Character>/active.jsonl` |
 | Compacted segments | `$XDG_DATA_HOME/shore/<Character>/segments/` |
 | Active prompt snapshot | `$XDG_DATA_HOME/shore/<Character>/active_prompt/` |
 | Deferred prompt edits | `$XDG_DATA_HOME/shore/<Character>/deferred_edits.jsonl` |
 | Dreaming state | `$XDG_DATA_HOME/shore/<Character>/dreams/` |
-| TUI log | `$XDG_DATA_HOME/shore/tui.log` |
+| Image attachments and generated outputs | `$XDG_DATA_HOME/shore/<Character>/images/` |
+
+Disposable cache surfaces:
+
+| Surface | Location |
+| --- | --- |
+| Cache forensics | `$XDG_CACHE_HOME/shore/cache_forensics.jsonl` |
+| Provider model discovery | `$XDG_CACHE_HOME/shore/providers/<Provider>/models.json` |
+| Workspace embedding index | `$XDG_CACHE_HOME/shore/characters/<Character>/workspace_index.json` |
+| Resized image cache | `$XDG_CACHE_HOME/shore/resized/` |
+| API payload debug logs | `$XDG_CACHE_HOME/shore/debug/api_logs/` |
+
+Runtime surfaces:
+
+| Surface | Location |
+| --- | --- |
+| TUI log | `$XDG_RUNTIME_DIR/shore/tui.log` |
 
 Enable cache forensics with:
 

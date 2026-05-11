@@ -60,7 +60,7 @@ pub enum LlmError {
 pub struct LlmClient {
     http_client: reqwest::Client,
     /// If set, per-call request/response files are written to
-    /// `{dir}/debug/api_logs/`. See `debug_log` module.
+    /// `{cache_dir}/debug/api_logs/`. See `debug_log` module.
     payload_log_dir: Option<PathBuf>,
 }
 
@@ -78,13 +78,13 @@ impl LlmClient {
         }
     }
 
-    /// Enable API payload logging to the given directory.
+    /// Enable API payload logging under the given cache directory.
     pub fn with_payload_logging(mut self, dir: PathBuf) -> Self {
         self.payload_log_dir = Some(dir);
         self
     }
 
-    /// Set the payload log directory.
+    /// Set the cache directory used for payload logs.
     pub fn set_payload_log_dir(&mut self, dir: PathBuf) {
         self.payload_log_dir = Some(dir);
     }

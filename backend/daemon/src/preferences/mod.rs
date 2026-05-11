@@ -495,7 +495,9 @@ pub fn find_static_model<'a>(
 }
 
 /// Resolve a saved `(provider, model_id)` selection against the effective
-/// catalog (static entries + discovery cache).
+/// catalog (static entries + discovery cache). If the cache has been
+/// deleted, a previously selected provider/model pair is reconstructed
+/// from the provider registry so cache deletion does not lose the selection.
 ///
 /// `include_hidden = true`: a previously selected discovered model should
 /// keep resolving across restarts even if the current `discovery.ignore`
@@ -503,7 +505,7 @@ pub fn find_static_model<'a>(
 /// scopes listing, not restoration.
 fn resolve_provider_model(
     config: &shore_config::LoadedConfig,
-    data_dir: &Path,
+    _data_dir: &Path,
     provider: &str,
     model_id: &str,
 ) -> Option<shore_config::models::ResolvedModel> {
@@ -512,11 +514,47 @@ fn resolve_provider_model(
     }
     crate::effective_catalog::find_effective_model(
         config,
-        data_dir,
+        &config.dirs.cache,
         &format!("{provider}:{model_id}"),
         true,
     )
     .ok()
+    .or_else(|| synthesize_selected_provider_model(config, provider, model_id))
+}
+
+/// Rebuild a previously selected discovered model when its disposable
+/// discovery cache has been deleted. Selection durability comes from the
+/// preferences file; the provider cache only supplies richer metadata.
+fn synthesize_selected_provider_model(
+    config: &shore_config::LoadedConfig,
+    provider: &str,
+    model_id: &str,
+) -> Option<shore_config::models::ResolvedModel> {
+    let entry = config.providers.get(provider)?;
+    if !entry.enabled {
+        return None;
+    }
+
+    let mut fields = shore_config::models::hardcoded_provider_defaults(provider).fields;
+    if let Some(sdk) = &entry.sdk {
+        fields.sdk = Some(sdk.clone());
+    }
+    if let Some(base_url) = &entry.base_url {
+        fields.base_url = Some(base_url.clone());
+    }
+    if let Some(api_key_env) = &entry.api_key_env {
+        fields.api_key_env = Some(api_key_env.clone());
+    }
+
+    Some(shore_config::models::ResolvedModel::from_parts(
+        model_id.to_string(),
+        format!("chat.{provider}.{model_id}"),
+        "chat".to_string(),
+        provider.to_string(),
+        model_id.to_string(),
+        shore_config::models::default_sdk(provider),
+        fields,
+    ))
 }
 
 /// Resolve the active model for a session.
@@ -525,7 +563,8 @@ fn resolve_provider_model(
 ///
 /// 1. Character preferences `[selected]` (provider, model_id) → effective
 ///    catalog lookup by `(provider_key, model_id)`. Discovered models
-///    resolve through the discovery cache.
+///    resolve through the discovery cache, or through the provider registry
+///    if the cache was deleted.
 /// 2. Global preferences `[selected]` → same lookup.
 /// 3. Legacy `runtime_state.json::active_model` (string name) →
 ///    catalog `find_model` by name. Migration fallback for installs
@@ -1283,7 +1322,7 @@ enabled = true
                 discovered_at: "2026-04-29T00:00:00Z".into(),
             }],
         };
-        write_cache(&cache_path(tmp.path(), "openrouter"), &cache).unwrap();
+        write_cache(&cache_path(&loaded.dirs.cache, "openrouter"), &cache).unwrap();
 
         let g = ModelPreferences::default();
         let mut c = ModelPreferences::default();
@@ -1294,6 +1333,48 @@ enabled = true
         assert_eq!(active.provider_key, "openrouter");
         assert_eq!(active.model_id, "anthropic/claude-sonnet-4.5");
         // Importantly: did NOT silently fall through to the static opus.
+        assert_ne!(active.qualified_name, "chat.anthropic.opus");
+    }
+
+    #[test]
+    fn resolve_active_rebuilds_selected_discovered_model_without_cache() {
+        use shore_config::providers::ProviderRegistry;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let catalog = make_catalog(
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+        );
+        let mut loaded = make_loaded_config(&tmp, catalog);
+        let providers_table: toml::Table = r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+
+[providers.openrouter.discovery]
+enabled = true
+"#
+        .parse()
+        .unwrap();
+        loaded.providers = ProviderRegistry::from_section(
+            providers_table.get("providers").and_then(|v| v.as_table()),
+        )
+        .unwrap();
+
+        let g = ModelPreferences::default();
+        let mut c = ModelPreferences::default();
+        c.selected.provider = Some("openrouter".into());
+        c.selected.model_id = Some("anthropic/claude-sonnet-4.5".into());
+
+        let active = resolve_active_for_character(&loaded, tmp.path(), &g, &c, None, None).unwrap();
+        assert_eq!(active.provider_key, "openrouter");
+        assert_eq!(active.model_id, "anthropic/claude-sonnet-4.5");
+        assert_eq!(
+            active.base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
         assert_ne!(active.qualified_name, "chat.anthropic.opus");
     }
 

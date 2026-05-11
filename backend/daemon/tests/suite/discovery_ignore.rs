@@ -2,7 +2,7 @@
 //!
 //! Boots a daemon with `[providers.openrouter]` discovery enabled and a
 //! gitignore-style ignore filter, then pre-seeds the on-disk
-//! `<data>/providers/openrouter/models.json` cache with three models.
+//! `<cache>/providers/openrouter/models.json` cache with three models.
 //! No real `/v1/models` fetch happens — the cache is the source of
 //! truth for this test.
 //!
@@ -59,7 +59,7 @@ fn fixture(provider: &str, model_id: &str) -> DiscoveredModel {
     }
 }
 
-fn seed_cache(data_dir: &std::path::Path, provider: &str, ids: &[&str]) {
+fn seed_cache(cache_dir: &std::path::Path, provider: &str, ids: &[&str]) {
     let cache = ProviderModelsCache {
         version: CACHE_VERSION,
         provider_key: provider.into(),
@@ -67,7 +67,7 @@ fn seed_cache(data_dir: &std::path::Path, provider: &str, ids: &[&str]) {
         base_url: Some("https://example.test/v1".into()),
         models: ids.iter().map(|id| fixture(provider, id)).collect(),
     };
-    write_cache(&cache_path(data_dir, provider), &cache).expect("write_cache");
+    write_cache(&cache_path(cache_dir, provider), &cache).expect("write_cache");
 }
 
 fn ids(arr: &Value) -> Vec<String> {
@@ -96,7 +96,7 @@ ignore = ["*", "!anthropic/*"]
         TestHarness::boot_with(TestConfigBuilder::new().provider_registry_toml(registry)).await;
 
     seed_cache(
-        &harness.data_dir,
+        &harness.config.dirs.cache,
         "openrouter",
         &[
             "anthropic/claude-sonnet-4.5",

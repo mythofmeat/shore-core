@@ -104,8 +104,10 @@ impl ShoreDirs {
     /// Resolve Shore directories.
     ///
     /// Priority (highest first):
-    /// 1. `SHORE_CONFIG_DIR` / `SHORE_DATA_DIR` / `SHORE_RUNTIME_DIR` — used as-is
-    /// 2. `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_RUNTIME_DIR` + `/shore`
+    /// 1. `SHORE_CONFIG_DIR` / `SHORE_DATA_DIR` / `SHORE_RUNTIME_DIR` /
+    ///    `SHORE_CACHE_DIR` — used as-is
+    /// 2. `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_RUNTIME_DIR` /
+    ///    `XDG_CACHE_HOME` + `/shore`
     /// 3. Platform defaults + `/shore`
     pub fn resolve() -> Self {
         Self {

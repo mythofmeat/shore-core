@@ -831,7 +831,10 @@ async fn build_librarian_tool_context(
         .ok(),
         memory_retrieval_config_val: loaded_config.app.memory.retrieval.clone(),
         embedder_val: embedder,
-        memory_index_path_val: character_data_dir.join("workspace_index.json"),
+        memory_index_path_val: crate::memory::workspace_index::index_path(
+            &loaded_config.dirs.cache,
+            character,
+        ),
         config_dir_val: loaded_config.dirs.config.to_string_lossy().into_owned(),
         character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
     })

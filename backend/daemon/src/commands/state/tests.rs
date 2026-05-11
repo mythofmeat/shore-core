@@ -952,7 +952,7 @@ mod phase7 {
                 })
                 .collect(),
         };
-        let path = shore_llm::discovery::cache_path(&ctx.data_dir, provider);
+        let path = shore_llm::discovery::cache_path(&ctx.config.dirs.cache, provider);
         shore_llm::discovery::write_cache(&path, &cache).unwrap();
 
         (_engine, ctx, push_rx)

@@ -67,7 +67,7 @@ pub fn list_providers(ctx: &CommandContext) -> CommandResult {
                 })
                 .collect();
 
-            let cache_path = shore_llm::discovery::cache_path(&ctx.data_dir, name);
+            let cache_path = shore_llm::discovery::cache_path(&ctx.config.dirs.cache, name);
             let cache_summary = match shore_llm::discovery::read_cache(&cache_path) {
                 Ok(Some(c)) => {
                     let hidden = c
@@ -125,7 +125,7 @@ pub(crate) struct RefreshOutcome {
 /// can call it with just the bits it needs.
 pub(crate) async fn refresh_one(
     config: &LoadedConfig,
-    data_dir: &Path,
+    cache_dir: &Path,
     llm: &LedgerClient,
     provider: &str,
 ) -> Result<RefreshOutcome, (ErrorCode, String)> {
@@ -196,7 +196,7 @@ pub(crate) async fn refresh_one(
         models,
     };
 
-    let cache_path = shore_llm::discovery::cache_path(data_dir, provider);
+    let cache_path = shore_llm::discovery::cache_path(cache_dir, provider);
     if let Err(e) = shore_llm::discovery::write_cache(&cache_path, &cache) {
         return Err((
             ErrorCode::InternalError,
@@ -211,7 +211,13 @@ pub(crate) async fn refresh_one(
 /// `shore provider refresh <name>` command path.
 pub async fn refresh_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult {
     let provider = require_provider(args)?;
-    let outcome = refresh_one(&ctx.config, &ctx.data_dir, &ctx.llm_client, provider).await?;
+    let outcome = refresh_one(
+        &ctx.config,
+        &ctx.config.dirs.cache,
+        &ctx.llm_client,
+        provider,
+    )
+    .await?;
     Ok(json!({
         "provider": provider,
         "model_count": outcome.cache.models.len(),
@@ -253,7 +259,7 @@ pub async fn refresh_all_provider_models(ctx: &CommandContext) -> CommandResult 
             continue;
         }
 
-        match refresh_one(&ctx.config, &ctx.data_dir, &ctx.llm_client, name).await {
+        match refresh_one(&ctx.config, &ctx.config.dirs.cache, &ctx.llm_client, name).await {
             Ok(outcome) => results.push(json!({
                 "provider": name,
                 "ok": true,
@@ -312,7 +318,7 @@ pub fn list_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult
         ));
     }
 
-    let cache_path = shore_llm::discovery::cache_path(&ctx.data_dir, provider);
+    let cache_path = shore_llm::discovery::cache_path(&ctx.config.dirs.cache, provider);
     let cache = shore_llm::discovery::read_cache(&cache_path).ok().flatten();
 
     let mut discovered: Vec<Value> = Vec::new();
@@ -439,7 +445,7 @@ mod tests {
         }
     }
 
-    fn write_test_cache(data_dir: &std::path::Path, provider: &str, models: Vec<DiscoveredModel>) {
+    fn write_test_cache(cache_dir: &std::path::Path, provider: &str, models: Vec<DiscoveredModel>) {
         let cache = ProviderModelsCache {
             version: CACHE_VERSION,
             provider_key: provider.into(),
@@ -447,7 +453,7 @@ mod tests {
             base_url: Some("https://example.test/v1".into()),
             models,
         };
-        let path = shore_llm::discovery::cache_path(data_dir, provider);
+        let path = shore_llm::discovery::cache_path(cache_dir, provider);
         shore_llm::discovery::write_cache(&path, &cache).unwrap();
     }
 
@@ -529,7 +535,7 @@ api_key_env = "OR_KEY"
 "#,
         );
         write_test_cache(
-            &ctx.data_dir,
+            &ctx.config.dirs.cache,
             "openrouter",
             vec![discovered_fixture(
                 "openrouter",
@@ -582,7 +588,7 @@ model_id = "kimi-k2"
             shore_config::models::ModelCatalog::from_sections(chat, None, None, None).unwrap();
 
         write_test_cache(
-            &ctx.data_dir,
+            &ctx.config.dirs.cache,
             "openrouter",
             vec![discovered_fixture(
                 "openrouter",
@@ -649,12 +655,12 @@ ignore = [
         build_ctx_with_registry(tmp, &toml_str)
     }
 
-    fn cache_with_models(data_dir: &std::path::Path, provider: &str, ids: &[&str]) {
+    fn cache_with_models(cache_dir: &std::path::Path, provider: &str, ids: &[&str]) {
         let models = ids
             .iter()
             .map(|id| discovered_fixture(provider, id))
             .collect();
-        write_test_cache(data_dir, provider, models);
+        write_test_cache(cache_dir, provider, models);
     }
 
     #[test]
@@ -662,7 +668,7 @@ ignore = [
         let tmp = tempfile::tempdir().unwrap();
         let ctx = build_ctx_with_ignore(&tmp, &["meta-llama/*"]);
         cache_with_models(
-            &ctx.data_dir,
+            &ctx.config.dirs.cache,
             "openrouter",
             &[
                 "anthropic/claude-3.5-sonnet",
@@ -693,7 +699,7 @@ ignore = [
         let tmp = tempfile::tempdir().unwrap();
         let ctx = build_ctx_with_ignore(&tmp, &["*", "!anthropic/*"]);
         cache_with_models(
-            &ctx.data_dir,
+            &ctx.config.dirs.cache,
             "openrouter",
             &[
                 "anthropic/claude-3.5-sonnet",
@@ -719,7 +725,7 @@ ignore = [
         let tmp = tempfile::tempdir().unwrap();
         let ctx = build_ctx_with_ignore(&tmp, &["anthropic/*", "!anthropic/claude-3.5-sonnet"]);
         cache_with_models(
-            &ctx.data_dir,
+            &ctx.config.dirs.cache,
             "openrouter",
             &[
                 "anthropic/claude-3.5-sonnet",
@@ -751,13 +757,13 @@ ignore = [
         let tmp = tempfile::tempdir().unwrap();
         let ctx = build_ctx_with_ignore(&tmp, &["meta-llama/*"]);
         cache_with_models(
-            &ctx.data_dir,
+            &ctx.config.dirs.cache,
             "openrouter",
             &["meta-llama/llama-3-405b", "anthropic/claude-3.5-sonnet"],
         );
 
         // Even though one model is hidden, the cache file still contains both.
-        let path = shore_llm::discovery::cache_path(&ctx.data_dir, "openrouter");
+        let path = shore_llm::discovery::cache_path(&ctx.config.dirs.cache, "openrouter");
         let cache = shore_llm::discovery::read_cache(&path).unwrap().unwrap();
         assert_eq!(cache.models.len(), 2);
     }
@@ -767,7 +773,7 @@ ignore = [
         let tmp = tempfile::tempdir().unwrap();
         let ctx = build_ctx_with_ignore(&tmp, &["meta-llama/*"]);
         cache_with_models(
-            &ctx.data_dir,
+            &ctx.config.dirs.cache,
             "openrouter",
             &["meta-llama/llama-3-405b", "anthropic/claude-3.5-sonnet"],
         );
@@ -801,7 +807,11 @@ model_id = "kimi-k2"
             None,
         )
         .unwrap();
-        cache_with_models(&ctx.data_dir, "openrouter", &["meta-llama/llama-3-405b"]);
+        cache_with_models(
+            &ctx.config.dirs.cache,
+            "openrouter",
+            &["meta-llama/llama-3-405b"],
+        );
 
         let out = list_provider_models(&ctx, &json!({ "provider": "openrouter" })).unwrap();
         // Discovered hidden by the "*" rule.
@@ -817,7 +827,7 @@ model_id = "kimi-k2"
         let tmp = tempfile::tempdir().unwrap();
         let ctx = build_ctx_with_ignore(&tmp, &["meta-llama/*"]);
         cache_with_models(
-            &ctx.data_dir,
+            &ctx.config.dirs.cache,
             "openrouter",
             &[
                 "meta-llama/llama-3-405b",
@@ -1019,14 +1029,14 @@ enabled = true
         );
 
         let prior = vec![discovered_fixture("upstream", "kept-after-failure")];
-        write_test_cache(&ctx.data_dir, "upstream", prior.clone());
+        write_test_cache(&ctx.config.dirs.cache, "upstream", prior.clone());
 
         let err = refresh_provider_models(&ctx, &json!({ "provider": "upstream" }))
             .await
             .unwrap_err();
         assert_eq!(err.0, ErrorCode::InternalError);
 
-        let path = shore_llm::discovery::cache_path(&ctx.data_dir, "upstream");
+        let path = shore_llm::discovery::cache_path(&ctx.config.dirs.cache, "upstream");
         let still_there = shore_llm::discovery::read_cache(&path)
             .unwrap()
             .expect("cache present");
@@ -1089,7 +1099,7 @@ enabled = true
         assert_eq!(out["provider"], "upstream");
 
         // Cache file is on disk and contains both models.
-        let path = shore_llm::discovery::cache_path(&ctx.data_dir, "upstream");
+        let path = shore_llm::discovery::cache_path(&ctx.config.dirs.cache, "upstream");
         let cache = shore_llm::discovery::read_cache(&path)
             .unwrap()
             .expect("cache");

@@ -1,7 +1,7 @@
 //! Per-call API debug logging.
 //!
 //! When enabled, every outbound LLM request and its paired response (or error)
-//! are dumped as individual JSON files under `{data_dir}/debug/api_logs/`.
+//! are dumped as individual JSON files under `{cache_dir}/debug/api_logs/`.
 //! Request filename: `{call_id}.json`. Response filename: `{call_id}_response.json`.
 //!
 //! This is the diagnostic counterpart to the old single `api_payloads.jsonl`:
@@ -50,9 +50,9 @@ struct Envelope {
     rid: Option<String>,
 }
 
-/// Compute the api_logs directory under a data dir.
-fn api_logs_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join(SUBDIR)
+/// Compute the api_logs directory under a cache dir.
+fn api_logs_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join(SUBDIR)
 }
 
 fn next_call_id() -> String {
@@ -83,11 +83,11 @@ fn redact_request(body: &str) -> String {
 /// Returns `None` if logging is disabled (no directory) or the directory
 /// cannot be created.
 pub fn log_request(
-    data_dir: Option<&Path>,
+    cache_dir: Option<&Path>,
     request: &LlmRequest,
     body: &str,
 ) -> Option<CallHandle> {
-    let dir = api_logs_dir(data_dir?);
+    let dir = api_logs_dir(cache_dir?);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         warn!(error = %e, path = %dir.display(), "Failed to create api_logs dir");
         return None;
