@@ -47,6 +47,8 @@ pub struct ConvFingerprint {
     pub show_thinking: bool,
     pub show_tools: bool,
     pub show_images: bool,
+    pub show_timestamps: bool,
+    pub show_metadata: bool,
     pub spinner_frame: u32,
     pub character_name_len: u32,
     pub image_cache_version: u64,
@@ -58,7 +60,6 @@ pub enum ConversationEntry {
     User {
         content: String,
         images: Vec<ImageRef>,
-        #[allow(dead_code)] // captured from daemon; TUI does not render per-entry timestamps
         timestamp: String,
     },
     Assistant {
@@ -66,7 +67,6 @@ pub enum ConversationEntry {
         msg_id: Option<String>,
         content: String,
         images: Vec<ImageRef>,
-        #[allow(dead_code)] // captured from daemon; TUI does not render per-entry timestamps
         timestamp: String,
         metadata: Option<StreamMetadata>,
     },
@@ -76,7 +76,6 @@ pub enum ConversationEntry {
         /// Starts at 1; incremented by `set_status` when the same message
         /// arrives repeatedly (e.g. a reconnect storm).
         count: u32,
-        #[allow(dead_code)] // captured from daemon; TUI does not render per-entry timestamps
         timestamp: String,
     },
     Thinking {
@@ -636,6 +635,8 @@ pub struct App {
     pub show_thinking: bool,
     pub show_tools: bool,
     pub show_images: bool,
+    pub show_timestamps: bool,
+    pub show_metadata: bool,
     pub show_help: bool,
     /// Images queued for attachment to the next outgoing message.
     pub pending_images: Vec<String>,
@@ -695,6 +696,8 @@ impl Default for App {
             show_thinking: true,
             show_tools: true,
             show_images: true,
+            show_timestamps: false,
+            show_metadata: true,
             show_help: false,
             pending_images: Vec::new(),
             paste_temp_paths: Vec::new(),
@@ -797,6 +800,8 @@ impl App {
             show_thinking: self.show_thinking,
             show_tools: self.show_tools,
             show_images: self.show_images,
+            show_timestamps: self.show_timestamps,
+            show_metadata: self.show_metadata,
             spinner_frame: self.spinner_frame as u32,
             character_name_len: self.character_name.len() as u32,
             image_cache_version: self.image_cache.version(),
@@ -1090,6 +1095,7 @@ impl App {
             "model" => Some("model"),
             "character" | "characters" => Some("character"),
             "setting" => Some("setting"),
+            "view" => Some("view"),
             _ => None,
         }
     }
@@ -1181,6 +1187,7 @@ impl App {
         ("speak", "Toggle TTS or replay the last message"),
         ("alt", "Choose an alternate response"),
         ("sys", "Inject a system instruction"),
+        ("view", "Configure TUI display options"),
     ];
 
     /// Look up the description for a top-level command. Returns `None`
@@ -1205,6 +1212,55 @@ impl App {
 
     fn is_setting_key(key: &str) -> bool {
         Self::SETTING_KEYS.contains(&key)
+    }
+
+    const VIEW_KEYS: &'static [&'static str] =
+        &["timestamps", "thinking", "tools", "images", "metadata"];
+
+    pub fn is_view_key(key: &str) -> bool {
+        Self::VIEW_KEYS.contains(&key)
+    }
+
+    pub fn view_enabled(&self, key: &str) -> Option<bool> {
+        match key {
+            "timestamps" => Some(self.show_timestamps),
+            "thinking" => Some(self.show_thinking),
+            "tools" => Some(self.show_tools),
+            "images" => Some(self.show_images),
+            "metadata" => Some(self.show_metadata),
+            _ => None,
+        }
+    }
+
+    pub fn set_view_option(&mut self, key: &str, enabled: bool) -> bool {
+        match key {
+            "timestamps" => self.show_timestamps = enabled,
+            "thinking" => self.show_thinking = enabled,
+            "tools" => self.show_tools = enabled,
+            "images" => self.show_images = enabled,
+            "metadata" => self.show_metadata = enabled,
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn toggle_view_option(&mut self, key: &str) -> Option<bool> {
+        let next = !self.view_enabled(key)?;
+        self.set_view_option(key, next);
+        Some(next)
+    }
+
+    fn view_row_label(&self, key: &str) -> String {
+        let state = if self.view_enabled(key).unwrap_or(false) {
+            "on"
+        } else {
+            "off"
+        };
+        format!("{key} = {state}")
+    }
+
+    pub fn view_key_from_row(row: &str) -> &str {
+        row.split_once(" = ").map(|(key, _)| key).unwrap_or(row)
     }
 
     fn setting_row_label(&self, key: &str) -> String {
@@ -1453,6 +1509,30 @@ impl App {
                         self.completion.candidates = candidates;
                     }
                 }
+                "view" => {
+                    self.completion.header = Some("view option".into());
+                    let (head, has_second) = match arg.split_once(' ') {
+                        Some((h, _)) => (h, true),
+                        None => (arg, false),
+                    };
+                    if has_second {
+                        let value_arg = arg.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                        self.completion.candidates =
+                            Self::filtered_presets(&["on", "off", "toggle"], value_arg)
+                                .into_iter()
+                                .map(|value| format!("view {head} {value}"))
+                                .collect();
+                    } else {
+                        self.completion.candidates = Self::VIEW_KEYS
+                            .iter()
+                            .filter(|key| {
+                                head.is_empty()
+                                    || key.to_lowercase().starts_with(&head.to_lowercase())
+                            })
+                            .map(|key| format!("view {key}"))
+                            .collect();
+                    }
+                }
                 _ => {
                     self.completion.candidates.clear();
                 }
@@ -1493,6 +1573,7 @@ impl App {
         self.completion.header = match parent.as_str() {
             "setting" | "setting:reset" => Some("setting key".into()),
             parent if parent.starts_with("setting:") => Some("setting value".into()),
+            "view" => Some("view option".into()),
             _ => None,
         };
 
@@ -1577,6 +1658,13 @@ impl App {
                     .iter()
                     .filter(|key| filter.is_empty() || key.starts_with(&filter))
                     .map(|key| (*key).to_string())
+                    .collect();
+            }
+            "view" => {
+                self.completion.candidates = Self::VIEW_KEYS
+                    .iter()
+                    .filter(|key| filter.is_empty() || key.starts_with(&filter))
+                    .map(|key| self.view_row_label(key))
                     .collect();
             }
             _ => self.completion.candidates.clear(),
@@ -1774,8 +1862,9 @@ impl App {
 
     /// Apply the currently selected submenu candidate. Returns the full
     /// command string (e.g. `"model gpt-4o"`) for the caller to feed
-    /// into `parse_command`. Clears completion state and exits command
-    /// mode as a side effect.
+    /// into `parse_command`. Most command-producing selections clear
+    /// completion state and exit command mode; local-only palettes may
+    /// instead apply in place and return `None`.
     pub fn apply_submenu(&mut self) -> Option<String> {
         let parent = match &self.completion.mode {
             PaletteMode::Submenu(s) => s.parent.clone(),
@@ -1823,6 +1912,23 @@ impl App {
                 return Some(format!("setting reset {key}"));
             }
             return Some(format!("setting {key} {value}"));
+        }
+
+        if parent == "view" {
+            let key = Self::view_key_from_row(&chosen).to_string();
+            if !Self::is_view_key(&key) {
+                return None;
+            }
+            let enabled = self.toggle_view_option(&key)?;
+            self.set_status(format!(
+                "view {key}: {}",
+                if enabled { "on" } else { "off" }
+            ));
+            self.update_completions();
+            if idx < self.completion.candidates.len() {
+                self.completion.selected = Some(idx);
+            }
+            return None;
         }
 
         self.completion.clear();

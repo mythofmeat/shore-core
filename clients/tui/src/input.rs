@@ -677,6 +677,7 @@ fn submenu_fetch_action(parent: &str) -> Action {
         "model" => "list_models",
         "character" => "list_characters",
         "setting" => "model_settings",
+        "view" => return Action::Redraw,
         _ => return Action::Redraw,
     };
     Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
@@ -721,6 +722,48 @@ fn parse_command(app: &mut App, input: &str) -> Action {
 
         "help" => {
             app.show_help = true;
+            Action::Redraw
+        }
+
+        "view" => {
+            let mut parts = arg.split_whitespace();
+            let Some(key) = parts.next() else {
+                app.enter_submenu("view");
+                return Action::Redraw;
+            };
+            if !App::is_view_key(key) {
+                app.set_status(format!("unknown view option: {key}"));
+                return Action::Redraw;
+            }
+            let value = parts.next().unwrap_or("toggle");
+            if parts.next().is_some() {
+                app.set_status(
+                    "usage: :view [timestamps|thinking|tools|images|metadata] [on|off|toggle]",
+                );
+                return Action::Redraw;
+            }
+            let enabled = match value.to_ascii_lowercase().as_str() {
+                "on" | "true" | "yes" | "1" => {
+                    app.set_view_option(key, true);
+                    true
+                }
+                "off" | "false" | "no" | "0" => {
+                    app.set_view_option(key, false);
+                    false
+                }
+                "toggle" => app.toggle_view_option(key).unwrap_or(false),
+                _ => {
+                    app.set_status(
+                        "usage: :view [timestamps|thinking|tools|images|metadata] [on|off|toggle]",
+                    );
+                    return Action::Redraw;
+                }
+            };
+            app.update_completions();
+            app.set_status(format!(
+                "view {key}: {}",
+                if enabled { "on" } else { "off" }
+            ));
             Action::Redraw
         }
 
@@ -1249,6 +1292,20 @@ mod tests {
         app.input.mode = InputMode::Normal;
         let action = handle_key(&mut app, make_key(KeyModifiers::NONE, KeyCode::Char('r')));
         assert!(matches!(action, Action::Send(_)));
+    }
+
+    #[test]
+    fn view_command_toggles_local_option() {
+        let mut app = App::default();
+        assert!(!app.show_timestamps);
+
+        let action = parse_command(&mut app, "view timestamps on");
+        assert!(matches!(action, Action::Redraw));
+        assert!(app.show_timestamps);
+
+        let action = parse_command(&mut app, "view metadata off");
+        assert!(matches!(action, Action::Redraw));
+        assert!(!app.show_metadata);
     }
 
     #[test]

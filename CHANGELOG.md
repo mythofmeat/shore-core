@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added a persisted `shore-tui` `:view` submenu for local display preferences,
+  including timestamps, thinking/tool-use blocks, inline images, and response
+  metadata.
 - Expanded `memory.dreaming.frequency` from daily-only `M H * * *` validation
   to five-field cron schedules, including weekly forms like `0 6 * * 1`.
 - Added env-var-only `shore-tui` debug fixtures for offline markdown rendering,

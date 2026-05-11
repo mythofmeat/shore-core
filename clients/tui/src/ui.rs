@@ -1,3 +1,4 @@
+use chrono::{DateTime, Local};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -367,6 +368,47 @@ fn spinner_glyphs(frame: usize) -> &'static str {
     FRAMES[frame % FRAMES.len()]
 }
 
+fn format_timestamp(timestamp: &str) -> Option<String> {
+    let timestamp = timestamp.trim();
+    if timestamp.is_empty() {
+        return None;
+    }
+
+    match DateTime::parse_from_rfc3339(timestamp) {
+        Ok(dt) => {
+            let local = dt.with_timezone(&Local);
+            if local.date_naive() == Local::now().date_naive() {
+                Some(local.format("%H:%M").to_string())
+            } else {
+                Some(local.format("%Y-%m-%d %H:%M").to_string())
+            }
+        }
+        Err(_) => Some(timestamp.to_string()),
+    }
+}
+
+fn push_entry_header(
+    lines: &mut Vec<Line<'static>>,
+    label: String,
+    color: Color,
+    timestamp: &str,
+    show_timestamp: bool,
+) {
+    let mut spans = vec![Span::styled(
+        label,
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )];
+    if show_timestamp {
+        if let Some(display) = format_timestamp(timestamp) {
+            spans.push(Span::styled(
+                format!("  {display}"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+    lines.push(Line::from(spans));
+}
+
 /// Render the scrollable conversation log.
 ///
 /// Building the full line list from `app.entries` is expensive — markdown
@@ -473,7 +515,9 @@ fn build_conversation_lines(
 
         match entry {
             ConversationEntry::User {
-                content, images, ..
+                content,
+                images,
+                timestamp,
             } => {
                 flush_thinking(
                     &mut lines,
@@ -487,12 +531,13 @@ fn build_conversation_lines(
                     app.show_tools,
                     content_width,
                 );
-                lines.push(Line::from(Span::styled(
-                    "You",
-                    Style::default()
-                        .fg(Color::Blue)
-                        .add_modifier(Modifier::BOLD),
-                )));
+                push_entry_header(
+                    &mut lines,
+                    "You".to_string(),
+                    Color::Blue,
+                    timestamp,
+                    app.show_timestamps,
+                );
                 lines.push(Line::from(""));
                 let wrap_w = content_width.saturating_sub(2) as usize;
                 lines.extend(indent_lines(markdown::render_markdown_wrapped(
@@ -511,6 +556,7 @@ fn build_conversation_lines(
                 content,
                 metadata,
                 images,
+                timestamp,
                 ..
             } => {
                 let name = if app.character_name.is_empty() {
@@ -518,12 +564,13 @@ fn build_conversation_lines(
                 } else {
                     app.character_name.clone()
                 };
-                lines.push(Line::from(Span::styled(
+                push_entry_header(
+                    &mut lines,
                     name,
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                )));
+                    Color::Green,
+                    timestamp,
+                    app.show_timestamps,
+                );
                 lines.push(Line::from(""));
                 // Render thinking and tool calls under the character name
                 flush_thinking(
@@ -549,22 +596,28 @@ fn build_conversation_lines(
                     app.show_images,
                     &mut image_index,
                 );
-                if let Some(meta) = metadata {
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "  [{} | in:{} out:{} cache:{} | {}ms]",
-                            meta.model,
-                            meta.tokens.input,
-                            meta.tokens.output,
-                            meta.tokens.cache_read,
-                            meta.timing.total_ms,
-                        ),
-                        Style::default().fg(Color::DarkGray),
-                    )));
+                if app.show_metadata {
+                    if let Some(meta) = metadata {
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "  [{} | in:{} out:{} cache:{} | {}ms]",
+                                meta.model,
+                                meta.tokens.input,
+                                meta.tokens.output,
+                                meta.tokens.cache_read,
+                                meta.timing.total_ms,
+                            ),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
                 }
                 lines.push(Line::from(""));
             }
-            ConversationEntry::System { content, count, .. } => {
+            ConversationEntry::System {
+                content,
+                count,
+                timestamp,
+            } => {
                 flush_thinking(
                     &mut lines,
                     &mut pending_thinking,
@@ -582,12 +635,13 @@ fn build_conversation_lines(
                 } else {
                     "System".to_string()
                 };
-                lines.push(Line::from(Span::styled(
+                push_entry_header(
+                    &mut lines,
                     header,
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )));
+                    Color::Yellow,
+                    timestamp,
+                    app.show_timestamps,
+                );
                 lines.push(Line::from(""));
                 let sys_style = Style::default().fg(Color::Yellow);
                 let sys_wrap_w = content_width.saturating_sub(2) as usize;
@@ -1003,6 +1057,10 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::White),
         )),
         Line::from(Span::styled(
+            "    :view           toggle TUI display preferences",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
             "    :image          attach image (picker)",
             Style::default().fg(Color::White),
         )),
@@ -1125,6 +1183,9 @@ fn draw_completions_inline(frame: &mut Frame, app: &App, area: Rect) {
                 .parent
                 .strip_prefix("setting:")
                 .is_some_and(|key| app.is_effective_setting_candidate(key, c)),
+            PaletteMode::Submenu(s) if s.parent == "view" => {
+                app.view_enabled(App::view_key_from_row(c)).unwrap_or(false)
+            }
             _ => false,
         };
 
@@ -1379,7 +1440,7 @@ mod scenario_tests {
     use ratatui::Terminal;
     use shore_protocol::client_msg::ClientMessage;
     use shore_protocol::server_msg::{CommandOutput, ServerMessage};
-    use shore_protocol::types::CharacterInfo;
+    use shore_protocol::types::{CharacterInfo, StreamMetadata, TimingInfo, TokenCounts};
 
     const W: u16 = 80;
     const H: u16 = 30;
@@ -1594,6 +1655,22 @@ mod scenario_tests {
         assert_eq!(cmd.args["scope"], "character");
     }
 
+    fn metadata(model: &str) -> StreamMetadata {
+        StreamMetadata {
+            model: model.into(),
+            tokens: TokenCounts {
+                input: 11,
+                output: 22,
+                cache_read: 33,
+                cache_write: 0,
+            },
+            timing: TimingInfo {
+                total_ms: 44,
+                ttft_ms: 5,
+            },
+        }
+    }
+
     // ── Scenario: empty state ───────────────────────────────────────────────
 
     #[test]
@@ -1728,6 +1805,56 @@ mod scenario_tests {
         assert!(
             f3.contains("thinking"),
             "inline thinking back after re-toggle"
+        );
+    }
+
+    #[test]
+    fn scenario_timestamp_toggle() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.entries.push(ConversationEntry::User {
+            content: "time check".into(),
+            images: vec![],
+            timestamp: "2026-01-15T10:30:00Z".into(),
+        });
+
+        let hidden = h.render("timestamps hidden by default");
+        assert!(
+            !hidden.contains("2026-01-15"),
+            "timestamps should start hidden; frame:\n{hidden}"
+        );
+
+        h.app.show_timestamps = true;
+        let visible = h.render("timestamps visible");
+        assert!(
+            visible.contains("2026-01-15"),
+            "timestamp date should render when enabled; frame:\n{visible}"
+        );
+    }
+
+    #[test]
+    fn scenario_metadata_toggle() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.entries.push(ConversationEntry::Assistant {
+            msg_id: Some("m1".into()),
+            content: "hello".into(),
+            images: vec![],
+            timestamp: "2026-01-15T10:30:00Z".into(),
+            metadata: Some(metadata("test-model")),
+        });
+
+        let visible = h.render("metadata visible by default");
+        assert!(
+            visible.contains("test-model"),
+            "metadata should start visible; frame:\n{visible}"
+        );
+
+        h.app.show_metadata = false;
+        let hidden = h.render("metadata hidden");
+        assert!(
+            !hidden.contains("test-model"),
+            "metadata should hide when disabled; frame:\n{hidden}"
         );
     }
 
@@ -1986,6 +2113,40 @@ mod scenario_tests {
             h.app.input.cmd_text.is_empty(),
             "filter starts empty; current cmd_text = {:?}",
             h.app.input.cmd_text
+        );
+    }
+
+    #[test]
+    fn scenario_view_submenu_toggles_local_preferences() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.input.mode = InputMode::Normal;
+
+        h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
+        h.type_str("view");
+        h.press(KeyCode::Enter);
+        let f = h.render("view submenu open");
+
+        match &h.app.completion.mode {
+            crate::app::PaletteMode::Submenu(s) => assert_eq!(s.parent, "view"),
+            _ => panic!("expected view submenu"),
+        }
+        assert!(f.contains("[view]"), "view submenu title visible");
+        assert!(
+            f.contains("timestamps = off"),
+            "timestamp row should show current state; frame:\n{f}"
+        );
+
+        h.press(KeyCode::Enter);
+        assert!(h.app.show_timestamps, "Enter toggles selected view option");
+        assert_eq!(h.app.input.mode, InputMode::Command);
+        assert!(
+            h.app
+                .completion
+                .candidates
+                .iter()
+                .any(|c| c == "timestamps = on"),
+            "view submenu should refresh in place"
         );
     }
 
