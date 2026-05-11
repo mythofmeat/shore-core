@@ -56,6 +56,24 @@ struct ListState {
     next: u64,
 }
 
+#[derive(Clone)]
+struct ItemPrefixState {
+    marker: String,
+    continuation: String,
+    used: bool,
+}
+
+impl ItemPrefixState {
+    fn new(marker: String) -> Self {
+        let continuation = " ".repeat(UnicodeWidthStr::width(marker.as_str()));
+        Self {
+            marker,
+            continuation,
+            used: false,
+        }
+    }
+}
+
 #[derive(Default)]
 struct TableState {
     in_head: bool,
@@ -69,8 +87,8 @@ struct MarkdownRenderer {
     style_stack: Vec<Style>,
     quote_depth: usize,
     list_stack: Vec<ListState>,
-    item_prefix: Option<String>,
-    item_prefix_stack: Vec<Option<String>>,
+    item_prefix: Option<ItemPrefixState>,
+    item_prefix_stack: Vec<Option<ItemPrefixState>>,
     link_stack: Vec<LinkState>,
     table: Option<TableState>,
     in_code_block: bool,
@@ -194,13 +212,13 @@ impl MarkdownRenderer {
                 self.flush_current();
                 let prior = self.item_prefix.take();
                 self.item_prefix_stack.push(prior);
-                self.item_prefix = Some(self.next_item_prefix());
+                self.item_prefix = Some(ItemPrefixState::new(self.next_item_prefix()));
             }
             Tag::FootnoteDefinition(label) => {
                 self.flush_current();
                 let prior = self.item_prefix.take();
                 self.item_prefix_stack.push(prior);
-                self.item_prefix = Some(format!("[^{}]: ", label.as_ref()));
+                self.item_prefix = Some(ItemPrefixState::new(format!("[^{}]: ", label.as_ref())));
             }
             Tag::DefinitionList => self.flush_current(),
             Tag::DefinitionListTitle => {
@@ -211,7 +229,7 @@ impl MarkdownRenderer {
                 self.flush_current();
                 let prior = self.item_prefix.take();
                 self.item_prefix_stack.push(prior);
-                self.item_prefix = Some(": ".to_string());
+                self.item_prefix = Some(ItemPrefixState::new(": ".to_string()));
             }
             Tag::Table(_) => {
                 self.flush_current();
@@ -410,16 +428,14 @@ impl MarkdownRenderer {
         }
 
         if self.in_code_block {
-            for (idx, line) in text.split('\n').enumerate() {
+            for (idx, line) in text.lines().enumerate() {
                 if idx > 0 {
                     self.flush_current();
                 }
-                if !line.is_empty() {
-                    self.ensure_prefix();
-                    self.current.push(Span::styled(
-                        line.to_string(),
-                        Style::default().fg(Color::Green),
-                    ));
+                if line.is_empty() {
+                    self.flush_blank_line();
+                } else {
+                    self.push_wrapped_code_segment(line, Style::default().fg(Color::Green));
                 }
             }
             return;
@@ -464,6 +480,31 @@ impl MarkdownRenderer {
         }
     }
 
+    fn push_wrapped_code_segment(&mut self, mut text: &str, style: Style) {
+        while !text.is_empty() {
+            self.ensure_prefix();
+
+            let Some(max_width) = self.max_width else {
+                self.current.push(Span::styled(text.to_string(), style));
+                return;
+            };
+
+            let line_width = self.current_width();
+            if line_width + UnicodeWidthStr::width(text) <= max_width {
+                self.current.push(Span::styled(text.to_string(), style));
+                return;
+            }
+
+            let available = max_width.saturating_sub(line_width).max(1);
+            let split = split_at_width_hard(text, available);
+            let (head, tail) = text.split_at(split);
+            self.current.push(Span::styled(head.to_string(), style));
+            self.flush_current();
+            self.ensure_continuation_prefix();
+            text = tail;
+        }
+    }
+
     fn ensure_prefix(&mut self) {
         if !self.current.is_empty() {
             return;
@@ -476,11 +517,16 @@ impl MarkdownRenderer {
             ));
         }
 
-        if let Some(prefix) = &self.item_prefix {
-            self.current.push(Span::styled(
-                prefix.clone(),
-                Style::default().fg(Color::DarkGray),
-            ));
+        if let Some(prefix) = &mut self.item_prefix {
+            if prefix.used {
+                self.current.push(Span::raw(prefix.continuation.clone()));
+            } else {
+                prefix.used = true;
+                self.current.push(Span::styled(
+                    prefix.marker.clone(),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
         }
     }
 
@@ -491,6 +537,15 @@ impl MarkdownRenderer {
 
         self.lines
             .push(Line::from(std::mem::take(&mut self.current)));
+    }
+
+    fn flush_blank_line(&mut self) {
+        self.ensure_prefix();
+        if self.current.is_empty() {
+            self.lines.push(Line::from(""));
+        } else {
+            self.flush_current();
+        }
     }
 
     fn ensure_continuation_prefix(&mut self) {
@@ -505,10 +560,9 @@ impl MarkdownRenderer {
             ));
         }
 
-        if let Some(prefix) = &self.item_prefix {
-            self.current.push(Span::raw(
-                " ".repeat(UnicodeWidthStr::width(prefix.as_str())),
-            ));
+        if let Some(prefix) = &mut self.item_prefix {
+            prefix.used = true;
+            self.current.push(Span::raw(prefix.continuation.clone()));
         }
     }
 
@@ -542,6 +596,26 @@ fn split_at_width(text: &str, max_width: usize) -> usize {
         if ch.is_whitespace() {
             last_whitespace = Some(next);
         }
+    }
+
+    text.len()
+}
+
+fn split_at_width_hard(text: &str, max_width: usize) -> usize {
+    let mut width = 0;
+    let mut last_fit = 0;
+
+    for (idx, ch) in text.char_indices() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width > max_width {
+            return if last_fit > 0 {
+                last_fit
+            } else {
+                idx + ch.len_utf8()
+            };
+        }
+        width += ch_width;
+        last_fit = idx + ch.len_utf8();
     }
 
     text.len()
@@ -642,6 +716,89 @@ mod tests {
         assert!(lines.len() > 1);
         assert!(line_text(&lines[0]).starts_with("- "));
         assert!(line_text(&lines[1]).starts_with("  "));
+    }
+
+    #[test]
+    fn wrapped_inline_code_keeps_style_and_width() {
+        let lines = render_markdown_wrapped("prefix `abcdefghijklmno` suffix", 12);
+
+        assert!(lines.len() > 1);
+        assert!(lines.iter().all(|line| line.width() <= 12));
+
+        let code_text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .filter(|span| span.style.fg == Some(Color::Yellow))
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(code_text, "abcdefghijklmno");
+    }
+
+    #[test]
+    fn wrapped_code_block_preserves_blank_lines_and_width() {
+        let text = "```rust\nlet message = \"abcdefghijklmnop\";\n\nprintln!(\"done\");\n```";
+        let lines = render_markdown_wrapped(text, 14);
+
+        assert!(lines.iter().all(|line| line.width() <= 14));
+        assert!(line_text(&lines[0]).contains("rust"));
+        assert!(all_text(&lines).contains("let message"));
+        assert!(all_text(&lines).contains("println!"));
+        assert!(
+            lines.iter().any(|line| line.width() == 0),
+            "interior blank code line should be preserved"
+        );
+        assert!(lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .any(|span| span.style.fg == Some(Color::Green)));
+    }
+
+    #[test]
+    fn ordered_unordered_and_task_lists_wrap() {
+        let text = "1. numbered item with `inline code` that wraps around\n2. second\n- bullet item with enough words to wrap\n- [x] task item";
+        let lines = render_markdown_wrapped(text, 18);
+        let rendered = all_text(&lines);
+
+        assert!(lines.iter().all(|line| line.width() <= 18));
+        assert!(rendered.contains("1. numbered item"));
+        assert!(rendered.contains("2. second"));
+        assert!(rendered.contains("- bullet item"));
+        assert!(rendered.contains("[x] task item"));
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line_text(line).starts_with("1. "))
+                .count(),
+            1,
+            "wrapped ordered item should not repeat its marker"
+        );
+        assert!(lines.iter().any(|line| {
+            let text = line_text(line);
+            text.starts_with("   ") && text.contains("inline")
+        }));
+    }
+
+    #[test]
+    fn code_block_inside_list_uses_continuation_indent() {
+        let text = "- before\n  ```\n  abcdefghijklmnop\n  ```\n  after";
+        let lines = render_markdown_wrapped(text, 12);
+        let rendered = all_text(&lines);
+
+        assert!(lines.iter().all(|line| line.width() <= 12));
+        assert!(line_text(&lines[0]).starts_with("- before"));
+        assert!(rendered.contains("abcdefghij"));
+        assert!(rendered.contains("klmnop"));
+        assert!(lines
+            .iter()
+            .any(|line| line_text(line).starts_with("  after")));
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line_text(line).starts_with("- "))
+                .count(),
+            1,
+            "list marker should only appear on the first visual line"
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{
@@ -214,11 +214,8 @@ fn squeeze_blank_lines(lines: &mut Vec<Line<'static>>) {
     *lines = squeezed;
 }
 
-fn visual_line_count(lines: &[Line<'static>], width: u16) -> u16 {
-    let paragraph = Paragraph::new(Text::from(lines.to_vec())).wrap(Wrap { trim: false });
-    let total = paragraph.line_count(width);
-
-    total.min(u16::MAX as usize) as u16
+fn visual_line_count(lines: &[Line<'static>], _width: u16) -> u16 {
+    lines.len().min(u16::MAX as usize) as u16
 }
 
 /// Word-wrap a single line of text to fit within `max_width` columns.
@@ -420,9 +417,9 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
         area
     };
 
-    let paragraph = Paragraph::new(Text::from(app.conv_cache.lines.clone()))
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
+    frame.render_widget(Clear, area);
+
+    let paragraph = Paragraph::new(Text::from(app.conv_cache.lines.clone())).scroll((scroll, 0));
 
     frame.render_widget(paragraph, render_area);
 
@@ -3404,6 +3401,56 @@ mod scenario_tests {
         );
     }
 
+    #[test]
+    fn scenario_line_by_line_scroll_repaints_unique_rows() {
+        let mut h = Harness::with_size(48, 16);
+        h.app.connection_status = ConnectionStatus::Connected;
+
+        for i in 0..45 {
+            h.app.entries.push(ConversationEntry::User {
+                content: format!("unique row {i:02}"),
+                images: vec![],
+                timestamp: format!("t{i}"),
+            });
+        }
+
+        fn visible_unique_rows(frame: &str) -> Vec<String> {
+            frame
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix("unique row "))
+                .map(|suffix| suffix.to_string())
+                .collect()
+        }
+
+        fn assert_no_duplicate_rows(frame: &str) {
+            let rows = visible_unique_rows(frame);
+            for (idx, row) in rows.iter().enumerate() {
+                assert_eq!(
+                    rows.iter().filter(|candidate| *candidate == row).count(),
+                    1,
+                    "visible row {idx} duplicated after repaint:\n{frame}"
+                );
+            }
+        }
+
+        assert_no_duplicate_rows(&h.render("scroll repaint at bottom"));
+
+        for step in 0..5 {
+            h.app.scroll_up(1);
+            assert_no_duplicate_rows(&h.render(&format!("scroll repaint up {step}")));
+        }
+
+        for step in 0..3 {
+            h.app.scroll_down(1);
+            assert_no_duplicate_rows(&h.render(&format!("scroll repaint down {step}")));
+        }
+
+        h.app.scroll_up(10);
+        assert_no_duplicate_rows(&h.render("scroll repaint page up"));
+        h.app.scroll_down(10);
+        assert_no_duplicate_rows(&h.render("scroll repaint page down"));
+    }
+
     // ── Scenario: input placeholder ─────────────────────────────────────────
 
     #[test]
@@ -3747,6 +3794,54 @@ mod scenario_tests {
         assert!(
             f.contains("That should work"),
             "text after code block visible"
+        );
+    }
+
+    #[test]
+    fn scenario_reported_markdown_elements_render() {
+        let mut h = Harness::with_size(44, 24);
+        h.app.connection_status = ConnectionStatus::Connected;
+
+        h.app.entries.push(ConversationEntry::Assistant {
+            msg_id: None,
+            content: concat!(
+                "review:\n\n",
+                "`inline code wraps across the pane`\n\n",
+                "```rust\n",
+                "fn main() {\n",
+                "    println!(\"hello\");\n",
+                "}\n",
+                "```\n\n",
+                "1. numbered list item wraps across the pane\n",
+                "2. second item\n",
+                "- bullet list item wraps too\n",
+                "- [x] task item"
+            )
+            .into(),
+            images: vec![],
+            timestamp: "t1".into(),
+            metadata: None,
+        });
+
+        let f = h.render("reported markdown elements");
+        assert!(
+            f.contains("inline code"),
+            "inline code content visible\n{f}"
+        );
+        assert!(f.contains("fn main()"), "code block content visible\n{f}");
+        assert!(
+            f.contains("1. numbered list item"),
+            "numbered list marker visible\n{f}"
+        );
+        assert!(
+            f.contains("2. second item"),
+            "second list marker visible\n{f}"
+        );
+        assert!(f.contains("- bullet list"), "bullet marker visible\n{f}");
+        assert!(f.contains("[x] task item"), "task marker visible\n{f}");
+        assert!(
+            !f.contains("```"),
+            "code fences should not render literally\n{f}"
         );
     }
 

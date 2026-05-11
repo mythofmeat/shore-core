@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed `shore-tui` markdown rendering regressions where wrapped inline code,
+  fenced code blocks, numbered lists, bullets, and task lists could render
+  incorrectly, and cleared the conversation pane before repainting to avoid
+  stale duplicated lines during fine-grained scrolling.
 - Improved `shore-tui` markdown rendering with CommonMark/GFM parsing for
   headings, lists, task markers, tables, strikethrough, rules, code, and other
   chat transcript formatting.
