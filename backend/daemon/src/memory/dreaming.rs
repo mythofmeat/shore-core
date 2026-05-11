@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Datelike, Local, Timelike, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shore_config::app::DreamingConfig;
+use shore_config::cron::CronSchedule;
 use shore_config::{
     character_memory_dir, character_workspace_dir, LoadedConfig, SOUL_FILE, USER_FILE,
 };
@@ -1135,41 +1136,30 @@ fn push_markdown_list_or_none(body: &mut String, items: &[String]) {
 }
 
 pub fn is_due(cfg: &DreamingConfig, last_run_at: Option<&str>) -> Result<bool, DreamingError> {
-    let (minute, hour) = parse_daily_cron(&cfg.frequency)?;
     let now = Local::now();
-    let today_due = now
-        .with_hour(hour)
-        .and_then(|dt| dt.with_minute(minute))
-        .and_then(|dt| dt.with_second(0))
-        .and_then(|dt| dt.with_nanosecond(0))
-        .ok_or_else(|| DreamingError::Schedule(cfg.frequency.clone()))?;
-    if now < today_due {
-        return Ok(false);
-    }
-    let Some(last) = last_run_at else {
-        return Ok(true);
-    };
-    let last = DateTime::parse_from_rfc3339(last)
-        .map_err(|e| DreamingError::Schedule(e.to_string()))?
-        .with_timezone(&Local);
-    Ok(last.year() != now.year() || last.ordinal() != now.ordinal())
+    is_due_at(cfg, last_run_at, now)
 }
 
-fn parse_daily_cron(expr: &str) -> Result<(u32, u32), DreamingError> {
-    let parts: Vec<&str> = expr.split_whitespace().collect();
-    if parts.len() != 5 {
-        return Err(DreamingError::Schedule(expr.to_string()));
-    }
-    let minute = parts[0]
-        .parse::<u32>()
-        .map_err(|_| DreamingError::Schedule(expr.to_string()))?;
-    let hour = parts[1]
-        .parse::<u32>()
-        .map_err(|_| DreamingError::Schedule(expr.to_string()))?;
-    if minute > 59 || hour > 23 || parts[2] != "*" || parts[3] != "*" || parts[4] != "*" {
-        return Err(DreamingError::Schedule(expr.to_string()));
-    }
-    Ok((minute, hour))
+fn is_due_at(
+    cfg: &DreamingConfig,
+    last_run_at: Option<&str>,
+    now: DateTime<Local>,
+) -> Result<bool, DreamingError> {
+    let schedule = CronSchedule::parse(&cfg.frequency)
+        .map_err(|e| DreamingError::Schedule(format!("{}: {e}", cfg.frequency)))?;
+    let after = match last_run_at {
+        Some(last) => DateTime::parse_from_rfc3339(last)
+            .map_err(|e| DreamingError::Schedule(format!("invalid last_run_at {last:?}: {e}")))?
+            .with_timezone(&Local),
+        None => schedule.initial_due_window_start(now) - Duration::minutes(1),
+    };
+    let Some(next_due) = schedule.next_after(after) else {
+        return Err(DreamingError::Schedule(format!(
+            "{}: no matching time found",
+            cfg.frequency
+        )));
+    };
+    Ok(next_due <= now)
 }
 
 fn dream_data_dir(data_dir: &Path, character: &str) -> PathBuf {
@@ -2332,6 +2322,7 @@ fn diary_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use shore_ledger::LedgerClient;
     use shore_llm::LlmClient;
     use shore_test_harness::{MockLlmServer, TestConfigBuilder};
@@ -2339,6 +2330,20 @@ mod tests {
 
     fn test_ledger(tmp: &tempfile::TempDir) -> LedgerClient {
         LedgerClient::new(LlmClient::new(), &tmp.path().join("ledger.db")).unwrap()
+    }
+
+    fn local_dt(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        second: u32,
+    ) -> DateTime<Local> {
+        Local
+            .with_ymd_and_hms(year, month, day, hour, minute, second)
+            .single()
+            .unwrap()
     }
 
     fn librarian_config(
@@ -2910,6 +2915,25 @@ mod tests {
             is_due(&invalid, None),
             Err(DreamingError::Schedule(_))
         ));
+    }
+
+    #[test]
+    fn weekly_cron_due_checks_catch_up_once_per_occurrence() {
+        let cfg = DreamingConfig {
+            frequency: "0 6 * * 1".to_string(),
+            ..DreamingConfig::default()
+        };
+        let before_monday = local_dt(2026, 5, 11, 5, 59, 0);
+        let after_monday = local_dt(2026, 5, 11, 6, 1, 0);
+        let tuesday = local_dt(2026, 5, 12, 9, 0, 0);
+        let already_ran = local_dt(2026, 5, 11, 6, 2, 0).to_rfc3339();
+        let stale_run = local_dt(2026, 5, 4, 6, 2, 0).to_rfc3339();
+
+        assert!(!is_due_at(&cfg, None, before_monday).unwrap());
+        assert!(is_due_at(&cfg, None, after_monday).unwrap());
+        assert!(is_due_at(&cfg, None, tuesday).unwrap());
+        assert!(!is_due_at(&cfg, Some(&already_ran), tuesday).unwrap());
+        assert!(is_due_at(&cfg, Some(&stale_run), tuesday).unwrap());
     }
 
     #[tokio::test]

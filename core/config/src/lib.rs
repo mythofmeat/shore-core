@@ -1,4 +1,5 @@
 pub mod app;
+pub mod cron;
 pub mod duration;
 pub mod models;
 pub mod providers;
@@ -8,6 +9,7 @@ pub use duration::ConfigDuration;
 use std::path::{Path, PathBuf};
 
 use app::AppConfig;
+use cron::CronSchedule;
 use models::ModelCatalog;
 use providers::ProviderRegistry;
 use tracing::{info, warn};
@@ -544,7 +546,7 @@ fn validate_config(
         app.defaults.image_generation.as_deref(),
     )?;
 
-    validate_daily_cron(&app.memory.dreaming.frequency)?;
+    validate_cron_schedule(&app.memory.dreaming.frequency)?;
 
     Ok(())
 }
@@ -594,25 +596,13 @@ fn validate_default_embedding(
     )))
 }
 
-fn validate_daily_cron(expr: &str) -> Result<(), ConfigError> {
-    let parts: Vec<&str> = expr.split_whitespace().collect();
-    if parts.len() != 5 {
-        return Err(ConfigError::Validation(format!(
-            "memory.dreaming.frequency must be a five-field cron expression, got {expr:?}"
-        )));
-    }
-    let minute = parts[0].parse::<u8>().ok();
-    let hour = parts[1].parse::<u8>().ok();
-    if minute.is_none_or(|m| m > 59)
-        || hour.is_none_or(|h| h > 23)
-        || parts[2] != "*"
-        || parts[3] != "*"
-        || parts[4] != "*"
-    {
-        return Err(ConfigError::Validation(format!(
-            "memory.dreaming.frequency currently supports daily cron of the form \"M H * * *\", got {expr:?}"
-        )));
-    }
+fn validate_cron_schedule(expr: &str) -> Result<(), ConfigError> {
+    CronSchedule::parse(expr).map_err(|e| {
+        ConfigError::Validation(format!(
+            "memory.dreaming.frequency must be a valid five-field cron expression \
+             (minute hour day-of-month month day-of-week), got {expr:?}: {e}"
+        ))
+    })?;
     Ok(())
 }
 
@@ -928,6 +918,21 @@ frequency = "sometimes"
             err.to_string().contains("memory.dreaming.frequency"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn weekly_dreaming_frequency_passes_validation() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[memory.dreaming]
+frequency = "0 6 * * 1"
+"#,
+        )]);
+
+        let config_path = tmp.path().join("config.toml");
+        let loaded = load_config(Some(&config_path)).unwrap();
+        assert_eq!(loaded.app.memory.dreaming.frequency, "0 6 * * 1");
     }
 
     #[test]
