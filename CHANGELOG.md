@@ -5,6 +5,9 @@
 - Improved `shore-tui` markdown rendering with CommonMark/GFM parsing for
   headings, lists, task markers, tables, strikethrough, rules, code, and other
   chat transcript formatting.
+- Moved disposable provider discovery catalogs, workspace embedding indexes,
+  cache-forensics logs, and API payload debug logs from the data directory to
+  the cache directory.
 - Fixed `shore-tui` image display for remote daemon connections by embedding
   image bytes in history/log snapshots and live generated-image events instead
   of relying on daemon-local filesystem paths.

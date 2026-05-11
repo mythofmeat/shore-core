@@ -29,14 +29,14 @@ use crate::commands::providers::refresh_one;
 /// duration; production callers pass [`discovery::REFRESH_INTERVAL`].
 pub fn spawn(
     config: LoadedConfig,
-    data_dir: PathBuf,
+    cache_dir: PathBuf,
     llm_client: LedgerClient,
     interval: Duration,
     shutdown_rx: watch::Receiver<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(run_loop(
         config,
-        data_dir,
+        cache_dir,
         llm_client,
         interval,
         shutdown_rx,
@@ -45,7 +45,7 @@ pub fn spawn(
 
 async fn run_loop(
     config: LoadedConfig,
-    data_dir: PathBuf,
+    cache_dir: PathBuf,
     llm_client: LedgerClient,
     interval: Duration,
     mut shutdown_rx: watch::Receiver<()>,
@@ -63,7 +63,7 @@ async fn run_loop(
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             _ = ticker.tick() => {
-                refresh_pass(&config, &data_dir, &llm_client).await;
+                refresh_pass(&config, &cache_dir, &llm_client).await;
             }
         }
     }
@@ -71,13 +71,13 @@ async fn run_loop(
     info!("Auto-discovery loop stopped");
 }
 
-async fn refresh_pass(config: &LoadedConfig, data_dir: &std::path::Path, llm: &LedgerClient) {
+async fn refresh_pass(config: &LoadedConfig, cache_dir: &std::path::Path, llm: &LedgerClient) {
     for (name, entry) in config.providers.iter() {
         if !entry.enabled || !entry.discovery.enabled {
             continue;
         }
 
-        let cache_path = discovery::cache_path(data_dir, name);
+        let cache_path = discovery::cache_path(cache_dir, name);
         let cache = discovery::read_cache(&cache_path).ok().flatten();
         let needs_refresh = cache.as_ref().map(discovery::is_stale).unwrap_or(true);
         if !needs_refresh {
@@ -85,7 +85,7 @@ async fn refresh_pass(config: &LoadedConfig, data_dir: &std::path::Path, llm: &L
             continue;
         }
 
-        match refresh_one(config, data_dir, llm, name).await {
+        match refresh_one(config, cache_dir, llm, name).await {
             Ok(outcome) => info!(
                 provider = %name,
                 models = outcome.cache.models.len(),

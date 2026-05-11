@@ -49,6 +49,7 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
         "active_model": effective_model,
         "config_dir": ctx.config.dirs.config.display().to_string(),
         "data_dir": ctx.config.dirs.data.display().to_string(),
+        "cache_dir": ctx.config.dirs.cache.display().to_string(),
         "memory_mode": "markdown",
         "pending_deferred_edit_count": pending_deferred_edits.len(),
         "pending_deferred_edits": pending_deferred_edits,

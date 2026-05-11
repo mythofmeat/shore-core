@@ -5,8 +5,8 @@
 //! fetcher. The Phase 5 layer is intentionally narrow:
 //!
 //! * `discover_openai_compatible` — one-shot fetch + map to `DiscoveredModel`.
-//! * `read_cache` / `write_cache` — durable, atomic per-provider cache files
-//!   under `<data_dir>/providers/<provider>/models.json`.
+//! * `read_cache` / `write_cache` — atomic per-provider cache files under
+//!   `<cache_dir>/providers/<provider>/models.json`.
 //!
 //! Capabilities are kept as `Option<bool>` so unknown values stay unknown:
 //! the user-facing list must not pretend a provider does *not* support
@@ -117,10 +117,10 @@ pub struct ProviderModelsCache {
     pub models: Vec<DiscoveredModel>,
 }
 
-/// Build the canonical cache path for `provider_key` under `data_dir`:
-/// `<data_dir>/providers/<provider>/models.json`.
-pub fn cache_path(data_dir: &Path, provider_key: &str) -> PathBuf {
-    data_dir
+/// Build the canonical cache path for `provider_key` under `cache_dir`:
+/// `<cache_dir>/providers/<provider>/models.json`.
+pub fn cache_path(cache_dir: &Path, provider_key: &str) -> PathBuf {
+    cache_dir
         .join("providers")
         .join(provider_key)
         .join("models.json")
@@ -403,8 +403,8 @@ mod tests {
 
     #[test]
     fn cache_path_layout() {
-        let p = cache_path(Path::new("/data"), "openrouter");
-        assert_eq!(p, PathBuf::from("/data/providers/openrouter/models.json"));
+        let p = cache_path(Path::new("/cache"), "openrouter");
+        assert_eq!(p, PathBuf::from("/cache/providers/openrouter/models.json"));
     }
 
     #[test]

@@ -146,10 +146,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Startup configuration resolved"
     );
 
-    // Ensure data and runtime directories exist before anything writes to them.
+    // Ensure persistent and cache/runtime directories exist before anything writes to them.
     std::fs::create_dir_all(&loaded.dirs.data).map_err(|source| StartupError::CreateDir {
         kind: "data",
         path: loaded.dirs.data.clone(),
+        source,
+    })?;
+    std::fs::create_dir_all(&loaded.dirs.cache).map_err(|source| StartupError::CreateDir {
+        kind: "cache",
+        path: loaded.dirs.cache.clone(),
         source,
     })?;
     std::fs::create_dir_all(&loaded.dirs.runtime).map_err(|source| StartupError::CreateDir {
@@ -293,16 +298,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut raw_llm_client = LlmClient::new();
     if loaded.app.advanced.api_payload_logging {
-        raw_llm_client.set_payload_log_dir(loaded.dirs.data.clone());
+        raw_llm_client.set_payload_log_dir(loaded.dirs.cache.clone());
         info!(
             "API payload logging enabled → {}/debug/api_logs/",
-            loaded.dirs.data.display()
+            loaded.dirs.cache.display()
         );
     }
 
-    let cache_forensics_path = loaded.dirs.data.join("cache_forensics.jsonl");
+    let cache_forensics_path = loaded.dirs.cache.join("cache_forensics.jsonl");
     if loaded.app.advanced.cache_forensics {
-        shore_llm::cache_forensics::enable(loaded.dirs.data.clone());
+        shore_llm::cache_forensics::enable(loaded.dirs.cache.clone());
         info!(
             path = %cache_forensics_path.display(),
             "Cache forensics enabled"
@@ -397,7 +402,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Spawn provider auto-discovery loop ───────────────────────────
     let auto_discovery_handle = shore_daemon::auto_discovery::spawn(
         loaded.clone(),
-        loaded.dirs.data.clone(),
+        loaded.dirs.cache.clone(),
         llm_client.clone(),
         shore_llm::discovery::REFRESH_INTERVAL,
         shutdown_rx.clone(),

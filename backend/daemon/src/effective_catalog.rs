@@ -79,7 +79,7 @@ pub struct EffectiveModel {
 /// `discovery.ignore` patterns. Static entries are never hidden.
 pub fn find_effective_model(
     config: &LoadedConfig,
-    data_dir: &Path,
+    cache_dir: &Path,
     name: &str,
     include_hidden: bool,
 ) -> Result<ResolvedModel, EffectiveCatalogError> {
@@ -100,7 +100,7 @@ pub fn find_effective_model(
                 // discovery are both enabled — never trust a stale cache
                 // for a provider the user has turned off.
                 if entry.enabled && entry.discovery.enabled {
-                    if let Some(disc) = read_provider_discovery(data_dir, provider, model_id) {
+                    if let Some(disc) = read_provider_discovery(cache_dir, provider, model_id) {
                         let hidden = !entry.discovery.is_visible(&disc.model_id);
                         if hidden && !include_hidden {
                             return Err(EffectiveCatalogError::Hidden {
@@ -127,7 +127,7 @@ pub fn find_effective_model(
         if !entry.enabled || !entry.discovery.enabled {
             continue;
         }
-        let Some(disc) = read_provider_discovery(data_dir, provider_key, name) else {
+        let Some(disc) = read_provider_discovery(cache_dir, provider_key, name) else {
             continue;
         };
         let hidden = !entry.discovery.is_visible(&disc.model_id);
@@ -182,7 +182,7 @@ pub fn find_effective_model(
 /// `discovery.ignore` rules. Static rows are always included.
 pub fn list_effective_models(
     config: &LoadedConfig,
-    data_dir: &Path,
+    cache_dir: &Path,
     include_hidden: bool,
 ) -> Vec<EffectiveModel> {
     let mut out: Vec<EffectiveModel> = config
@@ -200,7 +200,7 @@ pub fn list_effective_models(
         if !entry.enabled || !entry.discovery.enabled {
             continue;
         }
-        let cache_p = cache_path(data_dir, provider_key);
+        let cache_p = cache_path(cache_dir, provider_key);
         let Some(cache) = read_cache(&cache_p).ok().flatten() else {
             continue;
         };
@@ -226,11 +226,11 @@ pub fn list_effective_models(
 // ── Internals ───────────────────────────────────────────────────────────
 
 fn read_provider_discovery(
-    data_dir: &Path,
+    cache_dir: &Path,
     provider_key: &str,
     model_id: &str,
 ) -> Option<DiscoveredModel> {
-    let cache = read_cache(&cache_path(data_dir, provider_key))
+    let cache = read_cache(&cache_path(cache_dir, provider_key))
         .ok()
         .flatten()?;
     cache.models.into_iter().find(|m| m.model_id == model_id)

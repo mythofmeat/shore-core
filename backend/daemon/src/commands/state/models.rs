@@ -50,7 +50,7 @@ fn resolve_active_model(
             ErrorCode::InvalidRequest,
             "No model specified and no active model set".into(),
         ))?;
-    effective_catalog::find_effective_model(&ctx.config, &ctx.data_dir, name, true)
+    effective_catalog::find_effective_model(&ctx.config, &ctx.config.dirs.cache, name, true)
         .map_err(effective_catalog_err)
 }
 
@@ -123,8 +123,11 @@ pub fn list_models_with_args(ctx: &CommandContext, args: &Value) -> CommandResul
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let entries =
-        effective_catalog::list_effective_models(&ctx.config, &ctx.data_dir, include_hidden);
+    let entries = effective_catalog::list_effective_models(
+        &ctx.config,
+        &ctx.config.dirs.cache,
+        include_hidden,
+    );
     let models: Vec<Value> = entries.iter().map(effective_model_to_json).collect();
     let active = list_models_active_name(ctx, &entries);
 
@@ -133,7 +136,7 @@ pub fn list_models_with_args(ctx: &CommandContext, args: &Value) -> CommandResul
     } else {
         // Recompute the hidden count when not folded in.
         let with_hidden =
-            effective_catalog::list_effective_models(&ctx.config, &ctx.data_dir, true);
+            effective_catalog::list_effective_models(&ctx.config, &ctx.config.dirs.cache, true);
         with_hidden.iter().filter(|e| e.hidden).count()
     };
 
@@ -147,16 +150,21 @@ pub fn list_models_with_args(ctx: &CommandContext, args: &Value) -> CommandResul
 
 fn list_models_active_name(ctx: &CommandContext, entries: &[EffectiveModel]) -> Option<String> {
     if let Some(active) = ctx.active_model.as_deref().filter(|s| !s.is_empty()) {
-        return effective_catalog::find_effective_model(&ctx.config, &ctx.data_dir, active, true)
-            .map(|m| m.qualified_name)
-            .or_else(|_| {
-                ctx.config
-                    .models
-                    .find_model(active)
-                    .map(|m| m.qualified_name.clone())
-            })
-            .ok()
-            .or_else(|| Some(active.to_string()));
+        return effective_catalog::find_effective_model(
+            &ctx.config,
+            &ctx.config.dirs.cache,
+            active,
+            true,
+        )
+        .map(|m| m.qualified_name)
+        .or_else(|_| {
+            ctx.config
+                .models
+                .find_model(active)
+                .map(|m| m.qualified_name.clone())
+        })
+        .ok()
+        .or_else(|| Some(active.to_string()));
     }
 
     if let Some(default) = ctx
@@ -167,16 +175,21 @@ fn list_models_active_name(ctx: &CommandContext, entries: &[EffectiveModel]) -> 
         .as_deref()
         .filter(|s| !s.is_empty())
     {
-        return effective_catalog::find_effective_model(&ctx.config, &ctx.data_dir, default, true)
-            .map(|m| m.qualified_name)
-            .or_else(|_| {
-                ctx.config
-                    .models
-                    .find_model(default)
-                    .map(|m| m.qualified_name.clone())
-            })
-            .ok()
-            .or_else(|| Some(default.to_string()));
+        return effective_catalog::find_effective_model(
+            &ctx.config,
+            &ctx.config.dirs.cache,
+            default,
+            true,
+        )
+        .map(|m| m.qualified_name)
+        .or_else(|_| {
+            ctx.config
+                .models
+                .find_model(default)
+                .map(|m| m.qualified_name.clone())
+        })
+        .ok()
+        .or_else(|| Some(default.to_string()));
     }
 
     entries.first().map(|e| e.resolved.qualified_name.clone())
@@ -210,7 +223,7 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
 
     let resolved = match name_arg {
         Some(name) => {
-            effective_catalog::find_effective_model(&ctx.config, &ctx.data_dir, name, true)
+            effective_catalog::find_effective_model(&ctx.config, &ctx.config.dirs.cache, name, true)
                 .map_err(effective_catalog_err)?
         }
         None => resolve_active_model(ctx)?,
@@ -275,7 +288,7 @@ pub fn switch_model(ctx: &mut CommandContext, args: &Value) -> CommandResult {
         Some(name) => {
             let resolved = effective_catalog::find_effective_model(
                 &ctx.config,
-                &ctx.data_dir,
+                &ctx.config.dirs.cache,
                 name,
                 include_hidden,
             )
@@ -535,7 +548,7 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
         .filter(|s| !s.is_empty())
     {
         Some(name) => {
-            effective_catalog::find_effective_model(&ctx.config, &ctx.data_dir, name, true)
+            effective_catalog::find_effective_model(&ctx.config, &ctx.config.dirs.cache, name, true)
                 .map_err(effective_catalog_err)?
         }
         None => resolve_active_model(ctx)?,

@@ -278,15 +278,7 @@ pub fn dispatch_tool<'a>(
             }
             "list_files" => workspace::handle_list_files(input, ctx.workspace_dir()).await,
             "search" => {
-                let fallback_index_path = if ctx.character_data_dir().is_empty() {
-                    None
-                } else {
-                    Some(
-                        std::path::PathBuf::from(ctx.character_data_dir())
-                            .join("workspace_index.json"),
-                    )
-                };
-                let index_path = ctx.memory_index_path().or(fallback_index_path.as_deref());
+                let index_path = ctx.memory_index_path();
                 let mut input = input;
                 apply_default_search_mode(&mut input, ctx, index_path.is_some());
                 workspace::handle_search(

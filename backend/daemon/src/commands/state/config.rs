@@ -157,6 +157,7 @@ pub async fn config_check(ctx: &CommandContext) -> CommandResult {
         "info": info,
         "config_dir": ctx.config.dirs.config.display().to_string(),
         "data_dir": ctx.config.dirs.data.display().to_string(),
+        "cache_dir": ctx.config.dirs.cache.display().to_string(),
         "chat_models": ctx.config.models.chat.len(),
         "tool_models": ctx.config.models.tools.len(),
         "memory_mode": "markdown",

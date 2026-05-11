@@ -259,7 +259,7 @@ ignore = [
 ```
 
 Discovered models populate the cache at
-`$XDG_DATA_HOME/shore/providers/<name>/models.json`. The daemon
+`$XDG_CACHE_HOME/shore/providers/<name>/models.json`. The daemon
 auto-refreshes any discovery-enabled provider whose cache is missing or
 older than 24h, both at startup and on a 24h cadence while running. Run
 `shore provider refresh <name>` (or `shore provider refresh` to fan out
@@ -434,6 +434,16 @@ Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs in
 `MEMORY.md` is the index/map and replaces the old recap/digest concept. Normal chat reads `active_prompt/MEMORY.md`; edits to `workspace/MEMORY.md` only become prompt-active after compaction/reload. It should not duplicate `USER.md` or `AGENTS.md`, which remain pinned prompt files.
 
 The dreams audit log lives at `$XDG_DATA_HOME/shore/<Character>/DREAMS.md` (data dir, not workspace) so it never bleeds into prompts or memory snapshots. Use `shore memory dreams [--limit N]` to inspect recent entries. Machine-readable dreaming staging/debug state is written under `$XDG_DATA_HOME/shore/<Character>/dreams/`.
+
+## Advanced Diagnostics
+
+`[advanced].api_payload_logging = true` writes per-call provider request and
+response JSON under `$XDG_CACHE_HOME/shore/debug/api_logs/`. These files are
+diagnostic payload dumps, not durable user state.
+
+`[advanced].cache_forensics = true` writes Anthropic prompt-cache forensic
+events under `$XDG_CACHE_HOME/shore/cache_forensics.jsonl`. The durable cache
+state and anomaly summary remain in the usage ledger.
 
 ## `[memory.retrieval]`
 

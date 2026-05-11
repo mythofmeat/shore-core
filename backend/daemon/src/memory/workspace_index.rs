@@ -3,7 +3,7 @@
 //! Walks the same paths the lexical `search` tool walks (workspace root)
 //! with identical security rules
 //! (symlink skip, size cap, non-UTF8 skip), embeds every text file once,
-//! and stores vectors in a JSON index under the character data directory.
+//! and stores vectors in a JSON index under the Shore cache directory.
 //!
 //! Subsequent searches reuse cached vectors and only re-embed files whose
 //! size, mtime, embedding model, or embedding character cap changed.
@@ -25,6 +25,16 @@ use tracing::warn;
 
 const EMBED_BATCH_MAX_ITEMS: usize = 32;
 const EMBED_BATCH_MAX_CHARS: usize = 96_000;
+const INDEX_FILE: &str = "workspace_index.json";
+
+/// Build the canonical cache path for a character's workspace embedding index:
+/// `<cache_dir>/characters/<character>/workspace_index.json`.
+pub fn index_path(cache_dir: &Path, character: &str) -> PathBuf {
+    cache_dir
+        .join("characters")
+        .join(character)
+        .join(INDEX_FILE)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceIndexError {

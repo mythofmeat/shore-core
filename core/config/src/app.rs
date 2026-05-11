@@ -898,13 +898,13 @@ impl Default for NotificationEventsConfig {
 #[serde(deny_unknown_fields)]
 pub struct AdvancedConfig {
     /// Log every API request and response as individual JSON files under
-    /// `{data_dir}/debug/api_logs/`. Filenames are `{call_id}.json` for the
+    /// `{cache_dir}/debug/api_logs/`. Filenames are `{call_id}.json` for the
     /// request and `{call_id}_response.json` for the paired response or
     /// error. No rotation — operators manage disk usage manually.
     #[serde(default)]
     pub api_payload_logging: bool,
 
-    /// Log prompt-cache forensic data to cache_forensics.jsonl.
+    /// Log prompt-cache forensic data to `{cache_dir}/cache_forensics.jsonl`.
     ///
     /// Disabled by default so operators opt in deliberately when diagnosing
     /// cache behavior or prompt-cost anomalies.
