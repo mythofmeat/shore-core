@@ -4,6 +4,9 @@
 
 - Expanded `memory.dreaming.frequency` from daily-only `M H * * *` validation
   to five-field cron schedules, including weekly forms like `0 6 * * 1`.
+- Added env-var-only `shore-tui` debug fixtures for offline markdown rendering,
+  one-shot frame snapshots, repeated/role-switched fixture entries, redraw frame
+  dumps, and image-probe suppression.
 - Fixed `shore-tui` markdown rendering regressions where wrapped inline code,
   fenced code blocks, numbered lists, bullets, and task lists could render
   incorrectly, and cleared the conversation pane before repainting to avoid
