@@ -363,6 +363,7 @@ impl MessageHandler {
                             ServerMessage::History(shore_protocol::server_msg::History {
                                 rid: None,
                                 messages: snapshot.messages,
+                                active_start: snapshot.active_start,
                                 config: snapshot.config,
                                 selected_character: snapshot.selected_character,
                                 revision: snapshot.revision,

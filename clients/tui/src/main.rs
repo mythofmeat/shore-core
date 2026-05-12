@@ -941,6 +941,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> UiEffect {
         ConnEvent::Connected {
             characters,
             history,
+            active_start,
             config,
             selected_character,
             ..
@@ -963,10 +964,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> UiEffect {
             app.set_active_model(config.get("active_model").and_then(|v| v.as_str()));
 
             // Load any history from the handshake
-            app.entries.clear();
-            for msg in history {
-                expand_msg(msg, &mut app.entries);
-            }
+            rebuild_entries_from_history(history, active_start, &mut app.entries);
             transmit_entry_images(app);
 
             app.set_status("connected");
@@ -983,6 +981,34 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> UiEffect {
         }
 
         ConnEvent::Message(msg) => handle_server_message(app, msg),
+    }
+}
+
+/// Rebuild the display log from a history snapshot, inserting the archive
+/// boundary before the first active-context message.
+fn rebuild_entries_from_history(
+    messages: Vec<Message>,
+    active_start: usize,
+    entries: &mut Vec<ConversationEntry>,
+) {
+    entries.clear();
+
+    let boundary_at = active_start.min(messages.len());
+    let mut inserted_boundary = false;
+    for (index, msg) in messages.into_iter().enumerate() {
+        if boundary_at > 0 && index == boundary_at {
+            entries.push(ConversationEntry::ArchiveBoundary {
+                archived_count: boundary_at,
+            });
+            inserted_boundary = true;
+        }
+        expand_msg(msg, entries);
+    }
+
+    if boundary_at > 0 && !inserted_boundary {
+        entries.push(ConversationEntry::ArchiveBoundary {
+            archived_count: boundary_at,
+        });
     }
 }
 
@@ -1673,10 +1699,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
             }
             // Re-sync history
             app.image_cache.clear();
-            app.entries.clear();
-            for msg in hist.messages {
-                expand_msg(msg, &mut app.entries);
-            }
+            rebuild_entries_from_history(hist.messages, hist.active_start, &mut app.entries);
             // Bump so the conv-cache fingerprint changes even when the
             // entry count and last-two summaries collide with the prior
             // value (e.g. :edit on an earlier message).

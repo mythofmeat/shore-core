@@ -27,6 +27,7 @@ pub struct HelloSnapshot {
 #[derive(Debug, Clone)]
 pub struct HistorySnapshot {
     pub messages: Vec<Message>,
+    pub active_start: usize,
     pub config: serde_json::Value,
     pub selected_character: Option<String>,
     pub revision: u64,
@@ -479,6 +480,7 @@ where
     let history = ServerMessage::History(History {
         rid: None,
         messages: history_snapshot.messages,
+        active_start: history_snapshot.active_start,
         config: history_snapshot.config,
         selected_character: history_snapshot.selected_character,
         revision: history_snapshot.revision,
@@ -629,6 +631,7 @@ async fn load_history_snapshot(
         Some(provider) => (provider.history)(selected_character).await,
         None => HistorySnapshot {
             messages: Vec::new(),
+            active_start: 0,
             config: serde_json::json!({}),
             selected_character,
             revision: 0,
@@ -862,6 +865,7 @@ mod tests {
                     };
                     HistorySnapshot {
                         messages,
+                        active_start: 0,
                         config: serde_json::json!({}),
                         selected_character,
                         revision: 1,

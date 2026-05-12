@@ -120,7 +120,7 @@ pub fn log(
     _ctx: &CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
+    let (merged, active_start) = engine.display_history();
 
     let count = args
         .get("count")
@@ -128,13 +128,16 @@ pub fn log(
         .map(|c| c as usize);
 
     // Embed image data so clients can display without filesystem access.
-    let mut with_data: Vec<Message> = match count {
-        Some(n) => merged.into_iter().rev().take(n).rev().collect(),
-        None => merged,
-    };
+    let total = merged.len();
+    let skip = count.map(|n| total.saturating_sub(n)).unwrap_or(0);
+    let mut with_data: Vec<Message> = merged.into_iter().skip(skip).collect();
+    let active_start = active_start.saturating_sub(skip).min(with_data.len());
     crate::handler::embed_messages_image_data(&mut with_data);
 
-    Ok(json!({ "messages": with_data }))
+    Ok(json!({
+        "messages": with_data,
+        "active_start": active_start,
+    }))
 }
 
 /// Edit a message by ID.
@@ -469,6 +472,47 @@ mod tests {
         }
     }
 
+    fn write_jsonl(path: &std::path::Path, messages: &[Message]) {
+        let body = messages
+            .iter()
+            .map(|msg| serde_json::to_string(msg).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn write_segmented_history(tmp: &TempDir) {
+        let character_dir = tmp.path().join("TestChar");
+        let segments_dir = character_dir.join("segments");
+        std::fs::create_dir_all(&segments_dir).unwrap();
+
+        let archived = vec![
+            make_msg("m1", Role::User, "archived one"),
+            make_msg("m2", Role::Assistant, "archived two"),
+        ];
+        write_jsonl(&segments_dir.join("0001.jsonl"), &archived);
+        let manifest = crate::engine::segments::CompactionManifest {
+            segments: vec![crate::engine::segments::SegmentEntry {
+                file: "0001.jsonl".into(),
+                message_count: archived.len(),
+                compacted_at: "2026-01-01T00:00:00Z".into(),
+            }],
+            total_compacted_messages: archived.len(),
+        };
+        std::fs::write(
+            character_dir.join("compaction.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let active = vec![
+            make_msg("m3", Role::User, "active three"),
+            make_msg("m4", Role::Assistant, "active four"),
+        ];
+        write_jsonl(&character_dir.join("active.jsonl"), &active);
+    }
+
     #[test]
     fn log_all_messages() {
         let tmp = TempDir::new().unwrap();
@@ -508,6 +552,21 @@ mod tests {
         // Should be the last 2 messages.
         assert_eq!(msgs[0]["msg_id"], "m2");
         assert_eq!(msgs[1]["msg_id"], "m3");
+    }
+
+    #[test]
+    fn log_with_count_can_cross_from_active_tail_into_archived_segments() {
+        let tmp = TempDir::new().unwrap();
+        write_segmented_history(&tmp);
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = log(&engine, &ctx, &json!({"count": 3})).unwrap();
+        let msgs = result["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["msg_id"], "m2");
+        assert_eq!(msgs[1]["msg_id"], "m3");
+        assert_eq!(msgs[2]["msg_id"], "m4");
+        assert_eq!(result["active_start"], 1);
     }
 
     #[test]

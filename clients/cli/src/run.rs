@@ -274,12 +274,14 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             } else if *plain {
                 let char_name = display_character.as_str();
                 if let Some(messages) = data["messages"].as_array() {
-                    output::print_log_plain(messages, char_name);
+                    let active_start = data["active_start"].as_u64().unwrap_or(0) as usize;
+                    output::print_log_plain_with_boundary(messages, active_start, char_name);
                 }
             } else {
                 let char_name = display_character.as_str();
                 if let Some(messages) = data["messages"].as_array() {
-                    output::print_log(messages, char_name);
+                    let active_start = data["active_start"].as_u64().unwrap_or(0) as usize;
+                    output::print_log_with_boundary(messages, active_start, char_name);
                 }
             }
 
@@ -1368,6 +1370,7 @@ mod tests {
         let history = ServerMessage::History(History {
             rid: None,
             messages: vec![],
+            active_start: 0,
             config: serde_json::json!({}),
             selected_character: None,
             revision: 0,

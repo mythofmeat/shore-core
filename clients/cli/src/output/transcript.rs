@@ -69,6 +69,31 @@ pub(crate) fn write_header(
     let _ = writeln!(out);
 }
 
+fn write_archive_boundary(out: &mut impl Write, width: usize, archived_count: usize) {
+    let label = if archived_count == 1 {
+        " archived above · outside current context ".to_string()
+    } else {
+        format!(" {archived_count} archived messages above · outside current context ")
+    };
+    let label_width = label.chars().count();
+    let line = if width > label_width {
+        let left = (width - label_width) / 2;
+        let right = width.saturating_sub(label_width + left);
+        format!("{}{}{}", "─".repeat(left), label, "─".repeat(right))
+    } else {
+        label.trim().to_string()
+    };
+
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+    }
+    let _ = writeln!(out, "{line}");
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+    let _ = writeln!(out);
+}
+
 /// Render the content of a single message: content blocks if present, plain text fallback otherwise.
 fn render_message_content(
     out: &mut impl Write,
@@ -189,6 +214,15 @@ fn render_message_content(
 /// `character_name` is used for assistant messages; pass the active character
 /// name or a fallback like "Assistant".
 pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
+    print_log_with_boundary(messages, 0, character_name);
+}
+
+/// Print the conversation log with an optional archive/current-context boundary.
+pub fn print_log_with_boundary(
+    messages: &[serde_json::Value],
+    active_start: usize,
+    character_name: &str,
+) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let width = term_width();
@@ -196,7 +230,12 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
 
     let mut prev_date: Option<String> = None;
 
-    for msg in messages {
+    let active_start = active_start.min(messages.len());
+    for (index, msg) in messages.iter().enumerate() {
+        if active_start > 0 && index == active_start {
+            write_archive_boundary(&mut out, width, active_start);
+        }
+
         let role_str = msg["role"].as_str().unwrap_or("user");
         let content = msg["content"].as_str().unwrap_or("");
         let ts = msg["timestamp"].as_str().unwrap_or("");
@@ -272,6 +311,10 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
         // Blank line between messages
         let _ = writeln!(out);
     }
+
+    if active_start > 0 && active_start == messages.len() {
+        write_archive_boundary(&mut out, width, active_start);
+    }
 }
 
 /// Print only the text content of a single message — no role, no timestamp, no decoration.
@@ -300,10 +343,27 @@ pub fn print_message_content(data: &serde_json::Value) {
 /// Print the conversation log as plain text — no colors, no box-drawing.
 /// Format: `role [HH:MM]: content` with blank lines between messages.
 pub fn print_log_plain(messages: &[serde_json::Value], character_name: &str) {
+    print_log_plain_with_boundary(messages, 0, character_name);
+}
+
+/// Plain-text transcript with an optional archive/current-context boundary.
+pub fn print_log_plain_with_boundary(
+    messages: &[serde_json::Value],
+    active_start: usize,
+    character_name: &str,
+) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
-    for msg in messages {
+    let active_start = active_start.min(messages.len());
+    for (index, msg) in messages.iter().enumerate() {
+        if active_start > 0 && index == active_start {
+            let _ = writeln!(
+                out,
+                "--- {active_start} archived message(s) above; outside current context ---\n"
+            );
+        }
+
         let role_str = msg["role"].as_str().unwrap_or("user");
         let content = msg["content"].as_str().unwrap_or("");
         let ts = msg["timestamp"].as_str().unwrap_or("");
@@ -361,6 +421,13 @@ pub fn print_log_plain(messages: &[serde_json::Value], character_name: &str) {
         }
 
         let _ = writeln!(out);
+    }
+
+    if active_start > 0 && active_start == messages.len() {
+        let _ = writeln!(
+            out,
+            "--- {active_start} archived message(s) above; outside current context ---\n"
+        );
     }
 }
 

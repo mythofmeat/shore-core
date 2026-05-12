@@ -134,6 +134,7 @@ mod tests {
                 alternatives: vec![],
                 timestamp: "2026-01-01T00:00:00Z".into(),
             }],
+            active_start: 0,
             config: json!({}),
             selected_character: Some("alice".into()),
             revision: 7,
@@ -150,6 +151,7 @@ mod tests {
         let msg = ServerMessage::History(History {
             rid: Some("cmd_switch_01".into()),
             messages: vec![],
+            active_start: 0,
             config: json!({}),
             selected_character: Some("alice".into()),
             revision: 8,

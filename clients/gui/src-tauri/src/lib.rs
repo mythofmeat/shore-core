@@ -58,6 +58,7 @@ async fn connect(
                     server_name,
                     characters,
                     history,
+                    active_start: _,
                     config,
                     selected_character,
                 } => {

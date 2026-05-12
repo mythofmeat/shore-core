@@ -510,6 +510,22 @@ fn build_conversation_lines(
                 pending_tools.push(entry);
                 continue;
             }
+            ConversationEntry::ArchiveBoundary { archived_count } => {
+                flush_thinking(
+                    &mut lines,
+                    &mut pending_thinking,
+                    app.show_thinking,
+                    content_width,
+                );
+                flush_tools(
+                    &mut lines,
+                    &mut pending_tools,
+                    app.show_tools,
+                    content_width,
+                );
+                push_archive_boundary(&mut lines, content_width, *archived_count);
+                continue;
+            }
             _ => {}
         }
 
@@ -656,6 +672,7 @@ fn build_conversation_lines(
                 lines.push(Line::from(""));
             }
             ConversationEntry::Thinking { .. }
+            | ConversationEntry::ArchiveBoundary { .. }
             | ConversationEntry::ToolCall { .. }
             | ConversationEntry::ToolResult { .. } => unreachable!(),
         }
@@ -713,6 +730,40 @@ fn build_conversation_lines(
     let content_visual = visual_line_count(&lines, content_width);
 
     (lines, image_index, content_visual)
+}
+
+fn push_archive_boundary(
+    lines: &mut Vec<Line<'static>>,
+    content_width: u16,
+    archived_count: usize,
+) {
+    if archived_count == 0 {
+        return;
+    }
+
+    lines.push(Line::from(""));
+
+    let label = if archived_count == 1 {
+        " archived above · outside current context ".to_string()
+    } else {
+        format!(" {archived_count} archived messages above · outside current context ")
+    };
+    let width = content_width as usize;
+    let label_width = unicode_width::UnicodeWidthStr::width(label.as_str());
+
+    let text = if width > label_width {
+        let left = (width - label_width) / 2;
+        let right = width.saturating_sub(label_width + left);
+        format!("{}{}{}", "─".repeat(left), label, "─".repeat(right))
+    } else {
+        label.trim().to_string()
+    };
+
+    lines.push(Line::from(Span::styled(
+        text,
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(""));
 }
 
 /// Render the fullscreen image viewer overlay.
@@ -1785,6 +1836,63 @@ mod scenario_tests {
             f.contains("Hi there, how are you today?"),
             "final response visible"
         );
+    }
+
+    #[test]
+    fn scenario_history_marks_archived_boundary() {
+        use shore_protocol::server_msg::History;
+        use shore_protocol::types::{ContentBlock, Message, Role};
+
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.character_name = "Sable".into();
+
+        let history_msgs = vec![
+            Message {
+                msg_id: "m_old".into(),
+                role: Role::User,
+                content: "old context".into(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "old context".into(),
+                }],
+                alt_index: None,
+                alt_count: None,
+                alternatives: vec![],
+                timestamp: "t1".into(),
+            },
+            Message {
+                msg_id: "m_new".into(),
+                role: Role::Assistant,
+                content: "active reply".into(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "active reply".into(),
+                }],
+                alt_index: None,
+                alt_count: None,
+                alternatives: vec![],
+                timestamp: "t2".into(),
+            },
+        ];
+
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::History(History {
+                rid: None,
+                messages: history_msgs,
+                active_start: 1,
+                config: serde_json::json!({}),
+                selected_character: None,
+                revision: 1,
+            }),
+        );
+
+        let f = h.render("archived boundary");
+        assert!(f.contains("old context"));
+        assert!(f.contains("active reply"));
+        assert!(f.contains("archived"));
+        assert!(f.contains("outside current context"));
     }
 
     // ── Scenario: inline thinking toggle ────────────────────────────────────
@@ -3171,6 +3279,7 @@ mod scenario_tests {
             ServerMessage::History(History {
                 rid: None,
                 messages: history_msgs,
+                active_start: 0,
                 config: serde_json::json!({}),
                 selected_character: None,
                 revision: 1,
@@ -3319,6 +3428,7 @@ mod scenario_tests {
             ServerMessage::History(History {
                 rid: None,
                 messages: history_msgs,
+                active_start: 0,
                 config: serde_json::json!({}),
                 selected_character: None,
                 revision: 1,

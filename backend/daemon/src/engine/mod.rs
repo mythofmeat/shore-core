@@ -12,7 +12,7 @@ use segments::SegmentReader;
 use shore_protocol::server_msg::{History, ServerMessage};
 use shore_protocol::types::Message;
 use tokio::sync::broadcast;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Errors originating from the conversation engine.
 #[derive(Debug, thiserror::Error)]
@@ -129,6 +129,30 @@ impl ConversationEngine {
     /// Access the segment reader for historical messages.
     pub fn segments(&self) -> &SegmentReader {
         &self.segments
+    }
+
+    /// Client-visible conversation history: archived scrollback first, then
+    /// the active context tail. The returned index marks where active context
+    /// begins after tool-loop message merging.
+    pub fn display_history(&self) -> (Vec<Message>, usize) {
+        let mut archived_raw = Vec::new();
+        for index in 0..self.segments.segment_count() {
+            match self.segments.read_segment(index) {
+                Ok(mut messages) => archived_raw.append(&mut messages),
+                Err(error) => warn!(
+                    character = %self.character_name,
+                    segment = index,
+                    error = %error,
+                    "failed to load archived conversation segment for display"
+                ),
+            }
+        }
+
+        let mut archived = shore_protocol::merge::merge_tool_loop_messages(&archived_raw);
+        let active_start = archived.len();
+        let mut active = shore_protocol::merge::merge_tool_loop_messages(self.messages.messages());
+        archived.append(&mut active);
+        (archived, active_start)
     }
 
     pub fn current_revision(&self) -> u64 {
@@ -314,11 +338,12 @@ impl ConversationEngine {
         // switch / post-reload re-push), so dropping embedding here makes
         // images vanish on remote clients the moment the daemon broadcasts
         // any state change.
-        let mut merged = shore_protocol::merge::merge_tool_loop_messages(self.messages.messages());
-        crate::handler::embed_messages_image_data(&mut merged);
+        let (mut messages, active_start) = self.display_history();
+        crate::handler::embed_messages_image_data(&mut messages);
         History {
             rid: None,
-            messages: merged,
+            messages,
+            active_start,
             config,
             selected_character: Some(self.character_name.clone()),
             revision: self.revision,
@@ -359,6 +384,16 @@ mod tests {
             alternatives: vec![],
             timestamp: "2026-01-01T00:00:00Z".to_string(),
         }
+    }
+
+    fn write_jsonl(path: &std::path::Path, messages: &[Message]) {
+        let body = messages
+            .iter()
+            .map(|msg| serde_json::to_string(msg).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(path, body).unwrap();
     }
 
     #[test]
@@ -483,6 +518,46 @@ mod tests {
                 .unwrap(),
             bytes
         );
+    }
+
+    #[test]
+    fn history_snapshot_includes_archived_segments_before_active_tail() {
+        let tmp = TempDir::new().unwrap();
+        let character_dir = tmp.path().join("TestChar");
+        let segments_dir = character_dir.join("segments");
+        std::fs::create_dir_all(&segments_dir).unwrap();
+
+        let archived = vec![
+            make_msg("m1", Role::User, "archived question"),
+            make_msg("m2", Role::Assistant, "archived answer"),
+        ];
+        write_jsonl(&segments_dir.join("0001.jsonl"), &archived);
+        let manifest = super::segments::CompactionManifest {
+            segments: vec![super::segments::SegmentEntry {
+                file: "0001.jsonl".into(),
+                message_count: archived.len(),
+                compacted_at: "2026-01-01T00:00:00Z".into(),
+            }],
+            total_compacted_messages: archived.len(),
+        };
+        std::fs::write(
+            character_dir.join("compaction.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let active = vec![make_msg("m3", Role::User, "active question")];
+        write_jsonl(&character_dir.join("active.jsonl"), &active);
+
+        let (engine, _rx) = make_engine(&tmp);
+        let history = engine.history_snapshot(serde_json::json!({}));
+        let ids: Vec<&str> = history
+            .messages
+            .iter()
+            .map(|msg| msg.msg_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["m1", "m2", "m3"]);
+        assert_eq!(history.active_start, 2);
     }
 
     #[test]

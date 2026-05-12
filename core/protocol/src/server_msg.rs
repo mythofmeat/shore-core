@@ -18,12 +18,23 @@ pub struct History {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rid: Option<String>,
     pub messages: Vec<Message>,
+    /// Index of the first message that is still in the active prompt context.
+    ///
+    /// Messages before this index are durable archive scrollback loaded from
+    /// compacted segments. They are useful for humans, but are no longer part
+    /// of the model's active conversation context.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub active_start: usize,
     #[serde(default)]
     pub config: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_character: Option<String>,
     #[serde(default)]
     pub revision: u64,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 /// Server shutting down.

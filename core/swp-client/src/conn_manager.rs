@@ -18,6 +18,7 @@ pub enum ConnEvent {
         server_name: String,
         characters: Vec<shore_protocol::types::CharacterInfo>,
         history: Vec<shore_protocol::types::Message>,
+        active_start: usize,
         config: serde_json::Value,
         selected_character: Option<String>,
     },
@@ -119,6 +120,7 @@ async fn connection_loop(
                         server_name: hello.server_name,
                         characters: hello.characters,
                         history: history.messages,
+                        active_start: history.active_start,
                         config: history.config,
                         selected_character: history.selected_character,
                     })

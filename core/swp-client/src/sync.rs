@@ -70,6 +70,7 @@ mod tests {
         let stale = ServerMessage::History(History {
             rid: None,
             messages: vec![message("m1")],
+            active_start: 0,
             config: serde_json::json!({}),
             selected_character: Some("alice".into()),
             revision: 4,
@@ -85,6 +86,7 @@ mod tests {
         let newer = ServerMessage::History(History {
             rid: None,
             messages: vec![message("m1")],
+            active_start: 0,
             config: serde_json::json!({}),
             selected_character: Some("alice".into()),
             revision: 6,

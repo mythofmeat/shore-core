@@ -101,6 +101,7 @@ mod tests {
                     alternatives: vec![],
                     timestamp: "2026-01-01T00:00:00Z".into(),
                 }],
+                active_start: 0,
                 config: serde_json::json!({}),
                 selected_character: Some("alice".into()),
                 revision: 4,

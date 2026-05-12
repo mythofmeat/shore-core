@@ -78,6 +78,9 @@ pub enum ConversationEntry {
         count: u32,
         timestamp: String,
     },
+    ArchiveBoundary {
+        archived_count: usize,
+    },
     Thinking {
         content: String,
     },
@@ -743,6 +746,9 @@ impl App {
                 }
                 ConversationEntry::System { content, count, .. } => {
                     (3u64 << 56) | ((content.len() as u64) << 24) | (*count as u64)
+                }
+                ConversationEntry::ArchiveBoundary { archived_count } => {
+                    (7u64 << 56) | (*archived_count as u64)
                 }
                 ConversationEntry::Thinking { content } => (4u64 << 56) | (content.len() as u64),
                 ConversationEntry::ToolCall {

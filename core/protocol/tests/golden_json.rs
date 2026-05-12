@@ -140,6 +140,7 @@ fn history_golden() {
             // Config
             assert_eq!(h.config["model"], "claude-haiku-4-5-20251001");
             assert_eq!(h.selected_character.as_deref(), Some("alice"));
+            assert_eq!(h.active_start, 0);
             assert_eq!(h.revision, 12);
         }
         other => panic!("expected History, got {:?}", other),

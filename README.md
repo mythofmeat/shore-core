@@ -18,6 +18,8 @@ For release history, read [CHANGELOG.md](CHANGELOG.md).
   same daemon state.
 - **Repairable replies.** Regenerating an assistant response is non-destructive:
   old and new responses are kept as selectable alternates.
+- **Archive-visible history.** Compacted conversation segments remain visible in
+  CLI/TUI scrollback, with a boundary showing what is outside active context.
 - **Markdown memory.** Long-term memory lives under each character's
   `workspace/memory/` as ordinary git-diffable files.
 - **Cache-safe prompt edits.** Character self-edits to prompt-visible files are

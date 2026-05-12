@@ -71,6 +71,7 @@ pub async fn build_session_history_snapshot(
             let engine = engine.lock().await;
             let History {
                 messages,
+                active_start,
                 config: _,
                 selected_character,
                 revision,
@@ -78,6 +79,7 @@ pub async fn build_session_history_snapshot(
             } = engine.history_snapshot(serde_json::json!({}));
             HistorySnapshot {
                 messages,
+                active_start,
                 config,
                 selected_character,
                 revision,
@@ -85,6 +87,7 @@ pub async fn build_session_history_snapshot(
         }
         None => HistorySnapshot {
             messages: Vec::new(),
+            active_start: 0,
             config,
             selected_character: None,
             revision: 0,
