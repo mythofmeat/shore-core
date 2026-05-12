@@ -25,8 +25,21 @@ fn render_markdown_inner(text: &str, max_width: Option<usize>) -> Vec<Line<'stat
     }
 
     let mut renderer = MarkdownRenderer::new(max_width);
-    for event in Parser::new_ext(text, markdown_options()) {
+    let mut previous_block_end = None;
+    for (event, range) in Parser::new_ext(text, markdown_options()).into_offset_iter() {
+        if starts_visual_block(&event) {
+            if let Some(end) = previous_block_end.take() {
+                if range.start > end && source_gap_has_blank_line(&text[end..range.start]) {
+                    renderer.push_blank_line_if_needed();
+                }
+            }
+        }
+
+        let ends_block = ends_visual_block(&event);
         renderer.handle_event(event);
+        if ends_block {
+            previous_block_end = Some(block_gap_start(text, range.end));
+        }
     }
     renderer.finish()
 }
@@ -44,6 +57,61 @@ fn markdown_options() -> Options {
     options.insert(Options::ENABLE_SUBSCRIPT);
     options.insert(Options::ENABLE_WIKILINKS);
     options
+}
+
+fn starts_visual_block(event: &Event<'_>) -> bool {
+    matches!(
+        event,
+        Event::Start(
+            Tag::Paragraph
+                | Tag::Heading { .. }
+                | Tag::BlockQuote(_)
+                | Tag::CodeBlock(_)
+                | Tag::HtmlBlock
+                | Tag::List(_)
+                | Tag::Item
+                | Tag::FootnoteDefinition(_)
+                | Tag::DefinitionList
+                | Tag::DefinitionListTitle
+                | Tag::DefinitionListDefinition
+                | Tag::Table(_)
+        ) | Event::Rule
+            | Event::DisplayMath(_)
+    )
+}
+
+fn ends_visual_block(event: &Event<'_>) -> bool {
+    matches!(
+        event,
+        Event::End(
+            TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::BlockQuote(_)
+                | TagEnd::CodeBlock
+                | TagEnd::HtmlBlock
+                | TagEnd::List(_)
+                | TagEnd::Item
+                | TagEnd::FootnoteDefinition
+                | TagEnd::DefinitionList
+                | TagEnd::DefinitionListTitle
+                | TagEnd::DefinitionListDefinition
+                | TagEnd::Table
+        ) | Event::Rule
+            | Event::DisplayMath(_)
+    )
+}
+
+fn source_gap_has_blank_line(gap: &str) -> bool {
+    gap.bytes().filter(|byte| *byte == b'\n').count() >= 2
+}
+
+fn block_gap_start(text: &str, end: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut idx = end;
+    while idx > 0 && matches!(bytes[idx - 1], b'\n' | b'\r' | b' ' | b'\t') {
+        idx -= 1;
+    }
+    idx
 }
 
 struct LinkState {
@@ -548,6 +616,13 @@ impl MarkdownRenderer {
         }
     }
 
+    fn push_blank_line_if_needed(&mut self) {
+        self.flush_current();
+        if self.lines.last().map_or(true, |line| line.width() > 0) {
+            self.lines.push(Line::from(""));
+        }
+    }
+
     fn ensure_continuation_prefix(&mut self) {
         if self.quote_depth == 0 && self.item_prefix.is_none() {
             return;
@@ -641,6 +716,46 @@ mod tests {
         let lines = render_markdown("hello world");
         assert_eq!(lines.len(), 1);
         assert_eq!(line_text(&lines[0]), "hello world");
+    }
+
+    #[test]
+    fn blank_line_between_paragraphs() {
+        let lines = render_markdown("hello\n\nworld");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(line_text(&lines[0]), "hello");
+        assert_eq!(line_text(&lines[1]), "");
+        assert_eq!(line_text(&lines[2]), "world");
+    }
+
+    #[test]
+    fn single_newline_stays_compact() {
+        let lines = render_markdown("hello\nworld");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(line_text(&lines[0]), "hello");
+        assert_eq!(line_text(&lines[1]), "world");
+    }
+
+    #[test]
+    fn blank_lines_between_list_blocks() {
+        let text = "- one\n\n- two\n\n1. three\n\n2. four\n\n```rust\nfn main() {}\n```";
+        let rendered = all_text(&render_markdown(text));
+
+        assert!(
+            rendered.contains("- one\n\n- two"),
+            "blank line between unordered list items should render:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("- two\n\n1. three"),
+            "blank line between unordered and ordered lists should render:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("1. three\n\n2. four"),
+            "blank line between ordered list items should render:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("2. four\n\n-- rust --"),
+            "blank line between ordered list and code block should render:\n{rendered}"
+        );
     }
 
     #[test]

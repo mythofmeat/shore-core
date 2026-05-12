@@ -17,6 +17,8 @@
   fenced code blocks, numbered lists, bullets, and task lists could render
   incorrectly, and cleared the conversation pane before repainting to avoid
   stale duplicated lines during fine-grained scrolling.
+- Fixed `shore-tui` markdown paragraph spacing so source blank lines render as
+  visible blank lines in chat transcript entries.
 - Improved `shore-tui` markdown rendering with CommonMark/GFM parsing for
   headings, lists, task markers, tables, strikethrough, rules, code, and other
   chat transcript formatting.

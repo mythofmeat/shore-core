@@ -1491,6 +1491,28 @@ mod scenario_tests {
             text
         }
 
+        /// Render current app state and preserve empty rows in the frame text.
+        fn render_with_blank_rows(&mut self, label: &str) -> String {
+            self.terminal
+                .draw(|frame| draw(frame, &mut self.app))
+                .unwrap();
+            let buf = self.terminal.backend().buffer();
+            let area = buf.area;
+            let mut text = String::new();
+            for y in 0..area.height {
+                let mut row = String::new();
+                for x in 0..area.width {
+                    let cell = &buf[(x, y)];
+                    row.push_str(cell.symbol());
+                }
+                text.push_str(row.trim_end());
+                text.push('\n');
+            }
+            self.frames.push(text.clone());
+            eprintln!("═══ {label} ═══\n{text}");
+            text
+        }
+
         /// Press a key with no modifiers.
         fn press(&mut self, code: KeyCode) {
             let _ = self.press_action(code);
@@ -3955,6 +3977,41 @@ mod scenario_tests {
         assert!(
             f.contains("That should work"),
             "text after code block visible"
+        );
+    }
+
+    #[test]
+    fn scenario_markdown_blank_line_between_paragraphs() {
+        let mut h = Harness::with_size(60, 18);
+        h.app.connection_status = ConnectionStatus::Connected;
+
+        h.app.entries.push(ConversationEntry::Assistant {
+            msg_id: None,
+            content: "First paragraph.\n\nSecond paragraph.".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+            metadata: None,
+        });
+
+        let f = h.render_with_blank_rows("markdown paragraph spacing");
+        let rows: Vec<&str> = f.lines().collect();
+        let first = rows
+            .iter()
+            .position(|row| row.contains("First paragraph."))
+            .expect("first paragraph visible");
+        let second = rows
+            .iter()
+            .position(|row| row.contains("Second paragraph."))
+            .expect("second paragraph visible");
+
+        assert_eq!(
+            second,
+            first + 2,
+            "paragraphs should have one visible blank row between them\n{f}"
+        );
+        assert!(
+            rows[first + 1].trim().is_empty(),
+            "row between paragraphs should be visually blank\n{f}"
         );
     }
 

@@ -383,12 +383,12 @@ fn buffer_to_string(buf: &Buffer) -> String {
     let area = buf.area;
     let mut text = String::new();
     for y in 0..area.height {
+        let mut row = String::new();
         for x in 0..area.width {
             let cell = &buf[(x, y)];
-            text.push_str(cell.symbol());
+            row.push_str(cell.symbol());
         }
-        let trimmed_len = text.trim_end().len();
-        text.truncate(trimmed_len);
+        text.push_str(row.trim_end());
         text.push('\n');
     }
     text
