@@ -437,6 +437,12 @@ fn load_prefs(app: &mut App) {
             if let Some(b) = v.get("show_images").and_then(|v| v.as_bool()) {
                 app.show_images = b;
             }
+            if let Some(b) = v.get("show_timestamps").and_then(|v| v.as_bool()) {
+                app.show_timestamps = b;
+            }
+            if let Some(b) = v.get("show_metadata").and_then(|v| v.as_bool()) {
+                app.show_metadata = b;
+            }
         }
     }
 }
@@ -446,6 +452,8 @@ fn save_prefs(app: &App) {
         "show_thinking": app.show_thinking,
         "show_tools": app.show_tools,
         "show_images": app.show_images,
+        "show_timestamps": app.show_timestamps,
+        "show_metadata": app.show_metadata,
     });
     let _ = std::fs::write(prefs_path(), v.to_string());
 }
