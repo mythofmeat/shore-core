@@ -943,6 +943,7 @@ impl Default for AdvancedConfig {
 // ── [tts] ──────────────────────────────────────────────────────────────
 
 serde_default!(default_tts_port -> u16 { 8778 });
+serde_default!(default_tts_model -> String { "tts-1".into() });
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -959,6 +960,10 @@ pub struct TtsConfig {
     #[serde(default = "default_tts_port")]
     pub port: u16,
 
+    /// OpenAI-compatible speech model to request.
+    #[serde(default = "default_tts_model")]
+    pub model: String,
+
     /// Voice name to pass to the TTS server. If unset, falls back to the
     /// character name. Can be overridden per-character via the merged
     /// character config.
@@ -972,6 +977,7 @@ impl Default for TtsConfig {
             enabled: false,
             host: String::new(),
             port: default_tts_port(),
+            model: default_tts_model(),
             voice: None,
         }
     }
@@ -1488,6 +1494,7 @@ cache_forensics = true
         assert!(!config.tts.enabled);
         assert_eq!(config.tts.host, "");
         assert_eq!(config.tts.port, 8778);
+        assert_eq!(config.tts.model, "tts-1");
         assert!(config.tts.voice.is_none());
     }
 
@@ -1653,6 +1660,7 @@ typo_field = "x"
 enabled = true
 host = "192.168.1.50"
 port = 9000
+model = "kokoro"
 voice = "Nanachan"
 "#,
         )
@@ -1660,6 +1668,7 @@ voice = "Nanachan"
         assert!(config.tts.enabled);
         assert_eq!(config.tts.host, "192.168.1.50");
         assert_eq!(config.tts.port, 9000);
+        assert_eq!(config.tts.model, "kokoro");
         assert_eq!(config.tts.voice.as_deref(), Some("Nanachan"));
     }
 }

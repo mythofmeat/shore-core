@@ -2,17 +2,60 @@
 //! and relays streamed WAV audio as SWP AudioChunk messages.
 
 use base64::Engine as _;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use shore_config::app::TtsConfig;
 use shore_protocol::server_msg::{AudioChunk, AudioEnd, AudioError, AudioStart, ServerMessage};
+use std::{error::Error, fmt};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info};
+
+const TTS_RESPONSE_FORMAT: &str = "wav";
+const MAX_ERROR_BODY_LEN: usize = 4096;
 
 /// HTTP client for an OpenAI-compatible TTS server.
 #[derive(Clone)]
 pub struct TtsClient {
     http: Client,
     base_url: String,
+}
+
+#[derive(Debug)]
+enum TtsRequestError {
+    Transport(reqwest::Error),
+    Status {
+        status: StatusCode,
+        url: String,
+        body: String,
+    },
+}
+
+impl fmt::Display for TtsRequestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transport(err) => err.fmt(f),
+            Self::Status { status, url, body } if body.trim().is_empty() => {
+                write!(f, "HTTP status {status} for url ({url})")
+            }
+            Self::Status { status, url, body } => {
+                write!(f, "HTTP status {status} for url ({url}): {}", body.trim())
+            }
+        }
+    }
+}
+
+impl Error for TtsRequestError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Transport(err) => Some(err),
+            Self::Status { .. } => None,
+        }
+    }
+}
+
+impl From<reqwest::Error> for TtsRequestError {
+    fn from(err: reqwest::Error) -> Self {
+        Self::Transport(err)
+    }
 }
 
 impl TtsClient {
@@ -29,18 +72,47 @@ impl TtsClient {
         &self,
         text: &str,
         voice: &str,
-    ) -> Result<reqwest::Response, reqwest::Error> {
+        model: &str,
+    ) -> Result<reqwest::Response, TtsRequestError> {
         let url = format!("{}/v1/audio/speech", self.base_url);
-        self.http
+        let response = self
+            .http
             .post(&url)
             .json(&serde_json::json!({
-                "model": "",
+                "model": model,
                 "input": text,
                 "voice": voice,
+                "response_format": TTS_RESPONSE_FORMAT,
             }))
             .send()
-            .await?
-            .error_for_status()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let url = response.url().to_string();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|err| format!("<failed to read error body: {err}>"));
+            return Err(TtsRequestError::Status {
+                status,
+                url,
+                body: truncate_error_body(&body),
+            });
+        }
+
+        Ok(response)
+    }
+}
+
+fn truncate_error_body(body: &str) -> String {
+    let trimmed = body.trim();
+    let mut chars = trimmed.chars();
+    let truncated: String = chars.by_ref().take(MAX_ERROR_BODY_LEN).collect();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
     }
 }
 
@@ -70,13 +142,14 @@ pub async fn relay_speech(
     client: &TtsClient,
     text: &str,
     voice: &str,
+    model: &str,
     msg_id: &str,
     rid: Option<String>,
     push_tx: &broadcast::Sender<ServerMessage>,
 ) {
-    info!(voice, msg_id, "Starting TTS relay");
+    info!(voice, model, msg_id, "Starting TTS relay");
 
-    let response = match client.speak_raw(text, voice).await {
+    let response = match client.speak_raw(text, voice, model).await {
         Ok(r) => r,
         Err(e) => {
             error!(error = %e, "TTS request failed");
@@ -137,12 +210,16 @@ pub async fn relay_speech(
     }
 
     let _ = push_tx.send(ServerMessage::AudioEnd(AudioEnd { rid }));
-    info!(voice, msg_id, "TTS relay complete");
+    info!(voice, model, msg_id, "TTS relay complete");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::{
+        matchers::{body_json, method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
 
     fn minimal_wav_header(sample_rate: u32, channels: u16) -> Vec<u8> {
         let mut buf = vec![0u8; 44];
@@ -174,5 +251,65 @@ mod tests {
         let mut buf = minimal_wav_header(24000, 1);
         buf[0] = b'X';
         assert!(parse_wav_header(&buf).is_err());
+    }
+
+    fn client_for_mock(mock: &MockServer) -> TtsClient {
+        let url = reqwest::Url::parse(&mock.uri()).unwrap();
+        TtsClient::new(&TtsConfig {
+            enabled: true,
+            host: url.host_str().unwrap().to_string(),
+            port: url.port().unwrap(),
+            model: "tts-1".into(),
+            voice: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn speak_raw_sends_model_and_requests_wav() {
+        let mock = MockServer::start().await;
+        let body = serde_json::json!({
+            "model": "kokoro",
+            "input": "hello",
+            "voice": "Nanachan",
+            "response_format": "wav",
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/v1/audio/speech"))
+            .and(body_json(&body))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let client = client_for_mock(&mock);
+        let response = client
+            .speak_raw("hello", "Nanachan", "kokoro")
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn speak_raw_includes_error_body() {
+        let mock = MockServer::start().await;
+        let body = serde_json::json!({"error": "unknown voice"});
+
+        Mock::given(method("POST"))
+            .and(path("/v1/audio/speech"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(&body))
+            .mount(&mock)
+            .await;
+
+        let client = client_for_mock(&mock);
+        let err = client
+            .speak_raw("hello", "Nope", "kokoro")
+            .await
+            .unwrap_err();
+        let message = err.to_string();
+
+        assert!(message.contains("400 Bad Request"));
+        assert!(message.contains("unknown voice"));
     }
 }

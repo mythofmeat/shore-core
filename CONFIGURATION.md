@@ -503,10 +503,33 @@ Backends include `notify_send`, `ntfy`, and `command`.
 enabled = false
 host = "127.0.0.1"
 port = 8778
+model = "tts-1"
 voice = "alloy"
 ```
 
-Used by `shore speak` and live-speak mode.
+Used by `shore speak` and live-speak mode. Shore does not run a speech model
+itself; the daemon proxies to an OpenAI-compatible TTS server at
+`http://{host}:{port}/v1/audio/speech`.
+
+Requests include `model`, `input`, `voice`, and `response_format = "wav"`.
+The server must return WAV audio because Shore strips the WAV header and relays
+PCM chunks to the CLI/TUI audio player. If `voice` is unset, Shore sends the
+character name as the voice, which is convenient only when the TTS server has a
+matching voice configured.
+
+For a local or LAN TTS server, the usual shape is:
+
+```toml
+[tts]
+enabled = true
+host = "vegetable"
+port = 8778
+model = "tts-1"      # or the model name your server expects
+voice = "alloy"      # or a voice installed on your server
+```
+
+A `400 Bad Request` from `/v1/audio/speech` usually means the TTS server
+rejected the requested `model`, `voice`, or response format.
 
 ## `[connections.matrix]`
 

@@ -734,17 +734,13 @@ async fn handle_speak_request(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use shore_protocol::types::Role;
 
-    let (char_name, voice, resolved_id, text) = {
+    let (char_name, voice, model, resolved_id, text) = {
         let mut reg = registry.lock().await;
         let char_name = reg.resolve_character(character)?;
         let engine_arc = reg.get_or_create(&char_name)?;
-        let voice = reg
-            .effective_config(&char_name)
-            .app
-            .tts
-            .voice
-            .clone()
-            .unwrap_or_else(|| char_name.clone());
+        let tts = &reg.effective_config(&char_name).app.tts;
+        let model = tts.model.clone();
+        let voice = tts.voice.clone().unwrap_or_else(|| char_name.clone());
         drop(reg);
 
         let engine = engine_arc.lock().await;
@@ -767,7 +763,7 @@ async fn handle_speak_request(
             }
         };
 
-        (char_name, voice, resolved_id, text)
+        (char_name, voice, model, resolved_id, text)
     };
 
     if text.is_empty() {
@@ -778,7 +774,16 @@ async fn handle_speak_request(
         return Ok(());
     }
 
-    debug!(character = %char_name, voice = %voice, msg_id = %resolved_id, "handle_speak resolved");
-    crate::tts::relay_speech(tts_client, &text, &voice, &resolved_id, rid, push_tx).await;
+    debug!(character = %char_name, voice = %voice, model = %model, msg_id = %resolved_id, "handle_speak resolved");
+    crate::tts::relay_speech(
+        tts_client,
+        &text,
+        &voice,
+        &model,
+        &resolved_id,
+        rid,
+        push_tx,
+    )
+    .await;
     Ok(())
 }

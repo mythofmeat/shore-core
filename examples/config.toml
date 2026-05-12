@@ -148,6 +148,17 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 # error = true
 # message_complete = false  # Notify when message generation completes
 
+# ── Text to speech ───────────────────────────────────────────────────────
+# Shore proxies to an OpenAI-compatible /v1/audio/speech server and requests
+# WAV output for CLI/TUI playback.
+
+# [tts]
+# enabled = false
+# host = "127.0.0.1"
+# port = 8778
+# model = "tts-1"
+# voice = "alloy"  # Defaults to the character name when unset
+
 # ── Connections ──────────────────────────────────────────────────────────
 
 # ── Matrix: External mode (connect to an existing homeserver) ─────────────

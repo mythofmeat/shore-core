@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added configurable TTS speech model requests, explicit WAV output requests,
+  and clearer TTS HTTP error messages that include the server response body.
 - Added `shore notify` and a `shore-notify.service` user unit for desktop
   notifications, with character avatar icons and character/origin metadata on
   SWP `new_message` events.

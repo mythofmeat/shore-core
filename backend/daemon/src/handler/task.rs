@@ -432,16 +432,14 @@ pub(super) async fn handle_generation(
             let text = result.content.clone();
             if !text.is_empty() {
                 let msg_id = stream_msg_id.clone().unwrap_or_default();
-                let voice = effective_config
-                    .app
-                    .tts
-                    .voice
-                    .clone()
-                    .unwrap_or_else(|| char_name.clone());
+                let tts = &effective_config.app.tts;
+                let model = tts.model.clone();
+                let voice = tts.voice.clone().unwrap_or_else(|| char_name.clone());
                 crate::tts::relay_speech(
                     tts_client,
                     &text,
                     &voice,
+                    &model,
                     &msg_id,
                     request.rid.clone(),
                     &ctx.event_tx,
