@@ -43,6 +43,9 @@ Authoritative state lives in the daemon:
 
 Clients attach, receive snapshots/events, and send SWP messages. CLI, TUI, GUI,
 Matrix, and MCP must not become alternate sources of character truth.
+`new_message` events carry the authoritative character name and message origin
+so passive clients such as desktop notifiers do not infer ownership from local
+CLI state.
 
 ## File Layout
 
@@ -52,6 +55,7 @@ Config:
 $XDG_CONFIG_HOME/shore/
   config.toml
   .env
+  characters/<Character>/avatar.png
   characters/<Character>/workspace/
     SOUL.md
     USER.md

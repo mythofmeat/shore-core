@@ -8,8 +8,9 @@ use std::time::Instant;
 
 use serde_json::{json, Value};
 use shore_config::models::Sdk;
+use shore_protocol::server_msg::{MessageOrigin, NewMessage, ServerMessage};
 use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use tracing::{info, instrument};
 
 use crate::engine::messages::{MessageStore, PendingAlt};
@@ -112,13 +113,54 @@ pub(super) async fn persist_and_notify(
         }
         let notify_content = notify_content_from_response_messages(&response_messages);
         let mut generated_messages = tool_intermediate_messages;
-        generated_messages.extend(response_messages.into_iter().map(message_from_response));
+        let response_messages: Vec<Message> = response_messages
+            .into_iter()
+            .map(message_from_response)
+            .collect();
+        let response_event_ids: Vec<String> = response_messages
+            .iter()
+            .filter(|msg| msg.role == Role::Assistant)
+            .map(|msg| msg.msg_id.clone())
+            .collect();
+        generated_messages.extend(response_messages);
         if let Some(pending) = regen_alt {
             MessageStore::attach_generated_alt(&mut generated_messages, pending.alternatives);
+            let event_messages: Vec<Message> = generated_messages
+                .iter()
+                .filter(|msg| {
+                    response_event_ids
+                        .iter()
+                        .any(|msg_id| msg_id == &msg.msg_id)
+                })
+                .cloned()
+                .collect();
             engine.replace_after_last_user_turn(generated_messages)?;
+            let revision = engine.current_revision();
+            for msg in &event_messages {
+                emit_new_message_event(
+                    &ctx.event_tx,
+                    char_name,
+                    MessageOrigin::AssistantReply,
+                    revision,
+                    msg,
+                );
+            }
         } else {
             for msg in generated_messages {
+                let event_msg = response_event_ids
+                    .iter()
+                    .any(|msg_id| msg_id == &msg.msg_id)
+                    .then(|| msg.clone());
                 engine.append_message(msg)?;
+                if let Some(msg) = event_msg {
+                    emit_new_message_event(
+                        &ctx.event_tx,
+                        char_name,
+                        MessageOrigin::AssistantReply,
+                        engine.current_revision(),
+                        &msg,
+                    );
+                }
             }
         }
         ctx.autonomy
@@ -134,6 +176,23 @@ pub(super) async fn persist_and_notify(
     );
 
     Ok(())
+}
+
+fn emit_new_message_event(
+    event_tx: &broadcast::Sender<ServerMessage>,
+    character: &str,
+    origin: MessageOrigin,
+    revision: u64,
+    msg: &Message,
+) {
+    let mut wire_msg = msg.clone();
+    crate::handler::embed_image_data(&mut wire_msg.images);
+    let _ = event_tx.send(ServerMessage::NewMessage(NewMessage {
+        revision,
+        character: Some(character.to_string()),
+        origin: Some(origin),
+        message: wire_msg,
+    }));
 }
 
 fn message_from_response(response_msg: CompletedResponseMessage) -> Message {

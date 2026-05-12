@@ -1250,6 +1250,8 @@ mod tests {
             }),
             ServerMessage::NewMessage(NewMessage {
                 revision: 2,
+                character: Some("Alice".into()),
+                origin: None,
                 message: Message {
                     msg_id: "m1".into(),
                     role: shore_protocol::types::Role::Assistant,

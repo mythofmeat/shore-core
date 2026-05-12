@@ -2,6 +2,7 @@ use super::*;
 use images::media_type_for_path;
 use shore_protocol::client_msg::{Command, Regen};
 use shore_protocol::error::ErrorCode;
+use shore_protocol::server_msg::MessageOrigin;
 use shore_protocol::types::{ContentBlock, ImageRef, Message, Role};
 use std::collections::BTreeMap;
 use tempfile::TempDir;
@@ -1091,16 +1092,23 @@ async fn pipeline_user_message_to_persisted_response() {
         "active.jsonl should have 2 lines (user + assistant)"
     );
 
-    let mut saw_new_message = false;
+    let mut new_messages = Vec::new();
     while let Ok(msg) = push_rx.try_recv() {
-        if matches!(msg, ServerMessage::NewMessage(_)) {
-            saw_new_message = true;
+        if let ServerMessage::NewMessage(msg) = msg {
+            new_messages.push(msg);
         }
     }
     assert!(
-        saw_new_message,
+        !new_messages.is_empty(),
         "Should have broadcast at least one NewMessage"
     );
+    assert!(new_messages.iter().any(|msg| {
+        msg.character.as_deref() == Some("Alice") && msg.origin == Some(MessageOrigin::UserInput)
+    }));
+    assert!(new_messages.iter().any(|msg| {
+        msg.character.as_deref() == Some("Alice")
+            && msg.origin == Some(MessageOrigin::AssistantReply)
+    }));
 }
 
 // ── Stream-fanout / per-character last-user-message lease ──────────────

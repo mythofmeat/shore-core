@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added `shore notify` and a `shore-notify.service` user unit for desktop
+  notifications, with character avatar icons and character/origin metadata on
+  SWP `new_message` events.
 - Added env-var-only `shore-tui` debug fixtures for offline markdown rendering,
   one-shot frame snapshots, repeated/role-switched fixture entries, redraw frame
   dumps, and image-probe suppression.

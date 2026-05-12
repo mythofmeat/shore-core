@@ -54,6 +54,7 @@ struct TickContext {
     compaction: Arc<CompactionConfig>,
     data_dir: PathBuf,
     llm_client: Option<LedgerClient>,
+    push_tx: Option<broadcast::Sender<ServerMessage>>,
     loaded_config: Option<Arc<LoadedConfig>>,
     notifier: Option<NotificationService>,
     registry: Option<Arc<tokio::sync::Mutex<CharacterRegistry>>>,
@@ -453,6 +454,7 @@ impl AutonomyManager {
         let data_dir = self.data_dir.clone();
         let shutdown_rx = self.shutdown_rx.clone();
         let llm_client = self.llm_client.clone();
+        let push_tx = self.push_tx.clone();
         let loaded_config = effective_config
             .map(|c| Arc::new(c.clone()))
             .or_else(|| self.loaded_config.clone());
@@ -466,6 +468,7 @@ impl AutonomyManager {
             compaction,
             data_dir,
             llm_client,
+            push_tx,
             loaded_config,
             notifier,
             registry,
@@ -1013,6 +1016,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                 &ctx.state,
                 &ctx.data_dir,
                 ctx.llm_client.as_ref(),
+                ctx.push_tx.as_ref(),
                 ctx.loaded_config.as_deref(),
                 ctx.notifier.as_ref(),
                 ctx.registry.as_ref(),
@@ -1466,6 +1470,7 @@ async fn execute_heartbeat_tick(
     state: &Arc<Mutex<AutonomyState>>,
     data_dir: &Path,
     llm_client: Option<&LedgerClient>,
+    push_tx: Option<&broadcast::Sender<ServerMessage>>,
     loaded_config: Option<&LoadedConfig>,
     notifier: Option<&NotificationService>,
     registry: Option<&Arc<tokio::sync::Mutex<CharacterRegistry>>>,
@@ -1816,6 +1821,15 @@ async fn execute_heartbeat_tick(
                     let mut engine = engine_arc.lock().await;
                     if let Err(e) = engine.append_message(msg.clone()) {
                         error!(character, error = %e, "Failed to persist autonomous message via engine");
+                    } else if let Some(tx) = push_tx {
+                        let _ = tx.send(ServerMessage::NewMessage(
+                            shore_protocol::server_msg::NewMessage {
+                                revision: engine.current_revision(),
+                                character: Some(character.to_string()),
+                                origin: Some(shore_protocol::server_msg::MessageOrigin::Autonomous),
+                                message: msg.clone(),
+                            },
+                        ));
                     }
                 }
                 Err(e) => {
@@ -2498,6 +2512,7 @@ mod tests {
             compaction: Arc::new(Default::default()),
             data_dir: tmp.path().to_path_buf(),
             llm_client: None,
+            push_tx: None,
             loaded_config: None,
             notifier: None,
             registry: None,
@@ -2621,6 +2636,7 @@ mod tests {
             compaction: Arc::new(Default::default()),
             data_dir: data_dir.to_path_buf(),
             llm_client: None,
+            push_tx: None,
             loaded_config: None,
             notifier: None,
             registry: None,
@@ -3272,6 +3288,7 @@ api_key_env = "{heartbeat_env}"
             compaction: Arc::new(compaction),
             data_dir: tmp.path().to_path_buf(),
             llm_client: None,
+            push_tx: None,
             loaded_config: None,
             notifier: None,
             registry: None,

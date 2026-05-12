@@ -125,10 +125,23 @@ pub struct Phase {
 }
 
 /// Autonomous message arrived.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageOrigin {
+    UserInput,
+    AssistantReply,
+    Autonomous,
+}
+
+/// Conversation message appended by the daemon.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NewMessage {
     #[serde(default)]
     pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<MessageOrigin>,
     #[serde(flatten)]
     pub message: Message,
 }

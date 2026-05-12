@@ -1,11 +1,13 @@
 use std::io::{self, IsTerminal, Read as _};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use shore_protocol::client_msg::{ClientMessage, SetLiveSpeak, Speak as SpeakMsg};
-use shore_protocol::server_msg::ServerMessage;
+use shore_protocol::server_msg::{MessageOrigin, NewMessage, ServerMessage};
+use shore_protocol::types::Role;
 use shore_swp_client::audio::AudioPlayer;
 use shore_swp_client::{SWPConnection, ServerAddr};
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::cli::{Cli, CliCommand};
 use crate::output;
@@ -51,7 +53,13 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let addr = resolve_addr(&cli)?;
 
     // Character resolution: --character flag > SHORE_CHARACTER env > state file > None (daemon auto-selects).
-    let character = cli.character.clone().or_else(state::read_active_character);
+    // `shore notify` defaults to all characters, so it deliberately ignores
+    // the persisted active-character state unless the user passed -c/--character.
+    let character = if matches!(cli.command, CliCommand::Notify { .. }) {
+        cli.character.clone()
+    } else {
+        cli.character.clone().or_else(state::read_active_character)
+    };
 
     info!(character = ?character, "CLI executing command");
 
@@ -72,32 +80,34 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // Re-apply the persisted model here so every subsequent command sees it.
     // Intentionally best-effort: a stale entry (model removed from config)
     // shouldn't stop the user's actual command.
-    if let Some(model) = state::read_active_model() {
-        if let Err(e) = conn
-            .send_command("switch_model", serde_json::json!({ "name": &model }))
-            .await
-        {
-            debug!(error = %e, model = %model, "failed to pre-apply active model");
-        } else {
-            // Drain the response so it doesn't get mixed into the next
-            // command's stream. Errors (e.g. stale model) are ignored —
-            // the user's real command still runs.
-            match conn.recv().await {
-                Ok(ServerMessage::CommandOutput(_)) => {
-                    debug!(model = %model, "pre-applied active model");
-                }
-                Ok(ServerMessage::Error(err)) => {
-                    debug!(
-                        model = %model,
-                        error = %err.message,
-                        "stale active-model state file, ignoring",
-                    );
-                }
-                Ok(other) => {
-                    debug!(?other, "unexpected reply to pre-apply switch_model");
-                }
-                Err(e) => {
-                    debug!(error = %e, "error draining pre-apply switch_model reply");
+    if !matches!(cli.command, CliCommand::Notify { .. }) {
+        if let Some(model) = state::read_active_model() {
+            if let Err(e) = conn
+                .send_command("switch_model", serde_json::json!({ "name": &model }))
+                .await
+            {
+                debug!(error = %e, model = %model, "failed to pre-apply active model");
+            } else {
+                // Drain the response so it doesn't get mixed into the next
+                // command's stream. Errors (e.g. stale model) are ignored —
+                // the user's real command still runs.
+                match conn.recv().await {
+                    Ok(ServerMessage::CommandOutput(_)) => {
+                        debug!(model = %model, "pre-applied active model");
+                    }
+                    Ok(ServerMessage::Error(err)) => {
+                        debug!(
+                            model = %model,
+                            error = %err.message,
+                            "stale active-model state file, ignoring",
+                        );
+                    }
+                    Ok(other) => {
+                        debug!(?other, "unexpected reply to pre-apply switch_model");
+                    }
+                    Err(e) => {
+                        debug!(error = %e, "error draining pre-apply switch_model reply");
+                    }
                 }
             }
         }
@@ -148,6 +158,12 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         CliCommand::Speak { arg } => {
             handle_speak(&mut conn, arg.as_deref()).await?;
+        }
+        CliCommand::Notify {
+            all_messages,
+            autonomous_only: _,
+        } => {
+            handle_notify(&mut conn, &cli, *all_messages).await?;
         }
         CliCommand::Alt {
             selector,
@@ -272,7 +288,10 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     let msg = conn.recv().await?;
                     match &msg {
                         ServerMessage::NewMessage(nm) => {
-                            output::print_new_message(nm, follow_char);
+                            output::print_new_message(
+                                nm,
+                                nm.character.as_deref().unwrap_or(follow_char),
+                            );
                         }
                         ServerMessage::StreamStart(start) => {
                             output::reset_chunk_state();
@@ -602,6 +621,158 @@ fn config_dir() -> std::path::PathBuf {
     shore_config::config_dir()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotifyMode {
+    AutonomousOnly,
+    AllMessages,
+}
+
+const NOTIFY_PREVIEW_MAX: usize = 200;
+
+async fn handle_notify(
+    conn: &mut SWPConnection,
+    cli: &Cli,
+    all_messages: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mode = if all_messages {
+        NotifyMode::AllMessages
+    } else {
+        NotifyMode::AutonomousOnly
+    };
+    let config_dir = resolve_notify_config_dir(cli);
+    let requested_character = cli.character.as_deref();
+
+    info!(
+        character = ?requested_character,
+        all_messages,
+        config_dir = %config_dir.display(),
+        "starting desktop notification listener"
+    );
+
+    loop {
+        match conn.recv().await? {
+            ServerMessage::NewMessage(msg) => {
+                if should_notify_message(&msg, requested_character, mode) {
+                    let character = notify_character(&msg, requested_character);
+                    let title = format!("Shore - {character}");
+                    let body = notification_preview(&msg.message.content)
+                        .unwrap_or_else(|| "New message".to_string());
+                    let icon = avatar_icon_path(&config_dir, character);
+                    if let Err(e) = send_desktop_notification(&title, &body, icon.as_deref()) {
+                        warn!(error = %e, "desktop notification failed");
+                    }
+                }
+            }
+            ServerMessage::Shutdown(_) => break,
+            ServerMessage::Ping(_) | ServerMessage::History(_) => {}
+            other => {
+                debug!(?other, "ignoring non-notification event");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_notify_config_dir(cli: &Cli) -> PathBuf {
+    if let Some(config) = &cli.config {
+        let path = PathBuf::from(config);
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "config.toml")
+            || path.extension().and_then(|ext| ext.to_str()) == Some("toml")
+        {
+            return path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
+        }
+        return path;
+    }
+
+    shore_swp_client::discover_config_dir()
+        .ok()
+        .flatten()
+        .unwrap_or_else(config_dir)
+}
+
+fn should_notify_message(
+    msg: &NewMessage,
+    requested_character: Option<&str>,
+    mode: NotifyMode,
+) -> bool {
+    if let Some(character) = requested_character {
+        if msg.character.as_deref() != Some(character) {
+            return false;
+        }
+    }
+
+    match mode {
+        NotifyMode::AutonomousOnly => msg.origin == Some(MessageOrigin::Autonomous),
+        NotifyMode::AllMessages => {
+            msg.message.role == Role::Assistant
+                && matches!(
+                    msg.origin,
+                    Some(MessageOrigin::AssistantReply | MessageOrigin::Autonomous)
+                )
+        }
+    }
+}
+
+fn notify_character<'a>(msg: &'a NewMessage, requested_character: Option<&'a str>) -> &'a str {
+    msg.character
+        .as_deref()
+        .or(requested_character)
+        .unwrap_or_else(|| session_display_character())
+}
+
+fn notification_preview(content: &str) -> Option<String> {
+    let line = content
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(content)
+        .trim();
+    if line.is_empty() {
+        return None;
+    }
+
+    let mut preview = String::new();
+    for ch in line.chars().take(NOTIFY_PREVIEW_MAX) {
+        preview.push(ch);
+    }
+    if line.chars().count() > NOTIFY_PREVIEW_MAX {
+        preview.push_str("...");
+    }
+    Some(preview)
+}
+
+fn avatar_icon_path(config_dir: &Path, character: &str) -> Option<PathBuf> {
+    let path = config_dir
+        .join("characters")
+        .join(character)
+        .join("avatar.png");
+    path.is_file().then_some(path)
+}
+
+fn send_desktop_notification(
+    title: &str,
+    body: &str,
+    icon: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = std::process::Command::new("notify-send");
+    cmd.arg("--app-name=shore");
+    if let Some(icon) = icon {
+        cmd.arg("--icon").arg(icon);
+    }
+    let status = cmd.arg(title).arg(body).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("notify-send exited with status {status}").into())
+    }
+}
+
 /// Print the config directory path by querying the daemon.
 /// Falls back to local resolution if the daemon is unreachable.
 async fn print_config_path(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
@@ -885,7 +1056,12 @@ async fn recv_command_data(
                 output::print_send_image(img);
             }
             ServerMessage::NewMessage(msg) => {
-                output::print_new_message(msg, session_display_character());
+                output::print_new_message(
+                    msg,
+                    msg.character
+                        .as_deref()
+                        .unwrap_or_else(|| session_display_character()),
+                );
             }
             _ => {}
         }
@@ -905,6 +1081,101 @@ mod tests {
     use shore_protocol::SWP_V1;
 
     use crate::cli::{Cli, CliCommand};
+
+    fn notify_msg(character: &str, origin: Option<MessageOrigin>, role: Role) -> NewMessage {
+        NewMessage {
+            revision: 1,
+            character: Some(character.into()),
+            origin,
+            message: Message {
+                msg_id: "m1".into(),
+                role,
+                content: "hello".into(),
+                images: vec![],
+                content_blocks: vec![],
+                alt_index: None,
+                alt_count: None,
+                alternatives: vec![],
+                timestamp: "2026-01-01T00:00:00Z".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn notify_filter_autonomous_only() {
+        let auto = notify_msg("Alice", Some(MessageOrigin::Autonomous), Role::Assistant);
+        let reply = notify_msg(
+            "Alice",
+            Some(MessageOrigin::AssistantReply),
+            Role::Assistant,
+        );
+        assert!(super::should_notify_message(
+            &auto,
+            None,
+            super::NotifyMode::AutonomousOnly
+        ));
+        assert!(!super::should_notify_message(
+            &reply,
+            None,
+            super::NotifyMode::AutonomousOnly
+        ));
+    }
+
+    #[test]
+    fn notify_filter_all_messages_assistant_only() {
+        let reply = notify_msg(
+            "Alice",
+            Some(MessageOrigin::AssistantReply),
+            Role::Assistant,
+        );
+        let user = notify_msg("Alice", Some(MessageOrigin::UserInput), Role::User);
+        assert!(super::should_notify_message(
+            &reply,
+            None,
+            super::NotifyMode::AllMessages
+        ));
+        assert!(!super::should_notify_message(
+            &user,
+            None,
+            super::NotifyMode::AllMessages
+        ));
+    }
+
+    #[test]
+    fn notify_filter_respects_character() {
+        let auto = notify_msg("Alice", Some(MessageOrigin::Autonomous), Role::Assistant);
+        assert!(super::should_notify_message(
+            &auto,
+            Some("Alice"),
+            super::NotifyMode::AutonomousOnly
+        ));
+        assert!(!super::should_notify_message(
+            &auto,
+            Some("Bob"),
+            super::NotifyMode::AutonomousOnly
+        ));
+    }
+
+    #[test]
+    fn notification_preview_uses_first_non_empty_line_and_truncates() {
+        let content = format!(
+            "\n\n  {}\nsecond",
+            "x".repeat(super::NOTIFY_PREVIEW_MAX + 2)
+        );
+        let preview = super::notification_preview(&content).unwrap();
+        assert_eq!(preview.len(), super::NOTIFY_PREVIEW_MAX + 3);
+        assert!(preview.ends_with("..."));
+    }
+
+    #[test]
+    fn avatar_icon_path_requires_existing_avatar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("characters").join("Alice");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(super::avatar_icon_path(tmp.path(), "Alice").is_none());
+        std::fs::write(dir.join("avatar.png"), b"png").unwrap();
+        assert!(super::avatar_icon_path(tmp.path(), "Alice").is_some());
+    }
 
     /// Helper: write a JSON line to a writer.
     async fn write_json_line<W: AsyncWriteExt + Unpin, T: serde::Serialize>(w: &mut W, val: &T) {

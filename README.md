@@ -52,7 +52,7 @@ Create a character workspace:
 
 ```text
 ~/.config/shore/characters/Alice/
-  avatar.png    # optional Matrix profile avatar
+  avatar.png    # optional Matrix profile / desktop notification avatar
   workspace/
     SOUL.md       # character identity
     USER.md       # what this character knows about the user
@@ -77,6 +77,21 @@ cargo build --release -p shore-daemon -p shore-cli
 target/release/shore-daemon &
 target/release/shore send "Hello!"
 ```
+
+To receive desktop notifications for autonomous character messages, run the
+listener in your user session:
+
+```sh
+target/release/shore notify
+```
+
+Packaged installs can enable the user service:
+
+```sh
+systemctl --user enable --now shore-notify.service
+```
+
+Use `shore notify --all-messages` to notify for normal assistant replies too.
 
 Legacy `character.md`, `user.md`, and `prompts/system.md` character layouts are
 migrated into the workspace on first load.

@@ -102,6 +102,8 @@ pub(super) async fn handle_generation(
                 .send(shore_protocol::server_msg::ServerMessage::NewMessage(
                     shore_protocol::server_msg::NewMessage {
                         revision,
+                        character: Some(char_name.clone()),
+                        origin: Some(shore_protocol::server_msg::MessageOrigin::UserInput),
                         message: wire_msg,
                     },
                 ));

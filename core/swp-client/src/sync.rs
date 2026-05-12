@@ -99,6 +99,8 @@ mod tests {
         let mut sync = SyncState::new(6);
         let message = ServerMessage::NewMessage(NewMessage {
             revision: 6,
+            character: Some("alice".into()),
+            origin: None,
             message: message("m2"),
         });
 

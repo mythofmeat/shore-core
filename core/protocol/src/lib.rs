@@ -293,6 +293,8 @@ mod tests {
     fn server_new_message_round_trip() {
         let msg = ServerMessage::NewMessage(NewMessage {
             revision: 3,
+            character: Some("Alice".into()),
+            origin: Some(MessageOrigin::Autonomous),
             message: Message {
                 msg_id: "m2".into(),
                 role: Role::Assistant,
@@ -307,6 +309,8 @@ mod tests {
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "new_message");
+        assert_eq!(json["character"], "Alice");
+        assert_eq!(json["origin"], "autonomous");
         assert_eq!(json["msg_id"], "m2");
         assert_eq!(json["revision"], 3);
     }
