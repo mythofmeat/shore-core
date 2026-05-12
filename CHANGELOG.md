@@ -5,6 +5,8 @@
 - Added `shore notify` and a `shore-notify.service` user unit for desktop
   notifications, with character avatar icons and character/origin metadata on
   SWP `new_message` events.
+- Expanded `memory.dreaming.frequency` from daily-only `M H * * *` validation
+  to five-field cron schedules, including weekly forms like `0 6 * * 1`.
 - Added env-var-only `shore-tui` debug fixtures for offline markdown rendering,
   one-shot frame snapshots, repeated/role-switched fixture entries, redraw frame
   dumps, and image-probe suppression.

@@ -525,7 +525,7 @@ pub struct DreamingConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Cron-like daily schedule. Shore currently supports `M H * * *`.
+    /// Five-field cron schedule: minute hour day-of-month month day-of-week.
     #[serde(default = "default_dreaming_frequency")]
     pub frequency: String,
 

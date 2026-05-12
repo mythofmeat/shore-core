@@ -287,8 +287,8 @@ prompt edits. Dreaming may later reorganize the memory files and `MEMORY.md`.
 Dreaming is an opt-in scheduled AI librarian pass. When autonomy and
 `[memory.dreaming]` are enabled, the character privately uses memory/workspace
 tools to inspect, dedupe, consolidate, and mark stale or superseded memory.
-Dreaming may edit prompt-visible files; those edits follow the same deferred
-activation rule.
+The schedule is a five-field cron expression. Dreaming may edit prompt-visible
+files; those edits follow the same deferred activation rule.
 
 The dreams audit log lives at:
 
