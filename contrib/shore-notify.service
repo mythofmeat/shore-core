@@ -4,8 +4,9 @@ Documentation=https://localhost:3000/eshen/silvershore
 
 [Service]
 Type=simple
-ExecSearchPath=%h/.local/bin /usr/bin
-ExecStart=shore notify --autonomous-only
+ExecSearchPath=%h/.local/bin:/usr/bin
+ExecStart=shore notify --all-messages
+# ExecStart=shore notify --autonomous-only
 Restart=on-failure
 RestartSec=5
 
