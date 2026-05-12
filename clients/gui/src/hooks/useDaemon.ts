@@ -17,6 +17,10 @@ export type ConnectionStatus =
 
 export interface CharacterInfo {
   name: string;
+  avatar?: {
+    mime_type: string;
+    data: string;
+  };
 }
 
 export interface ServerMessageEvent {

@@ -3,7 +3,7 @@ use shore_config::{
     character_workspace_dir, AGENTS_FILE, HEARTBEAT_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE,
 };
 use shore_protocol::error::ErrorCode;
-use shore_protocol::types::CharacterInfo;
+use shore_protocol::types::{CharacterAvatar, CharacterInfo};
 use tracing::{debug, info};
 
 use super::{CommandContext, CommandResult};
@@ -11,13 +11,14 @@ use crate::engine::ConversationEngine;
 
 /// List available characters by scanning the config characters directory.
 pub fn list_characters(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
-    let mut characters = vec![CharacterInfo {
-        name: engine.character_name().to_string(),
-    }];
+    let mut characters = vec![character_metadata(
+        &ctx.config.dirs.config,
+        engine.character_name(),
+    )];
 
     for name in shore_config::discover_characters(&ctx.config.dirs.config) {
         if name != engine.character_name() {
-            characters.push(CharacterInfo { name });
+            characters.push(character_metadata(&ctx.config.dirs.config, &name));
         }
     }
 
@@ -30,11 +31,47 @@ pub fn list_characters(engine: &ConversationEngine, ctx: &CommandContext) -> Com
 pub fn list_characters_standalone(ctx: &CommandContext) -> CommandResult {
     let characters: Vec<CharacterInfo> = shore_config::discover_characters(&ctx.config.dirs.config)
         .into_iter()
-        .map(|name| CharacterInfo { name })
+        .map(|name| character_metadata(&ctx.config.dirs.config, &name))
         .collect();
 
     debug!(count = characters.len(), "Listed characters (standalone)");
     Ok(json!({ "characters": characters }))
+}
+
+pub(crate) fn character_metadata(config_dir: &std::path::Path, name: &str) -> CharacterInfo {
+    CharacterInfo {
+        name: name.to_string(),
+        avatar: character_avatar(config_dir, name),
+    }
+}
+
+fn character_avatar(config_dir: &std::path::Path, name: &str) -> Option<CharacterAvatar> {
+    for (filename, mime_type) in [
+        ("avatar.png", "image/png"),
+        ("avatar.jpg", "image/jpeg"),
+        ("avatar.jpeg", "image/jpeg"),
+        ("avatar.webp", "image/webp"),
+    ] {
+        let path = config_dir.join("characters").join(name).join(filename);
+        if !path.is_file() {
+            continue;
+        }
+        let data = match std::fs::read(&path) {
+            Ok(data) => data,
+            Err(_) => continue,
+        };
+        if data.is_empty() {
+            continue;
+        }
+        return Some(CharacterAvatar {
+            mime_type: mime_type.to_string(),
+            data: {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD.encode(data)
+            },
+        });
+    }
+    None
 }
 
 /// Show detailed info about a character's workspace bootstrap files.
@@ -273,6 +310,19 @@ mod tests {
             .map(|c| c["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, vec!["qifei"]);
+    }
+
+    #[test]
+    fn character_info_embeds_avatar_data() {
+        let tmp = TempDir::new().unwrap();
+        let char_dir = tmp.path().join("characters").join("Alice");
+        std::fs::create_dir_all(&char_dir).unwrap();
+        std::fs::write(char_dir.join("avatar.png"), b"png").unwrap();
+
+        let info = character_metadata(tmp.path(), "Alice");
+        let avatar = info.avatar.expect("avatar should be embedded");
+        assert_eq!(avatar.mime_type, "image/png");
+        assert_eq!(avatar.data, "cG5n");
     }
 
     #[test]

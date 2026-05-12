@@ -54,7 +54,34 @@ fn server_hello_golden() {
             assert_eq!(h.server_name, "shore-daemon");
             assert_eq!(h.characters.len(), 2);
             assert_eq!(h.characters[0].name, "alice");
+            assert_eq!(h.characters[0].avatar, None);
             assert_eq!(h.characters[1].name, "bob");
+        }
+        other => panic!("expected Hello, got {:?}", other),
+    }
+}
+
+const SERVER_HELLO_WITH_AVATAR_FIXTURE: &str = r#"{
+    "type": "hello",
+    "v": 1,
+    "server_name": "shore-daemon",
+    "characters": [{
+        "name": "alice",
+        "avatar": {
+            "mime_type": "image/png",
+            "data": "cG5n"
+        }
+    }]
+}"#;
+
+#[test]
+fn server_hello_with_avatar_golden() {
+    let msg: ServerMessage = assert_golden(SERVER_HELLO_WITH_AVATAR_FIXTURE);
+    match msg {
+        ServerMessage::Hello(h) => {
+            let avatar = h.characters[0].avatar.as_ref().expect("avatar");
+            assert_eq!(avatar.mime_type, "image/png");
+            assert_eq!(avatar.data, "cG5n");
         }
         other => panic!("expected Hello, got {:?}", other),
     }

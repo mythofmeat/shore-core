@@ -1354,9 +1354,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                         app.characters = chars
                             .iter()
                             .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
-                            .map(|name| shore_protocol::types::CharacterInfo {
-                                name: name.to_string(),
-                            })
+                            .map(shore_protocol::types::CharacterInfo::new)
                             .collect();
 
                         if app.is_submenu_open("character") {

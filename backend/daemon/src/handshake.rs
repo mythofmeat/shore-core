@@ -3,11 +3,11 @@ use std::sync::Arc;
 use serde_json::json;
 use shore_config::LoadedConfig;
 use shore_protocol::server_msg::History;
-use shore_protocol::types::CharacterInfo;
 use shore_swp_server::{HandshakeProvider, HelloSnapshot, HistorySnapshot};
 use tokio::sync::Mutex;
 
 use crate::characters::CharacterRegistry;
+use crate::commands::navigation::character_metadata;
 use crate::preferences;
 use crate::runtime_state::load_active_model;
 
@@ -19,11 +19,12 @@ pub fn build_handshake_provider(registry: Arc<Mutex<CharacterRegistry>>) -> Hand
                 let registry = registry.clone();
                 Box::pin(async move {
                     let registry = registry.lock().await;
+                    let config_dir = registry.global_config().dirs.config.clone();
                     HelloSnapshot {
                         characters: registry
                             .available_characters()
                             .iter()
-                            .map(|name| CharacterInfo { name: name.clone() })
+                            .map(|name| character_metadata(&config_dir, name))
                             .collect(),
                     }
                 })

@@ -229,10 +229,29 @@ pub fn derive_content_from_blocks(blocks: &[ContentBlock]) -> String {
     derive_content_from_blocks_with(blocks, true)
 }
 
+/// Base64-encoded character avatar for clients that cannot read the daemon's
+/// local config filesystem.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CharacterAvatar {
+    pub mime_type: String,
+    pub data: String,
+}
+
 /// Information about a character.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CharacterInfo {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<CharacterAvatar>,
+}
+
+impl CharacterInfo {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            avatar: None,
+        }
+    }
 }
 
 #[cfg(test)]

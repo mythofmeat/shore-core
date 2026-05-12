@@ -112,9 +112,7 @@ mod tests {
         let msg = ServerMessage::Hello(ServerHello {
             v: SWP_V1,
             server_name: "shore-daemon".into(),
-            characters: vec![CharacterInfo {
-                name: "alice".into(),
-            }],
+            characters: vec![CharacterInfo::new("alice")],
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "hello");
@@ -476,11 +474,25 @@ mod tests {
 
     #[test]
     fn character_info_round_trip() {
+        let info = CharacterInfo::new("alice");
+        let (json, back) = round_trip(&info);
+        assert!(json.get("avatar").is_none());
+        assert_eq!(back.name, "alice");
+        assert_eq!(back.avatar, None);
+    }
+
+    #[test]
+    fn character_info_avatar_round_trip() {
         let info = CharacterInfo {
             name: "alice".into(),
+            avatar: Some(crate::types::CharacterAvatar {
+                mime_type: "image/png".into(),
+                data: "AQID".into(),
+            }),
         };
-        let (_json, back) = round_trip(&info);
-        assert_eq!(back.name, "alice");
+        let (json, back) = round_trip(&info);
+        assert_eq!(json["avatar"]["mime_type"], "image/png");
+        assert_eq!(back.avatar.unwrap().data, "AQID");
     }
 
     #[test]

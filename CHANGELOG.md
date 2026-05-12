@@ -7,6 +7,10 @@
 - Added `shore notify` and a `shore-notify.service` user unit for desktop
   notifications, with character avatar icons and character/origin metadata on
   SWP `new_message` events.
+- Fixed the desktop notification service for remote-daemon clients by removing
+  the local daemon unit dependency, honoring `SHORE_ADDR`, reading optional
+  `~/.config/shore/notify.env`, and embedding avatar data in SWP character
+  metadata.
 - Added a persisted `shore-tui` `:view` submenu for local display preferences,
   including timestamps, thinking/tool-use blocks, inline images, and response
   metadata.

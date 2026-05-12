@@ -2188,12 +2188,7 @@ mod scenario_tests {
             "active model row should be marked like the active character; frame:\n{f}"
         );
 
-        h.app.characters = vec![
-            CharacterInfo {
-                name: "Alice".into(),
-            },
-            CharacterInfo { name: "Bob".into() },
-        ];
+        h.app.characters = vec![CharacterInfo::new("Alice"), CharacterInfo::new("Bob")];
         h.app.character_name = "Alice".into();
         h.app.enter_submenu("character");
         let f = h.render("active character marker");

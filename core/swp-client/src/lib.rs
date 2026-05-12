@@ -72,9 +72,7 @@ mod tests {
             let server_hello = ServerMessage::Hello(ServerHello {
                 v: SWP_V1,
                 server_name: "test-daemon".into(),
-                characters: vec![CharacterInfo {
-                    name: "alice".into(),
-                }],
+                characters: vec![CharacterInfo::new("alice")],
             });
             write_json_line(&mut w, &server_hello).await;
 

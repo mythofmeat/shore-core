@@ -1,8 +1,6 @@
 [Unit]
 Description=Shore desktop notifications
 Documentation=https://localhost:3000/eshen/silvershore
-Wants=shore-daemon.service
-After=shore-daemon.service
 
 [Service]
 Type=simple
@@ -17,6 +15,7 @@ Environment=XDG_CONFIG_HOME=%h/.config
 Environment=XDG_DATA_HOME=%h/.local/share
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+EnvironmentFile=-%h/.config/shore/notify.env
 
 [Install]
 WantedBy=default.target

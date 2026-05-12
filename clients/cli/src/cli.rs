@@ -10,7 +10,7 @@ use clap_complete::Shell;
 )]
 pub struct Cli {
     /// TCP address of the daemon (overrides discovery)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "SHORE_ADDR")]
     pub addr: Option<String>,
 
     /// Path to config file (selects daemon instance)

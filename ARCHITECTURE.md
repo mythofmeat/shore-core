@@ -43,9 +43,10 @@ Authoritative state lives in the daemon:
 
 Clients attach, receive snapshots/events, and send SWP messages. CLI, TUI, GUI,
 Matrix, and MCP must not become alternate sources of character truth.
-`new_message` events carry the authoritative character name and message origin
-so passive clients such as desktop notifiers do not infer ownership from local
-CLI state.
+`hello` character metadata carries optional base64 avatar data, and
+`new_message` events carry the authoritative character name and message origin.
+Passive clients such as desktop notifiers can therefore label and icon messages
+without reading the daemon's local config filesystem.
 
 ## File Layout
 
@@ -340,6 +341,9 @@ allowed_hosts = ["100.64.0.2"]
 
 `allowed_hosts` is a source-IP allowlist only. It is not authentication or TLS.
 Use a private overlay network such as Tailscale or WireGuard.
+Remote clients do not discover daemons through the local instances registry;
+they should use `SHORE_ADDR`, `--addr`, or
+`$XDG_CONFIG_HOME/shore/client.toml`.
 
 Provider keys come from environment variables or `.env` in the config directory.
 Do not commit real keys, captured Authorization headers, or private profile

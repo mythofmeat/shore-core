@@ -616,9 +616,7 @@ async fn load_hello_snapshot(handshake: Option<&HandshakeProvider>) -> HelloSnap
     match handshake {
         Some(provider) => (provider.hello)().await,
         None => HelloSnapshot {
-            characters: vec![CharacterInfo {
-                name: "default".into(),
-            }],
+            characters: vec![CharacterInfo::new("default")],
         },
     }
 }
@@ -842,12 +840,7 @@ mod tests {
             hello: Arc::new(|| {
                 Box::pin(async {
                     HelloSnapshot {
-                        characters: vec![
-                            CharacterInfo {
-                                name: "alice".into(),
-                            },
-                            CharacterInfo { name: "bob".into() },
-                        ],
+                        characters: vec![CharacterInfo::new("alice"), CharacterInfo::new("bob")],
                     }
                 })
             }),

@@ -91,6 +91,12 @@ Packaged installs can enable the user service:
 systemctl --user enable --now shore-notify.service
 ```
 
+The service does not start or require a local daemon. For a remote daemon, put
+`SHORE_ADDR=host:7320` in `~/.config/shore/notify.env` or set
+`default_address = "host:7320"` in `~/.config/shore/client.toml`.
+The daemon includes avatar image data in character metadata, so notification
+icons still work when the daemon's config directory is on another machine.
+
 Use `shore notify --all-messages` to notify for normal assistant replies too.
 
 Legacy `character.md`, `user.md`, and `prompts/system.md` character layouts are

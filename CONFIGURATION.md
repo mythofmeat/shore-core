@@ -20,6 +20,25 @@ Common variables:
 
 A `.env` file in the config directory is loaded on startup.
 
+## Client Connection
+
+The `shore` CLI resolves the SWP daemon address in this order:
+
+1. `--addr` or `SHORE_ADDR`
+2. `$XDG_CONFIG_HOME/shore/client.toml`
+3. the local `$XDG_RUNTIME_DIR/shore/instances.json` daemon registry
+4. the default `127.0.0.1:7320`
+
+Use `client.toml` when clients run on a different machine from the daemon:
+
+```toml
+default_address = "100.64.0.10:7320"
+```
+
+The packaged `shore-notify.service` also reads the optional
+`$XDG_CONFIG_HOME/shore/notify.env` environment file. For a remote notifier,
+set `SHORE_ADDR=100.64.0.10:7320` there or use `client.toml`.
+
 ## Hot Reload
 
 The daemon watches supported config inputs and reloads runtime config after

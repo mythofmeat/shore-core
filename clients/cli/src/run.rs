@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::io::{self, IsTerminal, Read as _};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use shore_protocol::client_msg::{ClientMessage, SetLiveSpeak, Speak as SpeakMsg};
 use shore_protocol::server_msg::{MessageOrigin, NewMessage, ServerMessage};
-use shore_protocol::types::Role;
+use shore_protocol::types::{CharacterAvatar, CharacterInfo, Role};
 use shore_swp_client::audio::AudioPlayer;
 use shore_swp_client::{SWPConnection, ServerAddr};
 use tracing::{debug, info, instrument, warn};
@@ -63,7 +64,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     info!(character = ?character, "CLI executing command");
 
-    let (mut conn, _server_hello, history) =
+    let (mut conn, server_hello, history) =
         SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
 
     // Prefer the daemon's authoritative answer over the local request.
@@ -163,7 +164,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             all_messages,
             autonomous_only: _,
         } => {
-            handle_notify(&mut conn, &cli, *all_messages).await?;
+            handle_notify(&mut conn, &cli, *all_messages, &server_hello.characters).await?;
         }
         CliCommand::Alt {
             selector,
@@ -633,6 +634,7 @@ async fn handle_notify(
     conn: &mut SWPConnection,
     cli: &Cli,
     all_messages: bool,
+    characters: &[CharacterInfo],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mode = if all_messages {
         NotifyMode::AllMessages
@@ -641,6 +643,7 @@ async fn handle_notify(
     };
     let config_dir = resolve_notify_config_dir(cli);
     let requested_character = cli.character.as_deref();
+    let avatars = notification_avatars(characters);
 
     info!(
         character = ?requested_character,
@@ -657,7 +660,8 @@ async fn handle_notify(
                     let title = format!("Shore - {character}");
                     let body = notification_preview(&msg.message.content)
                         .unwrap_or_else(|| "New message".to_string());
-                    let icon = avatar_icon_path(&config_dir, character);
+                    let icon =
+                        notification_icon_path(&config_dir, character, avatars.get(character));
                     if let Err(e) = send_desktop_notification(&title, &body, icon.as_deref()) {
                         warn!(error = %e, "desktop notification failed");
                     }
@@ -672,6 +676,17 @@ async fn handle_notify(
     }
 
     Ok(())
+}
+
+fn notification_avatars(characters: &[CharacterInfo]) -> HashMap<String, CharacterAvatar> {
+    characters
+        .iter()
+        .filter_map(|info| {
+            info.avatar
+                .clone()
+                .map(|avatar| (info.name.clone(), avatar))
+        })
+        .collect()
 }
 
 fn resolve_notify_config_dir(cli: &Cli) -> PathBuf {
@@ -747,12 +762,93 @@ fn notification_preview(content: &str) -> Option<String> {
     Some(preview)
 }
 
-fn avatar_icon_path(config_dir: &Path, character: &str) -> Option<PathBuf> {
-    let path = config_dir
-        .join("characters")
-        .join(character)
-        .join("avatar.png");
-    path.is_file().then_some(path)
+fn notification_icon_path(
+    config_dir: &Path,
+    character: &str,
+    remote_avatar: Option<&CharacterAvatar>,
+) -> Option<PathBuf> {
+    if let Some(avatar) = remote_avatar {
+        match cache_avatar_icon(character, avatar) {
+            Ok(path) => return Some(path),
+            Err(e) => warn!(
+                character,
+                error = %e,
+                "failed to cache remote notification avatar"
+            ),
+        }
+    }
+
+    local_avatar_icon_path(config_dir, character)
+}
+
+fn local_avatar_icon_path(config_dir: &Path, character: &str) -> Option<PathBuf> {
+    for filename in ["avatar.png", "avatar.jpg", "avatar.jpeg", "avatar.webp"] {
+        let path = config_dir.join("characters").join(character).join(filename);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn cache_avatar_icon(
+    character: &str,
+    avatar: &CharacterAvatar,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let cache_dir = shore_config::ShoreDirs::resolve()
+        .cache
+        .join("notification-icons");
+    cache_avatar_icon_in_dir(&cache_dir, character, avatar)
+}
+
+fn cache_avatar_icon_in_dir(
+    cache_dir: &Path,
+    character: &str,
+    avatar: &CharacterAvatar,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let bytes = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.decode(&avatar.data)?
+    };
+    if bytes.is_empty() {
+        return Err("remote avatar payload is empty".into());
+    }
+
+    std::fs::create_dir_all(cache_dir)?;
+    let path = cache_dir.join(format!(
+        "{}.{}",
+        notification_avatar_basename(character),
+        notification_avatar_extension(&avatar.mime_type)
+    ));
+    std::fs::write(&path, bytes)?;
+    Ok(path)
+}
+
+fn notification_avatar_basename(character: &str) -> String {
+    let basename: String = character
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if basename.is_empty() {
+        "character".to_string()
+    } else {
+        basename
+    }
+}
+
+fn notification_avatar_extension(mime_type: &str) -> &'static str {
+    match mime_type {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ => "img",
+    }
 }
 
 fn send_desktop_notification(
@@ -1172,9 +1268,60 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("characters").join("Alice");
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(super::avatar_icon_path(tmp.path(), "Alice").is_none());
+        assert!(super::local_avatar_icon_path(tmp.path(), "Alice").is_none());
         std::fs::write(dir.join("avatar.png"), b"png").unwrap();
-        assert!(super::avatar_icon_path(tmp.path(), "Alice").is_some());
+        assert!(super::local_avatar_icon_path(tmp.path(), "Alice").is_some());
+    }
+
+    #[test]
+    fn notification_avatars_indexes_handshake_avatars() {
+        let avatars = super::notification_avatars(&[CharacterInfo {
+            name: "Alice".into(),
+            avatar: Some(CharacterAvatar {
+                mime_type: "image/png".into(),
+                data: "cG5n".into(),
+            }),
+        }]);
+        assert_eq!(
+            avatars.get("Alice").map(|avatar| avatar.mime_type.as_str()),
+            Some("image/png")
+        );
+    }
+
+    #[test]
+    fn cache_avatar_icon_materializes_remote_avatar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let avatar = CharacterAvatar {
+            mime_type: "image/png".into(),
+            data: {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD.encode(b"png")
+            },
+        };
+
+        let path = super::cache_avatar_icon_in_dir(tmp.path(), "Alice Smith", &avatar).unwrap();
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("Alice_Smith.png")
+        );
+        assert_eq!(std::fs::read(path).unwrap(), b"png");
+    }
+
+    #[test]
+    fn cache_avatar_icon_uses_mime_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let avatar = CharacterAvatar {
+            mime_type: "image/jpeg".into(),
+            data: {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD.encode(b"jpg")
+            },
+        };
+
+        let path = super::cache_avatar_icon_in_dir(cache.path(), "Alice", &avatar).unwrap();
+        assert_eq!(path.extension().and_then(|ext| ext.to_str()), Some("jpg"));
+        assert!(super::local_avatar_icon_path(tmp.path(), "Alice").is_none());
     }
 
     /// Helper: write a JSON line to a writer.
