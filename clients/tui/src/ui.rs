@@ -432,6 +432,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     let content_visual = app.conv_cache.content_visual;
     let total_visual = content_visual.max(visible_height);
     let max_scroll = total_visual.saturating_sub(visible_height);
+    app.conversation_max_scroll = max_scroll;
     if app.scroll_offset > max_scroll {
         app.scroll_offset = max_scroll;
         if max_scroll == 0 {

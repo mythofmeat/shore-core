@@ -107,8 +107,8 @@ pub enum CliCommand {
         #[arg(allow_hyphen_values = true)]
         msg_ref: Option<String>,
 
-        /// Number of messages to show
-        #[arg(short = 'n', long, default_value = "20")]
+        /// Number of turns to show
+        #[arg(short = 'n', long = "turns", alias = "count", default_value = "64")]
         count: u32,
 
         /// Follow mode: keep listening for new messages
@@ -668,7 +668,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             count,
             ..
         } => Some(("heartbeat_log", json!({ "count": count }))),
-        CliCommand::Log { count, .. } => Some(("log", json!({ "count": count }))),
+        CliCommand::Log { count, .. } => Some(("log", json!({ "turns": count }))),
 
         // Status: diagnostics mode or normal status.
         CliCommand::Status {
@@ -1025,7 +1025,7 @@ mod tests {
             } => {
                 assert!(subcommand.is_none());
                 assert!(msg_ref.is_none());
-                assert_eq!(*count, 20);
+                assert_eq!(*count, 64);
                 assert!(!follow);
                 assert!(!json);
                 assert!(!content);
@@ -2109,7 +2109,7 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "log");
-        assert_eq!(args["count"], 20);
+        assert_eq!(args["turns"], 20);
     }
 
     #[test]

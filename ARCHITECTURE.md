@@ -48,10 +48,12 @@ Matrix, and MCP must not become alternate sources of character truth.
 Passive clients such as desktop notifiers can therefore label and icon messages
 without reading the daemon's local config filesystem.
 
-History snapshots are for human display and may include compacted `segments/`
-before the active `active.jsonl` tail. The SWP `active_start` index marks the
-first message that remains in prompt context so clients can draw an archive
-boundary without treating old scrollback as active model context.
+Handshake and push `History` snapshots contain the active `active.jsonl` tail
+only, keeping passive clients and bridges fast. Bounded log/history command
+responses may include compacted `segments/` before that active tail; the SWP
+`active_start` index marks the first message that remains in prompt context so
+clients can draw an archive boundary without treating old scrollback as active
+model context.
 
 ## File Layout
 
@@ -289,8 +291,9 @@ Compaction turns older conversation material into durable markdown memory,
 archives compacted messages into `segments/`, retains configured recent turns,
 updates `MEMORY.md` with carry-forward throughlines, and activates deferred
 prompt edits. Dreaming may later reorganize the memory files and `MEMORY.md`.
-Archived segments stay available to client history/log views, but prompt
-assembly uses only the retained active tail.
+Archived segments stay available to client history/log views through bounded,
+lazy pages, but prompt assembly and normal history snapshots use only the
+retained active tail.
 
 Dreaming is an opt-in scheduled AI librarian pass. When autonomy and
 `[memory.dreaming]` are enabled, the character privately uses memory/workspace

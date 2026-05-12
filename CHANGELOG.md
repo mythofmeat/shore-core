@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Made `shore log` and `shore-tui` history include compacted conversation
-  segments before the active context tail, with a horizontal rule marking
-  archived messages that are no longer in prompt context.
+- Made `shore log` and `shore-tui` expose compacted conversation segments as
+  bounded, lazy scrollback pages, with a horizontal rule marking archived
+  messages that are no longer in prompt context.
 - Added configurable TTS speech model requests, explicit WAV output requests,
   and clearer TTS HTTP error messages that include the server response body.
 - Added `shore notify` and a `shore-notify.service` user unit for desktop

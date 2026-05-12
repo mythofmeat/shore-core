@@ -20,9 +20,10 @@ pub struct History {
     pub messages: Vec<Message>,
     /// Index of the first message that is still in the active prompt context.
     ///
-    /// Messages before this index are durable archive scrollback loaded from
-    /// compacted segments. They are useful for humans, but are no longer part
-    /// of the model's active conversation context.
+    /// Normal push/handshake snapshots contain only active context and leave
+    /// this at zero. Bounded log/history responses may include durable archive
+    /// scrollback before this index; those messages are useful for humans but
+    /// are no longer part of the model's active conversation context.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub active_start: usize,
     #[serde(default)]

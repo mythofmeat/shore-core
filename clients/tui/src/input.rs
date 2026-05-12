@@ -7,6 +7,8 @@ use tracing::debug;
 use crate::app::{App, InputMode, PaletteMode};
 use crate::connection::ConnCommand;
 
+const HISTORY_PAGE_TURNS: u32 = 64;
+
 /// Action resulting from a key press.
 pub enum Action {
     None,
@@ -85,6 +87,29 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     }
 }
 
+fn redraw_or_load_older_history(app: &mut App) -> Action {
+    if app.history_page_loading || !app.history_has_more_before {
+        return Action::Redraw;
+    }
+    if app.scroll_offset < app.conversation_max_scroll.saturating_sub(2) {
+        return Action::Redraw;
+    }
+
+    app.history_page_loading = true;
+    let before = app
+        .history_next_before
+        .map(serde_json::Value::from)
+        .unwrap_or_else(|| serde_json::Value::String("active".into()));
+    Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+        rid: None,
+        name: "history_page".into(),
+        args: serde_json::json!({
+            "before": before,
+            "turns": HISTORY_PAGE_TURNS,
+        }),
+    })))
+}
+
 fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
     match (key.modifiers, key.code) {
         // Enter insert mode
@@ -133,7 +158,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
         // Scroll conversation
         (KeyModifiers::NONE, KeyCode::Char('k') | KeyCode::Up) => {
             app.scroll_up(1);
-            Action::Redraw
+            redraw_or_load_older_history(app)
         }
         (KeyModifiers::NONE, KeyCode::Char('j') | KeyCode::Down) => {
             app.scroll_down(1);
@@ -141,7 +166,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
         }
         (KeyModifiers::NONE, KeyCode::Char('u')) => {
             app.scroll_up(10);
-            Action::Redraw
+            redraw_or_load_older_history(app)
         }
         (KeyModifiers::NONE, KeyCode::Char('d')) => {
             app.scroll_down(10);
@@ -404,7 +429,7 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
         // Scroll conversation from insert mode
         (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
             app.scroll_up(10);
-            Action::Redraw
+            redraw_or_load_older_history(app)
         }
         (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
             app.scroll_down(10);
@@ -1316,6 +1341,24 @@ mod tests {
         assert_eq!(app.scroll_offset, 1);
         handle_key(&mut app, make_key(KeyModifiers::NONE, KeyCode::Char('j')));
         assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_top_requests_older_history_page() {
+        let mut app = App::default();
+        app.input.mode = InputMode::Normal;
+        app.history_has_more_before = true;
+        app.conversation_max_scroll = 1;
+
+        match handle_key(&mut app, make_key(KeyModifiers::NONE, KeyCode::Char('k'))) {
+            Action::Send(ConnCommand::Send(ClientMessage::Command(cmd))) => {
+                assert_eq!(cmd.name, "history_page");
+                assert_eq!(cmd.args["before"], "active");
+                assert_eq!(cmd.args["turns"], HISTORY_PAGE_TURNS);
+            }
+            _ => panic!("expected history_page command"),
+        }
+        assert!(app.history_page_loading);
     }
 
     #[test]

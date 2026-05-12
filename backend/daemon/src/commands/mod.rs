@@ -81,6 +81,7 @@ pub async fn dispatch(
 
         // Conversation
         "log" => conversation::log(engine, ctx, &cmd.args),
+        "history_page" => conversation::history_page(engine, ctx, &cmd.args),
         "get" => conversation::get(engine, ctx, &cmd.args),
         "edit" => conversation::edit(engine, ctx, &cmd.args),
         "delete" => conversation::delete(engine, ctx, &cmd.args),

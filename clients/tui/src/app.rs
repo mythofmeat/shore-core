@@ -634,6 +634,12 @@ pub struct App {
     /// supervisors see the conventional interrupt exit.
     pub interrupt: bool,
     pub auto_scroll: bool,
+    /// Last known maximum conversation scroll offset, updated by the renderer.
+    pub conversation_max_scroll: u16,
+    /// Cursor for the next older archived history page.
+    pub history_next_before: Option<usize>,
+    pub history_has_more_before: bool,
+    pub history_page_loading: bool,
     pub image_cache: ImageCache,
     pub show_thinking: bool,
     pub show_tools: bool,
@@ -695,6 +701,10 @@ impl Default for App {
             should_quit: false,
             interrupt: false,
             auto_scroll: true,
+            conversation_max_scroll: 0,
+            history_next_before: None,
+            history_has_more_before: false,
+            history_page_loading: false,
             image_cache: ImageCache::new(),
             show_thinking: true,
             show_tools: true,

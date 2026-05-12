@@ -6,6 +6,8 @@ use tracing::debug;
 use super::{engine_err, CommandContext, CommandResult};
 use crate::engine::ConversationEngine;
 
+const DEFAULT_LOG_TURNS: usize = 64;
+
 /// Resolve a message reference to a concrete msg_id.
 ///
 /// Supports: `"last"`, `"latest"`, negative indices (`"-1"` = last),
@@ -85,6 +87,87 @@ fn resolve_assistant_ref(
     }
 }
 
+fn page_start_by_turns(messages: &[Message], end: usize, turns: usize) -> usize {
+    let end = end.min(messages.len());
+    if turns == 0 {
+        return end;
+    }
+
+    let mut seen = 0usize;
+    for idx in (0..end).rev() {
+        if messages[idx].role == Role::User {
+            seen += 1;
+            if seen >= turns {
+                return idx;
+            }
+        }
+    }
+    0
+}
+
+fn page_start_by_args(messages: &[Message], end: usize, args: &serde_json::Value) -> usize {
+    if let Some(turns) = args.get("turns").and_then(|v| v.as_u64()) {
+        return page_start_by_turns(messages, end, turns as usize);
+    }
+
+    if let Some(count) = args.get("count").and_then(|v| v.as_u64()) {
+        return end.saturating_sub(count as usize);
+    }
+
+    page_start_by_turns(messages, end, DEFAULT_LOG_TURNS)
+}
+
+fn resolve_history_before(
+    args: &serde_json::Value,
+    active_start: usize,
+    total: usize,
+) -> Result<usize, (ErrorCode, String)> {
+    let Some(before) = args.get("before") else {
+        return Ok(total);
+    };
+
+    if before.as_str() == Some("active") {
+        return Ok(active_start);
+    }
+
+    let index = before.as_u64().ok_or_else(|| {
+        (
+            ErrorCode::InvalidRequest,
+            "before must be \"active\" or a message cursor".into(),
+        )
+    })? as usize;
+
+    Ok(index.min(total))
+}
+
+fn history_page_payload(
+    messages: &[Message],
+    global_active_start: usize,
+    start: usize,
+    end: usize,
+) -> serde_json::Value {
+    let start = start.min(messages.len());
+    let end = end.min(messages.len()).max(start);
+    let mut page: Vec<Message> = messages[start..end].to_vec();
+    let active_start = global_active_start.saturating_sub(start).min(page.len());
+
+    // Keep archived scrollback lightweight. Active-tail messages may still
+    // embed image bytes for remote clients; archived image refs remain labels.
+    if active_start < page.len() {
+        crate::handler::embed_messages_image_data(&mut page[active_start..]);
+    }
+
+    json!({
+        "messages": page,
+        "active_start": active_start,
+        "cursor": start,
+        "next_before": start,
+        "has_more_before": start > 0,
+        "global_active_start": global_active_start,
+        "total_messages": messages.len(),
+    })
+}
+
 /// Get a single message by index or reference.
 ///
 /// Refs resolve against the merged (client-visible) message list.
@@ -111,33 +194,38 @@ pub fn get(
     serde_json::to_value(msg).map_err(|e| (ErrorCode::InternalError, e.to_string()))
 }
 
-/// Show conversation history, optionally limited to the last N messages.
+/// Show conversation history, bounded by messages (`count`) or turns (`turns`).
 ///
-/// Tool-loop messages are merged into single assistant turns. The `count`
-/// parameter applies to the merged (logical) message list.
+/// Tool-loop messages are merged into single assistant turns. By default this
+/// returns the last 64 user turns, spanning compacted archive segments and the
+/// active context tail when needed.
 pub fn log(
     engine: &ConversationEngine,
     _ctx: &CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let (merged, active_start) = engine.display_history();
+    let (messages, active_start) = engine.display_history();
+    let end = messages.len();
+    let start = page_start_by_args(&messages, end, args);
 
-    let count = args
-        .get("count")
-        .and_then(|v| v.as_u64())
-        .map(|c| c as usize);
+    Ok(history_page_payload(&messages, active_start, start, end))
+}
 
-    // Embed image data so clients can display without filesystem access.
-    let total = merged.len();
-    let skip = count.map(|n| total.saturating_sub(n)).unwrap_or(0);
-    let mut with_data: Vec<Message> = merged.into_iter().skip(skip).collect();
-    let active_start = active_start.saturating_sub(skip).min(with_data.len());
-    crate::handler::embed_messages_image_data(&mut with_data);
+/// Fetch a bounded page of older display history for lazy clients.
+///
+/// Args:
+/// - `before`: `"active"` or a numeric cursor from a prior page.
+/// - `turns`: user turns to fetch; defaults to 64.
+pub fn history_page(
+    engine: &ConversationEngine,
+    _ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let (messages, active_start) = engine.display_history();
+    let end = resolve_history_before(args, active_start, messages.len())?;
+    let start = page_start_by_args(&messages, end, args);
 
-    Ok(json!({
-        "messages": with_data,
-        "active_start": active_start,
-    }))
+    Ok(history_page_payload(&messages, active_start, start, end))
 }
 
 /// Edit a message by ID.
@@ -567,6 +655,72 @@ mod tests {
         assert_eq!(msgs[1]["msg_id"], "m3");
         assert_eq!(msgs[2]["msg_id"], "m4");
         assert_eq!(result["active_start"], 1);
+    }
+
+    #[test]
+    fn log_keeps_archived_image_refs_lightweight() {
+        use shore_protocol::types::ImageRef;
+
+        let tmp = TempDir::new().unwrap();
+        let character_dir = tmp.path().join("TestChar");
+        let segments_dir = character_dir.join("segments");
+        std::fs::create_dir_all(&segments_dir).unwrap();
+        let image_path = tmp.path().join("image.bin");
+        std::fs::write(&image_path, b"image bytes").unwrap();
+        let image_path = image_path.to_string_lossy().to_string();
+
+        let mut archived = make_msg("m1", Role::User, "archived image");
+        archived.images.push(ImageRef {
+            path: image_path.clone(),
+            caption: Some("old".into()),
+            data: None,
+        });
+        write_jsonl(&segments_dir.join("0001.jsonl"), &[archived]);
+        let manifest = crate::engine::segments::CompactionManifest {
+            segments: vec![crate::engine::segments::SegmentEntry {
+                file: "0001.jsonl".into(),
+                message_count: 1,
+                compacted_at: "2026-01-01T00:00:00Z".into(),
+            }],
+            total_compacted_messages: 1,
+        };
+        std::fs::write(
+            character_dir.join("compaction.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let mut active = make_msg("m2", Role::User, "active image");
+        active.images.push(ImageRef {
+            path: image_path,
+            caption: Some("new".into()),
+            data: None,
+        });
+        write_jsonl(&character_dir.join("active.jsonl"), &[active]);
+
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+        let result = log(&engine, &ctx, &json!({"count": 2})).unwrap();
+        let msgs = result["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[0]["images"][0].get("data").is_none());
+        assert!(msgs[1]["images"][0]["data"].as_str().is_some());
+        assert_eq!(result["active_start"], 1);
+    }
+
+    #[test]
+    fn history_page_before_active_returns_archived_page_only() {
+        let tmp = TempDir::new().unwrap();
+        write_segmented_history(&tmp);
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = history_page(&engine, &ctx, &json!({"before": "active", "turns": 1})).unwrap();
+        let msgs = result["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["msg_id"], "m1");
+        assert_eq!(msgs[1]["msg_id"], "m2");
+        assert_eq!(result["active_start"], 2);
+        assert_eq!(result["cursor"], 0);
+        assert_eq!(result["has_more_before"], false);
     }
 
     #[test]

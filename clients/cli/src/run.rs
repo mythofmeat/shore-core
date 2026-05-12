@@ -257,7 +257,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             plain,
             ..
         } => {
-            conn.send_command("log", serde_json::json!({ "count": count }))
+            conn.send_command("log", serde_json::json!({ "turns": count }))
                 .await?;
             let data = recv_command_data(&mut conn).await?;
 

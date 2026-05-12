@@ -965,6 +965,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> UiEffect {
 
             // Load any history from the handshake
             rebuild_entries_from_history(history, active_start, &mut app.entries);
+            reset_history_paging(app);
             transmit_entry_images(app);
 
             app.set_status("connected");
@@ -976,6 +977,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> UiEffect {
             app.stream.reset(); // clear stale streaming state
             app.effective_sampler = None;
             app.sampler_settings_loading = false;
+            app.history_page_loading = false;
             app.set_status(format!("reconnecting: {reason}"));
             UiEffect::redraw(RedrawEffect::Immediate)
         }
@@ -1010,6 +1012,60 @@ fn rebuild_entries_from_history(
             archived_count: boundary_at,
         });
     }
+}
+
+fn reset_history_paging(app: &mut App) {
+    app.history_next_before = None;
+    app.history_has_more_before = true;
+    app.history_page_loading = false;
+}
+
+fn prepend_history_page(app: &mut App, data: &serde_json::Value) {
+    app.history_page_loading = false;
+    app.history_next_before = data
+        .get("next_before")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+    app.history_has_more_before = data
+        .get("has_more_before")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let Some(messages) = data.get("messages").and_then(|v| v.as_array()) else {
+        return;
+    };
+
+    let mut page_entries = Vec::new();
+    for msg_val in messages {
+        if let Ok(msg) = serde_json::from_value::<Message>(msg_val.clone()) {
+            expand_msg(msg, &mut page_entries);
+        }
+    }
+
+    if page_entries.is_empty() {
+        return;
+    }
+
+    let loaded_messages = messages.len();
+    if let Some(boundary_idx) = app
+        .entries
+        .iter()
+        .position(|entry| matches!(entry, ConversationEntry::ArchiveBoundary { .. }))
+    {
+        if let ConversationEntry::ArchiveBoundary { archived_count } =
+            &mut app.entries[boundary_idx]
+        {
+            *archived_count = archived_count.saturating_add(loaded_messages);
+        }
+        app.entries.splice(0..0, page_entries);
+    } else {
+        page_entries.push(ConversationEntry::ArchiveBoundary {
+            archived_count: loaded_messages,
+        });
+        app.entries.splice(0..0, page_entries);
+    }
+
+    app.history_version = app.history_version.wrapping_add(1);
 }
 
 /// Expand a protocol Message into one or more ConversationEntry items.
@@ -1362,17 +1418,38 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                 "log" => {
                     if let Some(messages) = co.data.get("messages").and_then(|v| v.as_array()) {
                         app.image_cache.clear();
-                        app.entries.clear();
-                        for msg_val in messages {
-                            if let Ok(msg) = serde_json::from_value::<Message>(msg_val.clone()) {
-                                expand_msg(msg, &mut app.entries);
-                            }
-                        }
+                        let history: Vec<Message> = messages
+                            .iter()
+                            .filter_map(|msg_val| {
+                                serde_json::from_value::<Message>(msg_val.clone()).ok()
+                            })
+                            .collect();
+                        let active_start = co
+                            .data
+                            .get("active_start")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        rebuild_entries_from_history(history, active_start, &mut app.entries);
+                        app.history_next_before = co
+                            .data
+                            .get("next_before")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as usize);
+                        app.history_has_more_before = co
+                            .data
+                            .get("has_more_before")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        app.history_page_loading = false;
                         transmit_entry_images(app);
                         if app.auto_scroll {
                             app.scroll_to_bottom();
                         }
                     }
+                }
+                "history_page" => {
+                    prepend_history_page(app, &co.data);
+                    return UiEffect::redraw(RedrawEffect::Immediate);
                 }
                 "list_characters" => {
                     if let Some(chars) = co.data.get("characters").and_then(|v| v.as_array()) {
@@ -1671,6 +1748,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                 app.cancel_alt_picker();
             }
             app.sampler_settings_loading = false;
+            app.history_page_loading = false;
             if app.is_setting_palette_open() {
                 app.update_completions();
             }
@@ -1700,6 +1778,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
             // Re-sync history
             app.image_cache.clear();
             rebuild_entries_from_history(hist.messages, hist.active_start, &mut app.entries);
+            reset_history_paging(app);
             // Bump so the conv-cache fingerprint changes even when the
             // entry count and last-two summaries collide with the prior
             // value (e.g. :edit on an earlier message).
