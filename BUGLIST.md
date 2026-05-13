@@ -43,17 +43,24 @@ every background site through them.
 
 ## Tier 2 — architectural smells
 
-- [ ] **Five parallel "build a request" paths.** No canonical
-      `build_request_for(character, task)`:
-      - `handler/task.rs` (chat) — applies overlay, builds prompt, builds tools
-      - `compaction_impls.rs::build_compaction_request`
-      - `dreaming.rs::build_librarian_request`
-      - `autonomy/manager.rs::rebuild_request_from_disk`
-      - `autonomy/manager.rs::apply_heartbeat_model_override`
+- [~] **Five parallel "build a request" paths.** Mostly closed. The two
+      that genuinely duplicated each other (chat handler + heartbeat cold
+      rebuild) now share `handler::prepare_chat_context`. The remaining
+      three sites do meaningfully different things:
+      - `apply_heartbeat_model_override` swaps the model on a request that
+        already exists.
+      - `compaction_impls::build_compaction_request` either rebuilds with
+        the compaction model while inheriting the cached prefix (cache hit)
+        or builds fresh.
+      - `dreaming::build_librarian_request` clones the cached request to
+        preserve the chat model + cache prefix, or builds fresh.
 
-      Each one independently decides: which model? apply overlay? what tools?
-      what system? cache_ttl? This is the load-bearing reason new "did X
-      forget Y?" bugs keep appearing.
+      "Which model? Which tools? Which system?" is now consistently resolved
+      via `preferences::resolve_background_model` and the
+      `system_suffix`/`tools` field rules. The shape of the remaining
+      request-construction sites is task-specific and not the same code
+      written three times. Leaving open as a future cleanup if one of these
+      sites grows again.
 
 - [~] **`s.last_request = None` after compaction is now arguably wrong.** On
       re-investigation: nulling is the correct behavior. After compaction the
@@ -159,14 +166,14 @@ Sorted by lines-of-code-removed-per-refactor.
 
 ### Medium blast radius
 
-- [ ] **Provider `translate_messages` / `translate_tools` × 4.**
-      `anthropic.rs`, `openai.rs`, `zai.rs`, `gemini.rs` each have their own.
-      Z.ai is ~90% OpenAI with a thinking-clear hack — could fold into
-      `openai.rs` behind a `ProviderContext` flag (which already exists for
-      routing). Anthropic/Gemini are genuinely different shapes, but the
-      structural-content extraction (text / tool_use / tool_result / thinking)
-      is the same logic three ways. A shared `iter_content_blocks(msg) -> impl
-      Iterator<ContentBlock>` removes ~hundreds of lines.
+- [ ] **Provider `translate_messages` / `translate_tools` × 4.** Not done.
+      Substantial refactor: folding `zai.rs` (~880 lines) into `openai.rs`
+      behind a `ProviderContext` flag is ~600 LoC of churn; sharing the
+      block-extraction logic across `anthropic`/`openai`/`gemini` is its
+      own design problem because the shapes are genuinely different at the
+      wire level. Deferred — needs separate design pass to land safely
+      without breaking provider-specific quirks (Z.ai thinking-clear hack,
+      Gemini's `functionCall` shape, Anthropic's tool_result content rules).
 
 - [~] **`<system_instruction>` wrapping is reinvented in 4 providers.**
       Partly addressed: trailing system instructions now flow through
@@ -207,10 +214,13 @@ Sorted by lines-of-code-removed-per-refactor.
       paths all route through it now, so the log line stays consistent and
       future callers can't silently forget to emit it.
 
-- [ ] **Provider 4xx/error handling.** Each provider does its own status check
-      + JSON error parse with slight variations. One shared
-      `parse_provider_error(provider_key, status, body)` cleaner than four
-      near-copies.
+- [x] **Provider 4xx/error handling.** Already centralized: every provider
+      (`anthropic`, `openai`, `zai`, `gemini`) routes non-success responses
+      through the shared `providers::check_response`, which builds a single
+      `LlmError::HttpStatus { status, body }` with consistent logging. The
+      only provider-specific error translation is `claude_code::quota` (CLI
+      quota errors → synthetic 429), which is a different responsibility
+      from generic 4xx parsing. Audit found no actual "four near-copies."
 
 - [x] **`write_jsonl` test helper defined twice.** Moved to
       `test_support::write_jsonl`. `engine/mod.rs` and
@@ -230,3 +240,25 @@ If picking three from this list by impact-per-line-of-refactor:
 3. **Tier 2 #3 + Tier 3 #5** — `system_suffix` on `LlmRequest` plus single
    provider transform. Closes the trailing-system hack and a
    future-provider footgun.
+
+---
+
+## Progress as of 2026-05-14
+
+Started from the 2026-05-14 compaction-loss investigation. Tier 1 closed in
+the first three commits via the recommended order above. Remaining sweeps
+through Tier 2/3 picked up the small/cheap wins along the way. Tier 3 #4
+(provider `translate_messages` × 4) and the open `~` items are the only
+material work left; they need separate design passes before another sweep.
+
+Commit log on `refactor/2026-05-14`:
+
+1. `Centralize background-task model resolution` — Tier 1 #1/#2/#3 + Tier 3 #2.
+2. `Extract prepare_chat_context helper` — Tier 3 #1.
+3. `Promote trailing-system instruction to LlmRequest::system_suffix` — Tier 2 #3.
+4. `Quality follow-ups: prefix test, MessageStore, helpers` — Tier 2 #5,
+   Tier 3 #6/#7/#9 + the cache-prefix regression pin.
+5. `Drop redundant data_dir arg from run_compaction` — Tier 2 #7.
+6. `Consolidate segmented-history test fixture` — Tier 3 #8.
+7. `Add canonical filename constants + character-data path helpers` —
+   Tier 3 #3 (substantially).
