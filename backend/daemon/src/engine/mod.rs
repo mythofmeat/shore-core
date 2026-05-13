@@ -78,7 +78,7 @@ impl ConversationEngine {
             dir = %character_dir.display(),
             "initializing conversation engine"
         );
-        let messages = MessageStore::load(character_dir.join("active.jsonl"))?;
+        let messages = MessageStore::load(character_dir.join(shore_config::ACTIVE_JSONL_FILE))?;
         let segments = SegmentReader::load(&character_dir)?;
         info!(
             character = %character_name,
@@ -302,7 +302,8 @@ impl ConversationEngine {
     /// Reload messages and segments from disk (e.g. after compaction with retention).
     pub fn reload(&mut self) -> Result<(), EngineError> {
         info!(character = %self.character_name, "reloading engine from disk");
-        self.messages = MessageStore::load(self.character_dir.join("active.jsonl"))?;
+        self.messages =
+            MessageStore::load(self.character_dir.join(shore_config::ACTIVE_JSONL_FILE))?;
         self.segments = SegmentReader::load(&self.character_dir)?;
         info!(
             character = %self.character_name,

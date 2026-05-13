@@ -24,12 +24,14 @@ pub async fn run_compaction(
     use crate::engine::messages::MessageStore;
     use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
     use crate::notifications::NotificationEvent;
-    use shore_config::{load_character_config, resolve_prompt_template};
+    use shore_config::{
+        character_active_jsonl, character_data_dir, load_character_config, resolve_prompt_template,
+    };
     use tracing::info;
 
     let data_dir = config.dirs.data.as_path();
-    let character_dir = data_dir.join(character);
-    let active_path = character_dir.join("active.jsonl");
+    let character_dir = character_data_dir(data_dir, character);
+    let active_path = character_active_jsonl(data_dir, character);
 
     // Same canonical load + normalize path the engine itself uses.
     let store = MessageStore::load(active_path.clone())?;

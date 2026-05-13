@@ -142,14 +142,20 @@ Sorted by lines-of-code-removed-per-refactor.
       route through these helpers. The old `state::memory::resolve_compaction_model`
       and `dreaming::resolve_dreaming_model` shims were removed.
 
-- [ ] **Per-character paths are joined ad-hoc in ~46 places.**
-      `data_dir.join(character)`, `character_dir.join("active.jsonl")`,
-      `character_dir.join("segments")`, `character_dir.join("compaction.json")`
-      — all open-coded. Existing helpers (`character_workspace_dir`,
-      `character_memory_dir`, `engine::character_dir`) don't form a coherent
-      surface. A `CharacterPaths` struct with `.active_jsonl()
-      .segments_dir() .compaction_manifest() .preferences() .workspace()
-      .memory_dir()` cuts tens of `.join` sites and removes typo-bug surface.
+- [~] **Per-character paths are joined ad-hoc in ~46 places.** Mostly closed:
+      added `shore_config::{ACTIVE_JSONL_FILE, SEGMENTS_DIR,
+      COMPACTION_MANIFEST_FILE}` constants and
+      `character_data_dir/character_active_jsonl/character_segments_dir/
+      character_compaction_manifest` free functions matching the existing
+      `character_*_dir` helper pattern. Migrated the production sites that
+      string-literal-typed these filenames (compaction `background`,
+      `compaction_impls::archive_and_retain`, `engine::segments::load`,
+      `engine::mod::{new, reload}`, `commands::state::memory`,
+      `tools::history::search`). Many remaining ad-hoc `data_dir.join(character)`
+      sites in production code (autonomy, dreaming) and in tests — those are
+      functionally fine and would only churn diffs without removing typo
+      surface, since the failure mode is on the *filename* tail, not the
+      character segment. Leaving open as polish for a future sweep.
 
 ### Medium blast radius
 

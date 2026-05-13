@@ -347,13 +347,14 @@ pub async fn compact(
 
     let mgr = CompactionManager::new(ctx.config.app.memory.compaction.clone());
 
-    let active_content = std::fs::read_to_string(engine.character_dir().join("active.jsonl"))
-        .map_err(|e| {
-            (
-                ErrorCode::InternalError,
-                format!("failed to read active.jsonl: {e}"),
-            )
-        })?;
+    let active_content =
+        std::fs::read_to_string(engine.character_dir().join(shore_config::ACTIVE_JSONL_FILE))
+            .map_err(|e| {
+                (
+                    ErrorCode::InternalError,
+                    format!("failed to read active.jsonl: {e}"),
+                )
+            })?;
 
     let display_name = ctx.config.app.defaults.resolve_display_name();
 

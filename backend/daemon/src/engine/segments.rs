@@ -40,8 +40,8 @@ impl SegmentReader {
     ///
     /// Reads `compaction.json` if present; otherwise starts empty.
     pub fn load(character_dir: &Path) -> Result<Self, EngineError> {
-        let manifest_path = character_dir.join("compaction.json");
-        let segments_dir = character_dir.join("segments");
+        let manifest_path = character_dir.join(shore_config::COMPACTION_MANIFEST_FILE);
+        let segments_dir = character_dir.join(shore_config::SEGMENTS_DIR);
 
         let manifest = if manifest_path.exists() {
             debug!(path = %manifest_path.display(), "loading compaction manifest");

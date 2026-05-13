@@ -294,7 +294,7 @@ impl RealConversationManager {
         params: RetentionParams,
     ) -> Result<String, CompactionError> {
         let started = std::time::Instant::now();
-        let active_path = self.character_dir.join("active.jsonl");
+        let active_path = self.character_dir.join(shore_config::ACTIVE_JSONL_FILE);
 
         // Use pre-read content from params to avoid TOCTOU race — the file
         // may have changed since compact() parsed the messages.
@@ -312,7 +312,9 @@ impl RealConversationManager {
 
         // Archive the compacted portion to a segment file.
         if !archive_lines.is_empty() {
-            let manifest_path = self.character_dir.join("compaction.json");
+            let manifest_path = self
+                .character_dir
+                .join(shore_config::COMPACTION_MANIFEST_FILE);
             let mut manifest: CompactionManifest = if manifest_path.exists() {
                 let mf = std::fs::read_to_string(&manifest_path).map_err(|e| {
                     CompactionError::ConversationManager(format!(
@@ -330,7 +332,7 @@ impl RealConversationManager {
 
             let segment_index = manifest.segments.len() + 1;
             let segment_file = format!("{:04}.jsonl", segment_index);
-            let segments_dir = self.character_dir.join("segments");
+            let segments_dir = self.character_dir.join(shore_config::SEGMENTS_DIR);
 
             std::fs::create_dir_all(&segments_dir).map_err(|e| {
                 CompactionError::ConversationManager(format!("failed to create segments dir: {e}"))
