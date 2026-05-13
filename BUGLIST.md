@@ -166,14 +166,21 @@ Sorted by lines-of-code-removed-per-refactor.
 
 ### Medium blast radius
 
-- [ ] **Provider `translate_messages` / `translate_tools` × 4.** Not done.
-      Substantial refactor: folding `zai.rs` (~880 lines) into `openai.rs`
-      behind a `ProviderContext` flag is ~600 LoC of churn; sharing the
-      block-extraction logic across `anthropic`/`openai`/`gemini` is its
-      own design problem because the shapes are genuinely different at the
-      wire level. Deferred — needs separate design pass to land safely
-      without breaking provider-specific quirks (Z.ai thinking-clear hack,
-      Gemini's `functionCall` shape, Anthropic's tool_result content rules).
+- [~] **Provider `translate_messages` / `translate_tools` × 4.** Half-closed.
+      Z.AI's `translate_messages` (~180 lines) and `translate_tools` are now
+      thin shims over `openai::translate_messages` / `translate_tools`. The
+      two provider-specific differences became flags on `ProviderContext`:
+      `wrap_inline_system` (Z.AI accepts raw `role:"system"` mid-history,
+      everyone else needs the `<system_instruction>` wrapper) and
+      `drop_prior_thinking` (Z.AI's `zai_clear_thinking` option). The Z.AI
+      `reasoning_content` field name flows through `reasoning_field_for`
+      (decoupled from `requires_reasoning_replay`, which kept its narrower
+      semantics).
+
+      Gemini and Anthropic have genuinely different wire shapes
+      (`functionCall` parts, `tool_result` content rules, system_instruction
+      placement) and are still their own translators — that consolidation
+      would need a separate design pass.
 
 - [~] **`<system_instruction>` wrapping is reinvented in 4 providers.**
       Partly addressed: trailing system instructions now flow through

@@ -26,7 +26,7 @@ const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 // ── Message & tool translation ──────────────────────────────────────
 
 /// Translate Anthropic-format messages into OpenAI chat completion messages.
-fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) -> Vec<Value> {
+pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) -> Vec<Value> {
     let mut out = Vec::new();
 
     // Inject system prompt if present.
@@ -45,17 +45,27 @@ fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) -> Vec<Value>
             // String content — simple pass-through.
             Some(Value::String(s)) => match role {
                 // Inline system messages mid-history (from injection,
-                // heartbeat recaps) get wrapped in <system_instruction>
-                // and emitted as user turns. Some OpenRouter-routed backends
-                // reject raw role:"system" mid-conversation; the wrapper is
-                // defensive and mirrors convert_inline_system_messages in
-                // providers/anthropic.rs. The top-level system prompt is
-                // unaffected — it's injected separately from request.system
-                // at the start of translate_messages.
-                "system" => out.push(json!({
-                    "role": "user",
-                    "content": format!("<system_instruction>{s}</system_instruction>"),
-                })),
+                // heartbeat recaps): wrap in <system_instruction> + emit
+                // as user, OR pass through as raw `role:"system"`,
+                // depending on whether this provider accepts mid-history
+                // system messages. Some OpenRouter-routed backends reject
+                // raw `role:"system"` mid-conversation, so most OpenAI
+                // SDK clients keep `wrap_inline_system = true` and
+                // mirror `convert_inline_system_messages` from
+                // `providers/anthropic.rs`. Z.ai accepts inline system
+                // messages natively and turns the flag off. The
+                // top-level system prompt is unaffected — it's emitted
+                // from `request.system` above.
+                "system" => {
+                    if ctx.wrap_inline_system {
+                        out.push(json!({
+                            "role": "user",
+                            "content": format!("<system_instruction>{s}</system_instruction>"),
+                        }));
+                    } else {
+                        out.push(json!({"role": "system", "content": s}));
+                    }
+                }
                 "user" => out.push(json!({"role": "user", "content": s})),
                 "assistant" => out.push(json!({"role": "assistant", "content": s})),
                 _ => {}
@@ -72,11 +82,15 @@ fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) -> Vec<Value>
                         .iter()
                         .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
                         .collect();
-                    let reasoning: String = blocks
-                        .iter()
-                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("thinking"))
-                        .map(|b| b.get("thinking").and_then(|t| t.as_str()).unwrap_or(""))
-                        .collect();
+                    let reasoning: String = if ctx.drop_prior_thinking {
+                        String::new()
+                    } else {
+                        blocks
+                            .iter()
+                            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("thinking"))
+                            .map(|b| b.get("thinking").and_then(|t| t.as_str()).unwrap_or(""))
+                            .collect()
+                    };
 
                     let content_str: String = text_parts
                         .iter()
@@ -201,14 +215,18 @@ fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) -> Vec<Value>
 
                 "system" => {
                     // Inline system messages: wrap in <system_instruction>
-                    // and emit as user (see rationale on the string-content
-                    // branch above).
+                    // and emit as user, OR pass through as raw `role:"system"`
+                    // (see rationale on the string-content branch above).
                     let text = extract_system_text(&Value::Array(blocks.clone()));
                     if !text.is_empty() {
-                        out.push(json!({
-                            "role": "user",
-                            "content": format!("<system_instruction>{text}</system_instruction>"),
-                        }));
+                        if ctx.wrap_inline_system {
+                            out.push(json!({
+                                "role": "user",
+                                "content": format!("<system_instruction>{text}</system_instruction>"),
+                            }));
+                        } else {
+                            out.push(json!({"role": "system", "content": text}));
+                        }
                     }
                 }
 
@@ -223,7 +241,7 @@ fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) -> Vec<Value>
 }
 
 /// Translate Anthropic-format tool definitions to OpenAI function-calling format.
-fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
+pub(super) fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
     translate_tool_declarations(tools).map(|decls| {
         decls
             .into_iter()

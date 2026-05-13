@@ -443,11 +443,14 @@ pub fn default_base_url(provider_key: &str) -> Option<&'static str> {
 /// for these providers produces a 400 like
 /// `"reasoning_content in the thinking mode must be passed back to the API."`.
 ///
-/// Derived from the provider's reasoning-field name so the two stay in
-/// sync: providers whose response carries `reasoning_content` are exactly
-/// the ones that demand it back on input.
+/// This is a distinct concept from
+/// [`providers::context::reasoning_field_for`]: Z.ai also emits its
+/// reasoning into the `reasoning_content` field but does NOT require it
+/// be replayed (its `zai_clear_thinking` provider option exists
+/// specifically to drop prior thinking), so the two views are tracked
+/// separately.
 pub fn requires_reasoning_replay(provider_key: &str) -> bool {
-    providers::context::reasoning_field_for(provider_key) == "reasoning_content"
+    matches!(provider_key, "deepseek" | "moonshot")
 }
 
 #[cfg(test)]

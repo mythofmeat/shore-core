@@ -29,6 +29,23 @@ pub(crate) struct ProviderContext {
     /// is refactored to use LlmRequest dispatch.
     #[allow(dead_code)]
     pub images_via_chat_completions: bool,
+
+    /// Whether mid-history `role: "system"` messages should be wrapped
+    /// in `<system_instruction>...</system_instruction>` and emitted as
+    /// user turns. True for most OpenAI-compatible providers (some
+    /// OpenRouter-routed backends reject raw `role: "system"`
+    /// mid-conversation); false for providers like Z.ai that accept
+    /// inline system messages natively.
+    ///
+    /// The top-level `request.system` field is always emitted as a
+    /// dedicated system message regardless of this flag — only inline
+    /// system messages inside `request.messages` are affected.
+    pub wrap_inline_system: bool,
+
+    /// When true, drop prior-turn `thinking` blocks during translation
+    /// instead of replaying them as `ctx.reasoning_field`. Set by Z.ai's
+    /// per-call `zai_clear_thinking` provider option.
+    pub drop_prior_thinking: bool,
 }
 
 /// Build a `ProviderContext` from the request's `provider_key` and
@@ -40,7 +57,7 @@ pub(crate) struct ProviderContext {
 /// the two views in sync via this single source of truth.
 pub(crate) fn reasoning_field_for(provider_key: &str) -> &'static str {
     match provider_key {
-        "deepseek" | "moonshot" => "reasoning_content",
+        "deepseek" | "moonshot" | "zai" => "reasoning_content",
         _ => "reasoning",
     }
 }
@@ -76,12 +93,31 @@ pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
 
     let images_via_chat_completions = pk == "openrouter";
 
+    // Z.ai accepts raw `role: "system"` mid-conversation; everything else
+    // OpenAI-compatible needs the `<system_instruction>` wrapper. (Providers
+    // that go through the Anthropic / Gemini / Claude Code SDKs don't read
+    // this field — they do their own translation.)
+    let wrap_inline_system = pk != "zai";
+
+    // Z.ai's `zai_clear_thinking` flag — when set, prior `thinking` blocks
+    // are dropped during translation instead of being replayed as
+    // `reasoning_content`. No other provider opts in today.
+    let drop_prior_thinking = pk == "zai"
+        && request
+            .provider_options
+            .as_ref()
+            .and_then(|opts| opts.get("zai_clear_thinking"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
     ProviderContext {
         reasoning_field,
         extra_headers,
         supports_reasoning_effort,
         routing_config,
         images_via_chat_completions,
+        wrap_inline_system,
+        drop_prior_thinking,
     }
 }
 
