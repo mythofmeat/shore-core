@@ -33,10 +33,7 @@ use crate::tools::context::SharedToolContext;
 use crate::tools::{ToolContext, ToolError};
 use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
-use shore_config::{
-    character_memory_dir, character_workspace_dir, AGENTS_FILE, HEARTBEAT_FILE, SOUL_FILE,
-    TOOLS_FILE, USER_FILE,
-};
+use shore_config::{character_memory_dir, character_workspace_dir, HEARTBEAT_FILE};
 use shore_diagnostics::truncate_summary;
 use shore_ledger::{CallType, CredentialFallbackEvent, LedgerClient};
 use shore_llm::types::LlmRequest;
@@ -1385,7 +1382,7 @@ fn rebuild_request_from_disk(
     config: &LoadedConfig,
 ) -> Option<LlmRequest> {
     use crate::engine::messages::MessageStore;
-    use crate::engine::prompt::{self, PromptParams};
+    use crate::handler::{prepare_chat_context, PrepareChatContextParams, PreparedChatContext};
 
     let char_dir = data_dir.join(character);
     let active_path = char_dir.join("active.jsonl");
@@ -1412,70 +1409,26 @@ fn rebuild_request_from_disk(
     // override after rebuilding; keepalive must refresh the chat cache
     // prefix using the same model+sampler chat would have produced, not
     // a heartbeat-only model or an un-overlaid `defaults.model`.
-    let resolved_owned = crate::preferences::resolve_chat_model_for_character(config, character)?;
-    let resolved = &resolved_owned;
+    let resolved = crate::preferences::resolve_chat_model_for_character(config, character)?;
 
-    let display_name = config.app.defaults.resolve_display_name();
-    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
-        &char_dir,
-        &config.dirs.config,
+    let PreparedChatContext {
+        llm_messages,
+        system,
+        tool_defs,
+        ..
+    } = prepare_chat_context(PrepareChatContextParams {
         character,
-    ) {
-        warn!(character, error = %e, "Heartbeat rebuild: failed to ensure active prompt snapshot");
-    }
-    let character_definition =
-        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, SOUL_FILE);
-    let user_definition =
-        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, USER_FILE);
-    let system_prompt =
-        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, AGENTS_FILE);
-    let tools_guidance =
-        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, TOOLS_FILE);
-    let memory_index =
-        crate::memory::deferred_edits::load_memory_index(&char_dir, &config.dirs.config, character);
-
-    let tool_toggles = &config.app.behavior.tool_use.tools;
-    let prompt_result = prompt::assemble_prompt(&PromptParams {
-        character_name: character,
-        display_name: &display_name,
-        system_prompt: system_prompt.as_deref(),
-        tools_guidance: tools_guidance.as_deref(),
-        character_definition: character_definition.as_deref(),
-        user_definition: user_definition.as_deref(),
-        memory_index: memory_index.as_deref(),
-        is_private: false,
-        has_prior_context,
+        character_data_dir: &char_dir,
+        config,
+        resolved: &resolved,
         messages: store.messages(),
-        max_context_tokens: resolved.max_context_tokens,
-        max_output_tokens: resolved.max_tokens,
+        has_prior_context,
+        is_private: false,
+        include_unsigned_thinking: false,
     });
 
-    let cache_dir = &config.dirs.cache;
-    let (mut llm_messages, system) = crate::handler::build_llm_messages(
-        &prompt_result,
-        false,
-        config.app.advanced.max_image_size,
-        cache_dir,
-    );
-    crate::content_util::maybe_strip_prior_thinking(
-        &mut llm_messages,
-        config.app.memory.thinking.preserve_prior_turns,
-        &resolved.provider_key,
-    );
-
-    let tool_defs = if config.app.behavior.tool_use.enabled {
-        Some(tool_system::render_tool_defs(
-            false,
-            tool_toggles,
-            character,
-            &display_name,
-        ))
-    } else {
-        None
-    };
-
     match LedgerClient::build_request_with_provider_keys(
-        resolved,
+        &resolved,
         &config.providers,
         llm_messages,
         system,

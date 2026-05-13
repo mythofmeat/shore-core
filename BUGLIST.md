@@ -105,14 +105,14 @@ Sorted by lines-of-code-removed-per-refactor.
 
 ### High blast radius
 
-- [ ] **The "load 4 prompt files, assemble, build_llm_messages" block is
-      copy-pasted.** `handler/task.rs:234–271` and
-      `autonomy/manager.rs:1422–1465` are nearly byte-identical 30-line
-      stretches: `load_active_prompt_file × 4` (SOUL/USER/AGENTS/TOOLS) →
-      `load_memory_index` → `prompt::assemble_prompt` → `build_llm_messages` →
-      `maybe_strip_prior_thinking`. One
-      `prepare_chat_context(character, data_dir, config, messages, ...)`
-      helper folds both. Compaction and dreaming would also route through it.
+- [x] **The "load 4 prompt files, assemble, build_llm_messages" block is
+      copy-pasted.** Closed by `handler::prepare_chat_context` (new module
+      `backend/daemon/src/handler/context.rs`). Both `handler::task::handle_generation`
+      and `autonomy::manager::rebuild_request_from_disk` now construct a
+      `PrepareChatContextParams` and consume the `PreparedChatContext`.
+      Compaction and dreaming don't use this block (they assemble a much
+      simpler request: a single user prompt + system instruction), so routing
+      them through this helper would be a different shape of refactor.
 
 - [x] **Per-task model-resolution chain is rebuilt three times.** Closed by
       `preferences::resolve_background_model` + `resolve_chat_model_for_character`.

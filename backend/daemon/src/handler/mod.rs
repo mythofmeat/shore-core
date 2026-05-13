@@ -8,6 +8,7 @@
 //! inline and always return immediately.
 
 mod command_dispatch;
+mod context;
 mod generation;
 mod images;
 mod key_fallback;
@@ -24,6 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub(crate) use context::{prepare_chat_context, PrepareChatContextParams, PreparedChatContext};
 pub(crate) use images::{
     build_content, embed_image_data, embed_messages_image_data, image_data_for_path,
 };

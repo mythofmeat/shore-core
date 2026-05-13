@@ -6,13 +6,12 @@ use std::time::Instant;
 
 use serde_json::{json, Value};
 use shore_config::models::Sdk;
-use shore_config::{AGENTS_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE};
 use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{debug, info, instrument, warn};
 
 use crate::autonomy::parse_cache_ttl_secs;
 use crate::engine::messages::PendingAlt;
-use crate::engine::prompt::{self, PromptParams};
+use crate::engine::prompt;
 use crate::handler::generation::{run_tool_phase, thinking_enabled_from_request};
 use crate::handler::images::{embed_image_data, ingest_images};
 use crate::handler::key_fallback::stream_with_credential_fallback;
@@ -24,7 +23,9 @@ use crate::memory::retrieval::resolve_embedder;
 use crate::tools::context::SharedToolContext;
 use crate::tools::ToolContext;
 
-use super::{GenContext, GenerationParams, HandlerToolContext};
+use super::{
+    GenContext, GenerationParams, HandlerToolContext, PrepareChatContextParams, PreparedChatContext,
+};
 
 #[instrument(
     skip(ctx, params),
@@ -223,41 +224,23 @@ pub(super) async fn handle_generation(
     };
 
     let character_data_dir = data_dir.join(&char_name);
-    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
-        &character_data_dir,
-        &effective_config.dirs.config,
-        &char_name,
-    ) {
-        debug!(character = %char_name, error = %e, "failed to ensure active prompt snapshot");
-    }
-
-    let character_definition =
-        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, SOUL_FILE);
-    let user_definition =
-        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, USER_FILE);
-    let system_prompt =
-        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, AGENTS_FILE);
-    let tools_guidance =
-        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, TOOLS_FILE);
-    let memory_index = crate::memory::deferred_edits::load_memory_index(
-        &character_data_dir,
-        &effective_config.dirs.config,
-        &char_name,
-    );
-    let display_name = effective_config.app.defaults.resolve_display_name();
-    let prompt_result = prompt::assemble_prompt(&PromptParams {
-        character_name: &char_name,
-        display_name: &display_name,
-        system_prompt: system_prompt.as_deref(),
-        tools_guidance: tools_guidance.as_deref(),
-        character_definition: character_definition.as_deref(),
-        user_definition: user_definition.as_deref(),
-        memory_index: memory_index.as_deref(),
-        is_private: false,
-        has_prior_context,
+    let include_unsigned_thinking = matches!(resolved.sdk, Sdk::Openai | Sdk::Zai);
+    let PreparedChatContext {
+        llm_messages,
+        system,
+        tool_defs,
+        prompt: prompt_result,
+        character_definition,
+        user_definition,
+    } = super::prepare_chat_context(PrepareChatContextParams {
+        character: &char_name,
+        character_data_dir: &character_data_dir,
+        config: &effective_config,
+        resolved,
         messages: &messages,
-        max_context_tokens: resolved.max_context_tokens,
-        max_output_tokens: resolved.max_tokens,
+        has_prior_context,
+        is_private: false,
+        include_unsigned_thinking,
     });
 
     let cache_dir = &effective_config.dirs.cache;
@@ -267,35 +250,6 @@ pub(super) async fn handle_generation(
         cache_dir,
     )
     .await;
-    let include_unsigned_thinking = matches!(resolved.sdk, Sdk::Openai | Sdk::Zai);
-    let (mut llm_messages, system) = build_llm_messages(
-        &prompt_result,
-        include_unsigned_thinking,
-        effective_config.app.advanced.max_image_size,
-        cache_dir,
-    );
-    // Strip thinking / redacted_thinking blocks from prior-turn assistant
-    // messages unless the user has opted to preserve them, or the provider
-    // requires prior `reasoning_content` to be replayed. The in-progress
-    // tool-use loop (messages appended by `run_tool_phase`) is built via a
-    // different path and is not affected by this call.
-    crate::content_util::maybe_strip_prior_thinking(
-        &mut llm_messages,
-        effective_config.app.memory.thinking.preserve_prior_turns,
-        &resolved.provider_key,
-    );
-
-    let tool_defs = if effective_config.app.behavior.tool_use.enabled {
-        let toggles = &effective_config.app.behavior.tool_use.tools;
-        Some(crate::tools::render_tool_defs(
-            false,
-            toggles,
-            &char_name,
-            &display_name,
-        ))
-    } else {
-        None
-    };
 
     // Phase 4: build the request without baking in a specific API key.
     // The credential-fallback wrapper resolves the candidate key list
