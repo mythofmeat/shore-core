@@ -689,6 +689,7 @@ mod tests {
             rid: None,
             forensic_character: None,
             system_suffix: None,
+            retain_long: false,
         }
     }
 

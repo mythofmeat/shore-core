@@ -288,6 +288,7 @@ impl LlmClient {
             rid: None,
             forensic_character: None,
             system_suffix: None,
+            retain_long: false,
         }
     }
 
@@ -791,6 +792,7 @@ sdk = "openai"
             rid: None,
             forensic_character: None,
             system_suffix: suffix.map(str::to_string),
+            retain_long: false,
         }
     }
 

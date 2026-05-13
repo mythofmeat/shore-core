@@ -695,6 +695,10 @@ async fn build_librarian_request(
         // `role: "system"` shape providers already handle, but downstream
         // calls reusing this request's cached prefix never see the prompt.
         request.system_suffix = Some(format!("{system}\n\n{user_prompt}"));
+        // Dreaming runs at most a few times per day; route the payload
+        // log to the long-retention tier so weeks-old memory-evolution
+        // forensics aren't pruned with chat-volume traffic.
+        request.retain_long = true;
         return Ok(request);
     }
 
@@ -705,7 +709,7 @@ async fn build_librarian_request(
     )
     .ok_or_else(|| DreamingError::Config("no chat model configured for dreaming".into()))?;
     let tools = build_librarian_tool_defs(character, &display_name, dry_run);
-    LedgerClient::build_request_with_provider_keys(
+    let mut request = LedgerClient::build_request_with_provider_keys(
         &resolved,
         &loaded_config.providers,
         vec![json!({"role": "user", "content": user_prompt})],
@@ -713,7 +717,9 @@ async fn build_librarian_request(
         Some(tools),
         None,
     )
-    .map_err(|e| DreamingError::Llm(e.to_string()))
+    .map_err(|e| DreamingError::Llm(e.to_string()))?;
+    request.retain_long = true;
+    Ok(request)
 }
 
 fn build_librarian_prompt(

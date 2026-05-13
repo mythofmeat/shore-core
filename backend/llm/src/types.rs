@@ -76,6 +76,19 @@ pub struct LlmRequest {
     /// the expansion entirely.
     #[serde(skip)]
     pub system_suffix: Option<String>,
+
+    /// Transient flag: this request belongs to a low-frequency, high-value
+    /// background task (compaction, dreaming, heartbeat) whose payload
+    /// logs should be kept on a longer retention tier than per-turn chat
+    /// payloads.
+    ///
+    /// `debug_log::log_request` routes flagged calls to a separate
+    /// `debug/api_logs_long/` subdirectory so operators can prune
+    /// chat-volume payloads aggressively (e.g. 3 days) while keeping
+    /// these for forensic analysis (e.g. 30 days). The flag carries no
+    /// wire-format meaning and is skipped from serialization.
+    #[serde(skip)]
+    pub retain_long: bool,
 }
 
 /// Token usage counts from shore-llm's normalized response.
@@ -268,6 +281,7 @@ mod tests {
             rid: None,
             forensic_character: None,
             system_suffix: None,
+            retain_long: false,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(!json.as_object().unwrap().contains_key("base_url"));

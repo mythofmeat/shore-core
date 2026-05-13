@@ -274,6 +274,9 @@ impl RealCompactionLlm {
 
         request.rid = None;
         request.forensic_character = Some(self.character.clone());
+        // Compaction is low-frequency and high-value for cache-regression
+        // forensics — route its payload log to the long-retention tier.
+        request.retain_long = true;
 
         Ok(request)
     }
@@ -584,6 +587,7 @@ mod tests {
             rid: Some("rid-chat".to_string()),
             forensic_character: Some("chat-forensics".to_string()),
             system_suffix: None,
+            retain_long: false,
         };
 
         let request = llm
@@ -687,6 +691,7 @@ mod tests {
             rid: Some("rid-chat".to_string()),
             forensic_character: Some("chat-forensics".to_string()),
             system_suffix: None,
+            retain_long: false,
         };
 
         let request = llm

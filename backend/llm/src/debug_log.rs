@@ -1,15 +1,31 @@
 //! Per-call API debug logging.
 //!
 //! When enabled, every outbound LLM request and its paired response (or error)
-//! are dumped as individual JSON files under `{cache_dir}/debug/api_logs/`.
-//! Request filename: `{call_id}.json`. Response filename: `{call_id}_response.json`.
+//! are dumped as individual JSON files under `{cache_dir}/debug/api_logs/`
+//! (per-turn chat traffic) or `{cache_dir}/debug/api_logs_long/` (background
+//! tasks flagged with `LlmRequest::retain_long`). Request filename:
+//! `{call_id}.json`. Response filename: `{call_id}_response.json`.
 //!
 //! This is the diagnostic counterpart to the old single `api_payloads.jsonl`:
 //! one file per direction per call, so greps stay fast and individual calls
 //! can be opened in isolation when a provider (or our code) misbehaves.
 //!
-//! Rotation is intentionally not implemented — operators manage disk usage
-//! by deleting the folder.
+//! Splitting into two directories lets operators run different retention
+//! policies on each. Per-turn chat payloads churn fast (one user message,
+//! one response) and are usually only useful for a few days. Background
+//! payloads (compaction, dreaming, heartbeat) are low-frequency and
+//! high-value for forensic analysis of cache regressions and memory drift
+//! — typically worth keeping for weeks. A representative split:
+//!
+//! ```sh
+//! # chat payloads: 3-day retention
+//! find ~/.cache/shore/debug/api_logs/ -type f -mtime +3 -delete
+//! # background payloads: 30-day retention
+//! find ~/.cache/shore/debug/api_logs_long/ -type f -mtime +30 -delete
+//! ```
+//!
+//! Rotation is intentionally not implemented inside shore-llm — operators
+//! own the cron/systemd timers that prune each tier.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -25,7 +41,8 @@ use tracing::warn;
 use crate::types::{GenerateResponse, LlmRequest};
 use crate::LlmError;
 
-const SUBDIR: &str = "debug/api_logs";
+const SUBDIR_CHAT: &str = "debug/api_logs";
+const SUBDIR_LONG: &str = "debug/api_logs_long";
 
 static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -51,8 +68,8 @@ struct Envelope {
 }
 
 /// Compute the api_logs directory under a cache dir.
-fn api_logs_dir(cache_dir: &Path) -> PathBuf {
-    cache_dir.join(SUBDIR)
+fn api_logs_dir(cache_dir: &Path, retain_long: bool) -> PathBuf {
+    cache_dir.join(if retain_long { SUBDIR_LONG } else { SUBDIR_CHAT })
 }
 
 fn next_call_id() -> String {
@@ -87,7 +104,7 @@ pub fn log_request(
     request: &LlmRequest,
     body: &str,
 ) -> Option<CallHandle> {
-    let dir = api_logs_dir(cache_dir?);
+    let dir = api_logs_dir(cache_dir?, request.retain_long);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         warn!(error = %e, path = %dir.display(), "Failed to create api_logs dir");
         return None;
@@ -269,5 +286,59 @@ impl<R: AsyncRead + Unpin> AsyncRead for TeeReader<R> {
             }
         }
         poll
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shore_config::models::Sdk;
+    use tempfile::tempdir;
+
+    fn make_request(retain_long: bool) -> LlmRequest {
+        LlmRequest {
+            sdk: Sdk::Anthropic,
+            model: "m".into(),
+            api_key: "k".into(),
+            base_url: None,
+            messages: vec![],
+            system: None,
+            tools: None,
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: Some("anthropic".into()),
+            rid: None,
+            forensic_character: None,
+            system_suffix: None,
+            retain_long,
+        }
+    }
+
+    #[test]
+    fn chat_payloads_land_in_short_retention_dir() {
+        let tmp = tempdir().unwrap();
+        let req = make_request(false);
+        let handle = log_request(Some(tmp.path()), &req, "{}").expect("handle");
+        assert!(handle
+            .response_path
+            .starts_with(tmp.path().join(SUBDIR_CHAT)));
+        assert!(!handle
+            .response_path
+            .starts_with(tmp.path().join(SUBDIR_LONG)));
+    }
+
+    #[test]
+    fn flagged_payloads_land_in_long_retention_dir() {
+        let tmp = tempdir().unwrap();
+        let req = make_request(true);
+        let handle = log_request(Some(tmp.path()), &req, "{}").expect("handle");
+        assert!(handle
+            .response_path
+            .starts_with(tmp.path().join(SUBDIR_LONG)));
+        assert!(!handle
+            .response_path
+            .starts_with(tmp.path().join(SUBDIR_CHAT)));
     }
 }
