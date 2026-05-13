@@ -77,13 +77,18 @@ every background site through them.
       `inject_system` messages, so it stays — but the trailing-system case is
       now declarative.
 
-- [ ] **Cache-breakpoint math after compaction is fragile.**
-      `apply_cache_control` places markers at `depth_turns=[0,1]` (last two
-      message breakpoints). Compaction appends 2 messages, so the existing
-      markers (preserved via `has_existing_markers` skip) end up at positions
-      N-3/N-4. Works today, but depends on "compaction final user message +
-      trailing system → merged into one user turn" always being true. If that
-      shape ever changes, cache hits silently degrade.
+- [~] **Cache-breakpoint math after compaction is fragile.** Partially
+      revisited after the `system_suffix` migration: compaction now appends
+      only **one** message to `request.messages` (the "compact now" user),
+      with the actual compaction system prompt living in `system_suffix`
+      and getting expanded into a trailing system message at provider
+      dispatch. The existing-markers-skip path still relies on Anthropic's
+      `convert_inline_system_messages` merging that trailing system into
+      the prior user turn — same risk shape, slightly different numbers.
+      Genuine fix would centralize the "what shape is the compaction tail"
+      knowledge in one place + add a dedicated breakpoint-position test.
+      Lower priority than the prefix-equivalence test that already pins
+      the high-risk regression. Leaving open.
 
 - [x] **No regression test pins tools-in-prefix.** Added
       `cached_compaction_request_matches_chat_prefix_byte_for_byte` —
@@ -92,19 +97,26 @@ every background site through them.
       compaction request it spawns. Fails immediately on any future
       refactor that drops one.
 
-- [ ] **API payload logs only retain ~3 days.** Investigating a 17-day
-      regression was un-enumerable past the 3-day window. For compaction /
-      dreaming specifically, a slow-rotation / compressed tier would help
-      future forensic work.
+- [~] **API payload logs only retain ~3 days.** No internal rotation logic
+      lives in shore-llm — `debug_log.rs` writes one file per call and the
+      module comment is explicit that "operators manage disk usage by
+      deleting the folder." The 3-day window must come from the user's local
+      cron / systemd timer setup. Real fix needs design input: a separate
+      compressed long-retention tier for compaction/dreaming/heartbeat, or
+      flagging those payloads with a `retain_long` envelope field. Leaving
+      open pending direction.
 
-- [ ] **`data_dir` threading is ad hoc.** Compaction reads `data_dir` as a
-      `&Path` arg, dreaming reaches into `loaded_config.dirs.data`. Same value,
-      two access paths.
+- [x] **`data_dir` threading is ad hoc.** Compaction's `run_compaction` no
+      longer takes a separate `data_dir` arg — it pulls from
+      `config.dirs.data` like dreaming does. One source of truth, three
+      callers simplified (`handler/task`, `autonomy/manager`,
+      `shore_test_harness`).
 
-- [ ] **Heartbeat cold rebuild rebuilds tools fresh.**
-      `autonomy/manager.rs:1469` calls `tool_system::render_tool_defs`. May or
-      may not byte-match what chat produced earlier; if chat and heartbeat ever
-      drift in toggle defaults, that's another silent cache miss.
+- [x] **Heartbeat cold rebuild rebuilds tools fresh.** Now handled by the
+      same `prepare_chat_context` helper chat uses, so both paths go through
+      identical `tool_use.tools` toggles + `render_tool_defs` invocation —
+      drift between them is no longer possible without changing the shared
+      helper.
 
 ---
 

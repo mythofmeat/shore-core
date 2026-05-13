@@ -9,11 +9,14 @@ use super::CompactionManager;
 /// from `AutonomyManager::cached_last_request`). When provided, compaction
 /// reuses the cached prefix instead of building a fresh request, preserving
 /// the Anthropic prompt cache for the compaction call itself.
+///
+/// The data directory comes from `config.dirs.data` — callers should not
+/// thread a separate `data_dir` argument; the two would have to stay
+/// manually in sync.
 pub async fn run_compaction(
     character: &str,
     config: &shore_config::LoadedConfig,
     llm_client: &shore_ledger::LedgerClient,
-    data_dir: &std::path::Path,
     notifier: &crate::notifications::NotificationService,
     cached_request: Option<shore_llm::types::LlmRequest>,
     http: Option<std::sync::Arc<crate::http::DaemonHttpState>>,
@@ -24,6 +27,7 @@ pub async fn run_compaction(
     use shore_config::{load_character_config, resolve_prompt_template};
     use tracing::info;
 
+    let data_dir = config.dirs.data.as_path();
     let character_dir = data_dir.join(character);
     let active_path = character_dir.join("active.jsonl");
 

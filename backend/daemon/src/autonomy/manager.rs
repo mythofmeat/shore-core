@@ -1176,7 +1176,6 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
         character,
         loaded_config,
         llm_client,
-        &ctx.data_dir,
         notifier,
         cached_request,
         ctx.http.clone(),

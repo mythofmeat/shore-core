@@ -483,7 +483,6 @@ async fn run_inline_compaction(
         &char_name,
         &effective_config,
         &ctx.llm_client,
-        &data_dir,
         &ctx.notifier,
         cached_request,
         ctx.http.clone(),
