@@ -7,7 +7,8 @@ use serde_json::{json, Value};
 use shore_config::app::DreamingConfig;
 use shore_config::cron::CronSchedule;
 use shore_config::{
-    character_memory_dir, character_workspace_dir, LoadedConfig, SOUL_FILE, USER_FILE,
+    character_data_dir, character_memory_dir, character_workspace_dir, LoadedConfig, SOUL_FILE,
+    USER_FILE,
 };
 
 use shore_ledger::{CallType, LedgerClient};
@@ -350,9 +351,9 @@ pub async fn run_librarian_sweep(
     let memory_created_by_fallback =
         ensure_memory_index_after_librarian(&store, &memory_index_path, character, &ran_at).await?;
     if memory_created_by_fallback {
-        if let Err(e) =
-            crate::memory::deferred_edits::note_memory_index_deferred(&data_dir.join(character))
-        {
+        if let Err(e) = crate::memory::deferred_edits::note_memory_index_deferred(
+            &character_data_dir(data_dir, character),
+        ) {
             warn!(
                 character,
                 error = %e,
@@ -467,7 +468,7 @@ pub async fn run_legacy_diagnostic_sweep(
     let memory_dir = character_memory_dir(config_dir, character);
     let workspace_dir = character_workspace_dir(config_dir, character);
     let memory_index_path = workspace_dir.join(MEMORY_INDEX_FILE);
-    let character_data_dir = data_dir.join(character);
+    let character_data_dir = character_data_dir(data_dir, character);
     let dream_dir = dream_data_dir(data_dir, character);
     let state_path = dream_state_path(data_dir, character);
     let state = read_state(data_dir, config_dir, character).await?;
@@ -656,7 +657,7 @@ async fn build_librarian_request(
     ran_at: &str,
 ) -> Result<LlmRequest, DreamingError> {
     let display_name = loaded_config.app.defaults.resolve_display_name();
-    let character_data_dir = loaded_config.dirs.data.join(character);
+    let character_data_dir = character_data_dir(&loaded_config.dirs.data, character);
     if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
         &character_data_dir,
         &loaded_config.dirs.config,
@@ -788,7 +789,7 @@ async fn build_librarian_tool_context(
     character: &str,
     _dry_run: bool,
 ) -> Option<SharedToolContext> {
-    let character_data_dir = data_dir.join(character);
+    let character_data_dir = character_data_dir(data_dir, character);
     let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
         loaded_config.app.defaults.image_generation.as_deref(),
         &loaded_config.models.image_generation,
@@ -1159,7 +1160,7 @@ fn is_due_at(
 }
 
 fn dream_data_dir(data_dir: &Path, character: &str) -> PathBuf {
-    data_dir.join(character).join(DREAM_DATA_DIR)
+    character_data_dir(data_dir, character).join(DREAM_DATA_DIR)
 }
 
 fn dream_state_path(data_dir: &Path, character: &str) -> PathBuf {
@@ -1175,7 +1176,7 @@ async fn read_state(
     config_dir: &Path,
     character: &str,
 ) -> Result<DreamState, DreamingError> {
-    let character_data_dir = data_dir.join(character);
+    let character_data_dir = character_data_dir(data_dir, character);
     let state_path = dream_state_path(data_dir, character);
     if let Some(content) = read_data_text(&character_data_dir, &state_path).await? {
         return serde_json::from_str(&content).map_err(|e| DreamingError::Io(e.to_string()));
@@ -1235,7 +1236,7 @@ async fn write_state(
     character: &str,
     state: &DreamState,
 ) -> Result<(), DreamingError> {
-    let character_data_dir = data_dir.join(character);
+    let character_data_dir = character_data_dir(data_dir, character);
     write_data_json(
         &character_data_dir,
         &dream_state_path(data_dir, character),

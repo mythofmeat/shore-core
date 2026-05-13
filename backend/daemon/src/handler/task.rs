@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{json, Value};
+use shore_config::character_data_dir;
 use shore_config::models::Sdk;
 use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{debug, info, instrument, warn};
@@ -223,7 +224,7 @@ pub(super) async fn handle_generation(
         )
     };
 
-    let character_data_dir = data_dir.join(&char_name);
+    let character_data_dir = character_data_dir(&data_dir, &char_name);
     let include_unsigned_thinking = matches!(resolved.sdk, Sdk::Openai | Sdk::Zai);
     let PreparedChatContext {
         llm_messages,
@@ -505,7 +506,7 @@ async fn run_inline_compaction(
 
             // Apply deferred character self-edits now that the cache
             // has been busted by the engine reload.
-            let character_data_dir = data_dir.join(&char_name);
+            let character_data_dir = character_data_dir(&data_dir, &char_name);
             if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
                 &character_data_dir,
                 &effective_config.dirs.config,
@@ -556,7 +557,7 @@ fn build_claude_code_tool_context(
     )
     .ok();
 
-    let character_data_dir = data_dir.join(char_name);
+    let character_data_dir = character_data_dir(data_dir, char_name);
     let config_dir = &effective_config.dirs.config;
     let workspace_dir = shore_config::character_workspace_dir(config_dir, char_name);
     let memory_dir = shore_config::character_memory_dir(config_dir, char_name);

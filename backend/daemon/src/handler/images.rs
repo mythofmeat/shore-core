@@ -94,8 +94,9 @@ pub(super) fn ingest_images(
     image_data: &[shore_protocol::client_msg::ImageUpload],
 ) -> (Vec<ImageRef>, Vec<ContentBlock>) {
     use base64::Engine;
+    use shore_config::character_data_dir;
 
-    let character_data_dir = data_dir.join(char_name);
+    let character_data_dir = character_data_dir(data_dir, char_name);
     let attachments_dir = character_data_dir.join("images").join("attachments");
     let mut images: Vec<ImageRef> = Vec::with_capacity(image_data.len() + image_paths.len());
 

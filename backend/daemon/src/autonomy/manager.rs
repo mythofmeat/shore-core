@@ -33,7 +33,9 @@ use crate::tools::context::SharedToolContext;
 use crate::tools::{ToolContext, ToolError};
 use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
-use shore_config::{character_memory_dir, character_workspace_dir, HEARTBEAT_FILE};
+use shore_config::{
+    character_data_dir, character_memory_dir, character_workspace_dir, HEARTBEAT_FILE,
+};
 use shore_diagnostics::truncate_summary;
 use shore_ledger::{CallType, CredentialFallbackEvent, LedgerClient};
 use shore_llm::types::LlmRequest;
@@ -170,7 +172,7 @@ struct PersistedState {
 }
 
 fn state_path(data_dir: &Path, character: &str) -> PathBuf {
-    data_dir.join(character).join(STATE_FILENAME)
+    character_data_dir(data_dir, character).join(STATE_FILENAME)
 }
 
 /// Convert a `tokio::time::Instant` to an RFC3339 wall-clock string.
@@ -434,7 +436,8 @@ impl AutonomyManager {
             cache_keepalive.on_cache_warmed(Instant::now());
         }
 
-        let heartbeat_log_path = self.data_dir.join(character).join("heartbeat.jsonl");
+        let heartbeat_log_path =
+            character_data_dir(&self.data_dir, character).join("heartbeat.jsonl");
         let heartbeat_log = HeartbeatLog::load_from(heartbeat_log_path.clone())
             .unwrap_or_else(|| HeartbeatLog::with_path(heartbeat_log_path));
 
@@ -1209,7 +1212,7 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
 
             // Apply deferred character self-edits now that the cache has
             // been bust by the engine reload.
-            let character_data_dir = ctx.data_dir.join(character);
+            let character_data_dir = character_data_dir(&ctx.data_dir, character);
             if let Some(lc) = ctx.loaded_config.as_deref() {
                 if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
                     &character_data_dir,
@@ -1391,9 +1394,10 @@ fn rebuild_request_from_disk(
 ) -> Option<LlmRequest> {
     use crate::engine::messages::MessageStore;
     use crate::handler::{prepare_chat_context, PrepareChatContextParams, PreparedChatContext};
+    use shore_config::character_active_jsonl;
 
-    let char_dir = data_dir.join(character);
-    let active_path = char_dir.join("active.jsonl");
+    let char_dir = character_data_dir(data_dir, character);
+    let active_path = character_active_jsonl(data_dir, character);
 
     let store = MessageStore::load(active_path)
         .map_err(|e| warn!(character, error = %e, "Heartbeat rebuild: failed to load messages"))
@@ -1572,7 +1576,7 @@ async fn execute_heartbeat_tick(
     apply_heartbeat_model_override(&mut request, lc, character);
 
     // Build the dynamic heartbeat prompt.
-    let character_data_dir = data_dir.join(character);
+    let character_data_dir = character_data_dir(data_dir, character);
     if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
         &character_data_dir,
         &lc.dirs.config,
@@ -1942,7 +1946,7 @@ async fn build_tool_context(
     client: &LedgerClient,
     config: &LoadedConfig,
 ) -> Option<SharedToolContext> {
-    let char_dir = data_dir.join(character);
+    let char_dir = character_data_dir(data_dir, character);
 
     let image_gen_config = resolve_image_gen_config(
         config.app.defaults.image_generation.as_deref(),

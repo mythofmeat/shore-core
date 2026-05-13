@@ -9,6 +9,7 @@ pub use parser::{
 pub use types::*;
 
 use crate::memory::markdown_store::MarkdownMemoryStore;
+use shore_config::character_data_dir;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -574,7 +575,7 @@ impl CompactionManager {
         if memory_index_updated {
             if let Some(data_dir) = data_dir {
                 if let Err(e) = crate::memory::deferred_edits::note_memory_index_deferred(
-                    &data_dir.join(char_name),
+                    &character_data_dir(data_dir, char_name),
                 ) {
                     warn!(
                         error = %e,

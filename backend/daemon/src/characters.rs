@@ -14,8 +14,8 @@ use tracing::{info, warn};
 
 use crate::engine::{ConversationEngine, EngineError};
 use shore_config::{
-    discover_characters, load_character_config, load_character_definition, resolve_user_definition,
-    LoadedConfig,
+    character_data_dir, discover_characters, load_character_config, load_character_definition,
+    resolve_user_definition, LoadedConfig,
 };
 
 /// Manages multiple character engines with lazy initialization.
@@ -54,9 +54,9 @@ impl CharacterRegistry {
     ) -> Self {
         let available = discover_characters(&config_dir);
         for name in &available {
-            let character_data_dir = data_dir.join(name);
+            let char_data_dir = character_data_dir(&data_dir, name);
             if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
-                &character_data_dir,
+                &char_data_dir,
                 &config_dir,
                 name,
             ) {
@@ -89,9 +89,9 @@ impl CharacterRegistry {
     pub fn refresh(&mut self) {
         self.available = discover_characters(&self.config_dir);
         for name in &self.available {
-            let character_data_dir = self.data_dir.join(name);
+            let char_data_dir = character_data_dir(&self.data_dir, name);
             if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
-                &character_data_dir,
+                &char_data_dir,
                 &self.config_dir,
                 name,
             ) {
@@ -198,9 +198,9 @@ impl CharacterRegistry {
         let available_before = self.available.clone();
         let available_after = discover_characters(&self.config_dir);
         for name in &available_after {
-            let character_data_dir = self.data_dir.join(name);
+            let char_data_dir = character_data_dir(&self.data_dir, name);
             if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
-                &character_data_dir,
+                &char_data_dir,
                 &self.config_dir,
                 name,
             ) {

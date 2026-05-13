@@ -10,6 +10,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset};
+use shore_config::character_data_dir;
 use tokio::fs;
 
 const DREAMS_FILE: &str = "DREAMS.md";
@@ -17,7 +18,7 @@ const DREAMS_HEADER: &str = "# Dreams\n";
 
 /// Canonical path of the dreams log for a character.
 pub fn dreams_log_path(data_dir: &Path, character: &str) -> PathBuf {
-    data_dir.join(character).join(DREAMS_FILE)
+    character_data_dir(data_dir, character).join(DREAMS_FILE)
 }
 
 /// Append a timestamped audit entry to the dreams log.
