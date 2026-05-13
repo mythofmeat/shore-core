@@ -179,18 +179,21 @@ Sorted by lines-of-code-removed-per-refactor.
       (`commands/state/memory`, `engine/messages::turn_count` /
       `is_real_user_turn`, `compaction/background`).
 
-- [ ] **Segment + manifest writing exists in two implementations.**
-      `compaction_impls.rs::archive_and_retain` is the real one;
-      `commands/conversation.rs:563+679` builds segments and manifests
-      directly. If those are test helpers, fine — but if they're real command
-      paths they bypass the rollback logic and any future invariants need
-      enforcing twice.
+- [x] **Segment + manifest writing exists in two implementations.** The two
+      sites in `commands/conversation.rs` were test fixtures, not real
+      command paths. Consolidated into `test_support::write_segmented_fixture`
+      with a comment that points future tests to
+      `compaction_impls::archive_and_retain` for tests exercising the real
+      pipeline.
 
 ### Lower priority
 
-- [ ] **`character_data_dir(&self) -> &str` declared on three traits**
-      (`handler/mod.rs:83`, `tools/context.rs:61`, `tools/mod.rs:93`). One
-      shared trait would do.
+- [x] **`character_data_dir(&self) -> &str` declared on three traits.** Not
+      actually three traits: `character_data_dir` is declared exactly once
+      on the `ToolContext` trait at `tools/mod.rs:93`. The other two
+      occurrences are concrete implementations (`HandlerToolContext` and
+      `SharedToolContext`) implementing that same trait method. Misread of
+      grep results during the audit — no consolidation needed.
 
 - [x] **`s.last_request = Some(req.clone())` written from 4 sites.** Added
       `cache_last_request(state, character, req)` private helper. The public

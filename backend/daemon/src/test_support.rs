@@ -33,6 +33,41 @@ pub fn write_jsonl(path: &std::path::Path, messages: &[Message]) {
     std::fs::write(path, body).unwrap();
 }
 
+/// Build a fixture segmented-history layout under `character_dir`:
+/// one segment file + a `compaction.json` manifest + an `active.jsonl`.
+///
+/// This bypasses `compaction_impls::archive_and_retain` and writes the
+/// files directly — that's intentional for unit tests that need a
+/// canned post-compaction state without running the full compaction
+/// pipeline. Tests that want to exercise the real archive path should
+/// drive `archive_and_retain` instead.
+pub fn write_segmented_fixture(
+    character_dir: &std::path::Path,
+    archived: &[Message],
+    active: &[Message],
+    timestamp: &str,
+) {
+    let segments_dir = character_dir.join("segments");
+    std::fs::create_dir_all(&segments_dir).unwrap();
+    write_jsonl(&segments_dir.join("0001.jsonl"), archived);
+
+    let manifest = crate::engine::segments::CompactionManifest {
+        segments: vec![crate::engine::segments::SegmentEntry {
+            file: "0001.jsonl".into(),
+            message_count: archived.len(),
+            compacted_at: timestamp.into(),
+        }],
+        total_compacted_messages: archived.len(),
+    };
+    std::fs::write(
+        character_dir.join("compaction.json"),
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    write_jsonl(&character_dir.join("active.jsonl"), active);
+}
+
 // ── test_model ──────────────────────────────────────────────────────────
 
 /// Canonical test `ResolvedModel` used across all daemon tests.

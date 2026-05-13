@@ -560,37 +560,19 @@ mod tests {
         }
     }
 
-    use crate::test_support::write_jsonl;
+    use crate::test_support::write_segmented_fixture;
 
     fn write_segmented_history(tmp: &TempDir) {
         let character_dir = tmp.path().join("TestChar");
-        let segments_dir = character_dir.join("segments");
-        std::fs::create_dir_all(&segments_dir).unwrap();
-
         let archived = vec![
             make_msg("m1", Role::User, "archived one"),
             make_msg("m2", Role::Assistant, "archived two"),
         ];
-        write_jsonl(&segments_dir.join("0001.jsonl"), &archived);
-        let manifest = crate::engine::segments::CompactionManifest {
-            segments: vec![crate::engine::segments::SegmentEntry {
-                file: "0001.jsonl".into(),
-                message_count: archived.len(),
-                compacted_at: "2026-01-01T00:00:00Z".into(),
-            }],
-            total_compacted_messages: archived.len(),
-        };
-        std::fs::write(
-            character_dir.join("compaction.json"),
-            serde_json::to_string_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
-
         let active = vec![
             make_msg("m3", Role::User, "active three"),
             make_msg("m4", Role::Assistant, "active four"),
         ];
-        write_jsonl(&character_dir.join("active.jsonl"), &active);
+        write_segmented_fixture(&character_dir, &archived, &active, "2026-01-01T00:00:00Z");
     }
 
     #[test]
@@ -655,8 +637,6 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let character_dir = tmp.path().join("TestChar");
-        let segments_dir = character_dir.join("segments");
-        std::fs::create_dir_all(&segments_dir).unwrap();
         let image_path = tmp.path().join("image.bin");
         std::fs::write(&image_path, b"image bytes").unwrap();
         let image_path = image_path.to_string_lossy().to_string();
@@ -667,28 +647,18 @@ mod tests {
             caption: Some("old".into()),
             data: None,
         });
-        write_jsonl(&segments_dir.join("0001.jsonl"), &[archived]);
-        let manifest = crate::engine::segments::CompactionManifest {
-            segments: vec![crate::engine::segments::SegmentEntry {
-                file: "0001.jsonl".into(),
-                message_count: 1,
-                compacted_at: "2026-01-01T00:00:00Z".into(),
-            }],
-            total_compacted_messages: 1,
-        };
-        std::fs::write(
-            character_dir.join("compaction.json"),
-            serde_json::to_string_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
-
         let mut active = make_msg("m2", Role::User, "active image");
         active.images.push(ImageRef {
             path: image_path,
             caption: Some("new".into()),
             data: None,
         });
-        write_jsonl(&character_dir.join("active.jsonl"), &[active]);
+        write_segmented_fixture(
+            &character_dir,
+            &[archived],
+            &[active],
+            "2026-01-01T00:00:00Z",
+        );
 
         let (engine, ctx, _rx) = make_ctx(&tmp);
         let result = log(&engine, &ctx, &json!({"count": 2})).unwrap();
