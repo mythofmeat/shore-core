@@ -497,7 +497,7 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
             let trimmed = app.input.cmd_text.trim().to_string();
             if let Some(parent) = App::canonical_submenu_parent(&trimmed) {
                 app.enter_submenu(parent);
-                submenu_fetch_action(parent)
+                submenu_fetch_action(app, parent)
             } else {
                 app.completion.clear();
                 let text = app.input.take_cmd_text();
@@ -511,7 +511,7 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
             let trimmed = app.input.cmd_text.trim().to_string();
             if let Some(parent) = App::canonical_submenu_parent(&trimmed) {
                 app.enter_submenu(parent);
-                submenu_fetch_action(parent)
+                submenu_fetch_action(app, parent)
             } else {
                 app.input.cmd_insert_char(' ');
                 app.update_completions();
@@ -548,7 +548,7 @@ fn enter_completed_submenu(app: &mut App) -> Option<Action> {
     app.input.cmd_text = parent.to_string();
     app.input.cmd_cursor = parent.len();
     app.enter_submenu(parent);
-    Some(submenu_fetch_action(parent))
+    Some(submenu_fetch_action(app, parent))
 }
 
 /// Submenu picker keys: filter typing, navigation, and Enter to apply
@@ -697,16 +697,16 @@ fn handle_alt_picker_mode(app: &mut App, key: KeyEvent) -> Action {
 
 /// Fetch the candidate list for a submenu so the picker isn't empty
 /// the first time the user opens it (and to refresh stale entries).
-fn submenu_fetch_action(parent: &str) -> Action {
-    let name = match parent {
-        "model" => "list_models",
-        "character" => "list_characters",
-        "setting" => "model_settings",
+fn submenu_fetch_action(app: &mut App, parent: &str) -> Action {
+    let (name, rid) = match parent {
+        "model" => ("list_models", None),
+        "character" => ("list_characters", None),
+        "setting" => ("model_settings", Some(app.begin_sampler_settings_refresh())),
         "view" => return Action::Redraw,
         _ => return Action::Redraw,
     };
     Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-        rid: None,
+        rid,
         name: name.into(),
         args: serde_json::json!({}),
     })))

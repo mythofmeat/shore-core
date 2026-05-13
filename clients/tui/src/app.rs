@@ -492,6 +492,8 @@ pub struct EffectiveSamplerField {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EffectiveSamplerSnapshot {
     pub model: Option<String>,
+    pub provider: Option<String>,
+    pub model_id: Option<String>,
     pub temperature: EffectiveSamplerField,
     pub top_p: EffectiveSamplerField,
     pub reasoning_effort: EffectiveSamplerField,
@@ -508,6 +510,14 @@ impl EffectiveSamplerSnapshot {
         Some(Self {
             model: data
                 .get("model")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string),
+            provider: data
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string),
+            model_id: data
+                .get("model_id")
                 .and_then(|v| v.as_str())
                 .map(ToString::to_string),
             temperature: Self::field(sampler, scopes, "temperature"),
@@ -626,6 +636,8 @@ pub struct App {
     pub model: String,
     pub effective_sampler: Option<EffectiveSamplerSnapshot>,
     pub sampler_settings_loading: bool,
+    pub pending_sampler_settings_rid: Option<String>,
+    pub sampler_settings_request_seq: u64,
     pub tokens: TokenCounts,
     pub is_private: bool,
     pub should_quit: bool,
@@ -691,6 +703,8 @@ impl Default for App {
             model: String::new(),
             effective_sampler: None,
             sampler_settings_loading: false,
+            pending_sampler_settings_rid: None,
+            sampler_settings_request_seq: 0,
             tokens: TokenCounts {
                 input: 0,
                 output: 0,
@@ -1142,6 +1156,7 @@ impl App {
         if changed {
             self.effective_sampler = None;
             self.sampler_settings_loading = false;
+            self.pending_sampler_settings_rid = None;
         }
 
         match model.filter(|m| !m.is_empty()) {
@@ -1160,10 +1175,47 @@ impl App {
         &self,
         snapshot: &EffectiveSamplerSnapshot,
     ) -> bool {
-        let Some(snapshot_model) = snapshot.model.as_deref() else {
+        if self.model.is_empty() {
             return true;
-        };
-        self.model.is_empty() || self.is_active_model_candidate(snapshot_model)
+        }
+        if snapshot.model.is_none() && snapshot.model_id.is_none() && snapshot.provider.is_none() {
+            return true;
+        }
+
+        snapshot
+            .model
+            .as_deref()
+            .is_some_and(|model| self.is_active_model_candidate(model))
+            || snapshot
+                .model_id
+                .as_deref()
+                .is_some_and(|model_id| self.is_active_model_candidate(model_id))
+            || snapshot
+                .provider
+                .as_deref()
+                .zip(snapshot.model_id.as_deref())
+                .is_some_and(|(provider, model_id)| {
+                    self.is_active_model_candidate(&format!("{provider}:{model_id}"))
+                })
+    }
+
+    pub fn begin_sampler_settings_refresh(&mut self) -> String {
+        self.sampler_settings_request_seq = self.sampler_settings_request_seq.wrapping_add(1);
+        let rid = format!("tui_sampler_settings_{}", self.sampler_settings_request_seq);
+        self.sampler_settings_loading = true;
+        self.pending_sampler_settings_rid = Some(rid.clone());
+        rid
+    }
+
+    pub fn sampler_settings_rid_matches(&self, rid: Option<&str>) -> bool {
+        self.pending_sampler_settings_rid
+            .as_deref()
+            .is_none_or(|pending| rid == Some(pending))
+    }
+
+    pub fn finish_sampler_settings_refresh(&mut self) {
+        self.sampler_settings_loading = false;
+        self.pending_sampler_settings_rid = None;
     }
 
     pub fn model_identifier_matches(active: &str, candidate: &str) -> bool {
