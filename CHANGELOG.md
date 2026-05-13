@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added inclusive `start_time`/`end_time` filters to `search_history`, allowing
+  range-only history lookups or keyword searches narrowed to a time window.
 - Made `shore log` and `shore-tui` expose compacted conversation segments as
   bounded, lazy scrollback pages, with a horizontal rule marking archived
   messages that are no longer in prompt context.
