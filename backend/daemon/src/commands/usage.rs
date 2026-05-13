@@ -5,20 +5,27 @@ use tracing::debug;
 
 use super::{CommandContext, CommandResult};
 
-fn parse_last_period(period: &str) -> Option<String> {
-    let now = chrono::Utc::now();
+fn parse_last_period_at(period: &str, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
     match period {
         "today" => {
             let start = now.date_naive().and_hms_opt(0, 0, 0)?;
             Some(start.and_utc().to_rfc3339())
         }
         "all" => None,
+        s if s.ends_with('h') => {
+            let hours: i64 = s.trim_end_matches('h').parse().ok()?;
+            Some((now - chrono::Duration::hours(hours)).to_rfc3339())
+        }
         s if s.ends_with('d') => {
             let days: i64 = s.trim_end_matches('d').parse().ok()?;
             Some((now - chrono::Duration::days(days)).to_rfc3339())
         }
         _ => None,
     }
+}
+
+fn parse_last_period(period: &str) -> Option<String> {
+    parse_last_period_at(period, chrono::Utc::now())
 }
 
 fn build_filter(args: &serde_json::Value) -> (QueryFilter, String) {
@@ -328,4 +335,41 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         "rate_limit_events": rate_limit_events,
         "anomaly_count_7d": anomaly_count,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixed_now() -> chrono::DateTime<chrono::Utc> {
+        chrono::NaiveDate::from_ymd_opt(2026, 5, 13)
+            .unwrap()
+            .and_hms_opt(12, 30, 0)
+            .unwrap()
+            .and_utc()
+    }
+
+    #[test]
+    fn parse_last_period_accepts_hour_ranges() {
+        assert_eq!(
+            parse_last_period_at("4h", fixed_now()).as_deref(),
+            Some("2026-05-13T08:30:00+00:00"),
+        );
+    }
+
+    #[test]
+    fn parse_last_period_keeps_day_ranges() {
+        assert_eq!(
+            parse_last_period_at("7d", fixed_now()).as_deref(),
+            Some("2026-05-06T12:30:00+00:00"),
+        );
+    }
+
+    #[test]
+    fn parse_last_period_today_uses_utc_midnight() {
+        assert_eq!(
+            parse_last_period_at("today", fixed_now()).as_deref(),
+            Some("2026-05-13T00:00:00+00:00"),
+        );
+    }
 }
