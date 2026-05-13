@@ -387,15 +387,7 @@ mod tests {
         }
     }
 
-    fn write_jsonl(path: &std::path::Path, messages: &[Message]) {
-        let body = messages
-            .iter()
-            .map(|msg| serde_json::to_string(msg).unwrap())
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        std::fs::write(path, body).unwrap();
-    }
+    use crate::test_support::write_jsonl;
 
     #[test]
     fn engine_starts_with_empty_messages() {

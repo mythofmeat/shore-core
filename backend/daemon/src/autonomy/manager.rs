@@ -562,9 +562,8 @@ impl AutonomyManager {
     /// Cache the last LLM request for heartbeat tick reuse.
     pub fn notify_last_request(&self, character: &str, request: LlmRequest) {
         self.with_state(character, |s| {
-            s.last_request = Some(request);
+            cache_last_request(s, character, request);
         });
-        debug!(character, "Cached last LLM request for heartbeat reuse");
     }
 
     /// Clone the cached LLM request for private background work that should
@@ -825,6 +824,16 @@ const HEARTBEAT_LOOP_DEADLINE: Duration = Duration::from_secs(30 * 60); // 30 mi
 /// worse (no more keepalive, no more heartbeat, permanent silent failure).
 fn lock_state(m: &Mutex<AutonomyState>) -> std::sync::MutexGuard<'_, AutonomyState> {
     lock_or_recover("autonomy state mutex", m)
+}
+
+/// Single point of mutation for `AutonomyState::last_request`. All
+/// callers — the public `notify_last_request` and the internal
+/// heartbeat/dormant-ping paths that already hold the state lock — go
+/// through this so the log line stays consistent and nobody silently
+/// forgets to emit it.
+fn cache_last_request(state: &mut AutonomyState, character: &str, request: LlmRequest) {
+    state.last_request = Some(request);
+    debug!(character, "Cached last LLM request for heartbeat reuse");
 }
 
 fn push_provider_fallback_events(
@@ -1537,7 +1546,7 @@ async fn execute_heartbeat_tick(
                         // use it — without this, pings silently no-op after
                         // every daemon restart until the next user message.
                         let mut s = lock_state(state);
-                        s.last_request = Some(req.clone());
+                        cache_last_request(&mut s, character, req.clone());
                         drop(s);
                         req
                     }
@@ -2114,7 +2123,7 @@ async fn execute_dormant_ping(
                 match rebuild_request_from_disk(character, data_dir, config) {
                     Some(req) => {
                         let mut s = lock_state(state);
-                        s.last_request = Some(req.clone());
+                        cache_last_request(&mut s, character, req.clone());
                         drop(s);
                         build_keepalive_ping(&req, character)
                     }

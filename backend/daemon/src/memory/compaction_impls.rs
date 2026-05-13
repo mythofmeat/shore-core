@@ -575,6 +575,100 @@ mod tests {
         assert!(provider_options.get("chat_only").is_none());
     }
 
+    /// Regression pin: every byte that contributes to Anthropic's cache-prefix
+    /// hash (system, tools, first N messages, max_tokens-style sampler config
+    /// when emitted in the body) must match between the chat request that
+    /// seeded the cache and the compaction request the daemon issues moments
+    /// later. If a future refactor changes any of these, this test fails
+    /// immediately rather than going silently undetected by manifesting as a
+    /// ~40% API-spend regression in production.
+    #[test]
+    fn cached_compaction_request_matches_chat_prefix_byte_for_byte() {
+        let api_key_env = format!(
+            "SHORE_TEST_COMPACTION_PREFIX_{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        std::env::set_var(&api_key_env, "compaction-secret");
+        let model = test_compaction_model(&api_key_env);
+        let ledger_tmp = TempDir::new().unwrap();
+        let llm = RealCompactionLlm::new(
+            LedgerClient::new(
+                shore_llm::LlmClient::new(),
+                &ledger_tmp.path().join("ledger.db"),
+            )
+            .unwrap(),
+            model,
+            ProviderRegistry::default(),
+            "alice".to_string(),
+            None,
+        );
+
+        let chat_tools = vec![json!({
+            "name": "read",
+            "description": "exact-byte tool definition",
+            "input_schema": { "type": "object", "properties": {} }
+        })];
+        let chat_messages = vec![
+            json!({"role": "user", "content": "cached user 1"}),
+            json!({"role": "assistant", "content": "cached assistant 1"}),
+            json!({"role": "user", "content": "cached user 2"}),
+        ];
+        let chat_system = Some(json!("chat system prompt"));
+
+        let cached = shore_llm::types::LlmRequest {
+            sdk: Sdk::Anthropic,
+            model: "chat-model".to_string(),
+            api_key: "chat-secret".to_string(),
+            base_url: Some("http://chat.example".to_string()),
+            messages: chat_messages.clone(),
+            system: chat_system.clone(),
+            tools: Some(chat_tools.clone()),
+            max_tokens: 42,
+            temperature: Some(0.9),
+            top_p: Some(0.8),
+            provider_options: Some(json!({"cache_ttl": "1h"})),
+            provider_key: Some("anthropic".to_string()),
+            rid: Some("rid-chat".to_string()),
+            forensic_character: Some("chat-forensics".to_string()),
+            system_suffix: None,
+        };
+
+        let request = llm
+            .build_compaction_request(
+                "compaction system prompt",
+                vec![json!({"role": "user", "content": "compact now"})],
+                Some(cached),
+            )
+            .unwrap();
+
+        std::env::remove_var(&api_key_env);
+
+        // Prefix portion: system + tools + first len(chat_messages) entries.
+        assert_eq!(
+            request.system, chat_system,
+            "system block diverged — would invalidate Anthropic cache prefix"
+        );
+        assert_eq!(
+            request.tools.as_deref(),
+            Some(chat_tools.as_slice()),
+            "tools array diverged — Anthropic hashes tools into the cache prefix"
+        );
+        for (i, expected) in chat_messages.iter().enumerate() {
+            assert_eq!(
+                &request.messages[i], expected,
+                "message {i} diverged from chat prefix — cache invalidation"
+            );
+        }
+        // The compaction-specific tail rides after the prefix, plus its
+        // prompt rides as `system_suffix` so it doesn't enter the prefix at all.
+        assert_eq!(request.messages.len(), chat_messages.len() + 1);
+        assert_eq!(request.messages.last().unwrap()["content"], "compact now");
+        assert_eq!(
+            request.system_suffix.as_deref(),
+            Some("compaction system prompt")
+        );
+    }
+
     // -- RealConversationManager: archive_and_retain --------------------------
 
     #[test]

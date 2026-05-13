@@ -14,6 +14,24 @@ use shore_config::app::{RetrievalConfig, SearchConfig};
 use shore_config::models::{ResolvedModel, Sdk};
 use shore_llm::embed::Embedder;
 use shore_llm::LlmClient;
+use shore_protocol::types::Message;
+
+// ── JSONL persistence helper ───────────────────────────────────────────
+
+/// Write a list of `Message`s as a newline-delimited JSONL file at `path`.
+///
+/// Mirrors the canonical on-disk shape used by the engine and tests, with
+/// a trailing newline so file readers that split on `\n` see the final
+/// entry. Used by tests in `engine/` and `commands/conversation`.
+pub fn write_jsonl(path: &std::path::Path, messages: &[Message]) {
+    let body = messages
+        .iter()
+        .map(|msg| serde_json::to_string(msg).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(path, body).unwrap();
+}
 
 // ── test_model ──────────────────────────────────────────────────────────
 

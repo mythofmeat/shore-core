@@ -1,6 +1,6 @@
 use serde_json::json;
 use shore_protocol::error::ErrorCode;
-use shore_protocol::types::{ContentBlock, Role};
+use shore_protocol::types::Role;
 use tracing::{debug, info};
 
 use crate::engine::ConversationEngine;
@@ -309,11 +309,7 @@ pub async fn compact(
             },
             content: m.content.clone(),
             timestamp: m.timestamp.clone(),
-            is_tool_result_only: m.role == Role::User
-                && !m.content_blocks.is_empty()
-                && m.content_blocks
-                    .iter()
-                    .all(|b| matches!(b, ContentBlock::ToolResult { .. })),
+            is_tool_result_only: m.is_tool_result_only(),
         })
         .collect();
 

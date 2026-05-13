@@ -55,11 +55,16 @@ every background site through them.
       what system? cache_ttl? This is the load-bearing reason new "did X
       forget Y?" bugs keep appearing.
 
-- [ ] **`s.last_request = None` after compaction is now arguably wrong.**
-      `autonomy/manager.rs:587`. Comment says nulling is fine because the next
-      call rebuilds from disk. With tools-passthrough fixed, the cached request
-      would have been a clean handoff into the next compaction or heartbeat.
-      Nulling forces a cache rebuild we're now positioned to avoid.
+- [~] **`s.last_request = None` after compaction is now arguably wrong.** On
+      re-investigation: nulling is the correct behavior. After compaction the
+      old `last_request.messages` no longer matches `active.jsonl` (most
+      entries have been moved to segments), so a heartbeat reusing it would
+      send a stale pre-compaction prefix as if it were the current
+      conversation. The next call rebuilds from disk and produces a correct
+      shorter prefix. The buglist suggestion to "preserve last_request" would
+      only save cache rebuilds if compaction itself warmed the new prefix in
+      the provider cache, which it doesn't. Leaving open as a "wontfix —
+      analysis filed in commit message" so it doesn't keep resurfacing.
 
 - [x] **Trailing `role: "system"` message hack.** Closed by adding
       `LlmRequest::system_suffix: Option<String>` (transient, `#[serde(skip)]`).
@@ -80,11 +85,12 @@ every background site through them.
       trailing system → merged into one user turn" always being true. If that
       shape ever changes, cache hits silently degrade.
 
-- [ ] **No regression test pins tools-in-prefix.** Unit test asserts the field
-      is preserved, but no integration test compares chat's prefix hash to
-      compaction's prefix hash and fails on divergence. This bug **will** come
-      back the next time someone re-refactors compaction without understanding
-      why `tools` is inherited.
+- [x] **No regression test pins tools-in-prefix.** Added
+      `cached_compaction_request_matches_chat_prefix_byte_for_byte` —
+      asserts every prefix-relevant field (`system`, `tools`, leading
+      messages) is byte-identical between the chat request and the
+      compaction request it spawns. Fails immediately on any future
+      refactor that drops one.
 
 - [ ] **API payload logs only retain ~3 days.** Investigating a 17-day
       regression was un-enumerable past the 3-day window. For compaction /
@@ -154,12 +160,12 @@ Sorted by lines-of-code-removed-per-refactor.
       per-provider conversion as the canonical form. Leaving open as
       lower-priority — the trailing case (the high-traffic path) is fixed.
 
-- [ ] **JSONL parse loop is open-coded where `MessageStore` already exists.**
-      `compaction/background.rs:32–52` writes a hand-rolled
-      `for line in content.lines() { serde_json::from_str::<Message> }` loop.
-      `MessageStore::load` already does this; `tools/history.rs:322` uses it
-      correctly. The hand-roll also computes `is_tool_result_only` inline —
-      should be a method on the protocol `Message` type.
+- [x] **JSONL parse loop is open-coded where `MessageStore` already exists.**
+      `compaction/background.rs::run_compaction` now loads via
+      `MessageStore::load`. Added `Message::is_tool_result_only()` to
+      shore-protocol, and migrated four inline copies of the same check
+      (`commands/state/memory`, `engine/messages::turn_count` /
+      `is_real_user_turn`, `compaction/background`).
 
 - [ ] **Segment + manifest writing exists in two implementations.**
       `compaction_impls.rs::archive_and_retain` is the real one;
@@ -174,20 +180,20 @@ Sorted by lines-of-code-removed-per-refactor.
       (`handler/mod.rs:83`, `tools/context.rs:61`, `tools/mod.rs:93`). One
       shared trait would do.
 
-- [ ] **`s.last_request = Some(req.clone())` written from 4 sites**
-      (1× `handler/persistence.rs`, 3× `autonomy/manager.rs`). A
-      `notify_last_request(req)` already exists at `manager.rs:566` but only
-      `persistence.rs` calls it. The three autonomy sites reach into the
-      mutex directly.
+- [x] **`s.last_request = Some(req.clone())` written from 4 sites.** Added
+      `cache_last_request(state, character, req)` private helper. The public
+      `notify_last_request` and the two internal heartbeat/dormant-ping
+      paths all route through it now, so the log line stays consistent and
+      future callers can't silently forget to emit it.
 
 - [ ] **Provider 4xx/error handling.** Each provider does its own status check
       + JSON error parse with slight variations. One shared
       `parse_provider_error(provider_key, status, body)` cleaner than four
       near-copies.
 
-- [ ] **`write_jsonl` test helper defined twice** in
-      `commands/conversation.rs:563` and `engine/mod.rs:390`. Move to
-      `test_support.rs`.
+- [x] **`write_jsonl` test helper defined twice.** Moved to
+      `test_support::write_jsonl`. `engine/mod.rs` and
+      `commands/conversation.rs` import the shared helper.
 
 ---
 

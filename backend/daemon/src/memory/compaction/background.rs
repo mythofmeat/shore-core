@@ -18,43 +18,36 @@ pub async fn run_compaction(
     cached_request: Option<shore_llm::types::LlmRequest>,
     http: Option<std::sync::Arc<crate::http::DaemonHttpState>>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    use crate::engine::messages::MessageStore;
     use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
     use crate::notifications::NotificationEvent;
     use shore_config::{load_character_config, resolve_prompt_template};
-    use shore_protocol::types::ContentBlock;
     use tracing::info;
 
     let character_dir = data_dir.join(character);
     let active_path = character_dir.join("active.jsonl");
 
-    // Read messages directly from active.jsonl.
-    let content = tokio::fs::read_to_string(&active_path).await?;
-    let mut messages = Vec::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let mut msg: shore_protocol::types::Message = serde_json::from_str(line)?;
-        msg.normalize();
-        let is_tool_result_only = msg.role == shore_protocol::types::Role::User
-            && !msg.content_blocks.is_empty()
-            && msg
-                .content_blocks
-                .iter()
-                .all(|b| matches!(b, ContentBlock::ToolResult { .. }));
-        messages.push(ConversationMessage {
+    // Same canonical load + normalize path the engine itself uses.
+    let store = MessageStore::load(active_path.clone())?;
+    let messages: Vec<ConversationMessage> = store
+        .messages()
+        .iter()
+        .map(|msg| ConversationMessage {
             role: format!("{:?}", msg.role).to_lowercase(),
-            content: msg.content,
-            timestamp: msg.timestamp,
-            is_tool_result_only,
-        });
-    }
+            content: msg.content.clone(),
+            timestamp: msg.timestamp.clone(),
+            is_tool_result_only: msg.is_tool_result_only(),
+        })
+        .collect();
 
     if messages.is_empty() {
         info!(character = %character, "No messages to compact, skipping");
         return Ok(0);
     }
+
+    // The `compact()` call below still wants the raw on-disk content for
+    // segment archival; read it once here.
+    let content = tokio::fs::read_to_string(&active_path).await?;
 
     // Resolve effective config: merge per-character overrides over global.
     let effective = load_character_config(config, character)
