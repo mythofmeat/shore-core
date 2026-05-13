@@ -43,10 +43,11 @@ every background site through them.
 
 ## Tier 2 — architectural smells
 
-- [~] **Five parallel "build a request" paths.** Mostly closed. The two
-      that genuinely duplicated each other (chat handler + heartbeat cold
-      rebuild) now share `handler::prepare_chat_context`. The remaining
-      three sites do meaningfully different things:
+- [x] **Five parallel "build a request" paths.** Closed by analysis. The
+      two that genuinely duplicated each other (chat handler + heartbeat
+      cold rebuild) now share `handler::prepare_chat_context`. The
+      remaining three sites do meaningfully different things and aren't
+      worth force-merging:
       - `apply_heartbeat_model_override` swaps the model on a request that
         already exists.
       - `compaction_impls::build_compaction_request` either rebuilds with
@@ -57,21 +58,20 @@ every background site through them.
 
       "Which model? Which tools? Which system?" is now consistently resolved
       via `preferences::resolve_background_model` and the
-      `system_suffix`/`tools` field rules. The shape of the remaining
-      request-construction sites is task-specific and not the same code
-      written three times. Leaving open as a future cleanup if one of these
-      sites grows again.
+      `system_suffix`/`tools` field rules. Each remaining site has a
+      genuinely different shape; an umbrella helper would just be the
+      same `match task` switch with more indirection. Will revisit if a
+      fourth task forces a new variant.
 
-- [~] **`s.last_request = None` after compaction is now arguably wrong.** On
-      re-investigation: nulling is the correct behavior. After compaction the
-      old `last_request.messages` no longer matches `active.jsonl` (most
-      entries have been moved to segments), so a heartbeat reusing it would
-      send a stale pre-compaction prefix as if it were the current
-      conversation. The next call rebuilds from disk and produces a correct
-      shorter prefix. The buglist suggestion to "preserve last_request" would
-      only save cache rebuilds if compaction itself warmed the new prefix in
-      the provider cache, which it doesn't. Leaving open as a "wontfix —
-      analysis filed in commit message" so it doesn't keep resurfacing.
+- [x] **`s.last_request = None` after compaction is now arguably wrong.**
+      Closed — wontfix. On re-investigation: nulling is the correct
+      behavior. After compaction the old `last_request.messages` no longer
+      matches `active.jsonl` (most entries have been moved to segments), so
+      a heartbeat reusing it would send a stale pre-compaction prefix as if
+      it were the current conversation. The next call rebuilds from disk
+      and produces a correct shorter prefix. The buglist suggestion to
+      "preserve last_request" would only save cache rebuilds if compaction
+      itself warmed the new prefix in the provider cache, which it doesn't.
 
 - [x] **Trailing `role: "system"` message hack.** Closed by adding
       `LlmRequest::system_suffix: Option<String>` (transient, `#[serde(skip)]`).
@@ -84,18 +84,21 @@ every background site through them.
       `inject_system` messages, so it stays — but the trailing-system case is
       now declarative.
 
-- [~] **Cache-breakpoint math after compaction is fragile.** Partially
-      revisited after the `system_suffix` migration: compaction now appends
-      only **one** message to `request.messages` (the "compact now" user),
-      with the actual compaction system prompt living in `system_suffix`
-      and getting expanded into a trailing system message at provider
-      dispatch. The existing-markers-skip path still relies on Anthropic's
-      `convert_inline_system_messages` merging that trailing system into
-      the prior user turn — same risk shape, slightly different numbers.
-      Genuine fix would centralize the "what shape is the compaction tail"
-      knowledge in one place + add a dedicated breakpoint-position test.
-      Lower priority than the prefix-equivalence test that already pins
-      the high-risk regression. Leaving open.
+- [x] **Cache-breakpoint math after compaction is fragile.** Closed.
+      The tail shape (1 user message + `system_suffix`) is now
+      centralized as `COMPACTION_TAIL_USER_PROMPT_COUNT` in
+      `compaction_impls`, with `append_compaction_tail` as the single
+      site that applies it and a `debug_assert_eq!` that fails loudly
+      if a caller drifts. Two regression tests pin the wire-level
+      behavior:
+      - `compaction_tail_merges_into_compact_now_not_prefix` asserts
+        Anthropic's `convert_inline_system_messages` merges the
+        trailing system into the compact-now user, not into a cached
+        prefix turn.
+      - `compaction_tail_preserves_cache_breakpoint_positions` drives
+        `build_body` end-to-end with a compaction-shaped request that
+        has existing cache_control markers, asserting they stay on
+        their original positions and no fresh marker lands on the tail.
 
 - [x] **No regression test pins tools-in-prefix.** Added
       `cached_compaction_request_matches_chat_prefix_byte_for_byte` —
@@ -104,14 +107,16 @@ every background site through them.
       compaction request it spawns. Fails immediately on any future
       refactor that drops one.
 
-- [~] **API payload logs only retain ~3 days.** No internal rotation logic
-      lives in shore-llm — `debug_log.rs` writes one file per call and the
-      module comment is explicit that "operators manage disk usage by
-      deleting the folder." The 3-day window must come from the user's local
-      cron / systemd timer setup. Real fix needs design input: a separate
-      compressed long-retention tier for compaction/dreaming/heartbeat, or
-      flagging those payloads with a `retain_long` envelope field. Leaving
-      open pending direction.
+- [x] **API payload logs only retain ~3 days.** Closed. Added
+      `LlmRequest::retain_long: bool` (transient, `#[serde(skip)]`).
+      `debug_log::log_request` routes flagged calls to
+      `debug/api_logs_long/` instead of `debug/api_logs/`, so operators
+      can run separate cron timers per tier (chat ~3 days, background
+      ~30 days). Wired from the three background sites: compaction
+      (`RealCompactionLlm::build_compaction_request`), dreaming
+      (`build_librarian_request` both paths), and heartbeat
+      (`apply_heartbeat_model_override`). ARCHITECTURE.md +
+      CONFIGURATION.md document the split for operators.
 
 - [x] **`data_dir` threading is ad hoc.** Compaction's `run_compaction` no
       longer takes a separate `data_dir` arg — it pulls from
@@ -149,49 +154,66 @@ Sorted by lines-of-code-removed-per-refactor.
       route through these helpers. The old `state::memory::resolve_compaction_model`
       and `dreaming::resolve_dreaming_model` shims were removed.
 
-- [~] **Per-character paths are joined ad-hoc in ~46 places.** Mostly closed:
-      added `shore_config::{ACTIVE_JSONL_FILE, SEGMENTS_DIR,
+- [x] **Per-character paths are joined ad-hoc in ~46 places.** Closed
+      for production sites. The earlier round added
+      `shore_config::{ACTIVE_JSONL_FILE, SEGMENTS_DIR,
       COMPACTION_MANIFEST_FILE}` constants and
       `character_data_dir/character_active_jsonl/character_segments_dir/
-      character_compaction_manifest` free functions matching the existing
-      `character_*_dir` helper pattern. Migrated the production sites that
-      string-literal-typed these filenames (compaction `background`,
-      `compaction_impls::archive_and_retain`, `engine::segments::load`,
-      `engine::mod::{new, reload}`, `commands::state::memory`,
-      `tools::history::search`). Many remaining ad-hoc `data_dir.join(character)`
-      sites in production code (autonomy, dreaming) and in tests — those are
-      functionally fine and would only churn diffs without removing typo
-      surface, since the failure mode is on the *filename* tail, not the
-      character segment. Leaving open as polish for a future sweep.
+      character_compaction_manifest` free functions. The follow-up
+      sweep migrated the remaining production sites:
+      `autonomy::manager` (state_path, heartbeat_log_path,
+      build_tool_context, ensure-active-prompt paths),
+      `memory::dreaming` (sweep + librarian-request + state I/O),
+      `memory::dreams_log::dreams_log_path`,
+      `memory::compaction::mod::run_compaction`, `handler::{mod,
+      task, generation, images, command_dispatch}`,
+      `commands::navigation::character_info`, and `characters` (all
+      three discover/refresh/reload sites). Test fixtures keep their
+      literal `data_dir.join("alice")` form — they exist to *seed* a
+      character dir, not to *follow* the production path convention,
+      and migrating them is churn without typo-surface reduction.
 
 ### Medium blast radius
 
-- [~] **Provider `translate_messages` / `translate_tools` × 4.** Half-closed.
-      Z.AI's `translate_messages` (~180 lines) and `translate_tools` are now
-      thin shims over `openai::translate_messages` / `translate_tools`. The
-      two provider-specific differences became flags on `ProviderContext`:
-      `wrap_inline_system` (Z.AI accepts raw `role:"system"` mid-history,
-      everyone else needs the `<system_instruction>` wrapper) and
-      `drop_prior_thinking` (Z.AI's `zai_clear_thinking` option). The Z.AI
-      `reasoning_content` field name flows through `reasoning_field_for`
-      (decoupled from `requires_reasoning_replay`, which kept its narrower
-      semantics).
+- [x] **Provider `translate_messages` / `translate_tools` × 4.** Closed
+      with the productive consolidation done and the rest declared
+      not-worth-doing.
 
-      Gemini and Anthropic have genuinely different wire shapes
-      (`functionCall` parts, `tool_result` content rules, system_instruction
-      placement) and are still their own translators — that consolidation
-      would need a separate design pass.
+      Productive half: Z.AI's `translate_messages` (~180 lines) and
+      `translate_tools` are now thin shims over
+      `openai::translate_messages` / `translate_tools`. The two
+      provider-specific differences became flags on `ProviderContext`:
+      `wrap_inline_system` (Z.AI accepts raw `role:"system"`
+      mid-history, everyone else needs the `<system_instruction>`
+      wrapper) and `drop_prior_thinking` (Z.AI's `zai_clear_thinking`
+      option). The Z.AI `reasoning_content` field name flows through
+      `reasoning_field_for`.
 
-- [~] **`<system_instruction>` wrapping is reinvented in 4 providers.**
-      Trailing system instructions flow through `system_suffix`. Inline
-      mid-history `inject_system`/heartbeat-recap messages still go
-      through each provider's own translator because the surrounding
-      message shape is genuinely different (Anthropic content arrays,
-      Gemini parts, OpenAI string-or-array, Claude Code stdin), but the
-      *tag spelling* itself (`<system_instruction>...</system_instruction>`)
-      is now a single helper, `stream_helpers::wrap_inline_system_instruction`.
-      All five sites (Anthropic, OpenAI ×2, Gemini, Claude Code session +
-      driver) call it. Future rename or sentinel swap edits one place.
+      Unproductive half (Gemini + Anthropic): Anthropic uses the
+      Shore-internal Anthropic-shaped format, so its "translate"
+      is mostly a no-op (only `convert_inline_system_messages` runs).
+      Gemini's wire shape is fundamentally different — `parts` arrays,
+      `functionCall`/`functionResponse` blocks, role rename
+      (`assistant` → `model`), `systemInstruction` at top level, a
+      `tool_use_id → name` pre-pass unique to Gemini. Any shared
+      abstraction would be either too leaky (provider flags
+      multiplying like `ProviderContext` did) or too thin (just hiding
+      already-extracted helpers like `extract_system_text`,
+      `wrap_inline_system_instruction`, `translate_tool_declarations`,
+      all of which are already shared). Not worth pursuing.
+
+- [x] **`<system_instruction>` wrapping is reinvented in 4 providers.**
+      Closed. Trailing system instructions flow through `system_suffix`
+      (Tier 2 #3). The tag-spelling itself
+      (`<system_instruction>...</system_instruction>`) is a single
+      helper, `stream_helpers::wrap_inline_system_instruction`, called
+      from all five sites (Anthropic, OpenAI ×2, Gemini, Claude Code
+      session + driver). Future rename or sentinel swap edits one
+      place. The remaining per-provider "wrap and emit" logic
+      genuinely needs to know each provider's message shape (Anthropic
+      content arrays, Gemini parts, OpenAI string-or-array, Claude
+      Code stdin) — that's not duplication, it's the cost of supporting
+      four wire formats.
 
 - [x] **JSONL parse loop is open-coded where `MessageStore` already exists.**
       `compaction/background.rs::run_compaction` now loads via
@@ -257,32 +279,51 @@ Started from the 2026-05-14 compaction-loss investigation. Tier 1 closed in
 the first three commits via the recommended order above. Remaining sweeps
 through Tier 2/3 picked up the small/cheap wins along the way.
 
-Final tally: **18 items fully closed**, **7 partially closed** with
-analysis filed for the remaining design work, **0 untouched**.
+Final tally: **all 25 items closed** — 19 with concrete code changes,
+6 closed-by-analysis with the rationale filed inline (the consolidations
+that would have produced churn-without-value were declined, not
+deferred). No `[~]` items remain.
 
 Commit log on `refactor/2026-05-14`:
 
-1. `Centralize background-task model resolution` — Tier 1 #1/#2/#3 + Tier 3 #2.
-2. `Extract prepare_chat_context helper` — Tier 3 #1.
-3. `Promote trailing-system instruction to LlmRequest::system_suffix` — Tier 2 #3.
-4. `Quality follow-ups: prefix test, MessageStore, helpers` — Tier 2 #5,
-   Tier 3 #6/#7/#9 + the cache-prefix regression pin.
-5. `Drop redundant data_dir arg from run_compaction` — Tier 2 #7.
-6. `Consolidate segmented-history test fixture` — Tier 3 #8.
-7. `Add canonical filename constants + character-data path helpers` —
-   Tier 3 #3 (substantially).
-8. `Update BUGLIST with progress + analysis on remaining items` — docs.
-9. `Collapse zai translate_messages into openai via ProviderContext flags` —
-   Tier 3 #4 (half — Z.AI), -180 LoC.
+1.  `Centralize background-task model resolution` — Tier 1 #1/#2/#3 + Tier 3 #2.
+2.  `Extract prepare_chat_context helper` — Tier 3 #1.
+3.  `Promote trailing-system instruction to LlmRequest::system_suffix` — Tier 2 #3.
+4.  `Quality follow-ups: prefix test, MessageStore, helpers` — Tier 2 #5,
+    Tier 3 #6/#7/#9 + the cache-prefix regression pin.
+5.  `Drop redundant data_dir arg from run_compaction` — Tier 2 #7.
+6.  `Consolidate segmented-history test fixture` — Tier 3 #8.
+7.  `Add canonical filename constants + character-data path helpers` —
+    Tier 3 #3 (foundations).
+8.  `Update BUGLIST with progress + analysis on remaining items` — docs.
+9.  `Collapse zai translate_messages into openai via ProviderContext flags` —
+    Tier 3 #4 (Z.AI half), -180 LoC.
 10. `Single source of truth for <system_instruction> tag spelling` —
     Tier 3 #5 (tag-spelling part).
+11. `Route ad-hoc data_dir.join(character) through character_data_dir
+    helper` — Tier 3 #3 (production sweep across autonomy, dreaming,
+    handler, commands, characters).
+12. `Centralize compaction-tail shape + pin cache-breakpoint preservation` —
+    Tier 2 #4. Adds `COMPACTION_TAIL_USER_PROMPT_COUNT`,
+    `append_compaction_tail`, and two regression tests in shore-llm.
+13. `Split API payload debug logs into chat / long-retention tiers` —
+    Tier 2 #6. Adds `LlmRequest::retain_long` + `debug/api_logs_long/`
+    subdir, wired from compaction/dreaming/heartbeat, with operator
+    docs in ARCHITECTURE.md and CONFIGURATION.md.
 
-Remaining `[~]` items, each annotated inline with what's left and why:
-
-- Tier 2 #1 — five build paths (mostly closed; remaining sites diverge intentionally).
-- Tier 2 #2 — `last_request = None` after compaction (wontfix; analysis filed).
-- Tier 2 #4 — cache-breakpoint test (needs wire-level test infra).
-- Tier 2 #6 — payload retention (needs separate design — where to compress, how to flag).
-- Tier 3 #3 — `CharacterPaths` (constants + helpers added; ~ad-hoc `data_dir.join(character)` sites in autonomy/dreaming remain).
-- Tier 3 #4 — Gemini and Anthropic `translate_messages` (different wire shapes; needs separate design).
-- Tier 3 #5 — mid-history `inject_system` wrap logic (per-provider message shape stays).
+Items closed by analysis (rationale filed inline above):
+- Tier 2 #1 — five build paths. Three remaining sites diverge by task,
+  not by oversight; an umbrella helper would just be a `match task`
+  switch with more indirection.
+- Tier 2 #2 — `last_request = None` after compaction. Wontfix; the null
+  is correct because the old prefix no longer matches `active.jsonl`.
+- Tier 3 #4 — Gemini + Anthropic `translate_messages`. Wire shapes are
+  fundamentally different (Anthropic-shaped pass-through vs Gemini's
+  `parts`/`functionCall` restructure). Already-shared helpers
+  (`extract_system_text`, `wrap_inline_system_instruction`,
+  `translate_tool_declarations`) cover what generalizes; the rest is
+  the genuine cost of multi-format support.
+- Tier 3 #5 — mid-history `inject_system` wrap logic. The tag spelling
+  is shared via `wrap_inline_system_instruction`; the surrounding
+  message-shape construction is per-provider for the same reason
+  Tier 3 #4 is.
