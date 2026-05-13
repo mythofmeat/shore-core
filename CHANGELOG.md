@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added hour-based usage windows such as `shore usage --last 4h`.
 - Made `shore log` and `shore-tui` expose compacted conversation segments as
   bounded, lazy scrollback pages, with a horizontal rule marking archived
   messages that are no longer in prompt context.

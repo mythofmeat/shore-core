@@ -266,7 +266,7 @@ pub enum CliCommand {
 
     /// Show token usage statistics and costs
     Usage {
-        /// Time period: "today", "7d", "30d", "all" (default: today)
+        /// Time period: "today", "4h", "7d", "30d", "all" (default: today)
         #[arg(long, default_value = "today")]
         last: String,
 
@@ -2392,6 +2392,14 @@ mod tests {
             }
             other => panic!("expected Usage, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn usage_last_hours_forwarded() {
+        let cli = parse(&["usage", "--last", "4h"]);
+        let (cmd, args) = to_swp_command(&cli.command).unwrap();
+        assert_eq!(cmd, "usage");
+        assert_eq!(args["last"], "4h");
     }
 
     #[test]

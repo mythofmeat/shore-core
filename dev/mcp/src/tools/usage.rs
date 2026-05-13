@@ -9,7 +9,7 @@ use crate::handler::ShoreMcpHandler;
 
 #[derive(Deserialize, JsonSchema, Debug, Default)]
 pub struct UsageParams {
-    /// Time period: "today", "7d", "30d", "all". Default: "today".
+    /// Time period: "today", "4h", "7d", "30d", "all". Default: "today".
     #[serde(default = "default_last")]
     pub last: String,
     pub character: Option<String>,
