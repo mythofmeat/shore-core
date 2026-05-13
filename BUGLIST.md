@@ -255,9 +255,10 @@ If picking three from this list by impact-per-line-of-refactor:
 
 Started from the 2026-05-14 compaction-loss investigation. Tier 1 closed in
 the first three commits via the recommended order above. Remaining sweeps
-through Tier 2/3 picked up the small/cheap wins along the way. Tier 3 #4
-(provider `translate_messages` × 4) and the open `~` items are the only
-material work left; they need separate design passes before another sweep.
+through Tier 2/3 picked up the small/cheap wins along the way.
+
+Final tally: **18 items fully closed**, **7 partially closed** with
+analysis filed for the remaining design work, **0 untouched**.
 
 Commit log on `refactor/2026-05-14`:
 
@@ -270,3 +271,18 @@ Commit log on `refactor/2026-05-14`:
 6. `Consolidate segmented-history test fixture` — Tier 3 #8.
 7. `Add canonical filename constants + character-data path helpers` —
    Tier 3 #3 (substantially).
+8. `Update BUGLIST with progress + analysis on remaining items` — docs.
+9. `Collapse zai translate_messages into openai via ProviderContext flags` —
+   Tier 3 #4 (half — Z.AI), -180 LoC.
+10. `Single source of truth for <system_instruction> tag spelling` —
+    Tier 3 #5 (tag-spelling part).
+
+Remaining `[~]` items, each annotated inline with what's left and why:
+
+- Tier 2 #1 — five build paths (mostly closed; remaining sites diverge intentionally).
+- Tier 2 #2 — `last_request = None` after compaction (wontfix; analysis filed).
+- Tier 2 #4 — cache-breakpoint test (needs wire-level test infra).
+- Tier 2 #6 — payload retention (needs separate design — where to compress, how to flag).
+- Tier 3 #3 — `CharacterPaths` (constants + helpers added; ~ad-hoc `data_dir.join(character)` sites in autonomy/dreaming remain).
+- Tier 3 #4 — Gemini and Anthropic `translate_messages` (different wire shapes; needs separate design).
+- Tier 3 #5 — mid-history `inject_system` wrap logic (per-provider message shape stays).
