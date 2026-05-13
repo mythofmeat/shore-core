@@ -350,6 +350,7 @@ mod tests {
             provider_key: Some("claude_code".into()),
             rid: None,
             forensic_character: None,
+            system_suffix: None,
         }
     }
 

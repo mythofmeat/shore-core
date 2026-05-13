@@ -628,6 +628,7 @@ mod tests {
             provider_key: Some("zai".into()),
             rid: None,
             forensic_character: None,
+            system_suffix: None,
         }
     }
 

@@ -1595,17 +1595,14 @@ async fn execute_heartbeat_tick(
         load_heartbeat_instructions(&character_data_dir).replace("{user}", &user_name);
     let heartbeat_prompt = build_heartbeat_prompt(&user_name, &default_interval_str);
 
-    request.messages.push(json!({
-        "role": "system",
-        "content": heartbeat_instructions,
-    }));
-
-    // Append the heartbeat prompt as a system-role message. The Anthropic
-    // provider auto-wraps inline system messages in <system_instruction> tags
-    // and emits them as a user turn (see convert_inline_system_messages).
-    request
-        .messages
-        .push(json!({"role": "system", "content": heartbeat_prompt}));
+    // Hand the heartbeat instructions + prompt to shore-llm as the
+    // trailing `system_suffix`. shore-llm expands this into a trailing
+    // `role: "system"` message just before provider dispatch, where each
+    // provider auto-wraps it in `<system_instruction>` and merges into
+    // the prior user turn. Keeping it out of `request.messages` means
+    // the cached chat prefix downstream calls reuse never sees this
+    // text — important when heartbeat re-uses chat's `last_request`.
+    request.system_suffix = Some(format!("{heartbeat_instructions}\n\n{heartbeat_prompt}"));
 
     // NOTE: set_next_wake is in the base tool set (tools/basic.rs), so the
     // tools array is identical between normal messages and heartbeat ticks.
@@ -2260,6 +2257,7 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
+            system_suffix: None,
         }
     }
 
@@ -2939,6 +2937,7 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
+            system_suffix: None,
         };
 
         // set_next_wake is now in the base tool set (tools/basic.rs),
@@ -3064,6 +3063,7 @@ api_key_env = "{api_key_env}"
             provider_key: None,
             rid: None,
             forensic_character: None,
+            system_suffix: None,
         }
     }
 

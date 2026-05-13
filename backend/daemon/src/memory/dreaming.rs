@@ -689,10 +689,11 @@ async fn build_librarian_request(
     if let Some(cached) = cached_request {
         let mut request = cached.clone();
         request.rid = None;
-        request.messages.push(json!({
-            "role": "system",
-            "content": format!("{system}\n\n{user_prompt}"),
-        }));
+        // The dreaming prompt rides as a `system_suffix` instead of being
+        // pushed into `messages`. shore-llm expands it into the trailing
+        // `role: "system"` shape providers already handle, but downstream
+        // calls reusing this request's cached prefix never see the prompt.
+        request.system_suffix = Some(format!("{system}\n\n{user_prompt}"));
         return Ok(request);
     }
 

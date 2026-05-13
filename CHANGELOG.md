@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added a first-class `system_suffix` field on outbound LLM requests so
+  background tasks (compaction, dreaming, heartbeat) can attach a trailing
+  system instruction declaratively instead of mutating `request.messages`.
+  shore-llm expands the suffix into the wire-format trailing-system shape
+  providers already wrap in `<system_instruction>`, so behavior is unchanged
+  but the cached chat prefix downstream calls reuse no longer carries
+  task-specific instructions.
 - Consolidated background-task model resolution behind
   `preferences::resolve_background_model` and
   `preferences::resolve_chat_model_for_character`, so manual `/compact`,

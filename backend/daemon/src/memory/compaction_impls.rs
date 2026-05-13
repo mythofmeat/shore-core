@@ -199,10 +199,12 @@ impl RealCompactionLlm {
                 for msg in messages {
                     request.messages.push(msg);
                 }
-                request.messages.push(json!({
-                    "role": "system",
-                    "content": system,
-                }));
+                // The compaction prompt rides as a `system_suffix` instead
+                // of being pushed into `messages`. shore-llm expands it
+                // into the same trailing-system shape providers already
+                // handle, but the cached prefix used by downstream chat
+                // calls never sees it.
+                request.system_suffix = Some(system.to_string());
                 request
             }
             None => LedgerClient::build_request_with_provider_keys(
@@ -525,6 +527,7 @@ mod tests {
             provider_key: Some("anthropic".to_string()),
             rid: Some("rid-chat".to_string()),
             forensic_character: Some("chat-forensics".to_string()),
+            system_suffix: None,
         };
 
         let request = llm
@@ -555,12 +558,17 @@ mod tests {
         assert_eq!(request.rid, None);
         assert_eq!(request.forensic_character.as_deref(), Some("alice"));
         assert_eq!(request.system, Some(json!("cached system")));
-        assert_eq!(request.messages.len(), 4);
+        // The compaction prompt rides as `system_suffix`, not as a
+        // trailing entry in `messages`. The chat prefix (cached user +
+        // cached assistant) plus the compaction-specific user turn is
+        // all that should appear in `messages`. shore-llm expands the
+        // suffix into the wire-format trailing system message just
+        // before provider dispatch.
+        assert_eq!(request.messages.len(), 3);
         assert_eq!(request.messages[0]["content"], "cached user");
         assert_eq!(request.messages[1]["content"], "cached assistant");
         assert_eq!(request.messages[2]["content"], "compact now");
-        assert_eq!(request.messages[3]["role"], "system");
-        assert_eq!(request.messages[3]["content"], "compaction system");
+        assert_eq!(request.system_suffix.as_deref(), Some("compaction system"));
 
         let provider_options = request.provider_options.expect("provider options");
         assert_eq!(provider_options["reasoning_effort"], "medium");

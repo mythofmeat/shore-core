@@ -415,6 +415,7 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
+            system_suffix: None,
         }
     }
 

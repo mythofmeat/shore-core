@@ -688,6 +688,7 @@ mod tests {
             provider_key: Some("anthropic".into()),
             rid: None,
             forensic_character: None,
+            system_suffix: None,
         }
     }
 

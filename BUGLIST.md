@@ -61,13 +61,16 @@ every background site through them.
       would have been a clean handoff into the next compaction or heartbeat.
       Nulling forces a cache rebuild we're now positioned to avoid.
 
-- [ ] **Trailing `role: "system"` message hack.** Compaction and dreaming both
-      append a system-role message and rely on each provider's
-      `convert_inline_system_messages` to wrap it in `<system_instruction>` and
-      merge into the prior user turn. Implemented in Anthropic, OpenAI, Gemini,
-      Claude Code — convention enforced by repetition, not types. A new
-      provider could ship without the transform and silently break compaction.
-      Promote to a first-class `system_suffix: Option<String>` on `LlmRequest`.
+- [x] **Trailing `role: "system"` message hack.** Closed by adding
+      `LlmRequest::system_suffix: Option<String>` (transient, `#[serde(skip)]`).
+      shore-llm's `preprocess_request` expands the suffix into a trailing
+      `role: "system"` message just before provider dispatch, so per-provider
+      `<system_instruction>` wrapping continues to apply uniformly. Heartbeat,
+      background compaction (cached path), and dreaming (cached path) now use
+      the field instead of mutating `request.messages` directly. The
+      per-provider inline conversion is still needed for genuinely mid-history
+      `inject_system` messages, so it stays — but the trailing-system case is
+      now declarative.
 
 - [ ] **Cache-breakpoint math after compaction is fragile.**
       `apply_cache_control` places markers at `depth_turns=[0,1]` (last two
@@ -141,12 +144,15 @@ Sorted by lines-of-code-removed-per-refactor.
       is the same logic three ways. A shared `iter_content_blocks(msg) -> impl
       Iterator<ContentBlock>` removes ~hundreds of lines.
 
-- [ ] **`<system_instruction>` wrapping is reinvented in 4 providers.**
-      `anthropic.rs:460::convert_inline_system_messages`, `openai.rs` (inline),
-      `gemini.rs:81`, `claude_code/driver.rs:570`, `claude_code/session.rs:148`.
-      Same XML tag, same "merge into prior user" fallback. Pair with the
-      Tier-2 `system_suffix` field on `LlmRequest`: one shared transform,
-      every provider drops its hand-roll.
+- [~] **`<system_instruction>` wrapping is reinvented in 4 providers.**
+      Partly addressed: trailing system instructions now flow through
+      `system_suffix`, but each provider still owns its inline conversion
+      because `inject_system` (mid-history) and persisted heartbeat-recap
+      `Role::System` messages still need wrapping at the provider layer.
+      Fully unifying this would require either threading mid-history system
+      messages through a separate first-class shape or accepting the
+      per-provider conversion as the canonical form. Leaving open as
+      lower-priority — the trailing case (the high-traffic path) is fixed.
 
 - [ ] **JSONL parse loop is open-coded where `MessageStore` already exists.**
       `compaction/background.rs:32–52` writes a hand-rolled

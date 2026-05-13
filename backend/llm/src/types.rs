@@ -59,6 +59,23 @@ pub struct LlmRequest {
     /// Character name — transient, for cache forensic logging only.
     #[serde(skip)]
     pub forensic_character: Option<String>,
+
+    /// Optional trailing system instruction.
+    ///
+    /// Background tasks (compaction, dreaming, heartbeat) need to append
+    /// a `role: "system"` message after the conversation history to drive
+    /// model behavior for this single call without polluting the
+    /// persisted history. Previously each caller hand-pushed a
+    /// `role: "system"` entry into `messages`; this field is the
+    /// first-class declarative form. shore-llm expands it into the
+    /// expected trailing-system shape just before provider dispatch, so
+    /// per-provider `<system_instruction>` wrapping continues to apply
+    /// uniformly.
+    ///
+    /// `None` and `Some("")` are both treated as "no suffix" and skip
+    /// the expansion entirely.
+    #[serde(skip)]
+    pub system_suffix: Option<String>,
 }
 
 /// Token usage counts from shore-llm's normalized response.
@@ -250,6 +267,7 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
+            system_suffix: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(!json.as_object().unwrap().contains_key("base_url"));

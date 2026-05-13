@@ -138,6 +138,7 @@ mod tests {
             provider_key: provider_key.map(String::from),
             rid: None,
             forensic_character: None,
+            system_suffix: None,
         }
     }
 

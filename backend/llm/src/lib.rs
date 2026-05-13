@@ -287,6 +287,7 @@ impl LlmClient {
             provider_key: Some(model.provider_key.clone()),
             rid: None,
             forensic_character: None,
+            system_suffix: None,
         }
     }
 
@@ -297,7 +298,7 @@ impl LlmClient {
     /// debug logging is enabled, the reader is transparently teed to a
     /// per-call response file.
     pub async fn stream_raw(&self, request: &LlmRequest) -> Result<StreamReader, LlmError> {
-        let request = maybe_sanitize_request(request);
+        let request = preprocess_request(request);
         let body = serde_json::to_string(&*request).map_err(LlmError::Serialize)?;
         let handle = debug_log::log_request(self.payload_log_dir.as_deref(), &request, &body);
 
@@ -320,7 +321,7 @@ impl LlmClient {
         &self,
         request: &LlmRequest,
     ) -> Result<types::GenerateResponse, LlmError> {
-        let request = maybe_sanitize_request(request);
+        let request = preprocess_request(request);
         let body = serde_json::to_string(&*request).map_err(LlmError::Serialize)?;
         let handle = debug_log::log_request(self.payload_log_dir.as_deref(), &request, &body);
 
@@ -349,26 +350,56 @@ impl Default for LlmClient {
     }
 }
 
-/// Defensively strip orphan `tool_use`/`tool_result` blocks from an outbound
-/// request. Orphans cause hard 400s from Anthropic and OpenAI-family APIs
-/// (and from translation proxies like OpenRouter). The healthy path allocates
-/// nothing; only when orphans are actually present do we clone and rewrite.
-fn maybe_sanitize_request(request: &LlmRequest) -> Cow<'_, LlmRequest> {
-    match sanitize::sanitize_tool_pairs(&request.messages) {
-        Some(cleaned) => {
-            warn!(
-                rid = request.rid.as_deref().unwrap_or("-"),
-                character = request.forensic_character.as_deref().unwrap_or("-"),
-                original_msgs = request.messages.len(),
-                cleaned_msgs = cleaned.len(),
-                "stripped orphan tool_use/tool_result blocks from outbound LLM request"
-            );
-            let mut owned = request.clone();
-            owned.messages = cleaned;
-            Cow::Owned(owned)
-        }
-        None => Cow::Borrowed(request),
+/// Preprocess an outbound request before serialization:
+///
+/// 1. Expand `system_suffix` (if any) into a trailing
+///    `role: "system"` message. This is the first-class form of the
+///    trailing-system-message convention background tasks (compaction,
+///    dreaming, heartbeat) rely on. Per-provider
+///    `<system_instruction>` wrapping then runs as it always has.
+/// 2. Strip orphan `tool_use`/`tool_result` blocks. Orphans cause hard
+///    400s from Anthropic and OpenAI-family APIs (and from translation
+///    proxies like OpenRouter).
+///
+/// The healthy path (no suffix, no orphans) allocates nothing.
+fn preprocess_request(request: &LlmRequest) -> Cow<'_, LlmRequest> {
+    let needs_suffix = request
+        .system_suffix
+        .as_deref()
+        .is_some_and(|s| !s.is_empty());
+
+    let with_suffix: Cow<'_, [serde_json::Value]> = if needs_suffix {
+        let mut msgs = request.messages.clone();
+        msgs.push(serde_json::json!({
+            "role": "system",
+            "content": request.system_suffix.as_deref().unwrap_or(""),
+        }));
+        Cow::Owned(msgs)
+    } else {
+        Cow::Borrowed(&request.messages)
+    };
+
+    let sanitized = sanitize::sanitize_tool_pairs(&with_suffix);
+    let messages_changed = sanitized.is_some() || needs_suffix;
+
+    if let Some(cleaned) = sanitized.as_ref() {
+        warn!(
+            rid = request.rid.as_deref().unwrap_or("-"),
+            character = request.forensic_character.as_deref().unwrap_or("-"),
+            original_msgs = with_suffix.len(),
+            cleaned_msgs = cleaned.len(),
+            "stripped orphan tool_use/tool_result blocks from outbound LLM request"
+        );
     }
+
+    if !messages_changed {
+        return Cow::Borrowed(request);
+    }
+
+    let mut owned = request.clone();
+    owned.messages = sanitized.unwrap_or_else(|| with_suffix.into_owned());
+    owned.system_suffix = None;
+    Cow::Owned(owned)
 }
 
 /// Return the conventional API key env var name for a provider key.
@@ -738,5 +769,54 @@ sdk = "openai"
     fn client_is_clone_and_send() {
         fn assert_clone_send<T: Clone + Send>() {}
         assert_clone_send::<LlmClient>();
+    }
+
+    fn req_with_suffix(suffix: Option<&str>) -> LlmRequest {
+        LlmRequest {
+            sdk: Sdk::Anthropic,
+            model: "m".into(),
+            api_key: "k".into(),
+            base_url: None,
+            messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
+            system: None,
+            tools: None,
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: Some("anthropic".into()),
+            rid: None,
+            forensic_character: None,
+            system_suffix: suffix.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn preprocess_no_suffix_is_borrowed() {
+        let req = req_with_suffix(None);
+        let out = preprocess_request(&req);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(out.messages.len(), 1);
+    }
+
+    #[test]
+    fn preprocess_empty_suffix_is_borrowed() {
+        let req = req_with_suffix(Some(""));
+        let out = preprocess_request(&req);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn preprocess_expands_suffix_into_trailing_system_message() {
+        let req = req_with_suffix(Some("be brief"));
+        let out = preprocess_request(&req);
+        // The on-the-wire payload gains a trailing `role:"system"` —
+        // exactly the shape per-provider inline conversion expects.
+        assert_eq!(out.messages.len(), 2);
+        assert_eq!(out.messages[1]["role"], "system");
+        assert_eq!(out.messages[1]["content"], "be brief");
+        // And the suffix has been consumed so it can't be double-applied
+        // if something else preprocesses the same request.
+        assert!(out.system_suffix.is_none());
     }
 }
