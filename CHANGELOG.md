@@ -43,6 +43,12 @@
 - Raised the SWP wire-frame ceiling from 16MB to 128MB so phone-camera-sized
   image attachments (which expand ~33% when base64-encoded) no longer trip the
   per-frame size guard and force the client to disconnect mid-upload.
+- Fixed Anthropic cache keepalive scheduling after compaction so the daemon no
+  longer cancels the keepalive deadline for stable pinned system prompt
+  prefixes, retries keepalive/background calls across configured provider
+  fallback keys on budget or credential failures, records failed/skipped ping
+  attempts in heartbeat status, and backs off failed keepalive/dreaming retries
+  instead of looping every tick.
 - Fixed Matrix avatar sync to read character avatars from
   `characters/<Character>/avatar.{png,jpg,jpeg,webp}` in the Shore config
   directory.

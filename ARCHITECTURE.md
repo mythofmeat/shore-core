@@ -266,10 +266,12 @@ compaction/reload refreshes `active_prompt/` and clears the queue.
 
 Unexpected Anthropic cache invalidation is a serious regression. Things that
 should not bust cache include ordinary workspace edits, ordinary markdown memory
-writes, tool loop bookkeeping, activity tracking, and image cache warmups.
-Expected cache breakpoints include compaction/reload, activating staged prompt
-edits, editing old conversation messages, changing model/provider/cache
-settings, and changing prompt templates or tool definitions in code.
+writes, tool loop bookkeeping, activity tracking, image cache warmups, and
+compaction of the recent conversation tail when the pinned system prompt prefix
+is unchanged. Expected cache breakpoints include activating staged prompt edits
+at compaction/reload, editing old conversation messages, changing
+model/provider/cache settings, and changing prompt templates or tool
+definitions in code.
 
 ## Memory
 
@@ -375,7 +377,10 @@ Heartbeat ticks:
 Heartbeat does not force recap files or daily memory notes. Durable notes happen
 only when the character uses write-capable tools. Dormancy stops autonomous LLM
 calls until user engagement resumes. Cache keepalive is separate from heartbeat;
-it preserves Anthropic cache warmth and does not simulate autonomy.
+it preserves Anthropic cache warmth and does not simulate autonomy. Compaction
+clears any cached request body that contains the old conversation tail, but it
+does not cancel the keepalive deadline; a later keepalive can rebuild from disk
+to keep stable pinned system prompt sections warm.
 
 ## Provider Boundary
 

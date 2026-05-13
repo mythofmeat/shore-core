@@ -27,6 +27,8 @@ pub struct CacheKeepalive {
     next_ping_at: Option<Instant>,
     /// The next scheduled wake, supplied by the heartbeat subsystem.
     next_wake_at: Option<Instant>,
+    /// Consecutive failed ping attempts. Used for retry backoff.
+    failure_count: u32,
 }
 
 /// Break-even point: if the gap to next wake exceeds this, pings cost more
@@ -34,8 +36,9 @@ pub struct CacheKeepalive {
 const KEEPALIVE_BREAKEVEN: Duration = Duration::from_secs(18 * 3600); // 18h
 
 /// Ping interval: 55 minutes — 5 minutes of headroom before the 60-minute
-/// cache TTL expires.  If the first attempt fails, the 10s tick loop retries
-/// every 10s, giving ~30 retry attempts before the cache goes cold.
+/// cache TTL expires. If the first attempt fails, retries use short
+/// exponential backoff so transient errors get another chance without turning
+/// provider/budget outages into a 10-second failure loop.
 /// Economics: one early ping costs ~0.1N tokens; a cache miss costs ~1.9N.
 /// The 5-minute insurance is worth ~$0.01 to avoid a ~$0.20 cold-start.
 ///
@@ -50,11 +53,18 @@ fn ping_interval() -> Duration {
     }
 }
 
+fn retry_delay(failure_count: u32) -> Duration {
+    let exponent = failure_count.saturating_sub(1).min(5);
+    let secs = 30u64.saturating_mul(1u64 << exponent);
+    Duration::from_secs(secs.min(15 * 60))
+}
+
 impl CacheKeepalive {
     pub fn new() -> Self {
         Self {
             next_ping_at: None,
             next_wake_at: None,
+            failure_count: 0,
         }
     }
 
@@ -63,13 +73,16 @@ impl CacheKeepalive {
     /// Resets the internal ping deadline.
     pub fn on_cache_warmed(&mut self, now: Instant) {
         self.next_ping_at = Some(now + ping_interval());
+        self.failure_count = 0;
     }
 
-    /// Called after compaction invalidates the cached prompt prefix.
-    /// Clears the ping deadline so we stop paying for stale-prefix pings.
-    /// The next real LLM call will re-enable pings via `on_cache_warmed`.
+    /// Called when the cached prompt prefix is known to be unusable.
+    ///
+    /// Ordinary compaction should not call this: the conversation tail changes,
+    /// but stable pinned system sections are still worth keeping warm.
     pub fn on_cache_invalidated(&mut self) {
         self.next_ping_at = None;
+        self.failure_count = 0;
     }
 
     /// Mirror of the scheduled heartbeat wake. Called whenever
@@ -79,6 +92,7 @@ impl CacheKeepalive {
         if at.is_none() {
             // Guard tripped — stop pinging.
             self.next_ping_at = None;
+            self.failure_count = 0;
         }
     }
 
@@ -91,7 +105,7 @@ impl CacheKeepalive {
     ///
     /// Does NOT advance `next_ping_at` — the caller must call
     /// `on_cache_warmed` after a successful ping, or `on_ping_failed`
-    /// to retry on the next tick.
+    /// to schedule a short retry backoff.
     pub fn tick(&mut self, now: Instant) -> CacheKeepaliveAction {
         let _ping_at = match self.next_ping_at {
             Some(t) if now >= t => t,
@@ -112,19 +126,17 @@ impl CacheKeepalive {
         // Ping is due and economically justified.
         // Do NOT advance next_ping_at here — caller must confirm the ping
         // actually succeeded via on_cache_warmed(), or call on_ping_failed()
-        // to retry on the next tick.
+        // to schedule a short retry backoff.
         CacheKeepaliveAction::Ping
     }
 
-    /// Called when a keepalive ping fails or is skipped (e.g. no cached
-    /// request available). Resets `next_ping_at` to the next tick so the
-    /// system retries promptly instead of waiting another 59 minutes.
-    pub fn on_ping_failed(&mut self) {
-        // Setting to None would stop pinging entirely. Instead, keep the
-        // existing (past-due) next_ping_at so tick() returns Ping again on
-        // the very next tick loop iteration.
-        // next_ping_at is already in the past, so tick() will return Ping
-        // on the next call — no change needed.
+    /// Called when a keepalive ping fails or is skipped. Retries with a short
+    /// exponential backoff so transient failures still get another chance
+    /// before the cache goes cold, while budget/provider outages don't hammer
+    /// the account every scheduler tick.
+    pub fn on_ping_failed(&mut self, now: Instant) {
+        self.failure_count = self.failure_count.saturating_add(1);
+        self.next_ping_at = Some(now + retry_delay(self.failure_count));
     }
 }
 
@@ -198,9 +210,14 @@ mod tests {
         // Ping fires at 55min.
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::Ping);
         // Caller does NOT confirm (ping failed/skipped).
-        // next_ping_at is still in the past → fires again immediately.
+        // Retry is delayed briefly rather than spinning every scheduler tick.
+        ka.on_ping_failed(now + minutes(55));
         assert_eq!(
-            ka.tick(now + minutes(55) + Duration::from_secs(10)),
+            ka.tick(now + minutes(55) + Duration::from_secs(29)),
+            CacheKeepaliveAction::None
+        );
+        assert_eq!(
+            ka.tick(now + minutes(55) + Duration::from_secs(30)),
             CacheKeepaliveAction::Ping
         );
     }

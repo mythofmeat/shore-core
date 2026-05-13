@@ -7,12 +7,18 @@ use crate::stream::LedgerStream;
 use crate::sync::lock_or_recover;
 use chrono::Utc;
 use shore_config::models::ResolvedModel;
+use shore_config::providers::ProviderRegistry;
+use shore_config::LoadedConfig;
+use shore_llm::credentials::{
+    classify_credential_failure, read_candidate_env, resolve_key_candidates, CredentialFailureKind,
+    KeyCandidate,
+};
 use shore_llm::types::{GenerateResponse, LlmRequest, Timing, Usage};
 use shore_llm::{LlmClient, LlmError};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 
 // ── CallType ────────────────────────────────────────────────────────────────
 
@@ -43,6 +49,16 @@ impl CallType {
     fn affects_cache_tracker(&self) -> bool {
         !matches!(self, CallType::Dreaming)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialFallbackEvent {
+    pub from_key: String,
+    pub to_key: Option<String>,
+    pub kind: String,
+    pub status: Option<u16>,
+    pub reason: String,
+    pub warn_on_fallback: bool,
 }
 
 // ── record_call ─────────────────────────────────────────────────────────────
@@ -366,6 +382,157 @@ impl LedgerClient {
         Ok(resp)
     }
 
+    /// Send a non-streaming request with the same ordered provider-key
+    /// fallback policy used by chat streaming.
+    ///
+    /// Every call starts at the first enabled key. Credential-shaped failures
+    /// such as missing keys, rejected keys, exhausted quota, or exhausted
+    /// budget rotate to the next configured key. Transient/provider failures
+    /// still return normally so callers can apply their own retry/backoff
+    /// policy.
+    pub async fn generate_with_credential_fallback(
+        &self,
+        request: &mut LlmRequest,
+        resolved: &ResolvedModel,
+        providers: &ProviderRegistry,
+        call_type: CallType,
+        character: &str,
+        thinking_enabled: bool,
+    ) -> Result<(GenerateResponse, Vec<CredentialFallbackEvent>), LlmError> {
+        if matches!(resolved.sdk, shore_config::models::Sdk::ClaudeCode) {
+            request.api_key.clear();
+            return self
+                .generate(request, call_type, character, thinking_enabled)
+                .await
+                .map(|resp| (resp, Vec::new()));
+        }
+
+        let candidates = resolve_key_candidates(&resolved.provider_key, providers, resolved);
+        if candidates.is_empty() {
+            return Err(LlmError::MissingApiKey {
+                var: format!("provider '{}' has no enabled keys", resolved.provider_key),
+            });
+        }
+
+        debug!(
+            provider = %resolved.provider_key,
+            model = %resolved.qualified_name,
+            call_type = call_type.as_str(),
+            candidates = candidates.len(),
+            "generate_with_credential_fallback starting"
+        );
+
+        let total = candidates.len();
+        let mut events = Vec::new();
+        let mut last_err: Option<LlmError> = None;
+
+        for (i, cand) in candidates.iter().enumerate() {
+            let next_cand = candidates.get(i + 1);
+
+            let api_key = match read_candidate_env(cand) {
+                Some(value) => value,
+                None => {
+                    let kind = CredentialFailureKind::MissingKey;
+                    let reason = format!("env {:?} unset or empty", cand.env);
+                    events.push(record_generate_fallback_event(
+                        request, resolved, call_type, character, cand, next_cand, kind, None,
+                        &reason,
+                    ));
+                    last_err = Some(LlmError::MissingApiKey {
+                        var: cand.env.clone(),
+                    });
+                    if next_cand.is_some() {
+                        continue;
+                    }
+                    break;
+                }
+            };
+
+            request.api_key = api_key;
+
+            match self
+                .generate(request, call_type, character, thinking_enabled)
+                .await
+            {
+                Ok(resp) => return Ok((resp, events)),
+                Err(e) => {
+                    let kind = classify_credential_failure(&resolved.provider_key, &e);
+                    if !kind.should_rotate() {
+                        return Err(e);
+                    }
+
+                    let status = match &e {
+                        LlmError::HttpStatus { status, .. } => Some(*status),
+                        _ => None,
+                    };
+                    let reason = sanitize_fallback_reason(&e);
+                    events.push(record_generate_fallback_event(
+                        request, resolved, call_type, character, cand, next_cand, kind, status,
+                        &reason,
+                    ));
+                    last_err = Some(e);
+                    if next_cand.is_none() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let final_err = last_err.unwrap_or_else(|| LlmError::MissingApiKey {
+            var: format!("all keys for provider '{}' failed", resolved.provider_key),
+        });
+        error!(
+            provider = %resolved.provider_key,
+            model = %resolved.qualified_name,
+            call_type = call_type.as_str(),
+            character,
+            candidates = total,
+            error = %final_err,
+            "generate_with_credential_fallback exhausted all keys"
+        );
+        Err(final_err)
+    }
+
+    /// Resolve the request's model from a loaded config, then apply
+    /// non-streaming provider-key fallback. If the request is from an older
+    /// persisted state and cannot be matched to the current catalog, fall back
+    /// to the existing single-key `generate` behavior.
+    pub async fn generate_with_config_fallback(
+        &self,
+        request: &mut LlmRequest,
+        config: &LoadedConfig,
+        call_type: CallType,
+        character: &str,
+        thinking_enabled: bool,
+    ) -> Result<(GenerateResponse, Vec<CredentialFallbackEvent>), LlmError> {
+        let resolved = resolve_model_for_request(request, config).cloned();
+        match resolved {
+            Some(resolved) => {
+                self.generate_with_credential_fallback(
+                    request,
+                    &resolved,
+                    &config.providers,
+                    call_type,
+                    character,
+                    thinking_enabled,
+                )
+                .await
+            }
+            None => {
+                debug!(
+                    provider = request.provider_key.as_deref().unwrap_or(request.sdk.as_str()),
+                    model = %request.model,
+                    call_type = call_type.as_str(),
+                    character,
+                    "generate_with_config_fallback could not resolve model; using single-key request"
+                );
+                self.generate(request, call_type, character, thinking_enabled)
+                    .await
+                    .map(|resp| (resp, Vec::new()))
+            }
+        }
+    }
+
     /// Send a streaming request, returning a LedgerStream that must be finalized.
     ///
     /// Calls `pricing.get_or_fetch()` first for lazy pricing resolution.
@@ -468,6 +635,81 @@ impl LedgerClient {
                 );
             }
         }
+    }
+}
+
+fn resolve_model_for_request<'a>(
+    request: &LlmRequest,
+    config: &'a LoadedConfig,
+) -> Option<&'a ResolvedModel> {
+    let provider = request.provider_key.as_deref();
+    config
+        .models
+        .chat
+        .values()
+        .chain(config.models.tools.values())
+        .find(|model| {
+            model.model_id == request.model
+                && model.sdk == request.sdk
+                && provider.map_or(true, |p| p == model.provider_key)
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_generate_fallback_event(
+    request: &LlmRequest,
+    resolved: &ResolvedModel,
+    call_type: CallType,
+    character: &str,
+    from: &KeyCandidate,
+    to: Option<&KeyCandidate>,
+    kind: CredentialFailureKind,
+    status: Option<u16>,
+    reason: &str,
+) -> CredentialFallbackEvent {
+    let to_key = to.map(|candidate| candidate.name.clone());
+    warn!(
+        provider = %resolved.provider_key,
+        model = %resolved.qualified_name,
+        call_type = call_type.as_str(),
+        character,
+        from_key = %from.name,
+        to_key = to_key.as_deref().unwrap_or("-"),
+        kind = kind.as_str(),
+        status = ?status,
+        rid = request.rid.as_deref().unwrap_or("-"),
+        reason = %reason,
+        "rotating provider key after non-streaming credential failure"
+    );
+
+    CredentialFallbackEvent {
+        from_key: from.name.clone(),
+        to_key,
+        kind: kind.as_str().to_string(),
+        status,
+        reason: reason.to_string(),
+        warn_on_fallback: from.warn_on_fallback,
+    }
+}
+
+fn sanitize_fallback_reason(err: &LlmError) -> String {
+    match err {
+        LlmError::HttpStatus { status, .. } => format!("HTTP {status}"),
+        LlmError::MissingApiKey { var } => format!("env {var:?} not set"),
+        LlmError::Provider { message } => {
+            let truncated = if message.len() > 200 {
+                let end = message.floor_char_boundary(200);
+                format!("{}...", &message[..end])
+            } else {
+                message.clone()
+            };
+            format!("provider error: {truncated}")
+        }
+        LlmError::Refusal => "model refusal".into(),
+        LlmError::IncompleteStream => "stream ended without done event".into(),
+        LlmError::Request(_) => "transport error".into(),
+        LlmError::Serialize(_) => "request serialization failed".into(),
+        LlmError::Deserialize(_) => "response deserialization failed".into(),
     }
 }
 

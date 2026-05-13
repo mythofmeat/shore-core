@@ -38,7 +38,7 @@ use shore_config::{
     TOOLS_FILE, USER_FILE,
 };
 use shore_diagnostics::truncate_summary;
-use shore_ledger::{CallType, LedgerClient};
+use shore_ledger::{CallType, CredentialFallbackEvent, LedgerClient};
 use shore_llm::types::LlmRequest;
 
 use crate::sync::lock_or_recover;
@@ -137,12 +137,22 @@ pub struct AutonomyState {
     compaction_pending: bool,
     /// Cached last LLM request for heartbeat tick reuse.
     last_request: Option<LlmRequest>,
+    /// Next allowed scheduled dreaming attempt after a failure.
+    next_dream_attempt_at: Option<Instant>,
+    /// Consecutive scheduled dreaming failures.
+    dream_failure_count: u32,
 }
 
 impl AutonomyState {
     fn mark_dirty(&mut self) {
         self.dirty = true;
     }
+}
+
+fn background_retry_delay(failure_count: u32) -> Duration {
+    let exponent = failure_count.saturating_sub(1).min(6);
+    let secs = 60u64.saturating_mul(1u64 << exponent);
+    Duration::from_secs(secs.min(60 * 60))
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +453,8 @@ impl AutonomyManager {
             active_turn_count: 0,
             compaction_pending: false,
             last_request: None,
+            next_dream_attempt_at: None,
+            dream_failure_count: 0,
         }));
 
         self.states.insert(character.to_string(), state.clone());
@@ -574,11 +586,11 @@ impl AutonomyManager {
         self.with_state(character, |s| {
             s.active_turn_count = new_turn_count;
             // Invalidate the cached request — it contains the pre-compaction
-            // conversation. The next heartbeat tick will rebuild from disk.
+            // conversation. The next heartbeat/keepalive call can rebuild from
+            // disk while preserving the existing keepalive deadline. Compaction
+            // changes the conversation tail, but the pinned system prompt
+            // prefix is often still the expensive cache entry worth keeping.
             s.last_request = None;
-            // Stop keepalive pings — the cached prompt prefix is stale.
-            // on_cache_warmed() will re-enable pings on the next real LLM call.
-            s.cache_keepalive.on_cache_invalidated();
             // Compaction cycle complete — allow future triggers.
             s.compaction_triggered = false;
             s.compaction_pending = false;
@@ -818,6 +830,23 @@ fn lock_state(m: &Mutex<AutonomyState>) -> std::sync::MutexGuard<'_, AutonomySta
     lock_or_recover("autonomy state mutex", m)
 }
 
+fn push_provider_fallback_events(
+    state: &mut AutonomyState,
+    kind: HeartbeatEventKind,
+    events: &[CredentialFallbackEvent],
+) {
+    for event in events {
+        let to_key = event.to_key.as_deref().unwrap_or("none");
+        state.heartbeat_log.push(
+            kind.clone(),
+            format!(
+                "Provider key fallback: {} -> {} ({})",
+                event.from_key, to_key, event.kind
+            ),
+        );
+    }
+}
+
 fn schedule_next_wake_in_state(
     state: &Mutex<AutonomyState>,
     input: &Value,
@@ -927,7 +956,11 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         // -- cache keepalive -------------------------------------------------
         let keepalive_action = s.cache_keepalive.tick(now);
 
-        let dream_needed = ctx.config.enabled
+        let dream_backoff_elapsed = s
+            .next_dream_attempt_at
+            .map_or(true, |next_attempt| now >= next_attempt);
+        let dream_needed = dream_backoff_elapsed
+            && ctx.config.enabled
             && ctx
                 .loaded_config
                 .as_ref()
@@ -1028,25 +1061,62 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 
     // -- cache keepalive ping (async, outside lock) -------------------------
     if keepalive_action == CacheKeepaliveAction::Ping {
-        let pinged = execute_dormant_ping(
+        let ping_result = execute_dormant_ping(
             character,
             &ctx.state,
+            &ctx.data_dir,
             ctx.llm_client.as_ref(),
+            ctx.loaded_config.as_deref(),
             ctx.http.as_ref(),
         )
         .await;
         let mut s = lock_state(&ctx.state);
-        if pinged {
-            // Ping actually sent and succeeded — confirm to the keepalive so
-            // it schedules the next ping 59 minutes from now.
-            s.cache_keepalive.on_cache_warmed(Instant::now());
-            s.heartbeat_log
-                .push(HeartbeatEventKind::DormantPing, "Cache keepalive ping");
-        } else {
-            // Ping was skipped (no cached request) or failed. next_ping_at is
-            // still in the past, so tick() will return Ping again on the next
-            // iteration — effectively retrying every 30s until it succeeds.
-            s.cache_keepalive.on_ping_failed();
+        match ping_result {
+            DormantPingOutcome::Success {
+                usage,
+                fallback_events,
+            } => {
+                // Ping actually sent and succeeded — confirm to the keepalive
+                // so it schedules the next ping 55 minutes from now.
+                s.cache_keepalive.on_cache_warmed(Instant::now());
+                push_provider_fallback_events(
+                    &mut s,
+                    HeartbeatEventKind::DormantPing,
+                    &fallback_events,
+                );
+                s.heartbeat_log.push(
+                    HeartbeatEventKind::DormantPing,
+                    format!(
+                        "Cache refresh ping (cache_read: {}, input: {})",
+                        usage.cache_read_tokens, usage.input_tokens
+                    ),
+                );
+                s.heartbeat_log
+                    .push(HeartbeatEventKind::DormantPing, "Cache keepalive ping");
+                s.mark_dirty();
+            }
+            DormantPingOutcome::Failed(reason) => {
+                s.cache_keepalive.on_ping_failed(Instant::now());
+                s.heartbeat_log.push(
+                    HeartbeatEventKind::DormantPing,
+                    format!(
+                        "Cache keepalive ping failed: {}",
+                        truncate_summary(&reason, 160)
+                    ),
+                );
+                s.mark_dirty();
+            }
+            DormantPingOutcome::Skipped(reason) => {
+                s.cache_keepalive.on_ping_failed(Instant::now());
+                s.heartbeat_log.push(
+                    HeartbeatEventKind::DormantPing,
+                    format!(
+                        "Cache keepalive ping skipped: {}",
+                        truncate_summary(&reason, 160)
+                    ),
+                );
+                s.mark_dirty();
+            }
         }
     }
 
@@ -1200,6 +1270,11 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
     .await
     {
         Ok(Some(result)) => {
+            let mut s = lock_state(&ctx.state);
+            s.dream_failure_count = 0;
+            s.next_dream_attempt_at = None;
+            s.mark_dirty();
+            drop(s);
             info!(
                 character,
                 tool_rounds = result.tool_rounds,
@@ -1208,9 +1283,28 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
                 "Dreaming: scheduled AI librarian pass complete"
             );
         }
-        Ok(None) => {}
+        Ok(None) => {
+            let mut s = lock_state(&ctx.state);
+            if s.dream_failure_count != 0 || s.next_dream_attempt_at.is_some() {
+                s.dream_failure_count = 0;
+                s.next_dream_attempt_at = None;
+                s.mark_dirty();
+            }
+        }
         Err(e) => {
             warn!(character, error = %e, "Dreaming: scheduled sweep failed");
+            let now = Instant::now();
+            let mut s = lock_state(&ctx.state);
+            s.dream_failure_count = s.dream_failure_count.saturating_add(1);
+            let delay = background_retry_delay(s.dream_failure_count);
+            s.next_dream_attempt_at = Some(now + delay);
+            s.mark_dirty();
+            debug!(
+                character,
+                retry_in_secs = delay.as_secs(),
+                failure_count = s.dream_failure_count,
+                "Dreaming: scheduled retry backed off"
+            );
         }
     }
 }
@@ -1281,7 +1375,8 @@ fn history_is_between_turns(messages: &[Message]) -> bool {
 
 /// Rebuild an `LlmRequest` from the compacted conversation on disk.
 ///
-/// Called when `last_request` is `None` (e.g. after compaction invalidated it).
+/// Called when `last_request` is `None` (e.g. after compaction invalidated the
+/// conversation tail, or after a daemon restart).
 /// Returns `None` if there are no messages, the conversation is mid-turn, or
 /// the model can't be resolved.
 fn rebuild_request_from_disk(
@@ -1312,12 +1407,14 @@ fn rebuild_request_from_disk(
         return None;
     }
 
-    // Resolve model: defaults.background.heartbeat → defaults.background.model
-    // → defaults.model → first chat model.
+    // Resolve the normal chat model. Heartbeat callers apply their background
+    // model override after rebuilding; keepalive must refresh the chat cache
+    // prefix, not a heartbeat-only model.
     let resolved = config
         .app
         .defaults
-        .resolve_background_model_name(shore_config::app::BackgroundTask::Heartbeat)
+        .model
+        .as_deref()
         .and_then(|name| config.models.find_model(name).ok())
         .or_else(|| config.models.first_chat_model())?;
 
@@ -1603,6 +1700,7 @@ async fn execute_heartbeat_tick(
 
     // Collect <sendMessage> content across iterations (last-wins).
     let mut send_message_text: Option<String> = None;
+    let mut cache_warmed = false;
 
     let loop_deadline = std::time::Instant::now() + HEARTBEAT_LOOP_DEADLINE;
     let mut wrap_up_nudged = false;
@@ -1653,18 +1751,27 @@ async fn execute_heartbeat_tick(
             CallType::ToolLoop
         };
 
-        let mut resp = match client.generate(&request, call_type, character, false).await {
+        let (mut resp, fallback_events) = match client
+            .generate_with_config_fallback(&mut request, lc, call_type, character, false)
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 error!(character, error = %e, iteration, "Heartbeat: LLM call failed");
                 break;
             }
         };
+        if !fallback_events.is_empty() {
+            let mut s = lock_state(state);
+            push_provider_fallback_events(&mut s, HeartbeatEventKind::ToolUse, &fallback_events);
+            s.mark_dirty();
+        }
         crate::claude_code::splice_generate_response_from_session(
             &mut resp,
             claude_code_session.as_ref(),
         )
         .await;
+        cache_warmed = true;
 
         info!(
             character,
@@ -1776,7 +1883,7 @@ async fn execute_heartbeat_tick(
     }
 
     // -- Cache warmed: the tick itself was a cache-warming LLM call -----------
-    {
+    if cache_warmed {
         let mut s = lock_state(state);
         s.cache_keepalive.on_cache_warmed(Instant::now());
         // Mirror schedule to keepalive (character may have called set_next_wake).
@@ -1990,6 +2097,20 @@ fn append_wrap_up_nudge(request: &mut LlmRequest) {
 // Dormant ping executor
 // ---------------------------------------------------------------------------
 
+struct DormantPingUsage {
+    input_tokens: u32,
+    cache_read_tokens: u32,
+}
+
+enum DormantPingOutcome {
+    Success {
+        usage: DormantPingUsage,
+        fallback_events: Vec<CredentialFallbackEvent>,
+    },
+    Failed(String),
+    Skipped(String),
+}
+
 /// Build a keepalive ping request from the most recent real request.
 ///
 /// The ping MUST be byte-identical to the cached request in every field that
@@ -2018,16 +2139,19 @@ fn build_keepalive_ping(req: &LlmRequest, character: &str) -> LlmRequest {
 /// Send a minimal API call (max_tokens=1) to keep the prompt cache warm
 /// while the character is dormant (no user activity).
 ///
-/// Returns `true` if the ping was actually sent and succeeded, `false` if
-/// it was skipped (no cached request) or the API call failed.
+/// Returns a structured outcome so the scheduler only advances the keepalive
+/// deadline after a confirmed cache-warming call, and records skipped/failed
+/// attempts in the heartbeat log.
 async fn execute_dormant_ping(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
+    data_dir: &Path,
     llm_client: Option<&LedgerClient>,
+    loaded_config: Option<&LoadedConfig>,
     http: Option<&Arc<crate::http::DaemonHttpState>>,
-) -> bool {
+) -> DormantPingOutcome {
     let Some(client) = llm_client else {
-        return false;
+        return DormantPingOutcome::Skipped("no LLM client available".to_string());
     };
 
     let mut request = {
@@ -2035,8 +2159,30 @@ async fn execute_dormant_ping(
         match &s.last_request {
             Some(req) => build_keepalive_ping(req, character),
             None => {
-                debug!(character, "Dormant ping: no cached request, skipping");
-                return false;
+                drop(s);
+                let Some(config) = loaded_config else {
+                    debug!(character, "Dormant ping: no cached request, skipping");
+                    return DormantPingOutcome::Skipped(
+                        "no cached request and no loaded config for rebuild".to_string(),
+                    );
+                };
+                match rebuild_request_from_disk(character, data_dir, config) {
+                    Some(req) => {
+                        let mut s = lock_state(state);
+                        s.last_request = Some(req.clone());
+                        drop(s);
+                        build_keepalive_ping(&req, character)
+                    }
+                    None => {
+                        debug!(
+                            character,
+                            "Dormant ping: failed to rebuild request, skipping"
+                        );
+                        return DormantPingOutcome::Skipped(
+                            "no cached or rebuildable request".to_string(),
+                        );
+                    }
+                }
             }
         }
     };
@@ -2051,15 +2197,30 @@ async fn execute_dormant_ping(
         Ok(session) => session,
         Err(e) => {
             debug!(character, error = %e, "Dormant ping: failed to prepare claude_code request");
-            return false;
+            return DormantPingOutcome::Failed(format!("failed to prepare provider request: {e}"));
         }
     };
 
-    match client
-        .generate(&request, CallType::Keepalive, character, false)
-        .await
-    {
-        Ok(mut resp) => {
+    let generate_result = match loaded_config {
+        Some(config) => {
+            client
+                .generate_with_config_fallback(
+                    &mut request,
+                    config,
+                    CallType::Keepalive,
+                    character,
+                    false,
+                )
+                .await
+        }
+        None => client
+            .generate(&request, CallType::Keepalive, character, false)
+            .await
+            .map(|resp| (resp, Vec::new())),
+    };
+
+    match generate_result {
+        Ok((mut resp, fallback_events)) => {
             crate::claude_code::splice_generate_response_from_session(
                 &mut resp,
                 claude_code_session.as_ref(),
@@ -2071,20 +2232,17 @@ async fn execute_dormant_ping(
                 input_tokens = resp.usage.input_tokens,
                 "Dormant ping: cache refreshed"
             );
-            let mut s = lock_state(state);
-            s.heartbeat_log.push(
-                HeartbeatEventKind::DormantPing,
-                format!(
-                    "Cache refresh ping (cache_read: {}, input: {})",
-                    resp.usage.cache_read_tokens, resp.usage.input_tokens
-                ),
-            );
-            s.mark_dirty();
-            true
+            DormantPingOutcome::Success {
+                usage: DormantPingUsage {
+                    input_tokens: resp.usage.input_tokens,
+                    cache_read_tokens: resp.usage.cache_read_tokens,
+                },
+                fallback_events,
+            }
         }
         Err(e) => {
             error!(character, error = %e, "Dormant ping failed");
-            false
+            DormantPingOutcome::Failed(e.to_string())
         }
     }
 }
@@ -2442,6 +2600,8 @@ mod tests {
             active_turn_count: 0,
             compaction_pending: false,
             last_request: None,
+            next_dream_attempt_at: None,
+            dream_failure_count: 0,
         };
         save_state(data_dir, "alice", &mut state);
         assert!(!state.dirty);
@@ -2498,6 +2658,8 @@ mod tests {
             active_turn_count: 0,
             compaction_pending: false,
             last_request: None,
+            next_dream_attempt_at: None,
+            dream_failure_count: 0,
         }));
 
         {
@@ -2648,9 +2810,9 @@ mod tests {
     async fn failed_ping_does_not_advance_timer() {
         // The phantom ping bug: execute_dormant_ping returns early (no
         // LLM client / no last_request), but on_cache_warmed was called
-        // unconditionally, resetting the timer for another 59 minutes.
-        // After the fix, the timer must stay in the past so the next
-        // tick retries.
+        // unconditionally, resetting the timer for another keepalive interval.
+        // After the fix, the timer must stay on a short retry path instead
+        // of being reset for another 55 minutes.
         let tmp = tempfile::tempdir().unwrap();
         let now = Instant::now();
 
@@ -2676,19 +2838,25 @@ mod tests {
             active_turn_count: 0,
             compaction_pending: false,
             last_request: None, // <-- no request → ping will be skipped
+            next_dream_attempt_at: None,
+            dream_failure_count: 0,
         }));
 
         let ctx = tick_ctx_no_llm(state.clone(), tmp.path());
         tick_character("test", &ctx).await;
 
-        // After the tick: the keepalive should STILL return Ping on the
-        // next iteration because the failed ping did not advance the timer.
+        // After the tick: the keepalive should not fire immediately, but
+        // should retry shortly rather than waiting a full keepalive interval.
         let mut s = lock_state(&state);
-        let action = s.cache_keepalive.tick(Instant::now());
+        let immediate = s.cache_keepalive.tick(Instant::now());
+        assert_eq!(immediate, CacheKeepaliveAction::None);
+        let action = s
+            .cache_keepalive
+            .tick(Instant::now() + Duration::from_secs(31));
         assert_eq!(
             action,
             CacheKeepaliveAction::Ping,
-            "Failed ping must NOT advance the keepalive timer"
+            "Failed ping must retry after short backoff"
         );
     }
 
@@ -2717,6 +2885,34 @@ mod tests {
             ka.tick(now + Duration::from_secs(55 * 60)),
             CacheKeepaliveAction::Ping
         );
+    }
+
+    #[tokio::test]
+    async fn compaction_keeps_keepalive_deadline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = test_manager(tmp.path());
+        mgr.ensure_state("alice", None);
+
+        let now = Instant::now();
+        mgr.with_state("alice", |s| {
+            s.cache_keepalive
+                .on_cache_warmed(now - Duration::from_secs(60 * 60));
+            s.cache_keepalive
+                .set_next_wake(Some(now + Duration::from_secs(3600)));
+            s.last_request = Some(empty_request());
+        });
+
+        mgr.notify_compaction_complete("alice", 2);
+
+        let (action, request_cleared) = mgr
+            .with_state("alice", |s| {
+                (s.cache_keepalive.tick(now), s.last_request.is_none())
+            })
+            .unwrap();
+        assert_eq!(action, CacheKeepaliveAction::Ping);
+        assert!(request_cleared);
+
+        mgr.shutdown().await;
     }
 
     #[test]
@@ -3280,6 +3476,8 @@ api_key_env = "{heartbeat_env}"
             active_turn_count: 8,
             compaction_pending: false,
             last_request: None,
+            next_dream_attempt_at: None,
+            dream_failure_count: 0,
         }));
 
         let tick_ctx = TickContext {

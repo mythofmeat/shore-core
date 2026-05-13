@@ -257,11 +257,13 @@ name = "overflow"
 env = "OPENROUTER_API_KEY_OVERFLOW"
 ```
 
-Keys are tried in configured order on every request. When the daemon
-falls back away from a key marked `warn_on_fallback = true` (e.g. an
-exhausted budget cap), a one-line client warning surfaces. The
-fallback is non-sticky: the next request retries from the top of the
-list.
+Keys are tried in configured order on every request, including streaming chat
+turns and non-streaming background work such as heartbeat, compaction,
+dreaming, and cache keepalive. When an interactive chat request falls back away
+from a key marked `warn_on_fallback = true` (e.g. an exhausted budget cap), a
+one-line client warning surfaces; background rotations are recorded in logs, and
+autonomy/keepalive rotations are also visible in heartbeat status. The fallback
+is non-sticky: the next request retries from the top of the list.
 
 ### Discovery and filtering
 
@@ -437,7 +439,7 @@ max_context_tokens = 200000
 keep_recent_turns = 2
 ```
 
-Compaction writes markdown memory notes, archives old turns, and activates staged prompt-visible edits. It also updates `MEMORY.md` with the conversational throughline so the next conversation can pick up where this one left off; dreaming reorganizes the index later. When the autonomy manager has a cached chat request, compaction reuses that prefix and appends only the carry-forward instruction (the trailing `role:"system"` message is wrapped to a `<system_instruction>` user turn by the Anthropic provider), preserving the live conversation's prompt cache.
+Compaction writes markdown memory notes, archives old turns, and activates staged prompt-visible edits. It also updates `MEMORY.md` with the conversational throughline so the next conversation can pick up where this one left off; dreaming reorganizes the index later. When the autonomy manager has a cached chat request, compaction reuses that prefix and appends only the carry-forward instruction (the trailing `role:"system"` message is wrapped to a `<system_instruction>` user turn by the Anthropic provider), preserving the live conversation's prompt cache. After compaction, cache keepalive keeps its existing deadline and rebuilds the request from disk if needed, so stable pinned system prompt sections can stay warm even though the old conversation tail was discarded.
 
 ## `[memory.dreaming]`
 

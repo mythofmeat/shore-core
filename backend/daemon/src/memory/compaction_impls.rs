@@ -243,9 +243,16 @@ impl CompactionLlm for RealCompactionLlm {
                 msg_count, cached_prefix_used, "compaction: starting LLM summarize"
             );
             let t0 = std::time::Instant::now();
-            let mut resp = self
+            let (mut resp, _fallback_events) = self
                 .client
-                .generate(&request, CallType::Compaction, &self.character, false)
+                .generate_with_credential_fallback(
+                    &mut request,
+                    &self.model,
+                    &self.providers,
+                    CallType::Compaction,
+                    &self.character,
+                    false,
+                )
                 .await
                 .map_err(|e| CompactionError::Llm(e.to_string()))?;
             crate::claude_code::splice_generate_response_from_session(

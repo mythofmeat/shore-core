@@ -289,6 +289,7 @@ pub async fn run_librarian_sweep(
 
     let loop_result = run_private_librarian_loop(
         llm_client,
+        loaded_config,
         &mut request,
         tool_ctx.as_ref(),
         character,
@@ -843,6 +844,7 @@ async fn build_librarian_tool_context(
 
 async fn run_private_librarian_loop(
     client: &LedgerClient,
+    loaded_config: &LoadedConfig,
     request: &mut LlmRequest,
     tool_ctx: &dyn ToolContext,
     character: &str,
@@ -853,8 +855,14 @@ async fn run_private_librarian_loop(
     let mut loop_result = LibrarianLoopResult::default();
 
     for iteration in 0..max_tool_rounds {
-        let mut resp = client
-            .generate(request, CallType::Dreaming, character, false)
+        let (mut resp, _fallback_events) = client
+            .generate_with_config_fallback(
+                request,
+                loaded_config,
+                CallType::Dreaming,
+                character,
+                false,
+            )
             .await
             .map_err(|e| DreamingError::Llm(e.to_string()))?;
         crate::claude_code::splice_generate_response_from_session(&mut resp, claude_code_session)

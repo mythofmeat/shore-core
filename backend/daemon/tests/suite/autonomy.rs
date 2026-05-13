@@ -10,7 +10,25 @@
 
 use std::time::Duration;
 
-use shore_test_harness::{MockLlmServer, TestHarness};
+use shore_test_harness::{MockLlmServer, TestConfigBuilder, TestHarness};
+
+fn registry_with(budget_env: &str, overflow_env: &str) -> String {
+    format!(
+        r#"
+[providers.openrouter]
+sdk = "anthropic"
+
+[[providers.openrouter.keys]]
+name = "budget"
+env = "{budget_env}"
+warn_on_fallback = true
+
+[[providers.openrouter.keys]]
+name = "overflow"
+env = "{overflow_env}"
+"#
+    )
+}
 
 /// Helper: yield the runtime multiple times so spawned tasks (especially the
 /// autonomy tick loop) have a chance to process after a time advance.
@@ -205,6 +223,60 @@ async fn test_failed_ping_retries() {
     );
 
     tokio::time::resume();
+    harness.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_keepalive_rotates_provider_key_on_budget_error() {
+    let budget_env = "AUTO_KEEPALIVE_BUDGET";
+    let overflow_env = "AUTO_KEEPALIVE_OVERFLOW";
+    std::env::set_var(budget_env, "sk-budget");
+    std::env::set_var(overflow_env, "sk-overflow");
+
+    let mut harness = TestHarness::boot_with(
+        TestConfigBuilder::new().provider_registry_toml(&registry_with(budget_env, overflow_env)),
+    )
+    .await;
+
+    // Prime last_request with the budget key. The later keepalive should
+    // retry the same request with the overflow key when the budget key fails.
+    harness.mock_llm.enqueue_text("Hello!").await;
+    let _response = harness.send_and_collect("Hi").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let baseline = harness.mock_llm.received_requests().await.len();
+
+    harness
+        .mock_llm
+        .enqueue_error_optional(402, r#"{"error":"budget exceeded"}"#)
+        .await;
+    harness
+        .mock_llm
+        .enqueue_json_text_optional("fallback ping ok")
+        .await;
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
+    tokio::time::advance(Duration::from_secs(60)).await;
+    let after = wait_until_count_above(&harness.mock_llm, baseline + 1, 200).await;
+
+    assert!(
+        after >= baseline + 2,
+        "Expected keepalive to retry with the fallback key after budget exhaustion. \
+         Baseline: {baseline}, After: {after}"
+    );
+
+    let events = harness.autonomy.heartbeat_log("TestChar", 20);
+    assert!(
+        events.iter().any(|event| event
+            .detail
+            .contains("Provider key fallback: budget -> overflow")),
+        "Expected heartbeat log to include provider key fallback, got: {events:#?}"
+    );
+
+    tokio::time::resume();
+    std::env::remove_var(budget_env);
+    std::env::remove_var(overflow_env);
     harness.shutdown().await;
 }
 
