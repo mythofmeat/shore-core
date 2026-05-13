@@ -610,9 +610,9 @@ async fn send_conn_commands(
     }
 }
 
-fn model_settings_conn_command() -> ConnCommand {
+fn model_settings_conn_command(rid: Option<String>) -> ConnCommand {
     ConnCommand::Send(ClientMessage::Command(Command {
-        rid: None,
+        rid,
         name: "model_settings".into(),
         args: serde_json::json!({}),
     }))
@@ -949,6 +949,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> UiEffect {
             app.connection_status = ConnectionStatus::Connected;
             app.effective_sampler = None;
             app.sampler_settings_loading = false;
+            app.pending_sampler_settings_rid = None;
             app.characters = characters.clone();
 
             if let Some(selected) = selected_character {
@@ -977,6 +978,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> UiEffect {
             app.stream.reset(); // clear stale streaming state
             app.effective_sampler = None;
             app.sampler_settings_loading = false;
+            app.pending_sampler_settings_rid = None;
             app.history_page_loading = false;
             app.set_status(format!("reconnecting: {reason}"));
             UiEffect::redraw(RedrawEffect::Immediate)
@@ -1596,12 +1598,16 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                     }
                 }
                 "model_settings" => {
-                    app.sampler_settings_loading = false;
-                    app.effective_sampler = None;
-                    if let Some(snapshot) = EffectiveSamplerSnapshot::from_model_settings(&co.data)
-                        .filter(|snapshot| app.sampler_snapshot_matches_active_model(snapshot))
-                    {
+                    let pending_response = app.sampler_settings_rid_matches(co.rid.as_deref());
+                    let usable_response = pending_response || co.rid.is_none();
+                    let snapshot = EffectiveSamplerSnapshot::from_model_settings(&co.data)
+                        .filter(|snapshot| app.sampler_snapshot_matches_active_model(snapshot));
+                    if let Some(snapshot) = snapshot.filter(|_| usable_response) {
+                        app.finish_sampler_settings_refresh();
                         app.effective_sampler = Some(snapshot);
+                    } else if pending_response {
+                        app.finish_sampler_settings_refresh();
+                        app.effective_sampler = None;
                     }
                     if app.is_setting_palette_open() {
                         app.update_completions();
@@ -1631,7 +1637,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                 }
                 "set_model_setting" => {
                     app.effective_sampler = None;
-                    app.sampler_settings_loading = true;
+                    let refresh_rid = app.begin_sampler_settings_refresh();
                     let key = co
                         .data
                         .get("key")
@@ -1648,7 +1654,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                         app.set_status(format!("setting {key} updated"));
                     }
                     return UiEffect {
-                        cmds: vec![model_settings_conn_command()],
+                        cmds: vec![model_settings_conn_command(Some(refresh_rid))],
                         redraw: RedrawEffect::Immediate,
                     };
                 }
@@ -1747,9 +1753,13 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
             if app.alt_picker.is_some() {
                 app.cancel_alt_picker();
             }
-            app.sampler_settings_loading = false;
+            let sampler_settings_error = app.sampler_settings_loading
+                && app.sampler_settings_rid_matches(err.rid.as_deref());
+            if sampler_settings_error {
+                app.finish_sampler_settings_refresh();
+            }
             app.history_page_loading = false;
-            if app.is_setting_palette_open() {
+            if sampler_settings_error && app.is_setting_palette_open() {
                 app.update_completions();
             }
             app.set_status(format!("error: {:?} - {}", err.code, err.message));
@@ -2083,6 +2093,87 @@ mod redraw_tests {
     }
 
     #[test]
+    fn unrelated_error_does_not_mark_pending_sampler_settings_unavailable() {
+        let mut app = App::default();
+        app.input.enter_command_mode();
+        app.enter_submenu("setting");
+        let rid = app.begin_sampler_settings_refresh();
+        assert_eq!(
+            app.completion.candidates,
+            vec!["loading sampler settings..."]
+        );
+
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::Error(CommandError {
+                rid: None,
+                code: ErrorCode::InvalidRequest,
+                message: "unrelated command failed".into(),
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::Immediate);
+        assert!(app.sampler_settings_loading);
+        assert_eq!(
+            app.pending_sampler_settings_rid.as_deref(),
+            Some(rid.as_str())
+        );
+        assert_eq!(
+            app.completion.candidates,
+            vec!["loading sampler settings..."]
+        );
+
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::CommandOutput(CommandOutput {
+                rid: Some(rid),
+                name: "model_settings".into(),
+                data: serde_json::json!({
+                    "effective_sampler": {
+                        "temperature": 0.7
+                    },
+                    "scopes": {
+                        "temperature": "character_model"
+                    }
+                }),
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::Immediate);
+        assert!(!app.sampler_settings_loading);
+        assert!(app.pending_sampler_settings_rid.is_none());
+        assert!(app
+            .completion
+            .candidates
+            .contains(&"temperature = 0.7".into()));
+    }
+
+    #[test]
+    fn pending_model_settings_error_marks_sampler_settings_unavailable() {
+        let mut app = App::default();
+        app.input.enter_command_mode();
+        app.enter_submenu("setting");
+        let rid = app.begin_sampler_settings_refresh();
+
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::Error(CommandError {
+                rid: Some(rid),
+                code: ErrorCode::InvalidRequest,
+                message: "No model specified and no active model set".into(),
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::Immediate);
+        assert!(!app.sampler_settings_loading);
+        assert!(app.pending_sampler_settings_rid.is_none());
+        assert_eq!(
+            app.completion.candidates,
+            vec!["sampler settings unavailable"]
+        );
+    }
+
+    #[test]
     fn model_settings_for_inactive_model_is_ignored() {
         let mut app = App::default();
         app.set_active_model(Some("chat.test.current"));
@@ -2111,6 +2202,41 @@ mod redraw_tests {
     }
 
     #[test]
+    fn model_settings_matches_active_provider_model_id_before_model_list_cache() {
+        let mut app = App::default();
+        app.set_active_model(Some("openrouter:anthropic/claude-sonnet-4.5"));
+        app.sampler_settings_loading = true;
+
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::CommandOutput(CommandOutput {
+                rid: None,
+                name: "model_settings".into(),
+                data: serde_json::json!({
+                    "model": "chat.openrouter.sonnet",
+                    "provider": "openrouter",
+                    "model_id": "anthropic/claude-sonnet-4.5",
+                    "effective_sampler": {
+                        "temperature": 0.7
+                    },
+                    "scopes": {
+                        "temperature": "character_model"
+                    }
+                }),
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::Immediate);
+        assert!(!app.sampler_settings_loading);
+        assert_eq!(
+            app.effective_sampler
+                .as_ref()
+                .and_then(|snapshot| snapshot.display_value("temperature")),
+            Some("0.7")
+        );
+    }
+
+    #[test]
     fn set_model_setting_response_requests_settings_refresh() {
         let mut app = App::default();
         let effect = handle_server_message(
@@ -2131,9 +2257,15 @@ mod redraw_tests {
         match &effect.cmds[0] {
             ConnCommand::Send(ClientMessage::Command(cmd)) => {
                 assert_eq!(cmd.name, "model_settings");
+                assert!(cmd.rid.is_some());
+                assert_eq!(
+                    cmd.rid.as_deref(),
+                    app.pending_sampler_settings_rid.as_deref()
+                );
             }
             _ => panic!("expected model_settings command"),
         }
+        assert!(app.sampler_settings_loading);
         assert!(app.entries.iter().any(|entry| {
             matches!(entry, ConversationEntry::System { content, .. } if content == "setting temperature updated")
         }));

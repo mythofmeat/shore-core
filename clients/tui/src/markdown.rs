@@ -618,7 +618,7 @@ impl MarkdownRenderer {
 
     fn push_blank_line_if_needed(&mut self) {
         self.flush_current();
-        if self.lines.last().map_or(true, |line| line.width() > 0) {
+        if self.lines.last().is_none_or(|line| line.width() > 0) {
             self.lines.push(Line::from(""));
         }
     }
