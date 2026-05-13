@@ -958,7 +958,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 
         let dream_backoff_elapsed = s
             .next_dream_attempt_at
-            .map_or(true, |next_attempt| now >= next_attempt);
+            .is_none_or(|next_attempt| now >= next_attempt);
         let dream_needed = dream_backoff_elapsed
             && ctx.config.enabled
             && ctx
@@ -1407,16 +1407,13 @@ fn rebuild_request_from_disk(
         return None;
     }
 
-    // Resolve the normal chat model. Heartbeat callers apply their background
-    // model override after rebuilding; keepalive must refresh the chat cache
-    // prefix, not a heartbeat-only model.
-    let resolved = config
-        .app
-        .defaults
-        .model
-        .as_deref()
-        .and_then(|name| config.models.find_model(name).ok())
-        .or_else(|| config.models.first_chat_model())?;
+    // Resolve the normal chat model with the per-character preference
+    // overlay applied. Heartbeat callers apply their background model
+    // override after rebuilding; keepalive must refresh the chat cache
+    // prefix using the same model+sampler chat would have produced, not
+    // a heartbeat-only model or an un-overlaid `defaults.model`.
+    let resolved_owned = crate::preferences::resolve_chat_model_for_character(config, character)?;
+    let resolved = &resolved_owned;
 
     let display_name = config.app.defaults.resolve_display_name();
     if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
@@ -1504,30 +1501,28 @@ fn apply_heartbeat_model_override(
     config: &LoadedConfig,
     character: &str,
 ) -> bool {
-    let Some(heartbeat_name) = config
+    // If `defaults.background.heartbeat` (or its fallbacks) is not set,
+    // we have no override to apply and keep the chat model.
+    if config
         .app
         .defaults
         .resolve_background_model_name(shore_config::app::BackgroundTask::Heartbeat)
-    else {
+        .is_none()
+    {
         return false;
-    };
-    let resolved = match config.models.find_model(heartbeat_name) {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(
-                character,
-                error = %e,
-                heartbeat_model = %heartbeat_name,
-                "Heartbeat: configured model not found in catalog"
-            );
-            return false;
-        }
+    }
+    let Some(resolved) = crate::preferences::resolve_background_model(
+        config,
+        shore_config::app::BackgroundTask::Heartbeat,
+        character,
+    ) else {
+        return false;
     };
     if resolved.model_id == request.model {
         return false;
     }
     match LedgerClient::build_request_with_provider_keys(
-        resolved,
+        &resolved,
         &config.providers,
         request.messages.clone(),
         request.system.clone(),
@@ -1537,7 +1532,7 @@ fn apply_heartbeat_model_override(
         Ok(mut new_req) => {
             info!(
                 character,
-                heartbeat_model = %heartbeat_name,
+                heartbeat_model = %resolved.name,
                 model_id = %new_req.model,
                 "Heartbeat: using configured heartbeat model"
             );
@@ -1549,7 +1544,7 @@ fn apply_heartbeat_model_override(
             warn!(
                 character,
                 error = %e,
-                heartbeat_model = %heartbeat_name,
+                heartbeat_model = %resolved.name,
                 "Heartbeat: failed to build override request, falling back to chat model"
             );
             false

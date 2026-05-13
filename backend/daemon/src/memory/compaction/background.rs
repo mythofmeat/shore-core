@@ -69,39 +69,12 @@ pub async fn run_compaction(
     let prompt_template = resolve_prompt_template(&effective.dirs.config, character, "compact.md")
         .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    let active_model = crate::runtime_state::load_character_runtime_state(&character_dir)
-        .ok()
-        .and_then(|state| state.active_model);
-    let model =
-        crate::commands::state::resolve_compaction_model(&effective, active_model.as_deref())
-            .ok_or("No model configured for background compaction")?;
-
-    // Apply preference overlay (max_tokens, reasoning_effort, etc.) so
-    // compaction honors the same per-character sampler settings as chat.
-    // Without this, a user who sets `max_tokens = 32768` in
-    // `<data>/<char>/preferences/models.toml` still gets the build_request
-    // fallback of 4096 for compaction — which silently truncates the XML
-    // response mid-`<write>` and loses memories.
-    let model = match crate::preferences::load_for_character(data_dir, character) {
-        Ok((global_prefs, char_prefs)) => {
-            let overlay = crate::preferences::resolve_sampler_settings(
-                &global_prefs,
-                Some(&char_prefs),
-                &model.provider_key,
-                &model.model_id,
-                Some(&model),
-            );
-            crate::preferences::apply_sampler_overlay(&model, &overlay)
-        }
-        Err(e) => {
-            tracing::warn!(
-                character,
-                error = %e,
-                "compaction: failed to load preferences; using raw model settings"
-            );
-            model
-        }
-    };
+    let model = crate::preferences::resolve_background_model(
+        &effective,
+        shore_config::app::BackgroundTask::Compaction,
+        character,
+    )
+    .ok_or("No model configured for background compaction")?;
 
     // Create trait implementations.
     let llm = RealCompactionLlm::new(

@@ -22,19 +22,22 @@ commit `1b4fc03` (2026-05-14); the rest are below.
 
 ---
 
-## Tier 1 — same overlay bug, not yet fixed
+## Tier 1 — same overlay bug
 
-Same three-line pattern as the compaction/dreaming fixes. Closes the class.
+Closed by introducing `preferences::resolve_background_model` and
+`preferences::resolve_chat_model_for_character` (Tier 3 #2 helper) and routing
+every background site through them.
 
-- [ ] **Manual `/compact` command** — `commands/state/memory.rs:336`.
-      `resolve_compaction_model` → `RealCompactionLlm::new` with no overlay.
-      User-triggered compactions still cap at 4K.
-- [ ] **Heartbeat cold rebuild** — `autonomy/manager.rs:rebuild_request_from_disk:1382`.
-      Raw `resolved` from `find_model`/`first_chat_model`, no overlay. After a
-      daemon restart, the first heartbeat builds a 4K-capped request that then
-      becomes `last_request` and may seed downstream calls.
-- [ ] **Heartbeat background-model override** —
-      `autonomy/manager.rs:apply_heartbeat_model_override:1502`. Same.
+- [x] **Manual `/compact` command** — `commands/state/memory.rs`. Now resolves
+      via `preferences::resolve_background_model(BackgroundTask::Compaction)`.
+- [x] **Heartbeat cold rebuild** — `autonomy/manager.rs::rebuild_request_from_disk`.
+      Now resolves via `preferences::resolve_chat_model_for_character`, which
+      also fixes a latent bug: it previously used `defaults.model` and ignored
+      per-character `[selected]` preferences, so the rebuilt chat-cache prefix
+      could differ from what chat would actually send.
+- [x] **Heartbeat background-model override** —
+      `autonomy/manager.rs::apply_heartbeat_model_override`. Now resolves via
+      `preferences::resolve_background_model(BackgroundTask::Heartbeat)`.
 
 ---
 
@@ -111,13 +114,12 @@ Sorted by lines-of-code-removed-per-refactor.
       `prepare_chat_context(character, data_dir, config, messages, ...)`
       helper folds both. Compaction and dreaming would also route through it.
 
-- [ ] **Per-task model-resolution chain is rebuilt three times.** Compaction
-      (`commands/state/memory.rs:469`), dreaming (`dreaming.rs:712`), heartbeat
-      (`autonomy/manager.rs:1502`) each implement the same `defaults.background.<task>
-      → defaults.background.model → first_chat_model` ladder, then each
-      forgets the preference overlay differently. A single
-      `resolve_background_model(config, BackgroundTask::X, character, data_dir)
-      -> ResolvedModel` (already overlayed) closes the entire bug class above.
+- [x] **Per-task model-resolution chain is rebuilt three times.** Closed by
+      `preferences::resolve_background_model` + `resolve_chat_model_for_character`.
+      All four background sites (manual `/compact`, background compaction,
+      dreaming, heartbeat override) and the heartbeat chat-cache rebuild now
+      route through these helpers. The old `state::memory::resolve_compaction_model`
+      and `dreaming::resolve_dreaming_model` shims were removed.
 
 - [ ] **Per-character paths are joined ad-hoc in ~46 places.**
       `data_dir.join(character)`, `character_dir.join("active.jsonl")`,

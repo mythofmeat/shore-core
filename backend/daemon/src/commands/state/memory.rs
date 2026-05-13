@@ -333,8 +333,12 @@ pub async fn compact(
         resolve_prompt_template(&ctx.config.dirs.config, &char_name, "compact.md")
             .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    let model = resolve_compaction_model(&ctx.config, ctx.active_model.as_deref())
-        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
+    let model = crate::preferences::resolve_background_model(
+        &ctx.config,
+        shore_config::app::BackgroundTask::Compaction,
+        &char_name,
+    )
+    .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
 
     let llm = RealCompactionLlm::new(
         ctx.llm_client.clone(),
@@ -458,41 +462,24 @@ fn compaction_err(e: CompactionError) -> (ErrorCode, String) {
     }
 }
 
-/// Resolve the model to use for compaction.
-///
-/// Chain: `defaults.background.compaction → defaults.background.model →
-/// defaults.model → first chat model`. The per-character active chat
-/// model is intentionally *not* consulted here — compaction is a
-/// background task and its model is configured independently of the
-/// chat selection so `switch_model` doesn't move it. The `active_model`
-/// argument is retained for API stability and currently ignored.
-pub fn resolve_compaction_model(
-    config: &shore_config::LoadedConfig,
-    _active_model: Option<&str>,
-) -> Option<shore_config::models::ResolvedModel> {
-    config
-        .app
-        .defaults
-        .resolve_background_model_name(shore_config::app::BackgroundTask::Compaction)
-        .and_then(|name| config.models.find_model(name).ok())
-        .or_else(|| config.models.first_chat_model())
-        .cloned()
-}
-
 #[cfg(test)]
 mod resolver_tests {
-    //! Regression tests for [`resolve_compaction_model`].
+    //! Regression tests for compaction model resolution via
+    //! [`crate::preferences::resolve_background_model`].
     //!
     //! Compaction is a background task and follows the
     //! `defaults.background.compaction → defaults.background.model →
     //! defaults.model → first chat model` chain. The per-character
     //! active chat model is **not** consulted, so a runtime
     //! `switch_model` does not move the compaction model.
-    use super::resolve_compaction_model;
-    use shore_config::app::{AppConfig, BackgroundDefaultsConfig, DefaultsConfig};
+    use crate::preferences::resolve_background_model;
+    use shore_config::app::{AppConfig, BackgroundDefaultsConfig, BackgroundTask, DefaultsConfig};
     use shore_config::models::ModelCatalog;
     use shore_config::{LoadedConfig, ShoreDirs};
-    use std::path::PathBuf;
+
+    fn resolve(config: &LoadedConfig) -> Option<shore_config::models::ResolvedModel> {
+        resolve_background_model(config, BackgroundTask::Compaction, "test-char")
+    }
 
     fn catalog_with_chat_and_tools() -> ModelCatalog {
         let chat: toml::Table = toml::from_str(
@@ -516,6 +503,7 @@ model_id = "minimax-tool"
     }
 
     fn make_config(defaults: DefaultsConfig) -> LoadedConfig {
+        let tmp = tempfile::tempdir().expect("tempdir");
         let app = AppConfig {
             defaults,
             ..AppConfig::default()
@@ -524,10 +512,10 @@ model_id = "minimax-tool"
             app,
             catalog_with_chat_and_tools(),
             ShoreDirs {
-                config: PathBuf::from("/tmp/resolver-test/config"),
-                data: PathBuf::from("/tmp/resolver-test/data"),
-                runtime: PathBuf::from("/tmp/resolver-test/runtime"),
-                cache: PathBuf::from("/tmp/resolver-test/cache"),
+                config: tmp.path().join("config"),
+                data: tmp.path().join("data"),
+                runtime: tmp.path().join("runtime"),
+                cache: tmp.path().join("cache"),
             },
         )
     }
@@ -543,7 +531,7 @@ model_id = "minimax-tool"
             },
             ..DefaultsConfig::default()
         });
-        let model = resolve_compaction_model(&config, None).expect("resolved");
+        let model = resolve(&config).expect("resolved");
         assert_eq!(model.name, "bg");
     }
 
@@ -557,7 +545,7 @@ model_id = "minimax-tool"
             },
             ..DefaultsConfig::default()
         });
-        let model = resolve_compaction_model(&config, None).expect("resolved");
+        let model = resolve(&config).expect("resolved");
         assert_eq!(model.name, "bg");
     }
 
@@ -567,33 +555,21 @@ model_id = "minimax-tool"
             model: Some("primary".to_string()),
             ..DefaultsConfig::default()
         });
-        let model = resolve_compaction_model(&config, None).expect("resolved");
-        assert_eq!(model.name, "primary");
-    }
-
-    #[test]
-    fn compaction_ignores_per_character_active_chat_model() {
-        // Even when an active chat model name is passed in, the resolver
-        // must use the configured background chain. This is the headline
-        // behavior change: `switch_model` must not move compaction.
-        let config = make_config(DefaultsConfig {
-            model: Some("primary".to_string()),
-            ..DefaultsConfig::default()
-        });
-        let model = resolve_compaction_model(&config, Some("bg")).expect("resolved");
+        let model = resolve(&config).expect("resolved");
         assert_eq!(model.name, "primary");
     }
 
     #[test]
     fn compaction_falls_back_to_first_chat_model_when_nothing_set() {
         let config = make_config(DefaultsConfig::default());
-        let model = resolve_compaction_model(&config, None).expect("resolved");
+        let model = resolve(&config).expect("resolved");
         // first_chat_model returns the first BTreeMap entry: "bg" sorts before "primary".
         assert_eq!(model.name, "bg");
     }
 
     #[test]
     fn compaction_returns_none_with_empty_catalog() {
+        let tmp = tempfile::tempdir().expect("tempdir");
         let app = AppConfig {
             defaults: DefaultsConfig::default(),
             ..AppConfig::default()
@@ -602,12 +578,12 @@ model_id = "minimax-tool"
             app,
             ModelCatalog::default(),
             ShoreDirs {
-                config: PathBuf::from("/tmp/resolver-test/config"),
-                data: PathBuf::from("/tmp/resolver-test/data"),
-                runtime: PathBuf::from("/tmp/resolver-test/runtime"),
-                cache: PathBuf::from("/tmp/resolver-test/cache"),
+                config: tmp.path().join("config"),
+                data: tmp.path().join("data"),
+                runtime: tmp.path().join("runtime"),
+                cache: tmp.path().join("cache"),
             },
         );
-        assert!(resolve_compaction_model(&config, None).is_none());
+        assert!(resolve(&config).is_none());
     }
 }

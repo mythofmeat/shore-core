@@ -696,38 +696,15 @@ async fn build_librarian_request(
         return Ok(request);
     }
 
-    let resolved_base = resolve_dreaming_model(loaded_config)?;
-    // Apply preference overlay (max_tokens, reasoning_effort, etc.) so
-    // dreaming honors the same per-character sampler settings as chat —
-    // matches the fix in `memory::compaction::run_compaction`. Without
-    // this, a per-character `max_tokens` is silently dropped and the
-    // librarian gets truncated mid-response.
-    let resolved_owned;
-    let resolved: &shore_config::models::ResolvedModel =
-        match crate::preferences::load_for_character(&loaded_config.dirs.data, character) {
-            Ok((global_prefs, char_prefs)) => {
-                let overlay = crate::preferences::resolve_sampler_settings(
-                    &global_prefs,
-                    Some(&char_prefs),
-                    &resolved_base.provider_key,
-                    &resolved_base.model_id,
-                    Some(resolved_base),
-                );
-                resolved_owned = crate::preferences::apply_sampler_overlay(resolved_base, &overlay);
-                &resolved_owned
-            }
-            Err(e) => {
-                warn!(
-                    character,
-                    error = %e,
-                    "dreaming: failed to load preferences; using raw model settings"
-                );
-                resolved_base
-            }
-        };
+    let resolved = crate::preferences::resolve_background_model(
+        loaded_config,
+        shore_config::app::BackgroundTask::Dreaming,
+        character,
+    )
+    .ok_or_else(|| DreamingError::Config("no chat model configured for dreaming".into()))?;
     let tools = build_librarian_tool_defs(character, &display_name, dry_run);
     LedgerClient::build_request_with_provider_keys(
-        resolved,
+        &resolved,
         &loaded_config.providers,
         vec![json!({"role": "user", "content": user_prompt})],
         Some(json!(system)),
@@ -735,25 +712,6 @@ async fn build_librarian_request(
         None,
     )
     .map_err(|e| DreamingError::Llm(e.to_string()))
-}
-
-fn resolve_dreaming_model(
-    loaded_config: &LoadedConfig,
-) -> Result<&shore_config::models::ResolvedModel, DreamingError> {
-    if let Some(name) = loaded_config
-        .app
-        .defaults
-        .resolve_background_model_name(shore_config::app::BackgroundTask::Dreaming)
-    {
-        return loaded_config
-            .models
-            .find_model(name)
-            .map_err(|e| DreamingError::Config(e.to_string()));
-    }
-    loaded_config
-        .models
-        .first_chat_model()
-        .ok_or_else(|| DreamingError::Config("no chat model configured for dreaming".into()))
 }
 
 fn build_librarian_prompt(
@@ -870,6 +828,7 @@ async fn build_librarian_tool_context(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_private_librarian_loop(
     client: &LedgerClient,
     loaded_config: &LoadedConfig,

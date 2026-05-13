@@ -972,6 +972,8 @@ mod tests {
         let mut c = ResponseCollector::new();
         let action = c.feed(&ServerMessage::NewMessage(NewMessage {
             revision: 0,
+            character: None,
+            origin: None,
             message: Message {
                 msg_id: "1".into(),
                 role: Role::Assistant,
