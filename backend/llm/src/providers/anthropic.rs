@@ -469,7 +469,7 @@ fn convert_inline_system_messages(messages: &[Value]) -> Vec<Value> {
     for msg in messages {
         if msg.get("role").and_then(Value::as_str) == Some("system") {
             let text = extract_text_content(msg);
-            let wrapped = format!("<system_instruction>{text}</system_instruction>");
+            let wrapped = super::stream_helpers::wrap_inline_system_instruction(&text);
 
             // If the previous message is a user message, merge to avoid
             // consecutive user roles (which the API rejects). Preserve

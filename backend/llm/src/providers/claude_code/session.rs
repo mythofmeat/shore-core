@@ -145,7 +145,7 @@ fn render_row(
             }
             json!({
                 "role": "user",
-                "content": format!("<system_instruction>{text}</system_instruction>"),
+                "content": crate::providers::stream_helpers::wrap_inline_system_instruction(&text),
             })
         }
         _ => return None,

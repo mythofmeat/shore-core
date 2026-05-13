@@ -566,9 +566,9 @@ fn render_current_message_blocks(message: &Value, image_index: &mut usize) -> Ve
             if text.is_empty() {
                 Vec::new()
             } else {
-                vec![text_block(format!(
-                    "<system_instruction>{text}</system_instruction>"
-                ))]
+                vec![text_block(
+                    crate::providers::stream_helpers::wrap_inline_system_instruction(&text),
+                )]
             }
         }
         _ => render_content_blocks_for_stdin(message.get("content"), image_index),

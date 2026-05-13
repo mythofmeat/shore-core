@@ -183,14 +183,15 @@ Sorted by lines-of-code-removed-per-refactor.
       would need a separate design pass.
 
 - [~] **`<system_instruction>` wrapping is reinvented in 4 providers.**
-      Partly addressed: trailing system instructions now flow through
-      `system_suffix`, but each provider still owns its inline conversion
-      because `inject_system` (mid-history) and persisted heartbeat-recap
-      `Role::System` messages still need wrapping at the provider layer.
-      Fully unifying this would require either threading mid-history system
-      messages through a separate first-class shape or accepting the
-      per-provider conversion as the canonical form. Leaving open as
-      lower-priority — the trailing case (the high-traffic path) is fixed.
+      Trailing system instructions flow through `system_suffix`. Inline
+      mid-history `inject_system`/heartbeat-recap messages still go
+      through each provider's own translator because the surrounding
+      message shape is genuinely different (Anthropic content arrays,
+      Gemini parts, OpenAI string-or-array, Claude Code stdin), but the
+      *tag spelling* itself (`<system_instruction>...</system_instruction>`)
+      is now a single helper, `stream_helpers::wrap_inline_system_instruction`.
+      All five sites (Anthropic, OpenAI ×2, Gemini, Claude Code session +
+      driver) call it. Future rename or sentinel swap edits one place.
 
 - [x] **JSONL parse loop is open-coded where `MessageStore` already exists.**
       `compaction/background.rs::run_compaction` now loads via

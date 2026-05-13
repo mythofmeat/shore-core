@@ -16,7 +16,7 @@ use super::sse::{read_sse_events, SseEvent};
 use super::stream_helpers::{
     apply_common_params, build_done_event, build_start_event, build_tool_use_event,
     extract_openai_usage, extract_system_text, normalize_finish_reason,
-    translate_tool_declarations, StreamTiming,
+    translate_tool_declarations, wrap_inline_system_instruction, StreamTiming,
 };
 
 // ── Default base URLs ───────────────────────────────────────────────
@@ -60,7 +60,7 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
                     if ctx.wrap_inline_system {
                         out.push(json!({
                             "role": "user",
-                            "content": format!("<system_instruction>{s}</system_instruction>"),
+                            "content": wrap_inline_system_instruction(s),
                         }));
                     } else {
                         out.push(json!({"role": "system", "content": s}));
@@ -222,7 +222,7 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
                         if ctx.wrap_inline_system {
                             out.push(json!({
                                 "role": "user",
-                                "content": format!("<system_instruction>{text}</system_instruction>"),
+                                "content": wrap_inline_system_instruction(&text),
                             }));
                         } else {
                             out.push(json!({"role": "system", "content": text}));

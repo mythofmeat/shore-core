@@ -188,6 +188,18 @@ pub(crate) fn extract_openai_usage(u: &Value) -> Usage {
     }
 }
 
+/// Wrap a system-role instruction in `<system_instruction>...</system_instruction>`
+/// so the model sees it as a system-style note inside a user-role
+/// turn — the canonical workaround for providers that reject raw
+/// `role: "system"` in the messages array. Used by Anthropic, OpenAI,
+/// Gemini, and Claude Code's translation paths.
+///
+/// Single source of truth for the tag spelling so a future rename
+/// (or a switch to a different sentinel) only touches one place.
+pub(crate) fn wrap_inline_system_instruction(text: &str) -> String {
+    format!("<system_instruction>{text}</system_instruction>")
+}
+
 /// Normalize a provider-specific finish reason into a canonical string.
 ///
 /// Covers OpenAI (lowercase), Gemini (UPPERCASE), and Anthropic (already
