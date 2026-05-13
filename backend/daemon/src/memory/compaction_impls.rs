@@ -177,16 +177,22 @@ impl RealCompactionLlm {
         let mut request = match cached_request {
             Some(cached) => {
                 // Cache-preserving path: keep the live conversation's cached
-                // prefix, but rebuild the request shell from the resolved
-                // compaction model. This preserves compaction provider/model,
-                // token, sampler, provider-option, and no-tool settings instead
-                // of leaking chat request settings into background compaction.
+                // prefix verbatim. Anthropic's prompt-cache hash includes the
+                // `tools` array as part of the cached prefix, so to actually
+                // hit the chat cache we must carry chat's tools through
+                // unchanged — `tools: None` here silently invalidates every
+                // cache match against the chat prefix and forces a full cache
+                // rebuild on every compaction. The trailing user/system
+                // instruction tells the model to emit the compaction XML
+                // response directly; we never parse tool_use blocks out of a
+                // compaction response, so passing the tool defs through is
+                // safe even though the model could in principle call them.
                 let mut request = LedgerClient::build_request_with_provider_keys(
                     &self.model,
                     &self.providers,
                     cached.messages,
                     cached.system,
-                    None,
+                    cached.tools,
                     None,
                 )
                 .map_err(|e| CompactionError::Llm(e.to_string()))?;
@@ -506,7 +512,7 @@ mod tests {
             system: Some(json!("cached system")),
             tools: Some(vec![json!({
                 "name": "read",
-                "description": "chat tool that compaction must not inherit",
+                "description": "chat tool — compaction inherits it to preserve the cache prefix hash",
                 "input_schema": { "type": "object" }
             })]),
             max_tokens: 42,
@@ -540,7 +546,12 @@ mod tests {
         assert_eq!(request.max_tokens, 777);
         assert_eq!(request.temperature, Some(0.25));
         assert_eq!(request.top_p, None);
-        assert!(request.tools.is_none());
+        let tools = request
+            .tools
+            .as_ref()
+            .expect("chat tools must pass through so the cache prefix hash matches");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "read");
         assert_eq!(request.rid, None);
         assert_eq!(request.forensic_character.as_deref(), Some("alice"));
         assert_eq!(request.system, Some(json!("cached system")));

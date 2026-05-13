@@ -696,7 +696,35 @@ async fn build_librarian_request(
         return Ok(request);
     }
 
-    let resolved = resolve_dreaming_model(loaded_config)?;
+    let resolved_base = resolve_dreaming_model(loaded_config)?;
+    // Apply preference overlay (max_tokens, reasoning_effort, etc.) so
+    // dreaming honors the same per-character sampler settings as chat —
+    // matches the fix in `memory::compaction::run_compaction`. Without
+    // this, a per-character `max_tokens` is silently dropped and the
+    // librarian gets truncated mid-response.
+    let resolved_owned;
+    let resolved: &shore_config::models::ResolvedModel =
+        match crate::preferences::load_for_character(&loaded_config.dirs.data, character) {
+            Ok((global_prefs, char_prefs)) => {
+                let overlay = crate::preferences::resolve_sampler_settings(
+                    &global_prefs,
+                    Some(&char_prefs),
+                    &resolved_base.provider_key,
+                    &resolved_base.model_id,
+                    Some(resolved_base),
+                );
+                resolved_owned = crate::preferences::apply_sampler_overlay(resolved_base, &overlay);
+                &resolved_owned
+            }
+            Err(e) => {
+                warn!(
+                    character,
+                    error = %e,
+                    "dreaming: failed to load preferences; using raw model settings"
+                );
+                resolved_base
+            }
+        };
     let tools = build_librarian_tool_defs(character, &display_name, dry_run);
     LedgerClient::build_request_with_provider_keys(
         resolved,
