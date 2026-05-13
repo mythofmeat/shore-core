@@ -2293,4 +2293,142 @@ mod tests {
         let built = builder.build().unwrap();
         assert_eq!(built.url().as_str(), "http://127.0.0.1:8080/v1/messages");
     }
+
+    // ── compaction-tail breakpoint regression ─────────────────────────
+    //
+    // These tests pin the on-the-wire invariants that the daemon's
+    // cached-compaction path relies on. The "compaction tail" shape
+    // (1 user prompt appended + `system_suffix`) is defined in
+    // shore-daemon's `compaction_impls::COMPACTION_TAIL_USER_PROMPT_COUNT`;
+    // changing either should require updating the other in lockstep.
+
+    /// After `convert_inline_system_messages`, a request shaped like a
+    /// compaction tail (`[...chat prefix..., user "compact now", system
+    /// "compaction system"]`) must merge the trailing system into the
+    /// compact-now user, NOT into any earlier prefix user. This is what
+    /// makes the cache_control markers placed by chat on the prefix
+    /// survive the compaction call verbatim.
+    #[test]
+    fn compaction_tail_merges_into_compact_now_not_prefix() {
+        // Simulate chat-warmed cache: cache_control on prefix user/assistant.
+        let cc = json!({"type": "ephemeral"});
+        let messages = vec![
+            json!({"role": "user", "content": [
+                {"type": "text", "text": "prefix u0", "cache_control": cc},
+            ]}),
+            json!({"role": "assistant", "content": [
+                {"type": "text", "text": "prefix a0", "cache_control": cc},
+            ]}),
+            // Compaction tail: one user prompt + (after preprocess_request)
+            // a trailing system block.
+            json!({"role": "user", "content": "compact now"}),
+            json!({"role": "system", "content": "compaction system"}),
+        ];
+
+        let result = convert_inline_system_messages(&messages);
+
+        assert_eq!(
+            result.len(),
+            3,
+            "trailing system must merge into compact-now user, leaving 3 messages"
+        );
+        // Prefix markers survived on their original messages.
+        let u0_blocks = result[0]["content"].as_array().expect("prefix u0 array");
+        assert!(
+            u0_blocks[0].get("cache_control").is_some(),
+            "prefix user cache_control marker must survive — compaction call \
+             reuses the chat-warmed cache prefix"
+        );
+        let a0_blocks = result[1]["content"].as_array().expect("prefix a0 array");
+        assert!(
+            a0_blocks[0].get("cache_control").is_some(),
+            "prefix assistant cache_control marker must survive"
+        );
+        // The merged compact-now user carries the system instruction.
+        assert_eq!(result[2]["role"], "user");
+        let merged_content = result[2]["content"].as_str().unwrap_or_default();
+        assert!(
+            merged_content.contains("compact now"),
+            "merge target must be the compact-now user, not a prefix turn"
+        );
+        assert!(
+            merged_content.contains("<system_instruction>compaction system</system_instruction>"),
+            "compaction system prompt must be wrapped and merged into compact-now"
+        );
+    }
+
+    /// When `has_existing_markers` is true (the cached-compaction path),
+    /// `apply_cache_control` is skipped and the prefix markers pass
+    /// through unchanged. This pins that `build_body` does not strip,
+    /// rewrite, or shift those markers — even after the trailing-system
+    /// merge changes the message count.
+    #[test]
+    fn compaction_tail_preserves_cache_breakpoint_positions() {
+        let cc = json!({"type": "ephemeral", "ttl": "1h"});
+        let mut request = make_request(
+            vec![
+                json!({"role": "user", "content": [
+                    {"type": "text", "text": "prefix u0", "cache_control": cc},
+                ]}),
+                json!({"role": "assistant", "content": "prefix a0"}),
+                json!({"role": "user", "content": [
+                    {"type": "text", "text": "prefix u1", "cache_control": cc},
+                ]}),
+                // Compaction tail (after `preprocess_request` expanded the
+                // `system_suffix` into a trailing system block).
+                json!({"role": "user", "content": "compact now"}),
+                json!({"role": "system", "content": "compaction system"}),
+            ],
+            Some(json!("chat system")),
+        );
+        request.provider_options = Some(json!({"cache_ttl": "1h"}));
+
+        let (body, _) = build_body(&request, false);
+
+        let out_messages = body["messages"].as_array().expect("messages array");
+        // Trailing system merged into compact-now ⇒ 4 wire messages.
+        assert_eq!(
+            out_messages.len(),
+            4,
+            "compaction tail collapses trailing system into compact-now user"
+        );
+        // Prefix breakpoints stayed on their original messages — chat's
+        // cache prefix is reused byte-for-byte.
+        let u0_blocks = out_messages[0]["content"]
+            .as_array()
+            .expect("u0 stays as array");
+        assert!(
+            u0_blocks[0].get("cache_control").is_some(),
+            "prefix u0 cache_control marker preserved"
+        );
+        let u1_blocks = out_messages[2]["content"]
+            .as_array()
+            .expect("u1 stays as array");
+        assert!(
+            u1_blocks[0].get("cache_control").is_some(),
+            "prefix u1 cache_control marker preserved"
+        );
+        // The compact-now turn is now a merged user; it must NOT have
+        // gained a cache_control marker (the existing-markers path skips
+        // `apply_cache_control`, so no new breakpoints land on the tail).
+        let tail = &out_messages[3];
+        assert_eq!(tail["role"], "user");
+        match &tail["content"] {
+            Value::Array(blocks) => {
+                for block in blocks {
+                    assert!(
+                        block.get("cache_control").is_none(),
+                        "compaction tail must not gain a fresh cache_control marker"
+                    );
+                }
+            }
+            Value::String(s) => {
+                assert!(
+                    s.contains("<system_instruction>compaction system</system_instruction>"),
+                    "compaction system instruction must ride on the merged tail"
+                );
+            }
+            other => panic!("unexpected tail content shape: {other:?}"),
+        }
+    }
 }

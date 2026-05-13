@@ -133,6 +133,50 @@ pub fn resolve_image_gen_config(
 }
 
 // ---------------------------------------------------------------------------
+// Compaction tail shape
+// ---------------------------------------------------------------------------
+
+/// Number of user messages appended to a cached chat prefix when building a
+/// cached compaction request.
+///
+/// The compaction system prompt rides as `system_suffix`, not as another
+/// trailing entry in `messages` — shore-llm's `preprocess_request` expands
+/// the suffix into a `role: "system"` block at provider dispatch, and
+/// Anthropic's `convert_inline_system_messages` then merges that block
+/// into the **immediately preceding** user message (the "compact now"
+/// turn). Because exactly ONE new user message is appended, the merge
+/// target is always the compaction tail itself — never one of the cached
+/// prefix turns. Cache-breakpoint markers placed by chat on the cached
+/// prefix therefore survive verbatim into the compaction request.
+///
+/// `apply_cache_control` (Anthropic) is skipped when existing markers are
+/// present, so the breakpoint positions chat warmed are preserved exactly
+/// instead of being re-derived from the shifted message count.
+///
+/// Changing this constant requires re-deriving the breakpoint math, and
+/// the regression test
+/// `compaction_tail_preserves_cache_breakpoint_positions` in
+/// shore-llm's `providers::anthropic::tests` must be updated in lockstep.
+pub const COMPACTION_TAIL_USER_PROMPT_COUNT: usize = 1;
+
+/// Apply the canonical compaction tail to a cached chat request.
+///
+/// See [`COMPACTION_TAIL_USER_PROMPT_COUNT`] for the contract. The caller
+/// is responsible for having cloned a cached `LlmRequest` and re-built it
+/// against the compaction model (e.g. via
+/// `LedgerClient::build_request_with_provider_keys`). This helper makes
+/// the "what to append" step a single named operation rather than two
+/// open-coded field mutations.
+fn append_compaction_tail(
+    request: &mut shore_llm::types::LlmRequest,
+    user_prompt: serde_json::Value,
+    system_prompt: &str,
+) {
+    request.messages.push(user_prompt);
+    request.system_suffix = Some(system_prompt.to_string());
+}
+
+// ---------------------------------------------------------------------------
 // RealCompactionLlm
 // ---------------------------------------------------------------------------
 
@@ -196,15 +240,25 @@ impl RealCompactionLlm {
                     None,
                 )
                 .map_err(|e| CompactionError::Llm(e.to_string()))?;
-                for msg in messages {
-                    request.messages.push(msg);
-                }
-                // The compaction prompt rides as a `system_suffix` instead
-                // of being pushed into `messages`. shore-llm expands it
-                // into the same trailing-system shape providers already
-                // handle, but the cached prefix used by downstream chat
-                // calls never sees it.
-                request.system_suffix = Some(system.to_string());
+                // Cache-breakpoint placement assumes the cached path
+                // appends exactly COMPACTION_TAIL_USER_PROMPT_COUNT user
+                // messages (see the const's docs for why). The compaction
+                // prompt rides as `system_suffix`, never as a trailing
+                // entry in `messages` — the cached prefix downstream chat
+                // calls reuse never sees it.
+                debug_assert_eq!(
+                    messages.len(),
+                    COMPACTION_TAIL_USER_PROMPT_COUNT,
+                    "cached-prefix compaction must append exactly \
+                     COMPACTION_TAIL_USER_PROMPT_COUNT user messages; \
+                     adjust the const and the breakpoint regression test \
+                     in lockstep before changing this shape"
+                );
+                let mut iter = messages.into_iter();
+                let user_prompt = iter
+                    .next()
+                    .expect("cached compaction requires one user prompt");
+                append_compaction_tail(&mut request, user_prompt, system);
                 request
             }
             None => LedgerClient::build_request_with_provider_keys(
