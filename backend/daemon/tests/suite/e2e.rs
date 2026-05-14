@@ -251,7 +251,11 @@ async fn e2e_conversation_milestone() {
         "Initial history should be empty"
     );
     assert_eq!(history.selected_character.as_deref(), Some("TestChar"));
-    assert_eq!(history.config["active_model"], "haiku");
+    // `active_model` in the handshake snapshot is the fully-qualified
+    // identifier (`kind.provider.alias`) rather than the bare alias —
+    // the qualified form uniquely picks one entry out of the model
+    // catalog when two providers expose the same alias name.
+    assert_eq!(history.config["active_model"], "chat.openrouter.haiku");
     assert_eq!(history.config["private"], false);
     assert_eq!(history.revision, 0);
     eprintln!(

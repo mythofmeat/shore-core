@@ -9,47 +9,46 @@ use super::CompactionManager;
 /// from `AutonomyManager::cached_last_request`). When provided, compaction
 /// reuses the cached prefix instead of building a fresh request, preserving
 /// the Anthropic prompt cache for the compaction call itself.
+///
+/// The data directory comes from `config.dirs.data` — callers should not
+/// thread a separate `data_dir` argument; the two would have to stay
+/// manually in sync.
 pub async fn run_compaction(
     character: &str,
     config: &shore_config::LoadedConfig,
     llm_client: &shore_ledger::LedgerClient,
-    data_dir: &std::path::Path,
     notifier: &crate::notifications::NotificationService,
     cached_request: Option<shore_llm::types::LlmRequest>,
     http: Option<std::sync::Arc<crate::http::DaemonHttpState>>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    use crate::engine::messages::MessageStore;
     use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
     use crate::notifications::NotificationEvent;
-    use shore_config::{load_character_config, resolve_prompt_template};
-    use shore_protocol::types::ContentBlock;
+    use shore_config::{
+        character_active_jsonl, character_data_dir, load_character_config, resolve_prompt_template,
+    };
     use tracing::info;
 
-    let character_dir = data_dir.join(character);
-    let active_path = character_dir.join("active.jsonl");
+    let data_dir = config.dirs.data.as_path();
+    let character_dir = character_data_dir(data_dir, character);
+    let active_path = character_active_jsonl(data_dir, character);
 
-    // Read messages directly from active.jsonl.
-    let content = tokio::fs::read_to_string(&active_path).await?;
-    let mut messages = Vec::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let mut msg: shore_protocol::types::Message = serde_json::from_str(line)?;
-        msg.normalize();
-        let is_tool_result_only = msg.role == shore_protocol::types::Role::User
-            && !msg.content_blocks.is_empty()
-            && msg
-                .content_blocks
-                .iter()
-                .all(|b| matches!(b, ContentBlock::ToolResult { .. }));
-        messages.push(ConversationMessage {
+    // Single read: parse messages + capture raw bytes for segment archival.
+    // Prior to this we did `MessageStore::load(...)` followed by a separate
+    // `tokio::fs::read_to_string(...)`, which read the same potentially
+    // multi-MB file twice and briefly blocked the runtime on the second
+    // (sync) read inside `load`.
+    let (store, content) = MessageStore::load_with_raw(active_path.clone())?;
+    let messages: Vec<ConversationMessage> = store
+        .messages()
+        .iter()
+        .map(|msg| ConversationMessage {
             role: format!("{:?}", msg.role).to_lowercase(),
-            content: msg.content,
-            timestamp: msg.timestamp,
-            is_tool_result_only,
-        });
-    }
+            content: msg.content.clone(),
+            timestamp: msg.timestamp.clone(),
+            is_tool_result_only: msg.is_tool_result_only(),
+        })
+        .collect();
 
     if messages.is_empty() {
         info!(character = %character, "No messages to compact, skipping");
@@ -69,39 +68,12 @@ pub async fn run_compaction(
     let prompt_template = resolve_prompt_template(&effective.dirs.config, character, "compact.md")
         .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    let active_model = crate::runtime_state::load_character_runtime_state(&character_dir)
-        .ok()
-        .and_then(|state| state.active_model);
-    let model =
-        crate::commands::state::resolve_compaction_model(&effective, active_model.as_deref())
-            .ok_or("No model configured for background compaction")?;
-
-    // Apply preference overlay (max_tokens, reasoning_effort, etc.) so
-    // compaction honors the same per-character sampler settings as chat.
-    // Without this, a user who sets `max_tokens = 32768` in
-    // `<data>/<char>/preferences/models.toml` still gets the build_request
-    // fallback of 4096 for compaction — which silently truncates the XML
-    // response mid-`<write>` and loses memories.
-    let model = match crate::preferences::load_for_character(data_dir, character) {
-        Ok((global_prefs, char_prefs)) => {
-            let overlay = crate::preferences::resolve_sampler_settings(
-                &global_prefs,
-                Some(&char_prefs),
-                &model.provider_key,
-                &model.model_id,
-                Some(&model),
-            );
-            crate::preferences::apply_sampler_overlay(&model, &overlay)
-        }
-        Err(e) => {
-            tracing::warn!(
-                character,
-                error = %e,
-                "compaction: failed to load preferences; using raw model settings"
-            );
-            model
-        }
-    };
+    let model = crate::preferences::resolve_background_model(
+        &effective,
+        shore_config::app::BackgroundTask::Compaction,
+        character,
+    )
+    .ok_or("No model configured for background compaction")?;
 
     // Create trait implementations.
     let llm = RealCompactionLlm::new(

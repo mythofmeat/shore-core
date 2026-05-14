@@ -84,7 +84,7 @@ use crate::memory::markdown_store::MarkdownMemoryStore;
 use crate::memory::retrieval::resolve_embedder;
 use crate::tools::context::SharedToolContext;
 use shore_config::LoadedConfig;
-use shore_config::{character_memory_dir, character_workspace_dir};
+use shore_config::{character_data_dir, character_memory_dir, character_workspace_dir};
 use shore_ledger::CallType;
 use shore_llm::retry::{self, RetryDecision, RetryPolicy};
 use shore_llm::stream::StreamConsumer;
@@ -209,7 +209,7 @@ pub(super) async fn run_tool_phase(
     )
     .ok();
 
-    let character_data_dir = data_dir.join(char_name);
+    let character_data_dir = character_data_dir(data_dir, char_name);
     let config_dir = &effective_config.dirs.config;
     let workspace_dir = character_workspace_dir(config_dir, char_name);
     let memory_dir = character_memory_dir(config_dir, char_name);

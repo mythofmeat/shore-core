@@ -2,12 +2,23 @@
 
 ## Unreleased
 
-<<<<<<< HEAD
+- Added a first-class `system_suffix` field on outbound LLM requests so
+  background tasks (compaction, dreaming, heartbeat) can attach a trailing
+  system instruction declaratively instead of mutating `request.messages`.
+  shore-llm expands the suffix into the wire-format trailing-system shape
+  providers already wrap in `<system_instruction>`, so behavior is unchanged
+  but the cached chat prefix downstream calls reuse no longer carries
+  task-specific instructions.
+- Consolidated background-task model resolution behind
+  `preferences::resolve_background_model` and
+  `preferences::resolve_chat_model_for_character`, so manual `/compact`,
+  background compaction, dreaming, heartbeat override, and the heartbeat
+  chat-cache rebuild all honor per-character `max_tokens` and other sampler
+  preferences. Previously several of these paths silently capped responses at
+  the 4096-token fallback and truncated compaction XML mid-`<write>`.
 - Added inclusive `start_time`/`end_time` filters to `search_history`, allowing
   range-only history lookups or keyword searches narrowed to a time window.
-=======
 - Added hour-based usage windows such as `shore usage --last 4h`.
->>>>>>> main
 - Made `shore log` and `shore-tui` expose compacted conversation segments as
   bounded, lazy scrollback pages, with a horizontal rule marking archived
   messages that are no longer in prompt context.

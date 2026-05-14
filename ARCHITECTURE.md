@@ -109,6 +109,20 @@ $XDG_CACHE_HOME/shore/providers/<Provider>/models.json
 $XDG_CACHE_HOME/shore/characters/<Character>/workspace_index.json
 $XDG_CACHE_HOME/shore/resized/
 $XDG_CACHE_HOME/shore/debug/api_logs/
+$XDG_CACHE_HOME/shore/debug/api_logs_long/
+```
+
+Per-call API payload logs split into two retention tiers. `api_logs/` is
+high-volume per-turn chat traffic — useful for a few days after a bug
+shows up. `api_logs_long/` holds background-task payloads (compaction,
+dreaming, heartbeat) flagged with `LlmRequest::retain_long`; those calls
+are low-frequency but high-value for forensic analysis of cache
+regressions and memory drift, so operators typically keep them longer.
+Pruning is operator-managed (no internal rotation):
+
+```sh
+find ~/.cache/shore/debug/api_logs/      -type f -mtime +3  -delete
+find ~/.cache/shore/debug/api_logs_long/ -type f -mtime +30 -delete
 ```
 
 ## Runtime Flow
@@ -437,7 +451,8 @@ Disposable cache surfaces:
 | Provider model discovery | `$XDG_CACHE_HOME/shore/providers/<Provider>/models.json` |
 | Workspace embedding index | `$XDG_CACHE_HOME/shore/characters/<Character>/workspace_index.json` |
 | Resized image cache | `$XDG_CACHE_HOME/shore/resized/` |
-| API payload debug logs | `$XDG_CACHE_HOME/shore/debug/api_logs/` |
+| API payload debug logs (chat) | `$XDG_CACHE_HOME/shore/debug/api_logs/` |
+| API payload debug logs (background, long-retention) | `$XDG_CACHE_HOME/shore/debug/api_logs_long/` |
 
 Runtime surfaces:
 

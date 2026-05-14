@@ -133,6 +133,50 @@ pub fn resolve_image_gen_config(
 }
 
 // ---------------------------------------------------------------------------
+// Compaction tail shape
+// ---------------------------------------------------------------------------
+
+/// Number of user messages appended to a cached chat prefix when building a
+/// cached compaction request.
+///
+/// The compaction system prompt rides as `system_suffix`, not as another
+/// trailing entry in `messages` — shore-llm's `preprocess_request` expands
+/// the suffix into a `role: "system"` block at provider dispatch, and
+/// Anthropic's `convert_inline_system_messages` then merges that block
+/// into the **immediately preceding** user message (the "compact now"
+/// turn). Because exactly ONE new user message is appended, the merge
+/// target is always the compaction tail itself — never one of the cached
+/// prefix turns. Cache-breakpoint markers placed by chat on the cached
+/// prefix therefore survive verbatim into the compaction request.
+///
+/// `apply_cache_control` (Anthropic) is skipped when existing markers are
+/// present, so the breakpoint positions chat warmed are preserved exactly
+/// instead of being re-derived from the shifted message count.
+///
+/// Changing this constant requires re-deriving the breakpoint math, and
+/// the regression test
+/// `compaction_tail_preserves_cache_breakpoint_positions` in
+/// shore-llm's `providers::anthropic::tests` must be updated in lockstep.
+pub const COMPACTION_TAIL_USER_PROMPT_COUNT: usize = 1;
+
+/// Apply the canonical compaction tail to a cached chat request.
+///
+/// See [`COMPACTION_TAIL_USER_PROMPT_COUNT`] for the contract. The caller
+/// is responsible for having cloned a cached `LlmRequest` and re-built it
+/// against the compaction model (e.g. via
+/// `LedgerClient::build_request_with_provider_keys`). This helper makes
+/// the "what to append" step a single named operation rather than two
+/// open-coded field mutations.
+fn append_compaction_tail(
+    request: &mut shore_llm::types::LlmRequest,
+    user_prompt: serde_json::Value,
+    system_prompt: &str,
+) {
+    request.messages.push(user_prompt);
+    request.system_suffix = Some(system_prompt.to_string());
+}
+
+// ---------------------------------------------------------------------------
 // RealCompactionLlm
 // ---------------------------------------------------------------------------
 
@@ -196,28 +240,80 @@ impl RealCompactionLlm {
                     None,
                 )
                 .map_err(|e| CompactionError::Llm(e.to_string()))?;
-                for msg in messages {
-                    request.messages.push(msg);
-                }
-                request.messages.push(json!({
-                    "role": "system",
-                    "content": system,
-                }));
+                // Cache-breakpoint placement assumes the cached path
+                // appends exactly COMPACTION_TAIL_USER_PROMPT_COUNT user
+                // messages (see the const's docs for why). The compaction
+                // prompt rides as `system_suffix`, never as a trailing
+                // entry in `messages` — the cached prefix downstream chat
+                // calls reuse never sees it.
+                //
+                // Destructure into a fixed-size array so the invariant is
+                // enforced in release builds too: a future caller that
+                // passes the wrong number of messages panics here instead
+                // of silently dropping the trailing turns (which would
+                // shift cache-breakpoint placement and re-warm the cache
+                // — exactly the quiet-failure class this PR exists to
+                // eliminate).
+                let [user_prompt]: [serde_json::Value; COMPACTION_TAIL_USER_PROMPT_COUNT] =
+                    messages.try_into().unwrap_or_else(|v: Vec<_>| {
+                        panic!(
+                            "cached-prefix compaction must append exactly {} user message(s), got {}; \
+                             adjust the const and the breakpoint regression test in lockstep before \
+                             changing this shape",
+                            COMPACTION_TAIL_USER_PROMPT_COUNT,
+                            v.len()
+                        )
+                    });
+                append_compaction_tail(&mut request, user_prompt, system);
                 request
             }
-            None => LedgerClient::build_request_with_provider_keys(
-                &self.model,
-                &self.providers,
-                messages,
-                Some(json!(system)),
-                None,
-                None,
-            )
-            .map_err(|e| CompactionError::Llm(e.to_string()))?,
+            None => {
+                // Fresh path: no chat cache to inherit. Branch on whether
+                // this SDK routes through Anthropic's prompt cache:
+                //
+                // - Anthropic / ClaudeCode: ride the compaction prompt as
+                //   `system_suffix` to match the cached path's wire shape.
+                //   `convert_inline_system_messages` then merges the
+                //   trailing `role:"system"` into the compact-now user
+                //   turn, so the model sees the same structure either way
+                //   (cached or fresh) — preserving the prefix-relationship
+                //   the cached-vs-chat regression test pins.
+                //
+                // - OpenAI / Gemini / Z.AI: keep the compaction prompt at
+                //   the top-level `request.system`. These providers don't
+                //   merge inline system messages into the preceding user;
+                //   they translate trailing `role:"system"` into either an
+                //   inline `<system_instruction>` user-wrap (OpenAI,
+                //   Gemini) or a raw `role:"system"` (Z.AI). Routing
+                //   through `system_suffix` here would materially shift
+                //   the model-facing wire shape — top-level system block
+                //   → mid-history wrapped instruction — for providers
+                //   that don't have the cache-prefix concern motivating
+                //   the change in the first place.
+                let (system_arg, suffix) = if self.model.sdk.uses_anthropic_prompt_cache() {
+                    (None, Some(system.to_string()))
+                } else {
+                    (Some(json!(system)), None)
+                };
+                let mut request = LedgerClient::build_request_with_provider_keys(
+                    &self.model,
+                    &self.providers,
+                    messages,
+                    system_arg,
+                    None,
+                    None,
+                )
+                .map_err(|e| CompactionError::Llm(e.to_string()))?;
+                request.system_suffix = suffix;
+                request
+            }
         };
 
         request.rid = None;
         request.forensic_character = Some(self.character.clone());
+        // Compaction is low-frequency and high-value for cache-regression
+        // forensics — route its payload log to the long-retention tier.
+        request.retain_long = true;
 
         Ok(request)
     }
@@ -292,7 +388,7 @@ impl RealConversationManager {
         params: RetentionParams,
     ) -> Result<String, CompactionError> {
         let started = std::time::Instant::now();
-        let active_path = self.character_dir.join("active.jsonl");
+        let active_path = self.character_dir.join(shore_config::ACTIVE_JSONL_FILE);
 
         // Use pre-read content from params to avoid TOCTOU race — the file
         // may have changed since compact() parsed the messages.
@@ -310,7 +406,9 @@ impl RealConversationManager {
 
         // Archive the compacted portion to a segment file.
         if !archive_lines.is_empty() {
-            let manifest_path = self.character_dir.join("compaction.json");
+            let manifest_path = self
+                .character_dir
+                .join(shore_config::COMPACTION_MANIFEST_FILE);
             let mut manifest: CompactionManifest = if manifest_path.exists() {
                 let mf = std::fs::read_to_string(&manifest_path).map_err(|e| {
                     CompactionError::ConversationManager(format!(
@@ -328,7 +426,7 @@ impl RealConversationManager {
 
             let segment_index = manifest.segments.len() + 1;
             let segment_file = format!("{:04}.jsonl", segment_index);
-            let segments_dir = self.character_dir.join("segments");
+            let segments_dir = self.character_dir.join(shore_config::SEGMENTS_DIR);
 
             std::fs::create_dir_all(&segments_dir).map_err(|e| {
                 CompactionError::ConversationManager(format!("failed to create segments dir: {e}"))
@@ -481,6 +579,141 @@ mod tests {
         assert_eq!(request.provider_key.as_deref(), Some("claude_code"));
         assert_eq!(request.api_key, "");
         assert_eq!(request.messages[0]["content"], "compact now");
+        // Anthropic-family SDK (ClaudeCode runs on Anthropic underneath):
+        // fresh path must use `system_suffix` so the wire shape matches
+        // the cached path — `convert_inline_system_messages` merges the
+        // trailing `role:"system"` into the compact-now user turn, giving
+        // the model the same prompt structure regardless of whether a
+        // chat call ran beforehand.
+        assert!(
+            request.system.is_none(),
+            "fresh compaction on Anthropic SDK must not emit a top-level system block"
+        );
+        assert_eq!(request.system_suffix.as_deref(), Some("compaction system"));
+    }
+
+    fn test_openai_compaction_model(api_key_env: &str) -> ResolvedModel {
+        ResolvedModel::from_parts(
+            "gpt".to_string(),
+            "chat.openai.gpt".to_string(),
+            "chat".to_string(),
+            "openai".to_string(),
+            "gpt-4o".to_string(),
+            Sdk::Openai,
+            ModelConfigFields {
+                sdk: Some(Sdk::Openai),
+                api_key_env: Some(api_key_env.to_string()),
+                base_url: Some("http://compaction-openai.example".to_string()),
+                max_tokens: Some(777),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Non-Anthropic providers (OpenAI/Gemini/Z.AI) don't merge trailing
+    /// `role:"system"` into the preceding user turn — they translate it
+    /// into either an inline `<system_instruction>` user-wrap or a raw
+    /// mid-history `role:"system"`. Routing the fresh-path compaction
+    /// prompt through `system_suffix` on those SDKs would materially shift
+    /// the model-facing wire shape (top-level system block → wrapped
+    /// instruction at the tail), which the cache-prefix argument that
+    /// motivates the Anthropic-side change doesn't apply to. Pin the
+    /// fresh-path here so future refactors don't accidentally unify the
+    /// two arms in the wrong direction.
+    #[test]
+    fn fresh_openai_compaction_request_keeps_top_level_system_block() {
+        let api_key_env = format!(
+            "SHORE_TEST_OPENAI_COMPACTION_{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        std::env::set_var(&api_key_env, "openai-secret");
+        let model = test_openai_compaction_model(&api_key_env);
+        let ledger_tmp = TempDir::new().unwrap();
+        let llm = RealCompactionLlm::new(
+            LedgerClient::new(
+                shore_llm::LlmClient::new(),
+                &ledger_tmp.path().join("ledger.db"),
+            )
+            .unwrap(),
+            model,
+            ProviderRegistry::default(),
+            "alice".to_string(),
+            None,
+        );
+
+        let request = llm
+            .build_compaction_request(
+                "compaction system",
+                vec![json!({"role": "user", "content": "compact now"})],
+                None,
+            )
+            .unwrap();
+
+        std::env::remove_var(&api_key_env);
+
+        assert_eq!(request.sdk, Sdk::Openai);
+        assert_eq!(request.system, Some(json!("compaction system")));
+        assert!(
+            request.system_suffix.is_none(),
+            "non-Anthropic fresh path must not route system through suffix"
+        );
+        assert_eq!(request.messages.len(), 1);
+        assert_eq!(request.messages[0]["content"], "compact now");
+    }
+
+    /// The cached-path tail invariant
+    /// (`messages.len() == COMPACTION_TAIL_USER_PROMPT_COUNT`) is enforced
+    /// by a `try_into` destructure so it fires in release builds as well
+    /// as debug. A future caller that passes the wrong number of messages
+    /// must panic here, not silently drop the trailing turns and shift
+    /// cache-breakpoint placement.
+    #[test]
+    #[should_panic(expected = "cached-prefix compaction must append exactly")]
+    fn cached_compaction_panics_when_caller_drifts_from_tail_invariant() {
+        let api_key_env = format!(
+            "SHORE_TEST_COMPACTION_TAIL_{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        std::env::set_var(&api_key_env, "compaction-secret");
+        let model = test_compaction_model(&api_key_env);
+        let ledger_tmp = TempDir::new().unwrap();
+        let llm = RealCompactionLlm::new(
+            LedgerClient::new(
+                shore_llm::LlmClient::new(),
+                &ledger_tmp.path().join("ledger.db"),
+            )
+            .unwrap(),
+            model,
+            ProviderRegistry::default(),
+            "alice".to_string(),
+            None,
+        );
+        let cached = shore_llm::types::LlmRequest {
+            sdk: Sdk::Anthropic,
+            model: "chat-model".to_string(),
+            api_key: "chat-secret".to_string(),
+            base_url: Some("http://chat.example".to_string()),
+            messages: vec![json!({"role": "user", "content": "cached user"})],
+            system: Some(json!("cached system")),
+            tools: None,
+            max_tokens: 42,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: Some("anthropic".to_string()),
+            rid: None,
+            forensic_character: None,
+            system_suffix: None,
+            retain_long: false,
+        };
+        let _ = llm.build_compaction_request(
+            "compaction system",
+            vec![
+                json!({"role": "user", "content": "compact now"}),
+                json!({"role": "user", "content": "second user message — must panic"}),
+            ],
+            Some(cached),
+        );
     }
 
     #[test]
@@ -525,6 +758,8 @@ mod tests {
             provider_key: Some("anthropic".to_string()),
             rid: Some("rid-chat".to_string()),
             forensic_character: Some("chat-forensics".to_string()),
+            system_suffix: None,
+            retain_long: false,
         };
 
         let request = llm
@@ -555,16 +790,116 @@ mod tests {
         assert_eq!(request.rid, None);
         assert_eq!(request.forensic_character.as_deref(), Some("alice"));
         assert_eq!(request.system, Some(json!("cached system")));
-        assert_eq!(request.messages.len(), 4);
+        // The compaction prompt rides as `system_suffix`, not as a
+        // trailing entry in `messages`. The chat prefix (cached user +
+        // cached assistant) plus the compaction-specific user turn is
+        // all that should appear in `messages`. shore-llm expands the
+        // suffix into the wire-format trailing system message just
+        // before provider dispatch.
+        assert_eq!(request.messages.len(), 3);
         assert_eq!(request.messages[0]["content"], "cached user");
         assert_eq!(request.messages[1]["content"], "cached assistant");
         assert_eq!(request.messages[2]["content"], "compact now");
-        assert_eq!(request.messages[3]["role"], "system");
-        assert_eq!(request.messages[3]["content"], "compaction system");
+        assert_eq!(request.system_suffix.as_deref(), Some("compaction system"));
 
         let provider_options = request.provider_options.expect("provider options");
         assert_eq!(provider_options["reasoning_effort"], "medium");
         assert!(provider_options.get("chat_only").is_none());
+    }
+
+    /// Regression pin: every byte that contributes to Anthropic's cache-prefix
+    /// hash (system, tools, first N messages, max_tokens-style sampler config
+    /// when emitted in the body) must match between the chat request that
+    /// seeded the cache and the compaction request the daemon issues moments
+    /// later. If a future refactor changes any of these, this test fails
+    /// immediately rather than going silently undetected by manifesting as a
+    /// ~40% API-spend regression in production.
+    #[test]
+    fn cached_compaction_request_matches_chat_prefix_byte_for_byte() {
+        let api_key_env = format!(
+            "SHORE_TEST_COMPACTION_PREFIX_{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        std::env::set_var(&api_key_env, "compaction-secret");
+        let model = test_compaction_model(&api_key_env);
+        let ledger_tmp = TempDir::new().unwrap();
+        let llm = RealCompactionLlm::new(
+            LedgerClient::new(
+                shore_llm::LlmClient::new(),
+                &ledger_tmp.path().join("ledger.db"),
+            )
+            .unwrap(),
+            model,
+            ProviderRegistry::default(),
+            "alice".to_string(),
+            None,
+        );
+
+        let chat_tools = vec![json!({
+            "name": "read",
+            "description": "exact-byte tool definition",
+            "input_schema": { "type": "object", "properties": {} }
+        })];
+        let chat_messages = vec![
+            json!({"role": "user", "content": "cached user 1"}),
+            json!({"role": "assistant", "content": "cached assistant 1"}),
+            json!({"role": "user", "content": "cached user 2"}),
+        ];
+        let chat_system = Some(json!("chat system prompt"));
+
+        let cached = shore_llm::types::LlmRequest {
+            sdk: Sdk::Anthropic,
+            model: "chat-model".to_string(),
+            api_key: "chat-secret".to_string(),
+            base_url: Some("http://chat.example".to_string()),
+            messages: chat_messages.clone(),
+            system: chat_system.clone(),
+            tools: Some(chat_tools.clone()),
+            max_tokens: 42,
+            temperature: Some(0.9),
+            top_p: Some(0.8),
+            provider_options: Some(json!({"cache_ttl": "1h"})),
+            provider_key: Some("anthropic".to_string()),
+            rid: Some("rid-chat".to_string()),
+            forensic_character: Some("chat-forensics".to_string()),
+            system_suffix: None,
+            retain_long: false,
+        };
+
+        let request = llm
+            .build_compaction_request(
+                "compaction system prompt",
+                vec![json!({"role": "user", "content": "compact now"})],
+                Some(cached),
+            )
+            .unwrap();
+
+        std::env::remove_var(&api_key_env);
+
+        // Prefix portion: system + tools + first len(chat_messages) entries.
+        assert_eq!(
+            request.system, chat_system,
+            "system block diverged — would invalidate Anthropic cache prefix"
+        );
+        assert_eq!(
+            request.tools.as_deref(),
+            Some(chat_tools.as_slice()),
+            "tools array diverged — Anthropic hashes tools into the cache prefix"
+        );
+        for (i, expected) in chat_messages.iter().enumerate() {
+            assert_eq!(
+                &request.messages[i], expected,
+                "message {i} diverged from chat prefix — cache invalidation"
+            );
+        }
+        // The compaction-specific tail rides after the prefix, plus its
+        // prompt rides as `system_suffix` so it doesn't enter the prefix at all.
+        assert_eq!(request.messages.len(), chat_messages.len() + 1);
+        assert_eq!(request.messages.last().unwrap()["content"], "compact now");
+        assert_eq!(
+            request.system_suffix.as_deref(),
+            Some("compaction system prompt")
+        );
     }
 
     // -- RealConversationManager: archive_and_retain --------------------------

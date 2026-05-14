@@ -78,7 +78,7 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
                 // Inline system instructions → user/model pair.
                 // merge_consecutive_roles() handles adjacent same-role merging.
                 let text = extract_system_text(msg.get("content").unwrap_or(&Value::Null));
-                let wrapped = format!("<system_instruction>{text}</system_instruction>");
+                let wrapped = super::stream_helpers::wrap_inline_system_instruction(&text);
                 contents.push(json!({
                     "role": "user",
                     "parts": [{"text": wrapped}]
@@ -637,6 +637,8 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
+            system_suffix: None,
+            retain_long: false,
         }
     }
 

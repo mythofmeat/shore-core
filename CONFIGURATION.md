@@ -463,8 +463,18 @@ The dreams audit log lives at `$XDG_DATA_HOME/shore/<Character>/DREAMS.md` (data
 ## Advanced Diagnostics
 
 `[advanced].api_payload_logging = true` writes per-call provider request and
-response JSON under `$XDG_CACHE_HOME/shore/debug/api_logs/`. These files are
-diagnostic payload dumps, not durable user state.
+response JSON under `$XDG_CACHE_HOME/shore/debug/api_logs/` for chat traffic
+and `$XDG_CACHE_HOME/shore/debug/api_logs_long/` for background tasks
+(compaction, dreaming, heartbeat). These files are diagnostic payload dumps,
+not durable user state. Rotation is operator-managed; the split lets you run
+different retention timers on the two tiers — chat churns fast and is rarely
+useful beyond a few days, while background payloads stay valuable for
+weeks-long forensic analysis. Example cron:
+
+```sh
+find ~/.cache/shore/debug/api_logs/      -type f -mtime +3  -delete
+find ~/.cache/shore/debug/api_logs_long/ -type f -mtime +30 -delete
+```
 
 `[advanced].cache_forensics = true` writes Anthropic prompt-cache forensic
 events under `$XDG_CACHE_HOME/shore/cache_forensics.jsonl`. The durable cache

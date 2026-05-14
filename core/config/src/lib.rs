@@ -196,6 +196,18 @@ pub const TOOLS_FILE: &str = "TOOLS.md";
 pub const HEARTBEAT_FILE: &str = "HEARTBEAT.md";
 pub const MEMORY_DIR: &str = "memory";
 
+/// Filename of the per-character active conversation log under
+/// `<data>/<character>/`. Newline-delimited JSON, one `Message` per line.
+pub const ACTIVE_JSONL_FILE: &str = "active.jsonl";
+
+/// Per-character archived-history directory under `<data>/<character>/`.
+/// Holds segment JSONL files produced by compaction.
+pub const SEGMENTS_DIR: &str = "segments";
+
+/// Per-character compaction manifest under `<data>/<character>/`. Records
+/// segment ordering, message counts, and timestamps.
+pub const COMPACTION_MANIFEST_FILE: &str = "compaction.json";
+
 /// Return `characters/{name}/`.
 pub fn character_config_dir(config_dir: &Path, character_name: &str) -> PathBuf {
     config_dir.join("characters").join(character_name)
@@ -214,6 +226,29 @@ pub fn character_workspace_file(config_dir: &Path, character_name: &str, name: &
 /// Return `characters/{name}/workspace/memory/`.
 pub fn character_memory_dir(config_dir: &Path, character_name: &str) -> PathBuf {
     character_workspace_dir(config_dir, character_name).join(MEMORY_DIR)
+}
+
+/// Return `<data_dir>/{character}/` — the daemon's per-character runtime
+/// storage root. All daemon-managed files (active.jsonl, segments,
+/// compaction.json, preferences, runtime_state.json, deferred edits,
+/// dreams + heartbeat logs) live under this directory.
+pub fn character_data_dir(data_dir: &Path, character_name: &str) -> PathBuf {
+    data_dir.join(character_name)
+}
+
+/// Return `<data_dir>/{character}/active.jsonl`.
+pub fn character_active_jsonl(data_dir: &Path, character_name: &str) -> PathBuf {
+    character_data_dir(data_dir, character_name).join(ACTIVE_JSONL_FILE)
+}
+
+/// Return `<data_dir>/{character}/segments/`.
+pub fn character_segments_dir(data_dir: &Path, character_name: &str) -> PathBuf {
+    character_data_dir(data_dir, character_name).join(SEGMENTS_DIR)
+}
+
+/// Return `<data_dir>/{character}/compaction.json`.
+pub fn character_compaction_manifest(data_dir: &Path, character_name: &str) -> PathBuf {
+    character_data_dir(data_dir, character_name).join(COMPACTION_MANIFEST_FILE)
 }
 
 /// Load and validate daemon configuration.

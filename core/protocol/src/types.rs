@@ -142,6 +142,22 @@ impl Message {
         }
     }
 
+    /// True when this is a user-role message whose content consists
+    /// entirely of `ToolResult` blocks — i.e. a synthetic tool-loop
+    /// message rather than a real user turn.
+    ///
+    /// Used by compaction, history rendering, and turn-counting logic.
+    pub fn is_tool_result_only(&self) -> bool {
+        if self.role != Role::User {
+            return false;
+        }
+        !self.content_blocks.is_empty()
+            && self
+                .content_blocks
+                .iter()
+                .all(|b| matches!(b, ContentBlock::ToolResult { .. }))
+    }
+
     /// Serialize for disk storage, omitting the redundant `content` field
     /// and stripping inline `data` from image refs.
     ///

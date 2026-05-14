@@ -1,6 +1,7 @@
 use serde_json::json;
 use tokio::sync::mpsc;
 
+use shore_config::character_data_dir;
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error as SwpError, ServerMessage};
 use shore_swp_server::{RequestMeta, SessionId};
@@ -213,7 +214,7 @@ impl MessageHandler {
             (char_name, engine_arc, effective_config)
         };
 
-        let character_data_dir = self.cmd_ctx.data_dir.join(&char_name);
+        let character_data_dir = character_data_dir(&self.cmd_ctx.data_dir, &char_name);
         // Phase 3: preferences are the durable source of truth for the
         // active model. Legacy `runtime_state.json` is read as a one-
         // release migration fallback so users who haven't written

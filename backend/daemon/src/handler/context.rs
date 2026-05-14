@@ -1,0 +1,153 @@
+//! Shared "build the chat-shaped request inputs" pipeline.
+//!
+//! Both the chat handler ([`crate::handler::task::handle_generation`]) and
+//! the heartbeat cold rebuild ([`crate::autonomy::manager`]) need to take a
+//! character + conversation history and produce the message JSON, system
+//! block, and tool definitions that an `LlmRequest` is built from. The two
+//! sites had nearly byte-identical 30-line stretches doing this; that
+//! duplication was load-bearing because subtle drifts (a forgotten
+//! `maybe_strip_prior_thinking`, a stale tool-def list) silently broke
+//! cache reuse between chat and heartbeat.
+//!
+//! This module is the one place those steps live. Both sites pass a
+//! [`PrepareChatContextParams`] and consume the [`PreparedChatContext`].
+
+use std::path::Path;
+
+use serde_json::Value;
+use tracing::warn;
+
+use shore_config::{LoadedConfig, AGENTS_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE};
+use shore_protocol::types::Message;
+
+use crate::engine::prompt::{self, AssembledPrompt, PromptParams};
+
+/// Inputs for [`prepare_chat_context`]. Callers fill this in instead of
+/// passing seven parallel arguments.
+pub struct PrepareChatContextParams<'a> {
+    pub character: &'a str,
+    pub character_data_dir: &'a Path,
+    pub config: &'a LoadedConfig,
+    pub resolved: &'a shore_config::models::ResolvedModel,
+    pub messages: &'a [Message],
+    pub has_prior_context: bool,
+    pub is_private: bool,
+    /// Whether to emit unsigned `thinking` blocks back to the provider.
+    /// True for OpenAI/Z.ai (which echo `reasoning_content`), false for
+    /// Anthropic and for any caller that doesn't need them.
+    pub include_unsigned_thinking: bool,
+}
+
+/// Output of [`prepare_chat_context`]: the three pieces every chat-shaped
+/// request needs, plus the assembled prompt for callers that want to do
+/// additional work (e.g., image cache warming) before building the
+/// request.
+pub struct PreparedChatContext {
+    pub llm_messages: Vec<Value>,
+    pub system: Option<Value>,
+    pub tool_defs: Option<Vec<Value>>,
+    pub prompt: AssembledPrompt,
+    /// Raw contents of `active_prompt/SOUL.md` (character definition).
+    /// Surfaced so callers that need it for downstream rendering
+    /// (e.g. tool-phase system prompts) don't re-read the file and risk
+    /// observing a different value mid-turn.
+    pub character_definition: Option<String>,
+    /// Raw contents of `active_prompt/USER.md` (user definition).
+    pub user_definition: Option<String>,
+}
+
+/// Load the four active-prompt files (SOUL/USER/AGENTS/TOOLS) plus the
+/// memory index, assemble the prompt, convert to LLM-API message JSON,
+/// strip prior thinking if configured, and render tool defs.
+///
+/// Errors loading individual prompt files are not fatal — missing files
+/// produce `None` for that slot, exactly as the existing code did.
+/// Snapshot-ensure errors are logged at `warn` and ignored.
+///
+/// The returned `prompt` is the [`AssembledPrompt`] that produced
+/// `llm_messages` and `system`; callers can use its `.messages` field
+/// directly for things like image cache warming.
+pub fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> PreparedChatContext {
+    let PrepareChatContextParams {
+        character,
+        character_data_dir,
+        config,
+        resolved,
+        messages,
+        has_prior_context,
+        is_private,
+        include_unsigned_thinking,
+    } = params;
+
+    let display_name = config.app.defaults.resolve_display_name();
+
+    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+        character_data_dir,
+        &config.dirs.config,
+        character,
+    ) {
+        warn!(character, error = %e, "failed to prepare active prompt snapshot");
+    }
+
+    let character_definition =
+        crate::memory::deferred_edits::load_active_prompt_file(character_data_dir, SOUL_FILE);
+    let user_definition =
+        crate::memory::deferred_edits::load_active_prompt_file(character_data_dir, USER_FILE);
+    let system_prompt =
+        crate::memory::deferred_edits::load_active_prompt_file(character_data_dir, AGENTS_FILE);
+    let tools_guidance =
+        crate::memory::deferred_edits::load_active_prompt_file(character_data_dir, TOOLS_FILE);
+    let memory_index = crate::memory::deferred_edits::load_memory_index(
+        character_data_dir,
+        &config.dirs.config,
+        character,
+    );
+
+    let prompt = prompt::assemble_prompt(&PromptParams {
+        character_name: character,
+        display_name: &display_name,
+        system_prompt: system_prompt.as_deref(),
+        tools_guidance: tools_guidance.as_deref(),
+        character_definition: character_definition.as_deref(),
+        user_definition: user_definition.as_deref(),
+        memory_index: memory_index.as_deref(),
+        is_private,
+        has_prior_context,
+        messages,
+        max_context_tokens: resolved.max_context_tokens,
+        max_output_tokens: resolved.max_tokens,
+    });
+
+    let cache_dir = &config.dirs.cache;
+    let (mut llm_messages, system) = super::build_llm_messages(
+        &prompt,
+        include_unsigned_thinking,
+        config.app.advanced.max_image_size,
+        cache_dir,
+    );
+    crate::content_util::maybe_strip_prior_thinking(
+        &mut llm_messages,
+        config.app.memory.thinking.preserve_prior_turns,
+        &resolved.provider_key,
+    );
+
+    let tool_defs = if config.app.behavior.tool_use.enabled {
+        Some(crate::tools::render_tool_defs(
+            false,
+            &config.app.behavior.tool_use.tools,
+            character,
+            &display_name,
+        ))
+    } else {
+        None
+    };
+
+    PreparedChatContext {
+        llm_messages,
+        system,
+        tool_defs,
+        prompt,
+        character_definition,
+        user_definition,
+    }
+}

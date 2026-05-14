@@ -651,7 +651,7 @@ fn resolve_model_for_request<'a>(
         .find(|model| {
             model.model_id == request.model
                 && model.sdk == request.sdk
-                && provider.map_or(true, |p| p == model.provider_key)
+                && provider.is_none_or(|p| p == model.provider_key)
         })
 }
 

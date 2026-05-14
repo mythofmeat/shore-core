@@ -7,7 +7,8 @@ use serde_json::{json, Value};
 use shore_config::app::DreamingConfig;
 use shore_config::cron::CronSchedule;
 use shore_config::{
-    character_memory_dir, character_workspace_dir, LoadedConfig, SOUL_FILE, USER_FILE,
+    character_data_dir, character_memory_dir, character_workspace_dir, LoadedConfig, SOUL_FILE,
+    USER_FILE,
 };
 
 use shore_ledger::{CallType, LedgerClient};
@@ -350,9 +351,9 @@ pub async fn run_librarian_sweep(
     let memory_created_by_fallback =
         ensure_memory_index_after_librarian(&store, &memory_index_path, character, &ran_at).await?;
     if memory_created_by_fallback {
-        if let Err(e) =
-            crate::memory::deferred_edits::note_memory_index_deferred(&data_dir.join(character))
-        {
+        if let Err(e) = crate::memory::deferred_edits::note_memory_index_deferred(
+            &character_data_dir(data_dir, character),
+        ) {
             warn!(
                 character,
                 error = %e,
@@ -467,7 +468,7 @@ pub async fn run_legacy_diagnostic_sweep(
     let memory_dir = character_memory_dir(config_dir, character);
     let workspace_dir = character_workspace_dir(config_dir, character);
     let memory_index_path = workspace_dir.join(MEMORY_INDEX_FILE);
-    let character_data_dir = data_dir.join(character);
+    let character_data_dir = character_data_dir(data_dir, character);
     let dream_dir = dream_data_dir(data_dir, character);
     let state_path = dream_state_path(data_dir, character);
     let state = read_state(data_dir, config_dir, character).await?;
@@ -656,7 +657,7 @@ async fn build_librarian_request(
     ran_at: &str,
 ) -> Result<LlmRequest, DreamingError> {
     let display_name = loaded_config.app.defaults.resolve_display_name();
-    let character_data_dir = loaded_config.dirs.data.join(character);
+    let character_data_dir = character_data_dir(&loaded_config.dirs.data, character);
     if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
         &character_data_dir,
         &loaded_config.dirs.config,
@@ -689,71 +690,58 @@ async fn build_librarian_request(
     if let Some(cached) = cached_request {
         let mut request = cached.clone();
         request.rid = None;
-        request.messages.push(json!({
-            "role": "system",
-            "content": format!("{system}\n\n{user_prompt}"),
-        }));
+        // The dreaming prompt rides as a `system_suffix` instead of being
+        // pushed into `messages`. shore-llm expands it into the trailing
+        // `role: "system"` shape providers already handle, but downstream
+        // calls reusing this request's cached prefix never see the prompt.
+        request.system_suffix = Some(format!("{system}\n\n{user_prompt}"));
+        // Dreaming runs at most a few times per day; route the payload
+        // log to the long-retention tier so weeks-old memory-evolution
+        // forensics aren't pruned with chat-volume traffic.
+        request.retain_long = true;
         return Ok(request);
     }
 
-    let resolved_base = resolve_dreaming_model(loaded_config)?;
-    // Apply preference overlay (max_tokens, reasoning_effort, etc.) so
-    // dreaming honors the same per-character sampler settings as chat —
-    // matches the fix in `memory::compaction::run_compaction`. Without
-    // this, a per-character `max_tokens` is silently dropped and the
-    // librarian gets truncated mid-response.
-    let resolved_owned;
-    let resolved: &shore_config::models::ResolvedModel =
-        match crate::preferences::load_for_character(&loaded_config.dirs.data, character) {
-            Ok((global_prefs, char_prefs)) => {
-                let overlay = crate::preferences::resolve_sampler_settings(
-                    &global_prefs,
-                    Some(&char_prefs),
-                    &resolved_base.provider_key,
-                    &resolved_base.model_id,
-                    Some(resolved_base),
-                );
-                resolved_owned = crate::preferences::apply_sampler_overlay(resolved_base, &overlay);
-                &resolved_owned
-            }
-            Err(e) => {
-                warn!(
-                    character,
-                    error = %e,
-                    "dreaming: failed to load preferences; using raw model settings"
-                );
-                resolved_base
-            }
-        };
+    let resolved = crate::preferences::resolve_background_model(
+        loaded_config,
+        shore_config::app::BackgroundTask::Dreaming,
+        character,
+    )
+    .ok_or_else(|| DreamingError::Config("no chat model configured for dreaming".into()))?;
     let tools = build_librarian_tool_defs(character, &display_name, dry_run);
-    LedgerClient::build_request_with_provider_keys(
-        resolved,
+    // Fresh path: no chat cache to inherit. Branch on whether this SDK
+    // routes through Anthropic's prompt cache:
+    //
+    // - Anthropic / ClaudeCode: ride the dreaming prompt as `system_suffix`
+    //   so the wire shape matches the cached path —
+    //   `convert_inline_system_messages` merges the trailing `role:"system"`
+    //   into the preceding user turn, giving the model an embedded
+    //   `<system_instruction>` block either way.
+    //
+    // - OpenAI / Gemini / Z.AI: keep the dreaming prompt at the top-level
+    //   `request.system`. These providers don't merge inline system
+    //   messages into the preceding user; they translate trailing
+    //   `role:"system"` into an inline user-wrap (or a raw `role:"system"`
+    //   on Z.AI). Routing through `system_suffix` here would materially
+    //   shift the model-facing wire shape for SDKs that don't have the
+    //   cache-prefix concern motivating the change.
+    let (system_arg, suffix) = if resolved.sdk.uses_anthropic_prompt_cache() {
+        (None, Some(system))
+    } else {
+        (Some(json!(system)), None)
+    };
+    let mut request = LedgerClient::build_request_with_provider_keys(
+        &resolved,
         &loaded_config.providers,
         vec![json!({"role": "user", "content": user_prompt})],
-        Some(json!(system)),
+        system_arg,
         Some(tools),
         None,
     )
-    .map_err(|e| DreamingError::Llm(e.to_string()))
-}
-
-fn resolve_dreaming_model(
-    loaded_config: &LoadedConfig,
-) -> Result<&shore_config::models::ResolvedModel, DreamingError> {
-    if let Some(name) = loaded_config
-        .app
-        .defaults
-        .resolve_background_model_name(shore_config::app::BackgroundTask::Dreaming)
-    {
-        return loaded_config
-            .models
-            .find_model(name)
-            .map_err(|e| DreamingError::Config(e.to_string()));
-    }
-    loaded_config
-        .models
-        .first_chat_model()
-        .ok_or_else(|| DreamingError::Config("no chat model configured for dreaming".into()))
+    .map_err(|e| DreamingError::Llm(e.to_string()))?;
+    request.system_suffix = suffix;
+    request.retain_long = true;
+    Ok(request)
 }
 
 fn build_librarian_prompt(
@@ -829,7 +817,7 @@ async fn build_librarian_tool_context(
     character: &str,
     _dry_run: bool,
 ) -> Option<SharedToolContext> {
-    let character_data_dir = data_dir.join(character);
+    let character_data_dir = character_data_dir(data_dir, character);
     let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
         loaded_config.app.defaults.image_generation.as_deref(),
         &loaded_config.models.image_generation,
@@ -870,6 +858,7 @@ async fn build_librarian_tool_context(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_private_librarian_loop(
     client: &LedgerClient,
     loaded_config: &LoadedConfig,
@@ -1199,7 +1188,7 @@ fn is_due_at(
 }
 
 fn dream_data_dir(data_dir: &Path, character: &str) -> PathBuf {
-    data_dir.join(character).join(DREAM_DATA_DIR)
+    character_data_dir(data_dir, character).join(DREAM_DATA_DIR)
 }
 
 fn dream_state_path(data_dir: &Path, character: &str) -> PathBuf {
@@ -1215,7 +1204,7 @@ async fn read_state(
     config_dir: &Path,
     character: &str,
 ) -> Result<DreamState, DreamingError> {
-    let character_data_dir = data_dir.join(character);
+    let character_data_dir = character_data_dir(data_dir, character);
     let state_path = dream_state_path(data_dir, character);
     if let Some(content) = read_data_text(&character_data_dir, &state_path).await? {
         return serde_json::from_str(&content).map_err(|e| DreamingError::Io(e.to_string()));
@@ -1275,7 +1264,7 @@ async fn write_state(
     character: &str,
     state: &DreamState,
 ) -> Result<(), DreamingError> {
-    let character_data_dir = data_dir.join(character);
+    let character_data_dir = character_data_dir(data_dir, character);
     write_data_json(
         &character_data_dir,
         &dream_state_path(data_dir, character),

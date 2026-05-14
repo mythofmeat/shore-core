@@ -126,7 +126,12 @@ impl TestHarness {
         );
 
         // ── Ledger-wrapped LLM Client ────────────────────────────────
-        let llm_client = LedgerClient::new(LlmClient::new(), &config.dirs.data.join("ledger.db"))
+        let mut raw_llm_client = LlmClient::new();
+        if config.app.advanced.api_payload_logging {
+            std::fs::create_dir_all(&config.dirs.cache).ok();
+            raw_llm_client.set_payload_log_dir(config.dirs.cache.clone());
+        }
+        let llm_client = LedgerClient::new(raw_llm_client, &config.dirs.data.join("ledger.db"))
             .expect("failed to create LedgerClient");
 
         let notifier = shore_daemon::notifications::NotificationService::new(Default::default());
@@ -230,16 +235,23 @@ impl TestHarness {
     /// Directly trigger compaction for a character, bypassing the 30-second
     /// autonomy tick.  Useful in tests where you don't want to wait 30s.
     ///
+    /// Pulls the cached last-request from the autonomy manager (the same
+    /// hand-off the production scheduler uses), so this drives the
+    /// cache-preserving compaction path whenever a chat call has run
+    /// before this trigger fires. Tests that need the fresh path can
+    /// reset the autonomy state first, but most callers will get the
+    /// production-shaped path automatically.
+    ///
     /// Enqueue mock responses (compaction LLM call + embedding calls) BEFORE
     /// calling this method.
     pub async fn trigger_compaction_now(&self, character: &str) {
+        let cached_request = self.autonomy.cached_last_request(character);
         match shore_daemon::memory::compaction::run_compaction(
             character,
             &self.config,
             &self.llm_client,
-            &self.data_dir,
             &self.notifier,
-            None,
+            cached_request,
             None,
         )
         .await
@@ -252,6 +264,38 @@ impl TestHarness {
             }
             Err(e) => {
                 info!(character, error = %e, "trigger_compaction_now: compaction failed");
+            }
+        }
+    }
+
+    /// Directly trigger a dreaming librarian sweep for a character with
+    /// `force=true`, bypassing the cadence gate.
+    ///
+    /// Enqueue mock responses (the librarian-call request body + any tool
+    /// follow-ups) BEFORE calling this method. Mirrors
+    /// [`Self::trigger_compaction_now`] for the dreaming pathway.
+    pub async fn trigger_dreaming_now(&self, character: &str) {
+        match shore_daemon::memory::dreaming::run_librarian_sweep(
+            &self.config,
+            &self.config.dirs.data,
+            &self.llm_client,
+            character,
+            None,
+            false,
+            true,
+            None,
+        )
+        .await
+        {
+            Ok(result) => {
+                info!(
+                    character,
+                    fired = result.is_some(),
+                    "trigger_dreaming_now: sweep complete"
+                );
+            }
+            Err(e) => {
+                info!(character, error = %e, "trigger_dreaming_now: sweep failed");
             }
         }
     }

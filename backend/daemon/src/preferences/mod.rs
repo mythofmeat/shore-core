@@ -635,6 +635,141 @@ pub fn apply_sampler_overlay(
     patched
 }
 
+/// Layer the global+character sampler overlay onto a resolved model.
+///
+/// Returns the model unchanged when no overlay applies. A missing
+/// preferences file produces empty defaults rather than a warning; other
+/// I/O or parse errors are logged with `op` (for forensics) and the raw
+/// model is returned so the caller can proceed.
+pub fn overlay_for_character(
+    data_dir: &Path,
+    character: &str,
+    base: shore_config::models::ResolvedModel,
+    op: &'static str,
+) -> shore_config::models::ResolvedModel {
+    match load_for_character(data_dir, character) {
+        Ok((global_prefs, char_prefs)) => {
+            let overlay = resolve_sampler_settings(
+                &global_prefs,
+                Some(&char_prefs),
+                &base.provider_key,
+                &base.model_id,
+                Some(&base),
+            );
+            apply_sampler_overlay(&base, &overlay)
+        }
+        Err(e) => {
+            tracing::warn!(
+                character,
+                op,
+                error = %e,
+                "preferences load failed; using raw model settings"
+            );
+            base
+        }
+    }
+}
+
+/// Resolve the model to use for a background task, with per-character
+/// preference overlay (max_tokens, reasoning_effort, etc.) already
+/// applied.
+///
+/// Walks the standard chain
+/// `defaults.background.<task> → defaults.background.model →
+/// defaults.model → first chat model` (see
+/// [`shore_config::app::DefaultsConfig::resolve_background_model_name`]),
+/// then layers the same sampler overlay that chat uses, so background
+/// calls honor `<data>/<char>/preferences/models.toml` settings.
+///
+/// Returns `None` when no model is configured anywhere.
+///
+/// Before this helper existed, every background-task site (manual
+/// `/compact`, background compaction, dreaming, heartbeat override)
+/// re-implemented the chain and either forgot the overlay or copy-pasted
+/// it inconsistently. The missing overlay silently dropped
+/// per-character `max_tokens`, capping responses at 4096 tokens and
+/// truncating compaction XML mid-`<write>`. See commit `1b4fc03`.
+pub fn resolve_background_model(
+    config: &shore_config::LoadedConfig,
+    task: shore_config::app::BackgroundTask,
+    character: &str,
+) -> Option<shore_config::models::ResolvedModel> {
+    let op = match task {
+        shore_config::app::BackgroundTask::Heartbeat => "heartbeat",
+        shore_config::app::BackgroundTask::Compaction => "compaction",
+        shore_config::app::BackgroundTask::Dreaming => "dreaming",
+    };
+    let configured = config.app.defaults.resolve_background_model_name(task);
+    let base = match configured {
+        Some(name) => match config.models.find_model(name) {
+            Ok(m) => m.clone(),
+            // The user *explicitly* configured a model for this task (or for
+            // `defaults.background.model`, or for `defaults.model`) but the
+            // catalog doesn't know it — almost always a typo. Warn loudly
+            // and fall back to the first chat model so the daemon stays up.
+            Err(e) => {
+                tracing::warn!(
+                    op,
+                    character,
+                    configured_model = %name,
+                    error = %e,
+                    "Configured {op} model not found in catalog; falling back to first chat model",
+                );
+                config.models.first_chat_model().cloned()?
+            }
+        },
+        None => config.models.first_chat_model().cloned()?,
+    };
+    Some(overlay_for_character(
+        &config.dirs.data,
+        character,
+        base,
+        op,
+    ))
+}
+
+/// Resolve the user's currently-selected chat model with the sampler
+/// overlay applied, mirroring what
+/// [`crate::handler::Handler`] would build for a fresh chat request.
+///
+/// Used by the heartbeat cold-rebuild path so the rebuilt request shares
+/// chat's cache prefix instead of diverging on a stale `defaults.model`
+/// value.
+pub fn resolve_chat_model_for_character(
+    config: &shore_config::LoadedConfig,
+    character: &str,
+) -> Option<shore_config::models::ResolvedModel> {
+    let (global_prefs, char_prefs) = match load_for_character(&config.dirs.data, character) {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::warn!(
+                character,
+                op = "resolve_chat_model",
+                error = %e,
+                "preferences load failed; using empty defaults"
+            );
+            (ModelPreferences::default(), ModelPreferences::default())
+        }
+    };
+    let legacy = crate::runtime_state::load_active_model(&config.dirs.data.join(character));
+    let resolved = resolve_active_for_character(
+        config,
+        &config.dirs.data,
+        &global_prefs,
+        &char_prefs,
+        legacy.as_deref(),
+        config.app.defaults.model.as_deref(),
+    )?;
+    let overlay = resolve_sampler_settings(
+        &global_prefs,
+        Some(&char_prefs),
+        &resolved.provider_key,
+        &resolved.model_id,
+        Some(&resolved),
+    );
+    Some(apply_sampler_overlay(&resolved, &overlay))
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]

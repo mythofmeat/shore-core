@@ -34,8 +34,7 @@ use crate::tools::{ToolContext, ToolError};
 use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
 use shore_config::{
-    character_memory_dir, character_workspace_dir, AGENTS_FILE, HEARTBEAT_FILE, SOUL_FILE,
-    TOOLS_FILE, USER_FILE,
+    character_data_dir, character_memory_dir, character_workspace_dir, HEARTBEAT_FILE,
 };
 use shore_diagnostics::truncate_summary;
 use shore_ledger::{CallType, CredentialFallbackEvent, LedgerClient};
@@ -173,7 +172,7 @@ struct PersistedState {
 }
 
 fn state_path(data_dir: &Path, character: &str) -> PathBuf {
-    data_dir.join(character).join(STATE_FILENAME)
+    character_data_dir(data_dir, character).join(STATE_FILENAME)
 }
 
 /// Convert a `tokio::time::Instant` to an RFC3339 wall-clock string.
@@ -437,7 +436,8 @@ impl AutonomyManager {
             cache_keepalive.on_cache_warmed(Instant::now());
         }
 
-        let heartbeat_log_path = self.data_dir.join(character).join("heartbeat.jsonl");
+        let heartbeat_log_path =
+            character_data_dir(&self.data_dir, character).join("heartbeat.jsonl");
         let heartbeat_log = HeartbeatLog::load_from(heartbeat_log_path.clone())
             .unwrap_or_else(|| HeartbeatLog::with_path(heartbeat_log_path));
 
@@ -565,9 +565,8 @@ impl AutonomyManager {
     /// Cache the last LLM request for heartbeat tick reuse.
     pub fn notify_last_request(&self, character: &str, request: LlmRequest) {
         self.with_state(character, |s| {
-            s.last_request = Some(request);
+            cache_last_request(s, character, request);
         });
-        debug!(character, "Cached last LLM request for heartbeat reuse");
     }
 
     /// Clone the cached LLM request for private background work that should
@@ -830,6 +829,16 @@ fn lock_state(m: &Mutex<AutonomyState>) -> std::sync::MutexGuard<'_, AutonomySta
     lock_or_recover("autonomy state mutex", m)
 }
 
+/// Single point of mutation for `AutonomyState::last_request`. All
+/// callers — the public `notify_last_request` and the internal
+/// heartbeat/dormant-ping paths that already hold the state lock — go
+/// through this so the log line stays consistent and nobody silently
+/// forgets to emit it.
+fn cache_last_request(state: &mut AutonomyState, character: &str, request: LlmRequest) {
+    state.last_request = Some(request);
+    debug!(character, "Cached last LLM request for heartbeat reuse");
+}
+
 fn push_provider_fallback_events(
     state: &mut AutonomyState,
     kind: HeartbeatEventKind,
@@ -958,7 +967,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 
         let dream_backoff_elapsed = s
             .next_dream_attempt_at
-            .map_or(true, |next_attempt| now >= next_attempt);
+            .is_none_or(|next_attempt| now >= next_attempt);
         let dream_needed = dream_backoff_elapsed
             && ctx.config.enabled
             && ctx
@@ -1170,7 +1179,6 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
         character,
         loaded_config,
         llm_client,
-        &ctx.data_dir,
         notifier,
         cached_request,
         ctx.http.clone(),
@@ -1204,7 +1212,7 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
 
             // Apply deferred character self-edits now that the cache has
             // been bust by the engine reload.
-            let character_data_dir = ctx.data_dir.join(character);
+            let character_data_dir = character_data_dir(&ctx.data_dir, character);
             if let Some(lc) = ctx.loaded_config.as_deref() {
                 if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
                     &character_data_dir,
@@ -1385,10 +1393,11 @@ fn rebuild_request_from_disk(
     config: &LoadedConfig,
 ) -> Option<LlmRequest> {
     use crate::engine::messages::MessageStore;
-    use crate::engine::prompt::{self, PromptParams};
+    use crate::handler::{prepare_chat_context, PrepareChatContextParams, PreparedChatContext};
+    use shore_config::character_active_jsonl;
 
-    let char_dir = data_dir.join(character);
-    let active_path = char_dir.join("active.jsonl");
+    let char_dir = character_data_dir(data_dir, character);
+    let active_path = character_active_jsonl(data_dir, character);
 
     let store = MessageStore::load(active_path)
         .map_err(|e| warn!(character, error = %e, "Heartbeat rebuild: failed to load messages"))
@@ -1407,78 +1416,36 @@ fn rebuild_request_from_disk(
         return None;
     }
 
-    // Resolve the normal chat model. Heartbeat callers apply their background
-    // model override after rebuilding; keepalive must refresh the chat cache
-    // prefix, not a heartbeat-only model.
-    let resolved = config
-        .app
-        .defaults
-        .model
-        .as_deref()
-        .and_then(|name| config.models.find_model(name).ok())
-        .or_else(|| config.models.first_chat_model())?;
+    // Resolve the normal chat model with the per-character preference
+    // overlay applied. Heartbeat callers apply their background model
+    // override after rebuilding; keepalive must refresh the chat cache
+    // prefix using the same model+sampler chat would have produced, not
+    // a heartbeat-only model or an un-overlaid `defaults.model`.
+    let resolved = crate::preferences::resolve_chat_model_for_character(config, character)?;
 
-    let display_name = config.app.defaults.resolve_display_name();
-    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
-        &char_dir,
-        &config.dirs.config,
+    let PreparedChatContext {
+        llm_messages,
+        system,
+        tool_defs,
+        ..
+    } = prepare_chat_context(PrepareChatContextParams {
         character,
-    ) {
-        warn!(character, error = %e, "Heartbeat rebuild: failed to ensure active prompt snapshot");
-    }
-    let character_definition =
-        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, SOUL_FILE);
-    let user_definition =
-        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, USER_FILE);
-    let system_prompt =
-        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, AGENTS_FILE);
-    let tools_guidance =
-        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, TOOLS_FILE);
-    let memory_index =
-        crate::memory::deferred_edits::load_memory_index(&char_dir, &config.dirs.config, character);
-
-    let tool_toggles = &config.app.behavior.tool_use.tools;
-    let prompt_result = prompt::assemble_prompt(&PromptParams {
-        character_name: character,
-        display_name: &display_name,
-        system_prompt: system_prompt.as_deref(),
-        tools_guidance: tools_guidance.as_deref(),
-        character_definition: character_definition.as_deref(),
-        user_definition: user_definition.as_deref(),
-        memory_index: memory_index.as_deref(),
-        is_private: false,
-        has_prior_context,
+        character_data_dir: &char_dir,
+        config,
+        resolved: &resolved,
         messages: store.messages(),
-        max_context_tokens: resolved.max_context_tokens,
-        max_output_tokens: resolved.max_tokens,
+        has_prior_context,
+        is_private: false,
+        // Must mirror the live chat path: a rebuild reconstructs the
+        // request chat would have produced, so the unsigned-thinking
+        // shape has to match too. Otherwise the heartbeat-rebuilt cache
+        // prefix diverges from the chat-warmed prefix on OpenAI/Z.AI
+        // SDKs, invalidating the cache the next chat call would have hit.
+        include_unsigned_thinking: resolved.sdk.echoes_unsigned_thinking(),
     });
 
-    let cache_dir = &config.dirs.cache;
-    let (mut llm_messages, system) = crate::handler::build_llm_messages(
-        &prompt_result,
-        false,
-        config.app.advanced.max_image_size,
-        cache_dir,
-    );
-    crate::content_util::maybe_strip_prior_thinking(
-        &mut llm_messages,
-        config.app.memory.thinking.preserve_prior_turns,
-        &resolved.provider_key,
-    );
-
-    let tool_defs = if config.app.behavior.tool_use.enabled {
-        Some(tool_system::render_tool_defs(
-            false,
-            tool_toggles,
-            character,
-            &display_name,
-        ))
-    } else {
-        None
-    };
-
     match LedgerClient::build_request_with_provider_keys(
-        resolved,
+        &resolved,
         &config.providers,
         llm_messages,
         system,
@@ -1504,30 +1471,42 @@ fn apply_heartbeat_model_override(
     config: &LoadedConfig,
     character: &str,
 ) -> bool {
-    let Some(heartbeat_name) = config
+    // If `defaults.background.heartbeat` (or its fallbacks) is not set,
+    // we have no override to apply and keep the chat model.
+    let Some(configured_name) = config
         .app
         .defaults
         .resolve_background_model_name(shore_config::app::BackgroundTask::Heartbeat)
     else {
         return false;
     };
-    let resolved = match config.models.find_model(heartbeat_name) {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(
-                character,
-                error = %e,
-                heartbeat_model = %heartbeat_name,
-                "Heartbeat: configured model not found in catalog"
-            );
-            return false;
-        }
+    // The configured name must actually resolve to a catalog entry. If it
+    // doesn't (typo, removed model, etc.), don't silently fall back to
+    // whichever chat model the catalog returns first — keep the chat
+    // model the user is currently using and warn so the misconfig is
+    // visible. (resolve_background_model's silent fallback is fine for
+    // compaction/dreaming where some model is better than none.)
+    if let Err(e) = config.models.find_model(configured_name) {
+        warn!(
+            character,
+            configured_model = %configured_name,
+            error = %e,
+            "Heartbeat: configured model not found in catalog; keeping chat model"
+        );
+        return false;
+    }
+    let Some(resolved) = crate::preferences::resolve_background_model(
+        config,
+        shore_config::app::BackgroundTask::Heartbeat,
+        character,
+    ) else {
+        return false;
     };
     if resolved.model_id == request.model {
         return false;
     }
     match LedgerClient::build_request_with_provider_keys(
-        resolved,
+        &resolved,
         &config.providers,
         request.messages.clone(),
         request.system.clone(),
@@ -1537,7 +1516,7 @@ fn apply_heartbeat_model_override(
         Ok(mut new_req) => {
             info!(
                 character,
-                heartbeat_model = %heartbeat_name,
+                heartbeat_model = %resolved.name,
                 model_id = %new_req.model,
                 "Heartbeat: using configured heartbeat model"
             );
@@ -1549,7 +1528,7 @@ fn apply_heartbeat_model_override(
             warn!(
                 character,
                 error = %e,
-                heartbeat_model = %heartbeat_name,
+                heartbeat_model = %resolved.name,
                 "Heartbeat: failed to build override request, falling back to chat model"
             );
             false
@@ -1589,7 +1568,7 @@ async fn execute_heartbeat_tick(
                         // use it — without this, pings silently no-op after
                         // every daemon restart until the next user message.
                         let mut s = lock_state(state);
-                        s.last_request = Some(req.clone());
+                        cache_last_request(&mut s, character, req.clone());
                         drop(s);
                         req
                     }
@@ -1616,7 +1595,7 @@ async fn execute_heartbeat_tick(
     apply_heartbeat_model_override(&mut request, lc, character);
 
     // Build the dynamic heartbeat prompt.
-    let character_data_dir = data_dir.join(character);
+    let character_data_dir = character_data_dir(data_dir, character);
     if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
         &character_data_dir,
         &lc.dirs.config,
@@ -1647,17 +1626,18 @@ async fn execute_heartbeat_tick(
         load_heartbeat_instructions(&character_data_dir).replace("{user}", &user_name);
     let heartbeat_prompt = build_heartbeat_prompt(&user_name, &default_interval_str);
 
-    request.messages.push(json!({
-        "role": "system",
-        "content": heartbeat_instructions,
-    }));
-
-    // Append the heartbeat prompt as a system-role message. The Anthropic
-    // provider auto-wraps inline system messages in <system_instruction> tags
-    // and emits them as a user turn (see convert_inline_system_messages).
-    request
-        .messages
-        .push(json!({"role": "system", "content": heartbeat_prompt}));
+    // Hand the heartbeat instructions + prompt to shore-llm as the
+    // trailing `system_suffix`. shore-llm expands this into a trailing
+    // `role: "system"` message just before provider dispatch, where each
+    // provider auto-wraps it in `<system_instruction>` and merges into
+    // the prior user turn. Keeping it out of `request.messages` means
+    // the cached chat prefix downstream calls reuse never sees this
+    // text — important when heartbeat re-uses chat's `last_request`.
+    request.system_suffix = Some(format!("{heartbeat_instructions}\n\n{heartbeat_prompt}"));
+    // Heartbeat ticks fire on a slow cadence; route the payload log to
+    // the long-retention tier so reflection traces survive past chat's
+    // 3-day prune.
+    request.retain_long = true;
 
     // NOTE: set_next_wake is in the base tool set (tools/basic.rs), so the
     // tools array is identical between normal messages and heartbeat ticks.
@@ -1989,7 +1969,7 @@ async fn build_tool_context(
     client: &LedgerClient,
     config: &LoadedConfig,
 ) -> Option<SharedToolContext> {
-    let char_dir = data_dir.join(character);
+    let char_dir = character_data_dir(data_dir, character);
 
     let image_gen_config = resolve_image_gen_config(
         config.app.defaults.image_generation.as_deref(),
@@ -2169,7 +2149,7 @@ async fn execute_dormant_ping(
                 match rebuild_request_from_disk(character, data_dir, config) {
                     Some(req) => {
                         let mut s = lock_state(state);
-                        s.last_request = Some(req.clone());
+                        cache_last_request(&mut s, character, req.clone());
                         drop(s);
                         build_keepalive_ping(&req, character)
                     }
@@ -2312,6 +2292,8 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
+            system_suffix: None,
+            retain_long: false,
         }
     }
 
@@ -2991,6 +2973,8 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
+            system_suffix: None,
+            retain_long: false,
         };
 
         // set_next_wake is now in the base tool set (tools/basic.rs),
@@ -3116,6 +3100,8 @@ api_key_env = "{api_key_env}"
             provider_key: None,
             rid: None,
             forensic_character: None,
+            system_suffix: None,
+            retain_long: false,
         }
     }
 

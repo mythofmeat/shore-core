@@ -12,8 +12,7 @@ use crate::LlmError;
 use super::sse::{read_sse_events, SseEvent};
 use super::stream_helpers::{
     apply_common_params, build_done_event, build_start_event, build_tool_use_event,
-    extract_openai_usage, extract_system_text, normalize_finish_reason,
-    translate_tool_declarations, StreamTiming,
+    extract_openai_usage, normalize_finish_reason, StreamTiming,
 };
 
 // ── Constants ──────────────────────────────────────────────────────────
@@ -44,200 +43,29 @@ fn resolve_base_url(request: &LlmRequest) -> &str {
     }
 }
 
-// ── Message translation ────────────────────────────────────────────────
+// ── Message + tool translation ─────────────────────────────────────────
+//
+// Z.AI speaks the OpenAI chat-completions wire format and previously
+// duplicated `openai::translate_messages` / `translate_tools` outright.
+// The only differences were:
+//
+// 1. Z.AI accepts raw `role: "system"` mid-history (OpenAI-routed
+//    backends need the `<system_instruction>` wrapper).
+// 2. Z.AI's `zai_clear_thinking` provider option, when set, drops prior
+//    `thinking` blocks instead of replaying them as `reasoning_content`.
+//
+// Both are now flags on `ProviderContext` (`wrap_inline_system` and
+// `drop_prior_thinking`), and the field name `reasoning_content` is
+// already produced by `reasoning_field_for("zai")`. So the entire body
+// of `translate_messages` collapses into a call into `openai`.
 
-/// Translate Anthropic-format messages into Z.AI / OpenAI-compatible messages.
-///
-/// When `clear_thinking` is false, `type: "thinking"` blocks in assistant
-/// content arrays are extracted and emitted as `reasoning_content` on the
-/// assistant message so the model can see its prior reasoning.
-fn translate_messages(request: &LlmRequest, clear_thinking: bool) -> Vec<Value> {
-    let mut out = Vec::new();
-
-    // Inject system prompt if present.
-    if let Some(system) = &request.system {
-        let text = extract_system_text(system);
-        if !text.is_empty() {
-            out.push(json!({"role": "system", "content": text}));
-        }
-    }
-
-    for msg in &request.messages {
-        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        let content = msg.get("content");
-
-        match content {
-            // String content — simple pass-through.
-            Some(Value::String(s)) => match role {
-                "system" => out.push(json!({"role": "system", "content": s})),
-                "user" => out.push(json!({"role": "user", "content": s})),
-                "assistant" => out.push(json!({"role": "assistant", "content": s})),
-                _ => {}
-            },
-
-            // Array content — needs block-level translation.
-            Some(Value::Array(blocks)) => match role {
-                "assistant" => {
-                    let text_parts: Vec<&Value> = blocks
-                        .iter()
-                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                        .collect();
-                    let tool_parts: Vec<&Value> = blocks
-                        .iter()
-                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
-                        .collect();
-
-                    let content_str: String = text_parts
-                        .iter()
-                        .map(|b| b.get("text").and_then(|t| t.as_str()).unwrap_or(""))
-                        .collect();
-                    let content_val = if content_str.is_empty() {
-                        Value::Null
-                    } else {
-                        Value::String(content_str)
-                    };
-
-                    let tool_calls: Vec<Value> = tool_parts
-                        .iter()
-                        .map(|b| {
-                            let id = b
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let name = b
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let input = b.get("input").cloned().unwrap_or(json!({}));
-                            let arguments =
-                                serde_json::to_string(&input).unwrap_or_else(|_| "{}".into());
-                            json!({
-                                "id": id,
-                                "type": "function",
-                                "function": {
-                                    "name": name,
-                                    "arguments": arguments,
-                                }
-                            })
-                        })
-                        .collect();
-
-                    let mut msg_obj = json!({"role": "assistant", "content": content_val});
-                    if !tool_calls.is_empty() {
-                        msg_obj["tool_calls"] = Value::Array(tool_calls);
-                    }
-
-                    // Preserve reasoning across turns when clear_thinking is false.
-                    if !clear_thinking {
-                        let reasoning: String = blocks
-                            .iter()
-                            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("thinking"))
-                            .map(|b| b.get("thinking").and_then(|t| t.as_str()).unwrap_or(""))
-                            .collect();
-                        if !reasoning.is_empty() {
-                            msg_obj["reasoning_content"] = Value::String(reasoning);
-                        }
-                    }
-
-                    out.push(msg_obj);
-                }
-
-                "user" => {
-                    let tool_results: Vec<&Value> = blocks
-                        .iter()
-                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
-                        .collect();
-                    let other_blocks: Vec<&Value> = blocks
-                        .iter()
-                        .filter(|b| {
-                            let ty = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            ty != "tool_result"
-                        })
-                        .collect();
-
-                    // Emit tool result messages first.
-                    for tr in &tool_results {
-                        let tool_call_id =
-                            tr.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("");
-                        let content = match tr.get("content") {
-                            Some(Value::String(s)) => s.clone(),
-                            Some(other) => serde_json::to_string(other).unwrap_or_default(),
-                            None => String::new(),
-                        };
-                        out.push(json!({
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "content": content,
-                        }));
-                    }
-
-                    // Emit remaining blocks as a user message.
-                    if !other_blocks.is_empty() {
-                        let parts: Vec<Value> = other_blocks
-                            .iter()
-                            .filter_map(|b| {
-                                let ty = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                                match ty {
-                                    "text" => {
-                                        let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                                        Some(json!({"type": "text", "text": text}))
-                                    }
-                                    "image" => {
-                                        let source = b.get("source")?;
-                                        let source_type = source.get("type").and_then(|t| t.as_str())?;
-                                        if source_type == "base64" {
-                                            let media_type = source
-                                                .get("media_type")
-                                                .and_then(|m| m.as_str())
-                                                .unwrap_or("image/png");
-                                            let data = source.get("data").and_then(|d| d.as_str())?;
-                                            Some(json!({
-                                                "type": "image_url",
-                                                "image_url": {
-                                                    "url": format!("data:{media_type};base64,{data}")
-                                                }
-                                            }))
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    _ => None,
-                                }
-                            })
-                            .collect();
-                        if !parts.is_empty() {
-                            out.push(json!({"role": "user", "content": parts}));
-                        }
-                    }
-                }
-
-                "system" => {
-                    let text = extract_system_text(&Value::Array(blocks.clone()));
-                    if !text.is_empty() {
-                        out.push(json!({"role": "system", "content": text}));
-                    }
-                }
-
-                _ => {}
-            },
-
-            _ => {}
-        }
-    }
-
-    out
+fn translate_messages(request: &LlmRequest) -> Vec<Value> {
+    let ctx = super::context::build_provider_context(request);
+    super::openai::translate_messages(request, &ctx)
 }
 
-/// Translate Anthropic-format tool definitions to OpenAI function-calling format.
 fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
-    translate_tool_declarations(tools).map(|decls| {
-        decls
-            .into_iter()
-            .map(|d| json!({"type": "function", "function": d}))
-            .collect()
-    })
+    super::openai::translate_tools(tools)
 }
 
 // ── Request body builder ────────────────────────────────────────────────
@@ -266,7 +94,7 @@ fn build_headers(request: &LlmRequest) -> reqwest::header::HeaderMap {
 /// Build the JSON body for Z.AI chat completions.
 fn build_chat_body(request: &LlmRequest, streaming: bool) -> Value {
     let clear_thinking = opt_bool(request, "zai_clear_thinking").unwrap_or(false);
-    let messages = translate_messages(request, clear_thinking);
+    let messages = translate_messages(request);
     let tools = translate_tools(&request.tools);
 
     let mut body = json!({
@@ -628,6 +456,8 @@ mod tests {
             provider_key: Some("zai".into()),
             rid: None,
             forensic_character: None,
+            system_suffix: None,
+            retain_long: false,
         }
     }
 
@@ -665,7 +495,7 @@ mod tests {
             json!({"role": "user", "content": "Hello"}),
             json!({"role": "assistant", "content": "Hi there!"}),
         ];
-        let msgs = translate_messages(&req, false);
+        let msgs = translate_messages(&req);
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0]["role"], "system");
         assert_eq!(msgs[0]["content"], "You are helpful.");
@@ -677,6 +507,7 @@ mod tests {
     #[test]
     fn translate_messages_assistant_thinking_clear_true() {
         let mut req = test_request();
+        req.provider_options = Some(json!({"zai_clear_thinking": true}));
         req.messages = vec![json!({
             "role": "assistant",
             "content": [
@@ -685,7 +516,7 @@ mod tests {
             ]
         })];
 
-        let msgs = translate_messages(&req, true);
+        let msgs = translate_messages(&req);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["content"], "The answer is 42.");
         // reasoning_content should NOT be present when clear_thinking is true.
@@ -703,7 +534,7 @@ mod tests {
             ]
         })];
 
-        let msgs = translate_messages(&req, false);
+        let msgs = translate_messages(&req);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["content"], "The answer is 42.");
         assert_eq!(msgs[0]["reasoning_content"], "let me reason...");
@@ -725,7 +556,7 @@ mod tests {
             ]
         })];
 
-        let msgs = translate_messages(&req, false);
+        let msgs = translate_messages(&req);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["content"], "Let me check.");
         let tc = &msgs[0]["tool_calls"][0];
@@ -749,7 +580,7 @@ mod tests {
             ]
         })];
 
-        let msgs = translate_messages(&req, false);
+        let msgs = translate_messages(&req);
         assert_eq!(msgs.len(), 2);
         // Tool result first.
         assert_eq!(msgs[0]["role"], "tool");
@@ -757,6 +588,30 @@ mod tests {
         assert_eq!(msgs[0]["content"], "Sunny, 25°C");
         // Remaining user text.
         assert_eq!(msgs[1]["role"], "user");
+    }
+
+    /// Z.AI accepts raw `role: "system"` mid-history; the OpenAI inline
+    /// system wrapper must not kick in here. This pins the
+    /// `wrap_inline_system = false` provider context flag for `zai`.
+    #[test]
+    fn translate_messages_zai_passes_inline_system_through_raw() {
+        let mut req = test_request();
+        req.messages = vec![
+            json!({"role": "user", "content": "first"}),
+            json!({"role": "system", "content": "behave"}),
+            json!({"role": "user", "content": "second"}),
+        ];
+        let msgs = translate_messages(&req);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[1]["role"], "system");
+        assert_eq!(msgs[1]["content"], "behave");
+        assert!(
+            !msgs[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("<system_instruction>"),
+            "zai should not wrap inline system messages"
+        );
     }
 
     // ── translate_tools ──────────────────────────────────────────

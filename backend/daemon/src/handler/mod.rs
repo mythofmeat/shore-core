@@ -8,6 +8,7 @@
 //! inline and always return immediately.
 
 mod command_dispatch;
+mod context;
 mod generation;
 mod images;
 mod key_fallback;
@@ -24,6 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub(crate) use context::{prepare_chat_context, PrepareChatContextParams, PreparedChatContext};
 pub(crate) use images::{
     build_content, embed_image_data, embed_messages_image_data, image_data_for_path,
 };
@@ -47,7 +49,7 @@ use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools::context::SharedToolContext;
 use crate::tools::ToolContext;
 use shore_config::app::SearchConfig;
-use shore_config::{discover_characters, load_character_config, LoadedConfig};
+use shore_config::{character_data_dir, discover_characters, load_character_config, LoadedConfig};
 use shore_ledger::LedgerClient;
 use shore_swp_server::{RequestMeta, RoutedMessage, SessionId, SessionRouter};
 
@@ -495,7 +497,7 @@ impl MessageHandler {
         // `runtime_state.json` remains as a migration fallback for one
         // release; it is read but never written by Phase 3+ code paths.
         let (active_model, sampler_overlay) = {
-            let character_data_dir = self.cmd_ctx.data_dir.join(&char_name);
+            let character_data_dir = character_data_dir(&self.cmd_ctx.data_dir, &char_name);
             let (global_prefs, char_prefs) =
                 crate::preferences::load_for_character(&self.cmd_ctx.data_dir, &char_name)
                     .unwrap_or_else(|e| {

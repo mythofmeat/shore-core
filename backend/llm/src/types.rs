@@ -59,6 +59,36 @@ pub struct LlmRequest {
     /// Character name — transient, for cache forensic logging only.
     #[serde(skip)]
     pub forensic_character: Option<String>,
+
+    /// Optional trailing system instruction.
+    ///
+    /// Background tasks (compaction, dreaming, heartbeat) need to append
+    /// a `role: "system"` message after the conversation history to drive
+    /// model behavior for this single call without polluting the
+    /// persisted history. Previously each caller hand-pushed a
+    /// `role: "system"` entry into `messages`; this field is the
+    /// first-class declarative form. shore-llm expands it into the
+    /// expected trailing-system shape just before provider dispatch, so
+    /// per-provider `<system_instruction>` wrapping continues to apply
+    /// uniformly.
+    ///
+    /// `None` and `Some("")` are both treated as "no suffix" and skip
+    /// the expansion entirely.
+    #[serde(skip)]
+    pub system_suffix: Option<String>,
+
+    /// Transient flag: this request belongs to a low-frequency, high-value
+    /// background task (compaction, dreaming, heartbeat) whose payload
+    /// logs should be kept on a longer retention tier than per-turn chat
+    /// payloads.
+    ///
+    /// `debug_log::log_request` routes flagged calls to a separate
+    /// `debug/api_logs_long/` subdirectory so operators can prune
+    /// chat-volume payloads aggressively (e.g. 3 days) while keeping
+    /// these for forensic analysis (e.g. 30 days). The flag carries no
+    /// wire-format meaning and is skipped from serialization.
+    #[serde(skip)]
+    pub retain_long: bool,
 }
 
 /// Token usage counts from shore-llm's normalized response.
@@ -250,6 +280,8 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
+            system_suffix: None,
+            retain_long: false,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(!json.as_object().unwrap().contains_key("base_url"));

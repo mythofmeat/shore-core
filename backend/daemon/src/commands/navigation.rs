@@ -1,6 +1,7 @@
 use serde_json::json;
 use shore_config::{
-    character_workspace_dir, AGENTS_FILE, HEARTBEAT_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE,
+    character_data_dir, character_workspace_dir, AGENTS_FILE, HEARTBEAT_FILE, SOUL_FILE,
+    TOOLS_FILE, USER_FILE,
 };
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::{CharacterAvatar, CharacterInfo};
@@ -118,7 +119,7 @@ pub fn character_info(
     let config_override_path = char_dir.join("config.toml");
     let has_config_override = config_override_path.exists();
 
-    let data_dir = ctx.data_dir.join(name);
+    let data_dir = character_data_dir(&ctx.data_dir, name);
     let has_data = data_dir.exists();
     let pending_deferred_edits =
         crate::memory::deferred_edits::pending_deferred_edit_paths(&data_dir).unwrap_or_default();

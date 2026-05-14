@@ -318,7 +318,7 @@ pub async fn handle_search_history(
     }
 
     if results.len() < max_results {
-        let active_path = character_dir.join("active.jsonl");
+        let active_path = character_dir.join(shore_config::ACTIVE_JSONL_FILE);
         let active = MessageStore::load(active_path).map_err(|e| ToolError::Io(e.to_string()))?;
         searched_messages += active.message_count();
         push_matches(

@@ -78,7 +78,7 @@ impl ConversationEngine {
             dir = %character_dir.display(),
             "initializing conversation engine"
         );
-        let messages = MessageStore::load(character_dir.join("active.jsonl"))?;
+        let messages = MessageStore::load(character_dir.join(shore_config::ACTIVE_JSONL_FILE))?;
         let segments = SegmentReader::load(&character_dir)?;
         info!(
             character = %character_name,
@@ -302,7 +302,8 @@ impl ConversationEngine {
     /// Reload messages and segments from disk (e.g. after compaction with retention).
     pub fn reload(&mut self) -> Result<(), EngineError> {
         info!(character = %self.character_name, "reloading engine from disk");
-        self.messages = MessageStore::load(self.character_dir.join("active.jsonl"))?;
+        self.messages =
+            MessageStore::load(self.character_dir.join(shore_config::ACTIVE_JSONL_FILE))?;
         self.segments = SegmentReader::load(&self.character_dir)?;
         info!(
             character = %self.character_name,
@@ -387,15 +388,7 @@ mod tests {
         }
     }
 
-    fn write_jsonl(path: &std::path::Path, messages: &[Message]) {
-        let body = messages
-            .iter()
-            .map(|msg| serde_json::to_string(msg).unwrap())
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        std::fs::write(path, body).unwrap();
-    }
+    use crate::test_support::write_jsonl;
 
     #[test]
     fn engine_starts_with_empty_messages() {
