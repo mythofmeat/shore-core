@@ -54,3 +54,4 @@ experiments/memory-framework-eval/.letta-pgdata/
 test_char
 .worktree
 .worktrees/
+sweep.timestamp
