@@ -225,7 +225,7 @@ pub(super) async fn handle_generation(
     };
 
     let character_data_dir = character_data_dir(&data_dir, &char_name);
-    let include_unsigned_thinking = matches!(resolved.sdk, Sdk::Openai | Sdk::Zai);
+    let include_unsigned_thinking = resolved.sdk.echoes_unsigned_thinking();
     let PreparedChatContext {
         llm_messages,
         system,

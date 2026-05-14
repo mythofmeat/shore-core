@@ -1436,7 +1436,12 @@ fn rebuild_request_from_disk(
         messages: store.messages(),
         has_prior_context,
         is_private: false,
-        include_unsigned_thinking: false,
+        // Must mirror the live chat path: a rebuild reconstructs the
+        // request chat would have produced, so the unsigned-thinking
+        // shape has to match too. Otherwise the heartbeat-rebuilt cache
+        // prefix diverges from the chat-warmed prefix on OpenAI/Z.AI
+        // SDKs, invalidating the cache the next chat call would have hit.
+        include_unsigned_thinking: resolved.sdk.echoes_unsigned_thinking(),
     });
 
     match LedgerClient::build_request_with_provider_keys(

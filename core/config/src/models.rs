@@ -86,6 +86,23 @@ impl Sdk {
             _ => None,
         }
     }
+
+    /// Whether this SDK's wire protocol requires the daemon to echo
+    /// **unsigned** reasoning text back to the provider on the next
+    /// request. Anthropic (and Claude Code, which is Anthropic underneath)
+    /// signs its thinking blocks and rejects requests that include
+    /// unsigned reasoning text from a prior turn; OpenAI and Z.AI, in
+    /// contrast, expect the assistant's prior `reasoning_content` to
+    /// round-trip verbatim. Gemini doesn't accept reasoning replay.
+    ///
+    /// Centralized here so chat and heartbeat sites can derive the same
+    /// value from one source — keeping the cache prefix consistent
+    /// between live chat and the heartbeat tick that reuses it. A bare
+    /// `match` at each call site was the kind of drift surface the
+    /// 2026-05-14 refactor was set up to eliminate.
+    pub fn echoes_unsigned_thinking(&self) -> bool {
+        matches!(self, Sdk::Openai | Sdk::Zai)
+    }
 }
 
 // ── Shared model config fields ──────────────────────────────────────────
