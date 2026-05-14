@@ -246,18 +246,24 @@ impl RealCompactionLlm {
                 // prompt rides as `system_suffix`, never as a trailing
                 // entry in `messages` — the cached prefix downstream chat
                 // calls reuse never sees it.
-                debug_assert_eq!(
-                    messages.len(),
-                    COMPACTION_TAIL_USER_PROMPT_COUNT,
-                    "cached-prefix compaction must append exactly \
-                     COMPACTION_TAIL_USER_PROMPT_COUNT user messages; \
-                     adjust the const and the breakpoint regression test \
-                     in lockstep before changing this shape"
-                );
-                let mut iter = messages.into_iter();
-                let user_prompt = iter
-                    .next()
-                    .expect("cached compaction requires one user prompt");
+                //
+                // Destructure into a fixed-size array so the invariant is
+                // enforced in release builds too: a future caller that
+                // passes the wrong number of messages panics here instead
+                // of silently dropping the trailing turns (which would
+                // shift cache-breakpoint placement and re-warm the cache
+                // — exactly the quiet-failure class this PR exists to
+                // eliminate).
+                let [user_prompt]: [serde_json::Value; COMPACTION_TAIL_USER_PROMPT_COUNT] =
+                    messages.try_into().unwrap_or_else(|v: Vec<_>| {
+                        panic!(
+                            "cached-prefix compaction must append exactly {} user message(s), got {}; \
+                             adjust the const and the breakpoint regression test in lockstep before \
+                             changing this shape",
+                            COMPACTION_TAIL_USER_PROMPT_COUNT,
+                            v.len()
+                        )
+                    });
                 append_compaction_tail(&mut request, user_prompt, system);
                 request
             }
@@ -653,6 +659,61 @@ mod tests {
         );
         assert_eq!(request.messages.len(), 1);
         assert_eq!(request.messages[0]["content"], "compact now");
+    }
+
+    /// The cached-path tail invariant
+    /// (`messages.len() == COMPACTION_TAIL_USER_PROMPT_COUNT`) is enforced
+    /// by a `try_into` destructure so it fires in release builds as well
+    /// as debug. A future caller that passes the wrong number of messages
+    /// must panic here, not silently drop the trailing turns and shift
+    /// cache-breakpoint placement.
+    #[test]
+    #[should_panic(expected = "cached-prefix compaction must append exactly")]
+    fn cached_compaction_panics_when_caller_drifts_from_tail_invariant() {
+        let api_key_env = format!(
+            "SHORE_TEST_COMPACTION_TAIL_{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        std::env::set_var(&api_key_env, "compaction-secret");
+        let model = test_compaction_model(&api_key_env);
+        let ledger_tmp = TempDir::new().unwrap();
+        let llm = RealCompactionLlm::new(
+            LedgerClient::new(
+                shore_llm::LlmClient::new(),
+                &ledger_tmp.path().join("ledger.db"),
+            )
+            .unwrap(),
+            model,
+            ProviderRegistry::default(),
+            "alice".to_string(),
+            None,
+        );
+        let cached = shore_llm::types::LlmRequest {
+            sdk: Sdk::Anthropic,
+            model: "chat-model".to_string(),
+            api_key: "chat-secret".to_string(),
+            base_url: Some("http://chat.example".to_string()),
+            messages: vec![json!({"role": "user", "content": "cached user"})],
+            system: Some(json!("cached system")),
+            tools: None,
+            max_tokens: 42,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: Some("anthropic".to_string()),
+            rid: None,
+            forensic_character: None,
+            system_suffix: None,
+            retain_long: false,
+        };
+        let _ = llm.build_compaction_request(
+            "compaction system",
+            vec![
+                json!({"role": "user", "content": "compact now"}),
+                json!({"role": "user", "content": "second user message — must panic"}),
+            ],
+            Some(cached),
+        );
     }
 
     #[test]
