@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::Local;
+use serde_json::json;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -261,27 +262,43 @@ impl RealCompactionLlm {
                 request
             }
             None => {
-                // Fresh path: no chat cache to inherit. Mirror the cached
-                // path's wire shape so the model sees the same prompt
-                // structure either way — the compaction instruction rides
-                // as `system_suffix`, which `preprocess_request` expands
-                // into a trailing `role: "system"` block that Anthropic's
-                // `convert_inline_system_messages` then merges into the
-                // preceding compact-now user turn. Without this parity,
-                // the model receives a top-level system prompt on the
-                // fresh path and an embedded `<system_instruction>` block
-                // on the cached path — different prompts for the same
-                // task depending on whether a chat call ran beforehand.
+                // Fresh path: no chat cache to inherit. Branch on whether
+                // this SDK routes through Anthropic's prompt cache:
+                //
+                // - Anthropic / ClaudeCode: ride the compaction prompt as
+                //   `system_suffix` to match the cached path's wire shape.
+                //   `convert_inline_system_messages` then merges the
+                //   trailing `role:"system"` into the compact-now user
+                //   turn, so the model sees the same structure either way
+                //   (cached or fresh) — preserving the prefix-relationship
+                //   the cached-vs-chat regression test pins.
+                //
+                // - OpenAI / Gemini / Z.AI: keep the compaction prompt at
+                //   the top-level `request.system`. These providers don't
+                //   merge inline system messages into the preceding user;
+                //   they translate trailing `role:"system"` into either an
+                //   inline `<system_instruction>` user-wrap (OpenAI,
+                //   Gemini) or a raw `role:"system"` (Z.AI). Routing
+                //   through `system_suffix` here would materially shift
+                //   the model-facing wire shape — top-level system block
+                //   → mid-history wrapped instruction — for providers
+                //   that don't have the cache-prefix concern motivating
+                //   the change in the first place.
+                let (system_arg, suffix) = if self.model.sdk.uses_anthropic_prompt_cache() {
+                    (None, Some(system.to_string()))
+                } else {
+                    (Some(json!(system)), None)
+                };
                 let mut request = LedgerClient::build_request_with_provider_keys(
                     &self.model,
                     &self.providers,
                     messages,
-                    None,
+                    system_arg,
                     None,
                     None,
                 )
                 .map_err(|e| CompactionError::Llm(e.to_string()))?;
-                request.system_suffix = Some(system.to_string());
+                request.system_suffix = suffix;
                 request
             }
         };
@@ -487,7 +504,6 @@ impl ConversationManager for RealConversationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use shore_config::models::{ModelConfigFields, Sdk};
     use tempfile::TempDir;
 
@@ -557,17 +573,86 @@ mod tests {
         assert_eq!(request.provider_key.as_deref(), Some("claude_code"));
         assert_eq!(request.api_key, "");
         assert_eq!(request.messages[0]["content"], "compact now");
-        // Wire-shape parity with the cached path: the compaction prompt
-        // rides as `system_suffix` (merged into the compact-now user turn
-        // at provider dispatch), never as a top-level `request.system`
-        // block. Without this, fresh-path compaction calls would emit a
-        // structurally different prompt than cached-path calls do for the
-        // same task.
+        // Anthropic-family SDK (ClaudeCode runs on Anthropic underneath):
+        // fresh path must use `system_suffix` so the wire shape matches
+        // the cached path — `convert_inline_system_messages` merges the
+        // trailing `role:"system"` into the compact-now user turn, giving
+        // the model the same prompt structure regardless of whether a
+        // chat call ran beforehand.
         assert!(
             request.system.is_none(),
-            "fresh compaction must not emit a top-level system block"
+            "fresh compaction on Anthropic SDK must not emit a top-level system block"
         );
         assert_eq!(request.system_suffix.as_deref(), Some("compaction system"));
+    }
+
+    fn test_openai_compaction_model(api_key_env: &str) -> ResolvedModel {
+        ResolvedModel::from_parts(
+            "gpt".to_string(),
+            "chat.openai.gpt".to_string(),
+            "chat".to_string(),
+            "openai".to_string(),
+            "gpt-4o".to_string(),
+            Sdk::Openai,
+            ModelConfigFields {
+                sdk: Some(Sdk::Openai),
+                api_key_env: Some(api_key_env.to_string()),
+                base_url: Some("http://compaction-openai.example".to_string()),
+                max_tokens: Some(777),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Non-Anthropic providers (OpenAI/Gemini/Z.AI) don't merge trailing
+    /// `role:"system"` into the preceding user turn — they translate it
+    /// into either an inline `<system_instruction>` user-wrap or a raw
+    /// mid-history `role:"system"`. Routing the fresh-path compaction
+    /// prompt through `system_suffix` on those SDKs would materially shift
+    /// the model-facing wire shape (top-level system block → wrapped
+    /// instruction at the tail), which the cache-prefix argument that
+    /// motivates the Anthropic-side change doesn't apply to. Pin the
+    /// fresh-path here so future refactors don't accidentally unify the
+    /// two arms in the wrong direction.
+    #[test]
+    fn fresh_openai_compaction_request_keeps_top_level_system_block() {
+        let api_key_env = format!(
+            "SHORE_TEST_OPENAI_COMPACTION_{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        std::env::set_var(&api_key_env, "openai-secret");
+        let model = test_openai_compaction_model(&api_key_env);
+        let ledger_tmp = TempDir::new().unwrap();
+        let llm = RealCompactionLlm::new(
+            LedgerClient::new(
+                shore_llm::LlmClient::new(),
+                &ledger_tmp.path().join("ledger.db"),
+            )
+            .unwrap(),
+            model,
+            ProviderRegistry::default(),
+            "alice".to_string(),
+            None,
+        );
+
+        let request = llm
+            .build_compaction_request(
+                "compaction system",
+                vec![json!({"role": "user", "content": "compact now"})],
+                None,
+            )
+            .unwrap();
+
+        std::env::remove_var(&api_key_env);
+
+        assert_eq!(request.sdk, Sdk::Openai);
+        assert_eq!(request.system, Some(json!("compaction system")));
+        assert!(
+            request.system_suffix.is_none(),
+            "non-Anthropic fresh path must not route system through suffix"
+        );
+        assert_eq!(request.messages.len(), 1);
+        assert_eq!(request.messages[0]["content"], "compact now");
     }
 
     #[test]

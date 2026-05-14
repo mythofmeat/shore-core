@@ -709,22 +709,37 @@ async fn build_librarian_request(
     )
     .ok_or_else(|| DreamingError::Config("no chat model configured for dreaming".into()))?;
     let tools = build_librarian_tool_defs(character, &display_name, dry_run);
-    // Fresh path: no chat cache to inherit. Mirror the cached path's wire
-    // shape — the dreaming system prompt rides as `system_suffix` so the
-    // model sees a `<system_instruction>...</system_instruction>` block
-    // attached to a user turn either way, instead of a top-level system
-    // block on the fresh path and an embedded instruction on the cached
-    // path.
+    // Fresh path: no chat cache to inherit. Branch on whether this SDK
+    // routes through Anthropic's prompt cache:
+    //
+    // - Anthropic / ClaudeCode: ride the dreaming prompt as `system_suffix`
+    //   so the wire shape matches the cached path —
+    //   `convert_inline_system_messages` merges the trailing `role:"system"`
+    //   into the preceding user turn, giving the model an embedded
+    //   `<system_instruction>` block either way.
+    //
+    // - OpenAI / Gemini / Z.AI: keep the dreaming prompt at the top-level
+    //   `request.system`. These providers don't merge inline system
+    //   messages into the preceding user; they translate trailing
+    //   `role:"system"` into an inline user-wrap (or a raw `role:"system"`
+    //   on Z.AI). Routing through `system_suffix` here would materially
+    //   shift the model-facing wire shape for SDKs that don't have the
+    //   cache-prefix concern motivating the change.
+    let (system_arg, suffix) = if resolved.sdk.uses_anthropic_prompt_cache() {
+        (None, Some(system))
+    } else {
+        (Some(json!(system)), None)
+    };
     let mut request = LedgerClient::build_request_with_provider_keys(
         &resolved,
         &loaded_config.providers,
         vec![json!({"role": "user", "content": user_prompt})],
-        None,
+        system_arg,
         Some(tools),
         None,
     )
     .map_err(|e| DreamingError::Llm(e.to_string()))?;
-    request.system_suffix = Some(system);
+    request.system_suffix = suffix;
     request.retain_long = true;
     Ok(request)
 }
