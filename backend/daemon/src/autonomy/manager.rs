@@ -1473,12 +1473,26 @@ fn apply_heartbeat_model_override(
 ) -> bool {
     // If `defaults.background.heartbeat` (or its fallbacks) is not set,
     // we have no override to apply and keep the chat model.
-    if config
+    let Some(configured_name) = config
         .app
         .defaults
         .resolve_background_model_name(shore_config::app::BackgroundTask::Heartbeat)
-        .is_none()
-    {
+    else {
+        return false;
+    };
+    // The configured name must actually resolve to a catalog entry. If it
+    // doesn't (typo, removed model, etc.), don't silently fall back to
+    // whichever chat model the catalog returns first — keep the chat
+    // model the user is currently using and warn so the misconfig is
+    // visible. (resolve_background_model's silent fallback is fine for
+    // compaction/dreaming where some model is better than none.)
+    if let Err(e) = config.models.find_model(configured_name) {
+        warn!(
+            character,
+            configured_model = %configured_name,
+            error = %e,
+            "Heartbeat: configured model not found in catalog; keeping chat model"
+        );
         return false;
     }
     let Some(resolved) = crate::preferences::resolve_background_model(

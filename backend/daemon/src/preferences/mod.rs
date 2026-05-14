@@ -694,17 +694,31 @@ pub fn resolve_background_model(
     task: shore_config::app::BackgroundTask,
     character: &str,
 ) -> Option<shore_config::models::ResolvedModel> {
-    let base = config
-        .app
-        .defaults
-        .resolve_background_model_name(task)
-        .and_then(|name| config.models.find_model(name).ok())
-        .or_else(|| config.models.first_chat_model())
-        .cloned()?;
     let op = match task {
         shore_config::app::BackgroundTask::Heartbeat => "heartbeat",
         shore_config::app::BackgroundTask::Compaction => "compaction",
         shore_config::app::BackgroundTask::Dreaming => "dreaming",
+    };
+    let configured = config.app.defaults.resolve_background_model_name(task);
+    let base = match configured {
+        Some(name) => match config.models.find_model(name) {
+            Ok(m) => m.clone(),
+            // The user *explicitly* configured a model for this task (or for
+            // `defaults.background.model`, or for `defaults.model`) but the
+            // catalog doesn't know it — almost always a typo. Warn loudly
+            // and fall back to the first chat model so the daemon stays up.
+            Err(e) => {
+                tracing::warn!(
+                    op,
+                    character,
+                    configured_model = %name,
+                    error = %e,
+                    "Configured {op} model not found in catalog; falling back to first chat model",
+                );
+                config.models.first_chat_model().cloned()?
+            }
+        },
+        None => config.models.first_chat_model().cloned()?,
     };
     Some(overlay_for_character(
         &config.dirs.data,
