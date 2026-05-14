@@ -9,7 +9,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::Local;
-use serde_json::json;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -261,15 +260,30 @@ impl RealCompactionLlm {
                 append_compaction_tail(&mut request, user_prompt, system);
                 request
             }
-            None => LedgerClient::build_request_with_provider_keys(
-                &self.model,
-                &self.providers,
-                messages,
-                Some(json!(system)),
-                None,
-                None,
-            )
-            .map_err(|e| CompactionError::Llm(e.to_string()))?,
+            None => {
+                // Fresh path: no chat cache to inherit. Mirror the cached
+                // path's wire shape so the model sees the same prompt
+                // structure either way — the compaction instruction rides
+                // as `system_suffix`, which `preprocess_request` expands
+                // into a trailing `role: "system"` block that Anthropic's
+                // `convert_inline_system_messages` then merges into the
+                // preceding compact-now user turn. Without this parity,
+                // the model receives a top-level system prompt on the
+                // fresh path and an embedded `<system_instruction>` block
+                // on the cached path — different prompts for the same
+                // task depending on whether a chat call ran beforehand.
+                let mut request = LedgerClient::build_request_with_provider_keys(
+                    &self.model,
+                    &self.providers,
+                    messages,
+                    None,
+                    None,
+                    None,
+                )
+                .map_err(|e| CompactionError::Llm(e.to_string()))?;
+                request.system_suffix = Some(system.to_string());
+                request
+            }
         };
 
         request.rid = None;
@@ -473,6 +487,7 @@ impl ConversationManager for RealConversationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use shore_config::models::{ModelConfigFields, Sdk};
     use tempfile::TempDir;
 
@@ -542,6 +557,17 @@ mod tests {
         assert_eq!(request.provider_key.as_deref(), Some("claude_code"));
         assert_eq!(request.api_key, "");
         assert_eq!(request.messages[0]["content"], "compact now");
+        // Wire-shape parity with the cached path: the compaction prompt
+        // rides as `system_suffix` (merged into the compact-now user turn
+        // at provider dispatch), never as a top-level `request.system`
+        // block. Without this, fresh-path compaction calls would emit a
+        // structurally different prompt than cached-path calls do for the
+        // same task.
+        assert!(
+            request.system.is_none(),
+            "fresh compaction must not emit a top-level system block"
+        );
+        assert_eq!(request.system_suffix.as_deref(), Some("compaction system"));
     }
 
     #[test]

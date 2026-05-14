@@ -709,15 +709,22 @@ async fn build_librarian_request(
     )
     .ok_or_else(|| DreamingError::Config("no chat model configured for dreaming".into()))?;
     let tools = build_librarian_tool_defs(character, &display_name, dry_run);
+    // Fresh path: no chat cache to inherit. Mirror the cached path's wire
+    // shape — the dreaming system prompt rides as `system_suffix` so the
+    // model sees a `<system_instruction>...</system_instruction>` block
+    // attached to a user turn either way, instead of a top-level system
+    // block on the fresh path and an embedded instruction on the cached
+    // path.
     let mut request = LedgerClient::build_request_with_provider_keys(
         &resolved,
         &loaded_config.providers,
         vec![json!({"role": "user", "content": user_prompt})],
-        Some(json!(system)),
+        None,
         Some(tools),
         None,
     )
     .map_err(|e| DreamingError::Llm(e.to_string()))?;
+    request.system_suffix = Some(system);
     request.retain_long = true;
     Ok(request)
 }
