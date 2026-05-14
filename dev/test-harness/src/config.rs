@@ -24,6 +24,10 @@ pub struct TestConfigBuilder {
     pub compaction_keep_recent: Option<usize>,
     pub autonomy_enabled: bool,
     pub heartbeat_max_tool_rounds: Option<u32>,
+    /// If true, the harness enables `[advanced].api_payload_logging` and
+    /// wires `LlmClient::set_payload_log_dir` to the cache dir. Tests that
+    /// inspect `<cache>/debug/api_logs{,_long}/` need this flipped on.
+    pub api_payload_logging: bool,
     /// Optional `[providers.<name>]` registry section in TOML form.
     /// When set, parsed and attached to `LoadedConfig.providers`. Used by
     /// the multi-key fallback tests to declare ordered named keys.
@@ -64,6 +68,7 @@ impl TestConfigBuilder {
             compaction_keep_recent: None,
             autonomy_enabled: false,
             heartbeat_max_tool_rounds: None,
+            api_payload_logging: false,
             provider_registry_toml: None,
             extra_chat_aliases: Vec::new(),
             extra_characters: Vec::new(),
@@ -148,6 +153,15 @@ impl TestConfigBuilder {
         self
     }
 
+    /// Enable per-call API payload logging on the harness's `LlmClient`,
+    /// routing files under `<cache>/debug/api_logs/` (chat) and
+    /// `<cache>/debug/api_logs_long/` (background, when the call sets
+    /// `LlmRequest::retain_long`).
+    pub fn api_payload_logging(mut self, enabled: bool) -> Self {
+        self.api_payload_logging = enabled;
+        self
+    }
+
     pub fn build(&self, tmp_dir: &Path, mock_base_url: &str) -> LoadedConfig {
         // Set a dummy API key so LlmClient::build_request succeeds.
         std::env::set_var("SHORE_TEST_API_KEY", "sk-test-dummy");
@@ -189,6 +203,7 @@ impl TestConfigBuilder {
             ..BehaviorConfig::default()
         };
         app.behavior.autonomy.enabled = self.autonomy_enabled;
+        app.advanced.api_payload_logging = self.api_payload_logging;
         if let Some(rounds) = self.heartbeat_max_tool_rounds {
             app.behavior.autonomy.heartbeat = HeartbeatConfig {
                 max_tool_rounds: rounds,

@@ -203,7 +203,7 @@ async fn main() {
         rid: Some(format!("live-reasoning-replay-{name}")),
         forensic_character: None,
         system_suffix: None,
-            retain_long: false,
+        retain_long: false,
     };
 
     let client = LlmClient::new();

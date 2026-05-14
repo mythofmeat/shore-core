@@ -69,7 +69,11 @@ struct Envelope {
 
 /// Compute the api_logs directory under a cache dir.
 fn api_logs_dir(cache_dir: &Path, retain_long: bool) -> PathBuf {
-    cache_dir.join(if retain_long { SUBDIR_LONG } else { SUBDIR_CHAT })
+    cache_dir.join(if retain_long {
+        SUBDIR_LONG
+    } else {
+        SUBDIR_CHAT
+    })
 }
 
 fn next_call_id() -> String {
