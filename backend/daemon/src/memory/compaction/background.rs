@@ -33,8 +33,12 @@ pub async fn run_compaction(
     let character_dir = character_data_dir(data_dir, character);
     let active_path = character_active_jsonl(data_dir, character);
 
-    // Same canonical load + normalize path the engine itself uses.
-    let store = MessageStore::load(active_path.clone())?;
+    // Single read: parse messages + capture raw bytes for segment archival.
+    // Prior to this we did `MessageStore::load(...)` followed by a separate
+    // `tokio::fs::read_to_string(...)`, which read the same potentially
+    // multi-MB file twice and briefly blocked the runtime on the second
+    // (sync) read inside `load`.
+    let (store, content) = MessageStore::load_with_raw(active_path.clone())?;
     let messages: Vec<ConversationMessage> = store
         .messages()
         .iter()
@@ -50,10 +54,6 @@ pub async fn run_compaction(
         info!(character = %character, "No messages to compact, skipping");
         return Ok(0);
     }
-
-    // The `compact()` call below still wants the raw on-disk content for
-    // segment archival; read it once here.
-    let content = tokio::fs::read_to_string(&active_path).await?;
 
     // Resolve effective config: merge per-character overrides over global.
     let effective = load_character_config(config, character)

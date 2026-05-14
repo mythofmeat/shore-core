@@ -44,7 +44,19 @@ impl MessageStore {
     /// Load messages from an existing JSONL file.
     /// If the file doesn't exist, starts with an empty list.
     pub fn load(path: PathBuf) -> Result<Self, EngineError> {
-        let messages = if path.exists() {
+        Self::load_with_raw(path).map(|(store, _)| store)
+    }
+
+    /// Load messages and return the raw on-disk content alongside the parsed
+    /// store. The caller-side use case is background compaction, which needs
+    /// both views — `compact()` parses messages while segment archival needs
+    /// the byte-for-byte file contents. A single read avoids re-opening the
+    /// file (which can be many MB for long histories) and avoids briefly
+    /// blocking the runtime on a sync read after the parse already happened.
+    ///
+    /// Returns `(store, raw)`. When the file doesn't exist, `raw` is empty.
+    pub fn load_with_raw(path: PathBuf) -> Result<(Self, String), EngineError> {
+        let (messages, raw) = if path.exists() {
             let content = std::fs::read_to_string(&path).map_err(|e| EngineError::Io {
                 path: path.clone(),
                 source: e,
@@ -63,12 +75,12 @@ impl MessageStore {
                 msg.normalize();
                 msgs.push(msg);
             }
-            msgs
+            (msgs, content)
         } else {
-            Vec::new()
+            (Vec::new(), String::new())
         };
 
-        Ok(Self { messages, path })
+        Ok((Self { messages, path }, raw))
     }
 
     /// All messages in order.
