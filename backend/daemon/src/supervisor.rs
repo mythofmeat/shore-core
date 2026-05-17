@@ -8,6 +8,8 @@ use tracing::{error, info, warn};
 const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 const STABLE_RUNTIME_THRESHOLD: Duration = Duration::from_secs(300);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+const MATRIX_LOG_ENV: &str = "SHORE_MATRIX_RUST_LOG";
+const DEFAULT_MATRIX_LOG_FILTER: &str = "warn,shore_matrix=info,matrix_sdk_crypto::backups=error";
 
 /// Handle to the supervisor's background task; `shutdown()` joins it.
 pub struct MatrixSupervisor {
@@ -64,7 +66,11 @@ async fn supervise(binary: PathBuf, shutdown_rx: &mut watch::Receiver<()>) {
 
         info!(binary = %binary.display(), "spawning shore-matrix");
         let started_at = Instant::now();
-        let mut child = match Command::new(&binary).kill_on_drop(true).spawn() {
+        let mut command = Command::new(&binary);
+        command
+            .kill_on_drop(true)
+            .env("RUST_LOG", matrix_log_filter());
+        let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
                 error!(error = %e, "failed to spawn shore-matrix");
@@ -160,6 +166,16 @@ fn backoff(failures: u32) -> Duration {
     Duration::from_secs(1u64 << shift)
 }
 
+fn matrix_log_filter() -> String {
+    matrix_log_filter_from(std::env::var(MATRIX_LOG_ENV).ok())
+}
+
+fn matrix_log_filter_from(value: Option<String>) -> String {
+    value
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_MATRIX_LOG_FILTER.to_string())
+}
+
 /// Sleep for `dur` unless a shutdown signal arrives first. Returns
 /// `true` if the sleep completed normally, `false` if interrupted by
 /// shutdown.
@@ -192,5 +208,25 @@ mod tests {
         // Not a real code path, but guards against a `saturating_sub`
         // regression turning 0 into the cap.
         assert_eq!(backoff(0), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn matrix_log_filter_uses_quiet_default() {
+        assert_eq!(
+            matrix_log_filter_from(None),
+            "warn,shore_matrix=info,matrix_sdk_crypto::backups=error"
+        );
+        assert_eq!(
+            matrix_log_filter_from(Some("   ".into())),
+            "warn,shore_matrix=info,matrix_sdk_crypto::backups=error"
+        );
+    }
+
+    #[test]
+    fn matrix_log_filter_accepts_override() {
+        assert_eq!(
+            matrix_log_filter_from(Some("shore_matrix=debug".into())),
+            "shore_matrix=debug"
+        );
     }
 }

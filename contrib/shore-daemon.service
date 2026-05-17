@@ -11,7 +11,8 @@ Restart=on-failure
 RestartSec=5
 
 # Environment
-Environment=RUST_LOG=info
+Environment=RUST_LOG=warn,shore_daemon=info,shore_llm=info,shore_ledger=info,shore_swp_server=info
+Environment=SHORE_MATRIX_RUST_LOG=warn,shore_matrix=info,matrix_sdk_crypto::backups=error
 Environment=XDG_CONFIG_HOME=%h/.config
 Environment=XDG_DATA_HOME=%h/.local/share
 Environment=XDG_RUNTIME_DIR=/run/user/%U

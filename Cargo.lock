@@ -6199,6 +6199,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -6267,6 +6268,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shore-config",
+ "shore-diagnostics",
  "shore-protocol",
  "shore-swp-client",
  "tempfile",

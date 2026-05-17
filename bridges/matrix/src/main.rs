@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
+
 use matrix_sdk::ruma::{OwnedRoomId, RoomId};
+use shore_diagnostics::logging::HumanLogFormat;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -83,6 +85,8 @@ struct Args {
     register_password: Option<String>,
 }
 
+const DEFAULT_LOG_FILTER: &str = "warn,shore_matrix=info,matrix_sdk_crypto::backups=error";
+
 fn resolve_store_path(arg: &Option<String>) -> String {
     match arg {
         Some(p) => p.clone(),
@@ -97,9 +101,10 @@ fn resolve_store_path(arg: &Option<String>) -> String {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("shore_matrix=info".parse()?),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER)),
         )
+        .event_format(HumanLogFormat)
         .init();
 
     let args = Args::parse();

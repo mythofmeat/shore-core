@@ -11,6 +11,7 @@ use shore_daemon::handler::{MessageHandler, MessageHandlerDeps};
 use shore_daemon::handshake::build_handshake_provider;
 use shore_daemon::notifications::NotificationService;
 use shore_daemon::tts::TtsClient;
+use shore_diagnostics::logging::HumanLogFormat;
 use shore_diagnostics::Diagnostics;
 use shore_ledger::LedgerClient;
 use shore_llm::LlmClient;
@@ -20,6 +21,9 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod supervisor;
+
+const DEFAULT_LOG_FILTER: &str =
+    "warn,shore_daemon=info,shore_llm=info,shore_ledger=info,shore_swp_server=info";
 
 #[derive(Debug, Parser)]
 #[command(name = "shore-daemon", about = "Shore daemon")]
@@ -124,10 +128,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Human-readable logging (journalctl already adds timestamps) ──
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER)),
         )
-        .with_target(true)
-        .without_time()
+        .event_format(HumanLogFormat)
         .init();
 
     let cli_parsed = Cli::parse();

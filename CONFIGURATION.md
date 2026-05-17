@@ -588,6 +588,11 @@ port = 6167
 admin_password = "change-me"
 ```
 
+When the daemon supervises `shore-matrix`, it sets the bridge process log filter
+from `SHORE_MATRIX_RUST_LOG`. The default keeps Shore bridge lifecycle logs but
+suppresses routine Matrix SDK sync and key-backup chatter:
+`warn,shore_matrix=info,matrix_sdk_crypto::backups=error`.
+
 ## Validation
 
 ```sh

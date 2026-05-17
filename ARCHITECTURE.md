@@ -422,6 +422,7 @@ Useful commands:
 
 ```sh
 RUST_LOG=shore_daemon=debug,shore_llm=debug,shore_swp_server=debug shore-daemon
+SHORE_MATRIX_RUST_LOG=shore_matrix=debug shore-daemon
 RUST_LOG=shore_cli=debug shore status
 shore status
 shore status --diagnostics
@@ -430,6 +431,16 @@ shore usage --anomalies
 shore log --heartbeat
 shore memory dreams
 ```
+
+Long-running daemon service logs default to a scoped filter:
+`warn,shore_daemon=info,shore_llm=info,shore_ledger=info,shore_swp_server=info`.
+The daemon-supervised Matrix bridge gets its own `RUST_LOG` from
+`SHORE_MATRIX_RUST_LOG`, defaulting to
+`warn,shore_matrix=info,matrix_sdk_crypto::backups=error`, so routine Matrix
+SDK sync and key-backup chatter does not dominate the daemon's systemd journal.
+Service logs use a single-line human format with the event sentence first,
+followed by structured event fields and span context:
+`LEVEL target: message | fields: key=value ... | spans: span{field=value}`.
 
 Persistent surfaces:
 

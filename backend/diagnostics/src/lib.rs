@@ -5,6 +5,8 @@ use std::collections::VecDeque;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+pub mod logging;
+
 // ---------------------------------------------------------------------------
 // Generic ring buffer
 // ---------------------------------------------------------------------------

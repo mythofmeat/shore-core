@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Quieted service-mode journald output by scoping the daemon's packaged
+  `RUST_LOG`, giving supervised `shore-matrix` its own `SHORE_MATRIX_RUST_LOG`
+  filter, suppressing routine Matrix SDK sync/key-backup chatter from the
+  daemon unit, and switching daemon/Matrix logs to a message-first human format
+  that preserves structured event fields and span context.
 - Added a first-class `system_suffix` field on outbound LLM requests so
   background tasks (compaction, dreaming, heartbeat) can attach a trailing
   system instruction declaratively instead of mutating `request.messages`.
