@@ -674,14 +674,22 @@ pub fn overlay_for_character(
 /// preference overlay (max_tokens, reasoning_effort, etc.) already
 /// applied.
 ///
-/// Walks the standard chain
-/// `defaults.background.<task> → defaults.background.model →
-/// defaults.model → first chat model` (see
-/// [`shore_config::app::DefaultsConfig::resolve_background_model_name`]),
-/// then layers the same sampler overlay that chat uses, so background
-/// calls honor `<data>/<char>/preferences/models.toml` settings.
+/// Resolution chain:
+/// 1. `defaults.background.<task>` (per-task pin)
+/// 2. `defaults.background.model` (blanket background pin)
+/// 3. The character's currently-selected chat model (active selection
+///    from preferences, then legacy `runtime_state.json`)
+/// 4. `defaults.model`
+/// 5. First chat model in the catalog
 ///
-/// Returns `None` when no model is configured anywhere.
+/// Steps 1–2 come from
+/// [`shore_config::app::DefaultsConfig::resolve_background_model_name`];
+/// 3–5 are the same fallback chain
+/// [`resolve_chat_model_for_character`] uses, so an unset
+/// `[defaults.background]` section means background tasks simply follow
+/// whatever model the character is using for chat.
+///
+/// Returns `None` only when the catalog has no chat models at all.
 ///
 /// Before this helper existed, every background-task site (manual
 /// `/compact`, background compaction, dreaming, heartbeat override)
@@ -699,33 +707,35 @@ pub fn resolve_background_model(
         shore_config::app::BackgroundTask::Compaction => "compaction",
         shore_config::app::BackgroundTask::Dreaming => "dreaming",
     };
-    let configured = config.app.defaults.resolve_background_model_name(task);
-    let base = match configured {
-        Some(name) => match config.models.find_model(name) {
+    if let Some(name) = config.app.defaults.resolve_background_model_name(task) {
+        let base = match config.models.find_model(name) {
             Ok(m) => m.clone(),
             // The user *explicitly* configured a model for this task (or for
-            // `defaults.background.model`, or for `defaults.model`) but the
-            // catalog doesn't know it — almost always a typo. Warn loudly
-            // and fall back to the first chat model so the daemon stays up.
+            // `defaults.background.model`) but the catalog doesn't know it —
+            // almost always a typo. Warn loudly and fall back to the
+            // character's chat model so the daemon stays up.
             Err(e) => {
                 tracing::warn!(
                     op,
                     character,
                     configured_model = %name,
                     error = %e,
-                    "Configured {op} model not found in catalog; falling back to first chat model",
+                    "Configured {op} model not found in catalog; falling back to active chat model",
                 );
-                config.models.first_chat_model().cloned()?
+                return resolve_chat_model_for_character(config, character);
             }
-        },
-        None => config.models.first_chat_model().cloned()?,
-    };
-    Some(overlay_for_character(
-        &config.dirs.data,
-        character,
-        base,
-        op,
-    ))
+        };
+        return Some(overlay_for_character(
+            &config.dirs.data,
+            character,
+            base,
+            op,
+        ));
+    }
+    // No background-specific model configured — follow the character's
+    // currently-selected chat model so a `shore model <name>` swap moves
+    // background work without needing a separate config knob.
+    resolve_chat_model_for_character(config, character)
 }
 
 /// Resolve the user's currently-selected chat model with the sampler

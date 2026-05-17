@@ -118,10 +118,12 @@ impl Default for DaemonHttpConfig {
 
 // ── [defaults] ──────────────────────────────────────────────────────────
 
-/// Background-task model selectors. All resolvers chain
-/// `<task> → background.model → defaults.model → first chat`, so the
-/// common case of "split chat from everything else" is two fields
-/// (`defaults.model` + `defaults.background.model`).
+/// Background-task model selectors. Resolution chains
+/// `<task> → background.model → active chat model → defaults.model →
+/// first chat`. The active-chat rung means an unset background section
+/// simply tracks whatever model the character is currently using; set
+/// `background.model` (or a per-task override) to pin background work
+/// to a different model regardless of chat selection.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BackgroundDefaultsConfig {
@@ -142,8 +144,11 @@ pub struct BackgroundDefaultsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DefaultsConfig {
-    /// Default chat model name (must match a model in config). Acts as the
-    /// fallback for every background task as well.
+    /// Default chat model name (must match a model in config). Used as
+    /// the initial chat model when a character hasn't selected one yet,
+    /// and as a late-stage fallback for background tasks (after the
+    /// character's active chat model). Optional — if unset, chat starts
+    /// on the first chat model declared in the catalog.
     pub model: Option<String>,
 
     /// Background-task model selectors (heartbeat, compaction, dreaming).
@@ -196,20 +201,20 @@ impl DefaultsConfig {
             .unwrap_or_else(|| "User".to_string())
     }
 
-    /// Resolve the configured model *name* for a background task, walking
-    /// `background.<task> → background.model → defaults.model`. Catalog
-    /// validation and final fallback to "first chat model" live in the
-    /// per-task resolvers; this returns just the configured name (or
-    /// `None` when nothing is set anywhere).
+    /// Resolve the *explicitly configured* background-task model name,
+    /// walking `background.<task> → background.model`. Returns `None`
+    /// when no background-specific model is set — in that case callers
+    /// should fall through to the character's active chat model (then
+    /// `defaults.model`, then the first chat model). The active-chat
+    /// fallback lives in the per-task resolvers because it requires
+    /// per-character runtime state this config struct doesn't see.
     pub fn resolve_background_model_name(&self, task: BackgroundTask) -> Option<&str> {
         let per_task = match task {
             BackgroundTask::Heartbeat => self.background.heartbeat.as_deref(),
             BackgroundTask::Compaction => self.background.compaction.as_deref(),
             BackgroundTask::Dreaming => self.background.dreaming.as_deref(),
         };
-        per_task
-            .or(self.background.model.as_deref())
-            .or(self.model.as_deref())
+        per_task.or(self.background.model.as_deref())
     }
 
     /// Migrate the legacy top-level `defaults.heartbeat` /
@@ -1523,23 +1528,26 @@ cache_forensics = true
     }
 
     #[test]
-    fn background_resolver_falls_back_to_background_then_chat_default() {
+    fn background_resolver_ignores_defaults_model() {
+        // `defaults.model` is *not* a background fallback — it's only
+        // for chat. Background tasks fall through to the per-character
+        // active chat model (handled by the per-task resolvers), so
+        // this struct-level helper returns None when no background-
+        // specific model is configured.
         let d_only_chat = DefaultsConfig {
             model: Some("chat".into()),
             ..Default::default()
         };
-        // No background config at all → all three tasks fall back to defaults.model.
         for task in [
             BackgroundTask::Heartbeat,
             BackgroundTask::Compaction,
             BackgroundTask::Dreaming,
         ] {
-            assert_eq!(
-                d_only_chat.resolve_background_model_name(task),
-                Some("chat")
-            );
+            assert_eq!(d_only_chat.resolve_background_model_name(task), None);
         }
 
+        // `background.model` is honored for every task without a
+        // per-task override.
         let d_split = DefaultsConfig {
             model: Some("chat".into()),
             background: BackgroundDefaultsConfig {

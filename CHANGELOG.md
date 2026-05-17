@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Background tasks (heartbeat, compaction, dreaming) now follow the character's
+  currently-selected chat model when `[defaults.background]` is unset, so
+  `shore model <name>` moves background work alongside chat without requiring a
+  separate background config. Previously the chain stopped at `defaults.model`
+  and ignored runtime chat-model swaps. Set `defaults.background.model` (or a
+  per-task key) to pin background to a different model regardless of chat
+  selection. Heartbeat ticks that previously rode the chat-warmed Anthropic
+  cache prefix will rebuild that prefix the first time after a chat-model swap
+  to a different provider; the prefix re-warms on the next tick.
 - Quieted service-mode journald output by scoping the daemon's packaged
   `RUST_LOG`, giving supervised `shore-matrix` its own `SHORE_MATRIX_RUST_LOG`
   filter, suppressing routine Matrix SDK sync/key-backup chatter from the

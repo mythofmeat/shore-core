@@ -110,15 +110,15 @@ Code turn is active.
 
 ```toml
 [defaults]
-model = "claude-sonnet"           # chat default; also fallback for background tasks
+model = "claude-sonnet"           # initial chat model when a character has none selected
 embedding = "text-large"
 image_generation = "image"
 display_name = "Ren"
 stream = true
 
-# Optional: split background tasks (heartbeat/compaction/dreaming) from chat.
-# Most users only need `model` (everything one model) or `model` + `background.model`
-# (split chat from all background work).
+# Optional: pin background tasks (heartbeat/compaction/dreaming) to a
+# specific model. When this section is omitted, background tasks follow
+# whichever model the character is currently using for chat.
 [defaults.background]
 model = "haiku"                   # blanket model for every background task
 # heartbeat = "haiku-fast"        # per-task overrides (optional)
@@ -130,8 +130,8 @@ Selectors are aliases declared under `[chat.*]`, `[tools.*]`, `[embedding.*]`, o
 
 Important slots:
 
-- `model` — chat default. Acts as the final fallback for background tasks too.
-- `[defaults.background]` — heartbeat, compaction, and dreaming selectors. Each task chains `background.<task> → background.model → defaults.model → first chat model`. None of these consult the per-character active chat model, so a runtime `shore model <name>` (which only updates chat) does **not** move background tasks.
+- `model` — chat default. Optional: if unset, chat starts on the first chat model declared in the catalog. Also acts as a late-stage fallback for background tasks (see below).
+- `[defaults.background]` — heartbeat, compaction, and dreaming selectors. Each task chains `background.<task> → background.model → active chat model → defaults.model → first chat model`. When no background-specific model is configured, background work tracks the character's current chat selection, so `shore model <name>` moves heartbeat/compaction/dreaming alongside chat. Set `background.model` (or a per-task key) to pin background to a different model regardless of chat selection.
 - `embedding` — optional hybrid retrieval profile
 - `image_generation` — image generation profile
 
