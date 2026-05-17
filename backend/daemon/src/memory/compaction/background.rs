@@ -29,6 +29,13 @@ pub async fn run_compaction(
     };
     use tracing::info;
 
+    let _compaction_guard = super::try_begin_compaction(character).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            format!("Compaction already running for {character}"),
+        )
+    })?;
+
     let data_dir = config.dirs.data.as_path();
     let character_dir = character_data_dir(data_dir, character);
     let active_path = character_active_jsonl(data_dir, character);

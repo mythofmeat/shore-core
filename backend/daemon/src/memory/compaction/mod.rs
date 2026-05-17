@@ -9,15 +9,39 @@ pub use parser::{
 pub use types::*;
 
 use crate::memory::markdown_store::MarkdownMemoryStore;
+use dashmap::DashMap;
 use shore_config::character_data_dir;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::Notify;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::{Mutex, Notify, OwnedMutexGuard};
 use tokio::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
 const EXISTING_MEMORY_CONTEXT_MAX_FILES: usize = 24;
 const EXISTING_MEMORY_CONTEXT_MAX_CHARS_PER_FILE: usize = 1_800;
+
+static COMPACTION_LOCKS: OnceLock<DashMap<String, Arc<Mutex<()>>>> = OnceLock::new();
+
+/// Held while a character has a compaction pass in flight.
+///
+/// Manual and idle-triggered compaction both mutate the same active transcript,
+/// segment manifest, markdown memory files, and prompt-refresh state. Keep them
+/// single-flight per character so a slow provider response cannot overlap with
+/// another compaction pass against the same pre-compaction active window.
+pub struct CompactionRunGuard {
+    _guard: OwnedMutexGuard<()>,
+}
+
+pub fn try_begin_compaction(character: &str) -> Option<CompactionRunGuard> {
+    let locks = COMPACTION_LOCKS.get_or_init(DashMap::new);
+    let lock = locks
+        .entry(character.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    lock.try_lock_owned()
+        .ok()
+        .map(|guard| CompactionRunGuard { _guard: guard })
+}
 
 // ---------------------------------------------------------------------------
 // CompactionManager
@@ -720,6 +744,28 @@ mod tests {
     use std::sync::mpsc;
     use std::sync::Mutex as StdMutex;
     use tokio::sync::oneshot;
+
+    #[test]
+    fn compaction_run_guard_serializes_per_character() {
+        let character = format!("guard-test-{}", uuid::Uuid::new_v4());
+        let other_character = format!("guard-test-{}", uuid::Uuid::new_v4());
+
+        let first = try_begin_compaction(&character).expect("first guard should acquire");
+        assert!(
+            try_begin_compaction(&character).is_none(),
+            "second guard for same character must be rejected"
+        );
+        assert!(
+            try_begin_compaction(&other_character).is_some(),
+            "different characters may compact independently"
+        );
+
+        drop(first);
+        assert!(
+            try_begin_compaction(&character).is_some(),
+            "guard should release when dropped"
+        );
+    }
 
     // -- Mock implementations ------------------------------------------------
 

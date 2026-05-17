@@ -297,6 +297,13 @@ pub async fn compact(
         .map(|n| n as usize);
 
     let char_name = engine.character_name().to_string();
+    let _compaction_guard = crate::memory::compaction::try_begin_compaction(&char_name)
+        .ok_or_else(|| {
+            (
+                ErrorCode::Busy,
+                format!("Compaction already running for {char_name}"),
+            )
+        })?;
 
     let messages: Vec<ConversationMessage> = engine
         .messages()

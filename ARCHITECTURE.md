@@ -311,6 +311,10 @@ Archived segments stay available to client history/log views through bounded,
 lazy pages, but prompt assembly and normal history snapshots use only the
 retained active tail.
 
+Compaction is single-flight per character. Manual `shore memory compact` and
+idle-triggered compaction share the same guard, so a second pass returns `busy`
+instead of racing against the same active transcript and memory files.
+
 Dreaming is an opt-in scheduled AI librarian pass. When autonomy and
 `[memory.dreaming]` are enabled, the character privately uses memory/workspace
 tools to inspect, dedupe, consolidate, and mark stale or superseded memory.

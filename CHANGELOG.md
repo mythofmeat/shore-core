@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Serialized compaction per character so idle-triggered and manual
+  `shore memory compact` runs no longer overlap against the same active
+  transcript; manual compaction now returns `busy` while another pass is in
+  flight.
 - Made user-visible conversation counts use real user turns instead of raw
   stored messages, so `shore status`, activity summaries, compaction summaries,
   history/archive boundaries, and the activity heatmap no longer inflate counts
