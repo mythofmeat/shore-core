@@ -95,6 +95,13 @@ impl CompactionManager {
         0
     }
 
+    fn count_turns(messages: &[ConversationMessage]) -> usize {
+        messages
+            .iter()
+            .filter(|msg| msg.role == "user" && !Self::is_tool_loop_message(msg))
+            .count()
+    }
+
     /// Signal that a new message was received, resetting the idle timer.
     pub fn notify_activity(&self) {
         self.activity_notify.notify_one();
@@ -472,7 +479,8 @@ impl CompactionManager {
         let file_ops = Self::filter_file_ops(Self::dedupe_file_ops(raw_file_ops));
         debug!(ops = file_ops.len(), "LLM compaction response parsed");
 
-        let retained_turns = keep_turns;
+        let compacted_turns = Self::count_turns(compacted_part);
+        let retained_turns = Self::count_turns(&messages[split_at..]);
 
         // Build markdown previews for dry run.
         let markdown_preview: Vec<String> = if dry_run {
@@ -487,6 +495,7 @@ impl CompactionManager {
                 would_write_files: file_ops.len(),
                 file_ops_preview: file_ops,
                 message_count: split_at,
+                compacted_turns,
                 retained_count: messages.len() - split_at,
                 retained_turns,
                 markdown_preview,
@@ -587,8 +596,8 @@ impl CompactionManager {
             }
         }
         let dream_body = format!(
-            "Compacted {} messages from `{conversation_id}`.\n\nUpdated memory files:\n{}",
-            split_at,
+            "Compacted {} turns from `{conversation_id}`.\n\nUpdated memory files:\n{}",
+            compacted_turns,
             markdown_paths
                 .iter()
                 .map(|path| format!("- `{path}`"))
@@ -623,6 +632,7 @@ impl CompactionManager {
             conversation_id: conversation_id.to_string(),
             new_conversation_id,
             message_count: split_at,
+            compacted_turns,
             retained_count: retained,
             retained_turns,
             markdown_paths,
@@ -1234,7 +1244,9 @@ mod tests {
                 assert_eq!(r.conversation_id, "conv-1");
                 assert_eq!(r.new_conversation_id, "new-conv-1");
                 assert_eq!(r.message_count, 6);
+                assert_eq!(r.compacted_turns, 3);
                 assert_eq!(r.retained_count, 4);
+                assert_eq!(r.retained_turns, 2);
             }
             _ => panic!("Expected Compacted outcome"),
         }
@@ -1245,7 +1257,7 @@ mod tests {
             .await
             .unwrap()
             .expect("dreams log should be written by compaction");
-        assert!(dreams.contains("Compacted 6 messages"));
+        assert!(dreams.contains("Compacted 3 turns"));
     }
 
     #[tokio::test]
@@ -1614,6 +1626,7 @@ mod tests {
         match result {
             CompactionOutcome::Compacted(r) => {
                 assert_eq!(r.message_count, 10);
+                assert_eq!(r.compacted_turns, 5);
                 assert_eq!(r.retained_count, 0);
                 assert_eq!(r.retained_turns, 0);
                 assert_eq!(r.memory_files_written.len(), 2);
@@ -1800,6 +1813,7 @@ mod tests {
             CompactionOutcome::DryRun(r) => {
                 assert_eq!(r.would_write_files, 2);
                 assert_eq!(r.message_count, 6);
+                assert_eq!(r.compacted_turns, 3);
                 assert_eq!(r.retained_count, 4);
                 assert_eq!(r.file_ops_preview.len(), 2);
                 assert!(

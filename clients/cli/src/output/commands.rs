@@ -118,11 +118,11 @@ fn write_activity_section(out: &mut impl Write, activity: &serde_json::Value, wi
     // -- stats row --
     let engagement = activity["engagement_score"].as_f64().unwrap_or(0.0);
     let sessions = activity["sessions_per_day"].as_f64().unwrap_or(0.0);
-    let msg_count = activity["message_count"].as_u64().unwrap_or(0);
+    let turn_count = activity["turn_count"].as_u64().unwrap_or(0);
     write_row(
         out,
         "Engagement",
-        &format!("{engagement:.2} \u{00b7} {sessions:.1} sessions/day \u{00b7} {msg_count} msgs"),
+        &format!("{engagement:.2} \u{00b7} {sessions:.1} sessions/day \u{00b7} {turn_count} turns"),
     );
 
     let _ = writeln!(out);
@@ -145,8 +145,8 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
     let model = data["active_model"].as_str().unwrap_or("(none)");
     write_row(&mut out, "Model", abbreviate_model(model));
 
-    if let Some(count) = data["message_count"].as_u64() {
-        write_row(&mut out, "Messages", &count.to_string());
+    if let Some(count) = data["turn_count"].as_u64() {
+        write_row(&mut out, "Turns", &count.to_string());
     }
 
     let pending_deferred_edit_count = data["pending_deferred_edit_count"].as_u64().unwrap_or(0);
@@ -195,8 +195,8 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
     // -- Activity --
     if let Some(activity) = data.get("activity") {
         if !activity.is_null() {
-            let msg_count = activity["message_count"].as_u64().unwrap_or(0);
-            if msg_count > 0 {
+            let turn_count = activity["turn_count"].as_u64().unwrap_or(0);
+            if turn_count > 0 {
                 write_activity_section(&mut out, activity, width);
             }
         }
@@ -356,12 +356,12 @@ fn print_delete_confirmation(data: &serde_json::Value) {
         let n = arr.len();
         if n == 1 {
             let id = arr[0].as_str().unwrap_or("?");
-            println!("Deleted message {id}");
+            println!("Deleted entry {id}");
         } else {
-            println!("Deleted {n} messages");
+            println!("Deleted {n} entries");
         }
     } else if let Some(id) = data["deleted"].as_str() {
-        println!("Deleted message {id}");
+        println!("Deleted entry {id}");
     }
 }
 
@@ -1001,24 +1001,30 @@ fn print_compact_result(data: &serde_json::Value) {
     if status == "dry_run" {
         let would = data["would_write_files"].as_u64().unwrap_or(0);
         write_row(&mut out, "Would write", &format!("{would} files"));
-        let msgs = data["message_count"].as_u64().unwrap_or(0);
+        let turns = data["compacted_turns"]
+            .as_u64()
+            .or_else(|| data["turn_count"].as_u64())
+            .unwrap_or(0);
         let retained_turns = data["retained_turns"].as_u64().unwrap_or(0);
         write_row(
             &mut out,
-            "Messages",
-            &format!("{msgs} compacted, {retained_turns} turns retained"),
+            "Turns",
+            &format!("{turns} compacted, {retained_turns} retained"),
         );
     } else {
         let files = data["memory_files_written"]
             .as_array()
             .map_or(0, |files| files.len());
         write_row(&mut out, "Memory files", &format!("{files} written"));
-        let msgs = data["message_count"].as_u64().unwrap_or(0);
+        let turns = data["compacted_turns"]
+            .as_u64()
+            .or_else(|| data["turn_count"].as_u64())
+            .unwrap_or(0);
         let retained_turns = data["retained_turns"].as_u64().unwrap_or(0);
         write_row(
             &mut out,
-            "Messages",
-            &format!("{msgs} compacted, {retained_turns} turns retained"),
+            "Turns",
+            &format!("{turns} compacted, {retained_turns} retained"),
         );
     }
 
@@ -1777,6 +1783,7 @@ mod tests {
         let data = serde_json::json!({
             "character": "Sable",
             "message_count": 142,
+            "turn_count": 142,
             "active_model": "claude-sonnet-4-20250514",
             "pending_deferred_edit_count": 2,
             "pending_deferred_edits": ["SOUL.md", "TOOLS.md"],
@@ -1803,6 +1810,7 @@ mod tests {
         let data = serde_json::json!({
             "character": "Sable",
             "message_count": 5,
+            "turn_count": 5,
             "active_model": null,
         });
         print_status(&data, "Sable");
@@ -1814,6 +1822,7 @@ mod tests {
         let data = serde_json::json!({
             "character": "Sable",
             "message_count": 50,
+            "turn_count": 50,
             "active_model": "test-model",
             "autonomy": {
                 "paused": true,
@@ -1852,6 +1861,7 @@ mod tests {
         let data = serde_json::json!({
             "character": "Sable",
             "message_count": 200,
+            "turn_count": 200,
             "active_model": "claude-sonnet-4-20250514",
             "tokens": { "input": 5000, "output": 1200, "cache_read": 0, "cache_write": 0 },
             "activity": {
@@ -1861,6 +1871,7 @@ mod tests {
                 "engagement_score": 0.72,
                 "sessions_per_day": 2.3,
                 "message_count": 200,
+                "turn_count": 200,
             }
         });
         print_status(&data, "Sable");
@@ -1872,6 +1883,7 @@ mod tests {
         let data = serde_json::json!({
             "character": "Sable",
             "message_count": 3,
+            "turn_count": 3,
             "active_model": "test-model",
             "activity": {
                 "hour_histogram": vec![0.0_f64; 24],
@@ -1880,6 +1892,7 @@ mod tests {
                 "engagement_score": 0.0,
                 "sessions_per_day": 0.0,
                 "message_count": 3,
+                "turn_count": 3,
             }
         });
         print_status(&data, "Sable");

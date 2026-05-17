@@ -736,18 +736,18 @@ fn build_conversation_lines(
 fn push_archive_boundary(
     lines: &mut Vec<Line<'static>>,
     content_width: u16,
-    archived_count: usize,
+    archived_turns: usize,
 ) {
-    if archived_count == 0 {
+    if archived_turns == 0 {
         return;
     }
 
     lines.push(Line::from(""));
 
-    let label = if archived_count == 1 {
-        " archived above · outside current context ".to_string()
+    let label = if archived_turns == 1 {
+        " 1 archived turn above · outside current context ".to_string()
     } else {
-        format!(" {archived_count} archived messages above · outside current context ")
+        format!(" {archived_turns} archived turns above · outside current context ")
     };
     let width = content_width as usize;
     let label_width = unicode_width::UnicodeWidthStr::width(label.as_str());

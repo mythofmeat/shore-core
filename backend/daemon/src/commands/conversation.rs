@@ -105,6 +105,13 @@ fn page_start_by_turns(messages: &[Message], end: usize, turns: usize) -> usize 
     0
 }
 
+fn count_user_turns(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|msg| msg.role == Role::User && !msg.is_tool_result_only())
+        .count()
+}
+
 fn page_start_by_args(messages: &[Message], end: usize, args: &serde_json::Value) -> usize {
     if let Some(turns) = args.get("turns").and_then(|v| v.as_u64()) {
         return page_start_by_turns(messages, end, turns as usize);
@@ -150,6 +157,7 @@ fn history_page_payload(
     let end = end.min(messages.len()).max(start);
     let mut page: Vec<Message> = messages[start..end].to_vec();
     let active_start = global_active_start.saturating_sub(start).min(page.len());
+    let total_turns = count_user_turns(messages);
 
     // Keep archived scrollback lightweight. Active-tail messages may still
     // embed image bytes for remote clients; archived image refs remain labels.
@@ -164,7 +172,8 @@ fn history_page_payload(
         "next_before": start,
         "has_more_before": start > 0,
         "global_active_start": global_active_start,
-        "total_messages": messages.len(),
+        "total_messages": total_turns,
+        "total_turns": total_turns,
     })
 }
 

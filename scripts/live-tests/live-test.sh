@@ -205,8 +205,8 @@ fi
 # Verify the message appears in the log.
 run_test_contains "user msg in log" "PONG" $CLI log --content -n 5
 
-# Verify message count increased.
-run_test_contains "status shows 2 messages" '"message_count": 2' $CLI status --json
+# Verify turn count increased.
+run_test_contains "status shows 1 turn" '"turn_count": 1' $CLI status --json
 
 # ══════════════════════════════════════════════════════════════════════
 # TEST 2: Regen
@@ -275,14 +275,14 @@ fi
 run_test "diagnostics after tool use" $CLI status --diagnostics
 
 # ══════════════════════════════════════════════════════════════════════
-# TEST 4: Message persistence and log
+# TEST 4: Turn persistence and log
 # ══════════════════════════════════════════════════════════════════════
-printf "\n${BOLD}Message persistence${RESET}\n"
+printf "\n${BOLD}Turn persistence${RESET}\n"
 
 # Wait for any async writes to settle, then check persistence.
 sleep 1
-msg_count_before=$($CLI status --json 2>&1 | grep -o '"message_count": [0-9]*' | head -1 | grep -o '[0-9]*')
-printf "${DIM}  %-50s${RESET}" "messages persist after restart"
+turn_count_before=$($CLI status --json 2>&1 | grep -o '"turn_count": [0-9]*' | head -1 | grep -o '[0-9]*')
+printf "${DIM}  %-50s${RESET}" "turns persist after restart"
 
 kill $DAEMON_PID 2>/dev/null || true
 wait $DAEMON_PID 2>/dev/null || true
@@ -295,14 +295,13 @@ for i in $(seq 1 50); do
     sleep 0.1
 done
 
-msg_count_after=$($CLI status --json 2>&1 | grep -o '"message_count": [0-9]*' | head -1 | grep -o '[0-9]*')
-# Messages persist if count after restart >= count before (tool results
-# may flush after CLI exits, so count can increase slightly).
-if [[ "$msg_count_after" -ge "$msg_count_before" ]] && [[ "$msg_count_after" -gt 0 ]]; then
-    printf "${GREEN}PASS ($msg_count_after messages)${RESET}\n"
+turn_count_after=$($CLI status --json 2>&1 | grep -o '"turn_count": [0-9]*' | head -1 | grep -o '[0-9]*')
+# Turns persist if count after restart >= count before.
+if [[ "$turn_count_after" -ge "$turn_count_before" ]] && [[ "$turn_count_after" -gt 0 ]]; then
+    printf "${GREEN}PASS ($turn_count_after turns)${RESET}\n"
     pass=$((pass + 1))
 else
-    printf "${RED}FAIL (before=$msg_count_before after=$msg_count_after)${RESET}\n"
+    printf "${RED}FAIL (before=$turn_count_before after=$turn_count_after)${RESET}\n"
     fail=$((fail + 1))
 fi
 
@@ -336,11 +335,11 @@ run_test "model --info" $CLI model haiku --info
 run_test "model --info --json" $CLI model haiku --info --json
 
 # ══════════════════════════════════════════════════════════════════════
-# TEST 7: Memory compaction (seed 25 messages, compact, verify)
+# TEST 7: Memory compaction (seed 13 turns, compact, verify)
 # ══════════════════════════════════════════════════════════════════════
 printf "\n${BOLD}Memory compaction${RESET}\n"
 
-# Seed 25 messages into active.jsonl to meet compaction threshold.
+# Seed 13 turns into active.jsonl to meet compaction threshold.
 # These simulate a multi-turn conversation about various topics.
 CHAR_DATA="$DATA_DIR/TestChar"
 mkdir -p "$CHAR_DATA"
@@ -388,8 +387,8 @@ for i in $(seq 1 50); do
     sleep 0.1
 done
 
-# Verify messages loaded.
-run_test_contains "seeded 26 messages" '"message_count": 26' $CLI status --json
+# Verify turns loaded.
+run_test_contains "seeded 13 turns" '"turn_count": 13' $CLI status --json
 
 # Check memory status before compaction.
 run_test_contains "memory status (0 entries)" '"entries": 0' $CLI memory --json
@@ -422,14 +421,14 @@ fi
 # Verify changelog recorded the compaction.
 run_test_contains "changelog records compaction" "compaction" $CLI memory changelog
 
-# Verify message count reduced (kept recent messages only).
-printf "${DIM}  %-50s${RESET}" "messages reduced after compact"
-new_count=$($CLI status --json 2>&1 | grep -o '"message_count": [0-9]*' | head -1 | grep -o '[0-9]*')
-if [[ -n "$new_count" ]] && [[ "$new_count" -lt 26 ]]; then
-    printf "${GREEN}PASS ($new_count messages remain)${RESET}\n"
+# Verify turn count reduced (kept recent turns only).
+printf "${DIM}  %-50s${RESET}" "turns reduced after compact"
+new_count=$($CLI status --json 2>&1 | grep -o '"turn_count": [0-9]*' | head -1 | grep -o '[0-9]*')
+if [[ -n "$new_count" ]] && [[ "$new_count" -lt 13 ]]; then
+    printf "${GREEN}PASS ($new_count turns remain)${RESET}\n"
     pass=$((pass + 1))
 else
-    printf "${RED}FAIL (expected < 26, got $new_count)${RESET}\n"
+    printf "${RED}FAIL (expected < 13, got $new_count)${RESET}\n"
     fail=$((fail + 1))
 fi
 

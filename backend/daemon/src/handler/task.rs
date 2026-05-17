@@ -164,7 +164,9 @@ pub(super) async fn handle_generation(
         let cutoff = chrono::Local::now().naive_local() - chrono::Duration::days(90);
         let mut timestamps: Vec<chrono::NaiveDateTime> = Vec::new();
 
-        for msg in engine.messages() {
+        for msg in engine.messages().iter().filter(|msg| {
+            msg.role == shore_protocol::types::Role::User && !msg.is_tool_result_only()
+        }) {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&msg.timestamp) {
                 let naive = dt.with_timezone(&chrono::Local).naive_local();
                 if naive >= cutoff {
@@ -176,7 +178,9 @@ pub(super) async fn handle_generation(
         let segments = engine.segments();
         for i in 0..segments.segment_count() {
             if let Ok(segment_msgs) = segments.read_segment(i) {
-                for msg in &segment_msgs {
+                for msg in segment_msgs.iter().filter(|msg| {
+                    msg.role == shore_protocol::types::Role::User && !msg.is_tool_result_only()
+                }) {
                     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&msg.timestamp) {
                         let naive = dt.with_timezone(&chrono::Local).naive_local();
                         if naive >= cutoff {

@@ -4,7 +4,7 @@ use crate::engine::ConversationEngine;
 use serde_json::json;
 use shore_config::models::ModelCatalog;
 use shore_protocol::server_msg::ServerMessage;
-use shore_protocol::types::{Message, Role};
+use shore_protocol::types::{ContentBlock, Message, Role};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use tempfile::TempDir;
 use tokio::sync::broadcast;
@@ -111,6 +111,42 @@ fn make_msg(id: &str, role: Role, content: &str) -> Message {
     }
 }
 
+fn tool_use_msg(id: &str) -> Message {
+    Message {
+        msg_id: id.to_string(),
+        role: Role::Assistant,
+        content: String::new(),
+        images: vec![],
+        content_blocks: vec![ContentBlock::ToolUse {
+            id: "toolu_1".to_string(),
+            name: "check_time".to_string(),
+            input: json!({}),
+        }],
+        alt_index: None,
+        alt_count: None,
+        alternatives: vec![],
+        timestamp: "2026-01-01T00:00:00Z".to_string(),
+    }
+}
+
+fn tool_result_msg(id: &str) -> Message {
+    Message {
+        msg_id: id.to_string(),
+        role: Role::User,
+        content: "ok".to_string(),
+        images: vec![],
+        content_blocks: vec![ContentBlock::ToolResult {
+            tool_use_id: "toolu_1".to_string(),
+            content: "ok".to_string(),
+            is_error: false,
+        }],
+        alt_index: None,
+        alt_count: None,
+        alternatives: vec![],
+        timestamp: "2026-01-01T00:00:00Z".to_string(),
+    }
+}
+
 #[test]
 fn memory_dream_returns_useful_phase_json() {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -203,6 +239,27 @@ fn status_with_messages() {
 
     let result = status(&engine, &ctx).unwrap();
     assert_eq!(result["message_count"], 1);
+    assert_eq!(result["turn_count"], 1);
+}
+
+#[test]
+fn status_counts_turns_not_tool_loop_messages() {
+    let tmp = TempDir::new().unwrap();
+    let (mut engine, ctx, _rx) = make_ctx(&tmp);
+    engine
+        .append_message(make_msg("u1", Role::User, "Hi"))
+        .unwrap();
+    engine.append_message(tool_use_msg("a_tool")).unwrap();
+    engine.append_message(tool_result_msg("u_tool")).unwrap();
+    engine
+        .append_message(make_msg("a1", Role::Assistant, "Done"))
+        .unwrap();
+
+    let result = status(&engine, &ctx).unwrap();
+    assert_eq!(engine.message_count(), 4);
+    assert_eq!(engine.turn_count(), 1);
+    assert_eq!(result["message_count"], 1);
+    assert_eq!(result["turn_count"], 1);
 }
 
 #[test]

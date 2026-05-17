@@ -542,7 +542,6 @@ impl AutonomyManager {
     /// Call after an assistant message is appended.
     pub fn notify_assistant_message(&self, character: &str, message_count: usize) {
         self.with_state(character, |s| {
-            s.activity.record_message();
             s.last_compaction_activity = Instant::now();
             s.active_turn_count = message_count;
             debug!(character, message_count, "Assistant message notified");
@@ -723,7 +722,7 @@ impl AutonomyManager {
 
     // -- activity stats --------------------------------------------------------
 
-    /// Return a clone of the `ActivityStats` and message count for a character.
+    /// Return a clone of the `ActivityStats` and recorded user-turn count.
     pub fn activity_stats(
         &self,
         character: &str,

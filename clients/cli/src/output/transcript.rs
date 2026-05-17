@@ -69,11 +69,11 @@ pub(crate) fn write_header(
     let _ = writeln!(out);
 }
 
-fn write_archive_boundary(out: &mut impl Write, width: usize, archived_count: usize) {
-    let label = if archived_count == 1 {
-        " archived above · outside current context ".to_string()
+fn write_archive_boundary(out: &mut impl Write, width: usize, archived_turns: usize) {
+    let label = if archived_turns == 1 {
+        " 1 archived turn above · outside current context ".to_string()
     } else {
-        format!(" {archived_count} archived messages above · outside current context ")
+        format!(" {archived_turns} archived turns above · outside current context ")
     };
     let label_width = label.chars().count();
     let line = if width > label_width {
@@ -92,6 +92,23 @@ fn write_archive_boundary(out: &mut impl Write, width: usize, archived_count: us
         let _ = crossterm::execute!(out, ResetColor);
     }
     let _ = writeln!(out);
+}
+
+fn is_tool_result_only_value(msg: &serde_json::Value) -> bool {
+    msg["role"].as_str() == Some("user")
+        && msg["content_blocks"].as_array().is_some_and(|blocks| {
+            !blocks.is_empty()
+                && blocks
+                    .iter()
+                    .all(|block| block["type"].as_str() == Some("tool_result"))
+        })
+}
+
+fn count_user_turn_values(messages: &[serde_json::Value]) -> usize {
+    messages
+        .iter()
+        .filter(|msg| msg["role"].as_str() == Some("user") && !is_tool_result_only_value(msg))
+        .count()
 }
 
 /// Render the content of a single message: content blocks if present, plain text fallback otherwise.
@@ -231,9 +248,10 @@ pub fn print_log_with_boundary(
     let mut prev_date: Option<String> = None;
 
     let active_start = active_start.min(messages.len());
+    let archived_turns = count_user_turn_values(&messages[..active_start]);
     for (index, msg) in messages.iter().enumerate() {
         if active_start > 0 && index == active_start {
-            write_archive_boundary(&mut out, width, active_start);
+            write_archive_boundary(&mut out, width, archived_turns);
         }
 
         let role_str = msg["role"].as_str().unwrap_or("user");
@@ -313,7 +331,7 @@ pub fn print_log_with_boundary(
     }
 
     if active_start > 0 && active_start == messages.len() {
-        write_archive_boundary(&mut out, width, active_start);
+        write_archive_boundary(&mut out, width, archived_turns);
     }
 }
 
@@ -356,11 +374,12 @@ pub fn print_log_plain_with_boundary(
     let mut out = stdout.lock();
 
     let active_start = active_start.min(messages.len());
+    let archived_turns = count_user_turn_values(&messages[..active_start]);
     for (index, msg) in messages.iter().enumerate() {
         if active_start > 0 && index == active_start {
             let _ = writeln!(
                 out,
-                "--- {active_start} archived message(s) above; outside current context ---\n"
+                "--- {archived_turns} archived turn(s) above; outside current context ---\n"
             );
         }
 
@@ -426,7 +445,7 @@ pub fn print_log_plain_with_boundary(
     if active_start > 0 && active_start == messages.len() {
         let _ = writeln!(
             out,
-            "--- {active_start} archived message(s) above; outside current context ---\n"
+            "--- {archived_turns} archived turn(s) above; outside current context ---\n"
         );
     }
 }
@@ -665,7 +684,7 @@ mod tests {
             serde_json::json!({
                 "msg_id": "m3",
                 "role": "system",
-                "content": "[compaction] Compacted 42 -> 12 messages",
+                "content": "[compaction] Compacted 42 -> 12 turns",
                 "images": [],
                 "timestamp": "2026-01-15T10:45:00Z"
             }),

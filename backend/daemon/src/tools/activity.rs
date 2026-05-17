@@ -41,7 +41,7 @@ pub async fn handle_activity_heatmap(
     let stats_opt = autonomy.and_then(|mgr| mgr.activity_stats(character));
 
     match stats_opt {
-        Some((stats, message_count)) => {
+        Some((stats, turn_count)) => {
             let hours: Vec<Value> = (0..24)
                 .map(|h| {
                     let class = match stats.hour_classifications[h] {
@@ -60,7 +60,8 @@ pub async fn handle_activity_heatmap(
             Ok(json!({
                 "days": days,
                 "hours": hours,
-                "total_messages": message_count,
+                "total_messages": turn_count,
+                "total_turns": turn_count,
                 "has_sufficient_data": stats.has_sufficient_heatmap,
                 "engagement_score": stats.engagement_score,
                 "sessions_per_day": stats.sessions_per_day,
@@ -72,6 +73,7 @@ pub async fn handle_activity_heatmap(
                 "days": days,
                 "hours": (0..24).map(|h| json!({ "hour": h, "density": 0.0, "classification": "normal" })).collect::<Vec<_>>(),
                 "total_messages": 0,
+                "total_turns": 0,
                 "has_sufficient_data": false,
                 "engagement_score": 0.0,
                 "sessions_per_day": 0.0,
@@ -105,6 +107,7 @@ mod tests {
         let result = handle_activity_heatmap(json!({}), &ctx).await.unwrap();
         assert_eq!(result["days"], 30);
         assert_eq!(result["total_messages"], 0);
+        assert_eq!(result["total_turns"], 0);
         assert_eq!(result["has_sufficient_data"], false);
 
         let hours = result["hours"].as_array().unwrap();
@@ -148,16 +151,17 @@ mod tests {
 
         // Initialize state and record some messages.
         mgr.ensure_state("TestChar", None::<u64>);
-        for _ in 0..5 {
-            mgr.notify_user_message("TestChar", 1);
-            mgr.notify_assistant_message("TestChar", 1);
+        for turn in 1..=5 {
+            mgr.notify_user_message("TestChar", turn);
+            mgr.notify_assistant_message("TestChar", turn);
         }
 
         let ctx = TestToolContext::new().with_autonomy(mgr, "TestChar");
         let result = handle_activity_heatmap(json!({}), &ctx).await.unwrap();
 
         assert_eq!(result["days"], 30);
-        assert_eq!(result["total_messages"], 10);
+        assert_eq!(result["total_messages"], 5);
+        assert_eq!(result["total_turns"], 5);
         let hours = result["hours"].as_array().unwrap();
         assert_eq!(hours.len(), 24);
         // At least one hour should have non-zero density.
@@ -186,6 +190,7 @@ mod tests {
         let result = handle_activity_heatmap(json!({}), &ctx).await.unwrap();
 
         assert_eq!(result["total_messages"], 0);
+        assert_eq!(result["total_turns"], 0);
         assert_eq!(result["has_sufficient_data"], false);
     }
 }

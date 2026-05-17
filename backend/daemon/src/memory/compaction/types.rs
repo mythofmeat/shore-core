@@ -38,6 +38,7 @@ pub struct CompactionResult {
     pub conversation_id: String,
     pub new_conversation_id: String,
     pub message_count: usize,
+    pub compacted_turns: usize,
     pub retained_count: usize,
     pub retained_turns: usize,
     /// Paths of markdown files written during compaction.
@@ -50,6 +51,7 @@ pub struct DryRunResult {
     pub would_write_files: usize,
     pub file_ops_preview: Vec<crate::memory::compaction::parser::MemoryFileOp>,
     pub message_count: usize,
+    pub compacted_turns: usize,
     pub retained_count: usize,
     pub retained_turns: usize,
     /// Paths of markdown files that would be written.

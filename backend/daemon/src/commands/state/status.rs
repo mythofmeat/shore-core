@@ -7,12 +7,13 @@ use crate::sync::lock_or_recover;
 
 use crate::commands::{CommandContext, CommandResult};
 
-/// Return system status: character, message count, model, token counts.
+/// Return system status: character, turn count, model, token counts.
 pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
+    let turn_count = engine.turn_count();
     let activity =
         ctx.autonomy
             .activity_stats(engine.character_name())
-            .map(|(stats, msg_count)| {
+            .map(|(stats, activity_turn_count)| {
                 let classifications: Vec<&str> = stats
                     .hour_classifications
                     .iter()
@@ -28,7 +29,8 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
                     "has_sufficient_heatmap": stats.has_sufficient_heatmap,
                     "engagement_score": stats.engagement_score,
                     "sessions_per_day": stats.sessions_per_day,
-                    "message_count": msg_count,
+                    "message_count": activity_turn_count,
+                    "turn_count": activity_turn_count,
                 })
             });
 
@@ -45,7 +47,8 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
             .unwrap_or_default();
     Ok(json!({
         "character": engine.character_name(),
-        "message_count": engine.message_count(),
+        "message_count": turn_count,
+        "turn_count": turn_count,
         "active_model": effective_model,
         "config_dir": ctx.config.dirs.config.display().to_string(),
         "data_dir": ctx.config.dirs.data.display().to_string(),

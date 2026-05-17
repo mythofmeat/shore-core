@@ -998,11 +998,12 @@ fn rebuild_entries_from_history(
     entries.clear();
 
     let boundary_at = active_start.min(messages.len());
+    let archived_turns = count_user_turns(&messages[..boundary_at]);
     let mut inserted_boundary = false;
     for (index, msg) in messages.into_iter().enumerate() {
         if boundary_at > 0 && index == boundary_at {
             entries.push(ConversationEntry::ArchiveBoundary {
-                archived_count: boundary_at,
+                archived_count: archived_turns,
             });
             inserted_boundary = true;
         }
@@ -1011,9 +1012,16 @@ fn rebuild_entries_from_history(
 
     if boundary_at > 0 && !inserted_boundary {
         entries.push(ConversationEntry::ArchiveBoundary {
-            archived_count: boundary_at,
+            archived_count: archived_turns,
         });
     }
+}
+
+fn count_user_turns(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|msg| msg.role == Role::User && !msg.is_tool_result_only())
+        .count()
 }
 
 fn reset_history_paging(app: &mut App) {
@@ -1037,18 +1045,23 @@ fn prepend_history_page(app: &mut App, data: &serde_json::Value) {
         return;
     };
 
-    let mut page_entries = Vec::new();
+    let mut page_messages = Vec::new();
     for msg_val in messages {
         if let Ok(msg) = serde_json::from_value::<Message>(msg_val.clone()) {
-            expand_msg(msg, &mut page_entries);
+            page_messages.push(msg);
         }
+    }
+
+    let loaded_turns = count_user_turns(&page_messages);
+    let mut page_entries = Vec::new();
+    for msg in page_messages {
+        expand_msg(msg, &mut page_entries);
     }
 
     if page_entries.is_empty() {
         return;
     }
 
-    let loaded_messages = messages.len();
     if let Some(boundary_idx) = app
         .entries
         .iter()
@@ -1057,12 +1070,12 @@ fn prepend_history_page(app: &mut App, data: &serde_json::Value) {
         if let ConversationEntry::ArchiveBoundary { archived_count } =
             &mut app.entries[boundary_idx]
         {
-            *archived_count = archived_count.saturating_add(loaded_messages);
+            *archived_count = archived_count.saturating_add(loaded_turns);
         }
         app.entries.splice(0..0, page_entries);
     } else {
         page_entries.push(ConversationEntry::ArchiveBoundary {
-            archived_count: loaded_messages,
+            archived_count: loaded_turns,
         });
         app.entries.splice(0..0, page_entries);
     }
@@ -1673,7 +1686,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                 "delete" => {
                     if let Some(deleted) = co.data.get("deleted").and_then(|v| v.as_array()) {
                         let count = deleted.len();
-                        app.set_status(format!("deleted {count} message(s)"));
+                        app.set_status(format!("deleted {count} entries"));
                     }
                 }
                 "list_alternatives" => {

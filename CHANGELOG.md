@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Made user-visible conversation counts use real user turns instead of raw
+  stored messages, so `shore status`, activity summaries, compaction summaries,
+  history/archive boundaries, and the activity heatmap no longer inflate counts
+  with tool-loop messages.
 - Background tasks (heartbeat, compaction, dreaming) now follow the character's
   currently-selected chat model when `[defaults.background]` is unset, so
   `shore model <name>` moves background work alongside chat without requiring a

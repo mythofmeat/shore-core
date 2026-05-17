@@ -121,7 +121,7 @@ pub async fn run_compaction(
             info!(
                 character = %character,
                 entries = result.memory_files_written.len(),
-                compacted_messages = result.message_count,
+                compacted_turns = result.compacted_turns,
                 retained_turns = result.retained_turns,
                 "Background compaction completed"
             );
@@ -130,9 +130,9 @@ pub async fn run_compaction(
                 NotificationEvent::CompactionComplete,
                 &format!("Shore — {character}"),
                 &format!(
-                    "Compaction complete: {} entries from {} messages",
+                    "Compaction complete: {} entries from {} turns",
                     result.memory_files_written.len(),
-                    result.message_count
+                    result.compacted_turns
                 ),
             );
 
