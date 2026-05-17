@@ -278,11 +278,10 @@ impl PricingEngine {
         let cache_read = pricing.cache_read_per_token * request.cache_read_tokens as f64;
 
         let mut cache_write = pricing.cache_write_per_token * request.cache_write_tokens as f64;
-        // Anthropic 1h cache writes cost 1.6× the 5-minute price (covers both
-        // native anthropic and OpenRouter-routed anthropic via custom providers).
-        if is_anthropic_pricing(request.provider, request.model)
-            && request.cache_ttl.unwrap_or("1h") == "1h"
-        {
+        // Native Anthropic 1h cache writes cost 1.6× the 5-minute price.
+        // OpenRouter-routed Anthropic rows use OpenRouter's catalog price as
+        // billed, so do not apply Anthropic's native TTL multiplier there.
+        if request.provider == "anthropic" && request.cache_ttl.unwrap_or("1h") == "1h" {
             cache_write *= ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER;
         }
 
@@ -338,10 +337,10 @@ pub fn to_openrouter_id(provider: &str, model: &str) -> String {
     }
 }
 
-/// Recognize a row that should be billed as Anthropic. Native anthropic uses
-/// the literal provider key; OpenRouter-routed Anthropic (regardless of
-/// custom provider name) carries an `anthropic/...` model id by the time it
-/// reaches the ledger. Mirrored in `query.rs` as the SQL fragment
+/// Recognize Anthropic-family rows for cache health and diagnostics. Native
+/// Anthropic uses the literal provider key; OpenRouter-routed Anthropic
+/// (regardless of custom provider name) carries an `anthropic/...` model id by
+/// the time it reaches the ledger. Mirrored in `query.rs` as the SQL fragment
 /// `(provider = 'anthropic' OR model LIKE 'anthropic/%')`.
 pub fn is_anthropic_pricing(provider: &str, model: &str) -> bool {
     provider == "anthropic" || model.starts_with("anthropic/")
@@ -450,13 +449,14 @@ mod tests {
     }
 
     #[test]
-    fn calculate_cost_1h_multiplier_applies_to_routed_anthropic() {
+    fn calculate_cost_routed_anthropic_uses_catalog_cache_write_price() {
         let engine = test_engine();
         engine
             .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
             .unwrap();
         // Provider is the user's custom name; model is the resolved
-        // OpenRouter id. The 1.6× multiplier must still apply.
+        // OpenRouter id. OpenRouter bills its catalog cache-write price
+        // directly, so the native Anthropic 1h multiplier must not apply.
         let cost = engine
             .calculate_cost(CostRequest {
                 provider: "openrouter-anthropic",
@@ -469,9 +469,7 @@ mod tests {
             })
             .unwrap()
             .unwrap();
-        // Same expectation as the native-anthropic 1h test:
-        // 20 tokens * 0.00001875 * 1.6 = 0.0006
-        assert!((cost.cache_write - 0.0006).abs() < 1e-10);
+        assert!((cost.cache_write - 0.000375).abs() < 1e-10);
     }
 
     #[test]
