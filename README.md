@@ -31,8 +31,9 @@ For release history, read [CHANGELOG.md](CHANGELOG.md).
 - **Tool-rich conversations.** Characters can inspect and edit workspace files,
   search workspace/history, use web/image/time/activity tools, and run narrow
   workspace commands.
-- **Budget awareness.** Usage and cost are recorded in SQLite; Anthropic prompt
-  cache behavior is treated as load-bearing.
+- **Budget awareness.** Usage and cost are recorded in SQLite with model,
+  call-kind, and configured API-key breakdowns; Anthropic prompt cache behavior
+  is treated as load-bearing.
 - **Claude Code subscription transport.** Chat models can route through the
   local `claude` CLI with `sdk = "claude_code"`, using the user's Claude
   subscription while Shore keeps owning tools and memory.

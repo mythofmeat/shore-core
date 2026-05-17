@@ -264,6 +264,9 @@ from a key marked `warn_on_fallback = true` (e.g. an exhausted budget cap), a
 one-line client warning surfaces; background rotations are recorded in logs, and
 autonomy/keepalive rotations are also visible in heartbeat status. The fallback
 is non-sticky: the next request retries from the top of the list.
+Friendly key names are usage metadata only; Shore never sends them to providers
+or logs key values. `shore usage --by-api-key` groups ledger spend by these
+names, and `shore usage --api-key overflow` filters to one key.
 
 ### Discovery and filtering
 

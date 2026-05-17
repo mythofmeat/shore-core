@@ -24,6 +24,14 @@
 - Added inclusive `start_time`/`end_time` filters to `search_history`, allowing
   range-only history lookups or keyword searches narrowed to a time window.
 - Added hour-based usage windows such as `shore usage --last 4h`.
+- Added `shore usage --by-kind`, `--by-api-key`, and `--api-key <name>` so
+  daily spend can be attributed to message/tool turns, heartbeat, compaction,
+  dreaming, keepalive, and configured provider keys. OpenRouter-routed
+  Anthropic rows now use OpenRouter's cache-write catalog price directly,
+  avoiding the native Anthropic 1h cache multiplier overcount. OpenRouter's
+  provider-reported `usage.cost` is now recorded as the authoritative ledger
+  total when present, and forced recalculation preserves those billed totals
+  instead of replacing them with catalog estimates.
 - Made `shore log` and `shore-tui` expose compacted conversation segments as
   bounded, lazy scrollback pages, with a horizontal rule marking archived
   messages that are no longer in prompt context.

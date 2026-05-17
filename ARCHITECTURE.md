@@ -427,10 +427,23 @@ RUST_LOG=shore_cli=debug shore status
 shore status
 shore status --diagnostics
 shore usage
+shore usage --by-kind
+shore usage --by-api-key
 shore usage --anomalies
 shore log --heartbeat
 shore memory dreams
 ```
+
+The usage ledger records provider/model, raw `call_type`, finish reason,
+configured API key name, token counts, cache TTL, cache state/anomalies, and
+cost components plus cost provenance. When OpenRouter includes `usage.cost`,
+Shore stores that provider-reported billed total and marks the row
+`provider_reported`; catalog pricing is still used as a fallback estimate when
+the provider does not report a total. `shore usage --by-kind` rolls raw rows
+into user-facing categories such as `message_no_tools`, `message_with_tools`,
+`heartbeat`, `compaction`, and `dreaming`; `shore usage --by-api-key` groups
+spend by the friendly configured key name, with historical rows shown as
+`unknown`.
 
 Long-running daemon service logs default to a scoped filter:
 `warn,shore_daemon=info,shore_llm=info,shore_ledger=info,shore_swp_server=info`.
