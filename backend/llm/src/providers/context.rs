@@ -163,6 +163,7 @@ mod tests {
             sdk,
             model: "test".into(),
             api_key: "sk-test".into(),
+            api_key_name: None,
             base_url: None,
             messages: vec![],
             system: None,

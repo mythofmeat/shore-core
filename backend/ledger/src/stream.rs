@@ -13,6 +13,7 @@ use tracing::error;
 pub struct LedgerStream {
     reader: StreamReader,
     provider: String,
+    api_key_name: Option<String>,
     model: String,
     call_type: CallType,
     character: String,
@@ -29,6 +30,7 @@ impl LedgerStream {
     pub(crate) fn new(
         reader: StreamReader,
         provider: String,
+        api_key_name: Option<String>,
         model: String,
         call_type: CallType,
         character: String,
@@ -41,6 +43,7 @@ impl LedgerStream {
         Self {
             reader,
             provider,
+            api_key_name,
             model,
             call_type,
             character,
@@ -57,6 +60,7 @@ impl LedgerStream {
     #[allow(clippy::too_many_arguments)]
     pub fn new_test(
         provider: String,
+        api_key_name: Option<String>,
         model: String,
         call_type: CallType,
         character: String,
@@ -71,6 +75,7 @@ impl LedgerStream {
         Self::new(
             tokio::io::BufReader::new(boxed),
             provider,
+            api_key_name,
             model,
             call_type,
             character,
@@ -93,6 +98,7 @@ impl LedgerStream {
             &self.cache_trackers,
             crate::client::RecordCall {
                 provider: &self.provider,
+                api_key_name: self.api_key_name.clone(),
                 model: &self.model,
                 call_type: self.call_type,
                 character: &self.character,
@@ -116,6 +122,7 @@ impl LedgerStream {
             &self.cache_trackers,
             crate::client::RecordCall {
                 provider: &self.provider,
+                api_key_name: self.api_key_name.clone(),
                 model: &self.model,
                 call_type: self.call_type,
                 character: &self.character,
@@ -166,6 +173,7 @@ mod tests {
 
         let mut stream = LedgerStream::new_test(
             "anthropic".into(),
+            None,
             "claude-opus-4-6".into(),
             CallType::Message,
             "aria".into(),
@@ -213,6 +221,7 @@ mod tests {
 
         let mut stream = LedgerStream::new_test(
             "anthropic".into(),
+            None,
             "claude-opus-4-6".into(),
             CallType::Message,
             "aria".into(),

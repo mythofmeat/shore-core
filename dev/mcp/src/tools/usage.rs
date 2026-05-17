@@ -14,11 +14,18 @@ pub struct UsageParams {
     pub last: String,
     pub character: Option<String>,
     pub provider: Option<String>,
+    pub api_key: Option<String>,
     pub model: Option<String>,
     pub call_type: Option<String>,
     /// Group results by call type instead of filtering.
     #[serde(default)]
     pub by_call_type: bool,
+    /// Group results by higher-level usage kind.
+    #[serde(default)]
+    pub by_kind: bool,
+    /// Group results by provider and configured API key name.
+    #[serde(default)]
+    pub by_api_key: bool,
     #[serde(default)]
     pub anomalies: bool,
 }
@@ -45,9 +52,12 @@ impl ShoreMcpHandler {
                     "last": p.last,
                     "character": p.character,
                     "provider": p.provider,
+                    "api_key": p.api_key,
                     "model": p.model,
                     "call_type": p.call_type,
                     "by_call_type": p.by_call_type,
+                    "by_kind": p.by_kind,
+                    "by_api_key": p.by_api_key,
                     "anomalies": p.anomalies,
                     "export_csv": false,
                     "export_tsv": false,

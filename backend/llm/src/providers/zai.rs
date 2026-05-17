@@ -445,6 +445,7 @@ mod tests {
             sdk: Sdk::Zai,
             model: "glm-5".into(),
             api_key: "test-key".into(),
+            api_key_name: None,
             base_url: None,
             messages: vec![],
             system: None,

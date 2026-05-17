@@ -61,6 +61,7 @@ pub(super) async fn stream_with_credential_fallback(
 ) -> Result<StreamResult, LlmError> {
     if matches!(resolved.sdk, shore_config::models::Sdk::ClaudeCode) {
         request.api_key.clear();
+        request.api_key_name = None;
         return stream_with_retry(
             ctx,
             request,
@@ -122,6 +123,7 @@ pub(super) async fn stream_with_credential_fallback(
         };
 
         request.api_key = api_key;
+        request.api_key_name = Some(cand.name.clone());
 
         // Step 2: dispatch through the existing transient-retry path.
         // If it returns Ok, we're done. If it returns Err, classify.

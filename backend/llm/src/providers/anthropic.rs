@@ -1142,6 +1142,7 @@ mod tests {
             sdk: Sdk::Anthropic,
             model: "claude-test".into(),
             api_key: "sk-test".into(),
+            api_key_name: None,
             base_url: None,
             messages,
             system,

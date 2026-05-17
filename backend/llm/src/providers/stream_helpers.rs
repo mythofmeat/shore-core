@@ -86,6 +86,9 @@ pub(crate) fn merge_anthropic_usage(usage: &mut Usage, raw: &Value) {
     {
         usage.cache_creation_tokens = v as u32;
     }
+    if let Some(v) = raw.get("cost").and_then(Value::as_f64) {
+        usage.total_cost_usd = Some(v);
+    }
 }
 
 /// Extract Anthropic usage from a non-streaming response body.
@@ -106,6 +109,7 @@ pub(crate) fn extract_anthropic_usage(body: Option<&Value>) -> Usage {
             .get("cache_creation_input_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(0) as u32;
+        usage.total_cost_usd = raw.get("cost").and_then(Value::as_f64);
     }
     usage
 }
@@ -168,11 +172,17 @@ pub(crate) fn extract_system_text(value: &Value) -> String {
 }
 
 /// Extract token usage from an OpenAI usage object, including cached tokens
-/// from `prompt_tokens_details.cached_tokens`.
+/// from `prompt_tokens_details.cached_tokens`. OpenRouter extends this shape
+/// with provider-reported `cost` and `cache_write_tokens`; when present, carry
+/// them through to the ledger.
 pub(crate) fn extract_openai_usage(u: &Value) -> Usage {
-    let cached = u
-        .get("prompt_tokens_details")
+    let prompt_details = u.get("prompt_tokens_details");
+    let cached = prompt_details
         .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let cache_write = prompt_details
+        .and_then(|d| d.get("cache_write_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
 
@@ -183,7 +193,8 @@ pub(crate) fn extract_openai_usage(u: &Value) -> Usage {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32,
         cache_read_tokens: cached,
-        cache_creation_tokens: 0,
+        cache_creation_tokens: cache_write,
+        total_cost_usd: u.get("cost").and_then(Value::as_f64),
         ..Default::default()
     }
 }
@@ -356,13 +367,15 @@ mod tests {
             "input_tokens": 200,
             "output_tokens": 50,
             "cache_read_input_tokens": 150,
-            "cache_creation_input_tokens": 80
+            "cache_creation_input_tokens": 80,
+            "cost": 0.0042
         });
         merge_anthropic_usage(&mut usage, &raw);
         assert_eq!(usage.input_tokens, 200);
         assert_eq!(usage.output_tokens, 50);
         assert_eq!(usage.cache_read_tokens, 150);
         assert_eq!(usage.cache_creation_tokens, 80);
+        assert_eq!(usage.total_cost_usd, Some(0.0042));
     }
 
     #[test]
@@ -371,13 +384,15 @@ mod tests {
             "input_tokens": 300,
             "output_tokens": 120,
             "cache_read_input_tokens": 200,
-            "cache_creation_input_tokens": 50
+            "cache_creation_input_tokens": 50,
+            "cost": 0.0123
         });
         let usage = extract_anthropic_usage(Some(&body));
         assert_eq!(usage.input_tokens, 300);
         assert_eq!(usage.output_tokens, 120);
         assert_eq!(usage.cache_read_tokens, 200);
         assert_eq!(usage.cache_creation_tokens, 50);
+        assert_eq!(usage.total_cost_usd, Some(0.0123));
 
         // None body returns all zeros.
         let empty = extract_anthropic_usage(None);
@@ -489,13 +504,18 @@ mod tests {
         let u = json!({
             "prompt_tokens": 100,
             "completion_tokens": 50,
-            "prompt_tokens_details": {"cached_tokens": 30}
+            "prompt_tokens_details": {
+                "cached_tokens": 30,
+                "cache_write_tokens": 12
+            },
+            "cost": 0.00042
         });
         let usage = extract_openai_usage(&u);
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.output_tokens, 50);
         assert_eq!(usage.cache_read_tokens, 30);
-        assert_eq!(usage.cache_creation_tokens, 0);
+        assert_eq!(usage.cache_creation_tokens, 12);
+        assert_eq!(usage.total_cost_usd, Some(0.00042));
     }
 
     #[test]

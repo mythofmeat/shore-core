@@ -144,6 +144,7 @@ mod tests {
             sdk,
             model: "test-model".into(),
             api_key: "sk-test".into(),
+            api_key_name: None,
             base_url: Some("http://127.0.0.1:1".into()), // unreachable
             messages: vec![json!({"role": "user", "content": "hi"})],
             system: None,

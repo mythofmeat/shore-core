@@ -130,14 +130,15 @@ impl CacheTracker {
             };
         }
 
-        // 1b. Track whether this is an heartbeat/tool_loop call. These
-        // operate on a different message prefix (heartbeat appends a prompt,
-        // tool loops append tool_result), so their cache_read values are not
+        // 1b. Track whether this is a heartbeat/tool-loop call. These operate
+        // on a different message prefix (heartbeat appends a prompt, tool
+        // loops append tool_result), so their cache_read values are not
         // comparable to the last normal message. We still run TTL expiry and
         // keepalive miss detection, but skip the UnexpectedWrite check and
         // don't update last_cache_read.
-        let skip_cache_read_comparison =
-            obs.call_type == "heartbeat" || obs.call_type == "tool_loop";
+        let skip_cache_read_comparison = obs.call_type == "heartbeat"
+            || obs.call_type == "heartbeat_tool_loop"
+            || obs.call_type == "tool_loop";
 
         // 2. TTL expiry: Warm → Cold
         if self.state == CacheState::Warm {

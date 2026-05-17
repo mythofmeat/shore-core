@@ -304,6 +304,7 @@ mod tests {
             sdk: Sdk::Anthropic,
             model: "m".into(),
             api_key: "k".into(),
+            api_key_name: None,
             base_url: None,
             messages: vec![],
             system: None,

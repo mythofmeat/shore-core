@@ -138,14 +138,16 @@ impl LlmClient {
             var: api_key_env.to_string(),
         })?;
 
-        Ok(Self::build_request_with_resolved_key(
+        let mut req = Self::build_request_with_resolved_key(
             model,
             api_key,
             messages,
             system,
             tools,
             provider_options,
-        ))
+        );
+        req.api_key_name = Some("default".into());
+        Ok(req)
     }
 
     /// Build an `LlmRequest` honoring the provider registry's key list.
@@ -198,14 +200,16 @@ impl LlmClient {
         let mut last_env = candidates[0].env.clone();
         for cand in &candidates {
             if let Some(api_key) = crate::credentials::read_candidate_env(cand) {
-                return Ok(Self::build_request_with_resolved_key(
+                let mut req = Self::build_request_with_resolved_key(
                     model,
                     api_key,
                     messages,
                     system,
                     tools,
                     provider_options,
-                ));
+                );
+                req.api_key_name = Some(cand.name.clone());
+                return Ok(req);
             }
             last_env = cand.env.clone();
         }
@@ -276,6 +280,7 @@ impl LlmClient {
             sdk: model.sdk.clone(),
             model: model.model_id.clone(),
             api_key,
+            api_key_name: None,
             base_url: model.base_url.clone(),
             messages,
             system,
@@ -780,6 +785,7 @@ sdk = "openai"
             sdk: Sdk::Anthropic,
             model: "m".into(),
             api_key: "k".into(),
+            api_key_name: None,
             base_url: None,
             messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
             system: None,

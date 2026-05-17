@@ -17,6 +17,12 @@ pub struct LlmRequest {
     /// API key resolved from the environment variable specified in models.toml.
     pub api_key: String,
 
+    /// Friendly configured key name, e.g. "default", "budget", or
+    /// "overflow". Transient metadata for usage attribution only; never sent
+    /// to providers.
+    #[serde(skip)]
+    pub api_key_name: Option<String>,
+
     /// Optional base URL override (for OpenAI-compatible providers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
@@ -269,6 +275,7 @@ mod tests {
             sdk: Sdk::Anthropic,
             model: "claude-sonnet-4-20250514".into(),
             api_key: "sk-test".into(),
+            api_key_name: None,
             base_url: None,
             messages: vec![serde_json::json!({"role": "user", "content": "Hello"})],
             system: None,

@@ -278,6 +278,10 @@ pub enum CliCommand {
         #[arg(long)]
         provider: Option<String>,
 
+        /// Filter by configured API key name ("unknown" matches older rows)
+        #[arg(long)]
+        api_key: Option<String>,
+
         /// Filter by model
         #[arg(long)]
         model: Option<String>,
@@ -286,6 +290,14 @@ pub enum CliCommand {
         /// grouped by call type (useful for discovering what types exist).
         #[arg(long, num_args = 0..=1)]
         call_type: Option<Option<String>>,
+
+        /// Group by higher-level usage kind, e.g. message_with_tools
+        #[arg(long)]
+        by_kind: bool,
+
+        /// Group by provider and configured API key name
+        #[arg(long)]
+        by_api_key: bool,
 
         /// Show only cache anomalies
         #[arg(long)]
@@ -814,8 +826,11 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             last,
             character,
             provider,
+            api_key,
             model,
             call_type,
+            by_kind,
+            by_api_key,
             anomalies,
             export_csv,
             export_tsv,
@@ -838,9 +853,12 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
                     "last": last,
                     "character": character,
                     "provider": provider,
+                    "api_key": api_key,
                     "model": model,
                     "call_type": call_type_filter,
                     "by_call_type": by_call_type,
+                    "by_kind": by_kind,
+                    "by_api_key": by_api_key,
                     "anomalies": anomalies,
                     "export_csv": export_csv,
                     "export_tsv": export_tsv,
@@ -2423,6 +2441,21 @@ mod tests {
                 || args["by_call_type"] == serde_json::Value::Bool(false),
             "filter value should not imply breakdown flag",
         );
+    }
+
+    #[test]
+    fn usage_kind_and_api_key_flags_forwarded() {
+        let cli = parse(&[
+            "usage",
+            "--by-kind",
+            "--by-api-key",
+            "--api-key",
+            "overflow",
+        ]);
+        let (_cmd, args) = to_swp_command(&cli.command).unwrap();
+        assert_eq!(args["by_kind"], serde_json::Value::Bool(true));
+        assert_eq!(args["by_api_key"], serde_json::Value::Bool(true));
+        assert_eq!(args["api_key"], "overflow");
     }
 
     #[test]

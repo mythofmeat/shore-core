@@ -11,6 +11,7 @@ pub struct QueryFilter {
     pub until: Option<String>,
     pub character: Option<String>,
     pub provider: Option<String>,
+    pub api_key_name: Option<String>,
     pub model: Option<String>,
     pub call_type: Option<String>,
 }
@@ -34,6 +35,13 @@ fn build_where(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::types::To
     }
     if let Some(ref v) = filter.provider {
         clauses.push(format!("provider = ?{}", values.len() + 1));
+        values.push(Box::new(v.clone()));
+    }
+    if let Some(ref v) = filter.api_key_name {
+        clauses.push(format!(
+            "COALESCE(api_key_name, 'unknown') = ?{}",
+            values.len() + 1
+        ));
         values.push(Box::new(v.clone()));
     }
     if let Some(ref v) = filter.model {
@@ -106,6 +114,14 @@ pub fn usage_summary(
     })
 }
 
+const USAGE_KIND_EXPR: &str = r#"CASE
+    WHEN call_type = 'heartbeat_tool_loop' THEN 'heartbeat'
+    WHEN call_type = 'message' AND finish_reason = 'tool_use' THEN 'message_with_tools'
+    WHEN call_type = 'tool_loop' THEN 'message_with_tools'
+    WHEN call_type = 'message' THEN 'message_no_tools'
+    ELSE call_type
+END"#;
+
 // ── Summary by call type ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -156,6 +172,115 @@ pub fn usage_summary_by_call_type(
     })
 }
 
+// ── Summary by usage kind ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct UsageKindSummary {
+    pub usage_kind: String,
+    pub call_count: u32,
+    pub total_input: u64,
+    pub total_output: u64,
+    pub total_cache_read: u64,
+    pub total_cache_write: u64,
+    pub total_cost: f64,
+}
+
+/// Groups calls by a higher-level usage kind. This keeps raw call types
+/// available while surfacing product concepts such as message-with-tools.
+pub fn usage_summary_by_usage_kind(
+    ledger: &Ledger,
+    filter: &QueryFilter,
+) -> Result<Vec<UsageKindSummary>, rusqlite::Error> {
+    let (where_clause, values) = build_where(filter);
+    let sql = format!(
+        r#"SELECT usage_kind,
+                  COUNT(*) as call_count,
+                  SUM(input_tokens) as total_input,
+                  SUM(output_tokens) as total_output,
+                  SUM(cache_read_tokens) as total_cache_read,
+                  SUM(cache_write_tokens) as total_cache_write,
+                  TOTAL(total_cost) as total_cost
+             FROM (
+                 SELECT {USAGE_KIND_EXPR} as usage_kind,
+                        input_tokens, output_tokens, cache_read_tokens,
+                        cache_write_tokens, total_cost
+                   FROM calls
+                  {where_clause}
+             )
+            GROUP BY usage_kind
+            ORDER BY total_cost DESC, call_count DESC"#,
+    );
+
+    ledger.with_conn(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(values.iter()), |row| {
+            Ok(UsageKindSummary {
+                usage_kind: row.get(0)?,
+                call_count: row.get::<_, i64>(1)? as u32,
+                total_input: row.get::<_, i64>(2)? as u64,
+                total_output: row.get::<_, i64>(3)? as u64,
+                total_cache_read: row.get::<_, i64>(4)? as u64,
+                total_cache_write: row.get::<_, i64>(5)? as u64,
+                total_cost: row.get::<_, f64>(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+    })
+}
+
+// ── Summary by API key ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ApiKeySummary {
+    pub provider: String,
+    pub api_key_name: String,
+    pub call_count: u32,
+    pub total_input: u64,
+    pub total_output: u64,
+    pub total_cache_read: u64,
+    pub total_cache_write: u64,
+    pub total_cost: f64,
+}
+
+/// Groups calls by provider + friendly configured API key name.
+pub fn usage_summary_by_api_key(
+    ledger: &Ledger,
+    filter: &QueryFilter,
+) -> Result<Vec<ApiKeySummary>, rusqlite::Error> {
+    let (where_clause, values) = build_where(filter);
+    let sql = format!(
+        r#"SELECT provider,
+                  COALESCE(api_key_name, 'unknown') as api_key_name,
+                  COUNT(*) as call_count,
+                  SUM(input_tokens) as total_input,
+                  SUM(output_tokens) as total_output,
+                  SUM(cache_read_tokens) as total_cache_read,
+                  SUM(cache_write_tokens) as total_cache_write,
+                  TOTAL(total_cost) as total_cost
+             FROM calls
+             {where_clause}
+            GROUP BY provider, COALESCE(api_key_name, 'unknown')
+            ORDER BY total_cost DESC, call_count DESC"#,
+    );
+
+    ledger.with_conn(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(values.iter()), |row| {
+            Ok(ApiKeySummary {
+                provider: row.get(0)?,
+                api_key_name: row.get(1)?,
+                call_count: row.get::<_, i64>(2)? as u32,
+                total_input: row.get::<_, i64>(3)? as u64,
+                total_output: row.get::<_, i64>(4)? as u64,
+                total_cache_read: row.get::<_, i64>(5)? as u64,
+                total_cache_write: row.get::<_, i64>(6)? as u64,
+                total_cost: row.get::<_, f64>(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+    })
+}
+
 // ── Anomalies ────────────────────────────────────────────────────────────────
 
 /// Returns rows where `cache_anomaly IS NOT NULL`, ordered by id DESC.
@@ -183,11 +308,11 @@ pub fn query_anomalies(
 
 // ── TSV export ───────────────────────────────────────────────────────────────
 
-const TSV_HEADER: &str = "ts\tcharacter\tprovider\tmodel\tcall_type\t\
+const TSV_HEADER: &str = "ts\tcharacter\tprovider\tapi_key_name\tmodel\tcall_type\t\
     input_tokens\toutput_tokens\tcache_read_tokens\tcache_write_tokens\tcache_ttl\t\
     total_ms\tttft_ms\tfinish_reason\tthinking_enabled\t\
     cache_state\tcache_anomaly\t\
-    input_cost\toutput_cost\tcache_read_cost\tcache_write_cost\ttotal_cost";
+    input_cost\toutput_cost\tcache_read_cost\tcache_write_cost\tcost_source\ttotal_cost";
 
 fn opt_str(v: &Option<String>) -> &str {
     v.as_deref().unwrap_or("")
@@ -202,10 +327,11 @@ fn opt_f64(v: Option<f64>) -> String {
 
 fn row_to_tsv(r: &CallRow) -> String {
     format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         r.ts,
         r.character,
         r.provider,
+        opt_str(&r.api_key_name),
         r.model,
         r.call_type,
         r.input_tokens,
@@ -223,11 +349,12 @@ fn row_to_tsv(r: &CallRow) -> String {
         opt_f64(r.output_cost),
         opt_f64(r.cache_read_cost),
         opt_f64(r.cache_write_cost),
+        opt_str(&r.cost_source),
         opt_f64(r.total_cost),
     )
 }
 
-/// Tab-separated header + all matching rows (all 21 CallRow columns).
+/// Tab-separated header + all matching rows (all 23 CallRow columns).
 pub fn export_tsv(ledger: &Ledger, filter: &QueryFilter) -> Result<String, rusqlite::Error> {
     let (where_clause, values) = build_where(filter);
     let sql = format!("SELECT * FROM calls{where_clause} ORDER BY id ASC");
@@ -353,7 +480,7 @@ pub fn null_cost_rows(ledger: &Ledger) -> Result<Vec<CostRow>, rusqlite::Error> 
 pub fn all_cost_rows(ledger: &Ledger) -> Result<Vec<CostRow>, rusqlite::Error> {
     ledger.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_ttl FROM calls",
+            "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_ttl FROM calls WHERE COALESCE(cost_source, 'pricing_catalog') != 'provider_reported'",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(CostRow {
@@ -379,7 +506,7 @@ pub fn update_costs(
 ) -> Result<(), rusqlite::Error> {
     ledger.with_conn(|conn| {
         conn.execute(
-            "UPDATE calls SET input_cost=?1, output_cost=?2, cache_read_cost=?3, cache_write_cost=?4, total_cost=?5 WHERE id=?6",
+            "UPDATE calls SET input_cost=?1, output_cost=?2, cache_read_cost=?3, cache_write_cost=?4, cost_source='pricing_catalog', total_cost=?5 WHERE id=?6",
             rusqlite::params![cost.input, cost.output, cost.cache_read, cost.cache_write, cost.total, id],
         )?;
         Ok(())
@@ -399,6 +526,7 @@ mod tests {
             ts: "2026-04-05T10:00:00Z".into(),
             character: "aria".into(),
             provider: "anthropic".into(),
+            api_key_name: Some("default".into()),
             model: "claude-opus-4-6".into(),
             call_type: "message".into(),
             input_tokens: 100,
@@ -408,7 +536,7 @@ mod tests {
             cache_ttl: None,
             total_ms: 1500,
             ttft_ms: 200,
-            finish_reason: "end_turn".into(),
+            finish_reason: "tool_use".into(),
             thinking_enabled: true,
             cache_state: Some("warm".into()),
             cache_anomaly: None,
@@ -416,6 +544,7 @@ mod tests {
             output_cost: Some(0.00375),
             cache_read_cost: Some(0.00012),
             cache_write_cost: Some(0.000375),
+            cost_source: Some("pricing_catalog".into()),
             total_cost: Some(0.005745),
         };
         ledger.insert(&base).unwrap();
@@ -423,6 +552,7 @@ mod tests {
         let mut row2 = base.clone();
         row2.ts = "2026-04-05T10:01:00Z".into();
         row2.call_type = "tool_loop".into();
+        row2.api_key_name = Some("overflow".into());
         row2.input_tokens = 200;
         row2.total_cost = Some(0.01);
         ledger.insert(&row2).unwrap();
@@ -434,6 +564,7 @@ mod tests {
         row3.cache_read_tokens = 0;
         row3.cache_write_tokens = 0;
         row3.cache_state = None;
+        row3.finish_reason = "end_turn".into();
         row3.total_cost = Some(0.002);
         ledger.insert(&row3).unwrap();
 
@@ -453,6 +584,40 @@ mod tests {
             .collect();
         assert_eq!(by_type.get("message"), Some(&2));
         assert_eq!(by_type.get("tool_loop"), Some(&1));
+    }
+
+    #[test]
+    fn summary_groups_by_usage_kind() {
+        let ledger = populated_ledger();
+        let summary = usage_summary_by_usage_kind(&ledger, &QueryFilter::default()).unwrap();
+        let by_kind: std::collections::HashMap<_, _> = summary
+            .iter()
+            .map(|s| (s.usage_kind.clone(), s.call_count))
+            .collect();
+        assert_eq!(by_kind.get("message_no_tools"), Some(&1));
+        assert_eq!(by_kind.get("message_with_tools"), Some(&2));
+    }
+
+    #[test]
+    fn summary_groups_by_api_key() {
+        let ledger = populated_ledger();
+        let summary = usage_summary_by_api_key(&ledger, &QueryFilter::default()).unwrap();
+        let by_key: std::collections::HashMap<_, _> = summary
+            .iter()
+            .map(|s| ((s.provider.clone(), s.api_key_name.clone()), s.call_count))
+            .collect();
+        assert_eq!(
+            by_key.get(&("anthropic".to_string(), "default".to_string())),
+            Some(&1)
+        );
+        assert_eq!(
+            by_key.get(&("anthropic".to_string(), "overflow".to_string())),
+            Some(&1)
+        );
+        assert_eq!(
+            by_key.get(&("openai".to_string(), "default".to_string())),
+            Some(&1)
+        );
     }
 
     #[test]
@@ -477,12 +642,26 @@ mod tests {
     }
 
     #[test]
+    fn filter_by_api_key() {
+        let ledger = populated_ledger();
+        let filter = QueryFilter {
+            api_key_name: Some("overflow".into()),
+            ..Default::default()
+        };
+        let summary = usage_summary(&ledger, &filter).unwrap();
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].call_count, 1);
+        assert_eq!(summary[0].total_input, 200);
+    }
+
+    #[test]
     fn anomalies_query() {
         let ledger = Ledger::open_in_memory().unwrap();
         let mut row = CallRow {
             ts: "2026-04-05T10:00:00Z".into(),
             character: "aria".into(),
             provider: "anthropic".into(),
+            api_key_name: Some("default".into()),
             model: "claude-opus-4-6".into(),
             call_type: "message".into(),
             input_tokens: 100,
@@ -500,6 +679,7 @@ mod tests {
             output_cost: None,
             cache_read_cost: None,
             cache_write_cost: None,
+            cost_source: Some("pricing_catalog".into()),
             total_cost: None,
         };
         ledger.insert(&row).unwrap();
@@ -515,7 +695,26 @@ mod tests {
         let tsv = export_tsv(&ledger, &QueryFilter::default()).unwrap();
         let lines: Vec<&str> = tsv.lines().collect();
         assert!(lines[0].contains("ts\t")); // header
+        assert!(lines[0].contains("\tcost_source\t"));
         assert_eq!(lines.len(), 4); // header + 3 rows
+    }
+
+    #[test]
+    fn all_cost_rows_skips_provider_reported_totals() {
+        let ledger = populated_ledger();
+        let mut provider_reported = ledger.recent(1).unwrap().remove(0);
+        provider_reported.ts = "2026-04-05T10:03:00Z".into();
+        provider_reported.input_cost = None;
+        provider_reported.output_cost = None;
+        provider_reported.cache_read_cost = None;
+        provider_reported.cache_write_cost = None;
+        provider_reported.cost_source = Some("provider_reported".into());
+        provider_reported.total_cost = Some(0.1234);
+        ledger.insert(&provider_reported).unwrap();
+
+        let rows = all_cost_rows(&ledger).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|row| row.id != 4));
     }
 
     #[test]
@@ -528,6 +727,7 @@ mod tests {
             ts: "2026-04-05T10:00:00Z".into(),
             character: "aria".into(),
             provider: "anthropic".into(),
+            api_key_name: Some("default".into()),
             model: "claude-opus-4-6".into(),
             call_type: "message".into(),
             input_tokens: 100,
@@ -545,6 +745,7 @@ mod tests {
             output_cost: None,
             cache_read_cost: None,
             cache_write_cost: None,
+            cost_source: Some("pricing_catalog".into()),
             total_cost: None,
         };
         ledger.insert(&base).unwrap();
@@ -577,6 +778,7 @@ mod tests {
             ts: "2026-04-05T10:00:00Z".into(),
             character: "aria".into(),
             provider: "anthropic".into(),
+            api_key_name: Some("default".into()),
             model: "claude-opus-4-6".into(),
             call_type: "message".into(),
             input_tokens: 100,
@@ -594,6 +796,7 @@ mod tests {
             output_cost: None,
             cache_read_cost: None,
             cache_write_cost: None,
+            cost_source: Some("pricing_catalog".into()),
             total_cost: None,
         };
         ledger.insert(&base).unwrap();

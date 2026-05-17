@@ -626,6 +626,7 @@ mod tests {
             sdk: Sdk::Gemini,
             model: "gemini-2.0-flash".into(),
             api_key: "test-key".into(),
+            api_key_name: None,
             base_url: None,
             messages,
             system,

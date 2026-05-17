@@ -677,6 +677,7 @@ mod tests {
             sdk: Sdk::ClaudeCode,
             model: "claude-sonnet-4-5".into(),
             api_key: String::new(),
+            api_key_name: None,
             base_url: None,
             messages,
             system: Some(json!("You are a helpful assistant.")),

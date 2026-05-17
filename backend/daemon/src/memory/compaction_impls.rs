@@ -692,6 +692,7 @@ mod tests {
             sdk: Sdk::Anthropic,
             model: "chat-model".to_string(),
             api_key: "chat-secret".to_string(),
+            api_key_name: None,
             base_url: Some("http://chat.example".to_string()),
             messages: vec![json!({"role": "user", "content": "cached user"})],
             system: Some(json!("cached system")),
@@ -737,6 +738,7 @@ mod tests {
             sdk: Sdk::Anthropic,
             model: "chat-model".to_string(),
             api_key: "chat-secret".to_string(),
+            api_key_name: None,
             base_url: Some("http://chat.example".to_string()),
             messages: vec![
                 json!({"role": "user", "content": "cached user"}),
@@ -851,6 +853,7 @@ mod tests {
             sdk: Sdk::Anthropic,
             model: "chat-model".to_string(),
             api_key: "chat-secret".to_string(),
+            api_key_name: None,
             base_url: Some("http://chat.example".to_string()),
             messages: chat_messages.clone(),
             system: chat_system.clone(),

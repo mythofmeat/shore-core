@@ -45,6 +45,10 @@ fn build_filter(args: &serde_json::Value) -> (QueryFilter, String) {
             .get("provider")
             .and_then(|v| v.as_str())
             .map(String::from),
+        api_key_name: args
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         model: args.get("model").and_then(|v| v.as_str()).map(String::from),
         call_type: args
             .get("call_type")
@@ -86,6 +90,55 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
             csv_lines.push(csv_fields.join(","));
         }
         return Ok(json!({ "mode": "csv", "data": csv_lines.join("\n") }));
+    }
+
+    if args.get("by_kind").and_then(|v| v.as_bool()) == Some(true) {
+        let summary = shore_ledger::query::usage_summary_by_usage_kind(ledger, &filter)
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+        let rows: Vec<serde_json::Value> = summary
+            .iter()
+            .map(|s| {
+                json!({
+                    "usage_kind": s.usage_kind,
+                    "call_count": s.call_count,
+                    "total_input": s.total_input,
+                    "total_output": s.total_output,
+                    "total_cache_read": s.total_cache_read,
+                    "total_cache_write": s.total_cache_write,
+                    "total_cost": s.total_cost,
+                })
+            })
+            .collect();
+        return Ok(json!({
+            "mode": "summary_by_usage_kind",
+            "period": last,
+            "summary": rows,
+        }));
+    }
+
+    if args.get("by_api_key").and_then(|v| v.as_bool()) == Some(true) {
+        let summary = shore_ledger::query::usage_summary_by_api_key(ledger, &filter)
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+        let rows: Vec<serde_json::Value> = summary
+            .iter()
+            .map(|s| {
+                json!({
+                    "provider": s.provider,
+                    "api_key_name": s.api_key_name,
+                    "call_count": s.call_count,
+                    "total_input": s.total_input,
+                    "total_output": s.total_output,
+                    "total_cache_read": s.total_cache_read,
+                    "total_cache_write": s.total_cache_write,
+                    "total_cost": s.total_cost,
+                })
+            })
+            .collect();
+        return Ok(json!({
+            "mode": "summary_by_api_key",
+            "period": last,
+            "summary": rows,
+        }));
     }
 
     if args.get("by_call_type").and_then(|v| v.as_bool()) == Some(true) {

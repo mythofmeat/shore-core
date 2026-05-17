@@ -1728,7 +1728,7 @@ async fn execute_heartbeat_tick(
         let call_type = if iteration == 0 {
             CallType::Heartbeat
         } else {
-            CallType::ToolLoop
+            CallType::HeartbeatToolLoop
         };
 
         let (mut resp, fallback_events) = match client
@@ -2281,6 +2281,7 @@ mod tests {
             sdk: shore_config::models::Sdk::Anthropic,
             model: "test".into(),
             api_key: "k".into(),
+            api_key_name: None,
             base_url: None,
             messages: vec![],
             system: None,
@@ -2962,6 +2963,7 @@ mod tests {
             sdk: shore_config::models::Sdk::Anthropic,
             model: "test".into(),
             api_key: "key".into(),
+            api_key_name: None,
             base_url: None,
             messages: vec![json!({"role": "user", "content": "hello"})],
             system: Some(json!([{"type": "text", "text": "system prompt"}])),
@@ -3089,6 +3091,7 @@ api_key_env = "{api_key_env}"
             sdk: shore_config::models::Sdk::Anthropic,
             model: model_id.into(),
             api_key: "chat-key".into(),
+            api_key_name: None,
             base_url: None,
             messages: vec![json!({"role": "user", "content": "hi"})],
             system: Some(json!([{"type": "text", "text": "sys"}])),

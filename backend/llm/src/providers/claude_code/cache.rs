@@ -456,6 +456,7 @@ mod tests {
             sdk: Sdk::ClaudeCode,
             model: "claude-sonnet-4-5".into(),
             api_key: String::new(),
+            api_key_name: None,
             base_url: None,
             messages: vec![json!({"role": "user", "content": "hi"})],
             system: Some(json!("sys")),

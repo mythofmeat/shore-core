@@ -404,6 +404,7 @@ mod tests {
             sdk: shore_config::models::Sdk::Anthropic,
             model: "test".into(),
             api_key: "sk-test".into(),
+            api_key_name: None,
             base_url: Some(base_url.to_string()),
             messages,
             system: None,

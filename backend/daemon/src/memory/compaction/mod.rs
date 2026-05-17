@@ -1479,6 +1479,7 @@ mod tests {
             sdk: shore_config::models::Sdk::Anthropic,
             model: "test-model".into(),
             api_key: "k".into(),
+            api_key_name: None,
             base_url: None,
             messages: vec![
                 serde_json::json!({"role": "user", "content": "hi"}),

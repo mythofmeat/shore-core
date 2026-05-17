@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS calls (
     ts                  TEXT    NOT NULL,
     character           TEXT    NOT NULL,
     provider            TEXT    NOT NULL,
+    api_key_name        TEXT,
     model               TEXT    NOT NULL,
     call_type           TEXT    NOT NULL,
     input_tokens        INTEGER NOT NULL,
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS calls (
     output_cost         REAL,
     cache_read_cost     REAL,
     cache_write_cost    REAL,
+    cost_source         TEXT    DEFAULT 'pricing_catalog',
     total_cost          REAL
 );
 
@@ -56,6 +58,7 @@ pub struct CallRow {
     pub ts: String,
     pub character: String,
     pub provider: String,
+    pub api_key_name: Option<String>,
     pub model: String,
     pub call_type: String,
     pub input_tokens: u32,
@@ -73,6 +76,7 @@ pub struct CallRow {
     pub output_cost: Option<f64>,
     pub cache_read_cost: Option<f64>,
     pub cache_write_cost: Option<f64>,
+    pub cost_source: Option<String>,
     pub total_cost: Option<f64>,
 }
 
@@ -118,6 +122,23 @@ impl Ledger {
 
         // v2: cache_ttl on calls
         add_if_missing("ALTER TABLE calls ADD COLUMN cache_ttl TEXT DEFAULT '1h'")?;
+        // v3: friendly provider key name for per-key spend attribution.
+        add_if_missing("ALTER TABLE calls ADD COLUMN api_key_name TEXT")?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_calls_api_key ON calls (provider, api_key_name)",
+        )?;
+        // v4: provenance for cost totals. Rows with provider-supplied totals
+        // must not be replaced by catalog estimates during forced recalculation.
+        add_if_missing("ALTER TABLE calls ADD COLUMN cost_source TEXT DEFAULT 'pricing_catalog'")?;
+        conn.execute_batch(
+            r#"UPDATE calls
+                  SET cost_source = 'provider_reported'
+                WHERE total_cost IS NOT NULL
+                  AND input_cost IS NULL
+                  AND output_cost IS NULL
+                  AND cache_read_cost IS NULL
+                  AND cache_write_cost IS NULL"#,
+        )?;
 
         Ok(())
     }
@@ -128,24 +149,25 @@ impl Ledger {
         let row_id = self.with_conn(|conn| {
             conn.execute(
                 r#"INSERT INTO calls (
-                    ts, character, provider, model, call_type,
+                    ts, character, provider, api_key_name, model, call_type,
                     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                     cache_ttl,
                     total_ms, ttft_ms, finish_reason, thinking_enabled,
                     cache_state, cache_anomaly,
-                    input_cost, output_cost, cache_read_cost, cache_write_cost, total_cost
+                    input_cost, output_cost, cache_read_cost, cache_write_cost, cost_source, total_cost
                 ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5,
-                    ?6, ?7, ?8, ?9,
-                    ?10,
-                    ?11, ?12, ?13, ?14,
-                    ?15, ?16,
-                    ?17, ?18, ?19, ?20, ?21
+                    ?1, ?2, ?3, ?4, ?5, ?6,
+                    ?7, ?8, ?9, ?10,
+                    ?11,
+                    ?12, ?13, ?14, ?15,
+                    ?16, ?17,
+                    ?18, ?19, ?20, ?21, ?22, ?23
                 )"#,
                 params![
                     row.ts,
                     row.character,
                     row.provider,
+                    row.api_key_name,
                     row.model,
                     row.call_type,
                     row.input_tokens,
@@ -163,6 +185,7 @@ impl Ledger {
                     row.output_cost,
                     row.cache_read_cost,
                     row.cache_write_cost,
+                    row.cost_source,
                     row.total_cost,
                 ],
             )?;
@@ -234,6 +257,7 @@ pub(crate) fn row_from_sqlite(row: &rusqlite::Row) -> SqlResult<CallRow> {
         ts: row.get("ts")?,
         character: row.get("character")?,
         provider: row.get("provider")?,
+        api_key_name: row.get("api_key_name")?,
         model: row.get("model")?,
         call_type: row.get("call_type")?,
         input_tokens: row.get::<_, i64>("input_tokens")? as u32,
@@ -251,6 +275,7 @@ pub(crate) fn row_from_sqlite(row: &rusqlite::Row) -> SqlResult<CallRow> {
         output_cost: row.get("output_cost")?,
         cache_read_cost: row.get("cache_read_cost")?,
         cache_write_cost: row.get("cache_write_cost")?,
+        cost_source: row.get("cost_source")?,
         total_cost: row.get("total_cost")?,
     })
 }
@@ -271,6 +296,7 @@ mod tests {
             ts: "2026-04-05T12:00:00Z".into(),
             character: "aria".into(),
             provider: "anthropic".into(),
+            api_key_name: Some("default".into()),
             model: "claude-opus-4-6".into(),
             call_type: "message".into(),
             input_tokens: 100,
@@ -288,6 +314,7 @@ mod tests {
             output_cost: Some(0.00075),
             cache_read_cost: Some(0.0004),
             cache_write_cost: Some(0.0005),
+            cost_source: Some("pricing_catalog".into()),
             total_cost: Some(0.00315),
         }
     }
@@ -306,6 +333,7 @@ mod tests {
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].character, "aria");
+        assert_eq!(rows[0].api_key_name.as_deref(), Some("default"));
         assert_eq!(rows[0].input_tokens, 100);
         assert_eq!(rows[0].cache_read_tokens, 80);
         assert!(rows[0].cache_anomaly.is_none());
@@ -404,8 +432,11 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].character, "aria");
         assert_eq!(rows[0].total_ms, 1500);
-        // Pre-v2 rows are backfilled with the column default.
+        // Pre-v2 rows are backfilled with the cache_ttl column default and
+        // have no friendly key name.
         assert_eq!(rows[0].cache_ttl.as_deref(), Some("1h"));
+        assert!(rows[0].api_key_name.is_none());
+        assert_eq!(rows[0].cost_source.as_deref(), Some("pricing_catalog"));
         assert_eq!(rows[0].cache_anomaly.as_deref(), Some("unexpected_read"));
 
         // And also check the anomaly query path (the one that surfaces the
@@ -414,6 +445,60 @@ mod tests {
             crate::query::query_anomalies(&ledger, &crate::query::QueryFilter::default()).unwrap();
         assert_eq!(anomalies.len(), 1);
         assert_eq!(anomalies[0].total_ms, 1500);
+    }
+
+    #[test]
+    fn migration_backfills_provider_reported_cost_source() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE calls (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts                  TEXT    NOT NULL,
+                character           TEXT    NOT NULL,
+                provider            TEXT    NOT NULL,
+                model               TEXT    NOT NULL,
+                call_type           TEXT    NOT NULL,
+                input_tokens        INTEGER NOT NULL,
+                output_tokens       INTEGER NOT NULL,
+                cache_read_tokens   INTEGER NOT NULL,
+                cache_write_tokens  INTEGER NOT NULL,
+                total_ms            INTEGER NOT NULL,
+                ttft_ms             INTEGER NOT NULL,
+                finish_reason       TEXT    NOT NULL,
+                thinking_enabled    INTEGER NOT NULL,
+                cache_state         TEXT,
+                cache_anomaly       TEXT,
+                input_cost          REAL,
+                output_cost         REAL,
+                cache_read_cost     REAL,
+                cache_write_cost    REAL,
+                total_cost          REAL
+            );
+            INSERT INTO calls (
+                ts, character, provider, model, call_type,
+                input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                total_ms, ttft_ms, finish_reason, thinking_enabled,
+                cache_state, cache_anomaly,
+                input_cost, output_cost, cache_read_cost, cache_write_cost, total_cost
+            ) VALUES (
+                '2026-04-05T12:00:00Z', 'aria', 'claude_code', 'claude-sonnet-4-5', 'message',
+                100, 50, 0, 0,
+                1500, 200, 'end_turn', 1,
+                NULL, NULL,
+                NULL, NULL, NULL, NULL, 0.0042
+            );
+            "#,
+        )
+        .unwrap();
+
+        Ledger::migrate(&conn).unwrap();
+        let ledger = Ledger {
+            conn: Mutex::new(conn),
+        };
+
+        let rows = ledger.recent(1).unwrap();
+        assert_eq!(rows[0].cost_source.as_deref(), Some("provider_reported"));
     }
 
     #[test]

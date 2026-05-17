@@ -26,6 +26,7 @@ use tracing::{debug, error, info, instrument, warn};
 pub enum CallType {
     Message,
     ToolLoop,
+    HeartbeatToolLoop,
     Keepalive,
     Heartbeat,
     Compaction,
@@ -38,6 +39,7 @@ impl CallType {
         match self {
             CallType::Message => "message",
             CallType::ToolLoop => "tool_loop",
+            CallType::HeartbeatToolLoop => "heartbeat_tool_loop",
             CallType::Keepalive => "keepalive",
             CallType::Heartbeat => "heartbeat",
             CallType::Compaction => "compaction",
@@ -65,6 +67,7 @@ pub struct CredentialFallbackEvent {
 
 pub(crate) struct RecordCall<'a> {
     pub(crate) provider: &'a str,
+    pub(crate) api_key_name: Option<String>,
     pub(crate) model: &'a str,
     pub(crate) call_type: CallType,
     pub(crate) character: &'a str,
@@ -84,6 +87,7 @@ pub(crate) fn record_call(
 ) {
     let RecordCall {
         provider,
+        api_key_name,
         model,
         call_type,
         character,
@@ -163,11 +167,17 @@ pub(crate) fn record_call(
         .ok()
         .flatten();
     let total_cost_override = usage.total_cost_usd;
+    let cost_source = if total_cost_override.is_some() {
+        "provider_reported"
+    } else {
+        "pricing_catalog"
+    };
 
     let row = CallRow {
         ts,
         character: character.to_string(),
         provider: provider.to_string(),
+        api_key_name,
         model: model.to_string(),
         call_type: call_type.as_str().to_string(),
         input_tokens: usage.input_tokens,
@@ -201,6 +211,7 @@ pub(crate) fn record_call(
         } else {
             priced_cost.as_ref().map(|c| c.cache_write)
         },
+        cost_source: Some(cost_source.to_string()),
         total_cost: total_cost_override.or_else(|| priced_cost.as_ref().map(|c| c.total)),
     };
 
@@ -368,6 +379,7 @@ impl LedgerClient {
             &self.cache_trackers,
             RecordCall {
                 provider: provider_key,
+                api_key_name: request.api_key_name.clone(),
                 model: &request.model,
                 call_type,
                 character,
@@ -401,6 +413,7 @@ impl LedgerClient {
     ) -> Result<(GenerateResponse, Vec<CredentialFallbackEvent>), LlmError> {
         if matches!(resolved.sdk, shore_config::models::Sdk::ClaudeCode) {
             request.api_key.clear();
+            request.api_key_name = None;
             return self
                 .generate(request, call_type, character, thinking_enabled)
                 .await
@@ -449,6 +462,7 @@ impl LedgerClient {
             };
 
             request.api_key = api_key;
+            request.api_key_name = Some(cand.name.clone());
 
             match self
                 .generate(request, call_type, character, thinking_enabled)
@@ -584,6 +598,7 @@ impl LedgerClient {
         Ok(LedgerStream::new(
             reader,
             provider_key.to_string(),
+            request.api_key_name.clone(),
             request.model.clone(),
             call_type,
             character.to_string(),
@@ -745,6 +760,7 @@ mod tests {
             &trackers,
             RecordCall {
                 provider: "anthropic",
+                api_key_name: Some("default".into()),
                 model: "claude-opus-4-6",
                 call_type: CallType::Message,
                 character: "aria",
@@ -779,6 +795,7 @@ mod tests {
             &trackers,
             RecordCall {
                 provider: "claude_code",
+                api_key_name: None,
                 model: "claude-sonnet-4-5",
                 call_type: CallType::Message,
                 character: "aria",
@@ -801,6 +818,7 @@ mod tests {
         );
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows[0].total_cost, Some(0.0042));
+        assert_eq!(rows[0].cost_source.as_deref(), Some("provider_reported"));
         assert!(rows[0].input_cost.is_none());
         assert!(rows[0].output_cost.is_none());
         assert!(rows[0].cache_read_cost.is_none());
@@ -816,6 +834,7 @@ mod tests {
             &trackers,
             RecordCall {
                 provider: "anthropic",
+                api_key_name: Some("default".into()),
                 model: "claude-opus-4-6",
                 call_type: CallType::Message,
                 character: "aria",
@@ -849,6 +868,7 @@ mod tests {
             &trackers,
             RecordCall {
                 provider: "anthropic",
+                api_key_name: Some("default".into()),
                 model: "claude-opus-4-6",
                 call_type: CallType::Message,
                 character: "aria",
@@ -874,6 +894,7 @@ mod tests {
             &trackers,
             RecordCall {
                 provider: "anthropic",
+                api_key_name: Some("default".into()),
                 model: "claude-opus-4-6",
                 call_type: CallType::Dreaming,
                 character: "aria",
@@ -913,6 +934,7 @@ mod tests {
             &trackers,
             RecordCall {
                 provider: "openai",
+                api_key_name: Some("default".into()),
                 model: "gpt-4o",
                 call_type: CallType::Message,
                 character: "aria",
@@ -941,6 +963,7 @@ mod tests {
     fn call_type_as_str() {
         assert_eq!(CallType::Message.as_str(), "message");
         assert_eq!(CallType::ToolLoop.as_str(), "tool_loop");
+        assert_eq!(CallType::HeartbeatToolLoop.as_str(), "heartbeat_tool_loop");
         assert_eq!(CallType::Keepalive.as_str(), "keepalive");
         assert_eq!(CallType::Heartbeat.as_str(), "heartbeat");
         assert_eq!(CallType::Compaction.as_str(), "compaction");
@@ -957,6 +980,7 @@ mod tests {
             &trackers,
             RecordCall {
                 provider: "anthropic",
+                api_key_name: Some("default".into()),
                 model: "claude-opus-4-6",
                 call_type: CallType::Message,
                 character: "aria",
@@ -990,6 +1014,7 @@ mod tests {
             &trackers,
             RecordCall {
                 provider: "anthropic",
+                api_key_name: Some("default".into()),
                 model: "claude-opus-4-6",
                 call_type: CallType::Message,
                 character: "aria",

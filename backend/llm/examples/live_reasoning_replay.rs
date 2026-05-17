@@ -151,6 +151,7 @@ async fn main() {
         sdk: Sdk::Openai,
         model: target.model.to_string(),
         api_key,
+        api_key_name: Some("default".into()),
         base_url: Some(target.base_url.to_string()),
         messages: vec![
             json!({

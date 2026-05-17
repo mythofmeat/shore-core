@@ -959,6 +959,7 @@ mod tests {
             sdk: Sdk::Openai,
             model: "gpt-4".into(),
             api_key: "sk-test".into(),
+            api_key_name: None,
             base_url: None,
             messages,
             system,
