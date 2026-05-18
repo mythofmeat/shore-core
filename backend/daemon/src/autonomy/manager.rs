@@ -588,7 +588,11 @@ impl AutonomyManager {
             // disk while preserving the existing keepalive deadline. Compaction
             // changes the conversation tail, but the pinned system prompt
             // prefix is often still the expensive cache entry worth keeping.
-            s.last_request = None;
+            invalidate_cached_request(
+                s,
+                character,
+                CachedRequestInvalidationReason::CompactionComplete,
+            );
             // Compaction cycle complete — allow future triggers.
             s.compaction_triggered = false;
             s.compaction_pending = false;
@@ -836,6 +840,32 @@ fn lock_state(m: &Mutex<AutonomyState>) -> std::sync::MutexGuard<'_, AutonomySta
 fn cache_last_request(state: &mut AutonomyState, character: &str, request: LlmRequest) {
     state.last_request = Some(request);
     debug!(character, "Cached last LLM request for heartbeat reuse");
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CachedRequestInvalidationReason {
+    CompactionComplete,
+    IdleCompactionComplete,
+}
+
+/// Single point of invalidation for `AutonomyState::last_request`.
+///
+/// This is not the provider-side Anthropic cache itself. It is Shore's cached
+/// request body used by heartbeat, dreaming, compaction, and keepalive reuse.
+/// Any new path that clears it should add a reason here so cache-sensitive
+/// behavior remains searchable and reviewable.
+fn invalidate_cached_request(
+    state: &mut AutonomyState,
+    character: &str,
+    reason: CachedRequestInvalidationReason,
+) {
+    let had_request = state.last_request.take().is_some();
+    debug!(
+        character,
+        reason = ?reason,
+        had_request,
+        "Invalidated cached LLM request"
+    );
 }
 
 fn push_provider_fallback_events(
@@ -1227,7 +1257,11 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
             }
 
             let mut s = lock_state(&ctx.state);
-            s.last_request = None;
+            invalidate_cached_request(
+                &mut s,
+                character,
+                CachedRequestInvalidationReason::IdleCompactionComplete,
+            );
             s.active_turn_count = retained_count;
             s.compaction_triggered = false;
             s.compaction_pending = false;
@@ -2898,6 +2932,37 @@ mod tests {
     }
 
     #[test]
+    fn wrap_up_nudge_preserves_existing_message_prefix() {
+        let mut request = empty_request();
+        request.system = Some(json!([{"type": "text", "text": "stable system"}]));
+        request.tools = Some(vec![json!({"name": "read", "input_schema": {}})]);
+        request.messages = vec![
+            json!({"role": "user", "content": "cached user"}),
+            json!({"role": "assistant", "content": "cached assistant"}),
+        ];
+        let original_messages = request.messages.clone();
+        let original_system = request.system.clone();
+        let original_tools = request.tools.clone();
+
+        append_wrap_up_nudge(&mut request);
+
+        assert_eq!(
+            &request.messages[..original_messages.len()],
+            original_messages.as_slice(),
+            "wrap-up nudge must append after the cached prefix"
+        );
+        assert_eq!(request.messages.len(), original_messages.len() + 1);
+        assert_eq!(
+            request.system, original_system,
+            "wrap-up nudge must not mutate system prefix"
+        );
+        assert_eq!(
+            request.tools, original_tools,
+            "wrap-up nudge must not mutate tools"
+        );
+    }
+
+    #[test]
     fn startup_with_restored_wake_primes_keepalive() {
         // After daemon restart, if the heartbeat clock had a next_wake
         // restored from persistence, the keepalive timer must be primed
@@ -3159,15 +3224,27 @@ api_key_env = "{heartbeat_env}"
 
         let config = loaded_config_with_two_chat_models(Some("slowthink"), chat_env, int_env);
         let mut request = minimal_request("claude-sonnet-chat");
+        let original_messages = request.messages.clone();
+        let original_system = request.system.clone();
+        let original_tools = request.tools.clone();
 
         let applied = apply_heartbeat_model_override(&mut request, &config, "alice");
 
         assert!(applied, "override should have been applied");
         assert_eq!(request.model, "claude-opus-slowthink");
         assert_eq!(request.api_key, "slowthink-secret");
-        assert_eq!(request.messages.len(), 1);
-        assert!(request.system.is_some());
-        assert_eq!(request.tools.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            request.messages, original_messages,
+            "heartbeat model override must preserve existing messages"
+        );
+        assert_eq!(
+            request.system, original_system,
+            "heartbeat model override must preserve system prefix"
+        );
+        assert_eq!(
+            request.tools, original_tools,
+            "heartbeat model override must preserve tool definitions"
+        );
 
         std::env::remove_var(chat_env);
         std::env::remove_var(int_env);

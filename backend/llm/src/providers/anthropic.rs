@@ -1333,6 +1333,83 @@ mod tests {
         ])
     }
 
+    fn generated_history(turns: usize, content_variant: usize, tail_kind: usize) -> Vec<Value> {
+        let mut msgs = Vec::new();
+        for i in 0..turns {
+            let user_content = if content_variant % 2 == 0 {
+                json!(format!("turn {i} user"))
+            } else {
+                json!([
+                    {"type": "text", "text": format!("turn {i} user prelude")},
+                    {"type": "text", "text": format!("turn {i} user")}
+                ])
+            };
+            msgs.push(json!({"role": "user", "content": user_content}));
+
+            let is_last = i + 1 == turns;
+            if !is_last || tail_kind == 1 {
+                let assistant_content = if content_variant % 2 == 0 {
+                    json!(format!("turn {i} assistant"))
+                } else {
+                    json!([{"type": "text", "text": format!("turn {i} assistant")}])
+                };
+                msgs.push(json!({"role": "assistant", "content": assistant_content}));
+            }
+
+            if is_last && tail_kind >= 2 {
+                let tool_count = tail_kind - 1;
+                for t in 0..tool_count {
+                    msgs.push(json!({"role": "assistant", "content": [
+                        {"type": "tool_use", "id": format!("tool-{t}"), "name": "read", "input": {"path": "memory/a.md"}}
+                    ]}));
+                    msgs.push(json!({"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": format!("tool-{t}"), "content": format!("result {t}")}
+                    ]}));
+                }
+            }
+        }
+        msgs
+    }
+
+    fn generated_system(blocks: usize) -> Value {
+        if blocks == 0 {
+            return json!(null);
+        }
+        let mut sys = Vec::new();
+        for i in 0..blocks {
+            let text = if i + 1 == blocks {
+                format!("<memory_index>\nvolatile index {i}\n</memory_index>")
+            } else {
+                format!("stable system block {i}")
+            };
+            sys.push(json!({"type": "text", "text": text, "_label": format!("block-{i}")}));
+        }
+        Value::Array(sys)
+    }
+
+    fn cache_control_count(value: &Value) -> usize {
+        match value {
+            Value::Array(items) => items.iter().map(cache_control_count).sum(),
+            Value::Object(obj) => {
+                usize::from(obj.contains_key("cache_control"))
+                    + obj.values().map(cache_control_count).sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
+
+    fn message_has_cache_control(msg: &Value) -> bool {
+        msg.get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|arr| arr.iter().any(|block| block.get("cache_control").is_some()))
+    }
+
+    fn last_real_user_idx(messages: &[Value]) -> Option<usize> {
+        messages.iter().rposition(|msg| {
+            msg.get("role").and_then(Value::as_str) == Some("user") && !is_tool_result_message(msg)
+        })
+    }
+
     #[test]
     fn test_default_sliding_config_system_anchor_present() {
         // Config: depth=[0,1] pinned=[0]. The system anchor must always be
@@ -1388,6 +1465,74 @@ mod tests {
 
         // Total breakpoints must not exceed 4.
         assert!(p.sys_breakpoints.len() + p.msg_breakpoints.len() <= 4);
+    }
+
+    #[test]
+    fn cache_control_property_matrix_accounts_for_generated_histories() {
+        let depth_sets: &[&[u32]] = &[&[], &[0], &[0, 1], &[0, 1, 2, 3], &[1, 3]];
+        let pin_sets: &[&[i32]] = &[&[], &[0], &[-1], &[-2, 0]];
+
+        for turns in 1..=8 {
+            for content_variant in 0..=1 {
+                for tail_kind in 0..=3 {
+                    let messages = generated_history(turns, content_variant, tail_kind);
+                    for system_blocks in 0..=4 {
+                        let system = generated_system(system_blocks);
+                        for depths in depth_sets {
+                            for pins in pin_sets {
+                                let (result, sys, placement) =
+                                    apply_cache_control(&messages, &system, "1h", depths, pins);
+                                let total_breakpoints = placement.sys_breakpoints.len()
+                                    + placement.msg_breakpoints.len();
+
+                                assert!(
+                                    total_breakpoints <= 4,
+                                    "breakpoint limit exceeded: turns={turns}, variant={content_variant}, tail={tail_kind}, sys={system_blocks}, depths={depths:?}, pins={pins:?}, placement={:?}/{:?}",
+                                    placement.sys_breakpoints,
+                                    placement.msg_breakpoints
+                                );
+                                assert_eq!(
+                                    cache_control_count(&sys)
+                                        + result.iter().map(cache_control_count).sum::<usize>(),
+                                    total_breakpoints,
+                                    "every reported breakpoint should have exactly one cache_control marker"
+                                );
+
+                                for (idx, msg) in result.iter().enumerate() {
+                                    assert!(
+                                        msg.get("content").is_some_and(Value::is_array),
+                                        "message content should be normalized to block arrays"
+                                    );
+                                    assert_eq!(
+                                        message_has_cache_control(msg),
+                                        placement.msg_breakpoints.contains(&idx),
+                                        "message marker accounting mismatch at index {idx}"
+                                    );
+                                }
+
+                                if messages.last().is_some_and(|msg| {
+                                    msg.get("role").and_then(Value::as_str) == Some("user")
+                                        && !is_tool_result_message(msg)
+                                }) {
+                                    let active_idx = last_real_user_idx(&messages).unwrap();
+                                    assert!(
+                                        !placement.msg_breakpoints.contains(&active_idx),
+                                        "active final user message must not become a cache breakpoint"
+                                    );
+                                }
+
+                                for idx in placement.sys_breakpoints {
+                                    assert!(
+                                        idx < system_blocks,
+                                        "system breakpoint index {idx} must be inside {system_blocks} blocks"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

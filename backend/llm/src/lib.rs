@@ -802,6 +802,24 @@ sdk = "openai"
         }
     }
 
+    fn req_with_prefix_and_suffix(suffix: Option<&str>) -> LlmRequest {
+        LlmRequest {
+            system: Some(serde_json::json!([
+                {"type": "text", "text": "stable system"}
+            ])),
+            tools: Some(vec![serde_json::json!({
+                "name": "read",
+                "description": "stable tool",
+                "input_schema": {"type": "object"}
+            })]),
+            messages: vec![
+                serde_json::json!({"role": "user", "content": "cached user"}),
+                serde_json::json!({"role": "assistant", "content": "cached assistant"}),
+            ],
+            ..req_with_suffix(suffix)
+        }
+    }
+
     #[test]
     fn preprocess_no_suffix_is_borrowed() {
         let req = req_with_suffix(None);
@@ -829,5 +847,29 @@ sdk = "openai"
         // And the suffix has been consumed so it can't be double-applied
         // if something else preprocesses the same request.
         assert!(out.system_suffix.is_none());
+    }
+
+    #[test]
+    fn preprocess_suffix_preserves_cached_prefix_shape() {
+        let req = req_with_prefix_and_suffix(Some("background instruction"));
+        let original_messages = req.messages.clone();
+        let original_system = req.system.clone();
+        let original_tools = req.tools.clone();
+
+        let out = preprocess_request(&req);
+
+        assert_eq!(out.system, original_system, "system prefix must not drift");
+        assert_eq!(out.tools, original_tools, "tools prefix must not drift");
+        assert_eq!(
+            &out.messages[..original_messages.len()],
+            original_messages.as_slice(),
+            "existing messages must be byte-preserved before suffix tail"
+        );
+        assert_eq!(out.messages.len(), original_messages.len() + 1);
+        assert_eq!(out.messages.last().unwrap()["role"], "system");
+        assert_eq!(
+            out.messages.last().unwrap()["content"],
+            "background instruction"
+        );
     }
 }

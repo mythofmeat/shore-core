@@ -287,6 +287,29 @@ at compaction/reload, editing old conversation messages, changing
 model/provider/cache settings, and changing prompt templates or tool
 definitions in code.
 
+Cache invalidation accounting is split into two layers:
+
+| Layer | Expected invalidation paths | Must stay cache-stable |
+| --- | --- | --- |
+| Provider-side Anthropic prompt cache | Cache TTL expiry without a successful keepalive, model/provider/cache setting changes, thinking-mode shape changes, prompt template or tool definition changes, activation of staged prompt-visible edits, edits to already-cached conversation history, and explicit cache breakpoint/debug overrides. | Ordinary workspace writes, markdown memory writes before active-prompt activation, tool-loop bookkeeping, activity stats, image cache warmups, and compaction of only the recent conversation tail when the pinned system prefix is unchanged. |
+| Shore cached `last_request` reuse | Successful chat requests replace it; successful compaction clears it because the conversation tail changed. Heartbeat and keepalive may rebuild it from disk. | Clearing `last_request` must not clear the cache keepalive deadline by itself; the pinned provider-side system prefix may still be worth refreshing. |
+
+Local regression tests should cover request-shape invariants before live
+provider checks are run. In particular, Anthropic cache-control placement tests
+must account for generated chat histories, tool-loop tails, system anchors, the
+four-breakpoint provider limit, and the rule that the active final user message
+is never itself a message breakpoint. Live cache scripts under
+`scripts/cache-tests/` validate provider behavior and economics only after
+those local invariants pass.
+
+An observed cache-read decrease while the ledger believes the cache is warm is
+not an expected invalidation path. It is recorded as `UnexpectedWrite` and must
+be treated as a regression signal unless explained by a known deliberate
+breakpoint above. Request-shape tests should keep tools, system blocks, and
+already-existing messages byte-preserved for every generation variant; only
+configured tool-surface changes or explicit/manual history edits may change
+that prefix.
+
 ## Memory
 
 Runtime long-term memory is markdown under:
