@@ -236,6 +236,7 @@ pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
         Ok(fresh) => {
             ctx.active_model = None;
             ctx.autonomy.reload_runtime_config(fresh.clone());
+            ctx.llm_client.set_usage_config(fresh.app.usage.clone());
             ctx.config = fresh;
             info!(path = %config_path.display(), "Configuration reloaded from disk");
             Ok(json!({

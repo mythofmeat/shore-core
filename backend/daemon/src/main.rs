@@ -324,6 +324,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let llm_client = LedgerClient::new(raw_llm_client, &loaded.dirs.data.join("ledger.db"))?;
+    llm_client.set_usage_config(loaded.app.usage.clone());
 
     // Reconstruct cache tracker state from the ledger for each known character.
     // This prevents false-positive anomalies when the cache is still warm from

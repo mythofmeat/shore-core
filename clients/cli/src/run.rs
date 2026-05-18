@@ -430,7 +430,8 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 CliCommand::Character { json, .. }
                 | CliCommand::Memory { json, .. }
-                | CliCommand::Config { json, .. } => *json,
+                | CliCommand::Config { json, .. }
+                | CliCommand::Usage { json, .. } => *json,
                 _ => false,
             };
             let (name, args) = crate::cli::to_swp_command(other)

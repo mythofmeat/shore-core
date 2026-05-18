@@ -1,11 +1,13 @@
 //! LedgerClient: compiler-enforced wrapper around LlmClient.
 
+use crate::budget::{enforce_budget_for_call, BudgetCallContext};
 use crate::cache_tracker::{Anomaly, CacheState, CacheTracker, Observation};
 use crate::ledger::{CallRow, Ledger};
 use crate::pricing::PricingEngine;
 use crate::stream::LedgerStream;
 use crate::sync::lock_or_recover;
 use chrono::Utc;
+use shore_config::app::UsageConfig;
 use shore_config::models::ResolvedModel;
 use shore_config::providers::ProviderRegistry;
 use shore_config::LoadedConfig;
@@ -17,7 +19,7 @@ use shore_llm::types::{GenerateResponse, LlmRequest, Timing, Usage};
 use shore_llm::{LlmClient, LlmError};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tracing::{debug, error, info, instrument, warn};
 
 // ── CallType ────────────────────────────────────────────────────────────────
@@ -254,6 +256,7 @@ pub struct LedgerClient {
     ledger: Arc<Ledger>,
     cache_trackers: Arc<Mutex<HashMap<String, CacheTracker>>>,
     pricing: Arc<PricingEngine>,
+    usage_config: Arc<RwLock<UsageConfig>>,
 }
 
 impl LedgerClient {
@@ -266,6 +269,7 @@ impl LedgerClient {
             ledger,
             cache_trackers: Arc::new(Mutex::new(HashMap::new())),
             pricing,
+            usage_config: Arc::new(RwLock::new(UsageConfig::default())),
         })
     }
 
@@ -279,6 +283,71 @@ impl LedgerClient {
             ledger,
             cache_trackers: Arc::new(Mutex::new(HashMap::new())),
             pricing,
+            usage_config: Arc::new(RwLock::new(UsageConfig::default())),
+        }
+    }
+
+    /// Replace the runtime usage-budget configuration used for LLM admission.
+    pub fn set_usage_config(&self, config: UsageConfig) {
+        match self.usage_config.write() {
+            Ok(mut guard) => {
+                *guard = config;
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = config;
+            }
+        }
+    }
+
+    fn usage_config_snapshot(&self) -> UsageConfig {
+        match self.usage_config.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn enforce_usage_budget(
+        &self,
+        provider_key: &str,
+        api_key_name: Option<&str>,
+        model: &str,
+        call_type: CallType,
+        character: &str,
+    ) -> Result<(), LlmError> {
+        let config = self.usage_config_snapshot();
+        if config.budgets.is_empty() {
+            return Ok(());
+        }
+
+        match enforce_budget_for_call(
+            &self.ledger,
+            &config,
+            BudgetCallContext {
+                provider: provider_key,
+                api_key_name,
+                model,
+                call_type,
+                character,
+            },
+            Utc::now(),
+        ) {
+            Ok(()) => Ok(()),
+            Err(block) => {
+                warn!(
+                    provider = provider_key,
+                    model,
+                    character,
+                    call_type = call_type.as_str(),
+                    budget = %block.budget_name,
+                    current_cost = block.current_cost,
+                    cost_limit = block.cost_limit,
+                    action = ?block.action,
+                    "LLM call blocked by usage budget"
+                );
+                Err(LlmError::Provider {
+                    message: block.to_string(),
+                })
+            }
         }
     }
 
@@ -334,6 +403,13 @@ impl LedgerClient {
             .provider_key
             .as_deref()
             .unwrap_or(request.sdk.as_str());
+        self.enforce_usage_budget(
+            provider_key,
+            request.api_key_name.as_deref(),
+            &request.model,
+            call_type,
+            character,
+        )?;
         debug!(
             model = request.model,
             call_type = call_type.as_str(),
@@ -564,6 +640,13 @@ impl LedgerClient {
             .provider_key
             .as_deref()
             .unwrap_or(request.sdk.as_str());
+        self.enforce_usage_budget(
+            provider_key,
+            request.api_key_name.as_deref(),
+            &request.model,
+            call_type,
+            character,
+        )?;
         debug!(
             model = request.model,
             call_type = call_type.as_str(),

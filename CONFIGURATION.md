@@ -52,9 +52,9 @@ Reloaded without restart:
 - character discovery when character directories or legacy `character.md` files change
 
 Hot reload updates model catalogs, defaults, behavior/tool settings, memory
-settings, autonomy config, and merged per-character config for future work. It
-keeps the previous runtime config if the changed files fail to parse or
-validate.
+settings, usage budgets, autonomy config, and merged per-character config for
+future work. It keeps the previous runtime config if the changed files fail to
+parse or validate.
 
 Startup-owned settings still require a daemon restart, including `[daemon]`
 listener settings, `[connections.matrix]`, `[tts]` connection setup,
@@ -529,6 +529,62 @@ generation_threshold = "0s"
 ```
 
 Backends include `notify_send`, `ntfy`, and `command`.
+
+## `[usage]`
+
+Usage budgets are evaluated from the SQLite ledger that powers `shore usage`.
+`shore usage --budget` prints budget state and spike warnings; `shore usage
+--json` and `shore usage --budget --json` return machine-readable JSON.
+
+```toml
+[usage]
+timezone = "local"                  # "local" or "utc"; default: local
+allow_compaction_over_budget = true # default: true
+
+[[usage.budgets]]
+name = "daily total"
+period = "day"                      # hour, day, week, month
+cost_usd = 10.00
+warn_at = [0.5, 0.8, 1.0]
+limit = "warn"                      # warn, block, pause_background
+
+[[usage.budgets]]
+name = "background"
+period = "day"
+usage_kind = ["heartbeat", "dreaming"]
+cost_usd = 2.00
+limit = "pause_background"
+
+[[usage.budgets]]
+name = "overflow key monthly"
+period = "month"
+provider = "openrouter"
+api_key = "overflow"
+cost_usd = 25.00
+limit = "block"
+allow_compaction_over_budget = false # optional per-budget override
+
+[usage.spike_warnings]
+enabled = true
+period = "hour"
+multiplier = 3.0
+min_cost_usd = 1.00
+```
+
+Budget filters are optional and combine with AND semantics. Supported filters
+are `character`, `provider`, `api_key`, `model`, `call_type`, and
+`usage_kind`. `usage_kind` accepts the grouped names from `shore usage
+--by-kind`, such as `message_no_tools`, `message_with_tools`, `heartbeat`,
+`compaction`, and `dreaming`.
+
+`limit = "warn"` reports status only. `limit = "block"` rejects matching LLM
+calls once committed ledger spend has reached the limit. `limit =
+"pause_background"` rejects matching background calls after the limit while
+leaving user chat available. Shore does not interrupt an in-flight generation;
+limits are checked before starting the next LLM call. Compaction is allowed
+over budget by default because reducing prompt context can lower the next chat
+turn's cost; set `allow_compaction_over_budget = false` globally or on a
+specific budget for a strict stop.
 
 ## `[tts]`
 

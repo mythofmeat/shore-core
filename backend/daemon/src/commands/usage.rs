@@ -5,11 +5,18 @@ use tracing::debug;
 
 use super::{CommandContext, CommandResult};
 
-fn parse_last_period_at(period: &str, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+fn parse_last_period_at(
+    period: &str,
+    now: chrono::DateTime<chrono::Utc>,
+    timezone: &str,
+) -> Option<String> {
     match period {
-        "today" => {
-            let start = now.date_naive().and_hms_opt(0, 0, 0)?;
-            Some(start.and_utc().to_rfc3339())
+        "today" => Some(calendar_start(now, CalendarWindow::Day, timezone).to_rfc3339()),
+        "week" | "this_week" => {
+            Some(calendar_start(now, CalendarWindow::Week, timezone).to_rfc3339())
+        }
+        "month" | "this_month" => {
+            Some(calendar_start(now, CalendarWindow::Month, timezone).to_rfc3339())
         }
         "all" => None,
         s if s.ends_with('h') => {
@@ -20,21 +27,80 @@ fn parse_last_period_at(period: &str, now: chrono::DateTime<chrono::Utc>) -> Opt
             let days: i64 = s.trim_end_matches('d').parse().ok()?;
             Some((now - chrono::Duration::days(days)).to_rfc3339())
         }
+        s if s.ends_with('w') => {
+            let weeks: i64 = s.trim_end_matches('w').parse().ok()?;
+            Some((now - chrono::Duration::weeks(weeks)).to_rfc3339())
+        }
         _ => None,
     }
 }
 
-fn parse_last_period(period: &str) -> Option<String> {
-    parse_last_period_at(period, chrono::Utc::now())
+#[derive(Debug, Clone, Copy)]
+enum CalendarWindow {
+    Day,
+    Week,
+    Month,
 }
 
-fn build_filter(args: &serde_json::Value) -> (QueryFilter, String) {
+fn calendar_start(
+    now: chrono::DateTime<chrono::Utc>,
+    window: CalendarWindow,
+    timezone: &str,
+) -> chrono::DateTime<chrono::Utc> {
+    use chrono::{Datelike, TimeZone};
+    if timezone == "utc" {
+        let date = now.date_naive();
+        let start = match window {
+            CalendarWindow::Day => date.and_hms_opt(0, 0, 0).unwrap(),
+            CalendarWindow::Week => {
+                let monday =
+                    date - chrono::Duration::days(date.weekday().num_days_from_monday() as i64);
+                monday.and_hms_opt(0, 0, 0).unwrap()
+            }
+            CalendarWindow::Month => chrono::NaiveDate::from_ymd_opt(date.year(), date.month(), 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+        };
+        return chrono::Utc.from_utc_datetime(&start);
+    }
+
+    let local_now = now.with_timezone(&chrono::Local);
+    let date = local_now.date_naive();
+    let start = match window {
+        CalendarWindow::Day => date.and_hms_opt(0, 0, 0).unwrap(),
+        CalendarWindow::Week => {
+            let monday =
+                date - chrono::Duration::days(date.weekday().num_days_from_monday() as i64);
+            monday.and_hms_opt(0, 0, 0).unwrap()
+        }
+        CalendarWindow::Month => chrono::NaiveDate::from_ymd_opt(date.year(), date.month(), 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap(),
+    };
+    match chrono::Local.from_local_datetime(&start) {
+        chrono::LocalResult::Single(dt) => dt.with_timezone(&chrono::Utc),
+        chrono::LocalResult::Ambiguous(early, _) => early.with_timezone(&chrono::Utc),
+        chrono::LocalResult::None => chrono::Local
+            .from_local_datetime(&(start + chrono::Duration::hours(1)))
+            .earliest()
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|| chrono::Utc.from_utc_datetime(&start)),
+    }
+}
+
+fn parse_last_period(period: &str, timezone: &str) -> Option<String> {
+    parse_last_period_at(period, chrono::Utc::now(), timezone)
+}
+
+fn build_filter(args: &serde_json::Value, timezone: &str) -> (QueryFilter, String) {
     let last = args
         .get("last")
         .and_then(|v| v.as_str())
         .unwrap_or("today")
         .to_string();
-    let since = parse_last_period(&last);
+    let since = parse_last_period(&last, timezone);
     let filter = QueryFilter {
         since,
         character: args
@@ -59,11 +125,34 @@ fn build_filter(args: &serde_json::Value) -> (QueryFilter, String) {
     (filter, last)
 }
 
+fn budget_payload(ctx: &CommandContext) -> CommandResult {
+    let ledger = ctx.llm_client.ledger();
+    let usage_config = &ctx.config.app.usage;
+    let now = chrono::Utc::now();
+    let budgets = shore_ledger::budget::budget_statuses(ledger, usage_config, now)
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    let spike_warnings = shore_ledger::budget::spike_warnings(ledger, usage_config, now)
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+
+    Ok(json!({
+        "mode": "budget",
+        "timezone": usage_config.timezone.as_str(),
+        "allow_compaction_over_budget": usage_config.allow_compaction_over_budget,
+        "budgets": budgets,
+        "spike_warnings": spike_warnings,
+    }))
+}
+
 pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
     let ledger = ctx.llm_client.ledger();
 
-    let (filter, last) = build_filter(args);
+    let timezone = ctx.config.app.usage.timezone.as_str();
+    let (filter, last) = build_filter(args, timezone);
     debug!(period = %last, "Usage query started");
+
+    if args.get("budget").and_then(|v| v.as_bool()) == Some(true) {
+        return budget_payload(ctx);
+    }
 
     if args.get("export_tsv").and_then(|v| v.as_bool()) == Some(true) {
         let output = shore_ledger::query::export_tsv(ledger, &filter)
@@ -168,7 +257,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     if args.get("anomalies").and_then(|v| v.as_bool()) == Some(true) {
         let anomaly_filter = if last == "today" {
             QueryFilter {
-                since: parse_last_period("7d"),
+                since: parse_last_period("7d", timezone),
                 ..filter.clone()
             }
         } else {
@@ -349,7 +438,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     };
 
     let anomaly_filter = QueryFilter {
-        since: parse_last_period("7d"),
+        since: parse_last_period("7d", timezone),
         ..Default::default()
     };
     let anomaly_count = shore_ledger::query::query_anomalies(ledger, &anomaly_filter)
@@ -382,11 +471,16 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     Ok(json!({
         "mode": "summary",
         "period": last,
+        "timezone": timezone,
         "summary": summary_rows,
         "cache_health": cache_health,
         "max_subscription": max_subscription,
         "rate_limit_events": rate_limit_events,
         "anomaly_count_7d": anomaly_count,
+        "budgets": shore_ledger::budget::budget_statuses(ledger, &ctx.config.app.usage, chrono::Utc::now())
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?,
+        "spike_warnings": shore_ledger::budget::spike_warnings(ledger, &ctx.config.app.usage, chrono::Utc::now())
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?,
     }))
 }
 
@@ -405,7 +499,7 @@ mod tests {
     #[test]
     fn parse_last_period_accepts_hour_ranges() {
         assert_eq!(
-            parse_last_period_at("4h", fixed_now()).as_deref(),
+            parse_last_period_at("4h", fixed_now(), "utc").as_deref(),
             Some("2026-05-13T08:30:00+00:00"),
         );
     }
@@ -413,7 +507,7 @@ mod tests {
     #[test]
     fn parse_last_period_keeps_day_ranges() {
         assert_eq!(
-            parse_last_period_at("7d", fixed_now()).as_deref(),
+            parse_last_period_at("7d", fixed_now(), "utc").as_deref(),
             Some("2026-05-06T12:30:00+00:00"),
         );
     }
@@ -421,8 +515,24 @@ mod tests {
     #[test]
     fn parse_last_period_today_uses_utc_midnight() {
         assert_eq!(
-            parse_last_period_at("today", fixed_now()).as_deref(),
+            parse_last_period_at("today", fixed_now(), "utc").as_deref(),
             Some("2026-05-13T00:00:00+00:00"),
+        );
+    }
+
+    #[test]
+    fn parse_last_period_accepts_calendar_week() {
+        assert_eq!(
+            parse_last_period_at("week", fixed_now(), "utc").as_deref(),
+            Some("2026-05-11T00:00:00+00:00"),
+        );
+    }
+
+    #[test]
+    fn parse_last_period_accepts_calendar_month() {
+        assert_eq!(
+            parse_last_period_at("month", fixed_now(), "utc").as_deref(),
+            Some("2026-05-01T00:00:00+00:00"),
         );
     }
 }

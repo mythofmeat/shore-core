@@ -582,6 +582,57 @@ fn validate_config(
     )?;
 
     validate_cron_schedule(&app.memory.dreaming.frequency)?;
+    validate_usage_config(&app.usage)?;
+
+    Ok(())
+}
+
+fn validate_usage_config(config: &app::UsageConfig) -> Result<(), ConfigError> {
+    match config.timezone.as_str() {
+        "local" | "utc" => {}
+        other => {
+            return Err(ConfigError::Validation(format!(
+                "usage.timezone must be \"local\" or \"utc\", got \"{other}\""
+            )));
+        }
+    }
+
+    if config.spike_warnings.multiplier <= 1.0 {
+        return Err(ConfigError::Validation(
+            "usage.spike_warnings.multiplier must be greater than 1.0".into(),
+        ));
+    }
+    if config.spike_warnings.min_cost_usd < 0.0 {
+        return Err(ConfigError::Validation(
+            "usage.spike_warnings.min_cost_usd must be non-negative".into(),
+        ));
+    }
+
+    let mut names = std::collections::HashSet::new();
+    for (idx, budget) in config.budgets.iter().enumerate() {
+        if budget.cost_usd <= 0.0 {
+            return Err(ConfigError::Validation(format!(
+                "usage.budgets[{idx}].cost_usd must be greater than 0"
+            )));
+        }
+        for threshold in &budget.warn_at {
+            if *threshold <= 0.0 {
+                return Err(ConfigError::Validation(format!(
+                    "usage.budgets[{idx}].warn_at values must be greater than 0"
+                )));
+            }
+        }
+        let name = if budget.name.trim().is_empty() {
+            format!("budget {}", idx + 1)
+        } else {
+            budget.name.trim().to_string()
+        };
+        if !names.insert(name.clone()) {
+            return Err(ConfigError::Validation(format!(
+                "usage budget name \"{name}\" is duplicated"
+            )));
+        }
+    }
 
     Ok(())
 }

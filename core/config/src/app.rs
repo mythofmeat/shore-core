@@ -42,6 +42,9 @@ pub struct AppConfig {
     pub notifications: NotificationsConfig,
 
     #[serde(default)]
+    pub usage: UsageConfig,
+
+    #[serde(default)]
     pub advanced: AdvancedConfig,
 
     #[serde(default)]
@@ -897,6 +900,144 @@ impl Default for NotificationEventsConfig {
     }
 }
 
+// ── [usage] ────────────────────────────────────────────────────────────
+
+serde_default!(default_usage_timezone -> String { "local".into() });
+serde_default!(default_usage_budget_warn_at -> Vec<f64> { vec![0.8, 1.0] });
+serde_default!(default_spike_multiplier -> f64 { 3.0 });
+serde_default!(default_spike_min_cost_usd -> f64 { 1.0 });
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct UsageConfig {
+    /// Calendar timezone for named windows such as "today", budget days,
+    /// weeks, and months. Supported values are "local" and "utc".
+    #[serde(default = "default_usage_timezone")]
+    pub timezone: String,
+
+    /// Let compaction run even when a blocking budget is already over limit.
+    /// Compaction can reduce future prompt size, so this defaults to true.
+    #[serde(default = "default_true")]
+    pub allow_compaction_over_budget: bool,
+
+    /// User-defined cost budgets.
+    #[serde(default)]
+    pub budgets: Vec<UsageBudgetConfig>,
+
+    /// Cost spike warning configuration.
+    #[serde(default)]
+    pub spike_warnings: UsageSpikeWarningsConfig,
+}
+
+impl Default for UsageConfig {
+    fn default() -> Self {
+        Self {
+            timezone: default_usage_timezone(),
+            allow_compaction_over_budget: true,
+            budgets: Vec::new(),
+            spike_warnings: UsageSpikeWarningsConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageBudgetPeriod {
+    Hour,
+    #[default]
+    Day,
+    Week,
+    Month,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageBudgetAction {
+    /// Report status and warnings, but never prevent calls.
+    #[default]
+    Warn,
+    /// Prevent all matching LLM calls after the budget is over limit.
+    Block,
+    /// Prevent matching background calls after the budget is over limit.
+    PauseBackground,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct UsageBudgetConfig {
+    /// Display name for status, warnings, and errors. If empty, Shore uses a
+    /// stable fallback such as "budget 1".
+    #[serde(default)]
+    pub name: String,
+
+    /// Calendar window for the budget.
+    #[serde(default)]
+    pub period: UsageBudgetPeriod,
+
+    /// USD cost limit for the period.
+    pub cost_usd: f64,
+
+    /// Fractions of `cost_usd` considered warning thresholds.
+    #[serde(default = "default_usage_budget_warn_at")]
+    pub warn_at: Vec<f64>,
+
+    /// Enforcement action once `cost_usd` is reached.
+    #[serde(default)]
+    pub limit: UsageBudgetAction,
+
+    /// Optional scope filters. All configured filters must match.
+    #[serde(default)]
+    pub character: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub call_type: Option<String>,
+    #[serde(default)]
+    pub usage_kind: Vec<String>,
+
+    /// Per-budget override for `[usage].allow_compaction_over_budget`.
+    #[serde(default)]
+    pub allow_compaction_over_budget: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct UsageSpikeWarningsConfig {
+    /// Whether `shore usage --budget` should report cost spikes.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Window to compare against the immediately previous window.
+    #[serde(default = "default_spike_period")]
+    pub period: UsageBudgetPeriod,
+
+    /// Current-period cost must be at least this multiple of the previous
+    /// period cost to warn.
+    #[serde(default = "default_spike_multiplier")]
+    pub multiplier: f64,
+
+    /// Current-period cost floor before a spike can warn.
+    #[serde(default = "default_spike_min_cost_usd")]
+    pub min_cost_usd: f64,
+}
+
+serde_default!(default_spike_period -> UsageBudgetPeriod { UsageBudgetPeriod::Hour });
+
+impl Default for UsageSpikeWarningsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            period: UsageBudgetPeriod::Hour,
+            multiplier: default_spike_multiplier(),
+            min_cost_usd: default_spike_min_cost_usd(),
+        }
+    }
+}
+
 // ── [advanced] ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1045,6 +1186,9 @@ mod tests {
         assert!(config.advanced.editor.is_none());
         assert!(config.advanced.max_retries.is_none());
         assert!(config.advanced.retry_backoff.is_none());
+        assert_eq!(config.usage.timezone, "local");
+        assert!(config.usage.allow_compaction_over_budget);
+        assert!(config.usage.budgets.is_empty());
     }
 
     #[test]
@@ -1068,6 +1212,45 @@ binary = "metadata"
             config.memory.retrieval.binary,
             RetrievalBinaryMode::Metadata
         );
+    }
+
+    #[test]
+    fn usage_config_parses() {
+        let toml_str = r#"
+[usage]
+timezone = "utc"
+allow_compaction_over_budget = false
+
+[[usage.budgets]]
+name = "daily"
+period = "day"
+cost_usd = 10.0
+warn_at = [0.5, 0.8]
+limit = "block"
+provider = "openrouter"
+api_key = "overflow"
+usage_kind = ["message_with_tools"]
+
+[usage.spike_warnings]
+enabled = true
+period = "hour"
+multiplier = 4.0
+min_cost_usd = 2.5
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.usage.timezone, "utc");
+        assert!(!config.usage.allow_compaction_over_budget);
+        assert_eq!(config.usage.budgets.len(), 1);
+        let budget = &config.usage.budgets[0];
+        assert_eq!(budget.period, UsageBudgetPeriod::Day);
+        assert_eq!(budget.limit, UsageBudgetAction::Block);
+        assert_eq!(budget.provider.as_deref(), Some("openrouter"));
+        assert_eq!(budget.api_key.as_deref(), Some("overflow"));
+        assert_eq!(budget.usage_kind, vec!["message_with_tools"]);
+        assert!(config.usage.spike_warnings.enabled);
+        assert_eq!(config.usage.spike_warnings.period, UsageBudgetPeriod::Hour);
+        assert_eq!(config.usage.spike_warnings.multiplier, 4.0);
+        assert_eq!(config.usage.spike_warnings.min_cost_usd, 2.5);
     }
 
     #[test]

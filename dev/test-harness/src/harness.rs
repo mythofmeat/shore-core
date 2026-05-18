@@ -133,6 +133,7 @@ impl TestHarness {
         }
         let llm_client = LedgerClient::new(raw_llm_client, &config.dirs.data.join("ledger.db"))
             .expect("failed to create LedgerClient");
+        llm_client.set_usage_config(config.app.usage.clone());
 
         let notifier = shore_daemon::notifications::NotificationService::new(Default::default());
 

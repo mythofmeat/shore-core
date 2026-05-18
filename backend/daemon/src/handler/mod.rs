@@ -647,6 +647,9 @@ impl MessageHandler {
 
         self.cmd_ctx.config = reloaded_config.clone();
         self.cmd_ctx
+            .llm_client
+            .set_usage_config(reloaded_config.app.usage.clone());
+        self.cmd_ctx
             .autonomy
             .reload_runtime_config(reloaded_config.clone());
         self.autonomy.reload_runtime_config(reloaded_config.clone());

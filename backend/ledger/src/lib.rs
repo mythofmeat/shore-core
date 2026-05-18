@@ -1,3 +1,4 @@
+pub mod budget;
 pub mod cache_tracker;
 pub mod client;
 pub mod ledger;

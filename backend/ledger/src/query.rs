@@ -14,7 +14,16 @@ pub struct QueryFilter {
     pub api_key_name: Option<String>,
     pub model: Option<String>,
     pub call_type: Option<String>,
+    pub usage_kinds: Vec<String>,
 }
+
+const USAGE_KIND_EXPR: &str = r#"CASE
+    WHEN call_type = 'heartbeat_tool_loop' THEN 'heartbeat'
+    WHEN call_type = 'message' AND finish_reason = 'tool_use' THEN 'message_with_tools'
+    WHEN call_type = 'tool_loop' THEN 'message_with_tools'
+    WHEN call_type = 'message' THEN 'message_no_tools'
+    ELSE call_type
+END"#;
 
 /// Collects WHERE clause fragments and their bound values from a `QueryFilter`.
 fn build_where(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
@@ -52,6 +61,20 @@ fn build_where(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::types::To
         clauses.push(format!("call_type = ?{}", values.len() + 1));
         values.push(Box::new(v.clone()));
     }
+    if !filter.usage_kinds.is_empty() {
+        let placeholders: Vec<String> = filter
+            .usage_kinds
+            .iter()
+            .map(|v| {
+                values.push(Box::new(v.clone()));
+                format!("?{}", values.len())
+            })
+            .collect();
+        clauses.push(format!(
+            "({USAGE_KIND_EXPR}) IN ({})",
+            placeholders.join(", ")
+        ));
+    }
 
     let sql = if clauses.is_empty() {
         String::new()
@@ -73,6 +96,45 @@ pub struct UsageSummary {
     pub total_cache_read: u64,
     pub total_cache_write: u64,
     pub total_cost: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UsageTotals {
+    pub call_count: u32,
+    pub total_input: u64,
+    pub total_output: u64,
+    pub total_cache_read: u64,
+    pub total_cache_write: u64,
+    pub total_cost: f64,
+}
+
+/// Sums calls matching the filter without grouping.
+pub fn usage_totals(ledger: &Ledger, filter: &QueryFilter) -> Result<UsageTotals, rusqlite::Error> {
+    let (where_clause, values) = build_where(filter);
+    let sql = format!(
+        r#"SELECT COUNT(*) as call_count,
+                  COALESCE(SUM(input_tokens), 0) as total_input,
+                  COALESCE(SUM(output_tokens), 0) as total_output,
+                  COALESCE(SUM(cache_read_tokens), 0) as total_cache_read,
+                  COALESCE(SUM(cache_write_tokens), 0) as total_cache_write,
+                  TOTAL(total_cost) as total_cost
+             FROM calls
+             {where_clause}"#,
+    );
+
+    ledger.with_conn(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        stmt.query_row(params_from_iter(values.iter()), |row| {
+            Ok(UsageTotals {
+                call_count: row.get::<_, i64>(0)? as u32,
+                total_input: row.get::<_, i64>(1)? as u64,
+                total_output: row.get::<_, i64>(2)? as u64,
+                total_cache_read: row.get::<_, i64>(3)? as u64,
+                total_cache_write: row.get::<_, i64>(4)? as u64,
+                total_cost: row.get::<_, f64>(5)?,
+            })
+        })
+    })
 }
 
 /// Groups calls by provider + model, sums token counts and cost.
@@ -113,14 +175,6 @@ pub fn usage_summary(
         rows.collect::<Result<Vec<_>, _>>()
     })
 }
-
-const USAGE_KIND_EXPR: &str = r#"CASE
-    WHEN call_type = 'heartbeat_tool_loop' THEN 'heartbeat'
-    WHEN call_type = 'message' AND finish_reason = 'tool_use' THEN 'message_with_tools'
-    WHEN call_type = 'tool_loop' THEN 'message_with_tools'
-    WHEN call_type = 'message' THEN 'message_no_tools'
-    ELSE call_type
-END"#;
 
 // ── Summary by call type ─────────────────────────────────────────────────────
 

@@ -1295,6 +1295,64 @@ fn format_k(tokens: u64) -> String {
     }
 }
 
+fn print_budget_table(data: &serde_json::Value) {
+    let budgets = data["budgets"].as_array();
+    if budgets.is_none_or(|rows| rows.is_empty()) {
+        println!("  No usage budgets configured.");
+        return;
+    }
+
+    println!(
+        "{:<24} {:<6} {:>11} {:>7}  {:<15} {:<10} Reset",
+        "Budget", "Period", "Spend", "Used", "Status", "Action"
+    );
+    println!("{}", "-".repeat(92));
+    if let Some(rows) = budgets {
+        for budget in rows {
+            let current = budget["current_cost"].as_f64().unwrap_or(0.0);
+            let limit = budget["cost_limit"].as_f64().unwrap_or(0.0);
+            let percent = budget["percent_used"].as_f64().unwrap_or(0.0) * 100.0;
+            println!(
+                "{:<24} {:<6} {:>5.2}/{:<5.2} {:>6.0}%  {:<15} {:<10} {}",
+                budget["name"].as_str().unwrap_or("budget"),
+                budget["period"].as_str().unwrap_or("day"),
+                current,
+                limit,
+                percent,
+                budget["status"].as_str().unwrap_or("ok"),
+                budget["action"].as_str().unwrap_or("warn"),
+                budget["reset_at"].as_str().unwrap_or("?"),
+            );
+        }
+    }
+}
+
+fn print_spike_warnings(data: &serde_json::Value) {
+    let warnings = data["spike_warnings"].as_array();
+    if warnings.is_none_or(|rows| rows.is_empty()) {
+        return;
+    }
+    println!("\nSpike Warnings:");
+    if let Some(rows) = warnings {
+        for warning in rows {
+            println!(
+                "  {}",
+                warning["message"]
+                    .as_str()
+                    .unwrap_or("Usage spike detected.")
+            );
+        }
+    }
+}
+
+fn usage_display_date(data: &serde_json::Value) -> String {
+    if data["timezone"].as_str() == Some("utc") {
+        chrono::Utc::now().format("%Y-%m-%d").to_string()
+    } else {
+        chrono::Local::now().format("%Y-%m-%d").to_string()
+    }
+}
+
 pub fn print_usage(data: &serde_json::Value) {
     let mode = data["mode"].as_str().unwrap_or("summary");
 
@@ -1306,7 +1364,7 @@ pub fn print_usage(data: &serde_json::Value) {
         }
         "summary_by_call_type" => {
             let period = data["period"].as_str().unwrap_or("today");
-            let today = chrono::Utc::now().format("%Y-%m-%d");
+            let today = usage_display_date(data);
             println!("Shore Usage by Call Type \u{2014} {today} (period: {period})\n");
             println!(
                 "{:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
@@ -1344,7 +1402,7 @@ pub fn print_usage(data: &serde_json::Value) {
         }
         "summary_by_usage_kind" => {
             let period = data["period"].as_str().unwrap_or("today");
-            let today = chrono::Utc::now().format("%Y-%m-%d");
+            let today = usage_display_date(data);
             println!("Shore Usage by Kind - {today} (period: {period})\n");
             println!(
                 "{:<20} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
@@ -1382,7 +1440,7 @@ pub fn print_usage(data: &serde_json::Value) {
         }
         "summary_by_api_key" => {
             let period = data["period"].as_str().unwrap_or("today");
-            let today = chrono::Utc::now().format("%Y-%m-%d");
+            let today = usage_display_date(data);
             println!("Shore Usage by API Key - {today} (period: {period})\n");
             println!(
                 "{:<22} {:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
@@ -1418,6 +1476,13 @@ pub fn print_usage(data: &serde_json::Value) {
                     println!("  No usage data for this period.");
                 }
             }
+        }
+        "budget" => {
+            let today = usage_display_date(data);
+            let timezone = data["timezone"].as_str().unwrap_or("local");
+            println!("Shore Usage Budgets - {today} (timezone: {timezone})\n");
+            print_budget_table(data);
+            print_spike_warnings(data);
         }
         "anomalies" => {
             let anomalies = data["anomalies"].as_array();
@@ -1469,7 +1534,7 @@ pub fn print_usage(data: &serde_json::Value) {
         }
         _ => {
             let period = data["period"].as_str().unwrap_or("today");
-            let today = chrono::Utc::now().format("%Y-%m-%d");
+            let today = usage_display_date(data);
             println!("Shore Usage \u{2014} {today} (period: {period})\n");
             println!(
                 "{:<12} {:<24} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
@@ -1531,6 +1596,14 @@ pub fn print_usage(data: &serde_json::Value) {
                     }
                 }
             }
+
+            if let Some(budgets) = data["budgets"].as_array() {
+                if !budgets.is_empty() {
+                    println!("\nBudgets:");
+                    print_budget_table(data);
+                }
+            }
+            print_spike_warnings(data);
 
             if let Some(events) = data["rate_limit_events"].as_array() {
                 if !events.is_empty() {

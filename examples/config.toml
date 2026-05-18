@@ -148,6 +148,41 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 # error = true
 # message_complete = false  # Notify when message generation completes
 
+# ── Usage budgets ────────────────────────────────────────────────────────
+
+# [usage]
+# timezone = "local"                  # "local" or "utc"; default: local
+# allow_compaction_over_budget = true # Let compaction run even over a blocking budget
+#
+# [[usage.budgets]]
+# name = "daily total"
+# period = "day"                      # hour, day, week, month
+# cost_usd = 10.00
+# warn_at = [0.5, 0.8, 1.0]
+# limit = "warn"                      # warn, block, pause_background
+#
+# [[usage.budgets]]
+# name = "background"
+# period = "day"
+# usage_kind = ["heartbeat", "dreaming"] # omit compaction so it can still save future cost
+# cost_usd = 2.00
+# limit = "pause_background"
+#
+# [[usage.budgets]]
+# name = "overflow key monthly"
+# period = "month"
+# provider = "openrouter"
+# api_key = "overflow"                # Friendly name from [providers.<name>.keys]
+# cost_usd = 25.00
+# limit = "block"
+# allow_compaction_over_budget = false # Optional per-budget strict override
+#
+# [usage.spike_warnings]
+# enabled = false                      # `shore usage --budget` reports spikes when true
+# period = "hour"
+# multiplier = 3.0
+# min_cost_usd = 1.00
+
 # ── Text to speech ───────────────────────────────────────────────────────
 # Shore proxies to an OpenAI-compatible /v1/audio/speech server and requests
 # WAV output for CLI/TUI playback.

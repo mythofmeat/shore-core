@@ -454,6 +454,7 @@ RUST_LOG=shore_cli=debug shore status
 shore status
 shore status --diagnostics
 shore usage
+shore usage --budget
 shore usage --by-kind
 shore usage --by-api-key
 shore usage --anomalies
@@ -471,6 +472,15 @@ into user-facing categories such as `message_no_tools`, `message_with_tools`,
 `heartbeat`, `compaction`, and `dreaming`; `shore usage --by-api-key` groups
 spend by the friendly configured key name, with historical rows shown as
 `unknown`.
+
+Usage budgets are configured under `[usage]` and evaluated directly against the
+ledger before each LLM call. Budget windows use the configured calendar
+timezone (`local` by default), can scope by provider/model/API key/character or
+usage kind, and can warn, block, or pause background work. Compaction is allowed
+over blocking budgets by default so context reduction can still lower future
+spend; operators can disable that globally or per budget. `shore usage
+--budget` reports current budget state and optional spike warnings, and
+`--json` exposes the same data for clients.
 
 Long-running daemon service logs default to a scoped filter:
 `warn,shore_daemon=info,shore_llm=info,shore_ledger=info,shore_swp_server=info`.

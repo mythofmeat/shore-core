@@ -299,6 +299,10 @@ pub enum CliCommand {
         #[arg(long)]
         by_api_key: bool,
 
+        /// Show configured budgets, limit state, and spike warnings
+        #[arg(long)]
+        budget: bool,
+
         /// Show only cache anomalies
         #[arg(long)]
         anomalies: bool,
@@ -322,6 +326,10 @@ pub enum CliCommand {
         /// Force recalculation of ALL rows (use with --recalculate)
         #[arg(long)]
         force: bool,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// External connector (bridge) setup and management
@@ -831,12 +839,14 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             call_type,
             by_kind,
             by_api_key,
+            budget,
             anomalies,
             export_csv,
             export_tsv,
             refresh_pricing,
             recalculate,
             force,
+            json: _,
         } => {
             // Three-state flag:
             //   absent         → None,             no grouping, no filter
@@ -859,6 +869,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
                     "by_call_type": by_call_type,
                     "by_kind": by_kind,
                     "by_api_key": by_api_key,
+                    "budget": budget,
                     "anomalies": anomalies,
                     "export_csv": export_csv,
                     "export_tsv": export_tsv,
@@ -2456,6 +2467,13 @@ mod tests {
         assert_eq!(args["by_kind"], serde_json::Value::Bool(true));
         assert_eq!(args["by_api_key"], serde_json::Value::Bool(true));
         assert_eq!(args["api_key"], "overflow");
+    }
+
+    #[test]
+    fn usage_budget_flag_forwarded() {
+        let cli = parse(&["usage", "--budget"]);
+        let (_cmd, args) = to_swp_command(&cli.command).unwrap();
+        assert_eq!(args["budget"], serde_json::Value::Bool(true));
     }
 
     #[test]
