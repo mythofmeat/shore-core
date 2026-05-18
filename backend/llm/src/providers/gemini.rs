@@ -539,13 +539,21 @@ pub async fn generate(
     }
     let response = req_builder
         .body(body_str)
+        .timeout(super::NON_STREAMING_TIMEOUT)
         .send()
         .await
-        .map_err(LlmError::Request)?;
+        .map_err(|e| LlmError::Provider {
+            message: format!("HTTP request failed: {}", super::format_reqwest_error(&e)),
+        })?;
 
     let response = super::check_response(response).await?;
 
-    let resp_text = response.text().await.map_err(LlmError::Request)?;
+    let resp_text = response.text().await.map_err(|e| LlmError::Provider {
+        message: format!(
+            "failed to read response body: {}",
+            super::format_reqwest_error(&e)
+        ),
+    })?;
     let resp: Value = serde_json::from_str(&resp_text).map_err(LlmError::Deserialize)?;
 
     let total_ms = start.elapsed().as_millis() as u32;

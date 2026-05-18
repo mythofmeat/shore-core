@@ -66,9 +66,16 @@ pub struct LlmClient {
 
 impl LlmClient {
     /// Create a new LLM client with a shared reqwest connection pool.
+    ///
+    /// Bounds connect (DNS/TCP/TLS) at 30s but intentionally sets no
+    /// whole-request deadline — non-streaming generates apply their own
+    /// per-call `timeout()` on the `RequestBuilder` (see `providers::NON_STREAMING_TIMEOUT`).
+    /// A global request timeout here would fire mid-body-read for any
+    /// long generation and surface as the misleading "error decoding
+    /// response body".
     pub fn new() -> Self {
         let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
+            .connect_timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to create HTTP client");
 

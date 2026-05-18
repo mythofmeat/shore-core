@@ -7,12 +7,43 @@ pub(crate) mod sse;
 pub(crate) mod stream_helpers;
 pub(crate) mod zai;
 
+use std::time::Duration;
+
 use shore_config::models::Sdk;
 use tracing::{debug, error, warn};
 
 use crate::types::{GenerateResponse, ImageGenerateParams, ImageGenerateResponse, LlmRequest};
 use crate::LlmError;
 use tokio::io::DuplexStream;
+
+/// Per-request ceiling for non-streaming generate calls.
+///
+/// Streaming has no whole-request bound (the SSE reader handles
+/// inter-event timing on its own), but non-streaming buffers the full
+/// body via `.json()` and so needs *some* deadline — set generously to
+/// accommodate compaction/dreaming on slow reasoning models (Opus 4.6
+/// emitting tens of thousands of output tokens can comfortably exceed
+/// 10 minutes). Without this, the shared client used to apply a 5-minute
+/// ceiling that fired mid-body and surfaced as "error decoding response
+/// body".
+pub(crate) const NON_STREAMING_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// Format a reqwest error with its full source chain so the proximate
+/// cause (e.g. `request timed out`) appears in the log instead of just
+/// the generic top-level `error decoding response body`.
+pub(crate) fn format_reqwest_error(err: &reqwest::Error) -> String {
+    let mut out = err.to_string();
+    let mut src: Option<&dyn std::error::Error> = std::error::Error::source(err);
+    while let Some(s) = src {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        src = s.source();
+    }
+    if err.is_timeout() && !out.contains("timed out") {
+        out.push_str(" (request timed out)");
+    }
+    out
+}
 
 /// Truncate a string for log preview, respecting UTF-8 char boundaries.
 fn body_preview(body: &str, max: usize) -> &str {

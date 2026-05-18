@@ -557,14 +557,23 @@ pub async fn generate(
         .post(&url)
         .headers(headers)
         .json(&body)
+        .timeout(super::NON_STREAMING_TIMEOUT)
         .send()
-        .await?;
+        .await
+        .map_err(|e| LlmError::Provider {
+            message: format!("HTTP request failed: {}", super::format_reqwest_error(&e)),
+        })?;
 
     let response = super::check_response(response).await?;
 
     let total_ms = start.elapsed().as_millis() as u32;
 
-    let resp_body: Value = response.json().await.map_err(LlmError::Request)?;
+    let resp_body: Value = response.json().await.map_err(|e| LlmError::Provider {
+        message: format!(
+            "failed to read response body: {}",
+            super::format_reqwest_error(&e)
+        ),
+    })?;
 
     let choice = resp_body.get("choices").and_then(|c| c.get(0));
     let message = choice.and_then(|c| c.get("message"));
