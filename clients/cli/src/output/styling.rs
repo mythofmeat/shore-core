@@ -5,6 +5,7 @@ use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use shore_protocol::server_msg::{
     Phase, ProviderFallbackWarning, SendImage, StreamChunk, StreamEnd, ToolCall, ToolResult,
 };
+use shore_protocol::tool_display::{format_tool_input_with_limit, format_tool_output_with_limit};
 use shore_protocol::types::ImageRef;
 
 use super::{abbreviate_model, use_color, MAX_TOOL_OUTPUT};
@@ -146,19 +147,35 @@ pub fn print_image_refs(refs: &[ImageRef]) {
     }
 }
 
-/// Format a tool input value for display. Compact single-line for simple
-/// values, truncated if too long.
+/// Format a tool input value for display.
 pub(crate) fn format_tool_input(input: &serde_json::Value) -> Option<String> {
-    // Skip empty objects (no arguments).
-    if input.as_object().is_some_and(|o| o.is_empty()) {
-        return None;
+    format_tool_input_with_limit(input, Some(MAX_TOOL_OUTPUT))
+}
+
+/// Format a tool result for display.
+pub(crate) fn format_tool_output(output: &str) -> String {
+    format_tool_output_with_limit(output, Some(MAX_TOOL_OUTPUT))
+}
+
+pub(crate) fn write_tool_body(out: &mut impl Write, body: &str, color: Color) {
+    if body.is_empty() {
+        return;
     }
-    let s = serde_json::to_string(input).ok()?;
-    if s.len() > MAX_TOOL_OUTPUT {
-        let end = s.floor_char_boundary(MAX_TOOL_OUTPUT);
-        Some(format!("{}...", &s[..end]))
-    } else {
-        Some(s)
+
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(color));
+    }
+    for line in body.lines() {
+        let _ = writeln!(out, "  {line}");
+    }
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+}
+
+pub(crate) fn write_tool_body_plain(out: &mut impl Write, body: &str) {
+    for line in body.lines() {
+        let _ = writeln!(out, "  {line}");
     }
 }
 
@@ -175,16 +192,10 @@ pub fn print_tool_call(call: &ToolCall) {
     if use_color() {
         let _ = crossterm::execute!(out, ResetColor);
     }
-    if let Some(input) = format_tool_input(&call.input) {
-        if use_color() {
-            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-        }
-        let _ = write!(out, " {input}");
-        if use_color() {
-            let _ = crossterm::execute!(out, ResetColor);
-        }
-    }
     let _ = writeln!(out);
+    if let Some(input) = format_tool_input(&call.input) {
+        write_tool_body(&mut out, &input, Color::DarkGrey);
+    }
 }
 
 /// Print a tool result. Long outputs are truncated.
@@ -202,23 +213,14 @@ pub fn print_tool_result(result: &ToolResult) {
     }
 
     let label = if result.is_error { "error" } else { "result" };
-    let output = &result.output;
-    if output.len() > MAX_TOOL_OUTPUT {
-        let end = output.floor_char_boundary(MAX_TOOL_OUTPUT);
-        let _ = write!(
-            out,
-            "[{label}: {}... truncated, {} bytes total]",
-            &output[..end],
-            output.len()
-        );
-    } else {
-        let _ = write!(out, "[{label}: {output}]");
-    }
+    let _ = write!(out, "[{label}: {}]", result.tool_name);
 
     if use_color() {
         let _ = crossterm::execute!(out, ResetColor);
     }
     let _ = writeln!(out);
+    let body = format_tool_output(&result.output);
+    write_tool_body(&mut out, &body, color);
 }
 
 /// Print the "thinking..." indicator when streaming starts.
@@ -296,8 +298,12 @@ mod tests {
         let input = serde_json::json!({"data": big});
         let result = format_tool_input(&input).unwrap();
         assert!(
-            result.ends_with("..."),
-            "large input should be truncated with ..."
+            result.contains("truncated"),
+            "large input should include a truncation notice"
+        );
+        assert!(
+            result.contains("bytes total"),
+            "large input should report the original display size"
         );
         assert!(
             result.len() <= MAX_TOOL_OUTPUT + 50,

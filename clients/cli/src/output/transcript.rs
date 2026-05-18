@@ -4,10 +4,10 @@ use chrono::{DateTime, Local};
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use shore_protocol::server_msg::NewMessage;
 
-use super::styling::{format_tool_input, print_image_refs};
-use super::{
-    parse_timestamp, print_dim_line, term_width, use_color, write_section_header, MAX_TOOL_OUTPUT,
+use super::styling::{
+    format_tool_input, format_tool_output, print_image_refs, write_tool_body, write_tool_body_plain,
 };
+use super::{parse_timestamp, print_dim_line, term_width, use_color, write_section_header};
 
 // ---------------------------------------------------------------------------
 // Log formatter -- human-readable chat transcript (Option B)
@@ -174,17 +174,10 @@ fn render_message_content(
                         if use_color() {
                             let _ = crossterm::execute!(out, ResetColor);
                         }
-                        if let Some(input_str) = format_tool_input(&block["input"]) {
-                            if use_color() {
-                                let _ =
-                                    crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                            }
-                            let _ = write!(out, " {input_str}");
-                            if use_color() {
-                                let _ = crossterm::execute!(out, ResetColor);
-                            }
-                        }
                         let _ = writeln!(out);
+                        if let Some(input_str) = format_tool_input(&block["input"]) {
+                            write_tool_body(out, &input_str, Color::DarkGrey);
+                        }
                     }
                     "tool_result" => {
                         let output = block["content"].as_str().unwrap_or("");
@@ -198,16 +191,13 @@ fn render_message_content(
                         if use_color() {
                             let _ = crossterm::execute!(out, SetForegroundColor(color));
                         }
-                        if output.len() > MAX_TOOL_OUTPUT {
-                            let end = output.floor_char_boundary(MAX_TOOL_OUTPUT);
-                            let _ = write!(out, "[{label}: {}... truncated]", &output[..end]);
-                        } else {
-                            let _ = write!(out, "[{label}: {output}]");
-                        }
+                        let _ = write!(out, "[{label}]");
                         if use_color() {
                             let _ = crossterm::execute!(out, ResetColor);
                         }
                         let _ = writeln!(out);
+                        let output = format_tool_output(output);
+                        write_tool_body(out, &output, color);
                     }
                     _ => {}
                 }
@@ -422,12 +412,17 @@ pub fn print_log_plain_with_boundary(
                         "tool_use" => {
                             let name = block["name"].as_str().unwrap_or("?");
                             let _ = writeln!(out, "[tool: {name}]");
+                            if let Some(input_str) = format_tool_input(&block["input"]) {
+                                write_tool_body_plain(&mut out, &input_str);
+                            }
                         }
                         "tool_result" => {
                             let output = block["content"].as_str().unwrap_or("");
                             let is_error = block["is_error"].as_bool().unwrap_or(false);
                             let label = if is_error { "error" } else { "result" };
-                            let _ = writeln!(out, "[{label}: {output}]");
+                            let _ = writeln!(out, "[{label}]");
+                            let output = format_tool_output(output);
+                            write_tool_body_plain(&mut out, &output);
                         }
                         _ => {}
                     }

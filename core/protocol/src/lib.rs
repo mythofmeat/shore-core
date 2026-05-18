@@ -2,6 +2,7 @@ pub mod client_msg;
 pub mod error;
 pub mod merge;
 pub mod server_msg;
+pub mod tool_display;
 pub mod types;
 
 /// SWP protocol version.

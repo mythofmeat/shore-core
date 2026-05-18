@@ -4,6 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
+use shore_protocol::tool_display::{format_tool_input, format_tool_output};
 
 use crate::app::{
     AltChoice, App, ConversationEntry, InputMode, PaletteMode, StreamBlock, ValueEditorKind,
@@ -155,14 +156,15 @@ fn flush_tools(
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]));
-                let json = serde_json::to_string_pretty(input).unwrap_or_default();
-                push_bar_wrapped(
-                    lines,
-                    &json,
-                    bar_style,
-                    Style::default().fg(Color::DarkGray),
-                    text_width,
-                );
+                if let Some(input) = format_tool_input(input) {
+                    push_bar_wrapped(
+                        lines,
+                        &input,
+                        bar_style,
+                        Style::default().fg(Color::DarkGray),
+                        text_width,
+                    );
+                }
                 lines.push(Line::from(""));
             }
             ConversationEntry::ToolResult {
@@ -181,9 +183,10 @@ fn flush_tools(
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]));
+                let output = format_tool_output(output);
                 push_bar_wrapped(
                     lines,
-                    output,
+                    &output,
                     bar_style,
                     Style::default().fg(Color::DarkGray),
                     text_width,
