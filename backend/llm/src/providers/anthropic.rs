@@ -1336,7 +1336,7 @@ mod tests {
     fn generated_history(turns: usize, content_variant: usize, tail_kind: usize) -> Vec<Value> {
         let mut msgs = Vec::new();
         for i in 0..turns {
-            let user_content = if content_variant % 2 == 0 {
+            let user_content = if content_variant.is_multiple_of(2) {
                 json!(format!("turn {i} user"))
             } else {
                 json!([
@@ -1348,7 +1348,7 @@ mod tests {
 
             let is_last = i + 1 == turns;
             if !is_last || tail_kind == 1 {
-                let assistant_content = if content_variant % 2 == 0 {
+                let assistant_content = if content_variant.is_multiple_of(2) {
                     json!(format!("turn {i} assistant"))
                 } else {
                     json!([{"type": "text", "text": format!("turn {i} assistant")}])

@@ -38,7 +38,10 @@ pub struct CacheTracker {
     last_ts: Option<DateTime<Utc>>,
     last_model: Option<String>,
     last_thinking: Option<bool>,
+    last_call_type: Option<String>,
     last_cache_read: u32,
+    last_tool_loop_kind: Option<String>,
+    last_tool_loop_cache_read: u32,
     ttl_secs: u64,
     /// True when the cache was Warm and just transitioned to Cold via TTL
     /// expiry. The next non-keepalive call in this state triggers a
@@ -60,7 +63,10 @@ impl CacheTracker {
             last_ts: None,
             last_model: None,
             last_thinking: None,
+            last_call_type: None,
             last_cache_read: 0,
+            last_tool_loop_kind: None,
+            last_tool_loop_cache_read: 0,
             ttl_secs: 3600,
             ttl_expired_since_warm: false,
         }
@@ -107,7 +113,10 @@ impl CacheTracker {
             last_ts: parsed.ok(),
             last_model: Some(last_model.to_string()),
             last_thinking: Some(last_thinking),
+            last_call_type: None,
             last_cache_read,
+            last_tool_loop_kind: None,
+            last_tool_loop_cache_read: 0,
             ttl_secs,
             ttl_expired_since_warm: false,
         }
@@ -122,23 +131,24 @@ impl CacheTracker {
         if obs.call_type == "compaction" {
             self.state = CacheState::Cold;
             self.last_cache_read = 0;
+            self.clear_tool_loop_baseline();
             self.ttl_expired_since_warm = false;
             self.update_metadata(obs_ts, &obs.model, obs.thinking_enabled);
+            self.last_call_type = Some(obs.call_type.clone());
             return ObservationResult {
                 state: self.state,
                 anomaly: None,
             };
         }
 
-        // 1b. Track whether this is a heartbeat/tool-loop call. These operate
-        // on a different message prefix (heartbeat appends a prompt, tool
-        // loops append tool_result), so their cache_read values are not
-        // comparable to the last normal message. We still run TTL expiry and
-        // keepalive miss detection, but skip the UnexpectedWrite check and
-        // don't update last_cache_read.
-        let skip_cache_read_comparison = obs.call_type == "heartbeat"
-            || obs.call_type == "heartbeat_tool_loop"
-            || obs.call_type == "tool_loop";
+        // 1b. Heartbeat and tool-loop calls operate on derived prefixes, so
+        // their reads are not comparable to the normal message baseline.
+        // Tool loops still have an invariant of their own: within a single
+        // loop the cacheable prefix should advance monotonically through
+        // completed tool_result messages.
+        let tool_loop_kind = tool_loop_kind(&obs.call_type);
+        let skip_normal_cache_read_comparison =
+            obs.call_type == "heartbeat" || tool_loop_kind.is_some();
 
         // 2. TTL expiry: Warm → Cold
         if self.state == CacheState::Warm {
@@ -147,6 +157,7 @@ impl CacheTracker {
                 if elapsed.num_seconds() > self.ttl_secs as i64 {
                     self.state = CacheState::Cold;
                     self.last_cache_read = 0;
+                    self.clear_tool_loop_baseline();
                     self.ttl_expired_since_warm = true;
                 }
             }
@@ -158,6 +169,7 @@ impl CacheTracker {
                 if *last_model != obs.model {
                     self.state = CacheState::Cold;
                     self.last_cache_read = 0;
+                    self.clear_tool_loop_baseline();
                     self.ttl_expired_since_warm = false;
                 }
             }
@@ -169,6 +181,7 @@ impl CacheTracker {
                 if last_thinking != obs.thinking_enabled {
                     self.state = CacheState::Cold;
                     self.last_cache_read = 0;
+                    self.clear_tool_loop_baseline();
                     self.ttl_expired_since_warm = false;
                 }
             }
@@ -176,15 +189,7 @@ impl CacheTracker {
 
         // 5. Evaluate against expected behavior
         let mut anomaly = match self.state {
-            CacheState::Warm => {
-                if skip_cache_read_comparison || obs.cache_read_tokens >= self.last_cache_read {
-                    None // OK, stay Warm
-                } else {
-                    self.state = CacheState::Cold;
-                    self.last_cache_read = 0;
-                    Some(Anomaly::UnexpectedWrite)
-                }
-            }
+            CacheState::Warm => self.observe_warm_cache(obs, tool_loop_kind),
             CacheState::Cold => {
                 if obs.cache_read_tokens > 0 || obs.cache_write_tokens > 0 {
                     self.state = CacheState::Warm;
@@ -211,10 +216,21 @@ impl CacheTracker {
 
         // 6. Update internal state — only update cache_read baseline from
         // normal message calls, not heartbeat/tool_loop (different prefix).
-        if !skip_cache_read_comparison {
+        if let Some(kind) = tool_loop_kind {
+            if anomaly.is_none() {
+                self.last_tool_loop_kind = Some(kind.to_string());
+                self.last_tool_loop_cache_read = obs.cache_read_tokens;
+            } else {
+                self.clear_tool_loop_baseline();
+            }
+        } else if !skip_normal_cache_read_comparison {
             self.last_cache_read = obs.cache_read_tokens;
+            self.clear_tool_loop_baseline();
+        } else if obs.call_type == "heartbeat" {
+            self.clear_tool_loop_baseline();
         }
         self.update_metadata(obs_ts, &obs.model, obs.thinking_enabled);
+        self.last_call_type = Some(obs.call_type.clone());
 
         debug!(
             call_type = obs.call_type,
@@ -235,6 +251,52 @@ impl CacheTracker {
         self.last_ts = ts;
         self.last_model = Some(model.to_string());
         self.last_thinking = Some(thinking);
+    }
+
+    fn observe_warm_cache(
+        &mut self,
+        obs: &Observation,
+        tool_loop_kind: Option<&'static str>,
+    ) -> Option<Anomaly> {
+        if let Some(kind) = tool_loop_kind {
+            let continued_loop = self.last_tool_loop_kind.as_deref() == Some(kind)
+                && self.last_call_type.as_deref() == Some(obs.call_type.as_str());
+            let dropped_within_loop =
+                continued_loop && obs.cache_read_tokens < self.last_tool_loop_cache_read;
+            let cold_write_after_warm_message = !continued_loop
+                && self.last_cache_read > 0
+                && obs.cache_read_tokens == 0
+                && obs.cache_write_tokens > 0;
+
+            if dropped_within_loop || cold_write_after_warm_message {
+                self.state = CacheState::Cold;
+                self.last_cache_read = 0;
+                return Some(Anomaly::UnexpectedWrite);
+            }
+
+            return None;
+        }
+
+        if obs.call_type == "heartbeat" || obs.cache_read_tokens >= self.last_cache_read {
+            None
+        } else {
+            self.state = CacheState::Cold;
+            self.last_cache_read = 0;
+            Some(Anomaly::UnexpectedWrite)
+        }
+    }
+
+    fn clear_tool_loop_baseline(&mut self) {
+        self.last_tool_loop_kind = None;
+        self.last_tool_loop_cache_read = 0;
+    }
+}
+
+fn tool_loop_kind(call_type: &str) -> Option<&'static str> {
+    match call_type {
+        "tool_loop" => Some("tool_loop"),
+        "heartbeat_tool_loop" => Some("heartbeat_tool_loop"),
+        _ => None,
     }
 }
 
@@ -627,5 +689,103 @@ mod tests {
             CacheState::Cold,
             "UnexpectedWrite should transition Warm → Cold"
         );
+    }
+
+    #[test]
+    fn first_tool_loop_zero_read_after_warm_message_is_unexpected_write() {
+        let mut tracker = CacheTracker::new();
+        tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 20_000,
+            cache_write_tokens: 0,
+            call_type: "message".into(),
+        });
+        assert_eq!(tracker.state(), CacheState::Warm);
+
+        let result = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:10Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 21_000,
+            call_type: "tool_loop".into(),
+        });
+
+        assert_eq!(result.anomaly, Some(Anomaly::UnexpectedWrite));
+        assert_eq!(tracker.state(), CacheState::Cold);
+    }
+
+    #[test]
+    fn consecutive_tool_loop_cache_drop_is_unexpected_write() {
+        let mut tracker = CacheTracker::new();
+        tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 20_000,
+            cache_write_tokens: 0,
+            call_type: "message".into(),
+        });
+        assert_eq!(tracker.state(), CacheState::Warm);
+
+        let first_loop = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:10Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 20_500,
+            cache_write_tokens: 500,
+            call_type: "tool_loop".into(),
+        });
+        assert!(first_loop.anomaly.is_none());
+
+        let second_loop = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:20Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 8_000,
+            cache_write_tokens: 12_000,
+            call_type: "tool_loop".into(),
+        });
+
+        assert_eq!(second_loop.anomaly, Some(Anomaly::UnexpectedWrite));
+        assert_eq!(tracker.state(), CacheState::Cold);
+    }
+
+    #[test]
+    fn tool_loop_does_not_replace_normal_message_baseline() {
+        let mut tracker = CacheTracker::new();
+        tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 20_000,
+            cache_write_tokens: 0,
+            call_type: "message".into(),
+        });
+        tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:10Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 20_500,
+            cache_write_tokens: 500,
+            call_type: "tool_loop".into(),
+        });
+
+        let final_message = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:30Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 20_100,
+            cache_write_tokens: 0,
+            call_type: "message".into(),
+        });
+
+        assert!(
+            final_message.anomaly.is_none(),
+            "normal message comparison should use the pre-loop message baseline"
+        );
+        assert_eq!(tracker.last_cache_read(), 20_100);
     }
 }

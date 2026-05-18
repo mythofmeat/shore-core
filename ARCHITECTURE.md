@@ -305,7 +305,11 @@ those local invariants pass.
 An observed cache-read decrease while the ledger believes the cache is warm is
 not an expected invalidation path. It is recorded as `UnexpectedWrite` and must
 be treated as a regression signal unless explained by a known deliberate
-breakpoint above. Request-shape tests should keep tools, system blocks, and
+breakpoint above. Tool-loop calls keep a separate short-lived cache-read
+baseline because their request prefix advances through newly completed
+`tool_result` blocks; within a loop that baseline must not drop, and the first
+tool-loop continuation after a warm message must not rewrite the prefix with
+zero cache read. Request-shape tests should keep tools, system blocks, and
 already-existing messages byte-preserved for every generation variant; only
 configured tool-surface changes or explicit/manual history edits may change
 that prefix.

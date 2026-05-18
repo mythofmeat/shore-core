@@ -47,6 +47,11 @@
   for CLI/TUI and notification backends; and budget enforcement actions that
   warn, block, or pause background work while still allowing compaction over
   budget by default.
+- Tightened Anthropic cache anomaly tracking during tool loops: completed
+  `tool_result` continuations keep their own short-lived cache-read baseline,
+  so a zero-read rewrite after a warm message or a cache-read drop inside one
+  tool loop is now recorded as `UnexpectedWrite` instead of being hidden by the
+  normal-message baseline exemption.
 - Added `shore usage --by-kind`, `--by-api-key`, and `--api-key <name>` so
   daily spend can be attributed to message/tool turns, heartbeat, compaction,
   dreaming, keepalive, and configured provider keys. OpenRouter-routed
