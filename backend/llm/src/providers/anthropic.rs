@@ -1012,13 +1012,20 @@ pub async fn generate(
 ) -> Result<GenerateResponse, LlmError> {
     let start = Instant::now();
     let (http_req, call_id) = build_http_request(client, request, false)?;
-    let response = http_req.send().await.map_err(|e| LlmError::Provider {
-        message: format!("HTTP request failed: {e}"),
-    })?;
+    let response = http_req
+        .timeout(super::NON_STREAMING_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| LlmError::Provider {
+            message: format!("HTTP request failed: {}", super::format_reqwest_error(&e)),
+        })?;
     let response = check_response(response).await?;
 
     let body: Value = response.json().await.map_err(|e| LlmError::Provider {
-        message: format!("failed to read response body: {e}"),
+        message: format!(
+            "failed to read response body: {}",
+            super::format_reqwest_error(&e)
+        ),
     })?;
 
     let total_ms = start.elapsed().as_millis() as u32;
