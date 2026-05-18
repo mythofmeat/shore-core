@@ -4,6 +4,7 @@ use chrono::{
     DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike,
     Utc,
 };
+use rusqlite::params;
 use serde::Serialize;
 use serde_json::json;
 use shore_config::app::{UsageBudgetAction, UsageBudgetConfig, UsageBudgetPeriod, UsageConfig};
@@ -52,6 +53,19 @@ pub struct SpikeWarning {
     pub threshold_multiplier: f64,
     pub min_cost_usd: f64,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageBudgetWarningEvent {
+    pub budget: String,
+    pub message: String,
+    pub current_cost: f64,
+    pub cost_limit: f64,
+    pub percent_used: f64,
+    pub crossed_warn_at: Vec<f64>,
+    pub period: UsageBudgetPeriod,
+    pub period_start: String,
+    pub reset_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -217,6 +231,79 @@ pub fn spike_warnings(
         min_cost_usd: spike.min_cost_usd,
         message,
     }])
+}
+
+/// Return newly crossed budget warning thresholds, recording each
+/// budget/window/threshold so future checks don't repeat the same warning.
+pub fn newly_crossed_budget_warnings(
+    ledger: &Ledger,
+    config: &UsageConfig,
+    now: DateTime<Utc>,
+) -> Result<Vec<UsageBudgetWarningEvent>, rusqlite::Error> {
+    let statuses = budget_statuses(ledger, config, now)?;
+    let mut events = Vec::new();
+
+    for status in statuses {
+        let mut newly_crossed = Vec::new();
+        for threshold in &status.crossed_warn_at {
+            if record_budget_warning_threshold(
+                ledger,
+                &status.name,
+                &status.period_start,
+                *threshold,
+                now,
+            )? {
+                newly_crossed.push(*threshold);
+            }
+        }
+        if newly_crossed.is_empty() {
+            continue;
+        }
+
+        let highest = newly_crossed
+            .iter()
+            .copied()
+            .fold(0.0_f64, |acc, v| acc.max(v));
+        events.push(UsageBudgetWarningEvent {
+            budget: status.name.clone(),
+            message: format!(
+                "Usage budget \"{}\" reached {:.0}% (${:.2}/${:.2}); resets at {}.",
+                status.name,
+                highest * 100.0,
+                status.current_cost,
+                status.cost_limit,
+                status.reset_at
+            ),
+            current_cost: status.current_cost,
+            cost_limit: status.cost_limit,
+            percent_used: status.percent_used,
+            crossed_warn_at: newly_crossed,
+            period: status.period,
+            period_start: status.period_start,
+            reset_at: status.reset_at,
+        });
+    }
+
+    Ok(events)
+}
+
+fn record_budget_warning_threshold(
+    ledger: &Ledger,
+    budget_name: &str,
+    period_start: &str,
+    threshold: f64,
+    now: DateTime<Utc>,
+) -> Result<bool, rusqlite::Error> {
+    let threshold_key = format!("{threshold:.6}");
+    ledger.with_conn(|conn| {
+        let changed = conn.execute(
+            r#"INSERT OR IGNORE INTO usage_budget_warnings
+               (budget_name, period_start, threshold, created_at)
+               VALUES (?1, ?2, ?3, ?4)"#,
+            params![budget_name, period_start, threshold_key, now.to_rfc3339()],
+        )?;
+        Ok(changed > 0)
+    })
 }
 
 fn budget_status(
@@ -625,6 +712,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(statuses[0].current_cost, 3.0);
+    }
+
+    #[test]
+    fn newly_crossed_budget_warnings_are_deduped() {
+        let ledger = Ledger::open_in_memory().unwrap();
+        insert_call(&ledger, "2026-05-18T03:00:00+00:00", 8.5, "message");
+        let config = UsageConfig {
+            timezone: "utc".into(),
+            budgets: vec![UsageBudgetConfig {
+                name: "daily".into(),
+                cost_usd: 10.0,
+                warn_at: vec![0.5, 0.8],
+                ..usage_budget()
+            }],
+            ..UsageConfig::default()
+        };
+        let now = "2026-05-18T12:00:00+00:00".parse().unwrap();
+
+        let first = newly_crossed_budget_warnings(&ledger, &config, now).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].crossed_warn_at, vec![0.5, 0.8]);
+
+        let second = newly_crossed_budget_warnings(&ledger, &config, now).unwrap();
+        assert!(second.is_empty());
     }
 
     fn usage_budget() -> UsageBudgetConfig {

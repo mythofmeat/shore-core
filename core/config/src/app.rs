@@ -886,6 +886,8 @@ pub struct NotificationEventsConfig {
     pub error: bool,
     #[serde(default)]
     pub message_complete: bool,
+    #[serde(default = "default_true")]
+    pub usage_warning: bool,
 }
 
 impl Default for NotificationEventsConfig {
@@ -896,6 +898,7 @@ impl Default for NotificationEventsConfig {
             compaction_complete: true,
             error: true,
             message_complete: false,
+            usage_warning: true,
         }
     }
 }
@@ -1396,6 +1399,8 @@ key = "value"
         assert!(config.notifications.events.cache_warning);
         assert!(config.notifications.events.compaction_complete);
         assert!(config.notifications.events.error);
+        assert!(!config.notifications.events.message_complete);
+        assert!(config.notifications.events.usage_warning);
     }
 
     #[test]
@@ -1421,6 +1426,7 @@ cache_warning = false
         assert_eq!(config.notifications.ntfy.token, "tk_secret");
         assert!(config.notifications.events.autonomous_message);
         assert!(!config.notifications.events.cache_warning);
+        assert!(config.notifications.events.usage_warning);
     }
 
     #[test]

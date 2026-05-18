@@ -530,6 +530,9 @@ generation_threshold = "0s"
 
 Backends include `notify_send`, `ntfy`, and `command`.
 
+Per-event toggles live under `[notifications.events]`. Usage budget threshold
+crossings use `usage_warning = true` by default.
+
 ## `[usage]`
 
 Usage budgets are evaluated from the SQLite ledger that powers `shore usage`.
@@ -585,6 +588,11 @@ limits are checked before starting the next LLM call. Compaction is allowed
 over budget by default because reducing prompt context can lower the next chat
 turn's cost; set `allow_compaction_over_budget = false` globally or on a
 specific budget for a strict stop.
+
+When committed spend crosses a `warn_at` threshold, the daemon emits one
+`usage_warning` server frame to the active requester and fires the
+`usage_warning` notification event. Threshold warnings are de-duped per budget,
+period window, and threshold.
 
 ## `[tts]`
 

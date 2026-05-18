@@ -274,7 +274,8 @@ pub async fn collect_stream(
             | ServerMessage::Phase(_)
             | ServerMessage::NewMessage(_)
             | ServerMessage::History(_)
-            | ServerMessage::SendImage(_) => {}
+            | ServerMessage::SendImage(_)
+            | ServerMessage::UsageWarning(_) => {}
             // Anything else is a protocol surprise — log and continue.
             other => {
                 tracing::debug!(?other, "collect_stream: ignoring unexpected frame");

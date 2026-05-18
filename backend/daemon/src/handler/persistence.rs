@@ -7,13 +7,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{json, Value};
+use shore_config::app::UsageBudgetPeriod;
 use shore_config::models::Sdk;
-use shore_protocol::server_msg::{MessageOrigin, NewMessage, ServerMessage};
+use shore_protocol::server_msg::{MessageOrigin, NewMessage, ServerMessage, UsageWarning};
 use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
 use tokio::sync::{broadcast, Mutex};
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 use crate::engine::messages::{MessageStore, PendingAlt};
+use crate::notifications::NotificationEvent;
 
 use super::GenContext;
 
@@ -174,8 +176,52 @@ pub(super) async fn persist_and_notify(
         &notify_content,
         wall_clock_ms,
     );
+    emit_usage_budget_warnings(ctx, request.rid.clone());
 
     Ok(())
+}
+
+fn emit_usage_budget_warnings(ctx: &GenContext, rid: Option<String>) {
+    let warnings = match ctx.llm_client.newly_crossed_usage_budget_warnings() {
+        Ok(warnings) => warnings,
+        Err(e) => {
+            warn!(error = %e, "Usage budget warning check failed");
+            return;
+        }
+    };
+
+    for warning in warnings {
+        let message = warning.message.clone();
+        let frame = UsageWarning {
+            rid: rid.clone(),
+            budget: warning.budget,
+            message: message.clone(),
+            current_cost: warning.current_cost,
+            cost_limit: warning.cost_limit,
+            percent_used: warning.percent_used,
+            crossed_warn_at: warning.crossed_warn_at,
+            period: usage_period_name(warning.period).to_string(),
+            period_start: warning.period_start,
+            reset_at: warning.reset_at,
+        };
+        if let Err(e) = ctx.direct_tx.try_send(ServerMessage::UsageWarning(frame)) {
+            warn!(error = %e, "UsageWarning drop: direct channel unavailable");
+        }
+        ctx.notifier.notify(
+            NotificationEvent::UsageWarning,
+            "Shore usage warning",
+            &message,
+        );
+    }
+}
+
+fn usage_period_name(period: UsageBudgetPeriod) -> &'static str {
+    match period {
+        UsageBudgetPeriod::Hour => "hour",
+        UsageBudgetPeriod::Day => "day",
+        UsageBudgetPeriod::Week => "week",
+        UsageBudgetPeriod::Month => "month",
+    }
 }
 
 fn emit_new_message_event(

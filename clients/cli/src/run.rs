@@ -1017,6 +1017,10 @@ async fn recv_streaming_response(
                 spinner.clear().await;
                 output::print_provider_fallback_warning(w);
             }
+            ServerMessage::UsageWarning(w) => {
+                spinner.clear().await;
+                output::print_usage_warning(w);
+            }
             _ => {
                 // Other messages during streaming are unexpected but not fatal
             }

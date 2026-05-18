@@ -43,7 +43,8 @@
 - Added hour-based usage windows such as `shore usage --last 4h`.
 - Added configurable usage budgets under `[usage]`, including hourly, daily,
   weekly, and monthly cost windows; `shore usage --budget`; JSON output for
-  usage reports; optional spike warnings; and budget enforcement actions that
+  usage reports; optional spike warnings; pushed threshold-crossing warnings
+  for CLI/TUI and notification backends; and budget enforcement actions that
   warn, block, or pause background work while still allowing compaction over
   budget by default.
 - Added `shore usage --by-kind`, `--by-api-key`, and `--api-key <name>` so

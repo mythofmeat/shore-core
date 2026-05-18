@@ -499,6 +499,36 @@ fn cache_warning_golden() {
     }
 }
 
+// ── UsageWarning ─────────────────────────────────────────────────────────
+
+const USAGE_WARNING_FIXTURE: &str = r#"{
+    "type": "usage_warning",
+    "rid": "msg_01",
+    "budget": "daily total",
+    "message": "Usage budget \"daily total\" reached 80% ($8.00/$10.00); resets at 2026-05-19T00:00:00Z.",
+    "current_cost": 8.0,
+    "cost_limit": 10.0,
+    "percent_used": 0.8,
+    "crossed_warn_at": [0.8],
+    "period": "day",
+    "period_start": "2026-05-18T00:00:00Z",
+    "reset_at": "2026-05-19T00:00:00Z"
+}"#;
+
+#[test]
+fn usage_warning_golden() {
+    let msg: ServerMessage = assert_golden(USAGE_WARNING_FIXTURE);
+    match msg {
+        ServerMessage::UsageWarning(w) => {
+            assert_eq!(w.rid.as_deref(), Some("msg_01"));
+            assert_eq!(w.budget, "daily total");
+            assert_eq!(w.period, "day");
+            assert_eq!(w.crossed_warn_at, vec![0.8]);
+        }
+        other => panic!("expected UsageWarning, got {:?}", other),
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Client Messages — Golden Fixtures
 // ═══════════════════════════════════════════════════════════════════════════

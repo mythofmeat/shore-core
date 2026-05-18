@@ -45,10 +45,21 @@ CREATE TABLE IF NOT EXISTS pricing (
     fetched_at            TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS usage_budget_warnings (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    budget_name    TEXT NOT NULL,
+    period_start   TEXT NOT NULL,
+    threshold      TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    UNIQUE (budget_name, period_start, threshold)
+);
+
 CREATE INDEX IF NOT EXISTS idx_calls_ts        ON calls (ts);
 CREATE INDEX IF NOT EXISTS idx_calls_character ON calls (character);
 CREATE INDEX IF NOT EXISTS idx_calls_provider  ON calls (provider);
 CREATE INDEX IF NOT EXISTS idx_calls_anomaly   ON calls (cache_anomaly) WHERE cache_anomaly IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_usage_budget_warnings_window
+    ON usage_budget_warnings (budget_name, period_start);
 "#;
 
 // ── Data types ────────────────────────────────────────────────────────────────
@@ -138,6 +149,19 @@ impl Ledger {
                   AND output_cost IS NULL
                   AND cache_read_cost IS NULL
                   AND cache_write_cost IS NULL"#,
+        )?;
+        // v5: de-duplication state for budget threshold warnings.
+        conn.execute_batch(
+            r#"CREATE TABLE IF NOT EXISTS usage_budget_warnings (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                budget_name    TEXT NOT NULL,
+                period_start   TEXT NOT NULL,
+                threshold      TEXT NOT NULL,
+                created_at     TEXT NOT NULL,
+                UNIQUE (budget_name, period_start, threshold)
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_budget_warnings_window
+                ON usage_budget_warnings (budget_name, period_start);"#,
         )?;
 
         Ok(())

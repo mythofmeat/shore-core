@@ -229,6 +229,31 @@ pub struct ProviderFallbackWarning {
     pub message: String,
 }
 
+/// A configured usage budget crossed one or more warning thresholds.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UsageWarning {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rid: Option<String>,
+    /// Configured budget name.
+    pub budget: String,
+    /// Human-readable warning text.
+    pub message: String,
+    /// Current spend for the budget window.
+    pub current_cost: f64,
+    /// Configured budget limit.
+    pub cost_limit: f64,
+    /// Fraction used, e.g. 0.8 for 80%.
+    pub percent_used: f64,
+    /// Newly crossed warning thresholds, as fractions.
+    pub crossed_warn_at: Vec<f64>,
+    /// Calendar period name.
+    pub period: String,
+    /// RFC3339 period start.
+    pub period_start: String,
+    /// RFC3339 reset/end time.
+    pub reset_at: String,
+}
+
 /// TTS audio stream starting.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AudioStart {
@@ -282,6 +307,7 @@ pub enum ServerMessage {
     SendImage(SendImage),
     CacheWarning(CacheWarning),
     ProviderFallbackWarning(ProviderFallbackWarning),
+    UsageWarning(UsageWarning),
     AudioStart(AudioStart),
     AudioChunk(AudioChunk),
     AudioEnd(AudioEnd),
@@ -309,6 +335,7 @@ impl ServerMessage {
             ServerMessage::AudioEnd(msg) => msg.rid = rid.clone(),
             ServerMessage::AudioError(msg) => msg.rid = rid.clone(),
             ServerMessage::ProviderFallbackWarning(msg) => msg.rid = rid.clone(),
+            ServerMessage::UsageWarning(msg) => msg.rid = rid.clone(),
             ServerMessage::Hello(_)
             | ServerMessage::Shutdown(_)
             | ServerMessage::Ping(_)

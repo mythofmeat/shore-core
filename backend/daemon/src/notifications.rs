@@ -19,6 +19,7 @@ pub enum NotificationEvent {
     CompactionComplete,
     Error,
     MessageComplete,
+    UsageWarning,
 }
 
 /// Daemon-side notification dispatcher.
@@ -69,6 +70,7 @@ impl NotificationService {
             NotificationEvent::CompactionComplete => self.config.events.compaction_complete,
             NotificationEvent::Error => self.config.events.error,
             NotificationEvent::MessageComplete => self.config.events.message_complete,
+            NotificationEvent::UsageWarning => self.config.events.usage_warning,
         }
     }
 
@@ -201,6 +203,7 @@ mod tests {
             compaction_complete: true,
             error: true,
             message_complete: true,
+            usage_warning: true,
         };
         let svc = make_service(true, events);
         assert!(svc.is_event_enabled(NotificationEvent::AutonomousMessage));
@@ -208,6 +211,7 @@ mod tests {
         assert!(svc.is_event_enabled(NotificationEvent::CompactionComplete));
         assert!(svc.is_event_enabled(NotificationEvent::Error));
         assert!(svc.is_event_enabled(NotificationEvent::MessageComplete));
+        assert!(svc.is_event_enabled(NotificationEvent::UsageWarning));
     }
 
     #[test]

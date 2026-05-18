@@ -480,7 +480,10 @@ usage kind, and can warn, block, or pause background work. Compaction is allowed
 over blocking budgets by default so context reduction can still lower future
 spend; operators can disable that globally or per budget. `shore usage
 --budget` reports current budget state and optional spike warnings, and
-`--json` exposes the same data for clients.
+`--json` exposes the same data for clients. When a completed call crosses a
+budget warning threshold, the daemon records that budget/window/threshold and
+emits a request-scoped `usage_warning` frame plus the matching notification
+event, so CLI/TUI clients can surface it without polling `shore usage`.
 
 Long-running daemon service logs default to a scoped filter:
 `warn,shore_daemon=info,shore_llm=info,shore_ledger=info,shore_swp_server=info`.

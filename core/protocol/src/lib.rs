@@ -372,6 +372,26 @@ mod tests {
         assert_eq!(json["expected_tokens"], 5000);
     }
 
+    #[test]
+    fn server_usage_warning_round_trip() {
+        let msg = ServerMessage::UsageWarning(UsageWarning {
+            rid: Some("msg_01".into()),
+            budget: "daily total".into(),
+            message: "Usage budget \"daily total\" reached 80% ($8.00/$10.00).".into(),
+            current_cost: 8.0,
+            cost_limit: 10.0,
+            percent_used: 0.8,
+            crossed_warn_at: vec![0.8],
+            period: "day".into(),
+            period_start: "2026-05-18T00:00:00Z".into(),
+            reset_at: "2026-05-19T00:00:00Z".into(),
+        });
+        let (json, _back) = round_trip(&msg);
+        assert_eq!(json["type"], "usage_warning");
+        assert_eq!(json["rid"], "msg_01");
+        assert_eq!(json["budget"], "daily total");
+    }
+
     // ── Types ─────────────────────────────────────────────────────────
 
     #[test]

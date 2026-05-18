@@ -1,6 +1,9 @@
 //! LedgerClient: compiler-enforced wrapper around LlmClient.
 
-use crate::budget::{enforce_budget_for_call, BudgetCallContext};
+use crate::budget::{
+    enforce_budget_for_call, newly_crossed_budget_warnings, BudgetCallContext,
+    UsageBudgetWarningEvent,
+};
 use crate::cache_tracker::{Anomaly, CacheState, CacheTracker, Observation};
 use crate::ledger::{CallRow, Ledger};
 use crate::pricing::PricingEngine;
@@ -349,6 +352,18 @@ impl LedgerClient {
                 })
             }
         }
+    }
+
+    /// Return newly crossed usage budget warning thresholds and mark them
+    /// delivered for the current budget window.
+    pub fn newly_crossed_usage_budget_warnings(
+        &self,
+    ) -> Result<Vec<UsageBudgetWarningEvent>, rusqlite::Error> {
+        let config = self.usage_config_snapshot();
+        if config.budgets.is_empty() {
+            return Ok(Vec::new());
+        }
+        newly_crossed_budget_warnings(&self.ledger, &config, Utc::now())
     }
 
     /// Passthrough to `LlmClient::build_request`.

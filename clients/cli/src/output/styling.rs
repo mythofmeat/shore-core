@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use shore_protocol::server_msg::{
     Phase, ProviderFallbackWarning, SendImage, StreamChunk, StreamEnd, ToolCall, ToolResult,
+    UsageWarning,
 };
 use shore_protocol::tool_display::{format_tool_input_with_limit, format_tool_output_with_limit};
 use shore_protocol::types::ImageRef;
@@ -107,6 +108,21 @@ pub fn print_error(err: &dyn std::fmt::Display) {
 /// rotates away from a credential-flagged key (e.g. an exhausted budget
 /// key) so the user sees the rotation immediately.
 pub fn print_provider_fallback_warning(w: &ProviderFallbackWarning) {
+    let stderr = io::stderr();
+    let mut out = stderr.lock();
+
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::Yellow));
+    }
+    let _ = write!(out, "warning");
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+    let _ = writeln!(out, ": {}", w.message);
+}
+
+/// Print a usage budget warning emitted after a threshold crossing.
+pub fn print_usage_warning(w: &UsageWarning) {
     let stderr = io::stderr();
     let mut out = stderr.lock();
 
