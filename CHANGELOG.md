@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Made `shore-matrix` parse only `[connections.matrix]` from merged Shore
+  config, so unrelated daemon-only sections or newer config keys no longer make
+  the Matrix bridge fall back to misleading external-mode errors.
 - Serialized compaction per character so idle-triggered and manual
   `shore memory compact` runs no longer overlap against the same active
   transcript; manual compaction now returns `busy` while another pass is in

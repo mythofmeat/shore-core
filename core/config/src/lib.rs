@@ -188,6 +188,16 @@ impl LoadedConfig {
     }
 }
 
+/// Raw Shore TOML after `include` and `conf.d/` merging.
+///
+/// This lets companion binaries parse only the sections they own without
+/// coupling their startup to the daemon's complete config schema.
+#[derive(Debug, Clone)]
+pub struct RawConfigTable {
+    pub table: toml::Table,
+    pub dirs: ShoreDirs,
+}
+
 pub const CHARACTER_WORKSPACE_DIR: &str = "workspace";
 pub const SOUL_FILE: &str = "SOUL.md";
 pub const USER_FILE: &str = "USER.md";
@@ -263,6 +273,17 @@ pub fn character_compaction_manifest(data_dir: &Path, character_name: &str) -> P
 /// 2. Extract model sections (`chat`, `tools`, `embedding`, `image_generation`),
 ///    then deserialize the remainder into `AppConfig` (preserving `deny_unknown_fields`).
 pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigError> {
+    let raw = load_raw_config_table(config_path)?;
+    parse_config_table(raw.table, raw.dirs)
+}
+
+/// Load config files into a raw merged TOML table without deserializing the
+/// daemon app schema.
+///
+/// This preserves Shore's file semantics (`config.toml`, `include`, `conf.d/`,
+/// and config-local `.env`) while allowing callers to deserialize a narrow
+/// section that belongs to them.
+pub fn load_raw_config_table(config_path: Option<&Path>) -> Result<RawConfigTable, ConfigError> {
     let mut dirs = ShoreDirs::resolve();
 
     // Determine the config directory (either from --config path or XDG).
@@ -339,8 +360,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
     let conf_d = config_dir.join("conf.d");
     load_conf_d(&conf_d, &mut table)?;
 
-    // Phase 2: parse the merged table into LoadedConfig.
-    parse_config_table(table, dirs)
+    Ok(RawConfigTable { table, dirs })
 }
 
 /// Parse a merged TOML table into a `LoadedConfig`.

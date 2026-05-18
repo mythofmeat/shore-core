@@ -8,11 +8,11 @@ use clap::Parser;
 
 use matrix_sdk::ruma::{OwnedRoomId, RoomId};
 use shore_diagnostics::logging::HumanLogFormat;
+use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 use shore_config::app::{EmbeddedConfig, MatrixConfig};
-use shore_config::LoadedConfig;
 use shore_matrix::bot::{BotConfig, MatrixBot, MatrixEvent};
 use shore_matrix::bridge::{
     input_to_swp, parse_matrix_input, CollectorAction, MatrixInput, ResponseCollector,
@@ -87,6 +87,27 @@ struct Args {
 
 const DEFAULT_LOG_FILTER: &str = "warn,shore_matrix=info,matrix_sdk_crypto::backups=error";
 
+#[derive(Debug)]
+struct MatrixFileConfig {
+    matrix: Option<MatrixConfig>,
+    config_dir: PathBuf,
+}
+
+#[derive(Debug, Error)]
+enum MatrixConfigError {
+    #[error("failed to load Shore config files for Matrix bridge: {0}")]
+    Load(#[source] Box<shore_config::ConfigError>),
+
+    #[error("failed to parse [connections.matrix] for Matrix bridge: {0}")]
+    Matrix(#[source] Box<toml::de::Error>),
+}
+
+impl From<shore_config::ConfigError> for MatrixConfigError {
+    fn from(error: shore_config::ConfigError) -> Self {
+        Self::Load(Box::new(error))
+    }
+}
+
 fn resolve_store_path(arg: &Option<String>) -> String {
     match arg {
         Some(p) => p.clone(),
@@ -109,15 +130,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Args::parse();
 
-    // Try to load [connections.matrix] from config.toml. `shore matrix ...`
-    // passes the daemon's config directory here, while the global `--config`
-    // convention accepts a config file path, so normalize before loading.
-    let loaded_config = load_shore_config(&args.config);
-    let file_config = loaded_config
-        .as_ref()
-        .and_then(|loaded| loaded.app.connections.matrix.clone());
-    let config_dir = resolved_config_dir(&args.config, loaded_config.as_ref());
-    let daemon_config = daemon_config_selector(&args.config, loaded_config.as_ref());
+    // Load only [connections.matrix]. The bridge must not be coupled to
+    // unrelated daemon config sections like [usage] or provider catalogs.
+    let matrix_config = load_matrix_config(&args.config)?;
+    let file_config = matrix_config.matrix;
+    let config_dir = matrix_config.config_dir;
+    let daemon_config = daemon_config_selector(&args.config, &config_dir);
 
     // Determine mode
     if let Some(ref fc) = file_config {
@@ -140,11 +158,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_external(&file_config, &args, &config_dir, daemon_config).await
 }
 
-/// Load Shore config if discoverable.
-fn load_shore_config(config_flag: &Option<String>) -> Option<LoadedConfig> {
+/// Load only the Matrix-owned portion of Shore config.
+fn load_matrix_config(config_flag: &Option<String>) -> Result<MatrixFileConfig, MatrixConfigError> {
     let config_path = config_flag.as_deref().map(config_file_from_arg);
-    let loaded = shore_config::load_config(config_path.as_deref()).ok()?;
-    Some(loaded)
+    let raw = shore_config::load_raw_config_table(config_path.as_deref())?;
+    let matrix = matrix_from_table(&raw.table)?;
+    Ok(MatrixFileConfig {
+        matrix,
+        config_dir: raw.dirs.config,
+    })
+}
+
+fn matrix_from_table(table: &toml::Table) -> Result<Option<MatrixConfig>, MatrixConfigError> {
+    let Some(connections) = table.get("connections").and_then(toml::Value::as_table) else {
+        return Ok(None);
+    };
+    let Some(matrix) = connections.get("matrix") else {
+        return Ok(None);
+    };
+    let parsed: MatrixConfig = matrix
+        .clone()
+        .try_into()
+        .map_err(|e| MatrixConfigError::Matrix(Box::new(e)))?;
+    Ok(Some(parsed))
 }
 
 fn config_file_from_arg(raw: &str) -> PathBuf {
@@ -156,6 +192,7 @@ fn config_file_from_arg(raw: &str) -> PathBuf {
     }
 }
 
+#[cfg(test)]
 fn config_dir_from_arg(raw: &str) -> PathBuf {
     let path = PathBuf::from(raw);
     if path.is_dir() || path.extension().is_none() {
@@ -165,22 +202,10 @@ fn config_dir_from_arg(raw: &str) -> PathBuf {
     }
 }
 
-fn resolved_config_dir(config_flag: &Option<String>, loaded: Option<&LoadedConfig>) -> PathBuf {
-    loaded
-        .map(|loaded| loaded.dirs.config.clone())
-        .or_else(|| config_flag.as_deref().map(config_dir_from_arg))
-        .unwrap_or_else(shore_config::config_dir)
-}
-
-fn daemon_config_selector(
-    config_flag: &Option<String>,
-    loaded: Option<&LoadedConfig>,
-) -> Option<String> {
-    config_flag.as_ref().map(|_| {
-        resolved_config_dir(config_flag, loaded)
-            .to_string_lossy()
-            .into_owned()
-    })
+fn daemon_config_selector(config_flag: &Option<String>, config_dir: &Path) -> Option<String> {
+    config_flag
+        .as_ref()
+        .map(|_| config_dir.to_string_lossy().into_owned())
 }
 
 // ── External mode ───────────────────────────────────────────────────────
@@ -779,7 +804,7 @@ async fn dispatch_action(bot: &MatrixBot, room_id: &OwnedRoomId, action: Collect
 
 #[cfg(test)]
 mod tests {
-    use super::{config_dir_from_arg, config_file_from_arg};
+    use super::{config_dir_from_arg, config_file_from_arg, load_matrix_config};
     use std::path::PathBuf;
 
     #[test]
@@ -800,5 +825,61 @@ mod tests {
 
         assert_eq!(config_file_from_arg(raw), PathBuf::from(raw));
         assert_eq!(config_dir_from_arg(raw), PathBuf::from("/etc/shore"));
+    }
+
+    #[test]
+    fn matrix_config_ignores_unrelated_future_daemon_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[future_daemon_only]
+enabled = true
+
+[connections.telegram]
+future_field = "ignored by shore-matrix"
+"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(config_dir.join("conf.d")).unwrap();
+        std::fs::write(
+            config_dir.join("conf.d/matrix.toml"),
+            r#"
+[connections.matrix.embedded]
+admin_password = "secret"
+"#,
+        )
+        .unwrap();
+
+        let raw = config_dir.to_string_lossy().into_owned();
+        let config = load_matrix_config(&Some(raw)).unwrap();
+        let matrix = config.matrix.expect("matrix config should load");
+        let embedded = matrix.embedded.expect("embedded matrix config");
+
+        assert!(matrix.enabled);
+        assert_eq!(embedded.admin_password, "secret");
+        assert_eq!(embedded.server_name, "localhost");
+    }
+
+    #[test]
+    fn matrix_config_rejects_matrix_owned_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[connections.matrix]
+homeserver = "https://matrix.example.com"
+bogus = true
+"#,
+        )
+        .unwrap();
+
+        let raw = config_dir.to_string_lossy().into_owned();
+        let err = load_matrix_config(&Some(raw)).unwrap_err().to_string();
+
+        assert!(err.contains("[connections.matrix]"));
+        assert!(err.contains("bogus"));
     }
 }
