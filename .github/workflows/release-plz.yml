@@ -22,6 +22,12 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.REPO_ARCH_TOKEN }}
+      # Match the toolchain in protocol-guardrails.yml: `.cargo/config.toml`
+      # forces clang + `-fuse-ld=mold`, so cargo verify (run by release-plz
+      # during version determination) needs both available on the runner,
+      # plus the same system deps the rest of the workspace builds against.
+      - name: Install system build dependencies
+        run: sudo apt-get update && sudo apt-get install -y mold libasound2-dev protobuf-compiler
       - uses: dtolnay/rust-toolchain@stable
       - uses: release-plz/action@v0.5
         with:
@@ -43,6 +49,12 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.REPO_ARCH_TOKEN }}
+      # Match the toolchain in protocol-guardrails.yml: `.cargo/config.toml`
+      # forces clang + `-fuse-ld=mold`, so cargo verify (run by release-plz
+      # during version determination) needs both available on the runner,
+      # plus the same system deps the rest of the workspace builds against.
+      - name: Install system build dependencies
+        run: sudo apt-get update && sudo apt-get install -y mold libasound2-dev protobuf-compiler
       - uses: dtolnay/rust-toolchain@stable
       - uses: release-plz/action@v0.5
         with:
