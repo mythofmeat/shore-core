@@ -1,6 +1,6 @@
 # Maintainer: eshen
 pkgbase=shore
-pkgname=(shore-daemon shore-cli shore-tui shore-matrix)
+pkgname=(shore-daemon shore-cli shore-matrix)
 pkgver=1.8.1
 pkgrel=1
 pkgdesc='Persistent AI character engine'
@@ -22,7 +22,7 @@ build() {
     cd "${pkgbase}"
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
-    cargo build --release --frozen -p shore-daemon -p shore-cli -p shore-tui -p shore-matrix
+    cargo build --release --frozen -p shore-daemon -p shore-cli -p shore-matrix
 }
 
 package_shore-daemon() {
@@ -67,17 +67,6 @@ package_shore-cli() {
     # Desktop notification listener service
     install -Dm644 contrib/shore-notify.service \
         "$pkgdir/usr/lib/systemd/user/shore-notify.service"
-}
-
-package_shore-tui() {
-    pkgdesc='Persistent AI character engine — TUI'
-    depends=('gcc-libs')
-    optdepends=('wl-clipboard: ctrl+v image paste from clipboard (Wayland)')
-    provides=('shore-tui')
-    conflicts=('shore-tui' 'shore-git')
-
-    cd "${pkgbase}"
-    install -Dm755 target/release/shore-tui "$pkgdir/usr/bin/shore-tui"
 }
 
 package_shore-matrix() {

@@ -112,7 +112,7 @@ migrated into the workspace on first load.
 | --- | --- |
 | `core/` | shared protocol, config, and SWP client crates |
 | `backend/` | daemon runtime plus backend support crates |
-| `clients/` | CLI, TUI, Tauri GUI, and experimental Godot GUI |
+| `clients/` | CLI client (TUI, Tauri GUI live in separate repos) |
 | `bridges/` | external service bridges such as Matrix |
 | `dev/` | development tools and deterministic test harnesses |
 
@@ -122,12 +122,13 @@ Main binaries:
 | --- | --- |
 | `shore-daemon` | persistent daemon |
 | `shore` | CLI client |
-| `shore-tui` | terminal UI |
 | `shore-matrix` | Matrix bridge |
 | `shore-mcp` | debug/development MCP bridge |
 
-The Tauri desktop GUI (`shore-gui`) lives in its own repository:
-[mythofmeat/shore-gui](https://github.com/mythofmeat/shore-gui).
+Out-of-tree clients (separate repos, consuming the libraries from crates.io):
+
+- `shore-tui` — [mythofmeat/shore-tui](https://github.com/mythofmeat/shore-tui)
+- `shore-gui` (Tauri desktop) — [mythofmeat/shore-gui](https://github.com/mythofmeat/shore-gui)
 
 ## Docs
 
@@ -148,7 +149,7 @@ python3 scripts/harness-check.py
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build --release -p shore-daemon -p shore-cli -p shore-tui -p shore-matrix
+cargo build --release -p shore-daemon -p shore-cli -p shore-matrix
 ```
 
 Focused checks:

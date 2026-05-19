@@ -36,6 +36,3 @@ jobs:
 
       - name: Daemon library suite
         run: cargo test -p shore-daemon --lib
-
-      - name: TUI protocol integration tests
-        run: cargo test -p shore-tui

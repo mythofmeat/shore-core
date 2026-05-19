@@ -15,7 +15,8 @@ purpose. Then update the relevant kept doc in the same change.
 
 - `core/`: protocol, config, and shared SWP client crates.
 - `backend/`: daemon, SWP server, LLM, ledger, and diagnostics crates.
-- `clients/`: CLI, TUI, Tauri GUI, and experimental Godot GUI surfaces.
+- `clients/`: CLI. The TUI lives at `mythofmeat/shore-tui` and the Tauri GUI at
+  `mythofmeat/shore-gui`; both consume the core libraries from crates.io.
 - `bridges/`: external service bridges such as Matrix.
 - `dev/`: MCP tooling and deterministic test harnesses.
 
@@ -46,7 +47,7 @@ python3 scripts/harness-check.py
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build --release -p shore-daemon -p shore-cli -p shore-tui -p shore-matrix
+cargo build --release -p shore-daemon -p shore-cli -p shore-matrix
 ```
 
 Focused checks:

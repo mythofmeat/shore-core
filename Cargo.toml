@@ -10,7 +10,6 @@ members = [
     "backend/swp-server",
     "backend/daemon",
     "clients/cli",
-    "clients/tui",
     "bridges/matrix",
     "dev/mcp",
     "dev/test-harness",
