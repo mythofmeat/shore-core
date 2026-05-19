@@ -1,7 +1,13 @@
 [package]
 name = "shore-protocol"
-version.workspace = true
-edition = "2021"
+# Published to crates.io independently of the workspace version. Starts
+# at 0.1.0 because the protocol's external API surface hasn't stabilized
+# enough to claim 1.x semver guarantees.
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shore Wire Protocol (SWP) message types and serialization for the Silvershore chat daemon."
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

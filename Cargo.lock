@@ -6138,7 +6138,7 @@ dependencies = [
 
 [[package]]
 name = "shore-config"
-version = "1.8.3"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -6305,7 +6305,7 @@ dependencies = [
 
 [[package]]
 name = "shore-protocol"
-version = "1.8.3"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6314,7 +6314,7 @@ dependencies = [
 
 [[package]]
 name = "shore-swp-client"
-version = "1.8.3"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "libc",
