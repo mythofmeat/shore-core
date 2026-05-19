@@ -1,6 +1,6 @@
 [package]
 name = "shore-mcp"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 publish = false
 description = "MCP server exposing Shore's CLI surface for debugging and programmatic use (debug-only)."
