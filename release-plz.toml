@@ -13,6 +13,12 @@
 # v1.8.1) instead of consulting the cargo registry, which matches reality
 # for an Arch-only workspace.
 git_only = true
+# `git_only` only affects version detection; release-plz still runs
+# `cargo package` to verify manifests before publishing. That fails here
+# because workspace path-deps (e.g. shore-config) don't declare a version,
+# which cargo requires when packaging. Skip publish entirely — we ship
+# via Arch, not crates.io.
+publish = false
 # Only run `release` (tag + GitHub release) for the merge of a release PR,
 # not on every push to main. The default (`true`) races with squash-merges:
 # release-plz can tag a follow-up commit whose changes weren't in the
