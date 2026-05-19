@@ -25,7 +25,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "1.8.2"
+version = "1.8.3"
 edition = "2021"
 
 [workspace.dependencies]
@@ -53,15 +53,22 @@ async-trait = "0.1"
 # (cargo refuses path-only deps when packaging, even when publish is
 # disabled). release-plz keeps these in sync with workspace.package.version
 # on every bump, so they always match the shared workspace version.
-shore-protocol = { path = "core/protocol", version = "1.8.2" }
-shore-config = { path = "core/config", version = "1.8.2" }
-shore-swp-client = { path = "core/swp-client", version = "1.8.2" }
-shore-diagnostics = { path = "backend/diagnostics", version = "1.8.2" }
-shore-llm = { path = "backend/llm", version = "1.8.2" }
-shore-ledger = { path = "backend/ledger", version = "1.8.2" }
-shore-swp-server = { path = "backend/swp-server", version = "1.8.2" }
-shore-daemon = { path = "backend/daemon", version = "1.8.2" }
-shore-test-harness = { path = "dev/test-harness", version = "1.8.2" }
+shore-protocol = { path = "core/protocol", version = "1.8.3" }
+shore-config = { path = "core/config", version = "1.8.3" }
+shore-swp-client = { path = "core/swp-client", version = "1.8.3" }
+shore-diagnostics = { path = "backend/diagnostics", version = "1.8.3" }
+shore-llm = { path = "backend/llm", version = "1.8.3" }
+shore-ledger = { path = "backend/ledger", version = "1.8.3" }
+shore-swp-server = { path = "backend/swp-server", version = "1.8.3" }
+shore-daemon = { path = "backend/daemon", version = "1.8.3" }
+# Intentionally path-only (no `version`). shore-test-harness is a dev-only
+# crate that both shore-daemon and shore-mcp pull in as a dev-dependency,
+# and it depends back on shore-daemon — a versioned cycle there causes
+# `cargo package --workspace` to silently skip shore-daemon (and several
+# other crates). Path-only dev-deps are stripped from packaged manifests
+# entirely, so the cycle vanishes for packaging while tests still link
+# against the harness via the path.
+shore-test-harness = { path = "dev/test-harness" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 
 [profile.dev]
