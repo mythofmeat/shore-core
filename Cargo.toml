@@ -49,15 +49,19 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 dashmap = "6"
 futures-util = "0.3"
 async-trait = "0.1"
-shore-protocol = { path = "core/protocol" }
-shore-config = { path = "core/config" }
-shore-swp-client = { path = "core/swp-client" }
-shore-diagnostics = { path = "backend/diagnostics" }
-shore-llm = { path = "backend/llm" }
-shore-ledger = { path = "backend/ledger" }
-shore-swp-server = { path = "backend/swp-server" }
-shore-daemon = { path = "backend/daemon" }
-shore-test-harness = { path = "dev/test-harness" }
+# `version` is required alongside `path` for `cargo package` to succeed
+# (cargo refuses path-only deps when packaging, even when publish is
+# disabled). release-plz keeps these in sync with workspace.package.version
+# on every bump, so they always match the shared workspace version.
+shore-protocol = { path = "core/protocol", version = "1.8.1" }
+shore-config = { path = "core/config", version = "1.8.1" }
+shore-swp-client = { path = "core/swp-client", version = "1.8.1" }
+shore-diagnostics = { path = "backend/diagnostics", version = "1.8.1" }
+shore-llm = { path = "backend/llm", version = "1.8.1" }
+shore-ledger = { path = "backend/ledger", version = "1.8.1" }
+shore-swp-server = { path = "backend/swp-server", version = "1.8.1" }
+shore-daemon = { path = "backend/daemon", version = "1.8.1" }
+shore-test-harness = { path = "dev/test-harness", version = "1.8.1" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 
 [profile.dev]
