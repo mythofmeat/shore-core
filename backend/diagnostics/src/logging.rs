@@ -183,12 +183,34 @@ mod tests {
         });
 
         let rendered = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        // tracing-subscriber's DefaultFields formatter emits ANSI escapes around
+        // span field names regardless of writer TTY-ness; strip them so the
+        // assertions are stable across environments.
+        let rendered = strip_ansi(&rendered);
         assert!(rendered
             .starts_with("WARN  shore_diagnostics::logging::tests: LLM API returned error status"));
         assert!(rendered.contains("fields: status=403 body_len=196 body_preview="));
         assert!(rendered.contains(
             r#"spans: generate{character="qifei" model="anthropic/claude-opus-4.6" call_type="keepalive"}"#
         ));
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' && chars.as_str().starts_with('[') {
+                chars.next();
+                for inner in chars.by_ref() {
+                    if inner.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
     }
 
     #[derive(Clone)]
