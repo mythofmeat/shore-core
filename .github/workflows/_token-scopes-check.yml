@@ -4,7 +4,9 @@ name: _token-scopes-check
 # so we can decide whether release-plz can reuse it. Delete after one run.
 
 on:
-  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/_token-scopes-check.yml
 
 jobs:
   check:
