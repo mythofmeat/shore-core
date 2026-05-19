@@ -15,11 +15,12 @@
 git_only = true
 # We don't publish to crates.io — distribution is via Arch packages.
 publish = false
-# Skip the build/link step of `cargo package` that release-plz runs for
-# version determination. The shore-gui (Tauri) crate pulls in GTK/glib
-# system libs that aren't installed on the runner; verifying isn't
-# meaningful for our workflow anyway since we never publish.
-publish_no_verify = true
+# Skip release-plz entirely for every package by default; only shore-daemon
+# (re-enabled in its [[package]] stanza below) gets analyzed. We share a
+# single workspace version across all crates, so per-crate change detection
+# isn't meaningful — and avoiding it means release-plz doesn't `cargo
+# package` crates like shore-gui that pull in GTK/glib system libs.
+release = false
 # Only run `release` (tag + GitHub release) for the merge of a release PR,
 # not on every push to main. The default (`true`) races with squash-merges:
 # release-plz can tag a follow-up commit whose changes weren't in the
@@ -59,6 +60,7 @@ release_commits = "^(feat|fix|perf|refactor|revert)(\\(.+\\))?!?:"
 # matches what package.yml listens for.
 [[package]]
 name = "shore-daemon"
+release = true
 git_tag_enable = true
 git_release_enable = true
 git_release_name = "v{{ version }}"
