@@ -1,7 +1,7 @@
 # Maintainer: eshen
 pkgbase=shore
 pkgname=(shore-daemon shore-cli shore-tui shore-matrix)
-pkgver=0.15.0
+pkgver=1.8.1
 pkgrel=1
 pkgdesc='Persistent AI character engine'
 arch=('x86_64')

@@ -6118,7 +6118,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shore-cli"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -6138,7 +6138,7 @@ dependencies = [
 
 [[package]]
 name = "shore-config"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "chrono",
  "dirs",
@@ -6153,7 +6153,7 @@ dependencies = [
 
 [[package]]
 name = "shore-daemon"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -6194,7 +6194,7 @@ dependencies = [
 
 [[package]]
 name = "shore-diagnostics"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -6204,7 +6204,7 @@ dependencies = [
 
 [[package]]
 name = "shore-gui"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "ksni",
  "png 0.17.16",
@@ -6222,7 +6222,7 @@ dependencies = [
 
 [[package]]
 name = "shore-ledger"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "chrono",
  "reqwest 0.12.28",
@@ -6237,7 +6237,7 @@ dependencies = [
 
 [[package]]
 name = "shore-llm"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6258,7 +6258,7 @@ dependencies = [
 
 [[package]]
 name = "shore-matrix"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "clap",
  "matrix-sdk",
@@ -6282,7 +6282,7 @@ dependencies = [
 
 [[package]]
 name = "shore-mcp"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -6305,7 +6305,7 @@ dependencies = [
 
 [[package]]
 name = "shore-protocol"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -6314,7 +6314,7 @@ dependencies = [
 
 [[package]]
 name = "shore-swp-client"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -6332,7 +6332,7 @@ dependencies = [
 
 [[package]]
 name = "shore-swp-server"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "fs2",
  "libc",
@@ -6347,7 +6347,7 @@ dependencies = [
 
 [[package]]
 name = "shore-test-harness"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "rusqlite",
  "serde_json",
@@ -6368,7 +6368,7 @@ dependencies = [
 
 [[package]]
 name = "shore-tui"
-version = "0.1.0"
+version = "1.8.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",

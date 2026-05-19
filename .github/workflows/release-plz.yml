@@ -4,16 +4,12 @@ on:
   push:
     branches: [main]
 
-# Cancel a stale release-plz run if a newer push to main is in flight,
-# but never cancel mid-release once tagging starts.
 concurrency:
   group: release-plz-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  # Opens / updates the "Release vX.Y.Z" PR whenever main moves.
-  release-pr:
-    name: Release PR
+  release-plz:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -25,26 +21,5 @@ jobs:
           token: ${{ secrets.REPO_ARCH_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: release-plz/action@v0.5
-        with:
-          command: release-pr
-        env:
-          GITHUB_TOKEN: ${{ secrets.REPO_ARCH_TOKEN }}
-
-  # When a release PR is merged, this tags the new version and creates the
-  # GitHub Release. The vX.Y.Z tag push triggers package.yml downstream.
-  release:
-    name: Release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.REPO_ARCH_TOKEN }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: release-plz/action@v0.5
-        with:
-          command: release
         env:
           GITHUB_TOKEN: ${{ secrets.REPO_ARCH_TOKEN }}

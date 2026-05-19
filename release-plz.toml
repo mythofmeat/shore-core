@@ -1,0 +1,60 @@
+# release-plz configuration.
+#
+# All shore-* crates share a single workspace version (workspace.package.version
+# in the root Cargo.toml). On every push to main, release-plz opens or updates
+# a "Release vX.Y.Z" PR. Merging it bumps the workspace version, prepends a new
+# section to CHANGELOG.md, tags vX.Y.Z, and creates a GitHub Release. The tag
+# push then triggers .github/workflows/package.yml which builds the Arch
+# packages and pushes them to mythofmeat/repo-arch.
+
+[workspace]
+# We don't publish to crates.io — distribution is via Arch packages.
+publish = false
+# Skip semver-check (only meaningful for crates.io consumers).
+semver_check = false
+# Single workspace-wide changelog at the repo root.
+changelog_path = "./CHANGELOG.md"
+# By default, no per-package git tag or GitHub release. The single umbrella
+# release for the whole workspace is owned by shore-daemon below.
+git_release_enable = false
+git_tag_enable = false
+# Skip non-shipping commit types when bumping versions / writing changelog.
+# Mirrors the old cliff.toml filter set.
+release_commits = "^(feat|fix|perf|refactor|revert)(\\(.+\\))?:"
+
+# Designated umbrella package: creates the single tag + GitHub release for
+# every workspace bump. Tag format matches what package.yml listens for.
+[[package]]
+name = "shore-daemon"
+git_tag_enable = true
+git_release_enable = true
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
+
+# Changelog formatting — ported from the old cliff.toml so the new sections
+# look like the historical hand-written ones (Added / Fixed / Changed).
+[changelog]
+header = "# Changelog\n\n"
+body = """
+## [{{ version | trim_start_matches(pat=\"v\") }}] - {{ timestamp | date(format=\"%Y-%m-%d\") }}
+{% for group, commits in commits | group_by(attribute=\"group\") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first }}
+{%- endfor %}
+{% endfor %}
+"""
+trim = true
+commit_parsers = [
+  { message = "^feat",     group = "Added" },
+  { message = "^fix",      group = "Fixed" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^perf",     group = "Changed" },
+  { message = "^revert",   group = "Changed" },
+  { message = "^docs",     skip  = true },
+  { message = "^chore",    skip  = true },
+  { message = "^test",     skip  = true },
+  { message = "^ci",       skip  = true },
+  { message = "^build",    skip  = true },
+  { message = "^style",    skip  = true },
+]
