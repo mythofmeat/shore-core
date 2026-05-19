@@ -20,11 +20,12 @@ git_only = true
 release_always = false
 # Skip semver-check (only meaningful for crates.io consumers).
 semver_check = false
-# Single workspace-wide changelog at the repo root. To avoid one
-# `## [X.Y.Z]` section per workspace package, per-package changelog writes
-# are disabled here and re-enabled only on the umbrella package below, which
-# pulls every other crate's commits in via `changelog_include`.
-changelog_path = "./CHANGELOG.md"
+# To avoid one `## [X.Y.Z]` section per workspace package, disable
+# per-package changelog writes here and re-enable only on the umbrella
+# package below, which pulls every other crate's commits in via
+# `changelog_include` and owns the single root `./CHANGELOG.md` path.
+# (`changelog_path` is a package-level field and rejected under
+# `[workspace]`, so it lives on shore-daemon.)
 changelog_update = false
 # By default, no per-package git tag or GitHub release. The single umbrella
 # release for the whole workspace is owned by shore-daemon below.
@@ -55,6 +56,7 @@ git_tag_enable = true
 git_release_enable = true
 git_release_name = "v{{ version }}"
 changelog_update = true
+changelog_path = "./CHANGELOG.md"
 changelog_include = [
   "shore-protocol",
   "shore-config",
