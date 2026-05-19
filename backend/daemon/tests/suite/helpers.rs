@@ -27,7 +27,10 @@ pub async fn collect_messages_for(
 }
 
 pub async fn wait_for_mock_requests(harness: &TestHarness, expected: usize) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Matches the harness's COLLECT_TIMEOUT. 5s was too tight on loaded CI
+    // runners where each tokio::test spins its own runtime; the request
+    // would arrive after the deadline despite no real fault.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if harness.mock_llm.received_requests().await.len() >= expected {
             return;
