@@ -13,6 +13,11 @@
 # v1.8.1) instead of consulting the cargo registry, which matches reality
 # for an Arch-only workspace.
 git_only = true
+# Only run `release` (tag + GitHub release) for the merge of a release PR,
+# not on every push to main. The default (`true`) races with squash-merges:
+# release-plz can tag a follow-up commit whose changes weren't in the
+# release PR / changelog.
+release_always = false
 # Skip semver-check (only meaningful for crates.io consumers).
 semver_check = false
 # Single workspace-wide changelog at the repo root. To avoid one
@@ -25,6 +30,14 @@ changelog_update = false
 # release for the whole workspace is owned by shore-daemon below.
 git_release_enable = false
 git_tag_enable = false
+# In a multi-package workspace release-plz defaults `git_tag_name` to
+# `{{ package }}-v{{ version }}`, but with `git_only` it also uses that
+# pattern to look up the prior version. Since this repo only ever creates
+# `v*` tags, non-umbrella crates would never find their previous release
+# and could be treated as unreleased. Share `v{{ version }}` across all
+# packages — `git_tag_enable` above still keeps tag creation limited to
+# the umbrella.
+git_tag_name = "v{{ version }}"
 # Skip non-shipping commit types when bumping versions / writing changelog.
 # Mirrors the old cliff.toml filter set. `!?` accepts the conventional-commits
 # breaking-change marker (e.g. `feat!:`, `feat(scope)!:`) so a release-only
@@ -40,7 +53,6 @@ release_commits = "^(feat|fix|perf|refactor|revert)(\\(.+\\))?!?:"
 name = "shore-daemon"
 git_tag_enable = true
 git_release_enable = true
-git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 changelog_update = true
 changelog_include = [
