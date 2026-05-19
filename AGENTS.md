@@ -15,10 +15,10 @@ purpose. Then update the relevant kept doc in the same change.
 
 - `core/`: protocol, config, and shared SWP client crates.
 - `backend/`: daemon, SWP server, LLM, ledger, and diagnostics crates.
-- `clients/`: CLI. The TUI lives at `mythofmeat/shore-tui` and the Tauri GUI at
-  `mythofmeat/shore-gui`; both consume the core libraries from crates.io.
-- `bridges/`: external service bridges such as Matrix.
-- `dev/`: MCP tooling and deterministic test harnesses.
+- `clients/`: CLI. Other clients (TUI, GUI, Matrix bridge, MCP bridge) live
+  in their own repos under `mythofmeat/` and consume the core libraries from
+  crates.io.
+- `dev/`: deterministic test harness.
 
 The daemon owns character state. Clients observe and send commands; they do not
 fork authoritative state.
@@ -47,7 +47,7 @@ python3 scripts/harness-check.py
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build --release -p shore-daemon -p shore-cli -p shore-matrix
+cargo build --release -p shore-daemon -p shore-cli
 ```
 
 Focused checks:

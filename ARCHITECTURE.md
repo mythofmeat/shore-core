@@ -19,19 +19,22 @@ security boundaries, observability, and validation expectations.
 | `backend/ledger` | `shore-ledger` | usage, pricing, Anthropic cache tracking |
 | `backend/diagnostics` | `shore-diagnostics` | shared diagnostic formatting |
 | `clients/cli` | `shore-cli` | CLI client |
-| `bridges/matrix` | `shore-matrix` | Matrix bridge |
-| `dev/mcp` | `shore-mcp` | development/debug MCP surface |
 | `dev/test-harness` | `shore-test-harness` | integration harness and mock server |
 
 `clients/gui-godot/rust` is intentionally outside the root Cargo workspace
 because it has Godot-specific tooling and produces a `shore_bridge` dynamic
 library.
 
-The Tauri-based desktop GUI lives in its own repository at
-[mythofmeat/shore-gui](https://github.com/mythofmeat/shore-gui); the terminal
-UI lives at [mythofmeat/shore-tui](https://github.com/mythofmeat/shore-tui).
-Both consume `shore-protocol` and `shore-swp-client` from crates.io rather
-than via path deps in this workspace.
+Out-of-tree clients live in separate repositories and consume the core
+library crates (`shore-protocol`, `shore-config`, `shore-swp-client`,
+`shore-diagnostics`) from crates.io:
+
+| Crate | Repo |
+| --- | --- |
+| `shore-tui` (terminal UI) | [mythofmeat/shore-tui](https://github.com/mythofmeat/shore-tui) |
+| `shore-gui` (Tauri desktop) | [mythofmeat/shore-gui](https://github.com/mythofmeat/shore-gui) |
+| `shore-matrix` (Matrix bridge) | [mythofmeat/shore-matrix](https://github.com/mythofmeat/shore-matrix) |
+| `shore-mcp` (debug/development MCP) | [mythofmeat/shore-mcp](https://github.com/mythofmeat/shore-mcp) |
 
 ## State Model
 
@@ -560,7 +563,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 Release build gate:
 
 ```sh
-cargo build --release -p shore-daemon -p shore-cli -p shore-matrix
+cargo build --release -p shore-daemon -p shore-cli
 ```
 
 Before a release, also run relevant cache tests, live provider smoke tests if

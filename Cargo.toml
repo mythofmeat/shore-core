@@ -10,8 +10,6 @@ members = [
     "backend/swp-server",
     "backend/daemon",
     "clients/cli",
-    "bridges/matrix",
-    "dev/mcp",
     "dev/test-harness",
 ]
 default-members = [
@@ -51,8 +49,8 @@ futures-util = "0.3"
 async-trait = "0.1"
 # `version` is required alongside `path` for `cargo package` to succeed
 # (cargo refuses path-only deps when packaging, even when publish is
-# disabled). release-plz keeps these in sync with workspace.package.version
-# on every bump, so they always match the shared workspace version.
+# disabled). Versions here track what is published on crates.io for the
+# core library crates so packaged manifests stay coherent.
 shore-protocol = { path = "core/protocol", version = "0.1.0" }
 shore-config = { path = "core/config", version = "0.1.0" }
 shore-swp-client = { path = "core/swp-client", version = "0.1.0" }
@@ -62,8 +60,8 @@ shore-ledger = { path = "backend/ledger", version = "1.8.3" }
 shore-swp-server = { path = "backend/swp-server", version = "1.8.3" }
 shore-daemon = { path = "backend/daemon", version = "1.8.3" }
 # Intentionally path-only (no `version`). shore-test-harness is a dev-only
-# crate that both shore-daemon and shore-mcp pull in as a dev-dependency,
-# and it depends back on shore-daemon — a versioned cycle there causes
+# crate that shore-daemon pulls in as a dev-dependency, and it depends
+# back on shore-daemon — a versioned cycle there causes
 # `cargo package --workspace` to silently skip shore-daemon (and several
 # other crates). Path-only dev-deps are stripped from packaged manifests
 # entirely, so the cycle vanishes for packaging while tests still link
@@ -76,12 +74,3 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
-
-# Pinned to a fork of matrix-rust-sdk that adds
-# `#![recursion_limit = "512"]` to crates/matrix-sdk/src/lib.rs.
-# rustc 1.94+ hits "queries overflow the depth limit" computing
-# the layout of matrix-sdk::Client::sync()'s async fn body on the
-# published 0.16.0. Upstream tracking: matrix-org/matrix-rust-sdk#6254.
-# Drop this patch once upstream ships a fix (expected post-0.16).
-[patch.crates-io]
-matrix-sdk = { git = "https://github.com/mythofmeat/matrix-rust-sdk.git", rev = "8285d1ca5da1f18227ba4eddaeef9bf579a55de6" }
