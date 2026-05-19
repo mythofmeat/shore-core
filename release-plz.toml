@@ -8,28 +8,56 @@
 # packages and pushes them to mythofmeat/repo-arch.
 
 [workspace]
-# We don't publish to crates.io — distribution is via Arch packages.
-publish = false
+# We don't publish to crates.io — distribution is via Arch packages. With
+# `git_only`, release-plz reads the current version from git tags (e.g.
+# v1.8.1) instead of consulting the cargo registry, which matches reality
+# for an Arch-only workspace.
+git_only = true
 # Skip semver-check (only meaningful for crates.io consumers).
 semver_check = false
-# Single workspace-wide changelog at the repo root.
+# Single workspace-wide changelog at the repo root. To avoid one
+# `## [X.Y.Z]` section per workspace package, per-package changelog writes
+# are disabled here and re-enabled only on the umbrella package below, which
+# pulls every other crate's commits in via `changelog_include`.
 changelog_path = "./CHANGELOG.md"
+changelog_update = false
 # By default, no per-package git tag or GitHub release. The single umbrella
 # release for the whole workspace is owned by shore-daemon below.
 git_release_enable = false
 git_tag_enable = false
 # Skip non-shipping commit types when bumping versions / writing changelog.
-# Mirrors the old cliff.toml filter set.
-release_commits = "^(feat|fix|perf|refactor|revert)(\\(.+\\))?:"
+# Mirrors the old cliff.toml filter set. `!?` accepts the conventional-commits
+# breaking-change marker (e.g. `feat!:`, `feat(scope)!:`) so a release-only
+# breaking change still triggers a release PR.
+release_commits = "^(feat|fix|perf|refactor|revert)(\\(.+\\))?!?:"
 
 # Designated umbrella package: creates the single tag + GitHub release for
-# every workspace bump. Tag format matches what package.yml listens for.
+# every workspace bump, owns the only write to CHANGELOG.md, and pulls in
+# commits from every other workspace crate so the release notes cover the
+# whole workspace (not just changes under backend/daemon). Tag format
+# matches what package.yml listens for.
 [[package]]
 name = "shore-daemon"
 git_tag_enable = true
 git_release_enable = true
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
+changelog_update = true
+changelog_include = [
+  "shore-protocol",
+  "shore-config",
+  "shore-swp-client",
+  "shore-diagnostics",
+  "shore-llm",
+  "shore-ledger",
+  "shore-swp-server",
+  "shore-cli",
+  "shore-tui",
+  "shore-gui",
+  "shore-matrix",
+  "shore-mcp",
+  "shore-test-harness",
+]
 
 # Changelog formatting — ported from the old cliff.toml so the new sections
 # look like the historical hand-written ones (Added / Fixed / Changed).
