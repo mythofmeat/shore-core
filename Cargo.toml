@@ -21,7 +21,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "1.8.3"
+version = "1.8.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mythofmeat/shore-core"
@@ -55,10 +55,10 @@ shore-protocol = { path = "core/protocol", version = "0.1.0" }
 shore-config = { path = "core/config", version = "0.1.0" }
 shore-swp-client = { path = "core/swp-client", version = "0.1.0" }
 shore-diagnostics = { path = "backend/diagnostics", version = "0.1.0" }
-shore-llm = { path = "backend/llm", version = "1.8.3" }
-shore-ledger = { path = "backend/ledger", version = "1.8.3" }
-shore-swp-server = { path = "backend/swp-server", version = "1.8.3" }
-shore-daemon = { path = "backend/daemon", version = "1.8.3" }
+shore-llm = { path = "backend/llm", version = "1.8.4" }
+shore-ledger = { path = "backend/ledger", version = "1.8.4" }
+shore-swp-server = { path = "backend/swp-server", version = "1.8.4" }
+shore-daemon = { path = "backend/daemon", version = "1.8.4" }
 # Intentionally path-only (no `version`). shore-test-harness is a dev-only
 # crate that shore-daemon pulls in as a dev-dependency, and it depends
 # back on shore-daemon — a versioned cycle there causes
