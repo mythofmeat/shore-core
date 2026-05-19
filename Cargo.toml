@@ -11,7 +11,6 @@ members = [
     "backend/daemon",
     "clients/cli",
     "clients/tui",
-    "clients/gui/src-tauri",
     "bridges/matrix",
     "dev/mcp",
     "dev/test-harness",

@@ -20,7 +20,6 @@ security boundaries, observability, and validation expectations.
 | `backend/diagnostics` | `shore-diagnostics` | shared diagnostic formatting |
 | `clients/cli` | `shore-cli` | CLI client |
 | `clients/tui` | `shore-tui` | terminal UI |
-| `clients/gui/src-tauri` | `shore-gui` | Tauri desktop client |
 | `bridges/matrix` | `shore-matrix` | Matrix bridge |
 | `dev/mcp` | `shore-mcp` | development/debug MCP surface |
 | `dev/test-harness` | `shore-test-harness` | integration harness and mock server |
@@ -28,6 +27,11 @@ security boundaries, observability, and validation expectations.
 `clients/gui-godot/rust` is intentionally outside the root Cargo workspace
 because it has Godot-specific tooling and produces a `shore_bridge` dynamic
 library.
+
+The Tauri-based desktop GUI lives in its own repository at
+[mythofmeat/shore-gui](https://github.com/mythofmeat/shore-gui); it consumes
+`shore-protocol` and `shore-swp-client` from crates.io rather than via path
+deps in this workspace.
 
 ## State Model
 

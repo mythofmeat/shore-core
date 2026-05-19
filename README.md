@@ -125,7 +125,9 @@ Main binaries:
 | `shore-tui` | terminal UI |
 | `shore-matrix` | Matrix bridge |
 | `shore-mcp` | debug/development MCP bridge |
-| `shore-gui` | Tauri desktop GUI, if built |
+
+The Tauri desktop GUI (`shore-gui`) lives in its own repository:
+[mythofmeat/shore-gui](https://github.com/mythofmeat/shore-gui).
 
 ## Docs
 
