@@ -54,7 +54,7 @@ async-trait = "0.1"
 shore-protocol = { path = "core/protocol", version = "0.1.0" }
 shore-config = { path = "core/config", version = "0.1.0" }
 shore-swp-client = { path = "core/swp-client", version = "0.1.0" }
-shore-diagnostics = { path = "backend/diagnostics", version = "0.1.0" }
+shore-diagnostics = { path = "backend/diagnostics", version = "0.1.1" }
 shore-llm = { path = "backend/llm", version = "1.8.4" }
 shore-ledger = { path = "backend/ledger", version = "1.8.4" }
 shore-swp-server = { path = "backend/swp-server", version = "1.8.4" }
