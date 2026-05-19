@@ -1,0 +1,62 @@
+[workspace]
+# Only library crates publish to crates.io. Binary crates (shore-daemon,
+# shore-cli) and the integration test harness ship via Arch packaging and
+# `cargo install`, not crates.io.
+git_release_enable = true
+changelog_update = true
+
+# --- Library crates that publish to crates.io -------------------------------
+# Each library tracks its own version; release-plz computes bumps from
+# conventional commits on a per-crate basis.
+
+[[package]]
+name = "shore-protocol"
+publish = true
+release = true
+
+[[package]]
+name = "shore-config"
+publish = true
+release = true
+
+[[package]]
+name = "shore-swp-client"
+publish = true
+release = true
+
+[[package]]
+name = "shore-diagnostics"
+publish = true
+release = true
+
+# --- Workspace-internal crates that DO NOT publish --------------------------
+
+[[package]]
+name = "shore-llm"
+publish = false
+release = false
+
+[[package]]
+name = "shore-ledger"
+publish = false
+release = false
+
+[[package]]
+name = "shore-swp-server"
+publish = false
+release = false
+
+[[package]]
+name = "shore-daemon"
+publish = false
+release = false
+
+[[package]]
+name = "shore-cli"
+publish = false
+release = false
+
+[[package]]
+name = "shore-test-harness"
+publish = false
+release = false
