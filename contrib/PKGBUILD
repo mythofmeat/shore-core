@@ -5,10 +5,10 @@ pkgver=1.8.1
 pkgrel=1
 pkgdesc='Persistent AI character engine'
 arch=('x86_64')
-url='https://github.com/mythofmeat/silvershore'
+url='https://github.com/mythofmeat/shore-core'
 license=('custom')
 makedepends=('cargo' 'git')
-source=("${pkgbase}::git+ssh://git@github.com/mythofmeat/silvershore.git")
+source=("${pkgbase}::git+ssh://git@github.com/mythofmeat/shore-core.git")
 options=('!lto')
 sha256sums=('SKIP')
 
