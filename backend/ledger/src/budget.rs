@@ -238,6 +238,11 @@ pub fn spike_warnings(
 
 /// Return newly crossed budget warning thresholds, recording each
 /// budget/window/threshold so future checks don't repeat the same warning.
+///
+/// Once a budget is over its limit, the warning re-fires on every check
+/// regardless of dedup — intermediate thresholds (50%, 80%) staying one-shot
+/// is the right call for noise, but "still over budget" is an active signal
+/// the operator needs to keep seeing as spend continues to accrue.
 pub fn newly_crossed_budget_warnings(
     ledger: &Ledger,
     config: &UsageConfig,
@@ -258,6 +263,9 @@ pub fn newly_crossed_budget_warnings(
             )? {
                 newly_crossed.push(*threshold);
             }
+        }
+        if newly_crossed.is_empty() && status.over_limit {
+            newly_crossed.push(1.0);
         }
         if newly_crossed.is_empty() {
             continue;
@@ -1048,6 +1056,39 @@ mod tests {
 
         let second = newly_crossed_budget_warnings(&ledger, &config, now).unwrap();
         assert!(second.is_empty());
+    }
+
+    #[test]
+    fn over_limit_warning_refires_each_call() {
+        let ledger = Ledger::open_in_memory().unwrap();
+        insert_call(&ledger, "2026-05-18T03:00:00+00:00", 12.0, "message");
+        let config = UsageConfig {
+            timezone: "utc".into(),
+            budgets: vec![UsageBudgetConfig {
+                name: "daily".into(),
+                cost_usd: 10.0,
+                warn_at: vec![0.5, 0.8],
+                ..usage_budget()
+            }],
+            ..UsageConfig::default()
+        };
+        let now = "2026-05-18T12:00:00+00:00".parse().unwrap();
+
+        let first = newly_crossed_budget_warnings(&ledger, &config, now).unwrap();
+        assert_eq!(first.len(), 1);
+        // First call records 0.5 and 0.8 as newly crossed; over_limit doesn't
+        // need to synthesize anything yet.
+        assert_eq!(first[0].crossed_warn_at, vec![0.5, 0.8]);
+
+        let second = newly_crossed_budget_warnings(&ledger, &config, now).unwrap();
+        assert_eq!(second.len(), 1, "over-limit warning should re-fire");
+        assert_eq!(second[0].crossed_warn_at, vec![1.0]);
+        assert!(second[0].current_cost >= second[0].cost_limit);
+
+        // And again — every subsequent call while over budget.
+        let third = newly_crossed_budget_warnings(&ledger, &config, now).unwrap();
+        assert_eq!(third.len(), 1);
+        assert_eq!(third[0].crossed_warn_at, vec![1.0]);
     }
 
     fn usage_budget() -> UsageBudgetConfig {
