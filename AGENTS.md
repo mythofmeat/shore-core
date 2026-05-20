@@ -6,6 +6,8 @@
 - [ARCHITECTURE.md](ARCHITECTURE.md): runtime model, invariants, security,
   observability, and validation.
 - [CONFIGURATION.md](CONFIGURATION.md): config reference.
+- [docs/PROTOCOL.md](docs/PROTOCOL.md): SWP wire protocol reference for
+  client authors (transport, frames, commands, types).
 - [CHANGELOG.md](CHANGELOG.md): release history.
 
 When docs and code disagree, inspect the code for behavior and `README.md` for
