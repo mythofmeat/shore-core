@@ -115,12 +115,28 @@ async fn set_next_wake_still_schedules_from_tool_use() {
         .await;
     fire_tick(&harness).await;
 
-    let events = harness.autonomy.heartbeat_log(CHARACTER, 20);
+    // The tick task runs in the background and the tool-loop wrap-up iteration
+    // makes a second (unmocked) HTTP roundtrip that costs real wall-clock time.
+    // Poll the log with a real-time deadline rather than asserting immediately.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let events = loop {
+        let events = harness.autonomy.heartbeat_log(CHARACTER, 20);
+        if events
+            .iter()
+            .any(|event| event.detail.contains("set_next_wake: 2.0h"))
+        {
+            break events;
+        }
+        if std::time::Instant::now() >= deadline {
+            break events;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     assert!(
         events
             .iter()
             .any(|event| event.detail.contains("set_next_wake: 2.0h")),
-        "set_next_wake should be intercepted and logged"
+        "set_next_wake should be intercepted and logged, got events: {events:?}"
     );
 
     harness.shutdown().await;
