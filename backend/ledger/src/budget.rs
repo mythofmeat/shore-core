@@ -7,6 +7,8 @@ use chrono::{
 use rusqlite::params;
 use serde::Serialize;
 use serde_json::json;
+#[cfg(test)]
+use shore_config::app::BudgetWeekday;
 use shore_config::app::{UsageBudgetAction, UsageBudgetConfig, UsageBudgetPeriod, UsageConfig};
 use tracing::warn;
 
@@ -167,11 +169,12 @@ pub fn spike_warnings(
         return Ok(Vec::new());
     }
 
-    let current = period_window(now, spike.period, &config.timezone);
+    let current = period_window(now, spike.period, &config.timezone, None);
     let previous = period_window(
         current.start - Duration::seconds(1),
         spike.period,
         &config.timezone,
+        None,
     );
 
     let current_cost = usage_totals(
@@ -313,7 +316,8 @@ fn budget_status(
     idx: usize,
     now: DateTime<Utc>,
 ) -> Result<BudgetStatus, rusqlite::Error> {
-    let window = period_window(now, budget.period, &config.timezone);
+    let anchors = BudgetAnchors::from_budget(budget);
+    let window = period_window(now, budget.period, &config.timezone, Some(&anchors));
     let totals = usage_totals(ledger, &filter_for_budget(budget, &window))?;
     let current_cost = totals.total_cost;
     let percent_used = current_cost / budget.cost_usd;
@@ -476,32 +480,59 @@ fn is_background_call(call_type: CallType) -> bool {
     )
 }
 
-fn period_window(now: DateTime<Utc>, period: UsageBudgetPeriod, timezone: &str) -> PeriodWindow {
-    match timezone {
-        "utc" => period_window_utc(now, period),
-        _ => period_window_local(now, period),
+#[derive(Debug, Clone, Copy)]
+struct BudgetAnchors {
+    /// Hour-of-day (0-23) at which day/week/month windows reset.
+    reset_hour: u32,
+    /// 0 = Monday .. 6 = Sunday. Used only for week windows.
+    reset_day_of_week: u32,
+    /// Day-of-month (1-31). Clamped to the last day on short months.
+    reset_day_of_month: u32,
+}
+
+impl Default for BudgetAnchors {
+    fn default() -> Self {
+        Self {
+            reset_hour: 0,
+            reset_day_of_week: 0,
+            reset_day_of_month: 1,
+        }
     }
 }
 
-fn period_window_utc(now: DateTime<Utc>, period: UsageBudgetPeriod) -> PeriodWindow {
-    let date = now.date_naive();
-    let start_naive = match period {
-        UsageBudgetPeriod::Hour => date
-            .and_hms_opt(now.hour(), 0, 0)
-            .expect("valid UTC hour boundary"),
-        UsageBudgetPeriod::Day => date.and_hms_opt(0, 0, 0).expect("valid UTC day boundary"),
-        UsageBudgetPeriod::Week => {
-            let monday = date - Duration::days(date.weekday().num_days_from_monday() as i64);
-            monday
-                .and_hms_opt(0, 0, 0)
-                .expect("valid UTC week boundary")
+impl BudgetAnchors {
+    fn from_budget(budget: &UsageBudgetConfig) -> Self {
+        Self {
+            reset_hour: budget.reset_hour.unwrap_or(0),
+            reset_day_of_week: budget
+                .reset_day_of_week
+                .map(|w| w.num_days_from_monday())
+                .unwrap_or(0),
+            reset_day_of_month: budget.reset_day_of_month.unwrap_or(1),
         }
-        UsageBudgetPeriod::Month => NaiveDate::from_ymd_opt(date.year(), date.month(), 1)
-            .expect("valid UTC month boundary")
-            .and_hms_opt(0, 0, 0)
-            .expect("valid UTC month boundary"),
-    };
-    let end_naive = period_end_naive(start_naive, period);
+    }
+}
+
+fn period_window(
+    now: DateTime<Utc>,
+    period: UsageBudgetPeriod,
+    timezone: &str,
+    anchors: Option<&BudgetAnchors>,
+) -> PeriodWindow {
+    match timezone {
+        "utc" => period_window_utc(now, period, anchors),
+        _ => period_window_local(now, period, anchors),
+    }
+}
+
+fn period_window_utc(
+    now: DateTime<Utc>,
+    period: UsageBudgetPeriod,
+    anchors: Option<&BudgetAnchors>,
+) -> PeriodWindow {
+    let now_naive = now.naive_utc();
+    let start_naive = period_start_naive(now_naive, period, anchors);
+    let end_naive = period_end_naive(start_naive, period, anchors);
     PeriodWindow {
         start: Utc.from_utc_datetime(&start_naive),
         end: Utc.from_utc_datetime(&end_naive),
@@ -509,26 +540,15 @@ fn period_window_utc(now: DateTime<Utc>, period: UsageBudgetPeriod) -> PeriodWin
     }
 }
 
-fn period_window_local(now: DateTime<Utc>, period: UsageBudgetPeriod) -> PeriodWindow {
+fn period_window_local(
+    now: DateTime<Utc>,
+    period: UsageBudgetPeriod,
+    anchors: Option<&BudgetAnchors>,
+) -> PeriodWindow {
     let local_now = now.with_timezone(&Local);
-    let date = local_now.date_naive();
-    let start_naive = match period {
-        UsageBudgetPeriod::Hour => date
-            .and_hms_opt(local_now.hour(), 0, 0)
-            .expect("valid local hour boundary"),
-        UsageBudgetPeriod::Day => date.and_hms_opt(0, 0, 0).expect("valid local day boundary"),
-        UsageBudgetPeriod::Week => {
-            let monday = date - Duration::days(date.weekday().num_days_from_monday() as i64);
-            monday
-                .and_hms_opt(0, 0, 0)
-                .expect("valid local week boundary")
-        }
-        UsageBudgetPeriod::Month => NaiveDate::from_ymd_opt(date.year(), date.month(), 1)
-            .expect("valid local month boundary")
-            .and_hms_opt(0, 0, 0)
-            .expect("valid local month boundary"),
-    };
-    let end_naive = period_end_naive(start_naive, period);
+    let now_naive = local_now.naive_local();
+    let start_naive = period_start_naive(now_naive, period, anchors);
+    let end_naive = period_end_naive(start_naive, period, anchors);
     PeriodWindow {
         start: resolve_local(start_naive).with_timezone(&Utc),
         end: resolve_local(end_naive).with_timezone(&Utc),
@@ -536,24 +556,101 @@ fn period_window_local(now: DateTime<Utc>, period: UsageBudgetPeriod) -> PeriodW
     }
 }
 
-fn period_end_naive(start: NaiveDateTime, period: UsageBudgetPeriod) -> NaiveDateTime {
+fn period_start_naive(
+    now: NaiveDateTime,
+    period: UsageBudgetPeriod,
+    anchors: Option<&BudgetAnchors>,
+) -> NaiveDateTime {
+    let anchors = anchors.copied().unwrap_or_default();
+    let date = now.date();
+    match period {
+        UsageBudgetPeriod::Hour => date
+            .and_hms_opt(now.hour(), 0, 0)
+            .expect("valid hour boundary"),
+        UsageBudgetPeriod::Day => {
+            let today_reset = date
+                .and_hms_opt(anchors.reset_hour, 0, 0)
+                .expect("valid day anchor");
+            if now >= today_reset {
+                today_reset
+            } else {
+                let yesterday = date.pred_opt().expect("date predecessor exists");
+                yesterday
+                    .and_hms_opt(anchors.reset_hour, 0, 0)
+                    .expect("valid day anchor")
+            }
+        }
+        UsageBudgetPeriod::Week => {
+            let today_dow = date.weekday().num_days_from_monday();
+            let days_back = (today_dow + 7 - anchors.reset_day_of_week) % 7;
+            let candidate_date = date - Duration::days(i64::from(days_back));
+            let candidate = candidate_date
+                .and_hms_opt(anchors.reset_hour, 0, 0)
+                .expect("valid week anchor");
+            if now >= candidate {
+                candidate
+            } else {
+                (candidate_date - Duration::days(7))
+                    .and_hms_opt(anchors.reset_hour, 0, 0)
+                    .expect("valid week anchor")
+            }
+        }
+        UsageBudgetPeriod::Month => {
+            let this_month = month_anchor_naive(date.year(), date.month(), &anchors);
+            if now >= this_month {
+                this_month
+            } else {
+                let (prev_year, prev_month) = if date.month() == 1 {
+                    (date.year() - 1, 12)
+                } else {
+                    (date.year(), date.month() - 1)
+                };
+                month_anchor_naive(prev_year, prev_month, &anchors)
+            }
+        }
+    }
+}
+
+fn period_end_naive(
+    start: NaiveDateTime,
+    period: UsageBudgetPeriod,
+    anchors: Option<&BudgetAnchors>,
+) -> NaiveDateTime {
+    let anchors = anchors.copied().unwrap_or_default();
     match period {
         UsageBudgetPeriod::Hour => start + Duration::hours(1),
         UsageBudgetPeriod::Day => start + Duration::days(1),
         UsageBudgetPeriod::Week => start + Duration::days(7),
         UsageBudgetPeriod::Month => {
-            let date = start.date();
-            let (year, month) = if date.month() == 12 {
-                (date.year() + 1, 1)
+            let (next_year, next_month) = if start.month() == 12 {
+                (start.year() + 1, 1)
             } else {
-                (date.year(), date.month() + 1)
+                (start.year(), start.month() + 1)
             };
-            NaiveDate::from_ymd_opt(year, month, 1)
-                .expect("valid next month boundary")
-                .and_hms_opt(0, 0, 0)
-                .expect("valid next month boundary")
+            month_anchor_naive(next_year, next_month, &anchors)
         }
     }
+}
+
+fn month_anchor_naive(year: i32, month: u32, anchors: &BudgetAnchors) -> NaiveDateTime {
+    let max_day = days_in_month(year, month);
+    let day = anchors.reset_day_of_month.min(max_day);
+    NaiveDate::from_ymd_opt(year, month, day)
+        .expect("valid month anchor date")
+        .and_hms_opt(anchors.reset_hour, 0, 0)
+        .expect("valid month anchor time")
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    NaiveDate::from_ymd_opt(next_year, next_month, 1)
+        .and_then(|d| d.pred_opt())
+        .map(|d| d.day())
+        .unwrap_or(28)
 }
 
 fn resolve_local(naive: NaiveDateTime) -> DateTime<Local> {
@@ -715,6 +812,221 @@ mod tests {
     }
 
     #[test]
+    fn day_budget_respects_reset_hour() {
+        // Before the reset hour, the window starts yesterday at reset_hour.
+        let ledger = Ledger::open_in_memory().unwrap();
+        let config = UsageConfig {
+            timezone: "utc".into(),
+            budgets: vec![UsageBudgetConfig {
+                name: "daily".into(),
+                period: UsageBudgetPeriod::Day,
+                cost_usd: 10.0,
+                reset_hour: Some(6),
+                ..usage_budget()
+            }],
+            ..UsageConfig::default()
+        };
+
+        let before = budget_statuses(
+            &ledger,
+            &config,
+            "2026-05-20T03:00:00+00:00".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(before[0].period_start, "2026-05-19T06:00:00+00:00");
+        assert_eq!(before[0].reset_at, "2026-05-20T06:00:00+00:00");
+
+        let after = budget_statuses(
+            &ledger,
+            &config,
+            "2026-05-20T09:00:00+00:00".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after[0].period_start, "2026-05-20T06:00:00+00:00");
+        assert_eq!(after[0].reset_at, "2026-05-21T06:00:00+00:00");
+    }
+
+    #[test]
+    fn week_budget_respects_reset_day_and_hour() {
+        // 2026-05-20 is a Wednesday. With reset_day_of_week=thursday and
+        // reset_hour=3, the most recent Thursday 03:00 is 2026-05-14T03:00.
+        let ledger = Ledger::open_in_memory().unwrap();
+        let config = UsageConfig {
+            timezone: "utc".into(),
+            budgets: vec![UsageBudgetConfig {
+                name: "weekly".into(),
+                period: UsageBudgetPeriod::Week,
+                cost_usd: 50.0,
+                reset_day_of_week: Some(BudgetWeekday::Thursday),
+                reset_hour: Some(3),
+                ..usage_budget()
+            }],
+            ..UsageConfig::default()
+        };
+
+        let statuses = budget_statuses(
+            &ledger,
+            &config,
+            "2026-05-20T14:00:00+00:00".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(statuses[0].period_start, "2026-05-14T03:00:00+00:00");
+        assert_eq!(statuses[0].reset_at, "2026-05-21T03:00:00+00:00");
+    }
+
+    #[test]
+    fn week_budget_resets_today_when_past_anchor_hour() {
+        // 2026-05-21 is a Thursday. Past 03:00, the window starts today at 03:00.
+        let ledger = Ledger::open_in_memory().unwrap();
+        let config = UsageConfig {
+            timezone: "utc".into(),
+            budgets: vec![UsageBudgetConfig {
+                name: "weekly".into(),
+                period: UsageBudgetPeriod::Week,
+                cost_usd: 50.0,
+                reset_day_of_week: Some(BudgetWeekday::Thursday),
+                reset_hour: Some(3),
+                ..usage_budget()
+            }],
+            ..UsageConfig::default()
+        };
+
+        let statuses = budget_statuses(
+            &ledger,
+            &config,
+            "2026-05-21T10:00:00+00:00".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(statuses[0].period_start, "2026-05-21T03:00:00+00:00");
+        assert_eq!(statuses[0].reset_at, "2026-05-28T03:00:00+00:00");
+    }
+
+    #[test]
+    fn month_budget_respects_reset_day_of_month() {
+        let ledger = Ledger::open_in_memory().unwrap();
+        let config = UsageConfig {
+            timezone: "utc".into(),
+            budgets: vec![UsageBudgetConfig {
+                name: "billing".into(),
+                period: UsageBudgetPeriod::Month,
+                cost_usd: 200.0,
+                reset_day_of_month: Some(15),
+                ..usage_budget()
+            }],
+            ..UsageConfig::default()
+        };
+
+        // Before the 15th: window started on the prior 15th.
+        let before = budget_statuses(
+            &ledger,
+            &config,
+            "2026-05-10T12:00:00+00:00".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(before[0].period_start, "2026-04-15T00:00:00+00:00");
+        assert_eq!(before[0].reset_at, "2026-05-15T00:00:00+00:00");
+
+        // After the 15th: window started this month.
+        let after = budget_statuses(
+            &ledger,
+            &config,
+            "2026-05-20T12:00:00+00:00".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after[0].period_start, "2026-05-15T00:00:00+00:00");
+        assert_eq!(after[0].reset_at, "2026-06-15T00:00:00+00:00");
+    }
+
+    #[test]
+    fn month_anchor_clamps_to_short_months() {
+        // reset_day_of_month=31, now is mid-February: clamp to Feb 28 (non-leap).
+        let ledger = Ledger::open_in_memory().unwrap();
+        let config = UsageConfig {
+            timezone: "utc".into(),
+            budgets: vec![UsageBudgetConfig {
+                name: "monthly".into(),
+                period: UsageBudgetPeriod::Month,
+                cost_usd: 100.0,
+                reset_day_of_month: Some(31),
+                ..usage_budget()
+            }],
+            ..UsageConfig::default()
+        };
+
+        // 2026 is not a leap year. Mid-Feb is before Feb 28 anchor.
+        let mid_feb = budget_statuses(
+            &ledger,
+            &config,
+            "2026-02-15T12:00:00+00:00".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mid_feb[0].period_start, "2026-01-31T00:00:00+00:00");
+        assert_eq!(mid_feb[0].reset_at, "2026-02-28T00:00:00+00:00");
+
+        // Past the clamped Feb anchor: window starts on Feb 28.
+        let late_feb = budget_statuses(
+            &ledger,
+            &config,
+            "2026-02-28T12:00:00+00:00".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(late_feb[0].period_start, "2026-02-28T00:00:00+00:00");
+        assert_eq!(late_feb[0].reset_at, "2026-03-31T00:00:00+00:00");
+    }
+
+    #[test]
+    fn month_anchor_clamps_across_year_boundary() {
+        // reset_day_of_month=31, now is early January: previous anchor is Dec 31.
+        let ledger = Ledger::open_in_memory().unwrap();
+        let config = UsageConfig {
+            timezone: "utc".into(),
+            budgets: vec![UsageBudgetConfig {
+                name: "monthly".into(),
+                period: UsageBudgetPeriod::Month,
+                cost_usd: 100.0,
+                reset_day_of_month: Some(31),
+                ..usage_budget()
+            }],
+            ..UsageConfig::default()
+        };
+
+        let statuses = budget_statuses(
+            &ledger,
+            &config,
+            "2026-01-10T12:00:00+00:00".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(statuses[0].period_start, "2025-12-31T00:00:00+00:00");
+        assert_eq!(statuses[0].reset_at, "2026-01-31T00:00:00+00:00");
+    }
+
+    #[test]
+    fn unanchored_day_budget_matches_legacy_behavior() {
+        // No anchor fields: the window starts at local/UTC midnight, matching
+        // the previous fixed-boundary semantics.
+        let ledger = Ledger::open_in_memory().unwrap();
+        let config = UsageConfig {
+            timezone: "utc".into(),
+            budgets: vec![UsageBudgetConfig {
+                name: "daily".into(),
+                period: UsageBudgetPeriod::Day,
+                cost_usd: 10.0,
+                ..usage_budget()
+            }],
+            ..UsageConfig::default()
+        };
+
+        let statuses = budget_statuses(
+            &ledger,
+            &config,
+            "2026-05-20T15:30:00+00:00".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(statuses[0].period_start, "2026-05-20T00:00:00+00:00");
+        assert_eq!(statuses[0].reset_at, "2026-05-21T00:00:00+00:00");
+    }
+
+    #[test]
     fn newly_crossed_budget_warnings_are_deduped() {
         let ledger = Ledger::open_in_memory().unwrap();
         insert_call(&ledger, "2026-05-18T03:00:00+00:00", 8.5, "message");
@@ -752,6 +1064,9 @@ mod tests {
             call_type: None,
             usage_kind: Vec::new(),
             allow_compaction_over_budget: None,
+            reset_hour: None,
+            reset_day_of_week: None,
+            reset_day_of_month: None,
         }
     }
 }

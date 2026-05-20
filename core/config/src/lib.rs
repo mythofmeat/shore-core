@@ -642,6 +642,7 @@ fn validate_usage_config(config: &app::UsageConfig) -> Result<(), ConfigError> {
                 )));
             }
         }
+        validate_budget_anchors(idx, budget)?;
         let name = if budget.name.trim().is_empty() {
             format!("budget {}", idx + 1)
         } else {
@@ -650,6 +651,44 @@ fn validate_usage_config(config: &app::UsageConfig) -> Result<(), ConfigError> {
         if !names.insert(name.clone()) {
             return Err(ConfigError::Validation(format!(
                 "usage budget name \"{name}\" is duplicated"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_budget_anchors(idx: usize, budget: &app::UsageBudgetConfig) -> Result<(), ConfigError> {
+    use app::UsageBudgetPeriod;
+
+    if let Some(hour) = budget.reset_hour {
+        if hour > 23 {
+            return Err(ConfigError::Validation(format!(
+                "usage.budgets[{idx}].reset_hour must be 0-23, got {hour}"
+            )));
+        }
+        if matches!(budget.period, UsageBudgetPeriod::Hour) {
+            return Err(ConfigError::Validation(format!(
+                "usage.budgets[{idx}].reset_hour is not valid for period = \"hour\""
+            )));
+        }
+    }
+
+    if budget.reset_day_of_week.is_some() && !matches!(budget.period, UsageBudgetPeriod::Week) {
+        return Err(ConfigError::Validation(format!(
+            "usage.budgets[{idx}].reset_day_of_week is only valid for period = \"week\""
+        )));
+    }
+
+    if let Some(day) = budget.reset_day_of_month {
+        if !(1..=31).contains(&day) {
+            return Err(ConfigError::Validation(format!(
+                "usage.budgets[{idx}].reset_day_of_month must be 1-31, got {day}"
+            )));
+        }
+        if !matches!(budget.period, UsageBudgetPeriod::Month) {
+            return Err(ConfigError::Validation(format!(
+                "usage.budgets[{idx}].reset_day_of_month is only valid for period = \"month\""
             )));
         }
     }
@@ -2059,5 +2098,101 @@ model = "sonnet"
         let sonnet = loaded.models.find_model("sonnet").unwrap();
         assert_eq!(sonnet.model_id, "anthropic/claude-sonnet-4.5");
         assert_eq!(sonnet.cache_ttl.as_deref(), Some("1h"));
+    }
+
+    fn budget_with_period(period: app::UsageBudgetPeriod) -> app::UsageBudgetConfig {
+        app::UsageBudgetConfig {
+            name: "test".into(),
+            period,
+            cost_usd: 1.0,
+            warn_at: vec![0.8, 1.0],
+            limit: app::UsageBudgetAction::Warn,
+            character: None,
+            provider: None,
+            api_key: None,
+            model: None,
+            call_type: None,
+            usage_kind: Vec::new(),
+            allow_compaction_over_budget: None,
+            reset_hour: None,
+            reset_day_of_week: None,
+            reset_day_of_month: None,
+        }
+    }
+
+    fn usage_with_one_budget(budget: app::UsageBudgetConfig) -> app::UsageConfig {
+        app::UsageConfig {
+            timezone: "local".into(),
+            allow_compaction_over_budget: true,
+            budgets: vec![budget],
+            spike_warnings: app::UsageSpikeWarningsConfig::default(),
+        }
+    }
+
+    #[test]
+    fn reset_hour_on_hour_period_rejected() {
+        let mut b = budget_with_period(app::UsageBudgetPeriod::Hour);
+        b.reset_hour = Some(6);
+        let err = validate_usage_config(&usage_with_one_budget(b)).unwrap_err();
+        assert!(format!("{err}").contains("reset_hour is not valid for period"));
+    }
+
+    #[test]
+    fn reset_hour_out_of_range_rejected() {
+        let mut b = budget_with_period(app::UsageBudgetPeriod::Day);
+        b.reset_hour = Some(24);
+        let err = validate_usage_config(&usage_with_one_budget(b)).unwrap_err();
+        assert!(format!("{err}").contains("reset_hour must be 0-23"));
+    }
+
+    #[test]
+    fn reset_day_of_week_on_day_period_rejected() {
+        let mut b = budget_with_period(app::UsageBudgetPeriod::Day);
+        b.reset_day_of_week = Some(app::BudgetWeekday::Thursday);
+        let err = validate_usage_config(&usage_with_one_budget(b)).unwrap_err();
+        assert!(format!("{err}").contains("reset_day_of_week is only valid for period = \"week\""));
+    }
+
+    #[test]
+    fn reset_day_of_month_out_of_range_rejected() {
+        let mut b = budget_with_period(app::UsageBudgetPeriod::Month);
+        b.reset_day_of_month = Some(32);
+        let err = validate_usage_config(&usage_with_one_budget(b)).unwrap_err();
+        assert!(format!("{err}").contains("reset_day_of_month must be 1-31"));
+    }
+
+    #[test]
+    fn reset_day_of_month_on_week_period_rejected() {
+        let mut b = budget_with_period(app::UsageBudgetPeriod::Week);
+        b.reset_day_of_month = Some(15);
+        let err = validate_usage_config(&usage_with_one_budget(b)).unwrap_err();
+        assert!(
+            format!("{err}").contains("reset_day_of_month is only valid for period = \"month\"")
+        );
+    }
+
+    #[test]
+    fn anchored_month_budget_accepted() {
+        let mut b = budget_with_period(app::UsageBudgetPeriod::Month);
+        b.reset_day_of_month = Some(15);
+        b.reset_hour = Some(6);
+        validate_usage_config(&usage_with_one_budget(b)).unwrap();
+    }
+
+    #[test]
+    fn unknown_weekday_string_rejected_at_parse() {
+        let toml_str = r#"
+[usage]
+
+[[usage.budgets]]
+name = "weekly"
+period = "week"
+cost_usd = 10.0
+reset_day_of_week = "funday"
+"#;
+        let err = toml::from_str::<app::AppConfig>(toml_str).unwrap_err();
+        assert!(
+            format!("{err}").contains("funday") || format!("{err}").contains("unknown variant")
+        );
     }
 }

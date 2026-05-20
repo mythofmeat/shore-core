@@ -962,6 +962,34 @@ pub enum UsageBudgetAction {
     PauseBackground,
 }
 
+/// Weekday name for `[[usage.budgets]].reset_day_of_week`. Lowercase in TOML.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BudgetWeekday {
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+    Sunday,
+}
+
+impl BudgetWeekday {
+    /// 0 = Monday .. 6 = Sunday, matching chrono's `num_days_from_monday`.
+    pub fn num_days_from_monday(self) -> u32 {
+        match self {
+            BudgetWeekday::Monday => 0,
+            BudgetWeekday::Tuesday => 1,
+            BudgetWeekday::Wednesday => 2,
+            BudgetWeekday::Thursday => 3,
+            BudgetWeekday::Friday => 4,
+            BudgetWeekday::Saturday => 5,
+            BudgetWeekday::Sunday => 6,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct UsageBudgetConfig {
@@ -1002,6 +1030,21 @@ pub struct UsageBudgetConfig {
     /// Per-budget override for `[usage].allow_compaction_over_budget`.
     #[serde(default)]
     pub allow_compaction_over_budget: Option<bool>,
+
+    /// Hour-of-day at which the budget window resets (0-23). Applies to
+    /// `period = day`, `week`, or `month`. Defaults to 0 (midnight).
+    #[serde(default)]
+    pub reset_hour: Option<u32>,
+
+    /// Weekday on which a `period = "week"` budget resets. Defaults to Monday.
+    #[serde(default)]
+    pub reset_day_of_week: Option<BudgetWeekday>,
+
+    /// Day-of-month on which a `period = "month"` budget resets (1-31).
+    /// Values past the end of a short month clamp to the last day of that
+    /// month. Defaults to 1.
+    #[serde(default)]
+    pub reset_day_of_month: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
