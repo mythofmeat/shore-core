@@ -567,6 +567,20 @@ cost_usd = 25.00
 limit = "block"
 allow_compaction_over_budget = false # optional per-budget override
 
+[[usage.budgets]]
+name = "billing cycle"
+period = "month"
+cost_usd = 200.00
+reset_day_of_month = 15              # 1-31; clamps to last day on short months
+reset_hour = 0                       # 0-23; default 0
+
+[[usage.budgets]]
+name = "work week"
+period = "week"
+cost_usd = 50.00
+reset_day_of_week = "thursday"       # monday..sunday; default monday
+reset_hour = 6
+
 [usage.spike_warnings]
 enabled = true
 period = "hour"
@@ -588,6 +602,21 @@ limits are checked before starting the next LLM call. Compaction is allowed
 over budget by default because reducing prompt context can lower the next chat
 turn's cost; set `allow_compaction_over_budget = false` globally or on a
 specific budget for a strict stop.
+
+Custom reset anchors let a budget align to a billing cycle, work week, or
+"my day starts at 6am" schedule instead of the default top-of-period
+boundary. All anchor fields are optional; defaults preserve the historical
+behavior (midnight, Monday, the 1st).
+
+| Field | Valid on `period =` | Range | Default |
+| --- | --- | --- | --- |
+| `reset_hour` | `day`, `week`, `month` | 0–23 | 0 |
+| `reset_day_of_week` | `week` | `monday`..`sunday` | `monday` |
+| `reset_day_of_month` | `month` | 1–31, clamped to the last day on short months | 1 |
+
+A month budget with `reset_day_of_month = 31` resets on the last calendar
+day of months shorter than 31 (Feb 28/29, Apr 30, etc.), so every month
+gets exactly one reset.
 
 When committed spend crosses a `warn_at` threshold, the daemon emits one
 `usage_warning` server frame to the active requester and fires the
