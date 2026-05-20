@@ -1,50 +1,40 @@
 # Maintainer: eshen
-pkgname=shore-core
-pkgver=1.8.3
+pkgname=shore-cli
+pkgver=1.8.5
 pkgrel=1
-pkgdesc='Persistent AI character engine — daemon and CLI'
+pkgdesc='Persistent AI character engine — CLI'
 arch=('x86_64')
 url='https://github.com/mythofmeat/shore-core'
 license=('custom')
-depends=('gcc-libs' 'openssl')
+depends=('gcc-libs')
 makedepends=('cargo' 'git')
-provides=('shore-daemon' 'shore-cli')
-conflicts=('shore-daemon' 'shore-cli' 'shore-git')
-replaces=('shore-daemon' 'shore-cli')
-source=("${pkgname}::git+ssh://git@github.com/mythofmeat/shore-core.git")
+provides=('shore-cli')
+conflicts=('shore-cli' 'shore-core' 'shore-git')
+replaces=('shore-core')
+source=("shore-core::git+ssh://git@github.com/mythofmeat/shore-core.git")
 options=('!lto' '!debug' 'strip')
 sha256sums=('SKIP')
 
 prepare() {
-    cd "${pkgname}"
+    cd shore-core
     export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-    cd "${pkgname}"
+    cd shore-core
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
-    cargo build --release --frozen -p shore-daemon -p shore-cli
+    cargo build --release --frozen -p shore-cli
 }
 
 package() {
-    cd "${pkgname}"
+    cd shore-core
 
-    install -Dm755 target/release/shore-daemon "$pkgdir/usr/bin/shore-daemon"
     install -Dm755 target/release/shore "$pkgdir/usr/bin/shore"
 
-    install -Dm644 contrib/shore-daemon.service \
-        "$pkgdir/usr/lib/systemd/user/shore-daemon.service"
     install -Dm644 contrib/shore-notify.service \
         "$pkgdir/usr/lib/systemd/user/shore-notify.service"
-
-    install -Dm644 examples/config.toml \
-        "$pkgdir/usr/share/doc/shore/config.toml.example"
-    install -Dm644 examples/models.toml \
-        "$pkgdir/usr/share/doc/shore/models.toml.example"
-    install -Dm644 examples/client.toml \
-        "$pkgdir/usr/share/doc/shore/client.toml.example"
 
     install -dm755 "$pkgdir/usr/share/fish/vendor_completions.d"
     install -dm755 "$pkgdir/usr/share/bash-completion/completions"

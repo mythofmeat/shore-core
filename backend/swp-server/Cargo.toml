@@ -1,7 +1,10 @@
 [package]
 name = "shore-swp-server"
-version.workspace = true
+version = "1.8.5"
 edition = "2021"
+license.workspace = true
+repository.workspace = true
+description = "Shore Wire Protocol (SWP) server implementation for the Silvershore daemon."
 
 [dependencies]
 shore-protocol = { workspace = true }

@@ -2124,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "shore-test-harness"
-version = "1.8.5"
+version = "0.1.0"
 dependencies = [
  "rusqlite",
  "serde_json",

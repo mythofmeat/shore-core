@@ -1,7 +1,10 @@
 [package]
 name = "shore-daemon"
-version.workspace = true
+version = "1.8.5"
 edition = "2021"
+license.workspace = true
+repository.workspace = true
+description = "Persistent AI character engine daemon — long-running process behind the Silvershore chat protocol."
 
 [dependencies]
 shore-protocol = { workspace = true }
