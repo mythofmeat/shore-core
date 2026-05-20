@@ -1,108 +1,62 @@
-# release-plz configuration.
-#
-# All shore-* crates share a single workspace version (workspace.package.version
-# in the root Cargo.toml). On every push to main, release-plz opens or updates
-# a "Release vX.Y.Z" PR. Merging it bumps the workspace version, prepends a new
-# section to CHANGELOG.md, tags vX.Y.Z, and creates a GitHub Release. The tag
-# push then triggers .github/workflows/package.yml which builds the Arch
-# packages and pushes them to mythofmeat/repo-arch.
-
 [workspace]
-# We don't publish to crates.io — distribution is via Arch packages. With
-# `git_only`, release-plz reads the current version from git tags (e.g.
-# v1.8.1) instead of consulting the cargo registry, which matches reality
-# for an Arch-only workspace.
-git_only = true
-# `git_only` only affects version detection; release-plz still runs
-# `cargo package` to verify manifests before publishing. That fails here
-# because workspace path-deps (e.g. shore-config) don't declare a version,
-# which cargo requires when packaging. Skip publish entirely — we ship
-# via Arch, not crates.io.
-publish = false
-# Only run `release` (tag + GitHub release) for the merge of a release PR,
-# not on every push to main. The default (`true`) races with squash-merges:
-# release-plz can tag a follow-up commit whose changes weren't in the
-# release PR / changelog.
-release_always = false
-# Skip semver-check (only meaningful for crates.io consumers).
-semver_check = false
-# To avoid one `## [X.Y.Z]` section per workspace package, disable
-# per-package changelog writes here and re-enable only on the umbrella
-# package below, which pulls every other crate's commits in via
-# `changelog_include` and owns the single root `./CHANGELOG.md` path.
-# (`changelog_path` is a package-level field and rejected under
-# `[workspace]`, so it lives on shore-daemon.)
-changelog_update = false
-# By default, no per-package git tag or GitHub release. The single umbrella
-# release for the whole workspace is owned by shore-daemon below.
-git_release_enable = false
-git_tag_enable = false
-# In a multi-package workspace release-plz defaults `git_tag_name` to
-# `{{ package }}-v{{ version }}`, but with `git_only` it also uses that
-# pattern to look up the prior version. Since this repo only ever creates
-# `v*` tags, non-umbrella crates would never find their previous release
-# and could be treated as unreleased. Share `v{{ version }}` across all
-# packages — `git_tag_enable` above still keeps tag creation limited to
-# the umbrella.
-git_tag_name = "v{{ version }}"
-# Skip non-shipping commit types when bumping versions / writing changelog.
-# Mirrors the old cliff.toml filter set. `!?` accepts the conventional-commits
-# breaking-change marker (e.g. `feat!:`, `feat(scope)!:`) so a release-only
-# breaking change still triggers a release PR.
-release_commits = "^(feat|fix|perf|refactor|revert)(\\(.+\\))?!?:"
+# Only library crates publish to crates.io. Binary crates (shore-daemon,
+# shore-cli) and the integration test harness ship via Arch packaging and
+# `cargo install`, not crates.io.
+git_release_enable = true
+changelog_update = true
 
-# Designated umbrella package: creates the single tag + GitHub release for
-# every workspace bump, owns the only write to CHANGELOG.md, and pulls in
-# commits from every other workspace crate so the release notes cover the
-# whole workspace (not just changes under backend/daemon). Tag format
-# matches what package.yml listens for.
+# --- Library crates that publish to crates.io -------------------------------
+# Each library tracks its own version; release-plz computes bumps from
+# conventional commits on a per-crate basis.
+
+[[package]]
+name = "shore-protocol"
+publish = true
+release = true
+
+[[package]]
+name = "shore-config"
+publish = true
+release = true
+
+[[package]]
+name = "shore-swp-client"
+publish = true
+release = true
+
+[[package]]
+name = "shore-diagnostics"
+publish = true
+release = true
+
+# --- Workspace-internal crates that DO NOT publish --------------------------
+
+[[package]]
+name = "shore-llm"
+publish = false
+release = false
+
+[[package]]
+name = "shore-ledger"
+publish = false
+release = false
+
+[[package]]
+name = "shore-swp-server"
+publish = false
+release = false
+
 [[package]]
 name = "shore-daemon"
-git_tag_enable = true
-git_release_enable = true
-git_release_name = "v{{ version }}"
-changelog_update = true
-changelog_path = "./CHANGELOG.md"
-changelog_include = [
-  "shore-protocol",
-  "shore-config",
-  "shore-swp-client",
-  "shore-diagnostics",
-  "shore-llm",
-  "shore-ledger",
-  "shore-swp-server",
-  "shore-cli",
-  "shore-tui",
-  "shore-gui",
-  "shore-matrix",
-  "shore-mcp",
-  "shore-test-harness",
-]
+publish = false
+release = false
 
-# Changelog formatting — ported from the old cliff.toml so the new sections
-# look like the historical hand-written ones (Added / Fixed / Changed).
-[changelog]
-header = "# Changelog\n\n"
-body = """
-## [{{ version | trim_start_matches(pat=\"v\") }}] - {{ timestamp | date(format=\"%Y-%m-%d\") }}
-{% for group, commits in commits | group_by(attribute=\"group\") %}
-### {{ group | upper_first }}
-{% for commit in commits %}
-- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first }}
-{%- endfor %}
-{% endfor %}
-"""
-trim = true
-commit_parsers = [
-  { message = "^feat",     group = "Added" },
-  { message = "^fix",      group = "Fixed" },
-  { message = "^refactor", group = "Changed" },
-  { message = "^perf",     group = "Changed" },
-  { message = "^revert",   group = "Changed" },
-  { message = "^docs",     skip  = true },
-  { message = "^chore",    skip  = true },
-  { message = "^test",     skip  = true },
-  { message = "^ci",       skip  = true },
-  { message = "^build",    skip  = true },
-  { message = "^style",    skip  = true },
-]
+[[package]]
+name = "shore-cli"
+publish = false
+release = false
+
+[[package]]
+name = "shore-test-harness"
+publish = false
+release = false

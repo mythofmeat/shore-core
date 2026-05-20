@@ -1,0 +1,14 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+  pull_request:
+
+jobs:
+  ci:
+    uses: mythofmeat/repo-arch/.github/workflows/ci-rust.yml@main
+    with:
+      system_deps: "libasound2-dev protobuf-compiler"

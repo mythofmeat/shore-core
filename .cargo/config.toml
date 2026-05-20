@@ -4,15 +4,3 @@ jobs = 6
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-
-[alias]
-# shore-mcp is a debug-only binary (see dev/mcp/src/main.rs — release builds
-# produce a stub that refuses to run). These aliases are short-hands for the
-# package selector.
-mcp        = "build   -p shore-mcp"
-mcp-run    = "run     -p shore-mcp --"
-mcp-test   = "test    -p shore-mcp"
-mcp-check  = "check   -p shore-mcp --tests"
-# Integration test that drives the binary as a subprocess against
-# a live in-process daemon. Gated behind --ignored.
-mcp-itest  = "test    -p shore-mcp --test suite -- mcp_integration --ignored --nocapture"

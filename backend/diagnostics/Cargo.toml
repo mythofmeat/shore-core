@@ -1,7 +1,10 @@
 [package]
 name = "shore-diagnostics"
-version.workspace = true
+version = "0.1.1"
 edition = "2021"
+license.workspace = true
+repository.workspace = true
+description = "Shared diagnostic ring buffers and structured-logging helpers used by the Silvershore daemon."
 
 [dependencies]
 serde = { workspace = true }
