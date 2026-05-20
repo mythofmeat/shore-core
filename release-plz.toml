@@ -49,7 +49,19 @@ release = false
 [[package]]
 name = "shore-daemon"
 publish = false
-release = false
+release = true
+# Anchor crate for the binary release track. shore-daemon, shore-cli, shore-llm,
+# shore-ledger, and shore-swp-server all share `workspace.package.version` via
+# `version.workspace = true`, so any of their version bumps lands on the same
+# workspace version line. release-plz tracks all of them (commits touching any
+# of them compute a bump), but only this anchor produces the tag — which means
+# exactly one `v$VERSION` tag fires per release, and that tag triggers the
+# Arch packaging workflow in .github/workflows/package.yml.
+git_tag_name = "v{{ version }}"
+# git-cliff (via package.yml) generates the GitHub release notes on tag push,
+# so suppress release-plz's release/changelog handling for the anchor.
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "shore-cli"
