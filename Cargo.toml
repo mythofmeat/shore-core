@@ -52,8 +52,8 @@ async-trait = "0.1"
 # disabled). Versions here track what is published on crates.io for the
 # core library crates so packaged manifests stay coherent.
 shore-protocol = { path = "core/protocol", version = "0.2.0" }
-shore-config = { path = "core/config", version = "0.2.0" }
-shore-swp-client = { path = "core/swp-client", version = "0.2.0" }
+shore-config = { path = "core/config", version = "0.3.0" }
+shore-swp-client = { path = "core/swp-client", version = "0.2.1" }
 shore-diagnostics = { path = "backend/diagnostics", version = "0.1.1" }
 shore-llm = { path = "backend/llm", version = "1.8.4" }
 shore-ledger = { path = "backend/ledger", version = "1.8.4" }
