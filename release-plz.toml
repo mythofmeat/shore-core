@@ -29,44 +29,65 @@ name = "shore-diagnostics"
 publish = true
 release = true
 
-# --- Workspace-internal crates that DO NOT publish --------------------------
-
-[[package]]
-name = "shore-llm"
-publish = false
-release = false
-
-[[package]]
-name = "shore-ledger"
-publish = false
-release = false
-
-[[package]]
-name = "shore-swp-server"
-publish = false
-release = false
+# --- Binary-side workspace members ------------------------------------------
+# shore-daemon, shore-cli, shore-llm, shore-ledger, and shore-swp-server all
+# share `[workspace.package].version` via `version.workspace = true`. They
+# ship together as one Arch package (shore-core).
+#
+# All five are marked release = true so release-plz sees commits touching any
+# of their files and computes bumps. Because they share the workspace version
+# line, any bump lands on `[workspace.package].version` — which advances all
+# five crates at once.
+#
+# Only shore-daemon emits a git tag and that tag is named `v{{ version }}`
+# (overriding release-plz's default `{{ package }}-v{{ version }}`). The
+# other four set `git_tag_enable = false` so we get exactly one v$VERSION
+# tag per release. That tag triggers .github/workflows/package.yml, which
+# builds and publishes the Arch package; git-cliff there owns the GitHub
+# release notes, so release-plz's per-crate releases/changelogs are
+# suppressed across the binary side.
 
 [[package]]
 name = "shore-daemon"
 publish = false
 release = true
-# Anchor crate for the binary release track. shore-daemon, shore-cli, shore-llm,
-# shore-ledger, and shore-swp-server all share `workspace.package.version` via
-# `version.workspace = true`, so any of their version bumps lands on the same
-# workspace version line. release-plz tracks all of them (commits touching any
-# of them compute a bump), but only this anchor produces the tag — which means
-# exactly one `v$VERSION` tag fires per release, and that tag triggers the
-# Arch packaging workflow in .github/workflows/package.yml.
 git_tag_name = "v{{ version }}"
-# git-cliff (via package.yml) generates the GitHub release notes on tag push,
-# so suppress release-plz's release/changelog handling for the anchor.
 git_release_enable = false
 changelog_update = false
 
 [[package]]
 name = "shore-cli"
 publish = false
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
+
+[[package]]
+name = "shore-llm"
+publish = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
+
+[[package]]
+name = "shore-ledger"
+publish = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
+
+[[package]]
+name = "shore-swp-server"
+publish = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
+
+# --- Truly non-released crates ----------------------------------------------
 
 [[package]]
 name = "shore-test-harness"
