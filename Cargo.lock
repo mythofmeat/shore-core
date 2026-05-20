@@ -1981,7 +1981,7 @@ dependencies = [
 
 [[package]]
 name = "shore-config"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "shore-swp-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "libc",
