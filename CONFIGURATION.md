@@ -57,9 +57,9 @@ future work. It keeps the previous runtime config if the changed files fail to
 parse or validate.
 
 Startup-owned settings still require a daemon restart, including `[daemon]`
-listener settings, `[connections.matrix]`, `[tts]` connection setup,
-`[notifications]`, `[services]`, and startup-only `[advanced]` diagnostics
-toggles. Shore logs these as restart-required when it sees them change.
+listener settings, `[connections.matrix]`, `[notifications]`, `[services]`,
+and startup-only `[advanced]` diagnostics toggles. Shore logs these as
+restart-required when it sees them change.
 
 The watcher deliberately ignores `characters/<Character>/workspace/**`,
 including prompt files and `workspace/memory/**`. Those files keep the normal
@@ -593,41 +593,6 @@ When committed spend crosses a `warn_at` threshold, the daemon emits one
 `usage_warning` server frame to the active requester and fires the
 `usage_warning` notification event. Threshold warnings are de-duped per budget,
 period window, and threshold.
-
-## `[tts]`
-
-```toml
-[tts]
-enabled = false
-host = "127.0.0.1"
-port = 8778
-model = "tts-1"
-voice = "alloy"
-```
-
-Used by `shore speak` and live-speak mode. Shore does not run a speech model
-itself; the daemon proxies to an OpenAI-compatible TTS server at
-`http://{host}:{port}/v1/audio/speech`.
-
-Requests include `model`, `input`, `voice`, and `response_format = "wav"`.
-The server must return WAV audio because Shore strips the WAV header and relays
-PCM chunks to the CLI/TUI audio player. If `voice` is unset, Shore sends the
-character name as the voice, which is convenient only when the TTS server has a
-matching voice configured.
-
-For a local or LAN TTS server, the usual shape is:
-
-```toml
-[tts]
-enabled = true
-host = "vegetable"
-port = 8778
-model = "tts-1"      # or the model name your server expects
-voice = "alloy"      # or a voice installed on your server
-```
-
-A `400 Bad Request` from `/v1/audio/speech` usually means the TTS server
-rejected the requested `model`, `voice`, or response format.
 
 ## `[connections.matrix]`
 

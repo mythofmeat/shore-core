@@ -21,7 +21,6 @@ mod tests;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -34,10 +33,7 @@ use task::handle_generation;
 
 use shore_protocol::client_msg::{ClientMessage, ClientMessageBody};
 use shore_protocol::error::ErrorCode;
-use shore_protocol::server_msg::{
-    AudioError as SwpAudioError, CommandOutput as SwpCommandOutput, Error as SwpError,
-    ServerMessage,
-};
+use shore_protocol::server_msg::{Error as SwpError, ServerMessage};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
@@ -52,8 +48,6 @@ use shore_config::app::SearchConfig;
 use shore_config::{character_data_dir, discover_characters, load_character_config, LoadedConfig};
 use shore_ledger::LedgerClient;
 use shore_swp_server::{RequestMeta, RoutedMessage, SessionId, SessionRouter};
-
-use crate::tts::TtsClient;
 
 pub(super) struct HandlerToolContext {
     inner: SharedToolContext,
@@ -115,10 +109,6 @@ struct GenContext {
     session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
     diagnostics: Arc<std::sync::Mutex<shore_diagnostics::Diagnostics>>,
     notifier: NotificationService,
-    /// Daemon-wide live TTS flag.
-    live_speak: Arc<AtomicBool>,
-    /// TTS client (None if TTS is not configured).
-    tts_client: Option<TtsClient>,
     /// Optional daemon HTTP listener state used by providers that need
     /// callback URLs into this daemon.
     http: Option<Arc<crate::http::DaemonHttpState>>,
@@ -189,10 +179,6 @@ pub struct MessageHandler {
     pub session_router: SessionRouter,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
-    /// Daemon-wide live TTS flag.
-    pub live_speak: Arc<AtomicBool>,
-    /// TTS client (None if TTS is not configured).
-    pub tts_client: Option<TtsClient>,
     /// Daemon HTTP state, when the listener is enabled. Carries the
     /// bind address (and, after M3, the MCP session registry) for
     /// providers that need a callback URL into the daemon — currently
@@ -211,8 +197,6 @@ pub struct MessageHandlerDeps {
     pub session_router: SessionRouter,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
-    pub live_speak: Arc<AtomicBool>,
-    pub tts_client: Option<TtsClient>,
     pub http: Option<Arc<crate::http::DaemonHttpState>>,
     pub control_rx: mpsc::Receiver<HandlerControl>,
 }
@@ -227,8 +211,6 @@ impl MessageHandler {
             session_router: deps.session_router,
             autonomy: deps.autonomy,
             notifier: deps.notifier,
-            live_speak: deps.live_speak,
-            tts_client: deps.tts_client,
             http: deps.http,
             control_rx: deps.control_rx,
             sessions: HashMap::new(),
@@ -352,8 +334,6 @@ impl MessageHandler {
             ClientMessage::Message(_) => "message",
             ClientMessage::Regen(_) => "regen",
             ClientMessage::Cancel(_) => "cancel",
-            ClientMessage::Speak(_) => "speak",
-            ClientMessage::SetLiveSpeak(_) => "set_live_speak",
             _ => "other",
         };
         debug!(
@@ -365,57 +345,6 @@ impl MessageHandler {
             kind = msg_kind,
             "handling engine message"
         );
-
-        if let ClientMessage::SetLiveSpeak(ref toggle) = msg {
-            let prev = self.live_speak.swap(toggle.enabled, Ordering::Relaxed);
-            info!(enabled = toggle.enabled, prev, "Live TTS toggled");
-            let _ = self
-                .session_router
-                .send_to_session(
-                    meta.session.session_id,
-                    ServerMessage::CommandOutput(SwpCommandOutput {
-                        rid: meta.rid.clone(),
-                        name: "set_live_speak".into(),
-                        data: serde_json::json!({ "enabled": toggle.enabled }),
-                    }),
-                )
-                .await;
-            return;
-        }
-
-        if let ClientMessage::Speak(ref speak) = msg {
-            let Some(tts_client) = self.tts_client.clone() else {
-                let _ = self.push_tx.send(ServerMessage::AudioError(SwpAudioError {
-                    rid: speak.rid.clone(),
-                    message: "TTS not configured".into(),
-                }));
-                return;
-            };
-            let push_tx = self.push_tx.clone();
-            let registry = self.registry.clone();
-            let rid = speak.rid.clone();
-            let msg_id = speak.msg_id.clone();
-            let character = meta.session.selected_character.clone();
-            tokio::spawn(async move {
-                if let Err(e) = handle_speak_request(
-                    &tts_client,
-                    &push_tx,
-                    &registry,
-                    rid.clone(),
-                    msg_id,
-                    character.as_deref(),
-                )
-                .await
-                {
-                    error!(error = %e, "TTS speak failed");
-                    let _ = push_tx.send(ServerMessage::AudioError(SwpAudioError {
-                        rid,
-                        message: e.to_string(),
-                    }));
-                }
-            });
-            return;
-        }
 
         if matches!(msg, ClientMessage::Cancel(_)) {
             info!(
@@ -710,9 +639,6 @@ fn restart_required_changes(old: &LoadedConfig, new: &LoadedConfig) -> Vec<&'sta
     if old.app.connections.matrix != new.app.connections.matrix {
         changes.push("[connections.matrix]");
     }
-    if old.app.tts != new.app.tts {
-        changes.push("[tts]");
-    }
     if old.app.notifications != new.app.notifications {
         changes.push("[notifications]");
     }
@@ -726,70 +652,4 @@ fn restart_required_changes(old: &LoadedConfig, new: &LoadedConfig) -> Vec<&'sta
         changes.push("[advanced].cache_forensics");
     }
     changes
-}
-
-/// Handle a client `Speak` request: resolve character + voice + message text,
-/// then call the TTS relay. All output goes through `push_tx` (broadcast).
-async fn handle_speak_request(
-    tts_client: &TtsClient,
-    push_tx: &broadcast::Sender<ServerMessage>,
-    registry: &Arc<Mutex<CharacterRegistry>>,
-    rid: Option<String>,
-    msg_id: Option<String>,
-    character: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use shore_protocol::types::Role;
-
-    let (char_name, voice, model, resolved_id, text) = {
-        let mut reg = registry.lock().await;
-        let char_name = reg.resolve_character(character)?;
-        let engine_arc = reg.get_or_create(&char_name)?;
-        let tts = &reg.effective_config(&char_name).app.tts;
-        let model = tts.model.clone();
-        let voice = tts.voice.clone().unwrap_or_else(|| char_name.clone());
-        drop(reg);
-
-        let engine = engine_arc.lock().await;
-        let messages = engine.messages();
-        let (resolved_id, text) = match msg_id {
-            Some(ref id) => {
-                let msg = messages
-                    .iter()
-                    .find(|m| &m.msg_id == id)
-                    .ok_or_else(|| format!("message not found: {id}"))?;
-                (msg.msg_id.clone(), msg.content.clone())
-            }
-            None => {
-                let msg = messages
-                    .iter()
-                    .rev()
-                    .find(|m| m.role == Role::Assistant)
-                    .ok_or("no assistant messages to speak")?;
-                (msg.msg_id.clone(), msg.content.clone())
-            }
-        };
-
-        (char_name, voice, model, resolved_id, text)
-    };
-
-    if text.is_empty() {
-        let _ = push_tx.send(ServerMessage::AudioError(SwpAudioError {
-            rid,
-            message: "message has no text content".into(),
-        }));
-        return Ok(());
-    }
-
-    debug!(character = %char_name, voice = %voice, model = %model, msg_id = %resolved_id, "handle_speak resolved");
-    crate::tts::relay_speech(
-        tts_client,
-        &text,
-        &voice,
-        &model,
-        &resolved_id,
-        rid,
-        push_tx,
-    )
-    .await;
-    Ok(())
 }

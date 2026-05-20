@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -180,8 +179,6 @@ impl TestHarness {
             session_router,
             autonomy,
             notifier,
-            live_speak: Arc::new(AtomicBool::new(false)),
-            tts_client: None,
             http: None,
             control_rx,
         });

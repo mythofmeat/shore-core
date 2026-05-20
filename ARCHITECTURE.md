@@ -251,7 +251,7 @@ The watcher covers config TOML inputs, `.env`, `conf.d/`, and per-character
 explicit compaction/reload boundary.
 
 Startup-owned settings such as daemon listener, Matrix supervision,
-notifications, TTS connection setup, and startup diagnostics require restart.
+notifications, and startup diagnostics require restart.
 
 ## Prompt And Cache
 

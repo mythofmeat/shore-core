@@ -1,4 +1,3 @@
-pub mod audio;
 pub mod client_config;
 pub mod conn_manager;
 pub mod connection;

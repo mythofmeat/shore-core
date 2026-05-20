@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -385,28 +384,6 @@ pub(super) async fn handle_generation(
         stream_revision,
     )
     .await;
-
-    if ctx.live_speak.load(Ordering::Relaxed) {
-        if let Some(ref tts_client) = ctx.tts_client {
-            let text = result.content.clone();
-            if !text.is_empty() {
-                let msg_id = stream_msg_id.clone().unwrap_or_default();
-                let tts = &effective_config.app.tts;
-                let model = tts.model.clone();
-                let voice = tts.voice.clone().unwrap_or_else(|| char_name.clone());
-                crate::tts::relay_speech(
-                    tts_client,
-                    &text,
-                    &voice,
-                    &model,
-                    &msg_id,
-                    request.rid.clone(),
-                    &ctx.event_tx,
-                )
-                .await;
-            }
-        }
-    }
 
     let (turn_count, context_tokens, should_compact) = {
         let engine = engine_arc.lock().await;
