@@ -592,7 +592,11 @@ specific budget for a strict stop.
 When committed spend crosses a `warn_at` threshold, the daemon emits one
 `usage_warning` server frame to the active requester and fires the
 `usage_warning` notification event. Threshold warnings are de-duped per budget,
-period window, and threshold.
+period window, and threshold — with one exception: once committed spend is at
+or above 100% of the budget, the warning re-fires on every subsequent check so
+the operator keeps seeing the over-limit signal as spend continues to accrue.
+The re-fired event carries `crossed_warn_at = [1.0]` regardless of which
+`warn_at` thresholds the user configured.
 
 ## `[connections.matrix]`
 
