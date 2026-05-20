@@ -1,7 +1,10 @@
 [package]
 name = "shore-ledger"
-version.workspace = true
+version = "1.8.5"
 edition = "2021"
+license.workspace = true
+repository.workspace = true
+description = "Conversation ledger and message persistence layer for the Silvershore daemon."
 
 [dependencies]
 shore-llm = { workspace = true }

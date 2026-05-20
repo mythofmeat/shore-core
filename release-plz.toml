@@ -1,13 +1,15 @@
 [workspace]
-# Only library crates publish to crates.io. Binary crates (shore-daemon,
-# shore-cli) and the integration test harness ship via Arch packaging and
-# `cargo install`, not crates.io.
+# All released workspace members publish to crates.io and get a per-crate
+# GitHub release + CHANGELOG.md entry. Each crate's tag is the default
+# `{{ package }}-v{{ version }}` (e.g., `shore-daemon-v1.8.5`).
+#
+# The Arch packaging workflow (.github/workflows/package.yml) gates on
+# `shore-daemon-v*` and `shore-cli-v*` tags specifically, so each binary
+# ships its own Arch package independently.
 git_release_enable = true
 changelog_update = true
 
-# --- Library crates that publish to crates.io -------------------------------
-# Each library tracks its own version; release-plz computes bumps from
-# conventional commits on a per-crate basis.
+# --- Core libraries ---------------------------------------------------------
 
 [[package]]
 name = "shore-protocol"
@@ -29,64 +31,38 @@ name = "shore-diagnostics"
 publish = true
 release = true
 
-# --- Binary-side workspace members ------------------------------------------
-# shore-daemon, shore-cli, shore-llm, shore-ledger, and shore-swp-server all
-# share `[workspace.package].version` via `version.workspace = true`. They
-# ship together as one Arch package (shore-core).
-#
-# All five are marked release = true so release-plz sees commits touching any
-# of their files and computes bumps. Because they share the workspace version
-# line, any bump lands on `[workspace.package].version` — which advances all
-# five crates at once.
-#
-# Each crate still gets its own git tag (release-plz uses per-crate tags as
-# the "last release" reference for computing bumps; without them, bumps come
-# out empty — observed concretely in the 2026-05-21 release-plz run that
-# returned `{"prs":[]}` despite an unreleased fix(ledger) commit). The four
-# non-anchor crates therefore keep the default `{{ package }}-v{{ version }}`
-# tag template; only shore-daemon's tag is `v{{ version }}`, which is what
-# .github/workflows/package.yml listens for to build and publish the Arch
-# package. git-cliff (invoked from that workflow) owns the GitHub release
-# notes on `v*`, so release-plz's per-crate GitHub releases and CHANGELOGs
-# are suppressed across the binary side.
-
-[[package]]
-name = "shore-daemon"
-publish = false
-release = true
-git_tag_name = "v{{ version }}"
-git_release_enable = false
-changelog_update = false
-
-[[package]]
-name = "shore-cli"
-publish = false
-release = true
-git_release_enable = false
-changelog_update = false
+# --- Binary-side crates -----------------------------------------------------
+# Each carries its own explicit version in Cargo.toml (no workspace
+# inheritance). release-plz computes per-crate bumps from conventional
+# commits against each crate's last `{{ package }}-v{{ version }}` tag and
+# the crates.io registry.
 
 [[package]]
 name = "shore-llm"
-publish = false
+publish = true
 release = true
-git_release_enable = false
-changelog_update = false
 
 [[package]]
 name = "shore-ledger"
-publish = false
+publish = true
 release = true
-git_release_enable = false
-changelog_update = false
 
 [[package]]
 name = "shore-swp-server"
-publish = false
+publish = true
 release = true
-git_release_enable = false
-changelog_update = false
 
-# --- Truly non-released crates ----------------------------------------------
+[[package]]
+name = "shore-daemon"
+publish = true
+release = true
+
+[[package]]
+name = "shore-cli"
+publish = true
+release = true
+
+# --- Non-released crates ----------------------------------------------------
 
 [[package]]
 name = "shore-test-harness"

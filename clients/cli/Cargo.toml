@@ -1,7 +1,10 @@
 [package]
 name = "shore-cli"
-version.workspace = true
+version = "1.8.5"
 edition = "2021"
+license.workspace = true
+repository.workspace = true
+description = "Command-line client (`shore`) for the Silvershore daemon."
 
 [[bin]]
 name = "shore"

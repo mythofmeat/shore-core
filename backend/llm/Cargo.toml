@@ -1,7 +1,10 @@
 [package]
 name = "shore-llm"
-version.workspace = true
+version = "1.8.5"
 edition = "2021"
+license.workspace = true
+repository.workspace = true
+description = "LLM provider abstraction and request orchestration for the Silvershore daemon."
 
 [dependencies]
 shore-protocol = { workspace = true }

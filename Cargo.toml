@@ -21,7 +21,11 @@ default-members = [
 ]
 
 [workspace.package]
-version = "1.8.5"
+# No shared `version` — every workspace member carries its own. The five
+# binary-side crates used to share `version.workspace = true`, which made
+# release-plz unable to compute per-crate bumps (it saw one workspace
+# version, not five independent versions). They now publish to crates.io
+# independently like the core libraries, each tracking its own version.
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mythofmeat/shore-core"
