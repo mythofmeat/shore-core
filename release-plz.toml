@@ -39,13 +39,16 @@ release = true
 # line, any bump lands on `[workspace.package].version` — which advances all
 # five crates at once.
 #
-# Only shore-daemon emits a git tag and that tag is named `v{{ version }}`
-# (overriding release-plz's default `{{ package }}-v{{ version }}`). The
-# other four set `git_tag_enable = false` so we get exactly one v$VERSION
-# tag per release. That tag triggers .github/workflows/package.yml, which
-# builds and publishes the Arch package; git-cliff there owns the GitHub
-# release notes, so release-plz's per-crate releases/changelogs are
-# suppressed across the binary side.
+# Each crate still gets its own git tag (release-plz uses per-crate tags as
+# the "last release" reference for computing bumps; without them, bumps come
+# out empty — observed concretely in the 2026-05-21 release-plz run that
+# returned `{"prs":[]}` despite an unreleased fix(ledger) commit). The four
+# non-anchor crates therefore keep the default `{{ package }}-v{{ version }}`
+# tag template; only shore-daemon's tag is `v{{ version }}`, which is what
+# .github/workflows/package.yml listens for to build and publish the Arch
+# package. git-cliff (invoked from that workflow) owns the GitHub release
+# notes on `v*`, so release-plz's per-crate GitHub releases and CHANGELOGs
+# are suppressed across the binary side.
 
 [[package]]
 name = "shore-daemon"
@@ -59,7 +62,6 @@ changelog_update = false
 name = "shore-cli"
 publish = false
 release = true
-git_tag_enable = false
 git_release_enable = false
 changelog_update = false
 
@@ -67,7 +69,6 @@ changelog_update = false
 name = "shore-llm"
 publish = false
 release = true
-git_tag_enable = false
 git_release_enable = false
 changelog_update = false
 
@@ -75,7 +76,6 @@ changelog_update = false
 name = "shore-ledger"
 publish = false
 release = true
-git_tag_enable = false
 git_release_enable = false
 changelog_update = false
 
@@ -83,7 +83,6 @@ changelog_update = false
 name = "shore-swp-server"
 publish = false
 release = true
-git_tag_enable = false
 git_release_enable = false
 changelog_update = false
 
