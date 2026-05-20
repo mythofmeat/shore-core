@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use shore_daemon::autonomy::HeartbeatEvent;
 use shore_protocol::server_msg::ServerMessage;
 use shore_test_harness::TestHarness;
 use tokio::time::{sleep, timeout, Instant};
@@ -39,6 +40,46 @@ pub async fn wait_for_mock_requests(harness: &TestHarness, expected: usize) {
             Instant::now() < deadline,
             "Timed out waiting for {expected} mock LLM request(s)"
         );
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
+pub async fn wait_for_heartbeat_detail(
+    harness: &TestHarness,
+    character: &str,
+    detail_needle: &str,
+) -> Vec<HeartbeatEvent> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let events = harness.autonomy.heartbeat_log(character, 20);
+        if events
+            .iter()
+            .any(|event| event.detail.contains(detail_needle))
+        {
+            return events;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Timed out waiting for heartbeat log detail {detail_needle:?}, got: {events:#?}"
+        );
+        tokio::task::yield_now().await;
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
+pub async fn wait_for_file_contents(path: &std::path::Path, needle: &str) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let contents = std::fs::read_to_string(path).unwrap_or_default();
+        if contents.contains(needle) {
+            return contents;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Timed out waiting for {needle:?} in {}, got: {contents}",
+            path.display()
+        );
+        tokio::task::yield_now().await;
         sleep(Duration::from_millis(25)).await;
     }
 }

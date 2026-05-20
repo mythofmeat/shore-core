@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use crate::helpers::wait_for_heartbeat_detail;
 use shore_test_harness::{MockLlmServer, TestConfigBuilder, TestHarness};
 
 fn registry_with(budget_env: &str, overflow_env: &str) -> String {
@@ -266,13 +267,12 @@ async fn test_keepalive_rotates_provider_key_on_budget_error() {
          Baseline: {baseline}, After: {after}"
     );
 
-    let events = harness.autonomy.heartbeat_log("TestChar", 20);
-    assert!(
-        events.iter().any(|event| event
-            .detail
-            .contains("Provider key fallback: budget -> overflow")),
-        "Expected heartbeat log to include provider key fallback, got: {events:#?}"
-    );
+    wait_for_heartbeat_detail(
+        &harness,
+        "TestChar",
+        "Provider key fallback: budget -> overflow",
+    )
+    .await;
 
     tokio::time::resume();
     std::env::remove_var(budget_env);

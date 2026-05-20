@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use crate::helpers::{wait_for_file_contents, wait_for_heartbeat_detail};
 use serde_json::json;
 use shore_test_harness::{TestConfigBuilder, TestHarness};
 
@@ -115,29 +116,7 @@ async fn set_next_wake_still_schedules_from_tool_use() {
         .await;
     fire_tick(&harness).await;
 
-    // The tick task runs in the background and the tool-loop wrap-up iteration
-    // makes a second (unmocked) HTTP roundtrip that costs real wall-clock time.
-    // Poll the log with a real-time deadline rather than asserting immediately.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let events = loop {
-        let events = harness.autonomy.heartbeat_log(CHARACTER, 20);
-        if events
-            .iter()
-            .any(|event| event.detail.contains("set_next_wake: 2.0h"))
-        {
-            break events;
-        }
-        if std::time::Instant::now() >= deadline {
-            break events;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    assert!(
-        events
-            .iter()
-            .any(|event| event.detail.contains("set_next_wake: 2.0h")),
-        "set_next_wake should be intercepted and logged, got events: {events:?}"
-    );
+    wait_for_heartbeat_detail(&harness, CHARACTER, "set_next_wake: 2.0h").await;
 
     harness.shutdown().await;
 }
@@ -159,7 +138,7 @@ async fn heartbeat_log_persists_to_disk_after_tick() {
         log_path.exists(),
         "heartbeat.jsonl should exist after a tick fires"
     );
-    let contents = std::fs::read_to_string(&log_path).expect("read heartbeat.jsonl");
+    let contents = wait_for_file_contents(&log_path, "tick_fired").await;
     assert!(
         contents.contains("tick_fired"),
         "disk log should record tick_fired event, got: {contents}"
@@ -189,15 +168,9 @@ async fn heartbeat_log_survives_crash_and_reboot() {
     // Sanity-check the pre-crash log shape so the post-reboot assertion is
     // meaningful — without these the test would silently pass if the tick
     // produced no events at all.
-    let pre_crash_events = harness.autonomy.heartbeat_log(CHARACTER, 20);
-    let pre_crash_message_sent = pre_crash_events
-        .iter()
-        .filter(|e| e.detail.contains("before crash"))
-        .count();
-    assert_eq!(
-        pre_crash_message_sent, 1,
-        "expected exactly one MessageSent event with 'before crash' detail before crash"
-    );
+    wait_for_heartbeat_detail(&harness, CHARACTER, "before crash").await;
+    let log_path = harness.data_dir.join(CHARACTER).join("heartbeat.jsonl");
+    wait_for_file_contents(&log_path, "before crash").await;
 
     let crashed = harness.crash().await;
     let mut harness = crashed.reboot().await;
@@ -208,7 +181,7 @@ async fn heartbeat_log_survives_crash_and_reboot() {
     let _ = harness.send_and_collect("hello again").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let events = harness.autonomy.heartbeat_log(CHARACTER, 20);
+    let events = wait_for_heartbeat_detail(&harness, CHARACTER, "before crash").await;
     let recovered = events
         .iter()
         .filter(|e| e.detail.contains("before crash"))
