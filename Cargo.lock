@@ -1961,7 +1961,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shore-cli"
-version = "1.8.4"
+version = "1.8.5"
 dependencies = [
  "base64",
  "chrono",
@@ -1996,7 +1996,7 @@ dependencies = [
 
 [[package]]
 name = "shore-daemon"
-version = "1.8.4"
+version = "1.8.5"
 dependencies = [
  "async-trait",
  "axum",
@@ -2047,7 +2047,7 @@ dependencies = [
 
 [[package]]
 name = "shore-ledger"
-version = "1.8.4"
+version = "1.8.5"
 dependencies = [
  "chrono",
  "reqwest",
@@ -2062,7 +2062,7 @@ dependencies = [
 
 [[package]]
 name = "shore-llm"
-version = "1.8.4"
+version = "1.8.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2109,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "shore-swp-server"
-version = "1.8.4"
+version = "1.8.5"
 dependencies = [
  "fs2",
  "libc",
@@ -2124,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "shore-test-harness"
-version = "1.8.4"
+version = "1.8.5"
 dependencies = [
  "rusqlite",
  "serde_json",
