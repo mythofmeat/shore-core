@@ -119,8 +119,6 @@ async fn make_basic_handler_with_models(
         session_router,
         autonomy,
         notifier: NotificationService::new(Default::default()),
-        live_speak: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        tts_client: None,
         http: None,
         control_rx,
     });
@@ -990,8 +988,6 @@ async fn make_handler_with_models(
         session_router,
         autonomy,
         notifier: NotificationService::new(Default::default()),
-        live_speak: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        tts_client: None,
         http: None,
         control_rx,
     });
@@ -1310,7 +1306,7 @@ async fn fanout_forwards_to_lease_holder_when_different_session() {
         .build_fanout_tx(shore_swp_server::SessionId(1), "Alice", issuer_tx)
         .await;
 
-    let probe = ServerMessage::CommandOutput(SwpCommandOutput {
+    let probe = ServerMessage::CommandOutput(shore_protocol::server_msg::CommandOutput {
         rid: None,
         name: "probe".into(),
         data: serde_json::json!({"ok": true}),
@@ -1346,7 +1342,7 @@ async fn fanout_skips_lease_when_issuer_is_lease_holder() {
         .build_fanout_tx(shore_swp_server::SessionId(1), "Alice", issuer_tx)
         .await;
 
-    let probe = ServerMessage::CommandOutput(SwpCommandOutput {
+    let probe = ServerMessage::CommandOutput(shore_protocol::server_msg::CommandOutput {
         rid: None,
         name: "probe".into(),
         data: serde_json::json!({}),

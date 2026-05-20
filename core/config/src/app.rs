@@ -46,9 +46,6 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub advanced: AdvancedConfig,
-
-    #[serde(default)]
-    pub tts: TtsConfig,
 }
 
 // ── [daemon] ────────────────────────────────────────────────────────────
@@ -1089,49 +1086,6 @@ impl Default for AdvancedConfig {
     }
 }
 
-// ── [tts] ──────────────────────────────────────────────────────────────
-
-serde_default!(default_tts_port -> u16 { 8778 });
-serde_default!(default_tts_model -> String { "tts-1".into() });
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct TtsConfig {
-    /// Enable TTS support.
-    #[serde(default)]
-    pub enabled: bool,
-
-    /// TTS server hostname.
-    #[serde(default)]
-    pub host: String,
-
-    /// TTS server port (default: 8778).
-    #[serde(default = "default_tts_port")]
-    pub port: u16,
-
-    /// OpenAI-compatible speech model to request.
-    #[serde(default = "default_tts_model")]
-    pub model: String,
-
-    /// Voice name to pass to the TTS server. If unset, falls back to the
-    /// character name. Can be overridden per-character via the merged
-    /// character config.
-    #[serde(default)]
-    pub voice: Option<String>,
-}
-
-impl Default for TtsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            host: String::new(),
-            port: default_tts_port(),
-            model: default_tts_model(),
-            voice: None,
-        }
-    }
-}
-
 // ── Shared defaults ─────────────────────────────────────────────────────
 
 serde_default!(default_true -> bool { true });
@@ -1682,16 +1636,6 @@ cache_forensics = true
         assert!(config.advanced.cache_forensics);
     }
 
-    #[test]
-    fn tts_config_defaults() {
-        let config: AppConfig = toml::from_str("").unwrap();
-        assert!(!config.tts.enabled);
-        assert_eq!(config.tts.host, "");
-        assert_eq!(config.tts.port, 8778);
-        assert_eq!(config.tts.model, "tts-1");
-        assert!(config.tts.voice.is_none());
-    }
-
     // ── BackgroundDefaultsConfig + resolver ──────────────────────────
 
     #[test]
@@ -1847,25 +1791,5 @@ typo_field = "x"
 "#;
         let err = toml::from_str::<AppConfig>(bad).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
-    }
-
-    #[test]
-    fn tts_config_explicit() {
-        let config: AppConfig = toml::from_str(
-            r#"
-[tts]
-enabled = true
-host = "192.168.1.50"
-port = 9000
-model = "kokoro"
-voice = "Nanachan"
-"#,
-        )
-        .unwrap();
-        assert!(config.tts.enabled);
-        assert_eq!(config.tts.host, "192.168.1.50");
-        assert_eq!(config.tts.port, 9000);
-        assert_eq!(config.tts.model, "kokoro");
-        assert_eq!(config.tts.voice.as_deref(), Some("Nanachan"));
     }
 }

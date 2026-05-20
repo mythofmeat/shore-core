@@ -79,13 +79,6 @@ pub enum CliCommand {
         json: bool,
     },
 
-    /// Speak a message aloud via TTS, or toggle live-speak mode (on/off)
-    Speak {
-        /// Message reference (last, -1, 3, etc.) or "on"/"off" for live mode
-        #[arg(allow_hyphen_values = true)]
-        arg: Option<String>,
-    },
-
     /// Listen for daemon events and send desktop notifications
     Notify {
         /// Notify only for autonomous character messages (default)
@@ -635,7 +628,6 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         // These use dedicated SWP message types or are handled locally.
         CliCommand::Send { system: false, .. }
         | CliCommand::Regen { .. }
-        | CliCommand::Speak { .. }
         | CliCommand::Notify { .. }
         | CliCommand::Completions { .. }
         | CliCommand::Complete { .. }

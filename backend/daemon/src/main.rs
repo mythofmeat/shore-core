@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -10,7 +9,6 @@ use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::handler::{MessageHandler, MessageHandlerDeps};
 use shore_daemon::handshake::build_handshake_provider;
 use shore_daemon::notifications::NotificationService;
-use shore_daemon::tts::TtsClient;
 use shore_diagnostics::logging::HumanLogFormat;
 use shore_diagnostics::Diagnostics;
 use shore_ledger::LedgerClient;
@@ -364,18 +362,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http: http_state.clone(),
     };
 
-    let live_speak = Arc::new(AtomicBool::new(false));
-    let tts_client = if loaded.app.tts.enabled && !loaded.app.tts.host.is_empty() {
-        info!(
-            host = %loaded.app.tts.host,
-            port = loaded.app.tts.port,
-            "TTS enabled"
-        );
-        Some(TtsClient::new(&loaded.app.tts))
-    } else {
-        None
-    };
-
     let (handler_control_tx, handler_control_rx) = tokio::sync::mpsc::channel(16);
 
     let mut msg_handler = MessageHandler::new(MessageHandlerDeps {
@@ -386,8 +372,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_router,
         autonomy: autonomy.clone(),
         notifier,
-        live_speak,
-        tts_client,
         http: http_state.clone(),
         control_rx: handler_control_rx,
     });

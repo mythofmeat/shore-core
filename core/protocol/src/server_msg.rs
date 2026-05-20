@@ -254,39 +254,6 @@ pub struct UsageWarning {
     pub reset_at: String,
 }
 
-/// TTS audio stream starting.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct AudioStart {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rid: Option<String>,
-    pub msg_id: String,
-    pub sample_rate: u32,
-    pub channels: u16,
-}
-
-/// TTS audio data chunk (base64-encoded PCM).
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct AudioChunk {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rid: Option<String>,
-    pub data: String,
-}
-
-/// TTS audio stream complete.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct AudioEnd {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rid: Option<String>,
-}
-
-/// TTS error.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct AudioError {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rid: Option<String>,
-    pub message: String,
-}
-
 /// All server → client message types, tagged by "type".
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -308,10 +275,6 @@ pub enum ServerMessage {
     CacheWarning(CacheWarning),
     ProviderFallbackWarning(ProviderFallbackWarning),
     UsageWarning(UsageWarning),
-    AudioStart(AudioStart),
-    AudioChunk(AudioChunk),
-    AudioEnd(AudioEnd),
-    AudioError(AudioError),
 }
 
 impl ServerMessage {
@@ -330,10 +293,6 @@ impl ServerMessage {
             ServerMessage::ToolCall(msg) => msg.rid = rid.clone(),
             ServerMessage::ToolResult(msg) => msg.rid = rid.clone(),
             ServerMessage::SendImage(msg) => msg.rid = rid.clone(),
-            ServerMessage::AudioStart(msg) => msg.rid = rid.clone(),
-            ServerMessage::AudioChunk(msg) => msg.rid = rid.clone(),
-            ServerMessage::AudioEnd(msg) => msg.rid = rid.clone(),
-            ServerMessage::AudioError(msg) => msg.rid = rid.clone(),
             ServerMessage::ProviderFallbackWarning(msg) => msg.rid = rid.clone(),
             ServerMessage::UsageWarning(msg) => msg.rid = rid.clone(),
             ServerMessage::Hello(_)
@@ -343,64 +302,5 @@ impl ServerMessage {
             | ServerMessage::CacheWarning(_) => {}
         }
         self
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn audio_start_roundtrip() {
-        let msg = ServerMessage::AudioStart(AudioStart {
-            rid: Some("r1".into()),
-            msg_id: "msg-123".into(),
-            sample_rate: 24000,
-            channels: 1,
-        });
-        let json = serde_json::to_value(&msg).unwrap();
-        assert_eq!(json["type"], "audio_start");
-        assert_eq!(json["sample_rate"], 24000);
-        assert_eq!(json["channels"], 1);
-
-        let roundtrip: ServerMessage = serde_json::from_value(json).unwrap();
-        assert!(matches!(roundtrip, ServerMessage::AudioStart(_)));
-    }
-
-    #[test]
-    fn audio_chunk_roundtrip() {
-        let msg = ServerMessage::AudioChunk(AudioChunk {
-            rid: None,
-            data: "AQID".into(),
-        });
-        let json = serde_json::to_value(&msg).unwrap();
-        assert_eq!(json["type"], "audio_chunk");
-
-        let roundtrip: ServerMessage = serde_json::from_value(json).unwrap();
-        assert!(matches!(roundtrip, ServerMessage::AudioChunk(_)));
-    }
-
-    #[test]
-    fn audio_end_roundtrip() {
-        let msg = ServerMessage::AudioEnd(AudioEnd { rid: None });
-        let json = serde_json::to_value(&msg).unwrap();
-        assert_eq!(json["type"], "audio_end");
-
-        let roundtrip: ServerMessage = serde_json::from_value(json).unwrap();
-        assert!(matches!(roundtrip, ServerMessage::AudioEnd(_)));
-    }
-
-    #[test]
-    fn audio_error_roundtrip() {
-        let msg = ServerMessage::AudioError(AudioError {
-            rid: None,
-            message: "voice not found".into(),
-        });
-        let json = serde_json::to_value(&msg).unwrap();
-        assert_eq!(json["type"], "audio_error");
-        assert_eq!(json["message"], "voice not found");
-
-        let roundtrip: ServerMessage = serde_json::from_value(json).unwrap();
-        assert!(matches!(roundtrip, ServerMessage::AudioError(_)));
     }
 }
