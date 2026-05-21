@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Route Anthropic provider catalog refreshes through the native Anthropic
+  Models API.
+
 ## [1.8.5](https://github.com/mythofmeat/shore-core/releases/tag/shore-daemon-v1.8.5) - 2026-05-20
 
 ### Added

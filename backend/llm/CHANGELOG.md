@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Use Anthropic's native Models API headers and metadata shape for provider
+  discovery.
+
 ## [1.8.5](https://github.com/mythofmeat/shore-core/releases/tag/shore-llm-v1.8.5) - 2026-05-20
 
 ### Fixed

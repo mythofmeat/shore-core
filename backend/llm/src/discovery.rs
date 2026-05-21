@@ -1,10 +1,11 @@
 //! Provider model discovery and on-disk cache.
 //!
-//! Every provider that exposes an OpenAI-compatible `/v1/models` endpoint
-//! (OpenAI, OpenRouter, vLLM, Together, etc.) is reachable through the same
-//! fetcher. The Phase 5 layer is intentionally narrow:
+//! OpenAI-compatible providers (OpenAI, OpenRouter, vLLM, Together, etc.)
+//! share one fetcher while native Anthropic discovery uses its required API
+//! headers. The Phase 5 layer is intentionally narrow:
 //!
 //! * `discover_openai_compatible` — one-shot fetch + map to `DiscoveredModel`.
+//! * `discover_anthropic` — one-shot Anthropic Models API fetch + map.
 //! * `read_cache` / `write_cache` — atomic per-provider cache files under
 //!   `<cache_dir>/providers/<provider>/models.json`.
 //!
@@ -21,8 +22,8 @@
 //! No secrets are read or written by this module's I/O code paths. The
 //! caller resolves the API key (typically via
 //! [`crate::credentials::resolve_key_candidates`]) and passes the value
-//! into `discover_openai_compatible`. Cache files contain only public
-//! provider metadata.
+//! into the discovery fetcher. Cache files contain only public provider
+//! metadata.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -40,6 +41,9 @@ pub const CACHE_VERSION: u32 = 1;
 /// the daemon refreshes any discovery-enabled provider whose cache is
 /// older than this (or absent).
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Required by Anthropic's API on every native HTTP request.
+const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 // ── DiscoveredModel ─────────────────────────────────────────────────────
 
@@ -274,10 +278,65 @@ pub async fn discover_openai_compatible(
     parse_openai_models_response(provider_key, base_url, &body)
 }
 
+/// Fetch and map Anthropic's native Models API endpoint.
+///
+/// Unlike OpenAI-compatible discovery, Anthropic authenticates with
+/// `x-api-key` and requires an API version header. Its conventional
+/// `base_url` is the API host, so `/v1/models` is appended when the
+/// caller did not already include a version segment.
+pub async fn discover_anthropic(
+    http: &reqwest::Client,
+    provider_key: &str,
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<DiscoveredModel>, DiscoveryError> {
+    let url = build_anthropic_models_url(base_url);
+    debug!(provider = provider_key, url = %url, "Fetching Anthropic provider models");
+
+    let resp = http
+        .get(&url)
+        .header("accept", "application/json")
+        .header("anthropic-version", ANTHROPIC_VERSION)
+        .header("x-api-key", api_key)
+        .send()
+        .await
+        .map_err(|e| DiscoveryError::Network {
+            provider: provider_key.to_string(),
+            source: e,
+        })?;
+
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| DiscoveryError::Network {
+        provider: provider_key.to_string(),
+        source: e,
+    })?;
+
+    if !status.is_success() {
+        return Err(DiscoveryError::HttpStatus {
+            provider: provider_key.to_string(),
+            status: status.as_u16(),
+            body: truncate_for_log(&body),
+        });
+    }
+
+    parse_anthropic_models_response(provider_key, base_url, &body)
+}
+
 /// Append `/models` to a provider base URL, handling a trailing slash.
 fn build_models_url(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     format!("{trimmed}/models")
+}
+
+/// Append Anthropic's Models API path to either the host root or a
+/// caller-supplied version root such as a gateway `/api/v1` URL.
+fn build_anthropic_models_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        format!("{trimmed}/models")
+    } else {
+        format!("{trimmed}/v1/models")
+    }
 }
 
 /// Truncate a response body for logging so we don't drag huge payloads
@@ -306,6 +365,23 @@ fn parse_openai_models_response(
     base_url: &str,
     body: &str,
 ) -> Result<Vec<DiscoveredModel>, DiscoveryError> {
+    parse_models_response(provider_key, base_url, "openai", body)
+}
+
+fn parse_anthropic_models_response(
+    provider_key: &str,
+    base_url: &str,
+    body: &str,
+) -> Result<Vec<DiscoveredModel>, DiscoveryError> {
+    parse_models_response(provider_key, base_url, "anthropic", body)
+}
+
+fn parse_models_response(
+    provider_key: &str,
+    base_url: &str,
+    sdk: &str,
+    body: &str,
+) -> Result<Vec<DiscoveredModel>, DiscoveryError> {
     let envelope: ModelsEnvelope =
         serde_json::from_str(body).map_err(|e| DiscoveryError::Parse {
             provider: provider_key.to_string(),
@@ -315,7 +391,7 @@ fn parse_openai_models_response(
     let now = chrono::Utc::now().to_rfc3339();
     let mut out = Vec::with_capacity(envelope.data.len());
     for raw in envelope.data {
-        if let Some(model) = map_entry(provider_key, base_url, &raw, &now) {
+        if let Some(model) = map_entry(provider_key, base_url, sdk, &raw, &now) {
             out.push(model);
         }
     }
@@ -325,15 +401,22 @@ fn parse_openai_models_response(
 fn map_entry(
     provider_key: &str,
     base_url: &str,
+    sdk: &str,
     raw: &serde_json::Value,
     now: &str,
 ) -> Option<DiscoveredModel> {
     let id = raw.get("id").and_then(|v| v.as_str())?.to_string();
     let display_name = raw
         .get("name")
+        .or_else(|| raw.get("display_name"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let created_at = raw.get("created").and_then(|v| v.as_i64());
+    let created_at = raw.get("created").and_then(|v| v.as_i64()).or_else(|| {
+        raw.get("created_at")
+            .and_then(|v| v.as_str())
+            .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+            .map(|v| v.timestamp())
+    });
     let owned_by = raw
         .get("owned_by")
         .and_then(|v| v.as_str())
@@ -362,7 +445,7 @@ fn map_entry(
         provider_key: provider_key.to_string(),
         model_id: id,
         display_name,
-        sdk: "openai".to_string(),
+        sdk: sdk.to_string(),
         base_url: Some(base_url.to_string()),
         created_at,
         owned_by,
@@ -490,6 +573,18 @@ mod tests {
     }
 
     #[test]
+    fn build_anthropic_models_url_adds_version_path_from_host_root() {
+        assert_eq!(
+            build_anthropic_models_url("https://api.anthropic.com"),
+            "https://api.anthropic.com/v1/models"
+        );
+        assert_eq!(
+            build_anthropic_models_url("https://gateway.test/api/v1/"),
+            "https://gateway.test/api/v1/models"
+        );
+    }
+
+    #[test]
     fn parses_openai_minimal_response() {
         let body = r#"{
             "object": "list",
@@ -545,6 +640,29 @@ mod tests {
         assert_eq!(m.supports_prompt_cache, Some(false));
         assert_eq!(m.description.as_deref(), Some("Strong general model."));
         assert_eq!(m.raw_provider_metadata["id"], "anthropic/claude-3.5-sonnet");
+    }
+
+    #[test]
+    fn parses_anthropic_models_response() {
+        let body = r#"{
+            "data": [{
+                "created_at": "1970-01-01T00:00:00Z",
+                "display_name": "Claude Sonnet 4",
+                "id": "claude-sonnet-4-20250514",
+                "type": "model"
+            }],
+            "has_more": false
+        }"#;
+        let models =
+            parse_anthropic_models_response("anthropic", "https://api.anthropic.com", body)
+                .unwrap();
+        assert_eq!(models.len(), 1);
+        let m = &models[0];
+        assert_eq!(m.model_id, "claude-sonnet-4-20250514");
+        assert_eq!(m.display_name.as_deref(), Some("Claude Sonnet 4"));
+        assert_eq!(m.created_at, Some(0));
+        assert_eq!(m.sdk, "anthropic");
+        assert_eq!(m.raw_provider_metadata["type"], "model");
     }
 
     #[test]

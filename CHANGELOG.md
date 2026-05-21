@@ -5,6 +5,12 @@ conventional commits. The block below is unstructured legacy history covering
 roughly v0.16.0 through v1.8.1. v1.8.2 and v1.8.3 were one-off manual cuts
 to advance the release-plz baseline past trees it couldn't `cargo package`.
 
+## Unreleased
+
+### Fixed
+- Fix native Anthropic provider model discovery to use the Anthropic Models
+  API and preserve Anthropic model metadata.
+
 ## [1.8.3] - 2026-05-19
 
 ### Changed

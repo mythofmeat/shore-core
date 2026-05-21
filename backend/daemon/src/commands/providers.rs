@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-use shore_config::LoadedConfig;
+use shore_config::{models::Sdk, LoadedConfig};
 use shore_ledger::LedgerClient;
 use shore_llm::discovery::ProviderModelsCache;
 use shore_protocol::error::ErrorCode;
@@ -155,7 +155,7 @@ pub(crate) async fn refresh_one(
             ErrorCode::InvalidRequest,
             format!(
                 "provider {provider:?} has no base_url; \
-                 required for OpenAI-compatible discovery"
+                 required for provider discovery"
             ),
         ))?;
 
@@ -176,11 +176,20 @@ pub(crate) async fn refresh_one(
     let http = llm.inner().http_client();
     info!(provider = %provider, base_url = %base_url, "Refreshing provider models");
 
-    let models = match shore_llm::discovery::discover_openai_compatible(
-        http, provider, &base_url, &key_value,
-    )
-    .await
-    {
+    let sdk = entry
+        .sdk
+        .clone()
+        .unwrap_or_else(|| shore_config::models::default_sdk(provider));
+    let discovered = match sdk {
+        Sdk::Anthropic => {
+            shore_llm::discovery::discover_anthropic(http, provider, &base_url, &key_value).await
+        }
+        _ => {
+            shore_llm::discovery::discover_openai_compatible(http, provider, &base_url, &key_value)
+                .await
+        }
+    };
+    let models = match discovered {
         Ok(m) => m,
         Err(e) => {
             warn!(provider = %provider, error = %e, "Provider discovery failed; preserving previous cache");
@@ -1109,6 +1118,70 @@ enabled = true
             .iter()
             .any(|m| m.model_id == "anthropic/claude-3.5-sonnet"));
         assert_eq!(cache.models[1].context_length, Some(200_000));
+
+        std::env::remove_var(&unique);
+    }
+
+    #[tokio::test]
+    async fn refresh_anthropic_uses_native_models_api() {
+        let tmp = tempfile::tempdir().unwrap();
+        let unique = format!("PROV_TEST_ANTHROPIC_REFRESH_{}", std::process::id());
+        std::env::set_var(&unique, "sk-ant-fixture");
+
+        let body = serde_json::json!({
+            "data": [{
+                "created_at": "2025-05-14T00:00:00Z",
+                "display_name": "Claude Sonnet 4",
+                "id": "claude-sonnet-4-20250514",
+                "type": "model"
+            }],
+            "has_more": false
+        });
+        let mock = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/v1/models"))
+            .and(wiremock::matchers::header("x-api-key", "sk-ant-fixture"))
+            .and(wiremock::matchers::header(
+                "anthropic-version",
+                "2023-06-01",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(&body))
+            .mount(&mock)
+            .await;
+
+        let ctx = build_ctx_with_registry(
+            &tmp,
+            &format!(
+                r#"
+[providers.anthropic]
+base_url = "{base}"
+
+[[providers.anthropic.keys]]
+name = "main"
+env = "{unique}"
+
+[providers.anthropic.discovery]
+enabled = true
+"#,
+                base = mock.uri()
+            ),
+        );
+
+        let out = refresh_provider_models(&ctx, &json!({ "provider": "anthropic" }))
+            .await
+            .unwrap();
+        assert_eq!(out["model_count"], 1);
+
+        let path = shore_llm::discovery::cache_path(&ctx.config.dirs.cache, "anthropic");
+        let cache = shore_llm::discovery::read_cache(&path)
+            .unwrap()
+            .expect("cache");
+        assert_eq!(cache.models[0].model_id, "claude-sonnet-4-20250514");
+        assert_eq!(
+            cache.models[0].display_name.as_deref(),
+            Some("Claude Sonnet 4")
+        );
+        assert_eq!(cache.models[0].sdk, "anthropic");
 
         std::env::remove_var(&unique);
     }
