@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.7](https://github.com/mythofmeat/shore-core/compare/shore-cli-v1.8.6...shore-cli-v1.8.7) - 2026-05-21
+
+### Other
+
+- [codex] add role filtering to shore log ([#25](https://github.com/mythofmeat/shore-core/pull/25))
+
 ### Added
 
 - Add `shore log --role` filtering for user, assistant, and system messages,
