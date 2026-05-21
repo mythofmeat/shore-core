@@ -104,6 +104,10 @@ pub enum CliCommand {
         #[arg(short = 'n', long = "turns", alias = "count", default_value = "64")]
         count: u32,
 
+        /// Show only messages from one role (`character` aliases `assistant`)
+        #[arg(long, value_enum, conflicts_with = "heartbeat")]
+        role: Option<LogRole>,
+
         /// Follow mode: keep listening for new messages
         #[arg(short = 'f', long)]
         follow: bool,
@@ -391,6 +395,25 @@ pub enum MatrixCommand {
     },
 }
 
+/// Message roles accepted by `shore log --role`.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogRole {
+    User,
+    #[value(alias = "character")]
+    Assistant,
+    System,
+}
+
+impl LogRole {
+    pub(crate) fn as_protocol_role(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::System => "system",
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum LogCommand {
     /// Edit a message by reference (last, -1, 3, etc.)
@@ -673,14 +696,28 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             ..
         } => Some(("delete", json!({ "refs": msg_ref }))),
         CliCommand::Log {
-            msg_ref: Some(r), ..
-        } => Some(("get", json!({ "ref": r }))),
+            msg_ref: Some(r),
+            role,
+            ..
+        } => {
+            let mut args = json!({ "ref": r });
+            if let Some(role) = role {
+                args["role"] = json!(role.as_protocol_role());
+            }
+            Some(("get", args))
+        }
         CliCommand::Log {
             heartbeat: true,
             count,
             ..
         } => Some(("heartbeat_log", json!({ "count": count }))),
-        CliCommand::Log { count, .. } => Some(("log", json!({ "turns": count }))),
+        CliCommand::Log { count, role, .. } => {
+            let mut args = json!({ "turns": count });
+            if let Some(role) = role {
+                args["role"] = json!(role.as_protocol_role());
+            }
+            Some(("log", args))
+        }
 
         // Status: diagnostics mode or normal status.
         CliCommand::Status {
@@ -1038,6 +1075,7 @@ mod tests {
                 subcommand,
                 msg_ref,
                 count,
+                role,
                 follow,
                 json,
                 content,
@@ -1047,6 +1085,7 @@ mod tests {
                 assert!(subcommand.is_none());
                 assert!(msg_ref.is_none());
                 assert_eq!(*count, 64);
+                assert!(role.is_none());
                 assert!(!follow);
                 assert!(!json);
                 assert!(!content);
@@ -1079,6 +1118,29 @@ mod tests {
             } => {
                 assert!(subcommand.is_none());
                 assert_eq!(msg_ref.as_deref(), Some("last"));
+            }
+            other => panic!("expected Log, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_log_get_by_role() {
+        let cli = parse(&["log", "last", "--role", "user"]);
+        match &cli.command {
+            CliCommand::Log { msg_ref, role, .. } => {
+                assert_eq!(msg_ref.as_deref(), Some("last"));
+                assert_eq!(*role, Some(LogRole::User));
+            }
+            other => panic!("expected Log, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_log_character_role_alias() {
+        let cli = parse(&["log", "--role", "character"]);
+        match &cli.command {
+            CliCommand::Log { role, .. } => {
+                assert_eq!(*role, Some(LogRole::Assistant));
             }
             other => panic!("expected Log, got: {other:?}"),
         }
@@ -2043,6 +2105,7 @@ mod tests {
             }),
             msg_ref: None,
             count: 20,
+            role: None,
             follow: false,
             json: false,
             content: false,
@@ -2063,6 +2126,7 @@ mod tests {
             }),
             msg_ref: None,
             count: 20,
+            role: None,
             follow: false,
             json: false,
             content: false,
@@ -2105,6 +2169,7 @@ mod tests {
             subcommand: None,
             msg_ref: Some("last".into()),
             count: 20,
+            role: Some(LogRole::User),
             follow: false,
             json: false,
             content: false,
@@ -2114,6 +2179,7 @@ mod tests {
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "get");
         assert_eq!(args["ref"], "last");
+        assert_eq!(args["role"], "user");
     }
 
     #[test]
@@ -2122,6 +2188,7 @@ mod tests {
             subcommand: None,
             msg_ref: None,
             count: 20,
+            role: Some(LogRole::Assistant),
             follow: false,
             json: false,
             content: false,
@@ -2131,6 +2198,7 @@ mod tests {
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "log");
         assert_eq!(args["turns"], 20);
+        assert_eq!(args["role"], "assistant");
     }
 
     #[test]
@@ -2180,6 +2248,7 @@ mod tests {
                 subcommand: None,
                 msg_ref: None,
                 count: 20,
+                role: None,
                 follow: false,
                 json: false,
                 content: false,
@@ -2193,6 +2262,7 @@ mod tests {
                 }),
                 msg_ref: None,
                 count: 20,
+                role: None,
                 follow: false,
                 json: false,
                 content: false,
@@ -2205,6 +2275,7 @@ mod tests {
                 }),
                 msg_ref: None,
                 count: 20,
+                role: None,
                 follow: false,
                 json: false,
                 content: false,
@@ -2215,6 +2286,7 @@ mod tests {
                 subcommand: None,
                 msg_ref: Some("last".into()),
                 count: 20,
+                role: None,
                 follow: false,
                 json: false,
                 content: false,

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add optional role filtering to conversation `log`, `history_page`, and `get`
+  command responses.
+
 ## [2.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v1.8.5...shore-daemon-v2.0.0) - 2026-05-21
 
 ### Other
