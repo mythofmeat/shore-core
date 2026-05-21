@@ -72,7 +72,6 @@ impl MessageHandler {
             session_tokens,
             diagnostics: self.cmd_ctx.diagnostics.clone(),
             notifier: self.notifier.clone(),
-            http: self.http.clone(),
         }
     }
 
@@ -116,7 +115,6 @@ impl MessageHandler {
                 autonomy: self.cmd_ctx.autonomy.clone(),
                 llm_client: self.cmd_ctx.llm_client.clone(),
                 diagnostics: self.cmd_ctx.diagnostics.clone(),
-                http: self.http.clone(),
             };
             return match commands::providers::refresh_provider_models(&ctx, &cmd.args).await {
                 Ok(data) => {
@@ -156,7 +154,6 @@ impl MessageHandler {
                 autonomy: self.cmd_ctx.autonomy.clone(),
                 llm_client: self.cmd_ctx.llm_client.clone(),
                 diagnostics: self.cmd_ctx.diagnostics.clone(),
-                http: self.http.clone(),
             };
             let result = commands::dispatch_characterless(&ctx, cmd);
             {
@@ -252,7 +249,6 @@ impl MessageHandler {
             autonomy: self.cmd_ctx.autonomy.clone(),
             llm_client: self.cmd_ctx.llm_client.clone(),
             diagnostics: self.cmd_ctx.diagnostics.clone(),
-            http: self.http.clone(),
         };
 
         let mut result = commands::dispatch(engine_arc.clone(), &mut cmd_ctx, cmd)

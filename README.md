@@ -34,9 +34,6 @@ For release history, read [CHANGELOG.md](CHANGELOG.md).
 - **Budget awareness.** Usage and cost are recorded in SQLite with model,
   call-kind, and configured API-key breakdowns; configurable hourly, daily,
   weekly, and monthly budgets can warn, block, or pause background work.
-- **Claude Code subscription transport.** Chat models can route through the
-  local `claude` CLI with `sdk = "claude_code"`, using the user's Claude
-  subscription while Shore keeps owning tools and memory.
 
 ## Quick Start
 

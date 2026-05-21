@@ -502,15 +502,6 @@ impl LedgerClient {
         character: &str,
         thinking_enabled: bool,
     ) -> Result<(GenerateResponse, Vec<CredentialFallbackEvent>), LlmError> {
-        if matches!(resolved.sdk, shore_config::models::Sdk::ClaudeCode) {
-            request.api_key.clear();
-            request.api_key_name = None;
-            return self
-                .generate(request, call_type, character, thinking_enabled)
-                .await
-                .map(|resp| (resp, Vec::new()));
-        }
-
         let candidates = resolve_key_candidates(&resolved.provider_key, providers, resolved);
         if candidates.is_empty() {
             return Err(LlmError::MissingApiKey {
@@ -892,7 +883,7 @@ mod tests {
             &pricing,
             &trackers,
             RecordCall {
-                provider: "claude_code",
+                provider: "openrouter",
                 api_key_name: None,
                 model: "claude-sonnet-4-5",
                 call_type: CallType::Message,
@@ -903,7 +894,6 @@ mod tests {
                     cache_read_tokens: 0,
                     cache_creation_tokens: 0,
                     total_cost_usd: Some(0.0042),
-                    ..Default::default()
                 },
                 timing: &Timing {
                     total_ms: 1500,

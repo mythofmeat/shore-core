@@ -36,8 +36,6 @@ fast_image_resize = { version = "6", features = ["image"] }
 which = { workspace = true }
 libc = { workspace = true }
 notify = "8.2"
-axum = { workspace = true }
-tower = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

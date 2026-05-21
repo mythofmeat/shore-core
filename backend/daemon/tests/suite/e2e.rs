@@ -203,7 +203,6 @@ async fn e2e_conversation_milestone() {
         diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
             shore_diagnostics::Diagnostics::default(),
         )),
-        http: None,
     };
 
     let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);
@@ -215,7 +214,6 @@ async fn e2e_conversation_milestone() {
         session_router,
         autonomy,
         notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
-        http: None,
         control_rx,
     });
 
@@ -686,7 +684,6 @@ impl E2EHarness {
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),
-            http: None,
         };
 
         let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);
@@ -698,7 +695,6 @@ impl E2EHarness {
             session_router,
             autonomy,
             notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
-            http: None,
             control_rx,
         });
 
