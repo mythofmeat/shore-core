@@ -54,9 +54,6 @@ pub struct CommandContext {
     pub llm_client: LedgerClient,
     /// In-memory diagnostics ring buffers.
     pub diagnostics: Arc<Mutex<Diagnostics>>,
-    /// Optional daemon HTTP listener state for providers that need
-    /// callback URLs during command-triggered background work.
-    pub http: Option<Arc<crate::http::DaemonHttpState>>,
 }
 
 /// Convenience type for command handler results.
@@ -212,7 +209,6 @@ mod tests {
             llm_client: LedgerClient::new(shore_llm::LlmClient::new(), &data_dir.join("ledger.db"))
                 .unwrap(),
             diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
-            http: None,
         };
         (engine, ctx, push_rx)
     }

@@ -64,7 +64,6 @@ enum StartupValueSource {
     Cli,
     Env,
     Config,
-    DaemonHttpConfig,
 }
 
 impl std::fmt::Display for StartupValueSource {
@@ -73,7 +72,6 @@ impl std::fmt::Display for StartupValueSource {
             StartupValueSource::Cli => "--addr",
             StartupValueSource::Env => "SHORE_ADDR",
             StartupValueSource::Config => "[daemon].addr",
-            StartupValueSource::DaemonHttpConfig => "[daemon.http].bind_addr",
         };
         f.write_str(label)
     }
@@ -234,21 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Registered daemon instance"
     );
 
-    // ── Daemon HTTP listener (off unless [daemon.http].enabled) ──────
-    // Bound here so it shares the SWP shutdown signal and the resolved
-    // address can be threaded into MessageHandlerDeps below.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-    let http_listener =
-        shore_daemon::http::spawn_listener(&loaded.app.daemon.http, shutdown_rx.clone())
-            .await
-            .map_err(|source| StartupError::ServerRun {
-                addr: loaded.app.daemon.http.bind_addr.clone(),
-                source,
-            })?;
-    let (http_state, http_handle) = match http_listener {
-        Some((state, handle)) => (Some(state), Some(handle)),
-        None => (None, None),
-    };
 
     tokio::spawn(async move {
         let ctrl_c = tokio::signal::ctrl_c();
@@ -337,7 +321,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         push_tx.clone(),
         loaded.clone(),
         notifier.clone(),
-        http_state.clone(),
     );
     autonomy.set_registry(char_registry.clone());
 
@@ -359,7 +342,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
         diagnostics: diagnostics.clone(),
-        http: http_state.clone(),
     };
 
     let (handler_control_tx, handler_control_rx) = tokio::sync::mpsc::channel(16);
@@ -372,7 +354,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_router,
         autonomy: autonomy.clone(),
         notifier,
-        http: http_state.clone(),
         control_rx: handler_control_rx,
     });
 
@@ -431,9 +412,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(handle) = hot_reload_handle {
         let _ = tokio::time::timeout(shutdown_timeout, handle).await;
     }
-    if let Some(handle) = http_handle {
-        let _ = tokio::time::timeout(shutdown_timeout, handle).await;
-    }
     let _ = tokio::time::timeout(shutdown_timeout, auto_discovery_handle).await;
     let _ = tokio::time::timeout(shutdown_timeout, handler_handle).await;
     let _ = tokio::time::timeout(shutdown_timeout, autonomy.shutdown()).await;
@@ -464,17 +442,14 @@ fn resolve_startup(cli: Cli, env_addr: Option<String>) -> Result<StartupConfig, 
     let config_path_for_errors = explicit_config_path
         .clone()
         .unwrap_or_else(default_config_path);
-    let mut loaded = load_config(explicit_config_path.as_deref()).map_err(|source| {
+    let loaded = load_config(explicit_config_path.as_deref()).map_err(|source| {
         StartupError::LoadConfig {
             path: config_path_for_errors.clone(),
             source: Box::new(source),
         }
     })?;
-    if claude_code_models_need_http(&loaded) && !loaded.app.daemon.http.enabled {
-        loaded.app.daemon.http.enabled = true;
-    }
     let (bind_addr, bind_addr_source) = resolve_listen_addr(cli.addr, env_addr, &loaded);
-    let mut remote_access_warnings: Vec<RemoteAccessWarning> = validate_remote_access_policy(
+    let remote_access_warnings: Vec<RemoteAccessWarning> = validate_remote_access_policy(
         &bind_addr,
         loaded.app.daemon.unsafe_allow_remote_access,
         &loaded.app.daemon.allowed_hosts,
@@ -491,25 +466,6 @@ fn resolve_startup(cli: Cli, env_addr: Option<String>) -> Result<StartupConfig, 
         message,
     })
     .collect();
-    remote_access_warnings.extend(
-        validate_http_remote_access_policy(
-            loaded.app.daemon.http.enabled,
-            &loaded.app.daemon.http.bind_addr,
-            loaded.app.daemon.unsafe_allow_remote_access,
-            &loaded.app.daemon.allowed_hosts,
-        )
-        .map_err(|message| StartupError::RemoteAccessPolicy {
-            addr: loaded.app.daemon.http.bind_addr.clone(),
-            bind_addr_source: StartupValueSource::DaemonHttpConfig,
-            message,
-        })?
-        .into_iter()
-        .map(|message| RemoteAccessWarning {
-            addr: loaded.app.daemon.http.bind_addr.clone(),
-            bind_addr_source: StartupValueSource::DaemonHttpConfig,
-            message,
-        }),
-    );
 
     Ok(StartupConfig {
         loaded,
@@ -518,14 +474,6 @@ fn resolve_startup(cli: Cli, env_addr: Option<String>) -> Result<StartupConfig, 
         bind_addr_source,
         remote_access_warnings,
     })
-}
-
-fn claude_code_models_need_http(loaded: &LoadedConfig) -> bool {
-    loaded
-        .models
-        .chat
-        .values()
-        .any(|model| model.sdk == shore_config::models::Sdk::ClaudeCode)
 }
 
 fn resolve_explicit_config_path(
@@ -607,36 +555,6 @@ Set [daemon].unsafe_allow_remote_access = true to acknowledge unauthenticated re
     Ok(warnings)
 }
 
-fn validate_http_remote_access_policy(
-    enabled: bool,
-    addr: &str,
-    unsafe_allow_remote_access: bool,
-    allowed_hosts: &[String],
-) -> Result<Vec<String>, String> {
-    if !enabled || bind_addr_is_loopback(addr)? {
-        return Ok(Vec::new());
-    }
-
-    if !unsafe_allow_remote_access {
-        return Err(format!(
-            "Refusing to bind [daemon.http] to non-loopback address {addr}. \
-Set [daemon].unsafe_allow_remote_access = true to acknowledge unauthenticated remote MCP exposure. \
-The HTTP MCP listener has no authentication or TLS; its session URLs are bearer secrets."
-        ));
-    }
-
-    let mut warnings = vec![format!(
-        "[daemon.http] is bound to non-loopback address {addr}. The HTTP MCP listener has no authentication or TLS; keep it on trusted private or overlay networks and treat /mcp/<session-id> URLs as bearer secrets."
-    )];
-    if !allowed_hosts.is_empty() {
-        warnings.push(String::from(
-            "[daemon].allowed_hosts filters the SWP listener only; it does not restrict [daemon.http].bind_addr.",
-        ));
-    }
-
-    Ok(warnings)
-}
-
 fn bind_addr_is_loopback(addr: &str) -> Result<bool, String> {
     if let Ok(socket_addr) = addr.parse::<std::net::SocketAddr>() {
         return Ok(socket_addr.ip().is_loopback());
@@ -676,8 +594,7 @@ mod tests {
 
     use super::{
         epoch_timestamp, resolve_explicit_config_path, resolve_listen_addr, resolve_startup,
-        validate_http_remote_access_policy, validate_remote_access_policy, Cli, StartupError,
-        StartupValueSource,
+        validate_remote_access_policy, Cli, StartupError, StartupValueSource,
     };
     use clap::Parser;
     use tempfile::TempDir;
@@ -724,29 +641,6 @@ mod tests {
         let err = validate_remote_access_policy("not-an-address", false, &[])
             .expect_err("invalid address should fail validation");
         assert!(err.contains("Invalid daemon listen address"));
-    }
-
-    #[test]
-    fn http_remote_bind_requires_explicit_opt_in() {
-        let err = validate_http_remote_access_policy(true, "0.0.0.0:7321", false, &[])
-            .expect_err("remote http bind without opt-in should fail");
-        assert!(err.contains("[daemon.http]"));
-        assert!(err.contains("unsafe_allow_remote_access"));
-        assert!(err.contains("bearer secrets"));
-    }
-
-    #[test]
-    fn http_remote_bind_warns_that_swp_acl_does_not_apply() {
-        let warnings = validate_http_remote_access_policy(
-            true,
-            "0.0.0.0:7321",
-            true,
-            &[String::from("10.0.0.5")],
-        )
-        .unwrap();
-        assert_eq!(warnings.len(), 2);
-        assert!(warnings[0].contains("bearer secrets"));
-        assert!(warnings[1].contains("does not restrict [daemon.http]"));
     }
 
     #[test]
@@ -891,70 +785,5 @@ unsafe_allow_remote_access = true
             }
             other => panic!("expected remote access policy error, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn resolve_startup_reports_http_remote_access_source() {
-        let tmp = TempDir::new().unwrap();
-        let config_dir = tmp.path().join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("config.toml");
-        std::fs::write(
-            &config_path,
-            r#"
-[daemon.http]
-enabled = true
-bind_addr = "0.0.0.0:7321"
-"#,
-        )
-        .unwrap();
-
-        let err = resolve_startup(
-            Cli {
-                config: Some(config_path),
-                addr: None,
-                instance_id: None,
-            },
-            None,
-        )
-        .expect_err("non-loopback [daemon.http] should enforce remote-access policy");
-
-        match err {
-            StartupError::RemoteAccessPolicy {
-                bind_addr_source, ..
-            } => {
-                assert_eq!(bind_addr_source, StartupValueSource::DaemonHttpConfig);
-            }
-            other => panic!("expected remote access policy error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn resolve_startup_auto_enables_http_for_claude_code_models() {
-        let tmp = TempDir::new().unwrap();
-        let config_dir = tmp.path().join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("config.toml");
-        std::fs::write(
-            &config_path,
-            r#"
-[chat.claude_code.sonnet]
-model_id = "claude-sonnet-4-5"
-"#,
-        )
-        .unwrap();
-
-        let startup = resolve_startup(
-            Cli {
-                config: Some(config_path),
-                addr: None,
-                instance_id: None,
-            },
-            None,
-        )
-        .unwrap();
-
-        assert!(startup.loaded.app.daemon.http.enabled);
-        assert_eq!(startup.loaded.app.daemon.http.bind_addr, "127.0.0.1:0");
     }
 }

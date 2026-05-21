@@ -26,11 +26,6 @@ pub enum Sdk {
     Openai,
     Gemini,
     Zai,
-    /// Routes through the local `claude` CLI subprocess, billing against
-    /// the user's Claude subscription via OAuth instead of an API key.
-    /// The underlying model is Anthropic, but the transport is a
-    /// subprocess driver rather than an HTTP client.
-    ClaudeCode,
 }
 
 impl<'de> Deserialize<'de> for Sdk {
@@ -44,7 +39,6 @@ impl<'de> Deserialize<'de> for Sdk {
             "openai" => Ok(Sdk::Openai),
             "gemini" => Ok(Sdk::Gemini),
             "zai" => Ok(Sdk::Zai),
-            "claude_code" | "claude-code" | "claudecode" => Ok(Sdk::ClaudeCode),
             "deepseek" | "zhipuai" => {
                 warn!(
                     "sdk = \"{s}\" is deprecated and now maps to \"openai\". \
@@ -54,7 +48,7 @@ impl<'de> Deserialize<'de> for Sdk {
             }
             other => Err(serde::de::Error::unknown_variant(
                 other,
-                &["anthropic", "openai", "gemini", "zai", "claude_code"],
+                &["anthropic", "openai", "gemini", "zai"],
             )),
         }
     }
@@ -68,7 +62,6 @@ impl Sdk {
             Sdk::Openai => "openai",
             Sdk::Gemini => "gemini",
             Sdk::Zai => "zai",
-            Sdk::ClaudeCode => "claude_code",
         }
     }
 
@@ -82,18 +75,16 @@ impl Sdk {
             "openai" => Some(Sdk::Openai),
             "gemini" => Some(Sdk::Gemini),
             "zai" => Some(Sdk::Zai),
-            "claude_code" => Some(Sdk::ClaudeCode),
             _ => None,
         }
     }
 
     /// Whether this SDK's wire protocol requires the daemon to echo
     /// **unsigned** reasoning text back to the provider on the next
-    /// request. Anthropic (and Claude Code, which is Anthropic underneath)
-    /// signs its thinking blocks and rejects requests that include
-    /// unsigned reasoning text from a prior turn; OpenAI and Z.AI, in
-    /// contrast, expect the assistant's prior `reasoning_content` to
-    /// round-trip verbatim. Gemini doesn't accept reasoning replay.
+    /// request. Anthropic signs its thinking blocks and rejects requests
+    /// that include unsigned reasoning text from a prior turn; OpenAI and
+    /// Z.AI, in contrast, expect the assistant's prior `reasoning_content`
+    /// to round-trip verbatim. Gemini doesn't accept reasoning replay.
     ///
     /// Centralized here so chat and heartbeat sites can derive the same
     /// value from one source — keeping the cache prefix consistent
@@ -109,15 +100,14 @@ impl Sdk {
     /// prefix has to preserve `request.system` verbatim and ride trailing
     /// instructions through `system_suffix` instead).
     ///
-    /// True for `Anthropic` and `ClaudeCode` (subprocess driver, Anthropic
-    /// underneath). False for OpenAI / Gemini / Z.AI — those translate
-    /// `system_suffix` into a mid-history `<system_instruction>` user-role
-    /// (or raw `role:"system"` on Z.AI), which is a materially different
-    /// wire shape than a top-level system block. Background tasks should
-    /// only swap their fresh-path system prompt over to `system_suffix`
-    /// on SDKs where this is true.
+    /// True for `Anthropic`. False for OpenAI / Gemini / Z.AI — those
+    /// translate `system_suffix` into a mid-history `<system_instruction>`
+    /// user-role (or raw `role:"system"` on Z.AI), which is a materially
+    /// different wire shape than a top-level system block. Background tasks
+    /// should only swap their fresh-path system prompt over to
+    /// `system_suffix` on SDKs where this is true.
     pub fn uses_anthropic_prompt_cache(&self) -> bool {
-        matches!(self, Sdk::Anthropic | Sdk::ClaudeCode)
+        matches!(self, Sdk::Anthropic)
     }
 }
 
@@ -716,11 +706,6 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
             base_url: Some("https://nano-gpt.com/api/v1".into()),
             ..base_provider_defaults()
         },
-        "claude_code" => ModelConfigFields {
-            sdk: Some(Sdk::ClaudeCode),
-            api_key_env: None,
-            ..base_provider_defaults()
-        },
         _ => ModelConfigFields::default(),
     };
     ProviderConfig { fields }
@@ -732,7 +717,6 @@ pub fn default_sdk(provider_key: &str) -> Sdk {
         "anthropic" => Sdk::Anthropic,
         "gemini" => Sdk::Gemini,
         "zai" => Sdk::Zai,
-        "claude_code" => Sdk::ClaudeCode,
         // Everything else (openrouter, xai, deepseek, zhipuai, custom)
         // defaults to OpenAI-compatible.
         _ => Sdk::Openai,
@@ -863,22 +847,6 @@ model_id = "anthropic/claude-opus-4.6"
         // openrouter -> Sdk::Openai via hardcoded_defaults; no auto cache_ttl.
         assert_eq!(foo.sdk, Sdk::Openai);
         assert_eq!(foo.cache_ttl, None);
-    }
-
-    #[test]
-    fn claude_code_provider_key_infers_sdk_without_api_key() {
-        let table = parse_table(
-            r#"
-[claude_code.sonnet-max]
-model_id = "claude-sonnet-4-5"
-"#,
-        );
-        let models = parse_category("chat", &table, None).unwrap();
-        let sonnet = &models["chat.claude_code.sonnet-max"];
-        assert_eq!(sonnet.sdk, Sdk::ClaudeCode);
-        assert_eq!(sonnet.provider_key, "claude_code");
-        assert_eq!(sonnet.api_key_env, None);
-        assert_eq!(sonnet.cache_ttl, None);
     }
 
     #[test]
@@ -1461,22 +1429,6 @@ sdk = "anthropic"
         );
         // Should inherit OpenRouter's API key env
         assert_eq!(opus.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
-    }
-
-    #[test]
-    fn claude_code_sdk_accepts_three_spellings() {
-        // The wire form is `claude_code`; we also accept the dashed and
-        // run-together variants because the docs use them interchangeably
-        // and config-typo lockout is unfriendly.
-        for input in ["claude_code", "claude-code", "claudecode"] {
-            let toml = format!(r#"sdk = "{input}""#);
-            let parsed: ModelConfigFields = toml::from_str(&toml).unwrap();
-            assert_eq!(parsed.sdk, Some(Sdk::ClaudeCode), "input was {input:?}");
-        }
-        assert_eq!(Sdk::ClaudeCode.as_str(), "claude_code");
-        assert_eq!(Sdk::parse_wire("claude_code"), Some(Sdk::ClaudeCode));
-        // Dashed form is for config humans; wire form is canonical.
-        assert_eq!(Sdk::parse_wire("claude-code"), None);
     }
 
     #[test]

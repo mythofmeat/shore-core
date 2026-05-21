@@ -142,7 +142,6 @@ impl TestHarness {
             push_tx.clone(),
             config.clone(),
             notifier.clone(),
-            None,
         );
         autonomy.set_registry(char_registry.clone());
 
@@ -161,7 +160,6 @@ impl TestHarness {
             autonomy: autonomy.clone(),
             llm_client: llm_client.clone(),
             diagnostics: diagnostics.clone(),
-            http: None,
         };
 
         // Clone for storage in TestHarness (before ownership is moved into msg_handler).
@@ -179,7 +177,6 @@ impl TestHarness {
             session_router,
             autonomy,
             notifier,
-            http: None,
             control_rx,
         });
 
@@ -250,7 +247,6 @@ impl TestHarness {
             &self.llm_client,
             &self.notifier,
             cached_request,
-            None,
         )
         .await
         {
@@ -281,7 +277,6 @@ impl TestHarness {
             None,
             false,
             true,
-            None,
         )
         .await
         {
