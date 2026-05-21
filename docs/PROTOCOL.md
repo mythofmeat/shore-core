@@ -552,15 +552,20 @@ may be:
 - A 1-based positive index (`"1"`, `"2"`, …) or negative index (`"-1"`, …)
 - A literal `msg_id`
 
+When `get` includes a `role` filter, its `ref` resolves against only messages
+with that role.
+
 #### `log`
-- **args:** `{ "turns"?: u64, "count"?: u64 }` — default `turns = 64`.
-  `turns` counts user turns; `count` counts raw messages.
+- **args:** `{ "turns"?: u64, "count"?: u64, "role"?: "user" | "assistant" | "system" }`
+  — default `turns = 64`. `turns` counts user turns; `count` counts raw
+  messages. `role` filters the bounded page returned by those limits.
 - **data:** see `history_page_payload` shape below.
 
 #### `history_page`
-- **args:** `{ "before"?: "active" | u64, "turns"?: u64, "count"?: u64 }`
-  — `"active"` clamps `before` to the current `active_start`; numeric
-  values are cursor positions returned from prior pages.
+- **args:** `{ "before"?: "active" | u64, "turns"?: u64, "count"?: u64, "role"?: "user" | "assistant" | "system" }`
+  — `"active"` clamps `before` to the current `active_start`; numeric values
+  are cursor positions returned from prior pages. `role` filters the bounded
+  page returned by those limits.
 - **data:**
   ```json
   {
@@ -576,7 +581,7 @@ may be:
   ```
 
 #### `get`
-- **args:** `{ "ref": "<ref>" }`
+- **args:** `{ "ref": "<ref>", "role"?: "user" | "assistant" | "system" }`
 - **data:** a single `Message` (see §9).
 
 #### `edit`

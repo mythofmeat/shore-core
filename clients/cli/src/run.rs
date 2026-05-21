@@ -8,7 +8,7 @@ use shore_protocol::types::{CharacterAvatar, CharacterInfo, Role};
 use shore_swp_client::{SWPConnection, ServerAddr};
 use tracing::{debug, info, instrument, warn};
 
-use crate::cli::{Cli, CliCommand};
+use crate::cli::{Cli, CliCommand, LogRole};
 use crate::output;
 use crate::state;
 
@@ -22,6 +22,15 @@ fn session_display_character() -> &'static str {
         .get()
         .map(String::as_str)
         .unwrap_or("Assistant")
+}
+
+fn log_role_matches(filter: Option<&LogRole>, role: &Role) -> bool {
+    match filter {
+        None => true,
+        Some(LogRole::User) => *role == Role::User,
+        Some(LogRole::Assistant) => *role == Role::Assistant,
+        Some(LogRole::System) => *role == Role::System,
+    }
 }
 
 /// Execute the CLI command by connecting to the daemon and dispatching.
@@ -212,10 +221,14 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             json,
             plain,
             content,
+            role,
             ..
         } => {
-            conn.send_command("get", serde_json::json!({ "ref": r }))
-                .await?;
+            let mut args = serde_json::json!({ "ref": r });
+            if let Some(role) = role {
+                args["role"] = serde_json::json!(role.as_protocol_role());
+            }
+            conn.send_command("get", args).await?;
             let data = recv_command_data(&mut conn).await?;
             if *json {
                 println!("{}", serde_json::to_string_pretty(&data)?);
@@ -250,10 +263,14 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             json,
             content,
             plain,
+            role,
             ..
         } => {
-            conn.send_command("log", serde_json::json!({ "turns": count }))
-                .await?;
+            let mut args = serde_json::json!({ "turns": count });
+            if let Some(role) = role {
+                args["role"] = serde_json::json!(role.as_protocol_role());
+            }
+            conn.send_command("log", args).await?;
             let data = recv_command_data(&mut conn).await?;
 
             if *json {
@@ -286,33 +303,47 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     let msg = conn.recv().await?;
                     match &msg {
                         ServerMessage::NewMessage(nm) => {
-                            output::print_new_message(
-                                nm,
-                                nm.character.as_deref().unwrap_or(follow_char),
-                            );
+                            if log_role_matches(role.as_ref(), &nm.message.role) {
+                                output::print_new_message(
+                                    nm,
+                                    nm.character.as_deref().unwrap_or(follow_char),
+                                );
+                            }
                         }
                         ServerMessage::StreamStart(start) => {
-                            output::reset_chunk_state();
-                            if !start.regen {
-                                output::print_follow_stream_start(follow_char);
-                            } else {
-                                output::print_stream_start(start.regen);
+                            if log_role_matches(role.as_ref(), &Role::Assistant) {
+                                output::reset_chunk_state();
+                                if !start.regen {
+                                    output::print_follow_stream_start(follow_char);
+                                } else {
+                                    output::print_stream_start(start.regen);
+                                }
                             }
                         }
                         ServerMessage::StreamChunk(chunk) => {
-                            output::print_chunk(chunk);
+                            if log_role_matches(role.as_ref(), &Role::Assistant) {
+                                output::print_chunk(chunk);
+                            }
                         }
                         ServerMessage::StreamEnd(end) => {
-                            output::print_stream_end(end);
+                            if log_role_matches(role.as_ref(), &Role::Assistant) {
+                                output::print_stream_end(end);
+                            }
                         }
                         ServerMessage::ToolCall(call) => {
-                            output::print_tool_call(call);
+                            if log_role_matches(role.as_ref(), &Role::Assistant) {
+                                output::print_tool_call(call);
+                            }
                         }
                         ServerMessage::ToolResult(result) => {
-                            output::print_tool_result(result);
+                            if log_role_matches(role.as_ref(), &Role::Assistant) {
+                                output::print_tool_result(result);
+                            }
                         }
                         ServerMessage::Phase(phase) => {
-                            output::print_phase(phase);
+                            if log_role_matches(role.as_ref(), &Role::Assistant) {
+                                output::print_phase(phase);
+                            }
                         }
                         ServerMessage::Shutdown(_) => break,
                         ServerMessage::Ping(_) | ServerMessage::History(_) => {}
@@ -1481,6 +1512,7 @@ mod tests {
             }),
             msg_ref: None,
             count: 20,
+            role: None,
             follow: false,
             json: false,
             content: false,
@@ -1509,6 +1541,7 @@ mod tests {
             }),
             msg_ref: None,
             count: 20,
+            role: None,
             follow: false,
             json: false,
             content: false,

@@ -124,6 +124,23 @@ fn page_start_by_args(messages: &[Message], end: usize, args: &serde_json::Value
     page_start_by_turns(messages, end, DEFAULT_LOG_TURNS)
 }
 
+fn role_filter(args: &serde_json::Value) -> Result<Option<Role>, (ErrorCode, String)> {
+    let Some(role) = args.get("role") else {
+        return Ok(None);
+    };
+
+    serde_json::from_value(role.clone()).map(Some).map_err(|_| {
+        (
+            ErrorCode::InvalidRequest,
+            "role must be one of user, assistant, or system".into(),
+        )
+    })
+}
+
+fn matches_role(message: &Message, role: Option<&Role>) -> bool {
+    role.map_or(true, |role| message.role == *role)
+}
+
 fn resolve_history_before(
     args: &serde_json::Value,
     active_start: usize,
@@ -152,22 +169,31 @@ fn history_page_payload(
     global_active_start: usize,
     start: usize,
     end: usize,
+    role: Option<&Role>,
 ) -> serde_json::Value {
     let start = start.min(messages.len());
     let end = end.min(messages.len()).max(start);
-    let mut page: Vec<Message> = messages[start..end].to_vec();
-    let active_start = global_active_start.saturating_sub(start).min(page.len());
+    let mut page: Vec<Message> = messages[start..end]
+        .iter()
+        .filter(|msg| matches_role(msg, role))
+        .cloned()
+        .collect();
+    let archived_end = global_active_start.min(end).max(start);
+    let active_page_start = messages[start..archived_end]
+        .iter()
+        .filter(|msg| matches_role(msg, role))
+        .count();
     let total_turns = count_user_turns(messages);
 
     // Keep archived scrollback lightweight. Active-tail messages may still
     // embed image bytes for remote clients; archived image refs remain labels.
-    if active_start < page.len() {
-        crate::handler::embed_messages_image_data(&mut page[active_start..]);
+    if active_page_start < page.len() {
+        crate::handler::embed_messages_image_data(&mut page[active_page_start..]);
     }
 
     json!({
         "messages": page,
-        "active_start": active_start,
+        "active_start": active_page_start,
         "cursor": start,
         "next_before": start,
         "has_more_before": start > 0,
@@ -192,7 +218,9 @@ pub fn get(
         )
     })?;
 
-    let merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
+    let role = role_filter(args)?;
+    let mut merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
+    merged.retain(|msg| matches_role(msg, role.as_ref()));
     let msg_id = resolve_ref(&merged, raw_ref)?;
     let msg = merged
         .iter()
@@ -216,8 +244,15 @@ pub fn log(
     let (messages, active_start) = engine.display_history();
     let end = messages.len();
     let start = page_start_by_args(&messages, end, args);
+    let role = role_filter(args)?;
 
-    Ok(history_page_payload(&messages, active_start, start, end))
+    Ok(history_page_payload(
+        &messages,
+        active_start,
+        start,
+        end,
+        role.as_ref(),
+    ))
 }
 
 /// Fetch a bounded page of older display history for lazy clients.
@@ -233,8 +268,15 @@ pub fn history_page(
     let (messages, active_start) = engine.display_history();
     let end = resolve_history_before(args, active_start, messages.len())?;
     let start = page_start_by_args(&messages, end, args);
+    let role = role_filter(args)?;
 
-    Ok(history_page_payload(&messages, active_start, start, end))
+    Ok(history_page_payload(
+        &messages,
+        active_start,
+        start,
+        end,
+        role.as_ref(),
+    ))
 }
 
 /// Edit a message by ID.
@@ -641,6 +683,30 @@ mod tests {
     }
 
     #[test]
+    fn log_with_role_filters_page_and_keeps_archive_boundary() {
+        let tmp = TempDir::new().unwrap();
+        write_segmented_history(&tmp);
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = log(&engine, &ctx, &json!({"count": 3, "role": "assistant"})).unwrap();
+        let msgs = result["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["msg_id"], "m2");
+        assert_eq!(msgs[1]["msg_id"], "m4");
+        assert_eq!(result["active_start"], 1);
+    }
+
+    #[test]
+    fn log_rejects_unknown_role() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let (code, message) = log(&engine, &ctx, &json!({"role": "character"})).unwrap_err();
+        assert_eq!(code, ErrorCode::InvalidRequest);
+        assert!(message.contains("user, assistant, or system"));
+    }
+
+    #[test]
     fn log_keeps_archived_image_refs_lightweight() {
         use shore_protocol::types::ImageRef;
 
@@ -702,6 +768,28 @@ mod tests {
         let result = log(&engine, &ctx, &json!({})).unwrap();
         let msgs = result["messages"].as_array().unwrap();
         assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn get_last_with_role_resolves_filtered_messages() {
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, ctx, _rx) = make_ctx(&tmp);
+        engine
+            .append_message(make_msg("m1", Role::User, "first user"))
+            .unwrap();
+        engine
+            .append_message(make_msg("m2", Role::Assistant, "first assistant"))
+            .unwrap();
+        engine
+            .append_message(make_msg("m3", Role::User, "last user"))
+            .unwrap();
+        engine
+            .append_message(make_msg("m4", Role::Assistant, "last assistant"))
+            .unwrap();
+
+        let result = get(&engine, &ctx, &json!({"ref": "last", "role": "user"})).unwrap();
+        assert_eq!(result["msg_id"], "m3");
+        assert_eq!(result["content"], "last user");
     }
 
     #[test]
