@@ -138,7 +138,7 @@ fn role_filter(args: &serde_json::Value) -> Result<Option<Role>, (ErrorCode, Str
 }
 
 fn matches_role(message: &Message, role: Option<&Role>) -> bool {
-    role.map_or(true, |role| message.role == *role)
+    role.is_none_or(|role| message.role == *role)
 }
 
 fn resolve_history_before(

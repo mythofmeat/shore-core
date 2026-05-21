@@ -302,48 +302,48 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 loop {
                     let msg = conn.recv().await?;
                     match &msg {
-                        ServerMessage::NewMessage(nm) => {
-                            if log_role_matches(role.as_ref(), &nm.message.role) {
-                                output::print_new_message(
-                                    nm,
-                                    nm.character.as_deref().unwrap_or(follow_char),
-                                );
+                        ServerMessage::NewMessage(nm)
+                            if log_role_matches(role.as_ref(), &nm.message.role) =>
+                        {
+                            output::print_new_message(
+                                nm,
+                                nm.character.as_deref().unwrap_or(follow_char),
+                            );
+                        }
+                        ServerMessage::StreamStart(start)
+                            if log_role_matches(role.as_ref(), &Role::Assistant) =>
+                        {
+                            output::reset_chunk_state();
+                            if !start.regen {
+                                output::print_follow_stream_start(follow_char);
+                            } else {
+                                output::print_stream_start(start.regen);
                             }
                         }
-                        ServerMessage::StreamStart(start) => {
-                            if log_role_matches(role.as_ref(), &Role::Assistant) {
-                                output::reset_chunk_state();
-                                if !start.regen {
-                                    output::print_follow_stream_start(follow_char);
-                                } else {
-                                    output::print_stream_start(start.regen);
-                                }
-                            }
+                        ServerMessage::StreamChunk(chunk)
+                            if log_role_matches(role.as_ref(), &Role::Assistant) =>
+                        {
+                            output::print_chunk(chunk);
                         }
-                        ServerMessage::StreamChunk(chunk) => {
-                            if log_role_matches(role.as_ref(), &Role::Assistant) {
-                                output::print_chunk(chunk);
-                            }
+                        ServerMessage::StreamEnd(end)
+                            if log_role_matches(role.as_ref(), &Role::Assistant) =>
+                        {
+                            output::print_stream_end(end);
                         }
-                        ServerMessage::StreamEnd(end) => {
-                            if log_role_matches(role.as_ref(), &Role::Assistant) {
-                                output::print_stream_end(end);
-                            }
+                        ServerMessage::ToolCall(call)
+                            if log_role_matches(role.as_ref(), &Role::Assistant) =>
+                        {
+                            output::print_tool_call(call);
                         }
-                        ServerMessage::ToolCall(call) => {
-                            if log_role_matches(role.as_ref(), &Role::Assistant) {
-                                output::print_tool_call(call);
-                            }
+                        ServerMessage::ToolResult(result)
+                            if log_role_matches(role.as_ref(), &Role::Assistant) =>
+                        {
+                            output::print_tool_result(result);
                         }
-                        ServerMessage::ToolResult(result) => {
-                            if log_role_matches(role.as_ref(), &Role::Assistant) {
-                                output::print_tool_result(result);
-                            }
-                        }
-                        ServerMessage::Phase(phase) => {
-                            if log_role_matches(role.as_ref(), &Role::Assistant) {
-                                output::print_phase(phase);
-                            }
+                        ServerMessage::Phase(phase)
+                            if log_role_matches(role.as_ref(), &Role::Assistant) =>
+                        {
+                            output::print_phase(phase);
                         }
                         ServerMessage::Shutdown(_) => break,
                         ServerMessage::Ping(_) | ServerMessage::History(_) => {}
