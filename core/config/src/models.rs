@@ -360,6 +360,11 @@ pub enum CatalogError {
     AmbiguousName { name: String, locations: String },
     #[error("model \"{name}\" not found")]
     NotFound { name: String },
+    #[error(
+        "[{category}.claude_code] is no longer supported — the Claude Code transport \
+         was removed; drop this section from your config"
+    )]
+    RemovedProvider { category: String },
 }
 
 /// Dict-valued TOML keys at the provider level that are config fields,
@@ -531,6 +536,16 @@ fn parse_category(
     );
 
     for (provider_key, provider_value) in section {
+        // The Claude Code transport was removed; reject leftover
+        // `[chat.claude_code.*]` / `[tools.claude_code.*]` sections explicitly
+        // so the breaking change surfaces as a clear config error rather than
+        // silently routing through `default_sdk("claude_code") == Openai`.
+        if provider_key == "claude_code" {
+            return Err(CatalogError::RemovedProvider {
+                category: category.to_string(),
+            });
+        }
+
         let provider_table = match provider_value.as_table() {
             Some(t) => t,
             None => {
@@ -1039,6 +1054,21 @@ model_id = "claude-opus-4-6"
         // And the provider-level openrouter_provider should cascade.
         let opus = &models["chat.anthropic.opus"];
         assert!(opus.openrouter_provider.is_some());
+    }
+
+    #[test]
+    fn rejects_removed_claude_code_provider_key() {
+        let table = parse_table(
+            r#"
+[claude_code.opus]
+model_id = "claude-opus-4-6"
+"#,
+        );
+        let err = parse_category("chat", &table, None).unwrap_err();
+        match err {
+            CatalogError::RemovedProvider { category } => assert_eq!(category, "chat"),
+            other => panic!("expected RemovedProvider, got {other:?}"),
+        }
     }
 
     #[test]
