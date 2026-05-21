@@ -67,12 +67,10 @@ pub struct ApiCallEntry {
     pub ttft_ms: u32,
     pub total_ms: u32,
     pub finish_reason: String,
-    /// Provider-reported total cost when available. For `claude_code`
-    /// this is would-be API cost, not subscription spend.
+    /// Provider-reported total cost when available (e.g. OpenRouter's
+    /// `cost` field).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_cost_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rate_limit_info: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -278,7 +276,6 @@ mod tests {
             total_ms: 1000,
             finish_reason: "end_turn".into(),
             total_cost_usd: Some(0.0123),
-            rate_limit_info: Some(json!({"status": "allowed"})),
             error: None,
         });
         diag.tool_calls.push(ToolCallEntry {

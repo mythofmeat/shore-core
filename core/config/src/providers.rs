@@ -73,6 +73,12 @@ pub enum ProviderRegistryError {
          each key under a provider must have a unique name"
     )]
     DuplicateKeyName { provider: String, name: String },
+
+    #[error(
+        "[providers.claude_code] is no longer supported — the Claude Code transport \
+         was removed; drop this section from your config"
+    )]
+    RemovedProvider,
 }
 
 // ── Discovery ───────────────────────────────────────────────────────────
@@ -273,6 +279,9 @@ impl ProviderRegistry {
 
         let mut providers = BTreeMap::new();
         for (name, value) in table {
+            if name == "claude_code" {
+                return Err(ProviderRegistryError::RemovedProvider);
+            }
             let entry = parse_entry(name, value.clone())?;
             providers.insert(name.clone(), entry);
         }
@@ -667,6 +676,19 @@ typo_field = "oops"
             }
             other => panic!("expected ParseEntry, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rejects_removed_claude_code_provider() {
+        let table = parse_table(
+            r#"
+[providers.claude_code]
+api_key_env = "K"
+"#,
+        );
+        let providers = table.get("providers").and_then(|v| v.as_table());
+        let err = ProviderRegistry::from_section(providers).unwrap_err();
+        assert!(matches!(err, ProviderRegistryError::RemovedProvider));
     }
 
     #[test]

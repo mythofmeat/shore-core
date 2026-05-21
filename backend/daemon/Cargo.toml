@@ -1,6 +1,6 @@
 [package]
 name = "shore-daemon"
-version = "1.8.5"
+version = "2.0.0"
 edition = "2021"
 license.workspace = true
 repository.workspace = true
@@ -36,8 +36,6 @@ fast_image_resize = { version = "6", features = ["image"] }
 which = { workspace = true }
 libc = { workspace = true }
 notify = "8.2"
-axum = { workspace = true }
-tower = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

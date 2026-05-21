@@ -66,12 +66,6 @@ pub struct DaemonConfig {
     /// Allowed client hosts. Empty list means allow all.
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
-
-    /// HTTP listener configuration. Off by default — only required
-    /// for providers that need a callback URL (e.g. `claude_code`'s
-    /// in-process MCP host).
-    #[serde(default)]
-    pub http: DaemonHttpConfig,
 }
 
 impl Default for DaemonConfig {
@@ -80,38 +74,6 @@ impl Default for DaemonConfig {
             addr: default_daemon_addr(),
             unsafe_allow_remote_access: false,
             allowed_hosts: vec![],
-            http: DaemonHttpConfig::default(),
-        }
-    }
-}
-
-// ── [daemon.http] ───────────────────────────────────────────────────────
-
-serde_default!(default_daemon_http_bind_addr -> String { "127.0.0.1:0".to_string() });
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct DaemonHttpConfig {
-    /// Whether the HTTP listener is started. Defaults to `false`. The
-    /// `claude_code` provider requires it to be `true`; other providers
-    /// have no use for it.
-    #[serde(default)]
-    pub enabled: bool,
-
-    /// Bind address for the HTTP listener. Default `127.0.0.1:0`
-    /// resolves to an ephemeral loopback port at startup; the daemon
-    /// surfaces the resolved address to its engine context. Set
-    /// explicitly only when the listener must be reachable from
-    /// outside the local machine (rare).
-    #[serde(default = "default_daemon_http_bind_addr")]
-    pub bind_addr: String,
-}
-
-impl Default for DaemonHttpConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            bind_addr: default_daemon_http_bind_addr(),
         }
     }
 }
@@ -1315,49 +1277,6 @@ allowed_hosts = ["127.0.0.1", "192.168.1.100"]
         assert_eq!(config.daemon.addr, "127.0.0.1:7320");
         assert!(!config.daemon.unsafe_allow_remote_access);
         assert!(config.daemon.allowed_hosts.is_empty());
-    }
-
-    #[test]
-    fn daemon_http_defaults_to_disabled_with_loopback_ephemeral_port() {
-        let config = AppConfig::default();
-        assert!(!config.daemon.http.enabled);
-        assert_eq!(config.daemon.http.bind_addr, "127.0.0.1:0");
-    }
-
-    #[test]
-    fn daemon_http_parses_explicit_block() {
-        let toml_str = r#"
-[daemon.http]
-enabled = true
-bind_addr = "127.0.0.1:7321"
-"#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert!(config.daemon.http.enabled);
-        assert_eq!(config.daemon.http.bind_addr, "127.0.0.1:7321");
-    }
-
-    #[test]
-    fn daemon_http_block_absent_keeps_default() {
-        // Adding [daemon] without [daemon.http] keeps the default
-        // (disabled). Pre-existing daemon configs must not regress.
-        let toml_str = r#"
-[daemon]
-addr = "0.0.0.0:9999"
-"#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.daemon.addr, "0.0.0.0:9999");
-        assert!(!config.daemon.http.enabled);
-    }
-
-    #[test]
-    fn daemon_http_rejects_unknown_field() {
-        let toml_str = r#"
-[daemon.http]
-enabled = true
-bogus = "x"
-"#;
-        let result: Result<AppConfig, _> = toml::from_str(toml_str);
-        assert!(result.is_err());
     }
 
     #[test]

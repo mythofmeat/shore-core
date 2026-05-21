@@ -813,8 +813,6 @@ unspecified mode runs the default `summary`.
     "timezone": "utc",
     "summary": [ { "provider": "anthropic", "model": "claude-sonnet", "call_count": 12, "total_input": …, "total_output": …, "total_cache_read": …, "total_cache_write": …, "total_cost": 0.42 } ],
     "cache_health": [ { "character": "Alice", "state": "warm" | "cold", "streak": 3 } ],
-    "max_subscription": { "provider": "claude_code", "badge": "Max subscription", "call_count": 5, "would_be_api_cost": 1.23, "models": [ { "model": "…", "call_count": 5, "would_be_api_cost": 1.23 } ] } | null,
-    "rate_limit_events": [ { "timestamp": "…", "provider": "…", "model": "…", "rate_limit_info": { … } } ],
     "anomaly_count_7d": 0,
     "budgets": [ … ],
     "spike_warnings": [ … ]
