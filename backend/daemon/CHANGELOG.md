@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v2.0.2...shore-daemon-v3.0.0) - 2026-05-22
+
+### Other
+
+- [codex] stabilize OpenRouter Anthropic cache tool loops ([#29](https://github.com/mythofmeat/shore-core/pull/29))
+- *(compaction)* key single-flight lock on character data root ([#30](https://github.com/mythofmeat/shore-core/pull/30))
+
 ## [2.0.2](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v2.0.1...shore-daemon-v2.0.2) - 2026-05-22
 
 ### Fixed
