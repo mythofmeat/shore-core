@@ -20,22 +20,24 @@ use tracing::{debug, info, instrument, warn};
 const EXISTING_MEMORY_CONTEXT_MAX_FILES: usize = 24;
 const EXISTING_MEMORY_CONTEXT_MAX_CHARS_PER_FILE: usize = 1_800;
 
-static COMPACTION_LOCKS: OnceLock<DashMap<String, Arc<Mutex<()>>>> = OnceLock::new();
+static COMPACTION_LOCKS: OnceLock<DashMap<PathBuf, Arc<Mutex<()>>>> = OnceLock::new();
 
-/// Held while a character has a compaction pass in flight.
+/// Held while a character data root has a compaction pass in flight.
 ///
 /// Manual and idle-triggered compaction both mutate the same active transcript,
 /// segment manifest, markdown memory files, and prompt-refresh state. Keep them
-/// single-flight per character so a slow provider response cannot overlap with
-/// another compaction pass against the same pre-compaction active window.
+/// single-flight per character data root so a slow provider response cannot
+/// overlap with another compaction pass against the same pre-compaction active
+/// window. Tests may host separate daemon instances for the same character
+/// name in one process, so the character name alone is not a sufficient key.
 pub struct CompactionRunGuard {
     _guard: OwnedMutexGuard<()>,
 }
 
-pub fn try_begin_compaction(character: &str) -> Option<CompactionRunGuard> {
+pub fn try_begin_compaction(data_dir: &Path, character: &str) -> Option<CompactionRunGuard> {
     let locks = COMPACTION_LOCKS.get_or_init(DashMap::new);
     let lock = locks
-        .entry(character.to_string())
+        .entry(character_data_dir(data_dir, character))
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone();
     lock.try_lock_owned()
@@ -746,23 +748,29 @@ mod tests {
     use tokio::sync::oneshot;
 
     #[test]
-    fn compaction_run_guard_serializes_per_character() {
-        let character = format!("guard-test-{}", uuid::Uuid::new_v4());
-        let other_character = format!("guard-test-{}", uuid::Uuid::new_v4());
+    fn compaction_run_guard_serializes_per_character_data_root() {
+        let data_dir = PathBuf::from(format!("/guard-data-{}", uuid::Uuid::new_v4()));
+        let other_data_dir = PathBuf::from(format!("/guard-data-{}", uuid::Uuid::new_v4()));
+        let character = "TestChar";
+        let other_character = "OtherChar";
 
-        let first = try_begin_compaction(&character).expect("first guard should acquire");
+        let first = try_begin_compaction(&data_dir, character).expect("first guard should acquire");
         assert!(
-            try_begin_compaction(&character).is_none(),
-            "second guard for same character must be rejected"
+            try_begin_compaction(&data_dir, character).is_none(),
+            "second guard for same character data root must be rejected"
         );
         assert!(
-            try_begin_compaction(&other_character).is_some(),
-            "different characters may compact independently"
+            try_begin_compaction(&data_dir, other_character).is_some(),
+            "different characters in one data dir may compact independently"
+        );
+        assert!(
+            try_begin_compaction(&other_data_dir, character).is_some(),
+            "same character name in another data dir may compact independently"
         );
 
         drop(first);
         assert!(
-            try_begin_compaction(&character).is_some(),
+            try_begin_compaction(&data_dir, character).is_some(),
             "guard should release when dropped"
         );
     }
