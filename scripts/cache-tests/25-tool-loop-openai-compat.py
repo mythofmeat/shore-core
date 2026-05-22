@@ -400,6 +400,9 @@ def main():
         loop_count = 0
         while tool_calls:
             loop_count += 1
+            if loop_count > 5:
+                print(f"{Y}  (stopping tool loop after 5 iterations){NC}")
+                break
             for tc in tool_calls:
                 name = tc.get("function", {}).get("name", "?")
                 args = tc.get("function", {}).get("arguments", "")
@@ -431,10 +434,6 @@ def main():
             messages.append(build_assistant_msg(msg))
             step += 1
             time.sleep(DELAY)
-
-            if loop_count > 5:
-                print(f"{Y}  (stopping tool loop after 5 iterations){NC}")
-                break
 
     # ── Run the test ──────────────────────────────────────────────
 

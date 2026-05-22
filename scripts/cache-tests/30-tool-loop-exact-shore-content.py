@@ -243,6 +243,8 @@ def run_flow(streaming):
         loop_count = 0
         while tcs:
             loop_count += 1
+            if loop_count > 3:
+                break
             for tc in tcs:
                 fname = tc.get("function", {}).get("name", "?")
                 args = tc.get("function", {}).get("arguments", "")
@@ -268,8 +270,6 @@ def run_flow(streaming):
             messages.append(build_assistant_msg(msg))
             step += 1
             time.sleep(DELAY)
-            if loop_count > 3:
-                break
 
     do_turn("Warm-up one. Reply with only WARM1.", "warm-up-1")
     do_turn("Warm-up two. Reply with only WARM2.", "warm-up-2")

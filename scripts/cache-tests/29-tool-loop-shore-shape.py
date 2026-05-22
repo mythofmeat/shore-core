@@ -288,6 +288,8 @@ def main():
         loop_count = 0
         while tool_calls:
             loop_count += 1
+            if loop_count > 3:
+                break
             for tc in tool_calls:
                 name = tc.get("function", {}).get("name", "?")
                 args = tc.get("function", {}).get("arguments", "")
@@ -318,9 +320,6 @@ def main():
             messages.append(build_assistant_msg(msg))
             step += 1
             time.sleep(DELAY)
-
-            if loop_count > 3:
-                break
 
     # ── Run the same 3-turn flow as 28-tool-loop-openai-daemon.sh ─────
 

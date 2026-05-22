@@ -564,7 +564,12 @@ fn attach_cache_control_to_message(msg: &mut Value, cc: &Value) {
             for block in arr.iter_mut().rev() {
                 if let Some(block_obj) = block.as_object_mut() {
                     let bt = block_obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    if matches!(bt, "text" | "image_url" | "tool_result") {
+                    // `image` (Anthropic-shape) lives here too: the
+                    // OpenRouter Anthropic tool-loop path passes Anthropic
+                    // image blocks through to the user turn, so the cache
+                    // walker must accept them as a tail candidate or it
+                    // would skip back and land on `tool_result` instead.
+                    if matches!(bt, "text" | "image" | "image_url" | "tool_result") {
                         block_obj.insert("cache_control".into(), cc.clone());
                         break;
                     }
@@ -1971,6 +1976,53 @@ mod tests {
             .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("image"))
             .expect("image block must be preserved on anthropic-shape path");
         assert_eq!(image, &img_block, "image block must pass through unchanged");
+    }
+
+    #[test]
+    fn cache_marker_lands_on_trailing_image_block_not_tool_result() {
+        // build_chat_body must attach cache_control to the actual tail of
+        // the user turn. For [tool_result, image], that's the image block —
+        // landing on tool_result would shift the cached prefix one block
+        // back and re-write the suffix on every continuation.
+        let mut request = make_openrouter_anthropic_request(vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgo=",
+                    }
+                },
+            ],
+        })]);
+        request.system = Some(json!("You are a test."));
+        let ctx = build_provider_context(&request);
+        assert!(ctx.emit_cache_control, "ctx must opt into cache markers");
+
+        let body = build_chat_body(&request, &ctx, false);
+        let msgs = body["messages"].as_array().unwrap();
+        let user = msgs.last().expect("must have user msg");
+        let content = user["content"].as_array().expect("array content");
+
+        let tr = content
+            .iter()
+            .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+            .expect("tool_result block must be present");
+        assert!(
+            tr.get("cache_control").is_none(),
+            "cache_control must NOT land on tool_result when image follows it: {tr}",
+        );
+        let img = content
+            .iter()
+            .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("image"))
+            .expect("image block must be present");
+        assert!(
+            img.get("cache_control").is_some(),
+            "cache_control must land on the trailing image block: {img}",
+        );
     }
 
     #[test]
