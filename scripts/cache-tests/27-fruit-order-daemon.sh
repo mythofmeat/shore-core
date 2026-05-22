@@ -113,12 +113,10 @@ declare -A POS
 LOWER="$(echo "$REPLY" | tr '[:upper:]' '[:lower:]')"
 
 for fruit in "${EXPECTED[@]}"; do
-    # awk index() returns 1-based offset of first match (0 if absent).
-    p="$(awk -v needle="$fruit" 'BEGIN{exit} {print index($0, needle); exit}' <<<"$LOWER" || true)"
-    # Fall back to a portable per-line scan if the awk one-liner gave 0.
-    if [[ -z "$p" || "$p" == "0" ]]; then
-        p="$(awk -v needle="$fruit" '{i=index($0, needle); if (i>0) {print NR*1000 + i; exit}}' <<<"$LOWER")"
-    fi
+    # Per-line scan: first hit yields a sortable position encoded as
+    # line-major (NR*1000 + column). awk's index() is 1-based; 0 means
+    # absent.
+    p="$(awk -v needle="$fruit" '{i=index($0, needle); if (i>0) {print NR*1000 + i; exit}}' <<<"$LOWER")"
     if [[ -z "$p" || "$p" == "0" ]]; then
         harness_fail "fruit '$fruit' missing from reply"
     fi

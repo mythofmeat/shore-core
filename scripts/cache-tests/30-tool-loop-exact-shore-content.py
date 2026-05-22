@@ -46,25 +46,27 @@ TOOLS = json.loads(pathlib.Path("/tmp/shore-tools.json").read_text())
 
 
 def apply_cache_markers(messages):
-    """Match what Shore's openai.rs does: mark the most recent user message
-    only, plus the system block. Same strategy as current Shore code."""
+    """Mirror Shore's openai.rs `apply_openrouter_cache_markers`: mark the
+    last two user messages (fallback breakpoint one step back through the
+    tool loop) and attach cache_control only to eligible trailing block
+    types — the same set Shore's attach_cache_control_to_message matches."""
     import copy
     msgs = copy.deepcopy(messages)
     cc = {"type": "ephemeral"}
+    eligible = ("text", "image", "image_url", "tool_result")
 
-    for i in range(len(msgs) - 1, -1, -1):
-        if msgs[i].get("role") == "user":
-            msg = msgs[i]
-            content = msg.get("content")
-            if isinstance(content, str):
-                msg["content"] = [{"type": "text", "text": content,
-                                   "cache_control": cc}]
-            elif isinstance(content, list):
-                for block in reversed(content):
-                    if isinstance(block, dict):
-                        block["cache_control"] = cc
-                        break
-            break
+    user_idxs = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
+    for i in user_idxs[-2:]:
+        msg = msgs[i]
+        content = msg.get("content")
+        if isinstance(content, str):
+            msg["content"] = [{"type": "text", "text": content,
+                               "cache_control": cc}]
+        elif isinstance(content, list):
+            for block in reversed(content):
+                if isinstance(block, dict) and block.get("type") in eligible:
+                    block["cache_control"] = cc
+                    break
     return msgs
 
 
