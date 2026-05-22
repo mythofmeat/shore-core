@@ -552,15 +552,20 @@ may be:
 - A 1-based positive index (`"1"`, `"2"`, …) or negative index (`"-1"`, …)
 - A literal `msg_id`
 
+When `get` includes a `role` filter, its `ref` resolves against only messages
+with that role.
+
 #### `log`
-- **args:** `{ "turns"?: u64, "count"?: u64 }` — default `turns = 64`.
-  `turns` counts user turns; `count` counts raw messages.
+- **args:** `{ "turns"?: u64, "count"?: u64, "role"?: "user" | "assistant" | "system" }`
+  — default `turns = 64`. `turns` counts user turns; `count` counts raw
+  messages. `role` filters the bounded page returned by those limits.
 - **data:** see `history_page_payload` shape below.
 
 #### `history_page`
-- **args:** `{ "before"?: "active" | u64, "turns"?: u64, "count"?: u64 }`
-  — `"active"` clamps `before` to the current `active_start`; numeric
-  values are cursor positions returned from prior pages.
+- **args:** `{ "before"?: "active" | u64, "turns"?: u64, "count"?: u64, "role"?: "user" | "assistant" | "system" }`
+  — `"active"` clamps `before` to the current `active_start`; numeric values
+  are cursor positions returned from prior pages. `role` filters the bounded
+  page returned by those limits.
 - **data:**
   ```json
   {
@@ -576,7 +581,7 @@ may be:
   ```
 
 #### `get`
-- **args:** `{ "ref": "<ref>" }`
+- **args:** `{ "ref": "<ref>", "role"?: "user" | "assistant" | "system" }`
 - **data:** a single `Message` (see §9).
 
 #### `edit`
@@ -808,8 +813,6 @@ unspecified mode runs the default `summary`.
     "timezone": "utc",
     "summary": [ { "provider": "anthropic", "model": "claude-sonnet", "call_count": 12, "total_input": …, "total_output": …, "total_cache_read": …, "total_cache_write": …, "total_cost": 0.42 } ],
     "cache_health": [ { "character": "Alice", "state": "warm" | "cold", "streak": 3 } ],
-    "max_subscription": { "provider": "claude_code", "badge": "Max subscription", "call_count": 5, "would_be_api_cost": 1.23, "models": [ { "model": "…", "call_count": 5, "would_be_api_cost": 1.23 } ] } | null,
-    "rate_limit_events": [ { "timestamp": "…", "provider": "…", "model": "…", "rate_limit_info": { … } } ],
     "anomaly_count_7d": 0,
     "budgets": [ … ],
     "spike_warnings": [ … ]

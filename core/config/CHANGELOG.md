@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.3.0...shore-config-v0.4.0) - 2026-05-21
+
+### Other
+
+- [codex] remove Claude Code transport ([#24](https://github.com/mythofmeat/shore-core/pull/24))
+
 ## [0.3.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.2.0...shore-config-v0.3.0) - 2026-05-20
 
 ### Added

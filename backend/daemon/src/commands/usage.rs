@@ -409,34 +409,6 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         })
         .collect();
 
-    let claude_code_rows: Vec<_> = summary
-        .iter()
-        .filter(|s| s.provider == "claude_code")
-        .collect();
-    let max_subscription = if claude_code_rows.is_empty() {
-        serde_json::Value::Null
-    } else {
-        let call_count: u32 = claude_code_rows.iter().map(|s| s.call_count).sum();
-        let would_be_api_cost: f64 = claude_code_rows.iter().map(|s| s.total_cost).sum();
-        let models: Vec<serde_json::Value> = claude_code_rows
-            .iter()
-            .map(|s| {
-                json!({
-                    "model": s.model,
-                    "call_count": s.call_count,
-                    "would_be_api_cost": s.total_cost,
-                })
-            })
-            .collect();
-        json!({
-            "provider": "claude_code",
-            "badge": "Max subscription",
-            "call_count": call_count,
-            "would_be_api_cost": would_be_api_cost,
-            "models": models,
-        })
-    };
-
     let anomaly_filter = QueryFilter {
         since: parse_last_period("7d", timezone),
         ..Default::default()
@@ -444,22 +416,6 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     let anomaly_count = shore_ledger::query::query_anomalies(ledger, &anomaly_filter)
         .map(|r| r.len())
         .unwrap_or(0);
-    let rate_limit_events: Vec<serde_json::Value> = {
-        let diag = ctx.diagnostics.lock().unwrap_or_else(|e| e.into_inner());
-        diag.api_calls
-            .iter()
-            .filter_map(|entry| {
-                entry.rate_limit_info.as_ref().map(|info| {
-                    json!({
-                        "timestamp": entry.timestamp,
-                        "provider": entry.provider,
-                        "model": entry.model,
-                        "rate_limit_info": info,
-                    })
-                })
-            })
-            .collect()
-    };
 
     debug!(
         period = %last,
@@ -474,8 +430,6 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         "timezone": timezone,
         "summary": summary_rows,
         "cache_health": cache_health,
-        "max_subscription": max_subscription,
-        "rate_limit_events": rate_limit_events,
         "anomaly_count_7d": anomaly_count,
         "budgets": shore_ledger::budget::budget_statuses(ledger, &ctx.config.app.usage, chrono::Utc::now())
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?,

@@ -106,17 +106,10 @@ pub struct Usage {
     pub cache_read_tokens: u32,
     #[serde(default)]
     pub cache_creation_tokens: u32,
-    /// Provider-reported total cost when available. For `claude_code`
-    /// this is Claude Code's would-be API cost, not subscription spend.
+    /// Provider-reported total cost when available (e.g. OpenRouter
+    /// returns this on a `cost` field).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_cost_usd: Option<f64>,
-    /// Provider-specific model usage breakdown. `claude_code` reports
-    /// this as `modelUsage` on the result event.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_usage: Option<serde_json::Value>,
-    /// Provider-specific rate-limit state from stream events.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rate_limit_info: Option<serde_json::Value>,
 }
 
 /// Timing information from shore-llm's normalized response.

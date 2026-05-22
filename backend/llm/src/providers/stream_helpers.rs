@@ -195,7 +195,6 @@ pub(crate) fn extract_openai_usage(u: &Value) -> Usage {
         cache_read_tokens: cached,
         cache_creation_tokens: cache_write,
         total_cost_usd: u.get("cost").and_then(Value::as_f64),
-        ..Default::default()
     }
 }
 
@@ -203,7 +202,7 @@ pub(crate) fn extract_openai_usage(u: &Value) -> Usage {
 /// so the model sees it as a system-style note inside a user-role
 /// turn — the canonical workaround for providers that reject raw
 /// `role: "system"` in the messages array. Used by Anthropic, OpenAI,
-/// Gemini, and Claude Code's translation paths.
+/// and Gemini's translation paths.
 ///
 /// Single source of truth for the tag spelling so a future rename
 /// (or a switch to a different sentinel) only touches one place.

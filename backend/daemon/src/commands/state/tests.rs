@@ -70,7 +70,6 @@ fn make_ctx_with_models(
         diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
             shore_diagnostics::Diagnostics::default(),
         )),
-        http: None,
     };
     (engine, ctx, push_rx)
 }
@@ -82,16 +81,6 @@ model_id = "claude-sonnet-4-20250514"
 
 [openrouter.gpt-4o]
 model_id = "gpt-4o"
-"#;
-    let table: toml::Table = toml_str.parse().unwrap();
-    ModelCatalog::from_sections(Some(&table), None, None, None).unwrap()
-}
-
-fn claude_code_models() -> ModelCatalog {
-    let toml_str = r#"
-[anthropic.claude-code-sonnet]
-model_id = "claude-sonnet-4-5"
-sdk = "claude_code"
 "#;
     let table: toml::Table = toml_str.parse().unwrap();
     ModelCatalog::from_sections(Some(&table), None, None, None).unwrap()
@@ -490,31 +479,6 @@ async fn config_check_with_models() {
     assert!(info
         .iter()
         .any(|i| i.as_str().unwrap().contains("2 chat model")));
-}
-
-#[tokio::test]
-async fn config_check_claude_code_requires_http_listener() {
-    let tmp = TempDir::new().unwrap();
-    let (_engine, ctx, _rx) = make_ctx_with_models(&tmp, claude_code_models());
-
-    let result = config_check(&ctx).await.unwrap();
-    let warnings = result["warnings"].as_array().unwrap();
-    assert!(warnings
-        .iter()
-        .any(|w| { w.as_str().unwrap().contains("[daemon.http].enabled = true") }));
-}
-
-#[tokio::test]
-async fn config_check_claude_code_http_warning_clears_when_enabled() {
-    let tmp = TempDir::new().unwrap();
-    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, claude_code_models());
-    ctx.config.app.daemon.http.enabled = true;
-
-    let result = config_check(&ctx).await.unwrap();
-    let warnings = result["warnings"].as_array().unwrap();
-    assert!(!warnings
-        .iter()
-        .any(|w| { w.as_str().unwrap().contains("[daemon.http].enabled = true") }));
 }
 
 #[test]

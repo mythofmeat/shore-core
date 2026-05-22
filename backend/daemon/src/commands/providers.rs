@@ -450,7 +450,6 @@ mod tests {
             llm_client: LedgerClient::new(shore_llm::LlmClient::new(), &data_dir.join("ledger.db"))
                 .unwrap(),
             diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
-            http: None,
         }
     }
 

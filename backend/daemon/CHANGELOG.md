@@ -12,6 +12,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Route Anthropic provider catalog refreshes through the native Anthropic
   Models API.
 
+## [2.0.1](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v2.0.0...shore-daemon-v2.0.1) - 2026-05-21
+
+### Other
+
+- [codex] add role filtering to shore log ([#25](https://github.com/mythofmeat/shore-core/pull/25))
+
+### Added
+
+- Add optional role filtering to conversation `log`, `history_page`, and `get`
+  command responses.
+
+## [2.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v1.8.5...shore-daemon-v2.0.0) - 2026-05-21
+
+### Other
+
+- [codex] remove Claude Code transport ([#24](https://github.com/mythofmeat/shore-core/pull/24))
+- release v1.8.5 ([#21](https://github.com/mythofmeat/shore-core/pull/21))
+
 ## [1.8.5](https://github.com/mythofmeat/shore-core/releases/tag/shore-daemon-v1.8.5) - 2026-05-20
 
 ### Added

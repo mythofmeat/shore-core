@@ -1,13 +1,11 @@
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{json, Value};
 use shore_config::character_data_dir;
-use shore_config::models::Sdk;
 use shore_protocol::types::{ContentBlock, Message, Role};
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument};
 
 use crate::autonomy::parse_cache_ttl_secs;
 use crate::engine::messages::PendingAlt;
@@ -17,15 +15,8 @@ use crate::handler::images::{embed_image_data, ingest_images};
 use crate::handler::key_fallback::stream_with_credential_fallback;
 use crate::handler::persistence::persist_and_notify;
 use crate::handler::resize::warm_image_cache;
-use crate::memory::compaction_impls::resolve_image_gen_config;
-use crate::memory::markdown_store::MarkdownMemoryStore;
-use crate::memory::retrieval::resolve_embedder;
-use crate::tools::context::SharedToolContext;
-use crate::tools::ToolContext;
 
-use super::{
-    GenContext, GenerationParams, HandlerToolContext, PrepareChatContextParams, PreparedChatContext,
-};
+use super::{GenContext, GenerationParams, PrepareChatContextParams, PreparedChatContext};
 
 #[instrument(
     skip(ctx, params),
@@ -207,15 +198,9 @@ pub(super) async fn handle_generation(
         ctx.autonomy.notify_user_message(&char_name, turn_count);
     }
 
-    let (messages, has_prior_context, history_rewrite_generation) = {
+    let (messages, has_prior_context) = {
         let engine = engine_arc.lock().await;
         let has_prior = engine.segments().segment_count() > 0;
-        let base_history_rewrite_generation = engine.history_rewrite_generation();
-        let history_rewrite_generation = if regen {
-            base_history_rewrite_generation.saturating_add(1)
-        } else {
-            base_history_rewrite_generation
-        };
         (
             if regen {
                 engine.messages_through_last_user_turn()
@@ -223,7 +208,6 @@ pub(super) async fn handle_generation(
                 engine.messages().to_vec()
             },
             has_prior,
-            history_rewrite_generation,
         )
     };
 
@@ -288,22 +272,6 @@ pub(super) async fn handle_generation(
         }
     }
 
-    let mut claude_code_session = None;
-    if matches!(resolved.sdk, Sdk::ClaudeCode) {
-        let subprocess_key =
-            claude_code_subprocess_key(&data_dir, &char_name, history_rewrite_generation);
-        let tool_ctx =
-            build_claude_code_tool_context(&ctx, &data_dir, &char_name, &effective_config)?;
-        claude_code_session = crate::claude_code::prepare_request(
-            &mut request,
-            ctx.http.as_ref(),
-            Some(subprocess_key),
-            tool_ctx,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    }
-
     info!(
         model = %resolved.model_id,
         messages = request.messages.len(),
@@ -323,31 +291,24 @@ pub(super) async fn handle_generation(
     )
     .await?;
 
-    let tool_intermediate_messages = if result.finish_reason == "tool_use"
-        && effective_config.app.behavior.tool_use.enabled
-        && !matches!(resolved.sdk, Sdk::ClaudeCode)
-    {
-        let tool_loop_result = run_tool_phase(
-            &ctx,
-            &data_dir,
-            &char_name,
-            &effective_config,
-            &character_definition,
-            &user_definition,
-            &mut request,
-            result,
-        )
-        .await?;
-        result = tool_loop_result.result;
-        tool_loop_result.intermediate_messages
-    } else {
-        Vec::new()
-    };
-
-    if let Some(session) = claude_code_session.take() {
-        let ledger = session.drain().await;
-        splice_claude_code_tool_ledger(&mut result, ledger);
-    }
+    let tool_intermediate_messages =
+        if result.finish_reason == "tool_use" && effective_config.app.behavior.tool_use.enabled {
+            let tool_loop_result = run_tool_phase(
+                &ctx,
+                &data_dir,
+                &char_name,
+                &effective_config,
+                &character_definition,
+                &user_definition,
+                &mut request,
+                result,
+            )
+            .await?;
+            result = tool_loop_result.result;
+            tool_loop_result.intermediate_messages
+        } else {
+            Vec::new()
+        };
 
     persist_and_notify(
         &ctx,
@@ -467,7 +428,6 @@ async fn run_inline_compaction(
         &ctx.llm_client,
         &ctx.notifier,
         cached_request,
-        ctx.http.clone(),
     )
     .await
     {
@@ -517,199 +477,6 @@ async fn run_inline_compaction(
             ctx.autonomy.notify_compaction_failed(&char_name);
         }
     }
-}
-
-fn claude_code_subprocess_key(data_dir: &Path, char_name: &str, history_generation: u64) -> String {
-    format!(
-        "{}:{char_name}:history-{history_generation}",
-        data_dir.display()
-    )
-}
-
-fn build_claude_code_tool_context(
-    ctx: &GenContext,
-    data_dir: &Path,
-    char_name: &str,
-    effective_config: &shore_config::LoadedConfig,
-) -> Result<Arc<dyn ToolContext + Send + Sync>, Box<dyn std::error::Error + Send + Sync>> {
-    let image_gen_config = resolve_image_gen_config(
-        effective_config.app.defaults.image_generation.as_deref(),
-        &effective_config.models.image_generation,
-    )
-    .ok();
-
-    let character_data_dir = character_data_dir(data_dir, char_name);
-    let config_dir = &effective_config.dirs.config;
-    let workspace_dir = shore_config::character_workspace_dir(config_dir, char_name);
-    let memory_dir = shore_config::character_memory_dir(config_dir, char_name);
-    let embedder = resolve_embedder(
-        effective_config.app.defaults.embedding.as_deref(),
-        &effective_config.models.embedding,
-        ctx.llm_client.inner().http_client(),
-    )
-    .map_err(|e| {
-        tracing::warn!(character = %char_name, error = %e, "embedder unavailable; semantic memory retrieval disabled");
-    })
-    .ok();
-
-    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
-        &character_data_dir,
-        config_dir,
-        char_name,
-    ) {
-        tracing::warn!(character = %char_name, error = %e, "Failed to prepare active prompt snapshot");
-    }
-
-    Ok(Arc::new(HandlerToolContext {
-        inner: SharedToolContext {
-            image_dir_val: character_data_dir
-                .join("images")
-                .to_string_lossy()
-                .into_owned(),
-            llm_client_val: ctx.llm_client.inner().clone(),
-            image_gen_config_val: image_gen_config,
-            search_config_val: effective_config.app.behavior.tool_use.search.clone(),
-            character_name_val: char_name.to_owned(),
-            workspace_dir_val: workspace_dir.to_string_lossy().into_owned(),
-            markdown_store_val: MarkdownMemoryStore::open_sync(memory_dir).ok(),
-            memory_retrieval_config_val: effective_config.app.memory.retrieval.clone(),
-            embedder_val: embedder,
-            memory_index_path_val: crate::memory::workspace_index::index_path(
-                &effective_config.dirs.cache,
-                char_name,
-            ),
-            config_dir_val: config_dir.to_string_lossy().into_owned(),
-            character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
-        },
-        autonomy_val: ctx.autonomy.clone(),
-    }))
-}
-
-fn splice_claude_code_tool_ledger(
-    result: &mut shore_llm::types::StreamResult,
-    ledger: Vec<crate::engine::mcp_session::LedgerEntry>,
-) {
-    if ledger.is_empty() {
-        result.tool_uses = tool_uses_from_blocks(&result.content_blocks);
-        return;
-    }
-
-    let existing = std::mem::take(&mut result.content_blocks);
-    let mut spliced = Vec::new();
-    let mut matched: HashSet<usize> = HashSet::new();
-    let mut emitted_tool_use_count = 0usize;
-    let mut unmatched_emitted_tool_uses = 0usize;
-
-    if existing.is_empty() && !result.content.is_empty() {
-        spliced.push(ContentBlock::Text {
-            text: result.content.clone(),
-        });
-    }
-
-    for block in existing {
-        match block {
-            ContentBlock::ToolUse { id, name, input } => {
-                emitted_tool_use_count += 1;
-                let bare_name = strip_mcp_tool_name(&name);
-                let match_idx = ledger_match(&ledger, &matched, &id, &bare_name, &input);
-                spliced.push(ContentBlock::ToolUse {
-                    id: id.clone(),
-                    name: bare_name,
-                    input: input.clone(),
-                });
-                if let Some(i) = match_idx {
-                    matched.insert(i);
-                    spliced.push(ledger_tool_result_block(&ledger[i], &id));
-                } else {
-                    unmatched_emitted_tool_uses += 1;
-                }
-            }
-            other => spliced.push(other),
-        }
-    }
-
-    let unmatched_ledger_count = ledger.len().saturating_sub(matched.len());
-    if unmatched_emitted_tool_uses > 0 || unmatched_ledger_count > 0 {
-        warn!(
-            ledger_count = ledger.len(),
-            emitted_tool_use_count,
-            unmatched_emitted_tool_uses,
-            unmatched_ledger_count,
-            "claude_code tool ledger mismatch; preserving emitted blocks and appending unmatched ledger entries"
-        );
-    }
-
-    for (i, entry) in ledger.iter().enumerate() {
-        if matched.contains(&i) {
-            continue;
-        }
-        spliced.push(ContentBlock::ToolUse {
-            id: entry.tool_use_id.clone(),
-            name: entry.name.clone(),
-            input: entry.input.clone(),
-        });
-        spliced.push(ledger_tool_result_block(entry, &entry.tool_use_id));
-    }
-
-    result.tool_uses = tool_uses_from_blocks(&spliced);
-    result.content_blocks = spliced;
-}
-
-fn tool_uses_from_blocks(blocks: &[ContentBlock]) -> Vec<shore_llm::types::ToolUseEvent> {
-    blocks
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::ToolUse { id, name, input } => Some(shore_llm::types::ToolUseEvent {
-                id: id.clone(),
-                name: strip_mcp_tool_name(name),
-                input: input.clone(),
-            }),
-            _ => None,
-        })
-        .collect()
-}
-
-fn ledger_match(
-    ledger: &[crate::engine::mcp_session::LedgerEntry],
-    matched: &HashSet<usize>,
-    tool_use_id: &str,
-    name: &str,
-    input: &Value,
-) -> Option<usize> {
-    ledger
-        .iter()
-        .enumerate()
-        .find(|(i, entry)| !matched.contains(i) && entry.tool_use_id == tool_use_id)
-        .map(|(i, _)| i)
-        .or_else(|| {
-            ledger
-                .iter()
-                .enumerate()
-                .find(|(i, entry)| {
-                    !matched.contains(i) && entry.name == name && entry.input == *input
-                })
-                .map(|(i, _)| i)
-        })
-}
-
-fn ledger_tool_result_block(
-    entry: &crate::engine::mcp_session::LedgerEntry,
-    tool_use_id: &str,
-) -> ContentBlock {
-    ContentBlock::ToolResult {
-        tool_use_id: tool_use_id.to_string(),
-        content: shore_protocol::types::derive_content_from_blocks(&entry.content),
-        is_error: entry.is_error,
-    }
-}
-
-fn strip_mcp_tool_name(name: &str) -> String {
-    if let Some(rest) = name.strip_prefix("mcp__") {
-        if let Some((_, tool)) = rest.split_once("__") {
-            return tool.to_string();
-        }
-    }
-    name.to_string()
 }
 
 /// Convert assembled prompt messages into LLM API JSON format.
@@ -773,130 +540,4 @@ pub(crate) fn build_llm_messages(
     };
 
     (llm_messages, system)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::engine::mcp_session::LedgerEntry;
-
-    fn stream_result(blocks: Vec<ContentBlock>) -> shore_llm::types::StreamResult {
-        shore_llm::types::StreamResult {
-            content: "final text".into(),
-            model: "claude-sonnet-4-5".into(),
-            finish_reason: "end_turn".into(),
-            usage: shore_llm::types::Usage::default(),
-            timing: shore_llm::types::Timing::default(),
-            tool_uses: Vec::new(),
-            content_blocks: blocks,
-        }
-    }
-
-    fn ledger(id: &str, name: &str, input: Value, content: &str) -> LedgerEntry {
-        LedgerEntry {
-            tool_use_id: id.into(),
-            name: name.into(),
-            input,
-            content: vec![ContentBlock::Text {
-                text: content.into(),
-            }],
-            is_error: false,
-        }
-    }
-
-    #[test]
-    fn splice_inserts_tool_result_after_matching_tool_use_and_strips_mcp_name() {
-        let input = json!({"message": "hi"});
-        let mut result = stream_result(vec![
-            ContentBlock::Text {
-                text: "calling ".into(),
-            },
-            ContentBlock::ToolUse {
-                id: "toolu_1".into(),
-                name: "mcp__shore__check_time".into(),
-                input: input.clone(),
-            },
-            ContentBlock::Text {
-                text: "done".into(),
-            },
-        ]);
-
-        splice_claude_code_tool_ledger(
-            &mut result,
-            vec![ledger("toolu_1", "check_time", input, "3:22 PM")],
-        );
-
-        assert!(matches!(
-            &result.content_blocks[1],
-            ContentBlock::ToolUse { id, name, .. } if id == "toolu_1" && name == "check_time"
-        ));
-        assert!(matches!(
-            &result.content_blocks[2],
-            ContentBlock::ToolResult { tool_use_id, content, is_error } if tool_use_id == "toolu_1" && content == "3:22 PM" && !is_error
-        ));
-        assert!(matches!(&result.content_blocks[3], ContentBlock::Text { text } if text == "done"));
-        assert_eq!(result.tool_uses.len(), 1);
-        assert_eq!(result.tool_uses[0].id, "toolu_1");
-        assert_eq!(result.tool_uses[0].name, "check_time");
-    }
-
-    #[test]
-    fn splice_appends_ledger_entries_missing_from_stream_blocks() {
-        let input = json!({"path": "notes.txt"});
-        let mut result = stream_result(vec![ContentBlock::Text {
-            text: "answer".into(),
-        }]);
-
-        splice_claude_code_tool_ledger(
-            &mut result,
-            vec![ledger("rpc-2", "read", input, "file contents")],
-        );
-
-        assert!(
-            matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "answer")
-        );
-        assert!(matches!(
-            &result.content_blocks[1],
-            ContentBlock::ToolUse { id, name, .. } if id == "rpc-2" && name == "read"
-        ));
-        assert!(matches!(
-            &result.content_blocks[2],
-            ContentBlock::ToolResult { tool_use_id, content, .. } if tool_use_id == "rpc-2" && content == "file contents"
-        ));
-        assert_eq!(result.tool_uses.len(), 1);
-        assert_eq!(result.tool_uses[0].id, "rpc-2");
-        assert_eq!(result.tool_uses[0].name, "read");
-    }
-
-    #[test]
-    fn ledger_match_falls_back_to_name_and_input_when_rpc_id_differs() {
-        let input = json!({"query": "tea"});
-        let mut result = stream_result(vec![ContentBlock::ToolUse {
-            id: "toolu_actual".into(),
-            name: "mcp__shore__search".into(),
-            input: input.clone(),
-        }]);
-
-        splice_claude_code_tool_ledger(
-            &mut result,
-            vec![ledger("rpc-2", "search", input, "matches")],
-        );
-
-        assert_eq!(result.content_blocks.len(), 2);
-        assert!(matches!(
-            &result.content_blocks[1],
-            ContentBlock::ToolResult { tool_use_id, content, .. } if tool_use_id == "toolu_actual" && content == "matches"
-        ));
-    }
-
-    #[test]
-    fn claude_code_subprocess_key_rotates_with_history_generation() {
-        let data_dir = Path::new("/tmp/shore-data");
-        let first = claude_code_subprocess_key(data_dir, "alice", 0);
-        let rewritten = claude_code_subprocess_key(data_dir, "alice", 1);
-
-        assert_ne!(first, rewritten);
-        assert!(first.ends_with(":alice:history-0"));
-        assert!(rewritten.ends_with(":alice:history-1"));
-    }
 }
