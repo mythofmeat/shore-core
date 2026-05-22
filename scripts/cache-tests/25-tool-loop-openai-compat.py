@@ -418,6 +418,8 @@ def main():
             resp, msg, u = send(messages, SYSTEM_PROMPT)
             if log(f"s{step}", f"tool-loop-{loop_count}", u, threshold):
                 rewrites += 1
+            if threshold == 0 and u["cache_w"] > 0:
+                threshold = u["cache_w"] // 2
 
             tool_calls = msg.get("tool_calls") or []
             text = msg.get("content") or ""
