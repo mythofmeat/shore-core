@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0](https://github.com/mythofmeat/shore-core/compare/shore-protocol-v0.2.0...shore-protocol-v0.3.0) - 2026-05-22
 
+### Breaking
+
+- `ContentBlock::Thinking` gained a new `details: Option<serde_json::Value>`
+  field carrying opaque provider-specific reasoning metadata (currently
+  OpenRouter's `reasoning_details`). The variant is exhaustive, so any code
+  constructing or exhaustively pattern-matching `ContentBlock::Thinking` must
+  account for the new field. Existing `Thinking` payloads on the wire stay
+  compatible — the field defaults to `None` and is skipped when serializing.
+
 ### Other
 
 - [codex] stabilize OpenRouter Anthropic cache tool loops ([#29](https://github.com/mythofmeat/shore-core/pull/29))

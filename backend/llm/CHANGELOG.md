@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v2.0.1...shore-llm-v3.0.0) - 2026-05-22
 
+### Breaking
+
+- `StreamEvent` added a new `ReasoningDetails { details: serde_json::Value }`
+  variant for opaque provider-side reasoning metadata. The enum is exhaustive,
+  so downstream `match` arms must handle the new variant.
+- Inserting `ReasoningDetails` shifted the discriminants of the variants that
+  follow it: `RedactedThinking` (4 → 5), `ToolUse` (5 → 6), and `Done`
+  (6 → 7). Any consumer relying on the numeric discriminant via `as isize`
+  (e.g. in FFI bindings or wire encodings) must be regenerated.
+
 ### Other
 
 - [codex] stabilize OpenRouter Anthropic cache tool loops ([#29](https://github.com/mythofmeat/shore-core/pull/29))
