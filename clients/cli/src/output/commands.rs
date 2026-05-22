@@ -1328,11 +1328,17 @@ fn print_budget_table(data: &serde_json::Value) {
         return;
     }
 
+    // `Reset` column matches the width of `format_reset_at`'s output
+    // (`YYYY-MM-DD HH:MM ±HH:MM` = 23 chars); raw-string fallbacks are
+    // ellipsized to the same width so the divider always spans the table.
+    const RESET_W: usize = 23;
+    let table_w = 24 + 1 + 6 + 1 + 11 + 1 + 7 + 2 + 15 + 1 + 16 + 1 + RESET_W;
+
     println!(
-        "{:<24} {:<6} {:>11} {:>7}  {:<15} {:<16} Reset",
-        "Budget", "Period", "Spend", "Used", "Status", "Action"
+        "{:<24} {:<6} {:>11} {:>7}  {:<15} {:<16} {:<RESET_W$}",
+        "Budget", "Period", "Spend", "Used", "Status", "Action", "Reset"
     );
-    println!("{}", "-".repeat(98));
+    println!("{}", "-".repeat(table_w));
     if let Some(rows) = budgets {
         for budget in rows {
             let current = budget["current_cost"].as_f64().unwrap_or(0.0);
@@ -1341,9 +1347,10 @@ fn print_budget_table(data: &serde_json::Value) {
             let reset = budget["reset_at"]
                 .as_str()
                 .map(format_reset_at)
+                .map(|s| ellipsize(&s, RESET_W))
                 .unwrap_or_else(|| "?".into());
             println!(
-                "{:<24} {:<6} {:>5.2}/{:<5.2} {:>6.0}%  {:<15} {:<16} {reset}",
+                "{:<24} {:<6} {:>5.2}/{:<5.2} {:>6.0}%  {:<15} {:<16} {reset:<RESET_W$}",
                 budget["name"].as_str().unwrap_or("budget"),
                 budget["period"].as_str().unwrap_or("day"),
                 current,
