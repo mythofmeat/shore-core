@@ -1924,7 +1924,7 @@ dependencies = [
 
 [[package]]
 name = "shore-daemon"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "async-trait",
  "base64",
@@ -1973,7 +1973,7 @@ dependencies = [
 
 [[package]]
 name = "shore-ledger"
-version = "1.8.6"
+version = "1.8.7"
 dependencies = [
  "chrono",
  "reqwest",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "shore-llm"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "async-trait",
  "chrono",
