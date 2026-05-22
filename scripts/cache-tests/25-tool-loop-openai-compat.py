@@ -378,13 +378,13 @@ def main():
         messages.append({"role": "user", "content": user_msg})
         resp, msg, u = send(messages, SYSTEM_PROMPT)
 
-        if threshold == 0 and u["cache_w"] > 0:
-            threshold = u["cache_w"] // 2
         if step == 0:
             log(f"s{step}", f"{label} (cold)", u, 0)
         else:
             if log(f"s{step}", label, u, threshold):
                 rewrites += 1
+        if threshold == 0 and u["cache_w"] > 0:
+            threshold = u["cache_w"] // 2
 
         tool_calls = msg.get("tool_calls") or []
         text = msg.get("content") or ""
