@@ -1295,6 +1295,32 @@ fn format_k(tokens: u64) -> String {
     }
 }
 
+/// Truncate `s` so it fits in `max_width` display columns, appending `…` when
+/// truncation occurs. Width is counted in chars (the table columns assume
+/// monospace single-width glyphs).
+fn ellipsize(s: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let count = s.chars().count();
+    if count <= max_width {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max_width.saturating_sub(1)).collect();
+    out.push('\u{2026}');
+    out
+}
+
+/// Render an RFC 3339 reset timestamp as the user's local clock time with an
+/// explicit offset (e.g. `2026-05-23 10:00 +10:00`). The raw daemon payload
+/// is always UTC, which reads as midnight even when `reset_hour` is set —
+/// surfacing the local offset makes the value match the configured anchor.
+fn format_reset_at(rfc3339: &str) -> String {
+    parse_timestamp(rfc3339)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M %:z").to_string())
+        .unwrap_or_else(|| rfc3339.to_string())
+}
+
 fn print_budget_table(data: &serde_json::Value) {
     let budgets = data["budgets"].as_array();
     if budgets.is_none_or(|rows| rows.is_empty()) {
@@ -1302,18 +1328,29 @@ fn print_budget_table(data: &serde_json::Value) {
         return;
     }
 
+    // `Reset` column matches the width of `format_reset_at`'s output
+    // (`YYYY-MM-DD HH:MM ±HH:MM` = 23 chars); raw-string fallbacks are
+    // ellipsized to the same width so the divider always spans the table.
+    const RESET_W: usize = 23;
+    let table_w = 24 + 1 + 6 + 1 + 11 + 1 + 7 + 2 + 15 + 1 + 16 + 1 + RESET_W;
+
     println!(
-        "{:<24} {:<6} {:>11} {:>7}  {:<15} {:<10} Reset",
-        "Budget", "Period", "Spend", "Used", "Status", "Action"
+        "{:<24} {:<6} {:>11} {:>7}  {:<15} {:<16} {:<RESET_W$}",
+        "Budget", "Period", "Spend", "Used", "Status", "Action", "Reset"
     );
-    println!("{}", "-".repeat(92));
+    println!("{}", "-".repeat(table_w));
     if let Some(rows) = budgets {
         for budget in rows {
             let current = budget["current_cost"].as_f64().unwrap_or(0.0);
             let limit = budget["cost_limit"].as_f64().unwrap_or(0.0);
             let percent = budget["percent_used"].as_f64().unwrap_or(0.0) * 100.0;
+            let reset = budget["reset_at"]
+                .as_str()
+                .map(format_reset_at)
+                .map(|s| ellipsize(&s, RESET_W))
+                .unwrap_or_else(|| "?".into());
             println!(
-                "{:<24} {:<6} {:>5.2}/{:<5.2} {:>6.0}%  {:<15} {:<10} {}",
+                "{:<24} {:<6} {:>5.2}/{:<5.2} {:>6.0}%  {:<15} {:<16} {reset:<RESET_W$}",
                 budget["name"].as_str().unwrap_or("budget"),
                 budget["period"].as_str().unwrap_or("day"),
                 current,
@@ -1321,7 +1358,6 @@ fn print_budget_table(data: &serde_json::Value) {
                 percent,
                 budget["status"].as_str().unwrap_or("ok"),
                 budget["action"].as_str().unwrap_or("warn"),
-                budget["reset_at"].as_str().unwrap_or("?"),
             );
         }
     }
@@ -1351,6 +1387,87 @@ fn usage_display_date(data: &serde_json::Value) -> String {
     } else {
         chrono::Local::now().format("%Y-%m-%d").to_string()
     }
+}
+
+/// Render the per-provider/model summary table for `shore usage`.
+///
+/// Column widths for `Provider` and `Model` are computed from the rendered
+/// rows so that an oversized name (e.g. `openrouter-anthropic`) can no longer
+/// shove every subsequent value under the wrong header. Values that exceed
+/// the per-column cap are truncated with `…`.
+fn write_usage_summary_table(out: &mut impl Write, data: &serde_json::Value) -> io::Result<()> {
+    const PROVIDER_HEADER: &str = "Provider";
+    const MODEL_HEADER: &str = "Model";
+    // Caps keep one freakishly long name from blowing the table out across
+    // the terminal; anything longer is truncated with `…`.
+    const MAX_PROVIDER_W: usize = 28;
+    const MAX_MODEL_W: usize = 40;
+
+    let period = data["period"].as_str().unwrap_or("today");
+    let today = usage_display_date(data);
+    writeln!(out, "Shore Usage \u{2014} {today} (period: {period})\n")?;
+
+    let summary = data["summary"].as_array();
+
+    let mut provider_w = PROVIDER_HEADER.chars().count();
+    let mut model_w = MODEL_HEADER.chars().count();
+    if let Some(rows) = summary {
+        for s in rows {
+            if let Some(p) = s["provider"].as_str() {
+                provider_w = provider_w.max(p.chars().count());
+            }
+            if let Some(m) = s["model"].as_str() {
+                model_w = model_w.max(m.chars().count());
+            }
+        }
+    }
+    provider_w = provider_w.min(MAX_PROVIDER_W);
+    model_w = model_w.min(MAX_MODEL_W);
+
+    writeln!(
+        out,
+        "{:<provider_w$} {:<model_w$} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+        PROVIDER_HEADER, MODEL_HEADER, "Calls", "Input", "Output", "Cache R", "Cache W", "Cost"
+    )?;
+
+    let total_w = provider_w + 1 + model_w + 1 + 5 + 2 + 9 + 2 + 9 + 2 + 9 + 2 + 9 + 2 + 8;
+    writeln!(out, "{}", "-".repeat(total_w))?;
+
+    let mut grand_total = 0.0f64;
+    if let Some(rows) = summary {
+        for s in rows {
+            let cost_str = s["total_cost"]
+                .as_f64()
+                .map(|c| {
+                    grand_total += c;
+                    format!("${c:.2}")
+                })
+                .unwrap_or_else(|| "\u{2014}".into());
+            let provider = ellipsize(s["provider"].as_str().unwrap_or(""), provider_w);
+            let model = ellipsize(s["model"].as_str().unwrap_or(""), model_w);
+            writeln!(
+                out,
+                "{provider:<provider_w$} {model:<model_w$} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+                s["call_count"].as_u64().unwrap_or(0),
+                format_k(s["total_input"].as_u64().unwrap_or(0)),
+                format_k(s["total_output"].as_u64().unwrap_or(0)),
+                format_k(s["total_cache_read"].as_u64().unwrap_or(0)),
+                format_k(s["total_cache_write"].as_u64().unwrap_or(0)),
+                cost_str,
+            )?;
+        }
+        if !rows.is_empty() {
+            // "Total:" sits in the column space before Cost; the dollar amount
+            // right-aligns inside the 8-char Cost column so it lines up with
+            // the per-row costs above it.
+            let label_w = total_w.saturating_sub(9);
+            let total_str = format!("${grand_total:.2}");
+            writeln!(out, "{:>label_w$} {total_str:>8}", "Total:")?;
+        } else {
+            writeln!(out, "  No usage data for this period.")?;
+        }
+    }
+    Ok(())
 }
 
 pub fn print_usage(data: &serde_json::Value) {
@@ -1533,44 +1650,9 @@ pub fn print_usage(data: &serde_json::Value) {
             }
         }
         _ => {
-            let period = data["period"].as_str().unwrap_or("today");
-            let today = usage_display_date(data);
-            println!("Shore Usage \u{2014} {today} (period: {period})\n");
-            println!(
-                "{:<12} {:<24} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
-                "Provider", "Model", "Calls", "Input", "Output", "Cache R", "Cache W", "Cost"
-            );
-            println!("{}", "-".repeat(90));
-
-            let summary = data["summary"].as_array();
-            let mut grand_total = 0.0f64;
-            if let Some(rows) = summary {
-                for s in rows {
-                    let cost_str = s["total_cost"]
-                        .as_f64()
-                        .map(|c| {
-                            grand_total += c;
-                            format!("${c:.2}")
-                        })
-                        .unwrap_or_else(|| "\u{2014}".into());
-                    println!(
-                        "{:<12} {:<24} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
-                        s["provider"].as_str().unwrap_or(""),
-                        s["model"].as_str().unwrap_or(""),
-                        s["call_count"].as_u64().unwrap_or(0),
-                        format_k(s["total_input"].as_u64().unwrap_or(0)),
-                        format_k(s["total_output"].as_u64().unwrap_or(0)),
-                        format_k(s["total_cache_read"].as_u64().unwrap_or(0)),
-                        format_k(s["total_cache_write"].as_u64().unwrap_or(0)),
-                        cost_str,
-                    );
-                }
-                if !rows.is_empty() {
-                    println!("{:>82} ${grand_total:.2}", "Total:");
-                } else {
-                    println!("  No usage data for this period.");
-                }
-            }
+            let mut stdout = io::stdout().lock();
+            let _ = write_usage_summary_table(&mut stdout, data);
+            drop(stdout);
 
             if let Some(health) = data["cache_health"].as_array() {
                 if !health.is_empty() {
@@ -2016,6 +2098,157 @@ mod tests {
         assert_eq!(format_k(1500), "1.5K");
         // 10000 → "10.0K"
         assert_eq!(format_k(10000), "10.0K");
+    }
+
+    #[test]
+    fn format_reset_at_shows_local_time_with_offset() {
+        // UTC midnight should render as the local equivalent with an explicit
+        // offset suffix so users can tell at a glance whether the displayed
+        // hour matches their configured `reset_hour`.
+        let rendered = format_reset_at("2026-05-23T00:00:00+00:00");
+        // "YYYY-MM-DD HH:MM " (17) + "±HH:MM" (6) = 23 chars, regardless of
+        // which local timezone the test runner is in.
+        assert_eq!(rendered.len(), 23, "unexpected length: {rendered:?}");
+        // Offset has a colon; raw RFC 3339 form contained 'T' which we drop.
+        assert!(
+            !rendered.contains('T'),
+            "should not contain 'T': {rendered:?}"
+        );
+        assert!(
+            rendered.contains('+') || rendered.contains('-'),
+            "should contain offset sign: {rendered:?}"
+        );
+        // Malformed input falls back to the raw string.
+        assert_eq!(format_reset_at("not-a-timestamp"), "not-a-timestamp");
+    }
+
+    #[test]
+    fn ellipsize_pads_and_truncates() {
+        assert_eq!(ellipsize("short", 10), "short");
+        assert_eq!(ellipsize("exactly10!", 10), "exactly10!");
+        // Truncated values end with U+2026 and fit exactly in `max_width` chars.
+        let truncated = ellipsize("openrouter-anthropic", 12);
+        assert_eq!(truncated.chars().count(), 12);
+        assert!(truncated.ends_with('\u{2026}'));
+        assert!(truncated.starts_with("openrouter-"));
+    }
+
+    #[test]
+    fn usage_summary_table_keeps_columns_aligned_with_long_provider() {
+        // Regression for issue #32: an over-long provider name used to push
+        // every subsequent value one column to the right.
+        let data = serde_json::json!({
+            "mode": "summary",
+            "period": "today",
+            "timezone": "local",
+            "summary": [
+                {
+                    "provider": "openrouter-anthropic",
+                    "model": "anthropic/claude-opus-4.6",
+                    "call_count": 96,
+                    "total_input": 189_900,
+                    "total_output": 52_000,
+                    "total_cache_read": 2_513_200,
+                    "total_cache_write": 246_300,
+                    "total_cost": 5.11,
+                },
+                {
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4.6",
+                    "call_count": 12,
+                    "total_input": 1_200,
+                    "total_output": 800,
+                    "total_cache_read": 0,
+                    "total_cache_write": 0,
+                    "total_cost": 0.42,
+                },
+            ],
+        });
+        let mut buf: Vec<u8> = Vec::new();
+        write_usage_summary_table(&mut buf, &data).expect("write");
+        let rendered = String::from_utf8(buf).expect("utf8");
+        let lines: Vec<&str> = rendered.lines().collect();
+        // Layout: title, blank, header, separator, two rows, total.
+        let header = lines[2];
+        let separator = lines[3];
+        let row1 = lines[4];
+        let row2 = lines[5];
+
+        // Every body line shares the same width as the separator, so no row
+        // can shift columns relative to the header.
+        assert_eq!(
+            row1.chars().count(),
+            separator.chars().count(),
+            "row1 width"
+        );
+        assert_eq!(
+            row2.chars().count(),
+            separator.chars().count(),
+            "row2 width"
+        );
+        assert_eq!(
+            header.chars().count(),
+            separator.chars().count(),
+            "header width"
+        );
+
+        // The Cost column right-aligns to the table edge — `$5.11` must end
+        // at the last column of the separator.
+        assert!(row1.ends_with("$5.11"));
+        assert!(row2.ends_with("$0.42"));
+
+        // The grand-total line's cost must end at the same column as the
+        // per-row cost (i.e. share the table's right edge). Before the fix
+        // the dollar amount sat ~3 columns left of the Cost column.
+        let total_line = lines[6];
+        assert!(
+            total_line.ends_with("$5.53"),
+            "total line should right-align with Cost column: {total_line:?}"
+        );
+        assert_eq!(
+            total_line.chars().count(),
+            separator.chars().count(),
+            "total line width should equal table width"
+        );
+
+        // The Calls column ("Calls" header is 5 wide) must contain the number
+        // at the same byte offset on both rows.
+        let calls_idx_header = header.find("Calls").expect("Calls header present");
+        let calls_end = calls_idx_header + "Calls".len();
+        assert_eq!(&row1[calls_end - 2..calls_end], "96");
+        assert_eq!(&row2[calls_end - 2..calls_end], "12");
+    }
+
+    #[test]
+    fn usage_summary_table_truncates_runaway_provider_names() {
+        // A provider name longer than MAX_PROVIDER_W should be ellipsized so
+        // the column width stays bounded.
+        let absurd = "a".repeat(80);
+        let data = serde_json::json!({
+            "mode": "summary",
+            "period": "today",
+            "summary": [{
+                "provider": absurd,
+                "model": "m",
+                "call_count": 1,
+                "total_input": 0,
+                "total_output": 0,
+                "total_cache_read": 0,
+                "total_cache_write": 0,
+                "total_cost": 0.01,
+            }],
+        });
+        let mut buf: Vec<u8> = Vec::new();
+        write_usage_summary_table(&mut buf, &data).expect("write");
+        let rendered = String::from_utf8(buf).expect("utf8");
+        assert!(
+            rendered.contains('\u{2026}'),
+            "expected ellipsis for runaway provider"
+        );
+        for line in rendered.lines().skip(2) {
+            // Sanity: no line should exceed a reasonable cap width.
+            assert!(line.chars().count() <= 120, "line too wide: {line:?}");
+        }
     }
 
     #[test]
