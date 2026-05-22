@@ -22,6 +22,17 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 - Keep adaptive Anthropic tool loops cache-stable through OpenRouter even from
   `sdk = "anthropic"` configs by using OpenRouter's replayable
   chat-completions continuation path.
+- `shore usage` now sizes the `Provider` and `Model` columns to the widest
+  rendered value (capped, with `…` truncation) so an over-long provider name
+  like `openrouter-anthropic` no longer shifts every subsequent value under
+  the wrong header. The grand-total dollar amount also right-aligns inside
+  the `Cost` column.
+- `shore usage` budget reset times now render in the user's local time with
+  an explicit `±HH:MM` offset (e.g. `2026-05-23 10:00 +10:00`) instead of a
+  raw UTC RFC 3339 string. The previous form made a local-midnight `reset_hour`
+  read as UTC midnight at a glance and disagree with the configured anchor.
+  Widened the `Action` column to 16 chars so `pause_background` fits without
+  pushing the `Reset` column right.
 
 ## [1.8.3] - 2026-05-19
 
