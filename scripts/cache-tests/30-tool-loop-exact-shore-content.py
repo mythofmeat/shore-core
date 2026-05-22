@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 Tool-loop cache probe using Shore's EXACT system prompt text and EXACT
-tools array, lifted byte-for-byte from a body dump
-(/tmp/shore-openai-body-dumps/).
+tools array, lifted byte-for-byte from a body dump captured by Shore's
+SHORE_OPENAI_BODY_DUMP=1 diagnostic. The daemon logs the dump path on
+first write ("SHORE_OPENAI_BODY_DUMP active"); it lives in a per-process
+random tempdir under $TMPDIR (prefix shore-openai-body-dumps-).
 
 This is the control experiment that should have been run from the start.
 It isolates wire-path bugs from content-driven model behavior. If the

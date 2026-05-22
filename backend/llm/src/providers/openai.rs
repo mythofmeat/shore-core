@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use serde_json::{json, Value};
@@ -241,12 +243,19 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
                         }
                         for b in &other_blocks {
                             let ty = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            if ty == "text" {
-                                let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                                parts.push(json!({"type": "text", "text": text}));
+                            match ty {
+                                "text" => {
+                                    let text =
+                                        b.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                    parts.push(json!({"type": "text", "text": text}));
+                                }
+                                // Anthropic-shape passthrough: forward the
+                                // block as-is so cache continuity does not
+                                // change when an image rides alongside a
+                                // tool_result on the user turn.
+                                "image" => parts.push((*b).clone()),
+                                _ => {}
                             }
-                            // Image blocks alongside tool results are rare
-                            // and not specially supported here; skipping.
                         }
                         out.push(json!({"role": "user", "content": parts}));
                         // Don't fall through to OpenAI-shape emission.
@@ -443,20 +452,40 @@ fn build_chat_body(request: &LlmRequest, ctx: &ProviderContext, streaming: bool)
     // Diagnostic dump of the FULL final body for cache investigations.
     // Off unless the env var is set so it doesn't interfere with production.
     if std::env::var("SHORE_OPENAI_BODY_DUMP").is_ok() {
-        let dump_dir = std::path::Path::new("/tmp/shore-openai-body-dumps");
-        let _ = std::fs::create_dir_all(dump_dir);
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_micros())
-            .unwrap_or(0);
-        let path = dump_dir.join(format!("call_{stamp}.json"));
-        let _ = std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&body).unwrap_or_default(),
-        );
+        if let Some(dir) = body_dump_dir() {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros())
+                .unwrap_or(0);
+            let path = dir.join(format!("call_{stamp}.json"));
+            let _ = std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&body).unwrap_or_default(),
+            );
+        }
     }
 
     body
+}
+
+/// Lazily create a process-scoped, randomly-named dump directory under the
+/// system temp dir. `tempfile::Builder::tempdir` creates the directory with
+/// `O_EXCL` semantics and 0o700 permissions, so it cannot collide with or
+/// follow a pre-existing symlink at a guessable path. The directory is kept
+/// (not auto-deleted) so dumps survive past process exit for post-hoc
+/// inspection.
+fn body_dump_dir() -> Option<&'static std::path::Path> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let path = tempfile::Builder::new()
+            .prefix("shore-openai-body-dumps-")
+            .tempdir()
+            .ok()
+            .map(|td| td.keep())?;
+        tracing::info!(path = %path.display(), "SHORE_OPENAI_BODY_DUMP active");
+        Some(path)
+    })
+    .as_deref()
 }
 
 /// Attach OpenRouter `cache_control: {type: "ephemeral"}` extensions to the
@@ -1904,6 +1933,45 @@ mod tests {
             .expect("must contain tool_result block");
         assert_eq!(tr_block["tool_use_id"], "toolu_1");
         assert_eq!(tr_block["content"], "Friday, May 22nd");
+    }
+
+    #[test]
+    fn anthropic_shape_preserves_image_alongside_tool_result() {
+        // Mixed user turn: a tool_result plus a vision-style image block.
+        // On the Anthropic-shape path the image must ride through in its
+        // native Anthropic shape so the prefix stays byte-identical for
+        // prompt-cache hits on subsequent continuations.
+        let img_block = json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "iVBORw0KGgo=",
+            }
+        });
+        let request = make_openrouter_anthropic_request(vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"},
+                img_block.clone(),
+            ],
+        })]);
+        let ctx = build_provider_context(&request);
+        let msgs = translate_messages(&request, &ctx);
+
+        assert_eq!(msgs.len(), 1, "expected single user msg: {msgs:?}");
+        let content = msgs[0]["content"].as_array().expect("array content");
+        assert!(
+            content
+                .iter()
+                .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result")),
+            "tool_result missing: {content:?}"
+        );
+        let image = content
+            .iter()
+            .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("image"))
+            .expect("image block must be preserved on anthropic-shape path");
+        assert_eq!(image, &img_block, "image block must pass through unchanged");
     }
 
     #[test]
