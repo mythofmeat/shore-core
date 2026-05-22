@@ -109,6 +109,110 @@ Finally, `sdk` describes a client-side wire protocol choice, but OpenRouter is
 still a routing layer with multiple provider-facing shapes. That distinction
 was not tested rigorously enough. Users paid for that gap.
 
+## Git history audit
+
+This audit is about the history visible in this repository. The root commit is
+`7fb4b379` from 2026-03-25, so git can prove a Shore timeline from that date
+through the 2026-05-22 fix. It cannot by itself prove what happened in older
+repositories, uncommitted experiments, user billing history, or issue
+discussions before 2026-03-25.
+
+### What git proves about `reasoning_details`
+
+The exact OpenRouter field name `reasoning_details` does not appear in git
+history before the two 2026-05-22 fix commits:
+
+```sh
+git log --all --date=short --format='%h %ad %s' -Sreasoning_details
+```
+
+That search returns only:
+
+| Commit | Date | Meaning |
+| --- | --- | --- |
+| `f9c986a` | 2026-05-22 | Adds OpenRouter `reasoning_details` capture and replay. |
+| `c3df711` | 2026-05-22 | Routes adaptive OpenRouter Anthropic use from the `sdk = "anthropic"` config surface onto the fixed continuation path. |
+
+The audit did not find an earlier commit that considered
+`reasoning_details` by name and explicitly rejected it. The evidence points to
+an omission caused by the older data model: OpenRouter reasoning was treated as
+plain reasoning text, normalized into `ContentBlock::Thinking`, while the
+opaque structured continuation metadata was not represented at all.
+
+The closest explicit decision is in `87874f7` on 2026-04-29. Its completed
+reasoning-replay plan says to keep the fix in the provider context and OpenAI
+adapter "rather than adding a new public content block shape" because Shore
+already normalized provider reasoning as `ContentBlock::Thinking`. That was
+reasonable for the DeepSeek and Moonshot string fields being fixed there, but
+it left OpenRouter adaptive continuation metadata outside the persisted shape
+Shore could replay.
+
+### Root-cause decision points
+
+| Date | Commit | Decision or behavior | Audit finding |
+| --- | --- | --- | --- |
+| 2026-03-25 | `59c4337` | Introduced the OpenAI-compatible and OpenRouter provider path with OpenAI-style tool-call replay. | This is the earliest visible OpenRouter tool-history shape that later proved wrong for Anthropic tool-loop cache extension through OpenRouter. |
+| 2026-03-28 | `cf071e5` | Made OpenRouter reasoning explicit as a normalized `reasoning` field while DeepSeek used `reasoning_content`. | This codified a string-field view of OpenRouter reasoning. There was still no structured replay metadata path. |
+| 2026-03-29 | `84ced31` | Routed Anthropic models on OpenRouter through the native Anthropic SDK path for cache control, thinking config, and cache token reporting. | This is the first visible decision to support the OpenRouter Anthropic Messages route used by the affected config family. |
+| 2026-03-29 | `ed9d71e` | Ported providers to Rust and described cache breakpoints as "immutable during tool loops". | This baked in the wrong model of the growing Anthropic tool-loop prefix. |
+| 2026-03-29 | `48c33d8` | Reworked caching around "turn boundaries" and said tool exchanges within a turn no longer shift breakpoint positions. | This reinforced the cache-boundary error later fixed by advancing through active user and completed tool-result boundaries. |
+| 2026-04-07 | `55e59be` | Re-enabled `sdk = "anthropic"` through OpenRouter after the temporary 2026-04-01 restriction. | This made the affected OpenRouter Anthropic config surface an intentional supported path again. |
+| 2026-04-25 | `df0df9d` | Moved sliding Anthropic breakpoints closer and explicitly forbade a breakpoint on the active final user message. | That active-user rule is one of the wrong assumptions the final fix reverses for tool-loop continuity. |
+| 2026-04-29 | `87874f7` | Fixed reasoning replay for OpenAI-compatible providers by replaying the existing normalized thinking shape instead of adding a richer content-block shape. | This is the clearest reasoning-data-model decision connected to the missing OpenRouter metadata. It fixed string replay, not `reasoning_details`. |
+| 2026-05-18 | `ac65edf` | Added an Anthropic cache property matrix and documented that the active final user message is never a message breakpoint. | Regression coverage now guarded the wrong invariant, which helped the cache-boundary bug survive. |
+
+For the user's `sdk = "anthropic"` with OpenRouter usage, the visible history
+therefore has two important bounds. The native Anthropic OpenRouter route was
+introduced on 2026-03-29 in `84ced31`. It was deliberately supported again on
+2026-04-07 in `55e59be` after a short restriction window. The fixed adaptive
+route landed on 2026-05-22 in `c3df711`.
+
+### Incomplete fix attempts
+
+These commits touched the same failure family but did not close the bug fixed
+on 2026-05-22.
+
+| Date | Commit | What it tried | Why it was incomplete |
+| --- | --- | --- | --- |
+| 2026-03-29 | `48c33d8` | Stabilize prompt caching and OpenRouter provider routing during tool use. | It preserved current tool-use thinking and changed breakpoint placement, but its "tool exchanges within a turn no longer shift" assumption was wrong for the growing tool-loop tail. |
+| 2026-04-25 | `df0df9d` | Move Anthropic sliding breakpoints closer to recent turns. | It encoded the active-final-user prohibition that the final tool-loop fix had to undo. |
+| 2026-05-01 | `332ae7b` | Advance Anthropic breakpoints through completed `tool_result` messages. | This fixed one half of the loop tail, but its docs still said the first request for a normal user turn must not mark the active user message. The first tool-loop continuation could still inherit the wrong warm boundary. |
+| 2026-05-18 | `ac65edf` | Guard cache prefix invariants with a broader generated-history test matrix. | The new matrix made the active-final-user prohibition an asserted invariant. It increased confidence in the wrong boundary rule. |
+| 2026-05-19 | `f5cb323` | Detect tool-loop cache drops in ledger tracking. | This improved anomaly reporting for the failure shape; it did not fix request shape, reasoning metadata replay, or breakpoint placement. |
+
+### Related cache work, not this root cause
+
+Several OpenRouter cache commits were legitimate work on adjacent cache
+instability. They did not fix this tool-loop regression, but the audit should
+not call them wasted work or pretend they were evidence for the same root
+cause.
+
+| Date | Commit | Audit classification |
+| --- | --- | --- |
+| 2026-04-01 | `eae8b5e` | Temporarily removed custom-base-url Anthropic SDK OpenRouter proxying after A/B tests blamed intermittent OpenRouter cache misses. Related symptom area, different diagnosis and route policy. |
+| 2026-04-09 | `6b7b769` | Added cache probes, breakpoint experiments, and a harness while OpenRouter misses were still unresolved. Investigation scaffolding, not a root-cause fix. |
+| 2026-04-09 | `71f7337` | Recorded controlled experiments attributing a substantial miss rate to OpenRouter load balancing. Adjacent provider behavior finding. |
+| 2026-04-09 | `36a9462` | Verified that pinning OpenRouter to Anthropic removed misses in those experiments. Operational mitigation for route instability, still useful alongside this fix. |
+| 2026-04-29 | `87874f7` | Fixed DeepSeek and Moonshot string reasoning replay failures. It exposed the missing richer metadata path in hindsight, but it was not a failed fix for those providers. |
+| 2026-04-30 | `b10f383` | Preserved prior-turn thinking by default for providers that require reasoning replay. Same string-thinking architecture; not the OpenRouter adaptive metadata fix. |
+
+### Audit conclusion
+
+The root cause was not one bad line in one commit. The visible history shows a
+chain:
+
+1. OpenRouter reasoning and tool replay were modeled around generic
+   OpenAI-compatible string/tool shapes.
+2. Anthropic cache breakpoint logic was designed around completed turns and
+   then tested with an active-user prohibition that does not fit the first
+   tool-result continuation.
+3. Reasoning replay work fixed string fields for providers that demanded them
+   without adding a place to persist OpenRouter's opaque adaptive continuation
+   metadata.
+4. The live cache checks that would have joined those pieces together did not
+   cover a warm adaptive OpenRouter Anthropic Shore tool loop until the
+   2026-05-22 fix.
+
 ## Fix
 
 The fix has four parts:
