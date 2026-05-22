@@ -167,9 +167,8 @@ embedding profile to enable semantic search.
 ## Providers
 
 Provider entries replace per-model `api_key_env` duplication and unlock
-runtime `/v1/models` discovery. Static `[chat.<provider>.<alias>]`
-entries keep working unchanged alongside the registry — they never
-require migration.
+runtime model discovery. Static `[chat.<provider>.<alias>]` entries keep
+working unchanged alongside the registry — they never require migration.
 
 ### Single-key form (compact)
 
@@ -230,6 +229,11 @@ auto-refreshes any discovery-enabled provider whose cache is missing or
 older than 24h, both at startup and on a 24h cadence while running. Run
 `shore provider refresh <name>` (or `shore provider refresh` to fan out
 across every discovery-enabled provider) to force a refetch out of band.
+Providers with `sdk = "anthropic"` use Anthropic's native `GET /v1/models`
+API. Other providers use the OpenAI-compatible `GET <base_url>/models`
+shape. Well-known provider keys with default base URLs, including
+`anthropic`, `openai`, and `openrouter`, can omit `base_url`; custom
+providers need it.
 Hidden models stay in the cache but are filtered out of `shore model` and
 `shore provider models <name>` until `--all` (CLI) or `:model all` (TUI)
 is used. Manual `[chat.<provider>.<alias>]` entries are never filtered —
