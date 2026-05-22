@@ -506,7 +506,7 @@ mod tests {
                 cache_state, cache_anomaly,
                 input_cost, output_cost, cache_read_cost, cache_write_cost, total_cost
             ) VALUES (
-                '2026-04-05T12:00:00Z', 'aria', 'claude_code', 'claude-sonnet-4-5', 'message',
+                '2026-04-05T12:00:00Z', 'aria', 'openrouter', 'claude-sonnet-4-5', 'message',
                 100, 50, 0, 0,
                 1500, 200, 'end_turn', 1,
                 NULL, NULL,

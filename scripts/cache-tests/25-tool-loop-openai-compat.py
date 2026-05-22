@@ -324,7 +324,9 @@ def send(messages, system_message):
     pt_details = usage.get("prompt_tokens_details") or {}
     cached_tokens = pt_details.get("cached_tokens", 0) or 0
     # OpenRouter sometimes uses cache_discount or distinct cache fields too.
-    cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
+    cache_creation = (pt_details.get("cache_write_tokens", 0)
+                      or usage.get("cache_creation_input_tokens", 0)
+                      or 0)
     cache_read = usage.get("cache_read_input_tokens", 0) or cached_tokens or 0
 
     return resp, msg, {

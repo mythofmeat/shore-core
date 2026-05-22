@@ -365,6 +365,15 @@ mod tests {
         )
     }
 
+    /// Build a mock OpenAI-compatible SSE response for the continuation call.
+    fn sse_openai_text_end_turn(text: &str) -> String {
+        format!(
+            "data: {{\"model\":\"test\",\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}}}}]}}\n\n\
+             data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}],\"usage\":{{\"prompt_tokens\":20,\"completion_tokens\":10}}}}\n\n\
+             data: [DONE]\n\n"
+        )
+    }
+
     /// Spawn a mock HTTP server that serves an SSE response for each connection.
     /// Returns the base URL (e.g. "http://127.0.0.1:PORT") and the server handle.
     async fn mock_sse_server(
@@ -566,6 +575,76 @@ mod tests {
         assert_eq!(request.messages.len(), 3);
         assert_eq!(request.messages[1]["content"][0]["name"], "check_time");
         assert_eq!(request.messages[2]["content"][0]["type"], "tool_result");
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn openrouter_tool_loop_keeps_reasoning_details_for_continuation_request() {
+        let sse = sse_openai_text_end_turn("Done.");
+        let (base_url, server) = mock_sse_server(sse, 1).await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let client = test_ledger_client(&tmp);
+        let (push_tx, _push_rx) = mpsc::channel(64);
+        let ctx = TestToolContext::new();
+
+        let mut request = test_request(
+            &base_url,
+            vec![json!({"role": "user", "content": "What time is it?"})],
+        );
+        request.sdk = shore_config::models::Sdk::Openai;
+        request.model = "anthropic/claude-sonnet-4-6".into();
+        request.provider_key = Some("openrouter".into());
+
+        let details = json!([{
+            "type": "reasoning.encrypted",
+            "data": "opaque-openrouter-detail"
+        }]);
+        let initial = StreamResult {
+            content: String::new(),
+            model: "test".into(),
+            finish_reason: "tool_use".into(),
+            usage: Default::default(),
+            timing: Default::default(),
+            tool_uses: vec![ToolUseEvent {
+                id: "t1".into(),
+                name: "check_time".into(),
+                input: json!({}),
+            }],
+            content_blocks: vec![
+                ContentBlock::Thinking {
+                    thinking: String::new(),
+                    signature: None,
+                    details: Some(details.clone()),
+                },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "check_time".into(),
+                    input: json!({}),
+                },
+            ],
+        };
+
+        let result = run_tool_loop(
+            &client,
+            &push_tx,
+            &mut request,
+            initial,
+            &ctx,
+            10,
+            &test_diag(),
+            "test",
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.result.finish_reason, "end_turn");
+        assert_eq!(
+            request.messages[1]["content"][0]["details"], details,
+            "OpenRouter reasoning_details must survive into the tool-loop continuation request"
+        );
 
         server.await.unwrap();
     }

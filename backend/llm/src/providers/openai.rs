@@ -125,8 +125,7 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
                         for b in &text_parts {
                             let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("");
                             if !text.is_empty() {
-                                content_blocks
-                                    .push(json!({"type": "text", "text": text}));
+                                content_blocks.push(json!({"type": "text", "text": text}));
                             }
                         }
                         for b in &tool_parts {
@@ -179,8 +178,8 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
                                     .unwrap_or("")
                                     .to_string();
                                 let input = b.get("input").cloned().unwrap_or(json!({}));
-                                let arguments = serde_json::to_string(&input)
-                                    .unwrap_or_else(|_| "{}".into());
+                                let arguments =
+                                    serde_json::to_string(&input).unwrap_or_else(|_| "{}".into());
                                 json!({
                                     "id": id,
                                     "type": "function",
@@ -192,8 +191,7 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
                             })
                             .collect();
 
-                        let mut msg_obj =
-                            json!({"role": "assistant", "content": content_val});
+                        let mut msg_obj = json!({"role": "assistant", "content": content_val});
                         if !tool_calls.is_empty() {
                             msg_obj["tool_calls"] = Value::Array(tool_calls);
                         }
@@ -228,10 +226,8 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
                         // /chat/completions when targeting Anthropic.
                         let mut parts: Vec<Value> = Vec::new();
                         for tr in &tool_results {
-                            let tool_use_id = tr
-                                .get("tool_use_id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
+                            let tool_use_id =
+                                tr.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("");
                             let content_value = match tr.get("content") {
                                 Some(Value::String(s)) => Value::String(s.clone()),
                                 Some(other) => other.clone(),
@@ -246,10 +242,7 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
                         for b in &other_blocks {
                             let ty = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
                             if ty == "text" {
-                                let text = b
-                                    .get("text")
-                                    .and_then(|t| t.as_str())
-                                    .unwrap_or("");
+                                let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("");
                                 parts.push(json!({"type": "text", "text": text}));
                             }
                             // Image blocks alongside tool results are rare
@@ -504,9 +497,7 @@ fn apply_openrouter_cache_markers(messages: &mut [Value]) {
     let user_indices: Vec<usize> = messages
         .iter()
         .enumerate()
-        .filter_map(|(i, m)| {
-            (m.get("role").and_then(|r| r.as_str()) == Some("user")).then_some(i)
-        })
+        .filter_map(|(i, m)| (m.get("role").and_then(|r| r.as_str()) == Some("user")).then_some(i))
         .collect();
     let take = user_indices.len().min(2);
     for &idx in user_indices.iter().rev().take(take) {
@@ -544,10 +535,7 @@ fn attach_cache_control_to_message(msg: &mut Value, cc: &Value) {
         Some(Value::Array(mut arr)) => {
             for block in arr.iter_mut().rev() {
                 if let Some(block_obj) = block.as_object_mut() {
-                    let bt = block_obj
-                        .get("type")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("");
+                    let bt = block_obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
                     if matches!(bt, "text" | "image_url" | "tool_result") {
                         block_obj.insert("cache_control".into(), cc.clone());
                         break;
@@ -1871,6 +1859,29 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_shape_replays_reasoning_details_with_tool_use() {
+        let details = json!([{
+            "type": "reasoning.encrypted",
+            "data": "opaque-openrouter-detail"
+        }]);
+        let request = make_openrouter_anthropic_request(vec![json!({
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "", "details": details.clone()},
+                {"type": "tool_use", "id": "toolu_1", "name": "check_time", "input": {}},
+            ],
+        })]);
+        let ctx = build_provider_context(&request);
+
+        let msgs = translate_messages(&request, &ctx);
+
+        assert_eq!(
+            msgs[0]["reasoning_details"], details,
+            "OpenRouter must receive the reasoning_details retained by the daemon"
+        );
+    }
+
+    #[test]
     fn anthropic_shape_emits_tool_result_in_user_message() {
         let request = make_openrouter_anthropic_request(vec![json!({
             "role": "user",
@@ -1897,8 +1908,7 @@ mod tests {
 
     #[test]
     fn build_chat_body_no_cache_markers_when_provider_disabled() {
-        let mut request =
-            make_request(vec![json!({"role": "user", "content": "hi"})], None);
+        let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         // Default: sdk=openai, no provider_key override — emit_cache_control
         // stays false and the body should be marker-free.
         request.provider_key = Some("openai".into());
@@ -1940,8 +1950,7 @@ mod tests {
 
     #[test]
     fn build_chat_body_emits_flat_reasoning_for_openai_direct() {
-        let mut request =
-            make_request(vec![json!({"role": "user", "content": "hi"})], None);
+        let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         request.provider_options = Some(json!({ "reasoning_effort": "high" }));
         let ctx = build_provider_context(&request);
         assert_eq!(ctx.reasoning_field_shape, "flat");

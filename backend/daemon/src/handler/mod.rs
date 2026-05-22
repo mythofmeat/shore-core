@@ -109,9 +109,6 @@ struct GenContext {
     session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
     diagnostics: Arc<std::sync::Mutex<shore_diagnostics::Diagnostics>>,
     notifier: NotificationService,
-    /// Optional daemon HTTP listener state used by providers that need
-    /// callback URLs into this daemon.
-    http: Option<Arc<crate::http::DaemonHttpState>>,
 }
 
 struct GenerationParams {
@@ -179,11 +176,6 @@ pub struct MessageHandler {
     pub session_router: SessionRouter,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
-    /// Daemon HTTP state, when the listener is enabled. Carries the
-    /// bind address (and, after M3, the MCP session registry) for
-    /// providers that need a callback URL into the daemon — currently
-    /// only `claude_code`.
-    pub http: Option<Arc<crate::http::DaemonHttpState>>,
     control_rx: mpsc::Receiver<HandlerControl>,
     sessions: HashMap<SessionId, SessionState>,
     last_user_session: HashMap<String, LastUserLease>,
@@ -197,7 +189,6 @@ pub struct MessageHandlerDeps {
     pub session_router: SessionRouter,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
-    pub http: Option<Arc<crate::http::DaemonHttpState>>,
     pub control_rx: mpsc::Receiver<HandlerControl>,
 }
 
@@ -211,7 +202,6 @@ impl MessageHandler {
             session_router: deps.session_router,
             autonomy: deps.autonomy,
             notifier: deps.notifier,
-            http: deps.http,
             control_rx: deps.control_rx,
             sessions: HashMap::new(),
             last_user_session: HashMap::new(),

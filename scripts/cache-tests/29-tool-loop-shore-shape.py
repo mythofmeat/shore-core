@@ -16,6 +16,10 @@ Flow:
 
 After (3), expect the assistant to call check_time; we return a fake result
 and observe whether the tool-result continuation reads the warm prefix.
+
+Set REPLAY_REASONING_DETAILS=0 for the negative control: the assistant's
+OpenRouter reasoning_details are intentionally omitted before the tool-result
+continuation, reproducing the replay hole that invalidates this cache prefix.
 """
 
 import json
@@ -31,6 +35,8 @@ URL = "https://openrouter.ai/api/v1/chat/completions"
 API_KEY = (os.environ.get("OPENROUTER_SHORE_TEST")
            or os.environ.get("OPENROUTER_API_KEY", ""))
 DELAY = 1
+REPLAY_REASONING_DETAILS = os.environ.get(
+    "REPLAY_REASONING_DETAILS", "1") not in ("0", "false", "False")
 
 R = "\033[0;31m"
 G = "\033[0;32m"
@@ -206,7 +212,9 @@ def send(messages, system_message):
     usage = resp.get("usage", {}) or {}
     pt_details = usage.get("prompt_tokens_details") or {}
     cached_tokens = pt_details.get("cached_tokens", 0) or 0
-    cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
+    cache_creation = (pt_details.get("cache_write_tokens", 0)
+                      or usage.get("cache_creation_input_tokens", 0)
+                      or 0)
     cache_read = usage.get("cache_read_input_tokens", 0) or cached_tokens or 0
 
     return resp, msg, {
@@ -231,7 +239,7 @@ def build_assistant_msg(msg):
         out["content"] = msg["content"]
     if msg.get("tool_calls"):
         out["tool_calls"] = msg["tool_calls"]
-    if msg.get("reasoning_details") is not None:
+    if REPLAY_REASONING_DETAILS and msg.get("reasoning_details") is not None:
         out["reasoning_details"] = msg["reasoning_details"]
     if msg.get("reasoning") is not None:
         out["reasoning"] = msg["reasoning"]
@@ -245,6 +253,7 @@ def main():
 
     print(f"{C}[{NAME}]{NC} nonce: {NONCE}")
     print(f"{C}[{NAME}]{NC} matches the prompts used by 28-tool-loop-openai-daemon.sh")
+    print(f"{C}[{NAME}]{NC} replay_reasoning_details={REPLAY_REASONING_DETAILS}")
     print()
 
     messages = []

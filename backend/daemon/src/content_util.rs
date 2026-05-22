@@ -60,11 +60,14 @@ pub fn content_block_to_json(block: &ContentBlock) -> Value {
         ContentBlock::Thinking {
             thinking,
             signature,
-            ..
+            details,
         } => {
             let mut block = json!({"type": "thinking", "thinking": thinking});
             if let Some(sig) = signature {
                 block["signature"] = json!(sig);
+            }
+            if let Some(details) = details {
+                block["details"] = details.clone();
             }
             block
         }
@@ -224,7 +227,7 @@ mod tests {
             thinking: "let me think".into(),
             signature: Some("sig_abc".into()),
             details: None,
-};
+        };
         let result = content_block_to_api_json(&block).unwrap();
         assert_eq!(result["type"], "thinking");
         assert_eq!(result["thinking"], "let me think");
@@ -237,7 +240,7 @@ mod tests {
             thinking: "unsigned thought".into(),
             signature: None,
             details: None,
-};
+        };
         assert!(
             content_block_to_api_json(&block).is_none(),
             "unsigned thinking blocks must be filtered from API requests"
@@ -304,11 +307,29 @@ mod tests {
             thinking: "unsigned thought".into(),
             signature: None,
             details: None,
-};
+        };
         let result = content_block_to_json(&block);
         assert_eq!(result["type"], "thinking");
         assert_eq!(result["thinking"], "unsigned thought");
         assert!(result.get("signature").is_none());
+    }
+
+    #[test]
+    fn json_thinking_preserves_openrouter_reasoning_details() {
+        let details = json!([{
+            "type": "reasoning.encrypted",
+            "data": "opaque-openrouter-detail"
+        }]);
+        let block = ContentBlock::Thinking {
+            thinking: String::new(),
+            signature: None,
+            details: Some(details.clone()),
+        };
+
+        let result = content_block_to_json(&block);
+
+        assert_eq!(result["type"], "thinking");
+        assert_eq!(result["details"], details);
     }
 
     #[test]
@@ -324,7 +345,7 @@ mod tests {
                 thinking: "hmm".into(),
                 signature: Some("sig".into()),
                 details: None,
-},
+            },
             ContentBlock::RedactedThinking { data: "enc".into() },
             ContentBlock::ToolResult {
                 tool_use_id: "t1".into(),
@@ -360,10 +381,24 @@ mod tests {
             thinking: "tool reasoning".into(),
             signature: None,
             details: None,
-};
+        };
         let result = content_block_to_request_json_for_sdk(&block, &Sdk::Openai).unwrap();
         assert_eq!(result["type"], "thinking");
         assert_eq!(result["thinking"], "tool reasoning");
+    }
+
+    #[test]
+    fn request_json_openai_keeps_reasoning_details_for_provider_replay() {
+        let details = json!([{"type": "reasoning.summary", "summary": "opaque"}]);
+        let block = ContentBlock::Thinking {
+            thinking: String::new(),
+            signature: None,
+            details: Some(details.clone()),
+        };
+
+        let result = content_block_to_request_json_for_sdk(&block, &Sdk::Openai).unwrap();
+
+        assert_eq!(result["details"], details);
     }
 
     #[test]
@@ -372,7 +407,7 @@ mod tests {
             thinking: "unsigned thought".into(),
             signature: None,
             details: None,
-};
+        };
         assert!(content_block_to_request_json_for_sdk(&block, &Sdk::Anthropic).is_none());
     }
 
@@ -398,7 +433,7 @@ mod tests {
                 thinking: "hmm".into(),
                 signature: None,
                 details: None,
-},
+            },
             ContentBlock::ToolUse {
                 id: "t2".into(),
                 name: "roll_dice".into(),
@@ -537,7 +572,7 @@ mod tests {
                 thinking: "thought".into(),
                 signature: None,
                 details: None,
-},
+            },
         ];
         assert!(extract_tool_uses(&blocks).is_empty());
     }

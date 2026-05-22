@@ -57,7 +57,6 @@ struct TickContext {
     loaded_config: Option<Arc<LoadedConfig>>,
     notifier: Option<NotificationService>,
     registry: Option<Arc<tokio::sync::Mutex<CharacterRegistry>>>,
-    http: Option<Arc<crate::http::DaemonHttpState>>,
 }
 
 struct HeartbeatToolContext {
@@ -321,8 +320,6 @@ pub struct AutonomyManager {
     notifier: Option<NotificationService>,
     /// Character engine registry for safe message persistence.
     registry: Option<Arc<tokio::sync::Mutex<CharacterRegistry>>>,
-    /// Optional daemon HTTP listener state for providers that need callbacks.
-    http: Option<Arc<crate::http::DaemonHttpState>>,
 }
 
 impl AutonomyManager {
@@ -344,7 +341,6 @@ impl AutonomyManager {
             loaded_config: None,
             notifier: None,
             registry: None,
-            http: None,
         }
     }
 
@@ -356,13 +352,11 @@ impl AutonomyManager {
         push_tx: broadcast::Sender<ServerMessage>,
         loaded_config: LoadedConfig,
         notifier: NotificationService,
-        http: Option<Arc<crate::http::DaemonHttpState>>,
     ) {
         self.llm_client = Some(llm_client);
         self.push_tx = Some(push_tx);
         self.loaded_config = Some(Arc::new(loaded_config));
         self.notifier = Some(notifier);
-        self.http = http;
     }
 
     /// Reload runtime autonomy and compaction configuration after `config_reset`.
@@ -472,7 +466,6 @@ impl AutonomyManager {
             .or_else(|| self.loaded_config.clone());
         let notifier = self.notifier.clone();
         let registry = self.registry.clone();
-        let http = self.http.clone();
 
         let tick_ctx = TickContext {
             state,
@@ -484,7 +477,6 @@ impl AutonomyManager {
             loaded_config,
             notifier,
             registry,
-            http,
         };
         let handle = tokio::spawn(async move {
             character_tick_loop(name, tick_ctx, shutdown_rx).await;
@@ -1091,7 +1083,6 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                 ctx.loaded_config.as_deref(),
                 ctx.notifier.as_ref(),
                 ctx.registry.as_ref(),
-                ctx.http.as_ref(),
             )
             .await;
         }
@@ -1105,7 +1096,6 @@ async fn tick_character(character: &str, ctx: &TickContext) {
             &ctx.data_dir,
             ctx.llm_client.as_ref(),
             ctx.loaded_config.as_deref(),
-            ctx.http.as_ref(),
         )
         .await;
         let mut s = lock_state(&ctx.state);
@@ -1210,7 +1200,6 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
         llm_client,
         notifier,
         cached_request,
-        ctx.http.clone(),
     )
     .await
     {
@@ -1306,7 +1295,6 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
         cached_request.as_ref(),
         false,
         false,
-        ctx.http.clone(),
     )
     .await
     {
@@ -1583,7 +1571,6 @@ async fn execute_heartbeat_tick(
     loaded_config: Option<&LoadedConfig>,
     notifier: Option<&NotificationService>,
     registry: Option<&Arc<tokio::sync::Mutex<CharacterRegistry>>>,
-    http: Option<&Arc<crate::http::DaemonHttpState>>,
 ) {
     let Some(client) = llm_client else { return };
 
@@ -1691,15 +1678,6 @@ async fn execute_heartbeat_tick(
         inner: tool_ctx,
         state: state.clone(),
     });
-    let claude_code_session =
-        match crate::claude_code::prepare_request(&mut request, http, None, tool_ctx.clone()).await
-        {
-            Ok(session) => session,
-            Err(e) => {
-                error!(character, error = %e, "Heartbeat: failed to prepare claude_code request");
-                return;
-            }
-        };
     let max_normal_iterations = lc.app.behavior.autonomy.heartbeat.max_tool_rounds;
     let wrap_up_grace = lc.app.behavior.autonomy.heartbeat.wrap_up_grace_rounds;
     let total_iterations = max_normal_iterations.saturating_add(wrap_up_grace);
@@ -1764,7 +1742,7 @@ async fn execute_heartbeat_tick(
             CallType::HeartbeatToolLoop
         };
 
-        let (mut resp, fallback_events) = match client
+        let (resp, fallback_events) = match client
             .generate_with_config_fallback(&mut request, lc, call_type, character, false)
             .await
         {
@@ -1779,11 +1757,6 @@ async fn execute_heartbeat_tick(
             push_provider_fallback_events(&mut s, HeartbeatEventKind::ToolUse, &fallback_events);
             s.mark_dirty();
         }
-        crate::claude_code::splice_generate_response_from_session(
-            &mut resp,
-            claude_code_session.as_ref(),
-        )
-        .await;
         cache_warmed = true;
 
         info!(
@@ -2161,7 +2134,6 @@ async fn execute_dormant_ping(
     data_dir: &Path,
     llm_client: Option<&LedgerClient>,
     loaded_config: Option<&LoadedConfig>,
-    http: Option<&Arc<crate::http::DaemonHttpState>>,
 ) -> DormantPingOutcome {
     let Some(client) = llm_client else {
         return DormantPingOutcome::Skipped("no LLM client available".to_string());
@@ -2199,21 +2171,6 @@ async fn execute_dormant_ping(
             }
         }
     };
-    let claude_code_session = match crate::claude_code::prepare_request(
-        &mut request,
-        http,
-        None,
-        crate::claude_code::empty_tool_context(),
-    )
-    .await
-    {
-        Ok(session) => session,
-        Err(e) => {
-            debug!(character, error = %e, "Dormant ping: failed to prepare claude_code request");
-            return DormantPingOutcome::Failed(format!("failed to prepare provider request: {e}"));
-        }
-    };
-
     let generate_result = match loaded_config {
         Some(config) => {
             client
@@ -2233,12 +2190,7 @@ async fn execute_dormant_ping(
     };
 
     match generate_result {
-        Ok((mut resp, fallback_events)) => {
-            crate::claude_code::splice_generate_response_from_session(
-                &mut resp,
-                claude_code_session.as_ref(),
-            )
-            .await;
+        Ok((resp, fallback_events)) => {
             info!(
                 character,
                 cache_read = resp.usage.cache_read_tokens,
@@ -2694,7 +2646,6 @@ mod tests {
             loaded_config: None,
             notifier: None,
             registry: None,
-            http: None,
         };
         tick_character("alice", &tick_ctx).await;
     }
@@ -2818,7 +2769,6 @@ mod tests {
             loaded_config: None,
             notifier: None,
             registry: None,
-            http: None,
         }
     }
 
@@ -3082,7 +3032,7 @@ mod tests {
                         thinking: "private chain".into(),
                         signature: Some("sig".into()),
                         details: None,
-},
+                    },
                     ContentBlock::Text {
                         text: "answer".into(),
                     },
@@ -3556,7 +3506,6 @@ api_key_env = "{heartbeat_env}"
             loaded_config: None,
             notifier: None,
             registry: None,
-            http: None,
         };
 
         tick_character("alice", &tick_ctx).await;

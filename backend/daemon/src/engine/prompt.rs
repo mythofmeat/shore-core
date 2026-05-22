@@ -723,7 +723,7 @@ mod tests {
                     thinking: "A".repeat(40),
                     signature: None,
                     details: None,
-},
+                },
                 ContentBlock::Text {
                     text: "B".repeat(80),
                 },
@@ -763,7 +763,7 @@ mod tests {
                     thinking: "B".repeat(20).to_string(),
                     signature: None,
                     details: None,
-},
+                },
             ],
             alt_index: None,
             alt_count: None,

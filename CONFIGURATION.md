@@ -85,26 +85,9 @@ cache_ttl = "1h"
 addr = "127.0.0.1:7320"
 unsafe_allow_remote_access = false
 allowed_hosts = []
-
-[daemon.http]
-enabled = false
-bind_addr = "127.0.0.1:0"
 ```
 
 Non-loopback binds require `unsafe_allow_remote_access = true`. `allowed_hosts` is only a source-IP filter, not auth or TLS.
-
-`[daemon.http]` starts the daemon's local HTTP listener. It is off by default
-for API providers and is auto-enabled at daemon startup when any
-`sdk = "claude_code"` chat model is configured, so the local `claude` CLI can
-call back into Shore's MCP tool host. The default `127.0.0.1:0` binds an
-ephemeral loopback port and is the recommended setting.
-
-The HTTP listener is not authenticated and does not provide TLS. Keep
-`bind_addr` on loopback unless you are on a trusted private or overlay network
-and have set `[daemon].unsafe_allow_remote_access = true` intentionally. The
-`allowed_hosts` filter applies to the SWP listener, not this HTTP MCP listener;
-the `/mcp/<session-id>` URL should be treated as a bearer secret while a Claude
-Code turn is active.
 
 ## `[defaults]`
 
@@ -154,47 +137,6 @@ model_id = "anthropic/claude-haiku-4-5"
 api_key_env = "OPENROUTER_API_KEY"
 base_url = "https://openrouter.ai/api/v1"
 ```
-
-### Claude Code / Max Subscription
-
-`sdk = "claude_code"` routes a chat model through the local `claude` CLI instead
-of a provider HTTP API. The CLI uses the user's local OAuth login, so there is
-no `api_key_env` for this model.
-
-```toml
-[chat.claude_code.sonnet-max]
-model_id = "claude-sonnet-4-5"
-max_tokens = 4096
-```
-
-Before using it, install Claude Code, run `claude auth login`, and verify with
-`shore config --check`. The provider supports Shore tools through the daemon's
-MCP listener, which the daemon auto-enables on loopback when `claude_code`
-models are present. Client-visible streaming uses Claude Code partial-message
-events for progressive text/thinking deltas. `max_tokens`, `temperature`,
-`top_p`, and Anthropic prompt-cache knobs are not currently forwarded because
-the `claude` CLI does not expose matching flags for this OAuth-backed path; see
-`docs/claude-code-parity.md`. `shore usage` records Claude Code's reported
-`total_cost_usd` as would-be API cost; actual subscription spend remains the
-fixed Claude plan price.
-
-By default, cold Claude Code starts with prior Shore history rewrite a native
-Claude Code JSONL session file and launch with `--resume <session_id>`. This
-preserves structured conversation context across compaction, daemon restart, or
-subprocess death more faithfully than a flattened transcript. Set
-`provider_options.native_session_replay = false` only for diagnostics or if a
-future Claude Code release changes the private JSONL format.
-
-Current-turn image input is supported through Shore's Claude Code MCP session:
-the daemon exposes a private attachment tool for the request and the provider
-points Claude at that tool instead of sending raw stream-json image blocks.
-Direct stream-json image blocks are still a Claude Code CLI parity gap, and
-older image-only history is not replayed as visual context.
-
-Shore passes the system prompt through Claude Code's `--system-prompt-file`
-flag to keep large prompts out of process arguments. That flag is an
-undocumented Claude Code surface, so provider live tests are the compatibility
-guard when upgrading the local `claude` CLI.
 
 Embedding profiles. Shore only ships an OpenAI-compatible embedder; any
 endpoint that speaks `/v1/embeddings` works (OpenAI, Together, Voyage's

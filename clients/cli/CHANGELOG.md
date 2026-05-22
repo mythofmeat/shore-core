@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop waiting for another stream turn after a terminal tool-use response.
+
+## [1.8.7](https://github.com/mythofmeat/shore-core/compare/shore-cli-v1.8.6...shore-cli-v1.8.7) - 2026-05-21
+
+### Other
+
+- [codex] add role filtering to shore log ([#25](https://github.com/mythofmeat/shore-core/pull/25))
+
+### Added
+
+- Add `shore log --role` filtering for user, assistant, and system messages,
+  with `character` accepted as an assistant-role alias.
+
+## [1.8.6](https://github.com/mythofmeat/shore-core/compare/shore-cli-v1.8.5...shore-cli-v1.8.6) - 2026-05-21
+
+### Other
+
+- [codex] remove Claude Code transport ([#24](https://github.com/mythofmeat/shore-core/pull/24))
+- release v1.8.5 ([#21](https://github.com/mythofmeat/shore-core/pull/21))
+
 ## [1.8.5](https://github.com/mythofmeat/shore-core/releases/tag/shore-cli-v1.8.5) - 2026-05-20
 
 ### Added

@@ -248,7 +248,6 @@ pub async fn run_librarian_sweep(
     cached_request: Option<&LlmRequest>,
     dry_run: bool,
     force: bool,
-    http: Option<std::sync::Arc<crate::http::DaemonHttpState>>,
 ) -> Result<Option<DreamSweepResult>, DreamingError> {
     let cfg = &loaded_config.app.memory.dreaming;
     let memory_dir = character_memory_dir(&loaded_config.dirs.config, character);
@@ -276,10 +275,6 @@ pub async fn run_librarian_sweep(
             .await
             .ok_or_else(|| DreamingError::Config("failed to build dreaming tool context".into()))?,
     );
-    let claude_code_session =
-        crate::claude_code::prepare_request(&mut request, http.as_ref(), None, tool_ctx.clone())
-            .await
-            .map_err(DreamingError::Llm)?;
 
     info!(
         character,
@@ -296,7 +291,6 @@ pub async fn run_librarian_sweep(
         character,
         cfg.max_tool_rounds,
         dry_run,
-        claude_code_session.as_ref(),
     )
     .await?;
 
@@ -712,8 +706,8 @@ async fn build_librarian_request(
     // Fresh path: no chat cache to inherit. Branch on whether this SDK
     // routes through Anthropic's prompt cache:
     //
-    // - Anthropic / ClaudeCode: ride the dreaming prompt as `system_suffix`
-    //   so the wire shape matches the cached path —
+    // - Anthropic: ride the dreaming prompt as `system_suffix` so the
+    //   wire shape matches the cached path —
     //   `convert_inline_system_messages` merges the trailing `role:"system"`
     //   into the preceding user turn, giving the model an embedded
     //   `<system_instruction>` block either way.
@@ -867,12 +861,11 @@ async fn run_private_librarian_loop(
     character: &str,
     max_tool_rounds: u32,
     dry_run: bool,
-    claude_code_session: Option<&crate::engine::mcp_session::McpSessionGuard>,
 ) -> Result<LibrarianLoopResult, DreamingError> {
     let mut loop_result = LibrarianLoopResult::default();
 
     for iteration in 0..max_tool_rounds {
-        let (mut resp, _fallback_events) = client
+        let (resp, _fallback_events) = client
             .generate_with_config_fallback(
                 request,
                 loaded_config,
@@ -882,8 +875,6 @@ async fn run_private_librarian_loop(
             )
             .await
             .map_err(|e| DreamingError::Llm(e.to_string()))?;
-        crate::claude_code::splice_generate_response_from_session(&mut resp, claude_code_session)
-            .await;
         remember_final_report(&mut loop_result, &resp);
         push_assistant_response(request, &resp);
 
@@ -2452,7 +2443,6 @@ mod tests {
             None,
             false,
             true,
-            None,
         )
         .await
         .unwrap()
@@ -2535,7 +2525,6 @@ mod tests {
             Some(&cached_request),
             false,
             true,
-            None,
         )
         .await
         .unwrap()
@@ -2580,7 +2569,6 @@ mod tests {
             None,
             false,
             true,
-            None,
         )
         .await
         .unwrap()
@@ -2626,7 +2614,6 @@ mod tests {
             None,
             true,
             true,
-            None,
         )
         .await
         .unwrap()
@@ -2667,7 +2654,6 @@ mod tests {
             None,
             false,
             true,
-            None,
         )
         .await
         .unwrap()
@@ -2719,7 +2705,6 @@ mod tests {
             None,
             false,
             true,
-            None,
         )
         .await
         .unwrap()

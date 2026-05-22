@@ -5,6 +5,17 @@ conventional commits. The block below is unstructured legacy history covering
 roughly v0.16.0 through v1.8.1. v1.8.2 and v1.8.3 were one-off manual cuts
 to advance the release-plz baseline past trees it couldn't `cargo package`.
 
+## [Unreleased]
+
+### Removed (BREAKING)
+- The `claude_code` SDK provider, the `[chat.claude_code.*]` model namespace,
+  the `sdk = "claude_code"` setting, the `[daemon.http]` MCP callback listener,
+  the per-turn MCP session registry, and the `shore_attached_image` MCP bridge.
+  Anthropic dropped programmatic access for the `claude` CLI's OAuth path, so
+  this transport no longer works. Configs that reference the removed sections
+  will fail to load — switch the model to a regular Anthropic / OpenRouter
+  entry with an API key.
+
 ## [1.8.3] - 2026-05-19
 
 ### Changed

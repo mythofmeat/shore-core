@@ -212,9 +212,9 @@ impl StreamConsumer {
                     // out loud), synthesize an empty Thinking block so
                     // the details survive on disk and on the next request.
                     if let Some(details) = pending_reasoning_details.take() {
-                        let last_thinking_idx = content_blocks.iter().rposition(|b| {
-                            matches!(b, ContentBlock::Thinking { .. })
-                        });
+                        let last_thinking_idx = content_blocks
+                            .iter()
+                            .rposition(|b| matches!(b, ContentBlock::Thinking { .. }));
                         match last_thinking_idx {
                             Some(idx) => {
                                 if let ContentBlock::Thinking { details: slot, .. } =
@@ -308,6 +308,7 @@ pub async fn emit_stream_end(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tokio::io::{AsyncWriteExt, DuplexStream};
 
     /// Helper: set up a duplex stream pair and return (writer, reader, direct_tx, direct_rx).
@@ -509,6 +510,55 @@ mod tests {
         assert!(
             matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "The answer")
         );
+
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn consume_stream_keeps_reasoning_details_without_thinking_text() {
+        let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
+        let consumer = StreamConsumer::new(push_tx, None);
+
+        let details = json!([{
+            "type": "reasoning.encrypted",
+            "data": "opaque-openrouter-detail"
+        }]);
+        let events = [
+            json!({"type": "start", "model": "anthropic/claude-sonnet-4-6"}).to_string(),
+            json!({"type": "reasoning_details", "details": details.clone()}).to_string(),
+            json!({
+                "type": "done",
+                "content": "",
+                "finish_reason": "tool_use",
+                "usage": {"input_tokens": 20, "output_tokens": 10},
+                "timing": {"total_ms": 300}
+            })
+            .to_string(),
+        ];
+
+        let server_handle = tokio::spawn(async move {
+            for event in events {
+                writer.write_all(event.as_bytes()).await.unwrap();
+                writer.write_all(b"\n").await.unwrap();
+            }
+            writer.shutdown().await.unwrap();
+        });
+
+        let result = consumer.consume(&mut reader, false).await.unwrap();
+
+        assert_eq!(result.content_blocks.len(), 1);
+        match &result.content_blocks[0] {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+                details: Some(actual),
+            } => {
+                assert!(thinking.is_empty());
+                assert!(signature.is_none());
+                assert_eq!(actual, &details);
+            }
+            other => panic!("Expected synthesized Thinking with reasoning details, got {other:?}"),
+        }
 
         server_handle.await.unwrap();
     }
