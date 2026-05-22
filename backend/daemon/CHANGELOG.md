@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v2.0.1...shore-daemon-v2.0.2) - 2026-05-22
+
+### Fixed
+
+- fix anthropic provider discovery ([#27](https://github.com/mythofmeat/shore-core/pull/27))
+
+### Fixed
+
+- Route Anthropic provider catalog refreshes through the native Anthropic
+  Models API.
+
 ## [2.0.1](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v2.0.0...shore-daemon-v2.0.1) - 2026-05-21
 
 ### Other

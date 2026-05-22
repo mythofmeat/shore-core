@@ -16,6 +16,10 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   will fail to load — switch the model to a regular Anthropic / OpenRouter
   entry with an API key.
 
+### Fixed
+- Fix native Anthropic provider model discovery to use the Anthropic Models
+  API and preserve Anthropic model metadata.
+
 ## [1.8.3] - 2026-05-19
 
 ### Changed
