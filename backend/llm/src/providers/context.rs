@@ -1,4 +1,5 @@
 use serde_json::Value;
+use shore_config::models::Sdk;
 
 use crate::types::LlmRequest;
 
@@ -99,6 +100,38 @@ pub(crate) fn is_anthropic_model(model_id: &str) -> bool {
     id.starts_with("anthropic/") || id.starts_with("claude-")
 }
 
+/// Return true when the request is aimed at OpenRouter even if the config
+/// entry uses a custom static `[chat.*]` provider name with OpenRouter's URL.
+pub(crate) fn is_openrouter_request(request: &LlmRequest) -> bool {
+    request.provider_key.as_deref() == Some("openrouter")
+        || request.base_url.as_deref().is_some_and(|base| {
+            reqwest::Url::parse(base)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .is_some_and(|host| host.eq_ignore_ascii_case("openrouter.ai"))
+        })
+}
+
+fn has_adaptive_anthropic_effort(request: &LlmRequest) -> bool {
+    matches!(
+        opt_str(request, "reasoning_effort"),
+        Some("adaptive" | "max" | "xhigh" | "high" | "medium" | "low")
+    )
+}
+
+/// OpenRouter's Anthropic `/messages` route can return a bare adaptive
+/// `tool_use` response with no signed/replayable thinking block. The next
+/// tool-result continuation then rewrites the message cache. Its
+/// `/chat/completions` route supplies `reasoning_details` for the same
+/// adaptive flow; `openai.rs` round-trips that metadata and uses Anthropic
+/// tool content blocks for cache continuity.
+pub(crate) fn route_anthropic_sdk_via_openrouter_chat(request: &LlmRequest) -> bool {
+    request.sdk == Sdk::Anthropic
+        && is_openrouter_request(request)
+        && is_anthropic_model(&request.model)
+        && has_adaptive_anthropic_effort(request)
+}
+
 /// Build a `ProviderContext` from the request's `provider_key` and
 /// `provider_options`.  This is the **single place** where provider-specific
 /// decisions are made — SDK modules never branch on provider identity.
@@ -114,10 +147,14 @@ pub(crate) fn reasoning_field_for(provider_key: &str) -> &'static str {
 }
 
 pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
-    let pk = request
-        .provider_key
-        .as_deref()
-        .unwrap_or(request.sdk.as_str());
+    let pk = if is_openrouter_request(request) {
+        "openrouter"
+    } else {
+        request
+            .provider_key
+            .as_deref()
+            .unwrap_or(request.sdk.as_str())
+    };
 
     let reasoning_field = reasoning_field_for(pk);
 
@@ -373,5 +410,43 @@ mod tests {
         // Should get OpenRouter headers even though SDK is Anthropic
         assert_eq!(ctx.extra_headers.len(), 1);
         assert!(ctx.images_via_chat_completions);
+    }
+
+    #[test]
+    fn openrouter_base_url_activates_openrouter_context_for_static_model() {
+        let mut req = make_request(Sdk::Anthropic, Some("custom"));
+        req.model = "anthropic/claude-sonnet-4-6".into();
+        req.base_url = Some("https://openrouter.ai/api/v1".into());
+        req.provider_options = Some(json!({
+            "reasoning_effort": "high",
+            "openrouter_provider": {"order": ["Anthropic"]}
+        }));
+
+        let ctx = build_provider_context(&req);
+        assert!(ctx.emit_cache_control);
+        assert!(ctx.preserve_reasoning_details);
+        assert!(ctx.emit_anthropic_tool_shape);
+        assert_eq!(ctx.reasoning_field_shape, "nested");
+        assert_eq!(ctx.routing_config.unwrap()["order"], json!(["Anthropic"]));
+    }
+
+    #[test]
+    fn adaptive_anthropic_openrouter_messages_route_uses_chat_completions() {
+        let mut req = make_request(Sdk::Anthropic, Some("openrouter"));
+        req.model = "anthropic/claude-sonnet-4-6".into();
+        req.provider_options = Some(json!({"reasoning_effort": "high"}));
+        assert!(route_anthropic_sdk_via_openrouter_chat(&req));
+
+        req.provider_key = Some("anthropic".into());
+        req.base_url = Some("https://api.anthropic.com".into());
+        assert!(!route_anthropic_sdk_via_openrouter_chat(&req));
+    }
+
+    #[test]
+    fn openrouter_anthropic_without_adaptive_effort_keeps_native_sdk_route() {
+        let mut req = make_request(Sdk::Anthropic, Some("openrouter"));
+        req.model = "anthropic/claude-sonnet-4-6".into();
+        req.provider_options = Some(json!({"cache_ttl": "1h"}));
+        assert!(!route_anthropic_sdk_via_openrouter_chat(&req));
     }
 }

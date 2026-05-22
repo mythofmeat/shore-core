@@ -1,22 +1,21 @@
 #!/usr/bin/env bash
 #
-# Test: the first tool-loop continuation after a warm chat message does not
-# rewrite the warm Anthropic message prefix when Shore drives the provider.
+# Test: an adaptive Anthropic model configured with sdk="anthropic" through
+# OpenRouter does not rewrite the warm prefix when Shore drives a tool loop.
 #
-# This complements 19-tool-loop.py, which constructs direct Anthropic payloads.
-# Here a temporary Shore daemon renders the prompt, tool surface, and cache
-# breakpoints, then the ledger checks the real tool_loop calls. Set
-# TOOL_LOOP_THINKING_MODE=adaptive to exercise reasoning_effort alone.
+# Here a temporary Shore daemon renders the prompt and tool surface from an
+# Anthropic-SDK config. shore-llm routes this adaptive OpenRouter call through
+# the cache-stable chat-completions path, then the ledger checks the real
+# tool_loop calls.
 #
 set -euo pipefail
 source "$(dirname "$0")/harness.sh"
 
 harness_init "tool-loop-daemon"
 
-BUDGET_TOKENS=4096
-TOOL_LOOP_THINKING_MODE="${TOOL_LOOP_THINKING_MODE:-budget}"
+API_KEY_ENV="OPENROUTER_API_KEY"
 TOOL_LOOP_EFFORT="${TOOL_LOOP_EFFORT:-high}"
-if [[ ! -v OPENROUTER_PROVIDER ]]; then
+if [[ -z "${OPENROUTER_PROVIDER:-}" ]]; then
     OPENROUTER_PROVIDER='{ order = ["Anthropic"], allow_fallbacks = false }'
 fi
 
@@ -65,16 +64,16 @@ TOML
         echo "api_key_env  = \"$API_KEY_ENV\""
         echo "base_url     = \"$BASE_URL\""
         echo "cache_ttl    = \"$CACHE_TTL\""
-        if [[ "$TOOL_LOOP_THINKING_MODE" == "adaptive" ]]; then
-            echo "reasoning_effort = \"$TOOL_LOOP_EFFORT\""
-        else
-            echo "budget_tokens = $BUDGET_TOKENS"
-        fi
+        echo "reasoning_effort = \"$TOOL_LOOP_EFFORT\""
         [[ -n "$OPENROUTER_PROVIDER" ]] && echo "openrouter_provider = $OPENROUTER_PROVIDER" || true
     } > "$model_toml"
 }
 
 harness_start
+
+if ! grep -q "^${API_KEY_ENV}=." "$CONFIG_DIR/.env" 2>/dev/null; then
+    harness_fail "$API_KEY_ENV is not set in the harness .env"
+fi
 
 echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 1: Warm cache ==="
 send_msg "Warm-up one. Reply with only WARM1."

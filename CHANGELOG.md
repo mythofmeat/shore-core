@@ -19,6 +19,9 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ### Fixed
 - Fix native Anthropic provider model discovery to use the Anthropic Models
   API and preserve Anthropic model metadata.
+- Keep adaptive Anthropic tool loops cache-stable through OpenRouter even from
+  `sdk = "anthropic"` configs by using OpenRouter's replayable
+  chat-completions continuation path.
 
 ## [1.8.3] - 2026-05-19
 

@@ -247,6 +247,16 @@ and already-existing messages byte-preserved for every generation variant;
 only configured tool-surface changes or explicit/manual history edits may
 change that prefix.
 
+Adaptive Anthropic requests routed through OpenRouter are a special transport
+case. OpenRouter's Anthropic `/messages` response can end a tool phase with a
+bare `tool_use` and no continuation metadata for Shore to replay on the
+following `tool_result` request. For an OpenRouter Anthropic model configured
+with `sdk = "anthropic"` plus adaptive `reasoning_effort`, shore-llm therefore
+dispatches the request through OpenRouter chat completions while keeping
+Anthropic content-block tool history and OpenRouter reasoning-detail replay.
+Direct Anthropic requests and non-adaptive Anthropic SDK requests keep the
+native Messages API path.
+
 ## Memory
 
 Runtime long-term memory is markdown under:
