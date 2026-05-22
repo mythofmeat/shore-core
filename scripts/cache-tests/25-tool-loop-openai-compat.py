@@ -306,6 +306,13 @@ def send(messages, system_message):
          "-d", json.dumps(body)],
         capture_output=True, text=True, timeout=120,
     )
+    if result.returncode != 0:
+        print(
+            f"{R}[{NAME}]{NC} curl failed ({result.returncode}): "
+            f"{result.stderr[:500]}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     try:
         resp = json.loads(result.stdout)
     except json.JSONDecodeError:

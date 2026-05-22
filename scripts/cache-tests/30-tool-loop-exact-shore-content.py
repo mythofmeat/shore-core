@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import base64
 import pathlib
@@ -43,6 +44,22 @@ NAME = "exact-shore-content"
 # Load Shore's actual content.
 SYSTEM_TEXT = json.loads(pathlib.Path("/tmp/shore-system.json").read_text())
 TOOLS = json.loads(pathlib.Path("/tmp/shore-tools.json").read_text())
+
+
+_PROBE_DUMP_DIR = None
+
+
+def _probe_dump_dir():
+    """Lazily create a per-process random dump directory with 0o700 perms.
+
+    Using tempfile.mkdtemp avoids the symlink-redirection risk of a fixed
+    /tmp path: the directory name is unguessable and is created with
+    O_EXCL semantics."""
+    global _PROBE_DUMP_DIR
+    if _PROBE_DUMP_DIR is None:
+        _PROBE_DUMP_DIR = pathlib.Path(tempfile.mkdtemp(prefix="probe-body-dumps-"))
+        print(f"{C}[{NAME}]{NC} PROBE_BODY_DUMP active: {_PROBE_DUMP_DIR}")
+    return _PROBE_DUMP_DIR
 
 
 def apply_cache_markers(messages):
@@ -103,10 +120,8 @@ def send(messages, streaming):
         body["stream"] = True
         body["stream_options"] = {"include_usage": True}
 
-    import os as _os
-    if _os.environ.get("PROBE_BODY_DUMP"):
-        _dir = pathlib.Path("/tmp/probe-body-dumps")
-        _dir.mkdir(exist_ok=True)
+    if os.environ.get("PROBE_BODY_DUMP"):
+        _dir = _probe_dump_dir()
         _stamp = int(time.time() * 1_000_000)
         (_dir / f"call_{_stamp}_{int(streaming)}.json").write_text(json.dumps(body, indent=2))
     result = subprocess.run(

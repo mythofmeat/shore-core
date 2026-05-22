@@ -113,10 +113,14 @@ pub(crate) fn is_openrouter_request(request: &LlmRequest) -> bool {
 }
 
 fn has_adaptive_anthropic_effort(request: &LlmRequest) -> bool {
-    matches!(
-        opt_str(request, "reasoning_effort"),
-        Some("adaptive" | "max" | "xhigh" | "high" | "medium" | "low")
-    )
+    opt_str(request, "reasoning_effort")
+        .map(|s| s.to_ascii_lowercase())
+        .is_some_and(|s| {
+            matches!(
+                s.as_str(),
+                "adaptive" | "max" | "xhigh" | "high" | "medium" | "low"
+            )
+        })
 }
 
 /// OpenRouter's Anthropic `/messages` route can return a bare adaptive
@@ -448,5 +452,22 @@ mod tests {
         req.model = "anthropic/claude-sonnet-4-6".into();
         req.provider_options = Some(json!({"cache_ttl": "1h"}));
         assert!(!route_anthropic_sdk_via_openrouter_chat(&req));
+    }
+
+    #[test]
+    fn adaptive_effort_detection_is_case_insensitive() {
+        // Config values for reasoning_effort can come from user-typed
+        // strings; "High", "HIGH", "Adaptive" must all activate the
+        // chat-completions route, not silently fall back to the cache-
+        // breaking /messages path.
+        for variant in ["HIGH", "High", "hIgH", "ADAPTIVE", "Max"] {
+            let mut req = make_request(Sdk::Anthropic, Some("openrouter"));
+            req.model = "anthropic/claude-sonnet-4-6".into();
+            req.provider_options = Some(json!({"reasoning_effort": variant}));
+            assert!(
+                route_anthropic_sdk_via_openrouter_chat(&req),
+                "reasoning_effort={variant:?} must be accepted case-insensitively",
+            );
+        }
     }
 }

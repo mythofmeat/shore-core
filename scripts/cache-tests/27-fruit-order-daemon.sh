@@ -113,14 +113,15 @@ declare -A POS
 LOWER="$(echo "$REPLY" | tr '[:upper:]' '[:lower:]')"
 
 for fruit in "${EXPECTED[@]}"; do
-    # Per-line scan: first hit yields a sortable position encoded as
-    # line-major (NR*1000 + column). awk's index() is 1-based; 0 means
-    # absent.
-    p="$(awk -v needle="$fruit" '{i=index($0, needle); if (i>0) {print NR*1000 + i; exit}}' <<<"$LOWER")"
-    if [[ -z "$p" || "$p" == "0" ]]; then
+    # Whole-word, fixed-string match. `-b` prints the byte offset of the
+    # first hit across the full reply, which is directly sortable. `-w`
+    # is the key bit: it guards against substring matches like "apple"
+    # firing on "pineapple". `+1` keeps the value >0 for empty replies.
+    p="$(grep -bowFm1 -- "$fruit" <<<"$LOWER" | cut -d: -f1 || true)"
+    if [[ -z "$p" ]]; then
         harness_fail "fruit '$fruit' missing from reply"
     fi
-    POS[$fruit]="$p"
+    POS[$fruit]=$((p + 1))
 done
 
 # Sort fruits by position to get the order the model emitted.

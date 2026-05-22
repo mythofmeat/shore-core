@@ -111,6 +111,10 @@ def send(messages, label):
         "model": MODEL,
         "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
         "max_tokens": 512,
+        # Deterministic sampling: the probe's pass/fail depends on a
+        # specific fruit ordering in the reply, so flaky temperature
+        # would turn a deterministic system into a noisy one.
+        "temperature": 0,
         "provider": {"order": ["Anthropic"], "allow_fallbacks": False},
     }
 

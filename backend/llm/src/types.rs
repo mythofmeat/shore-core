@@ -501,4 +501,23 @@ mod tests {
             other => panic!("Expected RedactedThinking, got {:?}", other),
         }
     }
+
+    #[test]
+    fn deserialize_stream_reasoning_details() {
+        // ReasoningDetails carries OpenRouter's reasoning_details on the
+        // stream, which we persist onto the most recent Thinking block
+        // for replay. A wire-shape change here would silently disable
+        // adaptive-thinking cache replay; this locks the contract.
+        let json = r#"{"type":"reasoning_details","details":[{"type":"reasoning.encrypted","data":"abc"}]}"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        match event {
+            StreamEvent::ReasoningDetails { details } => {
+                assert!(details.is_array(), "details must be a JSON array");
+                let first = &details.as_array().unwrap()[0];
+                assert_eq!(first["type"], "reasoning.encrypted");
+                assert_eq!(first["data"], "abc");
+            }
+            other => panic!("Expected ReasoningDetails, got {other:?}"),
+        }
+    }
 }
