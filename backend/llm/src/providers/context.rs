@@ -46,6 +46,57 @@ pub(crate) struct ProviderContext {
     /// instead of replaying them as `ctx.reasoning_field`. Set by Z.ai's
     /// per-call `zai_clear_thinking` provider option.
     pub drop_prior_thinking: bool,
+
+    /// Wire shape for the reasoning-effort knob.
+    /// - `"flat"`: top-level `reasoning_effort: "high"` (OpenAI native)
+    /// - `"nested"`: top-level `reasoning: {effort: "high"}` (OpenRouter
+    ///   shape for reasoning-capable third-party models including
+    ///   Anthropic on /chat/completions)
+    pub reasoning_field_shape: &'static str,
+
+    /// Whether to emit `cache_control: {type: "ephemeral"}` extensions on
+    /// the system block and the most recent user-side messages. The
+    /// extension is a non-OpenAI addition that OpenRouter forwards to
+    /// providers that natively understand it (Anthropic, Gemini). Models
+    /// that don't honor it ignore it silently — but we only enable it
+    /// where we expect a cache benefit, since the marker counts against
+    /// the 4-breakpoint provider limit when honored.
+    pub emit_cache_control: bool,
+
+    /// Whether to round-trip OpenRouter's `reasoning_details` array on
+    /// assistant messages. When the provider returns reasoning_details
+    /// alongside a message, replaying them on subsequent turns lets the
+    /// provider continue the cached prefix through adaptive-thinking
+    /// turns that emit zero inline reasoning blocks.
+    pub preserve_reasoning_details: bool,
+
+    /// Whether to emit tool messages on the chat-completions wire in
+    /// Anthropic-native content-block shape (assistant content array
+    /// with `tool_use` blocks; user content array with `tool_result`
+    /// blocks) instead of OpenAI's `role:"tool"` + `tool_calls` shape.
+    ///
+    /// **Load-bearing for cache continuity** through tool-loop
+    /// continuations when routing Anthropic models via OpenRouter's
+    /// /chat/completions endpoint. Verified empirically: the OpenAI
+    /// shape rewrites the cache on every tool-loop extension (39/39
+    /// trials missed); the Anthropic shape hits cache (5/5 trials hit).
+    /// OpenRouter accepts the Anthropic content-block shape on
+    /// /chat/completions as a non-OpenAI extension and forwards it
+    /// upstream so the cache walker traverses it correctly.
+    pub emit_anthropic_tool_shape: bool,
+}
+
+/// Return true when `model_id` targets an Anthropic Claude model regardless
+/// of transport. Anthropic models have no native mid-history `role: "system"`
+/// concept, so callers must wrap inline system messages themselves rather
+/// than letting the proxy choose what to do with them.
+pub(crate) fn is_anthropic_model(model_id: &str) -> bool {
+    let id = model_id.to_ascii_lowercase();
+    // Common forms:
+    //   "anthropic/claude-sonnet-4-6"  (OpenRouter prefix)
+    //   "claude-sonnet-4-6"             (bare)
+    //   "claude-3-7-sonnet-20250219"    (date-suffixed)
+    id.starts_with("anthropic/") || id.starts_with("claude-")
 }
 
 /// Build a `ProviderContext` from the request's `provider_key` and
@@ -93,11 +144,14 @@ pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
 
     let images_via_chat_completions = pk == "openrouter";
 
-    // Z.ai accepts raw `role: "system"` mid-conversation; everything else
-    // OpenAI-compatible needs the `<system_instruction>` wrapper. (Providers
-    // that go through the Anthropic / Gemini / Claude Code SDKs don't read
-    // this field — they do their own translation.)
-    let wrap_inline_system = pk != "zai";
+    // Wrap mid-history `role: "system"` messages when the target model has
+    // no native concept of one (Anthropic) or when the provider rejects them
+    // (most OpenAI-compatible backends). Z.ai accepts raw `role: "system"`
+    // mid-conversation. Anthropic models routed through OpenRouter's
+    // /chat/completions also need wrapping — the proxy re-orders inline
+    // system blocks relative to chat history if we send them raw.
+    let targets_anthropic = is_anthropic_model(&request.model);
+    let wrap_inline_system = pk != "zai" || targets_anthropic;
 
     // Z.ai's `zai_clear_thinking` flag — when set, prior `thinking` blocks
     // are dropped during translation instead of being replayed as
@@ -110,6 +164,24 @@ pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+    // OpenRouter accepts the OpenAI-flat `reasoning_effort` field but its
+    // canonical shape for reasoning-capable third-party models is
+    // `reasoning: {effort: ...}`. Use nested when going through OpenRouter
+    // to a non-OpenAI model, flat everywhere else.
+    let reasoning_field_shape = if pk == "openrouter" && !request.model.starts_with("openai/") {
+        "nested"
+    } else {
+        "flat"
+    };
+
+    // Cache-control extensions and reasoning_details round-trip are
+    // OpenRouter-specific affordances that only pay off for providers
+    // that honor them upstream. Today: Anthropic via OpenRouter. Other
+    // model families can opt in here as they're validated.
+    let emit_cache_control = pk == "openrouter" && targets_anthropic;
+    let preserve_reasoning_details = pk == "openrouter" && targets_anthropic;
+    let emit_anthropic_tool_shape = pk == "openrouter" && targets_anthropic;
+
     ProviderContext {
         reasoning_field,
         extra_headers,
@@ -118,6 +190,10 @@ pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
         images_via_chat_completions,
         wrap_inline_system,
         drop_prior_thinking,
+        reasoning_field_shape,
+        emit_cache_control,
+        preserve_reasoning_details,
+        emit_anthropic_tool_shape,
     }
 }
 

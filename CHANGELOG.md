@@ -77,7 +77,11 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   `tool_result` continuations keep their own short-lived cache-read baseline,
   so a zero-read rewrite after a warm message or a cache-read drop inside one
   tool loop is now recorded as `UnexpectedWrite` instead of being hidden by the
-  normal-message baseline exemption.
+  normal-message baseline exemption. The first tool-loop continuation also
+  keeps the cache boundary written on the active user prompt before it advances
+  a breakpoint onto the completed `tool_result`, matching Claude's growing
+  conversation cache shape instead of treating the active user prompt as
+  uncached.
 - Added `shore usage --by-kind`, `--by-api-key`, and `--api-key <name>` so
   daily spend can be attributed to message/tool turns, heartbeat, compaction,
   dreaming, keepalive, and configured provider keys. OpenRouter-routed

@@ -41,6 +41,16 @@ pub enum ContentBlock {
         thinking: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
+        /// Opaque provider-specific structured form of this reasoning
+        /// (currently OpenRouter's `reasoning_details` array carrying
+        /// signed reasoning detail objects). Persisted across turns so
+        /// the next request can replay it at the message level for cache
+        /// continuity through adaptive-thinking tool calls.
+        ///
+        /// Stays `None` for providers that don't use this surface — the
+        /// `signature` field above is sufficient for direct Anthropic.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
     },
     ToolUse {
         id: String,
@@ -311,6 +321,7 @@ mod tests {
             ContentBlock::Thinking {
                 thinking: "Let me think...".into(),
                 signature: None,
+                details: None,
             },
             ContentBlock::ToolUse {
                 id: "t1".into(),

@@ -3081,7 +3081,8 @@ mod tests {
                     ContentBlock::Thinking {
                         thinking: "private chain".into(),
                         signature: Some("sig".into()),
-                    },
+                        details: None,
+},
                     ContentBlock::Text {
                         text: "answer".into(),
                     },

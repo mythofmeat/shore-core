@@ -46,6 +46,11 @@ impl StreamConsumer {
         let mut text_buf = String::new();
         let mut thinking_buf = String::new();
         let mut pending_signature: Option<String> = None;
+        // OpenRouter's structured `reasoning_details` arrive on a dedicated
+        // StreamEvent emitted by openai.rs after the stream completes. We
+        // stash them here and attach to the most recent Thinking block (or
+        // create one if no thinking text was streamed but details exist).
+        let mut pending_reasoning_details: Option<serde_json::Value> = None;
         let mut started = false;
 
         // Flush accumulated text buffer into content_blocks.
@@ -64,6 +69,7 @@ impl StreamConsumer {
                     blocks.push(ContentBlock::Thinking {
                         thinking: std::mem::take(buf),
                         signature: sig.take(),
+                        details: None,
                     });
                 }
             };
@@ -158,6 +164,15 @@ impl StreamConsumer {
                     content_blocks.push(ContentBlock::RedactedThinking { data });
                 }
 
+                StreamEvent::ReasoningDetails { details } => {
+                    // OpenRouter's reasoning_details arrives in a single
+                    // event after the stream completes. Stash for
+                    // attachment on Done — by then all Thinking text
+                    // blocks have been flushed and we know whether one
+                    // exists to attach to.
+                    pending_reasoning_details = Some(details);
+                }
+
                 StreamEvent::ToolUse { id, name, input } => {
                     // Flush pending buffers before tool_use block.
                     flush_text(&mut text_buf, &mut content_blocks);
@@ -189,6 +204,34 @@ impl StreamConsumer {
                         &mut content_blocks,
                         &mut pending_signature,
                     );
+
+                    // Attach reasoning_details (if any) to the most recent
+                    // Thinking block. If the model emitted no thinking
+                    // text but the provider still returned structured
+                    // details (adaptive turn that decided not to think
+                    // out loud), synthesize an empty Thinking block so
+                    // the details survive on disk and on the next request.
+                    if let Some(details) = pending_reasoning_details.take() {
+                        let last_thinking_idx = content_blocks.iter().rposition(|b| {
+                            matches!(b, ContentBlock::Thinking { .. })
+                        });
+                        match last_thinking_idx {
+                            Some(idx) => {
+                                if let ContentBlock::Thinking { details: slot, .. } =
+                                    &mut content_blocks[idx]
+                                {
+                                    *slot = Some(details);
+                                }
+                            }
+                            None => {
+                                content_blocks.push(ContentBlock::Thinking {
+                                    thinking: String::new(),
+                                    signature: None,
+                                    details: Some(details),
+                                });
+                            }
+                        }
+                    }
 
                     info!(
                         model = %model,
@@ -404,7 +447,7 @@ mod tests {
             "Should have thinking + tool_use + text blocks"
         );
         assert!(
-            matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking, signature } if thinking == "Let me think..." && signature.is_none())
+            matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking, signature, .. } if thinking == "Let me think..." && signature.is_none())
         );
         assert!(
             matches!(&result.content_blocks[1], ContentBlock::ToolUse { id, name, .. } if id == "t1" && name == "search")
@@ -456,6 +499,7 @@ mod tests {
             ContentBlock::Thinking {
                 thinking,
                 signature,
+                ..
             } => {
                 assert_eq!(thinking, "Let me reason...");
                 assert_eq!(signature.as_deref(), Some("sig_test_abc"));
@@ -498,6 +542,7 @@ mod tests {
             ContentBlock::Thinking {
                 thinking,
                 signature,
+                ..
             } => {
                 assert_eq!(thinking, "Visible thinking");
                 assert_eq!(signature.as_deref(), Some("sig_1"));
@@ -625,7 +670,7 @@ mod tests {
         // Consecutive thinking chunks merged, then text block.
         assert_eq!(result.content_blocks.len(), 2);
         assert!(
-            matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking, signature } if thinking == "First thought" && signature.is_none())
+            matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking, signature, .. } if thinking == "First thought" && signature.is_none())
         );
         assert!(
             matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "Answer")
@@ -664,7 +709,7 @@ mod tests {
             matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "pre-thought ")
         );
         assert!(
-            matches!(&result.content_blocks[1], ContentBlock::Thinking { thinking, signature } if thinking == "hmm..." && signature.is_none())
+            matches!(&result.content_blocks[1], ContentBlock::Thinking { thinking, signature, .. } if thinking == "hmm..." && signature.is_none())
         );
         assert!(
             matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "post-thought")

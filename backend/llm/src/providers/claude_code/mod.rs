@@ -164,6 +164,9 @@ pub(super) fn serialize_event(ev: &StreamEvent) -> String {
         StreamEvent::RedactedThinking { data } => {
             json!({ "type": "redacted_thinking", "data": data }).to_string()
         }
+        StreamEvent::ReasoningDetails { details } => {
+            json!({ "type": "reasoning_details", "details": details }).to_string()
+        }
         StreamEvent::ToolUse { id, name, input } => {
             json!({ "type": "tool_use", "id": id, "name": name, "input": input }).to_string()
         }

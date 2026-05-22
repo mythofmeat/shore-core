@@ -152,6 +152,14 @@ pub enum StreamEvent {
     ThinkingSignature {
         signature: String,
     },
+    /// Opaque structured reasoning metadata that the provider returns
+    /// alongside the assistant message (currently OpenRouter's
+    /// `reasoning_details`). Persisted onto the most recent
+    /// `ContentBlock::Thinking` so the next request can replay it for
+    /// cache continuity.
+    ReasoningDetails {
+        details: serde_json::Value,
+    },
     RedactedThinking {
         data: String,
     },
@@ -468,6 +476,7 @@ mod tests {
             ContentBlock::Thinking {
                 thinking,
                 signature,
+                ..
             } => {
                 assert_eq!(thinking, "Let me think...");
                 assert!(signature.is_none());

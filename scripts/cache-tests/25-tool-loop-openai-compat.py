@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Cache stability test: multi-step tool loop.
+Cache stability test on OpenRouter via /chat/completions (OpenAI-compatible).
 
-Sequence:
-1. Warm up (2 easy turns, establish cache)
-2. Ask something that triggers a tool
-3. Return tool result — model should call ANOTHER tool
-4. Return that result — model responds with text
-5. Normal follow-up
+Same flow as 19-tool-loop.py, different wire path:
+- Endpoint: /v1/chat/completions instead of /v1/messages
+- Reasoning: OpenRouter "reasoning" field with effort=high (maps to adaptive)
+- Cache markers: cache_control extensions on content blocks
+- Replay: preserve reasoning_details on assistant messages across turns
 
-Thinking always on. Provider pinned to Anthropic.
+The question this probe answers: does OpenRouter's /chat/completions path
+preserve cache continuity through tool-result continuations when adaptive
+thinking rolls zero-think on a trivial tool call? That is the exact bare-
+tool_use shape that breaks Shore's current /messages path.
 """
 
 import json
@@ -20,7 +22,7 @@ import time
 import base64
 
 MODEL = "anthropic/claude-sonnet-4-6"
-URL = "https://openrouter.ai/api/v1/messages"
+URL = "https://openrouter.ai/api/v1/chat/completions"
 API_KEY = os.environ.get("OPENROUTER_SHORE_TEST", "")
 DELAY = 3
 
@@ -29,11 +31,13 @@ G = "\033[0;32m"
 C = "\033[0;36m"
 Y = "\033[0;33m"
 NC = "\033[0m"
-NAME = "tool-loop"
+NAME = "tool-loop-cc"
 
 NONCE = base64.b64encode(os.urandom(24)).decode().replace(
     "/", "").replace("+", "").replace("=", "")[:32]
 
+# Same padding as 19-tool-loop.py — keep system prefix byte-identical in
+# semantics so we can compare cache numbers across the two endpoints.
 SYSTEM_PROMPT = f"""\
 You are a helpful assistant with tools. Always use tools when asked.
 
@@ -41,7 +45,7 @@ NONCE: {NONCE}
 
 --- BEGIN PADDING ---
 
-This padding exists to ensure the system prompt exceeds Anthropic's minimum
+This padding exists to ensure the system prompt exceeds the provider's minimum
 for prompt caching. The content below is stable reference material.
 
 Section 1: Prompt caching reduces redundant computation when the same token
@@ -191,163 +195,166 @@ considered during system design and implementation phases.
 IMPORTANT: When asked to do multiple things, use tools one at a time. After
 getting a tool result, evaluate if you need another tool before responding."""
 
+# OpenAI-style tool schemas (function wrapper around an input schema).
+def fn_tool(name, desc, properties, required):
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": desc,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        },
+    }
+
+
 TOOLS = [
-    {"name": "check_time", "description": "Check the current date and time.",
-     "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "web_search", "description": "Search the web for current information.",
-     "input_schema": {"type": "object", "properties": {
-         "query": {"type": "string", "description": "Search query"}},
-         "required": ["query"]}},
-    {"name": "roll_dice", "description": "Roll dice using standard notation like 2d6+3.",
-     "input_schema": {"type": "object", "properties": {
-         "notation": {"type": "string", "description": "Dice notation"}},
-         "required": ["notation"]}},
-    {"name": "memory_search", "description": "Search markdown memory files for long-term context.",
-     "input_schema": {"type": "object", "properties": {
-         "query": {"type": "string", "description": "What to recall"}},
-         "required": ["query"]}},
-    {"name": "scratchpad_write", "description": "Write content to a file in the scratchpad.",
-     "input_schema": {"type": "object", "properties": {
-         "path": {"type": "string", "description": "File path"},
-         "content": {"type": "string", "description": "Content to write"}},
-         "required": ["path", "content"]}},
-    {"name": "scratchpad_read", "description": "Read content from a scratchpad file.",
-     "input_schema": {"type": "object", "properties": {
-         "path": {"type": "string", "description": "File path"}},
-         "required": ["path"]}},
-    {"name": "scratchpad_list", "description": "List files in the scratchpad directory.",
-     "input_schema": {"type": "object", "properties": {
-         "path": {"type": "string", "description": "Directory path"}},
-         "required": []}},
-    {"name": "fetch_url", "description": "Fetch content from a URL.",
-     "input_schema": {"type": "object", "properties": {
-         "url": {"type": "string", "description": "URL to fetch"}},
-         "required": ["url"]}},
-    {"name": "send_image", "description": "Send an image to the user.",
-     "input_schema": {"type": "object", "properties": {
-         "path": {"type": "string"}, "caption": {"type": "string"}},
-         "required": ["path"]}},
-    {"name": "generate_image", "description": "Generate an image from a text prompt.",
-     "input_schema": {"type": "object", "properties": {
-         "prompt": {"type": "string"}, "size": {"type": "string"}},
-         "required": ["prompt"]}},
-    {"name": "activity_heatmap", "description": "Generate activity heatmap visualization.",
-     "input_schema": {"type": "object", "properties": {
-         "days": {"type": "integer", "description": "Number of days"}},
-         "required": []},
-     "cache_control": {"type": "ephemeral"}},
+    fn_tool("check_time", "Check the current date and time.", {}, []),
+    fn_tool("web_search", "Search the web for current information.",
+            {"query": {"type": "string"}}, ["query"]),
+    fn_tool("roll_dice", "Roll dice using standard notation like 2d6+3.",
+            {"notation": {"type": "string"}}, ["notation"]),
+    fn_tool("memory_search", "Search markdown memory files.",
+            {"query": {"type": "string"}}, ["query"]),
+    fn_tool("scratchpad_write", "Write content to a scratchpad file.",
+            {"path": {"type": "string"}, "content": {"type": "string"}},
+            ["path", "content"]),
+    fn_tool("scratchpad_read", "Read content from a scratchpad file.",
+            {"path": {"type": "string"}}, ["path"]),
+    fn_tool("scratchpad_list", "List files in the scratchpad directory.",
+            {"path": {"type": "string"}}, []),
+    fn_tool("fetch_url", "Fetch content from a URL.",
+            {"url": {"type": "string"}}, ["url"]),
+    fn_tool("send_image", "Send an image to the user.",
+            {"path": {"type": "string"}, "caption": {"type": "string"}},
+            ["path"]),
+    fn_tool("generate_image", "Generate an image from a text prompt.",
+            {"prompt": {"type": "string"}, "size": {"type": "string"}},
+            ["prompt"]),
+    fn_tool("activity_heatmap", "Generate activity heatmap visualization.",
+            {"days": {"type": "integer"}}, []),
 ]
 
-# Fake tool responses
 TOOL_RESPONSES = {
     "check_time": "Current time: 2026-04-09T19:45:00Z (Wednesday evening UTC)",
-    "web_search": "Search results: The weather in Tokyo is currently 18°C and partly cloudy with a chance of rain tomorrow.",
+    "web_search": "Search results: Tokyo weather 18°C partly cloudy.",
     "roll_dice": "Result: 14 (rolled 3d6: 5, 4, 5)",
-    "memory": "Memory stored successfully.",
-    "scratchpad_write": "File written successfully.",
-    "scratchpad_read": "File contents: (empty)",
-    "scratchpad_list": "Files: notes.md, todo.txt",
-    "fetch_url": "Page content: Example web page with some text content.",
 }
 
 
-def apply_sliding_breakpoints(messages, depths=(0, 1)):
-    """Apply Shore-style sliding cache breakpoints to messages.
+def apply_cache_markers(messages):
+    """Mark the last user/tool message with OpenRouter cache_control.
 
-    depth=N means: count N user messages from the end and mark that user-side
-    boundary. Tool-result-only user messages advance the breakpoint during a
-    tool loop.
+    OpenRouter's /chat/completions accepts cache_control as an extension on
+    content blocks when content is an array. We mirror Anthropic's
+    sliding-breakpoint strategy: mark the most recent user-side boundary,
+    which advances onto each completed tool result.
     """
     import copy
     msgs = copy.deepcopy(messages)
-
-    user_indices = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
-
     cc = {"type": "ephemeral"}
-    placed = set()
-    for depth in depths:
-        target = len(user_indices) - 1 - depth
-        if target < 0:
-            continue
-        bp_idx = user_indices[target]
-        if bp_idx in placed:
-            continue
-        placed.add(bp_idx)
 
-        # Apply cache_control to last content block
-        msg = msgs[bp_idx]
+    # Find last two user-side messages (user or tool role).
+    user_side = [i for i, m in enumerate(msgs)
+                 if m.get("role") in ("user", "tool")]
+    targets = user_side[-2:] if len(user_side) >= 2 else user_side[-1:]
+
+    for idx in targets:
+        msg = msgs[idx]
         content = msg.get("content")
         if isinstance(content, str):
             msg["content"] = [{"type": "text", "text": content,
                                "cache_control": cc}]
         elif isinstance(content, list):
-            # Find last text/tool_result block
             for block in reversed(content):
-                if isinstance(block, dict) and block.get("type") in (
-                        "text", "tool_use", "tool_result"):
+                if isinstance(block, dict):
                     block["cache_control"] = cc
                     break
-
     return msgs
 
 
-def send(messages, system_blocks):
-    # Apply sliding breakpoints before sending
-    annotated = apply_sliding_breakpoints(messages)
+def send(messages, system_message):
+    annotated_msgs = apply_cache_markers(messages)
+
+    # System block as a content array so we can pin cache_control on it.
+    system_msg = {
+        "role": "system",
+        "content": [{
+            "type": "text",
+            "text": system_message,
+            "cache_control": {"type": "ephemeral"},
+        }],
+    }
 
     body = {
         "model": MODEL,
-        "system": system_blocks,
-        "messages": annotated,
+        "messages": [system_msg] + annotated_msgs,
         "tools": TOOLS,
         "max_tokens": 8192,
-        "thinking": {"type": "enabled", "budget_tokens": 4096},
+        "reasoning": {"effort": "high"},
         "provider": {"order": ["Anthropic"], "allow_fallbacks": False},
+        "usage": {"include": True},
     }
 
     result = subprocess.run(
         ["curl", "-s", URL,
          "-H", "Content-Type: application/json",
          "-H", f"Authorization: Bearer {API_KEY}",
-         "-H", "anthropic-version: 2023-06-01",
          "-d", json.dumps(body)],
         capture_output=True, text=True, timeout=120,
     )
-    resp = json.loads(result.stdout)
+    try:
+        resp = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        print(f"{R}[{NAME}]{NC} non-JSON response: {result.stdout[:500]}")
+        sys.exit(1)
 
     if "error" in resp:
         print(f"{R}[{NAME}]{NC} API error: {json.dumps(resp['error'], indent=2)}")
         sys.exit(1)
 
-    usage = resp.get("usage", {})
-    return resp, {
-        "input": usage.get("input_tokens", 0) or 0,
-        "cache_r": usage.get("cache_read_input_tokens", 0) or 0,
-        "cache_w": usage.get("cache_creation_input_tokens", 0) or 0,
+    choice = resp.get("choices", [{}])[0]
+    msg = choice.get("message", {})
+    usage = resp.get("usage", {}) or {}
+    # OpenRouter returns cache stats under prompt_tokens_details for Anthropic
+    # routes; some routes also expose cache_creation_input_tokens directly.
+    pt_details = usage.get("prompt_tokens_details") or {}
+    cached_tokens = pt_details.get("cached_tokens", 0) or 0
+    # OpenRouter sometimes uses cache_discount or distinct cache fields too.
+    cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
+    cache_read = usage.get("cache_read_input_tokens", 0) or cached_tokens or 0
+
+    return resp, msg, {
+        "prompt": usage.get("prompt_tokens", 0) or 0,
+        "completion": usage.get("completion_tokens", 0) or 0,
+        "cache_r": cache_read,
+        "cache_w": cache_creation,
     }
-
-
-def get_text(resp):
-    for b in resp.get("content", []):
-        if b.get("type") == "text":
-            return b["text"]
-    return ""
-
-
-def get_tool_uses(resp):
-    return [b for b in resp.get("content", []) if b.get("type") == "tool_use"]
-
-
-def get_thinking_count(resp):
-    return sum(1 for b in resp.get("content", []) if b.get("type") == "thinking")
 
 
 def log(step, label, u, threshold):
     rewrite = threshold > 0 and u["cache_w"] > threshold
     tag = f" {R}*** REWRITE ***{NC}" if rewrite else ""
     print(f"{C}[{NAME}]{NC} {step}: {label}")
-    print(f"  in={u['input']} r={u['cache_r']} w={u['cache_w']}{tag}")
+    print(f"  prompt={u['prompt']} cache_r={u['cache_r']} cache_w={u['cache_w']}{tag}")
     return rewrite
+
+
+def build_assistant_msg(msg):
+    """Echo the assistant message verbatim, preserving reasoning_details."""
+    out = {"role": "assistant"}
+    if msg.get("content") is not None:
+        out["content"] = msg["content"]
+    if msg.get("tool_calls"):
+        out["tool_calls"] = msg["tool_calls"]
+    if msg.get("reasoning_details") is not None:
+        out["reasoning_details"] = msg["reasoning_details"]
+    if msg.get("reasoning") is not None:
+        out["reasoning"] = msg["reasoning"]
+    return out
 
 
 def main():
@@ -356,13 +363,9 @@ def main():
         sys.exit(1)
 
     print(f"{C}[{NAME}]{NC} nonce: {NONCE}")
-    print(f"{C}[{NAME}]{NC} thinking=always, pin=Anthropic")
+    print(f"{C}[{NAME}]{NC} endpoint=/chat/completions reasoning.effort=high pin=Anthropic")
     print()
 
-    system_blocks = [
-        {"type": "text", "text": SYSTEM_PROMPT,
-         "cache_control": {"type": "ephemeral"}}
-    ]
     messages = []
     threshold = 0
     rewrites = 0
@@ -371,7 +374,7 @@ def main():
     def do_turn(user_msg, label):
         nonlocal step, threshold, rewrites
         messages.append({"role": "user", "content": user_msg})
-        resp, u = send(messages, system_blocks)
+        resp, msg, u = send(messages, SYSTEM_PROMPT)
 
         if step == 0:
             threshold = u["cache_w"] // 2
@@ -380,47 +383,47 @@ def main():
             if log(f"s{step}", label, u, threshold):
                 rewrites += 1
 
-        thinking = get_thinking_count(resp)
-        tool_uses = get_tool_uses(resp)
-        text = get_text(resp)
-
-        print(f"  → think={thinking} tools={len(tool_uses)} "
+        tool_calls = msg.get("tool_calls") or []
+        text = msg.get("content") or ""
+        reasoning_dets = msg.get("reasoning_details") or []
+        print(f"  → reasoning_dets={len(reasoning_dets)} "
+              f"tools={len(tool_calls)} "
               f"text={repr(text[:60]) if text else '(none)'}")
 
-        messages.append({"role": "assistant", "content": resp["content"]})
+        messages.append(build_assistant_msg(msg))
         step += 1
         time.sleep(DELAY)
 
-        # Handle tool loop — keep going until the model stops calling tools
         loop_count = 0
-        while tool_uses:
+        while tool_calls:
             loop_count += 1
-            for tu in tool_uses:
-                print(f"  🔧 {tu['name']}({json.dumps(tu.get('input', {}))[:60]})")
+            for tc in tool_calls:
+                name = tc.get("function", {}).get("name", "?")
+                args = tc.get("function", {}).get("arguments", "")
+                print(f"  🔧 {name}({args[:60]})")
 
-            # Build tool results
-            tool_results = []
-            for tu in tool_uses:
-                fake_resp = TOOL_RESPONSES.get(tu["name"],
-                    f"Tool {tu['name']} executed successfully.")
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tu["id"],
-                    "content": fake_resp,
+            # Build tool result messages.
+            for tc in tool_calls:
+                name = tc.get("function", {}).get("name", "?")
+                fake = TOOL_RESPONSES.get(name, f"Tool {name} executed.")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "content": fake,
                 })
-            messages.append({"role": "user", "content": tool_results})
 
-            resp, u = send(messages, system_blocks)
+            resp, msg, u = send(messages, SYSTEM_PROMPT)
             if log(f"s{step}", f"tool-loop-{loop_count}", u, threshold):
                 rewrites += 1
 
-            thinking = get_thinking_count(resp)
-            tool_uses = get_tool_uses(resp)
-            text = get_text(resp)
-            print(f"  → think={thinking} tools={len(tool_uses)} "
+            tool_calls = msg.get("tool_calls") or []
+            text = msg.get("content") or ""
+            reasoning_dets = msg.get("reasoning_details") or []
+            print(f"  → reasoning_dets={len(reasoning_dets)} "
+                  f"tools={len(tool_calls)} "
                   f"text={repr(text[:60]) if text else '(none)'}")
 
-            messages.append({"role": "assistant", "content": resp["content"]})
+            messages.append(build_assistant_msg(msg))
             step += 1
             time.sleep(DELAY)
 
@@ -433,7 +436,7 @@ def main():
     print(f"{C}[{NAME}]{NC} === WARM-UP ===")
     do_turn("What is 7 + 3?", "warm-up-1")
 
-    print(f"\n{C}[{NAME}]{NC} === THINKING TURNS (hard questions) ===")
+    print(f"\n{C}[{NAME}]{NC} === THINKING TURNS ===")
     do_turn(
         "What is the sum of all prime numbers between 50 and 100? "
         "Work through it carefully.",
@@ -445,7 +448,7 @@ def main():
     do_turn(
         "A train leaves station A at 60mph. Another leaves station B "
         "(300 miles away) at 80mph heading toward A. They leave at the "
-        "same time. When do they meet and how far from A?",
+        "same time. When do they meet?",
         "think-hard-3")
 
     print(f"\n{C}[{NAME}]{NC} === TOOL USE LOOP ===")
@@ -461,8 +464,7 @@ def main():
     do_turn("Thanks! Now what is 5 + 5?", "follow-up-1")
     do_turn("And 100 / 4?", "follow-up-2")
 
-    # ── Summary ───────────────────────────────────────────────────
-    total = step - 1  # exclude cold start
+    total = step - 1
     color = G if rewrites == 0 else R
     print(f"\n{color}[{NAME}] {rewrites}/{total} rewrites{NC}")
     sys.exit(1 if rewrites > 0 else 0)

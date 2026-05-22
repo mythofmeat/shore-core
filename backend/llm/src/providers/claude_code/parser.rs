@@ -146,6 +146,7 @@ impl StreamJsonParser {
                         step.blocks.push(ContentBlock::Thinking {
                             thinking,
                             signature,
+                            details: None,
                         });
                         continue;
                     }
@@ -164,6 +165,7 @@ impl StreamJsonParser {
                     step.blocks.push(ContentBlock::Thinking {
                         thinking,
                         signature,
+                        details: None,
                     });
                 }
                 RawAssistantBlock::RedactedThinking { data } => {
@@ -544,6 +546,7 @@ mod tests {
             ContentBlock::Thinking {
                 thinking,
                 signature,
+                ..
             } => {
                 assert_eq!(thinking, "let me think");
                 assert_eq!(signature.as_deref(), Some("sig_xyz"));

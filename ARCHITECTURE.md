@@ -304,10 +304,10 @@ Cache invalidation accounting is split into two layers:
 Local regression tests should cover request-shape invariants before live
 provider checks are run. In particular, Anthropic cache-control placement tests
 must account for generated chat histories, tool-loop tails, system anchors, the
-four-breakpoint provider limit, and the rule that the active final user message
-is never itself a message breakpoint. Live cache scripts under
-`scripts/cache-tests/` validate provider behavior and economics only after
-those local invariants pass.
+four-breakpoint provider limit, and recent user-side cache breakpoints,
+including active chat prompts and completed `tool_result` messages. Live cache
+scripts under `scripts/cache-tests/` validate provider behavior and economics
+only after those local invariants pass.
 
 An observed cache-read decrease while the ledger believes the cache is warm is
 not an expected invalidation path. It is recorded as `UnexpectedWrite` and must
@@ -316,10 +316,12 @@ breakpoint above. Tool-loop calls keep a separate short-lived cache-read
 baseline because their request prefix advances through newly completed
 `tool_result` blocks; within a loop that baseline must not drop, and the first
 tool-loop continuation after a warm message must not rewrite the prefix with
-zero cache read. Request-shape tests should keep tools, system blocks, and
-already-existing messages byte-preserved for every generation variant; only
-configured tool-surface changes or explicit/manual history edits may change
-that prefix.
+zero cache read. The request that starts the loop marks the active user prompt;
+the first continuation keeps that boundary and advances a breakpoint onto the
+completed `tool_result`. Request-shape tests should keep tools, system blocks,
+and already-existing messages byte-preserved for every generation variant;
+only configured tool-surface changes or explicit/manual history edits may
+change that prefix.
 
 ## Memory
 
