@@ -245,8 +245,7 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
                             let ty = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
                             match ty {
                                 "text" => {
-                                    let text =
-                                        b.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                    let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("");
                                     parts.push(json!({"type": "text", "text": text}));
                                 }
                                 // Anthropic-shape passthrough: forward the
