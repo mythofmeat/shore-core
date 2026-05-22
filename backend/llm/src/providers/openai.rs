@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use serde_json::{json, Value};
@@ -92,51 +94,117 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
                             .collect()
                     };
 
-                    let content_str: String = text_parts
-                        .iter()
-                        .map(|b| b.get("text").and_then(|t| t.as_str()).unwrap_or(""))
-                        .collect();
-                    let content_val = if content_str.is_empty() {
-                        Value::Null
+                    // Collect OpenRouter `reasoning_details` array from
+                    // Thinking blocks. When set on a Thinking block (only by
+                    // the openai.rs response parser, never by Anthropic),
+                    // these structured detail objects carry signed reasoning
+                    // metadata that OpenRouter forwards back to the upstream
+                    // provider so the cached prefix can continue across a
+                    // turn that emitted zero inline reasoning blocks.
+                    let reasoning_details: Vec<Value> = if ctx.preserve_reasoning_details
+                        && !ctx.drop_prior_thinking
+                    {
+                        blocks
+                            .iter()
+                            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("thinking"))
+                            .filter_map(|b| b.get("details").cloned())
+                            .flat_map(|d| match d {
+                                Value::Array(items) => items,
+                                other => vec![other],
+                            })
+                            .collect()
                     } else {
-                        Value::String(content_str)
+                        Vec::new()
                     };
 
-                    let tool_calls: Vec<Value> = tool_parts
-                        .iter()
-                        .map(|b| {
-                            let id = b
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let name = b
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
+                    if ctx.emit_anthropic_tool_shape && !tool_parts.is_empty() {
+                        // Anthropic-shape emission: assistant content is an
+                        // array of `text` + `tool_use` blocks instead of an
+                        // OpenAI `tool_calls` array. OpenRouter forwards
+                        // this shape upstream and the cache walker
+                        // traverses it correctly on tool-loop extensions.
+                        let mut content_blocks: Vec<Value> = Vec::new();
+                        for b in &text_parts {
+                            let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                            if !text.is_empty() {
+                                content_blocks.push(json!({"type": "text", "text": text}));
+                            }
+                        }
+                        for b in &tool_parts {
+                            let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                            let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
                             let input = b.get("input").cloned().unwrap_or(json!({}));
-                            let arguments =
-                                serde_json::to_string(&input).unwrap_or_else(|_| "{}".into());
-                            json!({
+                            content_blocks.push(json!({
+                                "type": "tool_use",
                                 "id": id,
-                                "type": "function",
-                                "function": {
-                                    "name": name,
-                                    "arguments": arguments,
-                                }
-                            })
-                        })
-                        .collect();
+                                "name": name,
+                                "input": input,
+                            }));
+                        }
 
-                    let mut msg_obj = json!({"role": "assistant", "content": content_val});
-                    if !tool_calls.is_empty() {
-                        msg_obj["tool_calls"] = Value::Array(tool_calls);
+                        let mut msg_obj = json!({
+                            "role": "assistant",
+                            "content": Value::Array(content_blocks),
+                        });
+                        if !reasoning.is_empty() {
+                            msg_obj[ctx.reasoning_field] = Value::String(reasoning);
+                        }
+                        if !reasoning_details.is_empty() {
+                            msg_obj["reasoning_details"] = Value::Array(reasoning_details);
+                        }
+                        out.push(msg_obj);
+                    } else {
+                        // OpenAI-shape emission (default): `tool_calls`
+                        // array with `content: null` or text string.
+                        let content_str: String = text_parts
+                            .iter()
+                            .map(|b| b.get("text").and_then(|t| t.as_str()).unwrap_or(""))
+                            .collect();
+                        let content_val = if content_str.is_empty() {
+                            Value::Null
+                        } else {
+                            Value::String(content_str)
+                        };
+
+                        let tool_calls: Vec<Value> = tool_parts
+                            .iter()
+                            .map(|b| {
+                                let id = b
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let name = b
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let input = b.get("input").cloned().unwrap_or(json!({}));
+                                let arguments =
+                                    serde_json::to_string(&input).unwrap_or_else(|_| "{}".into());
+                                json!({
+                                    "id": id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": arguments,
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        let mut msg_obj = json!({"role": "assistant", "content": content_val});
+                        if !tool_calls.is_empty() {
+                            msg_obj["tool_calls"] = Value::Array(tool_calls);
+                        }
+                        if !reasoning.is_empty() {
+                            msg_obj[ctx.reasoning_field] = Value::String(reasoning);
+                        }
+                        if !reasoning_details.is_empty() {
+                            msg_obj["reasoning_details"] = Value::Array(reasoning_details);
+                        }
+                        out.push(msg_obj);
                     }
-                    if !reasoning.is_empty() {
-                        msg_obj[ctx.reasoning_field] = Value::String(reasoning);
-                    }
-                    out.push(msg_obj);
                 }
 
                 "user" => {
@@ -152,7 +220,49 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
                         })
                         .collect();
 
-                    // Emit tool result messages first.
+                    if ctx.emit_anthropic_tool_shape && !tool_results.is_empty() {
+                        // Anthropic-shape emission: a single user message
+                        // whose content is an array of tool_result (and
+                        // possibly text/image) blocks. Preserves cache
+                        // continuity through tool loops on OpenRouter's
+                        // /chat/completions when targeting Anthropic.
+                        let mut parts: Vec<Value> = Vec::new();
+                        for tr in &tool_results {
+                            let tool_use_id =
+                                tr.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("");
+                            let content_value = match tr.get("content") {
+                                Some(Value::String(s)) => Value::String(s.clone()),
+                                Some(other) => other.clone(),
+                                None => Value::String(String::new()),
+                            };
+                            parts.push(json!({
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "content": content_value,
+                            }));
+                        }
+                        for b in &other_blocks {
+                            let ty = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                            match ty {
+                                "text" => {
+                                    let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                    parts.push(json!({"type": "text", "text": text}));
+                                }
+                                // Anthropic-shape passthrough: forward the
+                                // block as-is so cache continuity does not
+                                // change when an image rides alongside a
+                                // tool_result on the user turn.
+                                "image" => parts.push((*b).clone()),
+                                _ => {}
+                            }
+                        }
+                        out.push(json!({"role": "user", "content": parts}));
+                        // Don't fall through to OpenAI-shape emission.
+                        continue;
+                    }
+
+                    // OpenAI-shape: emit tool result messages first as
+                    // separate `role:"tool"` entries.
                     for tr in &tool_results {
                         let tool_call_id =
                             tr.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -302,8 +412,12 @@ fn build_headers(request: &LlmRequest, ctx: &ProviderContext) -> reqwest::header
 
 /// Build the JSON body for chat completions (shared by stream and generate).
 fn build_chat_body(request: &LlmRequest, ctx: &ProviderContext, streaming: bool) -> Value {
-    let messages = translate_messages(request, ctx);
+    let mut messages = translate_messages(request, ctx);
     let tools = translate_tools(&request.tools);
+
+    if ctx.emit_cache_control {
+        apply_openrouter_cache_markers(&mut messages);
+    }
 
     let mut body = json!({
         "model": request.model,
@@ -323,7 +437,10 @@ fn build_chat_body(request: &LlmRequest, ctx: &ProviderContext, streaming: bool)
 
     if ctx.supports_reasoning_effort {
         if let Some(effort) = provider_opt_str(request, "reasoning_effort") {
-            body["reasoning_effort"] = json!(effort);
+            match ctx.reasoning_field_shape {
+                "nested" => body["reasoning"] = json!({ "effort": effort }),
+                _ => body["reasoning_effort"] = json!(effort),
+            }
         }
     }
 
@@ -331,7 +448,137 @@ fn build_chat_body(request: &LlmRequest, ctx: &ProviderContext, streaming: bool)
         body["provider"] = routing.clone();
     }
 
+    // Diagnostic dump of the FULL final body for cache investigations.
+    // Off unless the env var is set so it doesn't interfere with production.
+    if std::env::var("SHORE_OPENAI_BODY_DUMP").is_ok() {
+        if let Some(dir) = body_dump_dir() {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros())
+                .unwrap_or(0);
+            let path = dir.join(format!("call_{stamp}.json"));
+            let _ = std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&body).unwrap_or_default(),
+            );
+        }
+    }
+
     body
+}
+
+/// Lazily create a process-scoped, randomly-named dump directory under the
+/// system temp dir. `tempfile::Builder::tempdir` creates the directory with
+/// `O_EXCL` semantics and 0o700 permissions, so it cannot collide with or
+/// follow a pre-existing symlink at a guessable path. The directory is kept
+/// (not auto-deleted) so dumps survive past process exit for post-hoc
+/// inspection.
+fn body_dump_dir() -> Option<&'static std::path::Path> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let path = tempfile::Builder::new()
+            .prefix("shore-openai-body-dumps-")
+            .tempdir()
+            .ok()
+            .map(|td| td.keep())?;
+        tracing::info!(path = %path.display(), "SHORE_OPENAI_BODY_DUMP active");
+        Some(path)
+    })
+    .as_deref()
+}
+
+/// Attach OpenRouter `cache_control: {type: "ephemeral"}` extensions to the
+/// system block and the last two user-side messages.
+///
+/// OpenRouter forwards these markers to providers that natively understand
+/// them (Anthropic on /chat/completions in particular) so a long stable
+/// prefix is served from cache and only the recently-added messages count
+/// as fresh writes. Mirrors the sliding-breakpoint strategy in
+/// `apply_cache_control` in providers/anthropic.rs at a simpler scale.
+///
+/// Anthropic's 4-breakpoint cap applies here too: one on system + two on
+/// user-side messages = 3 used, leaving headroom for an explicit tool-side
+/// marker later.
+fn apply_openrouter_cache_markers(messages: &mut [Value]) {
+    let cc = json!({ "type": "ephemeral" });
+
+    // System block: convert string content to array form if needed, then
+    // mark the last content block.
+    if let Some(sys_msg) = messages
+        .iter_mut()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
+    {
+        attach_cache_control_to_message(sys_msg, &cc);
+    }
+
+    // Mark the last two user messages so that on tool-loop continuations
+    // the cache walker has a fallback entry one iteration back. With
+    // Anthropic-shape tool emission, tool_results live inside user
+    // messages (content array, not role:"tool"), so cache_control on the
+    // content block serializes naturally.
+    //
+    // Multi-iteration tool loops without the second marker observe a
+    // miss starting on the 3rd request, because the previous iteration's
+    // cache_w=0 (read everything, wrote nothing) doesn't create a new
+    // cache entry at the new marker position. The fallback marker keeps
+    // the older entry addressable for the next lookup.
+    let user_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| (m.get("role").and_then(|r| r.as_str()) == Some("user")).then_some(i))
+        .collect();
+    let take = user_indices.len().min(2);
+    for &idx in user_indices.iter().rev().take(take) {
+        attach_cache_control_to_message(&mut messages[idx], &cc);
+    }
+}
+
+/// Convert message content to block-array form if it's a string, then
+/// attach `cache_control` to the last text/tool_result block in the array.
+/// No-op if content is missing or in an unrecognized shape.
+fn attach_cache_control_to_message(msg: &mut Value, cc: &Value) {
+    let Some(obj) = msg.as_object_mut() else {
+        return;
+    };
+    let role = obj
+        .get("role")
+        .and_then(|r| r.as_str())
+        .unwrap_or("")
+        .to_string();
+    match obj.get("content").cloned() {
+        Some(Value::String(text)) => {
+            // `role: "tool"` requires a string content per OpenAI spec, so
+            // attach cache_control as a sibling field on the tool message
+            // instead of restructuring its content. OpenRouter accepts
+            // top-level cache_control on tool messages.
+            if role == "tool" {
+                obj.insert("cache_control".into(), cc.clone());
+            } else {
+                obj.insert(
+                    "content".into(),
+                    json!([{ "type": "text", "text": text, "cache_control": cc }]),
+                );
+            }
+        }
+        Some(Value::Array(mut arr)) => {
+            for block in arr.iter_mut().rev() {
+                if let Some(block_obj) = block.as_object_mut() {
+                    let bt = block_obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    // `image` (Anthropic-shape) lives here too: the
+                    // OpenRouter Anthropic tool-loop path passes Anthropic
+                    // image blocks through to the user turn, so the cache
+                    // walker must accept them as a tail candidate or it
+                    // would skip back and land on `tool_result` instead.
+                    if matches!(bt, "text" | "image" | "image_url" | "tool_result") {
+                        block_obj.insert("cache_control".into(), cc.clone());
+                        break;
+                    }
+                }
+            }
+            obj.insert("content".into(), Value::Array(arr));
+        }
+        _ => {}
+    }
 }
 
 // ── Streaming ───────────────────────────────────────────────────────
@@ -361,6 +608,7 @@ pub async fn stream(
 
     let (mut writer, reader) = tokio::io::duplex(64 * 1024);
     let reasoning_field_name = ctx.reasoning_field.to_string();
+    let capture_reasoning_details = ctx.preserve_reasoning_details;
     let model_fallback = request.model.clone();
 
     tokio::spawn(async move {
@@ -375,6 +623,13 @@ pub async fn stream(
 
         // Tool call accumulation: index → (id, name, argument_chunks).
         let mut tool_calls: HashMap<u64, (String, String, Vec<String>)> = HashMap::new();
+
+        // OpenRouter's `reasoning_details` is a structured array that
+        // arrives on `delta.reasoning_details` — usually on a late chunk
+        // (sometimes on multiple). Accumulate into one array and emit
+        // a single ReasoningDetails StreamEvent before Done so the
+        // StreamConsumer can attach it to the final Thinking block.
+        let mut reasoning_details_buf: Vec<Value> = Vec::new();
 
         let result = read_sse_events(
             response,
@@ -433,6 +688,18 @@ pub async fn stream(
                             let ev = json!({"type": "text", "text": content});
                             if let Ok(line) = serde_json::to_string(&ev) {
                                 lines_out.push(line);
+                            }
+                        }
+                    }
+
+                    // OpenRouter structured reasoning details.
+                    if capture_reasoning_details {
+                        if let Some(rds) = delta
+                            .and_then(|d| d.get("reasoning_details"))
+                            .and_then(|r| r.as_array())
+                        {
+                            for item in rds {
+                                reasoning_details_buf.push(item.clone());
                             }
                         }
                     }
@@ -520,6 +787,19 @@ pub async fn stream(
             }
         }
 
+        // Reasoning details (OpenRouter) — emit before Done so the
+        // StreamConsumer can attach to the most recent Thinking block.
+        if !reasoning_details_buf.is_empty() {
+            let ev = json!({
+                "type": "reasoning_details",
+                "details": Value::Array(reasoning_details_buf),
+            });
+            if let Ok(line) = serde_json::to_string(&ev) {
+                let _ = writer.write_all(line.as_bytes()).await;
+                let _ = writer.write_all(b"\n").await;
+            }
+        }
+
         // Done event.
         let done = build_done_event(
             &text_content,
@@ -583,17 +863,27 @@ pub async fn generate(
     // Build content blocks.
     let mut typed_blocks: Vec<ContentBlock> = Vec::new();
 
-    // Reasoning / thinking.
-    if let Some(reasoning) = message
+    // Reasoning / thinking. When the provider returned a structured
+    // `reasoning_details` array (OpenRouter's portable reasoning format
+    // for third-party models), capture it on the Thinking block so the
+    // next request can replay it at the message level. The plain-text
+    // `reasoning` / `reasoning_content` field is captured alongside for
+    // human-readable display.
+    let reasoning_text = message
         .and_then(|m| m.get(field_name))
         .and_then(|r| r.as_str())
-    {
-        if !reasoning.is_empty() {
-            typed_blocks.push(ContentBlock::Thinking {
-                thinking: reasoning.to_string(),
-                signature: None,
-            });
-        }
+        .unwrap_or("");
+    let reasoning_details = if ctx.preserve_reasoning_details {
+        message.and_then(|m| m.get("reasoning_details")).cloned()
+    } else {
+        None
+    };
+    if !reasoning_text.is_empty() || reasoning_details.is_some() {
+        typed_blocks.push(ContentBlock::Thinking {
+            thinking: reasoning_text.to_string(),
+            signature: None,
+            details: reasoning_details,
+        });
     }
 
     // Text content.
@@ -1418,5 +1708,374 @@ mod tests {
             text_content, "Hello",
             "First chunk's content delta was dropped — text_content is empty"
         );
+    }
+
+    // ── Inline-system wrap (Anthropic-via-OpenRouter shape) ───────────
+    //
+    // When the target is an Anthropic model — direct or routed through
+    // OpenRouter's /chat/completions — mid-history `role:"system"`
+    // messages must land at their original conversation position as
+    // wrapped user messages. OpenRouter re-orders raw inline system
+    // blocks relative to surrounding chat history; collapsing them into
+    // the top-level system prompt would (a) bust the cached prefix and
+    // (b) move instructions in front of the chat history that they're
+    // supposed to gate.
+
+    fn make_openrouter_anthropic_request(messages: Vec<Value>) -> LlmRequest {
+        let mut req = make_request(messages, None);
+        req.model = "anthropic/claude-sonnet-4-6".into();
+        req.provider_key = Some("openrouter".into());
+        req
+    }
+
+    /// Build the apple/banana/grape/peach/orange logical conversation used
+    /// by 26-inline-system-fruit-order.py. Returns Anthropic-shape messages
+    /// (role + string content) as Shore stores them internally.
+    fn fruit_conversation() -> Vec<Value> {
+        vec![
+            json!({"role": "user", "content": "I'm going to list 5 fruits."}),
+            json!({"role": "user", "content": "apple"}),
+            json!({"role": "user", "content": "banana"}),
+            json!({"role": "system", "content": "grape"}),
+            json!({"role": "user", "content": "peach"}),
+            json!({"role": "system", "content": "orange"}),
+            json!({"role": "user", "content":
+                "List the fruits in the order you saw them, one per line."}),
+        ]
+    }
+
+    #[test]
+    fn fruit_order_inline_system_wraps_in_position() {
+        let request = make_openrouter_anthropic_request(fruit_conversation());
+        let msgs = translate_test_messages(&request);
+
+        // The wrap merges consecutive user turns when the prior message is
+        // already a user — so "banana" + wrapped "grape" collapse into one
+        // user message, and "peach" + wrapped "orange" do the same. That
+        // yields 5 wire messages, none of which carry `role:"system"`.
+        let system_roles = msgs
+            .iter()
+            .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
+            .count();
+        assert_eq!(
+            system_roles, 0,
+            "inline system messages must not survive as role:system on the wire"
+        );
+
+        // Concatenate text content of every message in order. The fruits
+        // must appear in the original conversation order — apple, banana,
+        // grape, peach, orange — not collapsed to the top.
+        let mut serialized = String::new();
+        for msg in &msgs {
+            match msg.get("content") {
+                Some(Value::String(s)) => serialized.push_str(s),
+                Some(Value::Array(blocks)) => {
+                    for b in blocks {
+                        if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
+                            serialized.push_str(t);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            serialized.push('\n');
+        }
+        let fruits = ["apple", "banana", "grape", "peach", "orange"];
+        let positions: Vec<(usize, &str)> = fruits
+            .iter()
+            .map(|f| (serialized.find(f).expect("fruit must appear"), *f))
+            .collect();
+        let mut sorted = positions.clone();
+        sorted.sort_by_key(|(p, _)| *p);
+        assert_eq!(
+            positions, sorted,
+            "fruits out of order: {positions:?} should equal {sorted:?}"
+        );
+
+        // The wrapped grape lives merged with banana; the wrapped orange
+        // lives merged with peach. Verify the system_instruction tag
+        // marks them.
+        assert!(
+            serialized.contains("<system_instruction>grape</system_instruction>"),
+            "grape must be wrapped as system_instruction in place"
+        );
+        assert!(
+            serialized.contains("<system_instruction>orange</system_instruction>"),
+            "orange must be wrapped as system_instruction in place"
+        );
+    }
+
+    // ── OpenRouter cache_control extension placement ─────────────────
+
+    #[test]
+    fn build_chat_body_marks_system_and_latest_user_message() {
+        // We deliberately mark ONLY the latest user message (plus the
+        // system block) instead of also sliding a marker onto the most
+        // recent tool message. The tool-message-sibling-cache_control
+        // path was tried and didn't help cache continuity — the real
+        // fix is the Anthropic-shape tool emission tested separately.
+        let mut request = make_openrouter_anthropic_request(vec![
+            json!({"role": "user", "content": "turn 1"}),
+            json!({"role": "assistant", "content": "ok"}),
+            json!({"role": "user", "content": "turn 2"}),
+        ]);
+        request.system = Some(json!("You are a test."));
+        let ctx = build_provider_context(&request);
+        assert!(ctx.emit_cache_control, "ctx must opt into cache markers");
+
+        let body = build_chat_body(&request, &ctx, false);
+        let msgs = body["messages"].as_array().unwrap();
+
+        // The active (last) user message must carry cache_control on
+        // its last text block.
+        let last = msgs.last().unwrap();
+        let arr = last["content"].as_array().expect("content array");
+        assert!(
+            arr.iter().any(|b| b.get("cache_control").is_some()),
+            "the active user message must carry cache_control: {last}"
+        );
+
+        // The system message (first) must carry cache_control too.
+        let sys = &msgs[0];
+        assert_eq!(sys["role"], "system");
+        let sys_arr = sys["content"].as_array().expect("system content array");
+        assert!(
+            sys_arr.iter().any(|b| b.get("cache_control").is_some()),
+            "the system message must carry cache_control: {sys}"
+        );
+    }
+
+    // ── Anthropic-shape tool emission (the cache-continuity fix) ─────
+
+    #[test]
+    fn anthropic_shape_emits_tool_use_as_content_block_not_tool_calls() {
+        let mut request = make_openrouter_anthropic_request(vec![json!({
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "check_time", "input": {}},
+            ],
+        })]);
+        // Verify ctx opts in.
+        let ctx = build_provider_context(&request);
+        assert!(
+            ctx.emit_anthropic_tool_shape,
+            "openrouter + anthropic/* model must enable anthropic tool shape"
+        );
+
+        let msgs = translate_messages(&request, &ctx);
+        assert_eq!(msgs.len(), 1);
+        let asst = &msgs[0];
+        assert_eq!(asst["role"], "assistant");
+
+        // Must NOT have OpenAI `tool_calls` field.
+        assert!(
+            asst.get("tool_calls").is_none(),
+            "anthropic-shape assistant must not emit tool_calls: {asst}"
+        );
+        // Content must be an array with a tool_use block.
+        let content = asst["content"].as_array().expect("array content");
+        let has_tool_use = content
+            .iter()
+            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"));
+        assert!(has_tool_use, "must have tool_use content block: {asst}");
+
+        // Non-anthropic provider stays OpenAI-shape.
+        request.model = "openai/gpt-4o".into();
+        request.provider_key = Some("openai".into());
+        let ctx2 = build_provider_context(&request);
+        assert!(!ctx2.emit_anthropic_tool_shape);
+        let msgs2 = translate_messages(&request, &ctx2);
+        assert!(
+            msgs2[0].get("tool_calls").is_some(),
+            "openai provider must emit tool_calls"
+        );
+    }
+
+    #[test]
+    fn anthropic_shape_replays_reasoning_details_with_tool_use() {
+        let details = json!([{
+            "type": "reasoning.encrypted",
+            "data": "opaque-openrouter-detail"
+        }]);
+        let request = make_openrouter_anthropic_request(vec![json!({
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "", "details": details.clone()},
+                {"type": "tool_use", "id": "toolu_1", "name": "check_time", "input": {}},
+            ],
+        })]);
+        let ctx = build_provider_context(&request);
+
+        let msgs = translate_messages(&request, &ctx);
+
+        assert_eq!(
+            msgs[0]["reasoning_details"], details,
+            "OpenRouter must receive the reasoning_details retained by the daemon"
+        );
+    }
+
+    #[test]
+    fn anthropic_shape_emits_tool_result_in_user_message() {
+        let request = make_openrouter_anthropic_request(vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1",
+                 "content": "Friday, May 22nd"},
+            ],
+        })]);
+        let ctx = build_provider_context(&request);
+        let msgs = translate_messages(&request, &ctx);
+
+        // Should emit ONE user message containing the tool_result block,
+        // NOT a separate role:"tool" message.
+        assert_eq!(msgs.len(), 1, "expected single user msg: {msgs:?}");
+        assert_eq!(msgs[0]["role"], "user");
+        let content = msgs[0]["content"].as_array().expect("array content");
+        let tr_block = content
+            .iter()
+            .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+            .expect("must contain tool_result block");
+        assert_eq!(tr_block["tool_use_id"], "toolu_1");
+        assert_eq!(tr_block["content"], "Friday, May 22nd");
+    }
+
+    #[test]
+    fn anthropic_shape_preserves_image_alongside_tool_result() {
+        // Mixed user turn: a tool_result plus a vision-style image block.
+        // On the Anthropic-shape path the image must ride through in its
+        // native Anthropic shape so the prefix stays byte-identical for
+        // prompt-cache hits on subsequent continuations.
+        let img_block = json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "iVBORw0KGgo=",
+            }
+        });
+        let request = make_openrouter_anthropic_request(vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"},
+                img_block.clone(),
+            ],
+        })]);
+        let ctx = build_provider_context(&request);
+        let msgs = translate_messages(&request, &ctx);
+
+        assert_eq!(msgs.len(), 1, "expected single user msg: {msgs:?}");
+        let content = msgs[0]["content"].as_array().expect("array content");
+        assert!(
+            content
+                .iter()
+                .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result")),
+            "tool_result missing: {content:?}"
+        );
+        let image = content
+            .iter()
+            .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("image"))
+            .expect("image block must be preserved on anthropic-shape path");
+        assert_eq!(image, &img_block, "image block must pass through unchanged");
+    }
+
+    #[test]
+    fn cache_marker_lands_on_trailing_image_block_not_tool_result() {
+        // build_chat_body must attach cache_control to the actual tail of
+        // the user turn. For [tool_result, image], that's the image block —
+        // landing on tool_result would shift the cached prefix one block
+        // back and re-write the suffix on every continuation.
+        let mut request = make_openrouter_anthropic_request(vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgo=",
+                    }
+                },
+            ],
+        })]);
+        request.system = Some(json!("You are a test."));
+        let ctx = build_provider_context(&request);
+        assert!(ctx.emit_cache_control, "ctx must opt into cache markers");
+
+        let body = build_chat_body(&request, &ctx, false);
+        let msgs = body["messages"].as_array().unwrap();
+        let user = msgs.last().expect("must have user msg");
+        let content = user["content"].as_array().expect("array content");
+
+        let tr = content
+            .iter()
+            .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+            .expect("tool_result block must be present");
+        assert!(
+            tr.get("cache_control").is_none(),
+            "cache_control must NOT land on tool_result when image follows it: {tr}",
+        );
+        let img = content
+            .iter()
+            .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("image"))
+            .expect("image block must be present");
+        assert!(
+            img.get("cache_control").is_some(),
+            "cache_control must land on the trailing image block: {img}",
+        );
+    }
+
+    #[test]
+    fn build_chat_body_no_cache_markers_when_provider_disabled() {
+        let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
+        // Default: sdk=openai, no provider_key override — emit_cache_control
+        // stays false and the body should be marker-free.
+        request.provider_key = Some("openai".into());
+        let ctx = build_provider_context(&request);
+        assert!(!ctx.emit_cache_control);
+
+        let body = build_chat_body(&request, &ctx, false);
+        let msgs = body["messages"].as_array().unwrap();
+        for m in msgs {
+            if let Some(arr) = m.get("content").and_then(|c| c.as_array()) {
+                for b in arr {
+                    assert!(
+                        b.get("cache_control").is_none(),
+                        "cache_control leaked into openai-direct request: {m}"
+                    );
+                }
+            }
+        }
+    }
+
+    // ── Reasoning effort shape mapping ────────────────────────────────
+
+    #[test]
+    fn build_chat_body_emits_nested_reasoning_for_openrouter_anthropic() {
+        let mut request = make_openrouter_anthropic_request(vec![json!({
+            "role": "user", "content": "hi"
+        })]);
+        request.provider_options = Some(json!({ "reasoning_effort": "high" }));
+        let ctx = build_provider_context(&request);
+        assert_eq!(ctx.reasoning_field_shape, "nested");
+
+        let body = build_chat_body(&request, &ctx, false);
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "must not emit flat reasoning_effort on nested-shape providers"
+        );
+        assert_eq!(body["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn build_chat_body_emits_flat_reasoning_for_openai_direct() {
+        let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
+        request.provider_options = Some(json!({ "reasoning_effort": "high" }));
+        let ctx = build_provider_context(&request);
+        assert_eq!(ctx.reasoning_field_shape, "flat");
+
+        let body = build_chat_body(&request, &ctx, false);
+        assert_eq!(body["reasoning_effort"], "high");
+        assert!(body.get("reasoning").is_none());
     }
 }

@@ -377,6 +377,7 @@ fn print_result(label: &str, resp: &shore_llm::types::GenerateResponse) -> Vec<S
             ContentBlock::Thinking {
                 thinking,
                 signature,
+                ..
             } => Some((thinking.as_str(), signature.is_some())),
             _ => None,
         })

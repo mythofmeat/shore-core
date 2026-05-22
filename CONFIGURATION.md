@@ -234,6 +234,14 @@ API. Other providers use the OpenAI-compatible `GET <base_url>/models`
 shape. Well-known provider keys with default base URLs, including
 `anthropic`, `openai`, and `openrouter`, can omit `base_url`; custom
 providers need it.
+At chat-runtime, adaptive Anthropic models reached through OpenRouter are a
+cache-continuity exception: an OpenRouter model configured with
+`sdk = "anthropic"` and `reasoning_effort` keeps that config surface, but Shore
+sends those adaptive requests through OpenRouter chat completions so tool-loop
+continuations can replay OpenRouter reasoning metadata. Direct Anthropic calls
+and non-adaptive Anthropic SDK calls keep the native Messages API path.
+The [OpenRouter Anthropic cache incident guide](docs/incidents/2026-05-22-openrouter-anthropic-tool-loop-cache.md)
+includes the user-facing post-mortem and recommended settings.
 Hidden models stay in the cache but are filtered out of `shore model` and
 `shore provider models <name>` until `--all` (CLI) or `:model all` (TUI)
 is used. Manual `[chat.<provider>.<alias>]` entries are never filtered —

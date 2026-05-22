@@ -987,7 +987,7 @@ async fn recv_streaming_response(
             ServerMessage::StreamEnd(end) => {
                 spinner.stop().await;
                 debug!(finish_reason = end.finish_reason, "Stream complete");
-                if end.finish_reason == "tool_use" {
+                if !end.is_final {
                     // Tool loop: more messages will follow.
                     // Restart spinner for the next LLM round.
                     spinner.restart();
@@ -1600,6 +1600,26 @@ mod tests {
                 is_final: true,
             }),
         ];
+
+        let cli = test_cli(CliCommand::Send {
+            message: vec!["test".into()],
+            images: vec![],
+            temperature: None,
+            top_p: None,
+            thinking: None,
+            system: false,
+        });
+        let received = execute_with_mock(cli, responses).await;
+        assert!(matches!(received, ClientMessage::Message(_)));
+    }
+
+    #[tokio::test]
+    async fn streaming_final_tool_use_end_returns_to_cli() {
+        let mut responses = streaming_response("");
+        let ServerMessage::StreamEnd(end) = responses.last_mut().unwrap() else {
+            panic!("streaming response should end with StreamEnd");
+        };
+        end.finish_reason = "tool_use".into();
 
         let cli = test_cli(CliCommand::Send {
             message: vec!["test".into()],

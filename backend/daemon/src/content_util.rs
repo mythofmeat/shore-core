@@ -15,8 +15,11 @@ pub fn content_block_to_api_json(block: &ContentBlock) -> Option<Value> {
         ContentBlock::Thinking {
             thinking,
             signature,
+            ..
         } => {
             // Require signature — Anthropic API rejects unsigned thinking blocks.
+            // The `details` field is opaque OpenRouter reasoning_details used
+            // by the chat-completions path and intentionally ignored here.
             signature
                 .as_ref()
                 .map(|sig| json!({ "type": "thinking", "thinking": thinking, "signature": sig }))
@@ -57,10 +60,14 @@ pub fn content_block_to_json(block: &ContentBlock) -> Value {
         ContentBlock::Thinking {
             thinking,
             signature,
+            details,
         } => {
             let mut block = json!({"type": "thinking", "thinking": thinking});
             if let Some(sig) = signature {
                 block["signature"] = json!(sig);
+            }
+            if let Some(details) = details {
+                block["details"] = details.clone();
             }
             block
         }
@@ -219,6 +226,7 @@ mod tests {
         let block = ContentBlock::Thinking {
             thinking: "let me think".into(),
             signature: Some("sig_abc".into()),
+            details: None,
         };
         let result = content_block_to_api_json(&block).unwrap();
         assert_eq!(result["type"], "thinking");
@@ -231,6 +239,7 @@ mod tests {
         let block = ContentBlock::Thinking {
             thinking: "unsigned thought".into(),
             signature: None,
+            details: None,
         };
         assert!(
             content_block_to_api_json(&block).is_none(),
@@ -297,11 +306,30 @@ mod tests {
         let block = ContentBlock::Thinking {
             thinking: "unsigned thought".into(),
             signature: None,
+            details: None,
         };
         let result = content_block_to_json(&block);
         assert_eq!(result["type"], "thinking");
         assert_eq!(result["thinking"], "unsigned thought");
         assert!(result.get("signature").is_none());
+    }
+
+    #[test]
+    fn json_thinking_preserves_openrouter_reasoning_details() {
+        let details = json!([{
+            "type": "reasoning.encrypted",
+            "data": "opaque-openrouter-detail"
+        }]);
+        let block = ContentBlock::Thinking {
+            thinking: String::new(),
+            signature: None,
+            details: Some(details.clone()),
+        };
+
+        let result = content_block_to_json(&block);
+
+        assert_eq!(result["type"], "thinking");
+        assert_eq!(result["details"], details);
     }
 
     #[test]
@@ -316,6 +344,7 @@ mod tests {
             ContentBlock::Thinking {
                 thinking: "hmm".into(),
                 signature: Some("sig".into()),
+                details: None,
             },
             ContentBlock::RedactedThinking { data: "enc".into() },
             ContentBlock::ToolResult {
@@ -351,6 +380,7 @@ mod tests {
         let block = ContentBlock::Thinking {
             thinking: "tool reasoning".into(),
             signature: None,
+            details: None,
         };
         let result = content_block_to_request_json_for_sdk(&block, &Sdk::Openai).unwrap();
         assert_eq!(result["type"], "thinking");
@@ -358,10 +388,25 @@ mod tests {
     }
 
     #[test]
+    fn request_json_openai_keeps_reasoning_details_for_provider_replay() {
+        let details = json!([{"type": "reasoning.summary", "summary": "opaque"}]);
+        let block = ContentBlock::Thinking {
+            thinking: String::new(),
+            signature: None,
+            details: Some(details.clone()),
+        };
+
+        let result = content_block_to_request_json_for_sdk(&block, &Sdk::Openai).unwrap();
+
+        assert_eq!(result["details"], details);
+    }
+
+    #[test]
     fn request_json_anthropic_filters_unsigned_thinking() {
         let block = ContentBlock::Thinking {
             thinking: "unsigned thought".into(),
             signature: None,
+            details: None,
         };
         assert!(content_block_to_request_json_for_sdk(&block, &Sdk::Anthropic).is_none());
     }
@@ -387,6 +432,7 @@ mod tests {
             ContentBlock::Thinking {
                 thinking: "hmm".into(),
                 signature: None,
+                details: None,
             },
             ContentBlock::ToolUse {
                 id: "t2".into(),
@@ -525,6 +571,7 @@ mod tests {
             ContentBlock::Thinking {
                 thinking: "thought".into(),
                 signature: None,
+                details: None,
             },
         ];
         assert!(extract_tool_uses(&blocks).is_empty());

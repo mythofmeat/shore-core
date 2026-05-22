@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+#
+# Test: an adaptive Anthropic model configured with sdk="anthropic" through
+# OpenRouter does not rewrite the warm prefix when Shore drives a tool loop.
+#
+# Here a temporary Shore daemon renders the prompt and tool surface from an
+# Anthropic-SDK config. shore-llm routes this adaptive OpenRouter call through
+# the cache-stable chat-completions path, then the ledger checks the real
+# tool_loop calls.
+#
+set -euo pipefail
+source "$(dirname "$0")/harness.sh"
+
+harness_init "tool-loop-daemon"
+
+API_KEY_ENV="OPENROUTER_API_KEY"
+TOOL_LOOP_EFFORT="${TOOL_LOOP_EFFORT:-high}"
+if [[ -z "${OPENROUTER_PROVIDER:-}" ]]; then
+    OPENROUTER_PROVIDER='{ order = ["Anthropic"], allow_fallbacks = false }'
+fi
+
+_write_config() {
+    cat > "$CONFIG_DIR/config.toml" << TOML
+[defaults]
+display_name = "tester"
+model        = "chat.test.model"
+
+[behavior.autonomy]
+enabled = false
+
+[behavior.tool_use]
+enabled = true
+max_iterations = 3
+
+[behavior.tool_use.tools]
+check_time = true
+roll_dice = false
+activity_heatmap = false
+generate_image = false
+web_search = false
+fetch_url = false
+read = false
+write = false
+edit = false
+list_files = false
+search = false
+delete = false
+exec = false
+search_history = false
+
+[advanced]
+api_payload_logging = true
+cache_forensics = true
+
+[daemon]
+addr = "$LISTEN_ADDR"
+TOML
+
+    local model_toml="$CONFIG_DIR/conf.d/models.toml"
+    {
+        echo '[chat.test.model]'
+        echo "sdk          = \"anthropic\""
+        echo "model_id     = \"$MODEL_ID\""
+        echo "api_key_env  = \"$API_KEY_ENV\""
+        echo "base_url     = \"$BASE_URL\""
+        echo "cache_ttl    = \"$CACHE_TTL\""
+        echo "reasoning_effort = \"$TOOL_LOOP_EFFORT\""
+        [[ -n "$OPENROUTER_PROVIDER" ]] && echo "openrouter_provider = $OPENROUTER_PROVIDER" || true
+    } > "$model_toml"
+}
+
+harness_start
+
+if ! grep -q "^${API_KEY_ENV}=." "$CONFIG_DIR/.env" 2>/dev/null; then
+    harness_fail "$API_KEY_ENV is not set in the harness .env"
+fi
+
+echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 1: Warm cache ==="
+send_msg "Warm-up one. Reply with only WARM1."
+send_msg "Warm-up two. Reply with only WARM2."
+
+echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 2: Tool use ==="
+send_msg "Use the check_time tool exactly once before answering. After the tool result, reply with only TIME_OK."
+
+LEDGER="$DATA_DIR/ledger.db"
+if [[ ! -f "$LEDGER" ]]; then
+    harness_fail "ledger missing at $LEDGER"
+fi
+
+echo -e "${CYAN}[$TEST_NAME]${NC} tool-loop ledger rows:"
+sqlite3 -header -column "$LEDGER" \
+    "select call_type, cache_read_tokens, cache_write_tokens, cache_anomaly, finish_reason, thinking_enabled
+       from calls
+      where call_type in ('message', 'tool_loop')
+      order by id desc
+      limit 6;" || harness_fail "failed to read ledger rows"
+
+TOOL_LOOPS="$(sqlite3 "$LEDGER" "select count(*) from calls where call_type = 'tool_loop';")"
+if [[ "$TOOL_LOOPS" -eq 0 ]]; then
+    harness_fail "model did not enter a Shore tool loop"
+fi
+
+ANOMALIES="$(sqlite3 "$LEDGER" \
+    "select count(*) from calls where call_type = 'tool_loop' and cache_anomaly is not null;")"
+if [[ "$ANOMALIES" -ne 0 ]]; then
+    harness_fail "tool-loop ledger rows contain cache anomalies"
+fi
+
+FIRST_TOOL_ROW="$(sqlite3 -separator ' ' "$LEDGER" \
+    "select cache_read_tokens, cache_write_tokens, thinking_enabled
+       from calls
+      where call_type = 'tool_loop'
+      order by id
+      limit 1;")"
+read -r FIRST_TOOL_READ FIRST_TOOL_WRITE FIRST_TOOL_THINKING <<< "$FIRST_TOOL_ROW"
+
+if [[ "${FIRST_TOOL_THINKING:-0}" -ne 1 ]]; then
+    harness_fail "tool-loop call did not record thinking_enabled=1"
+fi
+
+if [[ "${FIRST_TOOL_READ:-0}" -eq 0 ]]; then
+    harness_fail "first tool-loop continuation did not read the warm prefix"
+fi
+
+harness_pass
