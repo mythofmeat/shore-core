@@ -98,21 +98,80 @@ Rust daemon. We don't ship the TS daemon until the final cutover phase.
 
 ### Phase 4: LLM calls via real SDKs
 
-- `@anthropic-ai/sdk` for Anthropic.
-- `openai` SDK for OpenAI, OpenRouter, DeepSeek, Moonshot, xAI — anyone
-  who exposes the OpenAI-compatible surface.
-- `@google/generative-ai` for Gemini direct.
-- Streaming responses translated to SWP `StreamStart` / `StreamChunk` /
-  `StreamEnd` frames.
-- Tool-use loop driven by the SDK (loop until the model stops requesting
-  tools), daemon handles tool execution and feeds results back.
-- Prompt caching, extended thinking, reasoning_details — all handled by
-  the SDK with appropriate config flags.
-- **Exit criterion:** Send a message via CLI to an Anthropic-via-OpenRouter
-  character with extended thinking and a tool that requires a couple of
-  iterations. Model finishes the loop, replies coherently, no signature
-  errors, no model-loop pathology, cache continuity through the tool loop.
-  THIS is the test the Rust daemon currently fails.
+Split into 4a (cache regression killed) and 4b/4c (full prompt + tool
+surface). 4a is the load-bearing one — it proves the SDK route fixes
+the bug this rewrite exists to kill.
+
+**4a — cache regression validated (done, 2026-05-23):**
+
+- `@anthropic-ai/sdk` adapter at `backend/daemon-ts/src/llm/providers/anthropic.ts`.
+  Pointed at OpenRouter's `/v1/messages` by stripping the trailing `/v1`
+  from the configured base URL.
+- `openai` SDK adapter at `.../providers/openai.ts` (smoke-tested only;
+  no live API key on this machine for OpenAI direct, but the build path
+  is exercised by the test suite under the `OPENAI_API_KEY` gate).
+- Generic tool loop at `.../tool_loop.ts` that preserves block ordering
+  verbatim across iterations (thinking → tool_use → tool_result → ...).
+  This is what kills the cache regression.
+- 4 cache_control breakpoints placed by the Anthropic adapter: last
+  system block, last tool def, last stable assistant turn, last message.
+- Live tests at `backend/daemon-ts/tests/cache_regression.test.ts`,
+  gated on `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY`. All scenarios
+  green on **both haiku-4.5 and sonnet-4.5**:
+    - plain chat 2-turn cache hit
+    - 1-iteration tool loop (loop-entry cache + loop-exit cache)
+    - **adaptive thinking + 3-iteration dependent-roll tool loop**,
+      with an explicit assertion that the assistant turns mix
+      thinking-emitting and thinking-skipping shapes — the exact
+      transition that broke the Rust daemon's prefix hash
+- ONE inline tool (`roll_dice`) registered so the loop has something to
+  iterate against. Full tool registry deferred to 4c.
+
+One OpenRouter-specific gotcha is in the adapter:
+
+- **Provider routing pin.** When the base URL points at OpenRouter we
+  send `provider: { order: ["anthropic"], allow_fallbacks: false }` so
+  the request is guaranteed to hit Anthropic directly. Without this
+  pin OpenRouter can route to Bedrock/Vertex, which handle
+  `cache_control` differently.
+
+We deliberately **do NOT** filter OpenRouter's
+`openrouter.reasoning:`-prefixed `redacted_thinking` blocks (the Rust
+impl did, and that was wrong). Echoing them back verbatim is correct;
+the cache prefix hash is unaffected by them, and the model needs the
+reasoning context across turns. The empirical proof: with the
+adapter unchanged but the prompt padded above haiku's real cache
+threshold (~4096 tokens — Anthropic docs say 2048 but reality is
+higher), cache holds across every thinking-shape transition.
+
+Test-design notes worth preserving (both load-bearing):
+
+- **Per-run cache nonce.** Each test run injects a fresh UUID into the
+  system prompt so a warmed cache from a prior run can't hide a
+  regression. Without this, `cache_read > 0` is meaningless — it could
+  just be yesterday's cache.
+- **Prompt size well above documented threshold.** Anthropic docs say
+  haiku-4.5 caches prompts ≥2048 input tokens. In practice via
+  OpenRouter, ~4000 input tokens still returns `cache_creation=0` on
+  the first call. The test pads to ~11k tokens to stay clear of that
+  gray zone.
+
+- **Exit criterion (met):** in the live test, `cache_read_input_tokens > 0`
+  on every provider call after the first within a turn, including
+  across tool_use/tool_result boundaries AND across adaptive-thinking
+  shape transitions (the assistant turn emitting a thinking block on
+  iteration 1 but not iteration 2). The Rust regression dropped to 0
+  here; the TS impl holds.
+
+**4b — full prompt assembly (pending):** port `engine/prompt.rs` (~1.5k
+lines): SOUL/USER/AGENTS/TOOLS/MEMORY assembly, time markers, message
+trimming, `<system_instruction>` mid-history wrapping for non-Anthropic
+SDKs. Until this lands, the Phase-4 daemon can't serve a real character.
+
+**4c — full tool registry (pending):** port the 9 real tools with
+path-traversal / symlink-escape protections (originally Phase 5).
+SWP `StreamStart`/`StreamChunk`/`StreamEnd` frame translation slots in
+here once the engine wires the provider call through `appendMessage`.
 
 ### Phase 5: tools
 

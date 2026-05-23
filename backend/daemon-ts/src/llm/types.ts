@@ -1,0 +1,91 @@
+/**
+ * Provider-agnostic types for the LLM call boundary.
+ *
+ * We use Anthropic-style content blocks as the canonical in-process
+ * representation because:
+ *   1. Our on-disk format (`active.jsonl`) already stores blocks in this
+ *      shape — see `src/engine/types.ts`.
+ *   2. Anthropic is the picky one about block ordering (thinking →
+ *      tool_use → tool_result → thinking → text); preserving its exact
+ *      shape end-to-end is how we kill the cache regression.
+ *   3. Converting Anthropic blocks → OpenAI messages is straightforward
+ *      and contained inside the OpenAI adapter.
+ *
+ * The "thinking" block's `signature` is opaque bytes from Anthropic.
+ * Replay across turns is verbatim — we never inspect, regenerate, or
+ * normalize it. (This was a recurring Rust bug surface.)
+ */
+
+import type { ContentBlock } from "../engine/types.ts";
+
+export interface ToolDef {
+  name: string;
+  description: string;
+  /** JSON Schema for the tool's input. */
+  inputSchema: Record<string, unknown>;
+}
+
+/** One turn in the message array sent to the provider. */
+export interface TurnMessage {
+  role: "user" | "assistant";
+  content: ContentBlock[];
+}
+
+export interface ThinkingConfig {
+  /** When false, request goes out without any thinking config. */
+  enabled: boolean;
+  /** Anthropic budget_tokens (when reasoning_effort is not "adaptive"). */
+  budgetTokens?: number;
+  /**
+   * Anthropic reasoning_effort. "adaptive" enables Claude's adaptive
+   * thinking (no fixed budget); other values map to fixed budgets.
+   * "low" | "medium" | "high" | "xhigh" | "max" | "adaptive".
+   */
+  effort?: string;
+}
+
+export interface ChatRequest {
+  /** System prompt as a single string — adapter wraps it into blocks. */
+  system: string;
+  messages: TurnMessage[];
+  tools: ToolDef[];
+  thinking: ThinkingConfig;
+  /** Empty string disables caching; otherwise a TTL like "1h" / "5m". */
+  cacheTtl: string;
+  /** Model id sent on the wire (e.g. "anthropic/claude-haiku-4.5"). */
+  modelId: string;
+  /** Bearer credential — adapter knows how to apply it (api-key vs Authorization). */
+  apiKey: string;
+  /** Provider base URL override (e.g. https://openrouter.ai/api/v1). */
+  baseUrl?: string;
+  maxTokens: number;
+  temperature?: number;
+  topP?: number;
+}
+
+export interface UsageStats {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+export type ChatEvent =
+  | { kind: "text_delta"; text: string }
+  | { kind: "thinking_delta"; text: string }
+  | { kind: "tool_use_start"; id: string; name: string }
+  | { kind: "tool_use_input_delta"; id: string; partial_json: string }
+  | { kind: "tool_use_done"; id: string }
+  | {
+      kind: "done";
+      /** Final assistant content blocks, in order. */
+      content: ContentBlock[];
+      /** "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "refusal" */
+      stopReason: string;
+      usage: UsageStats;
+    };
+
+export interface ProviderClient {
+  /** Async iterator over streaming events. Caller must consume until "done". */
+  stream(req: ChatRequest): AsyncIterable<ChatEvent>;
+}
