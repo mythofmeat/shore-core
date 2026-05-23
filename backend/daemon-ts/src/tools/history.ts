@@ -16,10 +16,10 @@
  * just search the active window.
  */
 
-import fs from "node:fs";
 import path from "node:path";
 
-import { loadActiveMessages, normalizeMessage } from "../engine/messages.ts";
+import { loadActiveMessages } from "../engine/messages.ts";
+import { SegmentReader } from "../engine/segments.ts";
 import type { Message, MessageAlternative } from "../engine/types.ts";
 
 import type { ToolContext, ToolHandler } from "./registry.ts";
@@ -31,92 +31,6 @@ const EXCERPT_CHARS = 360;
 
 export const CONVERSATION_SEARCH_DESCRIPTION =
   "Search your own conversation history, including compacted older segments and the active conversation window. Use this when the user asks what you discussed before, when you need to verify a past exchange, when you need messages from a specific time range, or when the answer may be in the transcript rather than in curated memory files. Provide `query` for keyword search, `start_time` and/or `end_time` for an inclusive RFC3339 time range, or combine them to narrow keyword matches to a window. Returns matching messages with role, timestamp, source, and a short excerpt. Excerpts are clipped — when the answer is non-trivial, follow up with another `conversation_search` for adjacent terms/time windows or `file_search`/`read` against memory to get the full picture.";
-
-// ---------------------------------------------------------------------------
-// Segment manifest (a slim port of SegmentReader in engine/segments.rs)
-// ---------------------------------------------------------------------------
-
-interface SegmentEntry {
-  file: string;
-  message_count: number;
-  compacted_at: string;
-}
-
-interface CompactionManifest {
-  segments: SegmentEntry[];
-  total_compacted_messages: number;
-}
-
-function loadCompactionManifest(characterDataDir: string): CompactionManifest {
-  const manifestPath = path.join(characterDataDir, "compaction.json");
-  let content: string;
-  try {
-    content = fs.readFileSync(manifestPath, "utf8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      return { segments: [], total_compacted_messages: 0 };
-    }
-    throw new ToolError("Io", (e as Error).message);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch (e) {
-    throw new ToolError(
-      "Io",
-      `failed to parse compaction.json: ${(e as Error).message}`,
-    );
-  }
-  const obj = (parsed ?? {}) as Record<string, unknown>;
-  const segs = Array.isArray(obj["segments"]) ? obj["segments"] : [];
-  const total =
-    typeof obj["total_compacted_messages"] === "number"
-      ? (obj["total_compacted_messages"] as number)
-      : 0;
-  return {
-    segments: segs.map((s) => {
-      const e = (s ?? {}) as Record<string, unknown>;
-      return {
-        file: typeof e["file"] === "string" ? (e["file"] as string) : "",
-        message_count:
-          typeof e["message_count"] === "number"
-            ? (e["message_count"] as number)
-            : 0,
-        compacted_at:
-          typeof e["compacted_at"] === "string"
-            ? (e["compacted_at"] as string)
-            : "",
-      };
-    }),
-    total_compacted_messages: total,
-  };
-}
-
-function loadSegmentMessages(
-  characterDataDir: string,
-  segmentFile: string,
-): Message[] {
-  const full = path.join(characterDataDir, "segments", segmentFile);
-  let content: string;
-  try {
-    content = fs.readFileSync(full, "utf8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw new ToolError("Io", (e as Error).message);
-  }
-  const out: Message[] = [];
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-    try {
-      const raw = JSON.parse(trimmed) as Record<string, unknown>;
-      out.push(normalizeMessage(raw));
-    } catch {
-      // Skip malformed lines silently — mirrors Rust's tolerant load.
-    }
-  }
-  return out;
-}
 
 // ---------------------------------------------------------------------------
 // Filters
@@ -353,11 +267,20 @@ export const conversationSearchHandler: ToolHandler = {
     const results: Array<Record<string, unknown>> = [];
     let searched = 0;
 
-    const manifest = loadCompactionManifest(characterDataDir);
-    for (let i = 0; i < manifest.segments.length; i++) {
+    let segments: SegmentReader;
+    try {
+      segments = SegmentReader.load(characterDataDir);
+    } catch (e) {
+      throw new ToolError("Io", (e as Error).message);
+    }
+    for (let i = 0; i < segments.segmentCount(); i++) {
       if (results.length >= maxResults) break;
-      const seg = manifest.segments[i]!;
-      const msgs = loadSegmentMessages(characterDataDir, seg.file);
+      let msgs: Message[];
+      try {
+        msgs = segments.readSegment(i);
+      } catch (e) {
+        throw new ToolError("Io", (e as Error).message);
+      }
       searched += msgs.length;
       pushMatches(results, msgs, `segment:${i}`, filters, maxResults, stats);
     }

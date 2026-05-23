@@ -22,6 +22,8 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import { queueDeferredEdit } from "../memory/deferred_edits.ts";
+
 import {
   displayPathFor,
   isPromptVisiblePath,
@@ -84,12 +86,35 @@ function requireStringField(input: unknown, field: string): string {
   return v;
 }
 
+/**
+ * Decorate a write/edit result for prompt-visible files AND queue the
+ * deferred edit. The queue entry is what `applyDeferredEdits` consumes at
+ * the next compaction boundary to refresh the active prompt snapshot.
+ *
+ * No-op for paths that aren't prompt-visible (returns base unchanged).
+ * Queue-write failures are logged but don't fail the tool call — the
+ * file edit already succeeded, and the operator can recover by editing
+ * MEMORY.md/etc. directly. Mirrors Rust's `ContextToolContext::defer_edit`
+ * warn-and-continue behavior.
+ */
 function decorateForPromptVisible(
   pathStr: string,
   base: Record<string, unknown>,
+  ctx: ToolContext,
 ): Record<string, unknown> {
   const deferredPath = normalizePromptVisiblePath(pathStr);
   if (deferredPath === undefined) return base;
+
+  if (ctx.characterDataDir.length > 0) {
+    try {
+      queueDeferredEdit(ctx.characterDataDir, pathStr);
+    } catch (e) {
+      console.warn(
+        `[deferred_edits] failed to queue ${pathStr}: ${(e as Error).message}`,
+      );
+    }
+  }
+
   const out = { ...base };
   out["prompt_visible_file"] = true;
   if (normalizeProtectedPath(pathStr) !== undefined) {
@@ -214,7 +239,7 @@ export const writeHandler: ToolHandler = {
       path: pathStr,
       bytes_written: Buffer.byteLength(content, "utf8"),
     };
-    return JSON.stringify(decorateForPromptVisible(pathStr, base));
+    return JSON.stringify(decorateForPromptVisible(pathStr, base, ctx));
   },
 };
 
@@ -311,7 +336,7 @@ export const editHandler: ToolHandler = {
       path: pathStr,
       replacements_made: replacementsMade,
     };
-    return JSON.stringify(decorateForPromptVisible(pathStr, base));
+    return JSON.stringify(decorateForPromptVisible(pathStr, base, ctx));
   },
 };
 

@@ -231,6 +231,64 @@ describe("write/edit on prompt-visible files", () => {
     expect(r.prompt_visible_file).toBeUndefined();
     expect(r.deferred_until_compaction).toBeUndefined();
   });
+
+  it("writing SOUL.md appends an entry to deferred_edits.jsonl", async () => {
+    const { data, ctx } = setup();
+    await writeHandler.execute(
+      { path: "SOUL.md", content: "I am the soul" },
+      ctx,
+    );
+    const queue = fs
+      .readFileSync(path.join(data, "deferred_edits.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(queue.length).toBe(1);
+    expect(queue[0]!.path).toBe("SOUL.md");
+    expect(typeof queue[0]!.timestamp).toBe("string");
+  });
+
+  it("writing MEMORY.md creates the active_prompt sentinel and queues", async () => {
+    const { data, ctx } = setup();
+    await writeHandler.execute(
+      { path: "MEMORY.md", content: "memory index" },
+      ctx,
+    );
+    expect(fs.existsSync(path.join(data, "deferred_edits.jsonl"))).toBe(true);
+    // Zero-byte sentinel that keeps the un-applied canonical from leaking
+    // into loadMemoryIndex.
+    const sentinel = path.join(data, "active_prompt", "MEMORY.md");
+    expect(fs.existsSync(sentinel)).toBe(true);
+    expect(fs.statSync(sentinel).size).toBe(0);
+  });
+
+  it("editing SOUL.md (after a write) appends a second queue entry", async () => {
+    const { data, ctx } = setup();
+    await writeHandler.execute(
+      { path: "SOUL.md", content: "first" },
+      ctx,
+    );
+    await editHandler.execute(
+      { path: "SOUL.md", edits: [{ old_string: "first", new_string: "second" }] },
+      ctx,
+    );
+    const queue = fs
+      .readFileSync(path.join(data, "deferred_edits.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .filter((l) => l.length > 0);
+    expect(queue.length).toBe(2);
+  });
+
+  it("ordinary writes do NOT append to deferred_edits.jsonl", async () => {
+    const { data, ctx } = setup();
+    await writeHandler.execute(
+      { path: "notes/ideas.md", content: "thoughts" },
+      ctx,
+    );
+    expect(fs.existsSync(path.join(data, "deferred_edits.jsonl"))).toBe(false);
+  });
 });
 
 describe("delete", () => {

@@ -350,40 +350,76 @@ here as a placeholder so the original numbering still maps cleanly.)
 
 ### Phase 6: memory + dreaming + compaction
 
-- Markdown memory under `characters/<C>/workspace/memory/`.
-- Dreaming reorganizes `MEMORY.md`; compaction adds carry-forward
-  throughlines.
-- **PORT with care.** This subsystem has subtleties (single-flight locks,
-  throughline carry-forward, the compaction lock fix in #30). Read the
-  existing code carefully and write tests that pin the observable
-  behavior before porting. *Do not* "rewrite from scratch" the memory
-  subsystem — transcribe it.
-- Semantic search via embeddings (HTTP, no language preference).
-- **Wire up the tool-side fallbacks landed in 4c.2:**
-  - `file_search` currently falls back to lexical with
-    `semantic_unavailable: "embedder not configured"` whenever
-    `mode` is `hybrid` or `vector`. When the embedder lands, plumb
-    it (plus the workspace index path + retrieval config) onto
-    `ToolContext` and verify hybrid/vector mode actually engages
-    against a real index. Add live tests that match the Rust
-    `search_with_path_runs_hybrid_scoped_to_subtree` shape.
-  - `conversation_search` already reads `compaction.json` +
-    `segments/<file>.jsonl` if they exist, so the read path is
-    ready. Once the real compactor starts writing those files,
-    re-run `tests/tools_history.test.ts` against the production
-    segment shape to catch any field drift.
-  - `write` / `edit` on prompt-visible paths (SOUL/USER/AGENTS/
-    TOOLS/HEARTBEAT/MEMORY) already emit the
-    `deferred_until_compaction` markers in the result, but the
-    queue side (`deferred_edits.jsonl`) isn't wired — TS daemon
-    doesn't append. Phase 6 needs to (a) start writing those queue
-    entries from the workspace handlers AND (b) consume them at
-    compaction time. Add a unit test that asserts the queue file
-    contains the expected entry after a write to `SOUL.md`.
-- **Exit criterion:** trigger a compaction via the same conditions that
-  trigger it in the Rust daemon. Resulting `MEMORY.md` is byte-identical
-  for a deterministic test input. AND the three tool integrations above
-  are exercised in tests.
+Split into 6a (memory primitives + deferred-edits queue), 6b (compaction),
+6c (workspace_index + embedder + hybrid_search), 6d (dreaming). Each
+sub-phase ends with a parity check.
+
+**PORT with care.** This subsystem has subtleties (single-flight locks,
+throughline carry-forward, the compaction lock fix in #30, the
+MEMORY.md active-snapshot sentinel that keeps un-applied edits out of
+the prompt). Read the existing code carefully and write tests that pin
+the observable behavior before porting. *Do not* "rewrite from
+scratch" the memory subsystem — transcribe it.
+
+**6a — memory primitives + deferred-edits queue (done, 2026-05-24):**
+
+- `src/memory/markdown_store.ts` ports `MarkdownMemoryStore`:
+  recursive list (excludes `.dreams/` / `dreaming/` / top-level
+  `DREAMS.md` / `MEMORY.md`), write/read/delete with empty-parent
+  cleanup, ranked text search, traversal + symlink-escape rejection.
+- `src/memory/deferred_edits.ts` ports the protected-file machinery:
+  active-prompt snapshot under `<characterDataDir>/active_prompt/`,
+  `queueDeferredEdit` → `deferred_edits.jsonl`, `applyDeferredEdits`
+  refreshes the snapshot and clears the queue, MEMORY.md zero-byte
+  sentinel blocks live activation. Re-exports the normalize* helpers
+  from `tools/paths.ts` so the conceptual home matches Rust without
+  duplicating the impl. Character-dir helpers
+  (`characterConfigDir`/`characterWorkspaceDir`/`characterMemoryDir`/
+  `characterWorkspaceFile`) inlined here rather than scaffolding a
+  shore-config-style path module — promote to a shared location if
+  other modules grow to need them.
+- `src/engine/segments.ts` ports `SegmentReader`. `tools/history.ts`
+  was carrying inline manifest+segment readers; refactored to delegate.
+  The handler now propagates segment-read errors as `ToolError("Io",
+  …)` — matches Rust, which uses `serde_json::from_str` straight
+  through; the previous TS tolerance was wrong.
+- `tools/workspace.ts` write/edit handlers now call `queueDeferredEdit`
+  via `decorateForPromptVisible(_, _, ctx)`. Queue failures log + continue
+  (the file write already succeeded); mirrors Rust's
+  `ContextToolContext::defer_edit` warn-and-continue.
+- Tests: `markdown_store.test.ts` (11), `deferred_edits.test.ts` (11),
+  `segments.test.ts` (4), plus 4 new cases in `tools_workspace.test.ts`
+  pinning the queue side effects. 211 pass / 0 fail across the suite;
+  parity harness still green.
+
+What 6a does NOT do:
+- No write side of compaction yet — `apply_deferred_edits` exists but
+  no caller invokes it (6b will, at the compaction boundary).
+- The `loadMemoryIndex` / active-prompt snapshot helpers aren't yet
+  wired into `engine/context.ts`'s prompt assembly — that still reads
+  workspace MEMORY.md directly. Wiring lands when compaction starts
+  producing snapshots in 6b; until then, direct read is correct.
+- Embedder/hybrid_search still falls back to lexical (6c).
+
+**6b — compaction (pending):**
+
+- LLM-driven memory-write loop, archive-and-retain into `segments/`.
+- Single-flight `try_begin_compaction` keyed on character data root.
+- IdleTimer + activity gating, force-compact threshold.
+- MEMORY.md throughline carry-forward.
+- Fire `applyDeferredEdits` at the compaction boundary so 6a's queue
+  entries actually activate.
+- **Exit criterion:** byte-identical MEMORY.md for a deterministic test
+  input.
+
+**6c — workspace_index + embedder + hybrid_search (pending):**
+
+- Wire `file_search` hybrid/vector modes against a real embedder hook
+  on `ToolContext`. Live test gated on an embedder endpoint.
+
+**6d — dreaming (pending):**
+
+- `run_librarian_sweep` port + `dreams_log` audit trail.
 
 ### Phase 7: ledger + cache forensics
 
