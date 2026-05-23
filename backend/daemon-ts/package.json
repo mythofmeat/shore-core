@@ -8,7 +8,12 @@
     "start": "bun run src/main.ts",
     "build": "bun build src/main.ts --compile --outfile dist/shore-daemon",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "smoketest": "bun scripts/handshake-smoketest.ts",
+    "smoketest:compiled": "bun scripts/handshake-smoketest.ts ./dist/shore-daemon",
+    "parity": "bun scripts/parity-check.ts parity-traces/handshake-empty.jsonl",
+    "parity:compiled": "bun scripts/parity-check.ts parity-traces/handshake-empty.jsonl ./dist/shore-daemon",
+    "capture-trace": "bun scripts/capture-rust-trace.ts /usr/bin/shore-daemon"
   },
   "devDependencies": {
     "@types/bun": "latest",

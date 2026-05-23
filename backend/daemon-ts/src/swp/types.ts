@@ -70,14 +70,22 @@ export interface ServerHello {
   characters?: CharacterInfo[];
 }
 
+/**
+ * Per `core/protocol/src/server_msg.rs`:
+ *   - `config` is always emitted (default `null`); the Rust daemon populates
+ *     it with `{active_model, private}`.
+ *   - `active_start` skip-if-zero.
+ *   - `selected_character` skip-if-none.
+ *   - `revision` always emitted (default 0).
+ */
 export interface ServerHistory {
   type: "history";
   rid?: string;
   messages: unknown[];
   active_start?: number;
-  config?: unknown;
+  config: unknown;
   selected_character?: string;
-  revision?: number;
+  revision: number;
 }
 
 export interface ServerShutdown {

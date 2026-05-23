@@ -70,7 +70,8 @@ Rust daemon. We don't ship the TS daemon until the final cutover phase.
 ### Phase 1: distribution story
 
 - Validate `bun build --compile` produces a single-binary `shore-daemon`.
-- Validate it runs on Arch (PKGBUILD-friendly) and macOS.
+- Validate it runs on Arch (PKGBUILD-friendly). Linux/x86_64 only — no Mac
+  to test against.
 - Confirm size, startup time, and dynamic-lib dependencies are acceptable.
 - **Exit criterion:** the compiled binary passes Phase 0's handshake test.
 

@@ -1,0 +1,3 @@
+{"dir":"s2c","frame":{"type":"hello","v":1,"server_name":"shore-daemon","characters":[]}}
+{"dir":"c2s","frame":{"type":"hello","client_type":"cli","client_name":"rust-trace-capture"}}
+{"dir":"s2c","frame":{"type":"history","messages":[],"config":{"active_model":null,"private":false},"revision":0}}

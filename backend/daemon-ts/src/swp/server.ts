@@ -141,10 +141,14 @@ export class SwpServer {
       this.opts.onClient?.(msg.client_type, msg.client_name);
 
       // Step 3 of the handshake: send empty history snapshot.
-      // Phase 0 has no engine, so the snapshot is always empty.
+      // Phase 0/1 has no engine. The `config` object mirrors what the Rust
+      // daemon's `handshake.rs::history_config_snapshot` emits when no
+      // character is selected — null active_model, private=false. Keeping
+      // the field shape matched lets parity-traces diff cleanly.
       const history: ServerMessage = {
         type: "history",
         messages: [],
+        config: { active_model: null, private: false },
         revision: 0,
       };
       this.sendFrame(sock, history);
