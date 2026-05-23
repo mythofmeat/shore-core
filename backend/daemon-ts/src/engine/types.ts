@@ -1,0 +1,48 @@
+/**
+ * Wire-shape types mirroring `core/protocol/src/types.rs`.
+ *
+ * `Message` is the canonical form post-normalize: `content` is always
+ * present (derived from blocks or kept as-is for legacy data),
+ * `images` and `content_blocks` arrays are always present (possibly
+ * empty), and `alt_*` fields are present when the message has stored
+ * alternatives.
+ *
+ * Serialization to JSON for the wire happens via `JSON.stringify` on
+ * these objects directly; skip-if-empty / skip-if-none parity is handled
+ * by omitting the field from the object rather than emitting `null`.
+ */
+
+export type Role = "user" | "assistant" | "system";
+
+export interface ImageRef {
+  path: string;
+  caption?: string;
+  /** Base64 image bytes, populated only for wire snapshots (not on disk). */
+  data?: string;
+}
+
+export type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "thinking"; thinking: string; signature?: string; details?: unknown }
+  | { type: "tool_use"; id: string; name: string; input: unknown }
+  | { type: "redacted_thinking"; data: string }
+  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean };
+
+export interface MessageAlternative {
+  content: string;
+  images: ImageRef[];
+  content_blocks: ContentBlock[];
+  timestamp: string;
+}
+
+export interface Message {
+  msg_id: string;
+  role: Role;
+  content: string;
+  images: ImageRef[];
+  content_blocks: ContentBlock[];
+  alt_index?: number;
+  alt_count?: number;
+  alternatives?: MessageAlternative[];
+  timestamp: string;
+}

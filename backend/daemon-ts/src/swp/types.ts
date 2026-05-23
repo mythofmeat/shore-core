@@ -58,10 +58,7 @@ export type ClientMessage = ClientHello | ClientMessageBody | ClientRegen | Clie
 
 // ── Server → Client ─────────────────────────────────────────────────
 
-export interface CharacterInfo {
-  name: string;
-  // Other fields exist; we'll add them as needed in later phases.
-}
+import type { CharacterInfo } from "../characters/registry.ts";
 
 export interface ServerHello {
   type: "hello";

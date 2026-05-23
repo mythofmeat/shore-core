@@ -1,32 +1,42 @@
 /**
  * SWP server — newline-delimited JSON over TCP.
  *
- * Phase 0 scope: accept connection, perform the 3-step handshake
- * (server-hello → client-hello → history-snapshot), then idle until the
- * client disconnects. No engine, no LLM, no real messages.
+ * Owns the handshake (server-hello → client-hello → history-snapshot) and
+ * the per-client frame loop. Application state (characters, engine,
+ * config) lives behind the `HandshakeProvider` callback so the transport
+ * stays decoupled from Phase-N business logic.
  */
 
 import type { Socket, TCPSocketListener } from "bun";
 
+import type { CharacterInfo } from "../characters/registry.ts";
 import { MAX_WIRE_MESSAGE_SIZE, SWP_V1 } from "./types.ts";
-import type { ClientMessage, ServerMessage } from "./types.ts";
+import type { ClientMessage, ServerHistory, ServerMessage } from "./types.ts";
 
 interface SessionState {
-  /** Accumulated bytes for the in-progress frame. */
   buf: Buffer;
-  /** Has the client sent ClientHello yet? */
   hello: boolean;
 }
 
+/**
+ * Per-connection callbacks. The hello snapshot is taken on every new
+ * connection (so a re-registered character appears the next time a CLI
+ * connects); the history snapshot is taken after the client tells us
+ * which character it wants.
+ *
+ * Mirror of `backend/daemon/src/handshake.rs::HandshakeProvider`.
+ */
+export interface HandshakeProvider {
+  helloSnapshot(): { characters: CharacterInfo[] };
+  historySnapshot(selectedCharacter: string | undefined): Omit<ServerHistory, "type" | "rid">;
+}
+
 export interface SwpServerOptions {
-  /** Address to bind. `"0.0.0.0"` for any, `"127.0.0.1"` for loopback. */
   host: string;
-  /** Port to bind. `0` to let the OS pick. */
   port: number;
-  /** Server name advertised in ServerHello. */
   serverName: string;
-  /** Called when a client successfully completes the handshake. */
-  onClient?: (clientType: string, clientName: string) => void;
+  handshake: HandshakeProvider;
+  onClient?: (clientType: string, clientName: string, character: string | undefined) => void;
 }
 
 export class SwpServer {
@@ -35,7 +45,6 @@ export class SwpServer {
 
   constructor(private readonly opts: SwpServerOptions) {}
 
-  /** Start listening. Returns the resolved listen address. */
   start(): { host: string; port: number } {
     const server = Bun.listen<SessionState>({
       hostname: this.opts.host,
@@ -51,11 +60,8 @@ export class SwpServer {
     return { host: server.hostname, port: server.port };
   }
 
-  /** Stop accepting new connections and close all open sessions. */
   stop(): void {
-    for (const sock of this.clients) {
-      sock.end();
-    }
+    for (const sock of this.clients) sock.end();
     this.clients.clear();
     this.server?.stop(true);
     this.server = undefined;
@@ -67,20 +73,19 @@ export class SwpServer {
     sock.data = { buf: Buffer.alloc(0), hello: false };
     this.clients.add(sock);
 
-    // Step 1 of the handshake: server sends Hello first.
+    const snapshot = this.opts.handshake.helloSnapshot();
     const hello: ServerMessage = {
       type: "hello",
       v: SWP_V1,
       server_name: this.opts.serverName,
-      // characters list is empty until Phase 2 wires up config + workspace
-      // discovery. Empty is wire-valid.
-      characters: [],
+      characters: snapshot.characters,
     };
     this.sendFrame(sock, hello);
   }
 
   private onData(sock: Socket<SessionState>, chunk: Buffer): void {
-    sock.data.buf = sock.data.buf.length === 0 ? Buffer.from(chunk) : Buffer.concat([sock.data.buf, chunk]);
+    sock.data.buf =
+      sock.data.buf.length === 0 ? Buffer.from(chunk) : Buffer.concat([sock.data.buf, chunk]);
 
     if (sock.data.buf.length > MAX_WIRE_MESSAGE_SIZE) {
       this.sendFrame(sock, {
@@ -93,7 +98,7 @@ export class SwpServer {
     }
 
     while (true) {
-      const nl = sock.data.buf.indexOf(0x0a); // '\n'
+      const nl = sock.data.buf.indexOf(0x0a);
       if (nl < 0) return;
       const line = sock.data.buf.subarray(0, nl).toString("utf8");
       sock.data.buf = sock.data.buf.subarray(nl + 1);
@@ -138,19 +143,13 @@ export class SwpServer {
         return;
       }
       sock.data.hello = true;
-      this.opts.onClient?.(msg.client_type, msg.client_name);
 
-      // Step 3 of the handshake: send empty history snapshot.
-      // Phase 0/1 has no engine. The `config` object mirrors what the Rust
-      // daemon's `handshake.rs::history_config_snapshot` emits when no
-      // character is selected — null active_model, private=false. Keeping
-      // the field shape matched lets parity-traces diff cleanly.
-      const history: ServerMessage = {
-        type: "history",
-        messages: [],
-        config: { active_model: null, private: false },
-        revision: 0,
-      };
+      const helloSnapshot = this.opts.handshake.helloSnapshot();
+      const selected = resolveHandshakeCharacter(msg.character, helloSnapshot.characters);
+      this.opts.onClient?.(msg.client_type, msg.client_name, selected);
+
+      const historyBody = this.opts.handshake.historySnapshot(selected);
+      const history: ServerMessage = { type: "history", ...historyBody };
       this.sendFrame(sock, history);
       return;
     }
@@ -165,13 +164,10 @@ export class SwpServer {
       return;
     }
 
-    // Phase 0: we accept frames but don't act on them. Echo a stub error
-    // using one of the protocol's defined error codes so the CLI doesn't
-    // reject our response as a deserialization failure.
     const errMsg: ServerMessage = {
       type: "error",
       code: "internal_error",
-      message: `shore-daemon-ts is in Phase 0 of the rewrite (REWRITE.md) and does not implement ${msg.type} yet`,
+      message: `shore-daemon-ts does not implement ${msg.type} yet (see REWRITE.md)`,
     };
     const r = rid(msg);
     if (r !== undefined) errMsg.rid = r;
@@ -182,6 +178,26 @@ export class SwpServer {
     const line = JSON.stringify(msg) + "\n";
     sock.write(line);
   }
+}
+
+/**
+ * Mirror of `swp-server::resolve_handshake_character`:
+ *   - requested name that exists → that name
+ *   - requested name that doesn't exist → none (warn)
+ *   - no request + exactly one character → auto-select that one
+ *   - no request + zero or >1 characters → none
+ */
+function resolveHandshakeCharacter(
+  requested: string | undefined,
+  characters: CharacterInfo[],
+): string | undefined {
+  if (requested !== undefined) {
+    if (characters.some((c) => c.name === requested)) return requested;
+    console.warn(`[swp] ignoring unknown connect-time character: ${requested}`);
+    return undefined;
+  }
+  if (characters.length === 1) return characters[0]!.name;
+  return undefined;
 }
 
 function rid(msg: ClientMessage): string | undefined {

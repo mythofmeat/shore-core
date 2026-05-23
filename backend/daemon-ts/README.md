@@ -3,10 +3,18 @@
 TypeScript reimplementation of `shore-daemon`. See `../../REWRITE.md` for the
 plan.
 
-## Current phase: 1 — distribution story
+## Current phase: 2 — config + workspace read
 
-Phase 0 (scaffold + handshake) is done. Phase 1 validates that
-`bun build --compile` produces an acceptable single-binary distribution.
+Phases 0 (scaffold), 1 (compile + parity harness), and the handshake half
+of Phase 2 are done. Selecting a character now returns a real `History`
+snapshot with messages loaded from `active.jsonl`, normalized + tool-loop
+merged, byte-matching the Rust daemon for the fixture in
+`parity-traces/fixtures/handshake-character/`.
+
+Still on Phase 2's "everything the handshake touches" list: the full model
+catalog (category → provider → model hierarchy) so `active_model` resolves
+to a real qualified name when defaults aren't set; image-data embedding;
+archive segments (display history shows them, handshake doesn't).
 
 ## Run
 

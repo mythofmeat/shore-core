@@ -2,14 +2,18 @@
 /**
  * shore-daemon-ts entry point.
  *
- * Phase 0: start the SWP server, register in instances.json, idle until
- * SIGINT/SIGTERM. No engine, no LLM, no real messages — just enough to
- * pass the handshake with the existing Rust CLI.
+ * Phase 2: resolve dirs, load config, discover characters, build the
+ * handshake provider, then start the SWP server. No append/regen/LLM
+ * yet — that's Phase 3+.
  */
 
+import { characterMetadata, discoverCharacters } from "./characters/registry.ts";
+import { loadConfig, firstChatModelQualifiedName, type LoadedConfig } from "./config/loader.ts";
+import { engineForCharacter } from "./engine/engine.ts";
 import { resolveShoreDirs } from "./runtime/dirs.ts";
 import { Registry } from "./runtime/registry.ts";
 import { SwpServer } from "./swp/server.ts";
+import type { HandshakeProvider } from "./swp/server.ts";
 
 interface ParsedArgs {
   addr: string;
@@ -92,12 +96,18 @@ async function main(): Promise<void> {
   const dirs = resolveShoreDirs();
   const id = instanceId ?? generateInstanceId();
 
+  const config = loadConfig(dirs.config);
+  const handshake = buildHandshakeProvider(config, dirs.config, dirs.data);
+
   const server = new SwpServer({
     host,
     port,
     serverName: "shore-daemon-ts",
-    onClient: (clientType, clientName) => {
-      console.log(`[shore-daemon-ts] client connected: type=${clientType} name=${clientName}`);
+    handshake,
+    onClient: (clientType, clientName, character) => {
+      console.log(
+        `[shore-daemon-ts] client connected: type=${clientType} name=${clientName} character=${character ?? "<none>"}`,
+      );
     },
   });
   const listen = server.start();
@@ -131,6 +141,48 @@ async function main(): Promise<void> {
   process.on("SIGHUP", () => shutdown("SIGHUP"));
 
   // Idle. Bun keeps the event loop alive while the TCP listener is open.
+}
+
+/**
+ * Build the handshake provider that mirrors
+ * `backend/daemon/src/handshake.rs::build_handshake_provider`.
+ *
+ * Re-walks character discovery on every connect so newly-added characters
+ * appear without a daemon restart. History snapshot returns the no-engine
+ * shape when no character is selected (matching Rust's `None => HistorySnapshot`).
+ */
+function buildHandshakeProvider(
+  config: LoadedConfig,
+  configDir: string,
+  dataDir: string,
+): HandshakeProvider {
+  const activeModel = (): string | null =>
+    config.app.defaults.model ?? firstChatModelQualifiedName(config) ?? null;
+
+  return {
+    helloSnapshot() {
+      const names = discoverCharacters(configDir);
+      return { characters: names.map((n) => characterMetadata(configDir, n)) };
+    },
+    historySnapshot(selectedCharacter) {
+      const baseConfig = { active_model: activeModel(), private: false };
+      if (selectedCharacter === undefined) {
+        return {
+          messages: [],
+          config: baseConfig,
+          revision: 0,
+        };
+      }
+      const snap = engineForCharacter(dataDir, selectedCharacter).historySnapshot();
+      return {
+        messages: snap.messages,
+        ...(snap.active_start !== 0 ? { active_start: snap.active_start } : {}),
+        config: baseConfig,
+        selected_character: snap.selected_character,
+        revision: snap.revision,
+      };
+    },
+  };
 }
 
 await main();

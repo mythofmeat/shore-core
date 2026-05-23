@@ -3,35 +3,56 @@
  * Capture a handshake trace from the Rust shore-daemon for parity baseline.
  *
  * Usage:
- *   bun scripts/capture-rust-trace.ts <rust-daemon-path> <out-file>
+ *   bun scripts/capture-rust-trace.ts <rust-daemon-path> <out-file> \
+ *     [--fixture <dir>] [--character <name>]
  *
- * Spawns the Rust daemon against an empty SHORE_DATA_DIR/SHORE_CONFIG_DIR,
- * connects, performs a minimal SWP handshake, and writes both directions of
- * the exchange to <out-file> as JSONL with a `dir` field ("s2c" or "c2s").
+ *   --fixture <dir>   Path with `config/` and `data/` subdirs to populate
+ *                     SHORE_CONFIG_DIR / SHORE_DATA_DIR. Use the fixture
+ *                     in-place (no copy) — the daemon shouldn't write to it
+ *                     during a handshake-only run.
+ *   --character <n>   Send `character: "<n>"` in ClientHello.
  *
- * These traces are the source of truth for "did the TS daemon emit the same
- * bytes" parity checks in later phases. The empty-character / empty-history
- * case is Phase 0's exit criterion baseline.
+ * Writes both directions of the SWP exchange to <out-file> as JSONL with a
+ * `dir` field ("s2c" or "c2s"). These traces are the source of truth for
+ * "did the TS daemon emit the same bytes" parity checks in later phases.
  */
 
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 
-const daemonPath = process.argv[2];
-const outPath = process.argv[3];
+const args = process.argv.slice(2);
+const daemonPath = args[0];
+const outPath = args[1];
+let fixtureDir: string | undefined;
+let character: string | undefined;
+for (let i = 2; i < args.length; i++) {
+  const a = args[i];
+  if (a === "--fixture") fixtureDir = resolvePath(args[++i]!);
+  else if (a === "--character") character = args[++i];
+  else {
+    console.error(`unknown arg: ${a}`);
+    process.exit(2);
+  }
+}
 if (!daemonPath || !outPath) {
-  console.error("usage: capture-rust-trace.ts <rust-daemon-path> <out-file>");
+  console.error(
+    "usage: capture-rust-trace.ts <rust-daemon-path> <out-file> [--fixture <dir>] [--character <name>]",
+  );
   process.exit(2);
 }
 
-const tmp = mkdtempSync(join(tmpdir(), "shore-rust-trace-"));
+const runtimeDir = mkdtempSync(join(tmpdir(), "shore-rust-trace-runtime-"));
+const cacheDir = mkdtempSync(join(tmpdir(), "shore-rust-trace-cache-"));
+const configDir = fixtureDir ? join(fixtureDir, "config") : mkdtempSync(join(tmpdir(), "shore-rust-trace-config-"));
+const dataDir = fixtureDir ? join(fixtureDir, "data") : mkdtempSync(join(tmpdir(), "shore-rust-trace-data-"));
+
 const env = {
   ...process.env,
-  SHORE_RUNTIME_DIR: join(tmp, "runtime"),
-  SHORE_DATA_DIR: join(tmp, "data"),
-  SHORE_CONFIG_DIR: join(tmp, "config"),
-  SHORE_CACHE_DIR: join(tmp, "cache"),
+  SHORE_RUNTIME_DIR: runtimeDir,
+  SHORE_DATA_DIR: dataDir,
+  SHORE_CONFIG_DIR: configDir,
+  SHORE_CACHE_DIR: cacheDir,
 };
 
 const proc = Bun.spawn({
@@ -66,11 +87,12 @@ try {
   trace.push({ dir: "s2c", frame: hello });
 
   // 2) ClientHello
-  const clientHello = {
+  const clientHello: Record<string, unknown> = {
     type: "hello",
     client_type: "cli",
     client_name: "rust-trace-capture",
   };
+  if (character) clientHello["character"] = character;
   sock.write(JSON.stringify(clientHello) + "\n");
   trace.push({ dir: "c2s", frame: clientHello });
 

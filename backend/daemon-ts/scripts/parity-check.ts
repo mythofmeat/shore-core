@@ -1,21 +1,23 @@
 #!/usr/bin/env bun
 /**
- * Parity check: spawn the TS daemon, run the same handshake the trace was
- * captured from, diff the emitted server-to-client frames against the
- * baseline trace produced by `capture-rust-trace.ts`.
+ * Parity check: spawn the TS daemon, replay the captured client side of the
+ * trace, diff the emitted server-to-client frames against the baseline
+ * produced by `capture-rust-trace.ts`.
  *
  * Exits non-zero on any structural divergence. Differences in
  * `server_name` are expected (we want "shore-daemon-ts" vs "shore-daemon").
  *
  * Usage:
- *   bun scripts/parity-check.ts <baseline.jsonl> [<daemon-bin>]
+ *   bun scripts/parity-check.ts <baseline.jsonl> [<daemon-bin>] [--fixture <dir>]
  *
  *   daemon-bin defaults to running `bun src/main.ts`.
+ *   --fixture points SHORE_CONFIG_DIR / SHORE_DATA_DIR at <dir>/config and
+ *   <dir>/data (matches capture-rust-trace.ts).
  */
 
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 
 /**
  * Expected differences between the Rust daemon and the TS daemon that
@@ -27,12 +29,19 @@ const EXPECTED_DIFFS: Record<string, string[]> = {
   hello: ["server_name"],
 };
 
-const baselinePath = process.argv[2];
+const positional: string[] = [];
+let fixtureDir: string | undefined;
+for (let i = 2; i < process.argv.length; i++) {
+  const a = process.argv[i]!;
+  if (a === "--fixture") fixtureDir = resolvePath(process.argv[++i]!);
+  else positional.push(a);
+}
+const baselinePath = positional[0];
+const daemonBin = positional[1];
 if (!baselinePath) {
-  console.error("usage: parity-check.ts <baseline.jsonl> [<daemon-bin>]");
+  console.error("usage: parity-check.ts <baseline.jsonl> [<daemon-bin>] [--fixture <dir>]");
   process.exit(2);
 }
-const daemonBin = process.argv[3];
 const cmd: string[] = daemonBin ? [daemonBin] : ["bun", "src/main.ts"];
 
 const baseline = readFileSync(baselinePath, "utf8")
@@ -44,9 +53,9 @@ const tmp = mkdtempSync(join(tmpdir(), "shore-daemon-ts-parity-"));
 const env = {
   ...process.env,
   SHORE_RUNTIME_DIR: join(tmp, "runtime"),
-  SHORE_DATA_DIR: join(tmp, "data"),
-  SHORE_CONFIG_DIR: join(tmp, "config"),
   SHORE_CACHE_DIR: join(tmp, "cache"),
+  SHORE_CONFIG_DIR: fixtureDir ? join(fixtureDir, "config") : join(tmp, "config"),
+  SHORE_DATA_DIR: fixtureDir ? join(fixtureDir, "data") : join(tmp, "data"),
 };
 
 const proc = Bun.spawn({
