@@ -52,7 +52,8 @@ import type {
   ToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages";
 
-import type { ContentBlock } from "../../engine/types.ts";
+import type { ContentBlock, ImageRef } from "../../engine/types.ts";
+import { resolveImage } from "../images.ts";
 import type {
   ChatEvent,
   ChatRequest,
@@ -114,7 +115,10 @@ export class AnthropicProvider implements ProviderClient {
       if (req.topP !== undefined) params.top_p = req.topP;
     }
 
-    const stream = client.messages.stream(params);
+    const stream = client.messages.stream(
+      params,
+      req.signal ? { signal: req.signal } : undefined,
+    );
 
     // Per-block accumulators — keyed by block index from the SSE stream.
     const accum = new Map<number, AccumState>();
@@ -318,7 +322,11 @@ export function wrapInlineSystemInstruction(text: string): string {
 }
 
 /** Post-conversion turn — system role has been wrapped away. */
-type WireTurn = { role: "user" | "assistant"; content: ContentBlock[] };
+type WireTurn = {
+  role: "user" | "assistant";
+  content: ContentBlock[];
+  images?: ImageRef[];
+};
 
 /**
  * Convert `role:"system"` turns into wrapped `role:"user"` turns. Anthropic
@@ -333,7 +341,9 @@ export function convertInlineSystemMessages(turns: TurnMessage[]): WireTurn[] {
   const out: WireTurn[] = [];
   for (const turn of turns) {
     if (turn.role !== "system") {
-      out.push({ role: turn.role, content: turn.content.slice() });
+      const w: WireTurn = { role: turn.role, content: turn.content.slice() };
+      if (turn.images && turn.images.length > 0) w.images = turn.images.slice();
+      out.push(w);
       continue;
     }
     const text = turn.content
@@ -376,12 +386,40 @@ function buildMessages(
   }
 
   return turns.map((turn, i) => {
-    const content = turn.content.map((b) => toAnthropicBlockParam(b));
+    const imageBlocks = imagesToAnthropicBlocks(turn.images);
+    const content: ContentBlockParam[] = [
+      ...imageBlocks,
+      ...turn.content.map((b) => toAnthropicBlockParam(b)),
+    ];
     if (cacheControl && (i === stableIdx || i === lastIdx)) {
       applyMessageBreakpoint(content, cacheControl);
     }
     return { role: turn.role, content };
   });
+}
+
+function imagesToAnthropicBlocks(
+  images: ImageRef[] | undefined,
+): ContentBlockParam[] {
+  if (!images || images.length === 0) return [];
+  const out: ContentBlockParam[] = [];
+  for (const img of images) {
+    const resolved = resolveImage(img);
+    if (!resolved) continue;
+    out.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: resolved.mediaType as
+          | "image/png"
+          | "image/jpeg"
+          | "image/webp"
+          | "image/gif",
+        data: resolved.base64,
+      },
+    });
+  }
+  return out;
 }
 
 function applyMessageBreakpoint(

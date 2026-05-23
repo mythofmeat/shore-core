@@ -238,14 +238,26 @@ Not in 4b:
   assistant turn). First successful real-character generation from
   the TS daemon.
 
-Known gaps to close before 4c.2 (deliberate stubs, not deferred):
-  - `displayName` defaults to `$USER` — should read
-    `app.defaults.display_name` from config like Rust.
-  - `thinking` config hardcoded off — should flow through the
-    catalog (and accept the per-call `overrides` field).
-  - Image messages still ignored (`msg.images`, `msg.image_data`).
-  - SWP `regen` / `cancel` / `command` frames still rejected with
-    "not implemented" errors.
+4c.1 polish (done, same day):
+  - `displayName` reads `app.defaults.display_name` from config; falls
+    back to `$USER` then `"user"` like Rust.
+  - `thinking` flows from the catalog (`reasoning_effort` /
+    `budget_tokens`) and honors per-call ClientMessage `overrides`
+    (temperature / top_p / thinking_budget). Priority documented in
+    `buildThinkingConfig`.
+  - Image messages: `msg.images` (file paths) + `msg.image_data`
+    (inline base64) become `ImageRef`s on the user turn. Adapters wrap
+    them as Anthropic `image` blocks (base64 source) or OpenAI
+    `image_url` parts (data URLs). Size-cap + mime detection in
+    `src/llm/images.ts`.
+  - SWP `regen` / `cancel` / `command` frames fully wired.
+    `cancel` aborts the in-flight generation via AbortController →
+    `stream_end finish=cancelled`. `regen` drops the trailing
+    assistant turn (and tool-loop intermediates) and re-generates,
+    optionally with a system-message guidance prefix. `command`
+    dispatches a minimal handler set (currently just
+    `inject_system_message`); unknown commands return a clear
+    "not implemented" error.
 
 **4c.2 — real tool registry (pending):** port the 9 real tools with
 path-traversal / symlink-escape protections (originally Phase 5).

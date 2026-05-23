@@ -21,7 +21,8 @@ import type {
   ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions";
 
-import type { ContentBlock } from "../../engine/types.ts";
+import type { ContentBlock, ImageRef } from "../../engine/types.ts";
+import { resolveImage } from "../images.ts";
 import type {
   ChatEvent,
   ChatRequest,
@@ -76,7 +77,10 @@ export class OpenAIProvider implements ProviderClient {
       }
     }
 
-    const stream = (await client.chat.completions.create(params)) as AsyncIterable<ChatCompletionChunk>;
+    const stream = (await client.chat.completions.create(
+      params,
+      req.signal ? { signal: req.signal } : undefined,
+    )) as AsyncIterable<ChatCompletionChunk>;
 
     // Per-tool-call accumulators, keyed by tool_call index (the SDK
     // streams a parallel-call array — chunks carry the index slot).
@@ -210,7 +214,8 @@ function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {
   }
 
   // User turn: split tool_results into role:tool messages; text/etc.
-  // ride on a single user message.
+  // ride on a single user message. Images become image_url parts in the
+  // user message's multipart content array, prepended before text.
   const out: ChatCompletionMessageParam[] = [];
   const userBlocks: string[] = [];
   for (const b of turn.content) {
@@ -225,8 +230,35 @@ function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {
       userBlocks.push(b.text);
     }
   }
-  if (userBlocks.length > 0) {
-    out.push({ role: "user", content: userBlocks.join("\n") });
+  const imageParts = imagesToOpenAIParts(turn.images);
+  if (imageParts.length > 0 || userBlocks.length > 0) {
+    if (imageParts.length === 0) {
+      out.push({ role: "user", content: userBlocks.join("\n") });
+    } else {
+      const parts: Array<
+        { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }
+      > = [...imageParts];
+      if (userBlocks.length > 0) {
+        parts.push({ type: "text", text: userBlocks.join("\n") });
+      }
+      out.push({ role: "user", content: parts });
+    }
+  }
+  return out;
+}
+
+function imagesToOpenAIParts(
+  images: ImageRef[] | undefined,
+): Array<{ type: "image_url"; image_url: { url: string } }> {
+  if (!images || images.length === 0) return [];
+  const out: Array<{ type: "image_url"; image_url: { url: string } }> = [];
+  for (const img of images) {
+    const resolved = resolveImage(img);
+    if (!resolved) continue;
+    out.push({
+      type: "image_url",
+      image_url: { url: `data:${resolved.mediaType};base64,${resolved.base64}` },
+    });
   }
   return out;
 }

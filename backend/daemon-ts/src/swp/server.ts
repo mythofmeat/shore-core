@@ -18,6 +18,14 @@ interface SessionState {
   hello: boolean;
   /** Character this client is attached to (after handshake). */
   character: string | undefined;
+  /**
+   * AbortController for the most recent in-flight generation. Used by
+   * ClientCancel — and replaced when a new generation kicks off. The
+   * server doesn't auto-cancel a prior generation when a new message
+   * arrives; that's the orchestrator's call (currently we serialize
+   * via the engine write queue, so the second message simply waits).
+   */
+  inflight: AbortController | undefined;
 }
 
 /**
@@ -39,9 +47,32 @@ export interface HandshakeProvider {
  * The SWP server is transport-only; the actual append / broadcast / LLM
  * call live behind this callback.
  */
+export interface MessageOverrides {
+  temperature?: number;
+  top_p?: number;
+  thinking_budget?: number;
+}
+
 export type MessageHandler = (
   session: { character: string | undefined },
-  msg: { text: string; rid: string | undefined },
+  msg: {
+    text: string;
+    rid: string | undefined;
+    images: string[];
+    image_data: Array<{ filename: string; data: string }>;
+    overrides: MessageOverrides | undefined;
+    signal: AbortSignal;
+  },
+) => Promise<void>;
+
+export type RegenHandler = (
+  session: { character: string | undefined },
+  msg: { rid: string | undefined; guidance: string | undefined; signal: AbortSignal },
+) => Promise<void>;
+
+export type CommandHandler = (
+  session: { character: string | undefined },
+  msg: { rid: string | undefined; name: string; args: unknown },
 ) => Promise<void>;
 
 export interface SwpServerOptions {
@@ -51,6 +82,10 @@ export interface SwpServerOptions {
   handshake: HandshakeProvider;
   /** Called when a client sends a ClientMessage. Optional — without it the server replies with an error. */
   onMessage?: MessageHandler;
+  /** Called when a client sends a ClientRegen frame. */
+  onRegen?: RegenHandler;
+  /** Called when a client sends a ClientCommand frame. */
+  onCommand?: CommandHandler;
   onClient?: (clientType: string, clientName: string, character: string | undefined) => void;
 }
 
@@ -85,7 +120,12 @@ export class SwpServer {
   // ── connection callbacks ────────────────────────────────────────
 
   private onOpen(sock: Socket<SessionState>): void {
-    sock.data = { buf: Buffer.alloc(0), hello: false, character: undefined };
+    sock.data = {
+      buf: Buffer.alloc(0),
+      hello: false,
+      character: undefined,
+      inflight: undefined,
+    };
     this.clients.add(sock);
 
     const snapshot = this.opts.handshake.helloSnapshot();
@@ -189,31 +229,89 @@ export class SwpServer {
         });
         return;
       }
+      const ctrl = new AbortController();
+      sock.data.inflight = ctrl;
       // Fire and forget — the handler is responsible for broadcasting any
       // resulting state changes. We don't await here so a slow LLM call
-      // (in later phases) doesn't block the read loop.
+      // doesn't block the read loop.
       this.opts.onMessage(
         { character: sock.data.character },
-        { text: msg.text, rid: msg.rid },
-      ).catch((e) => {
-        const errMsg: ServerMessage = {
-          type: "error",
-          code: "internal_error",
-          message: (e as Error).message,
-        };
-        const r = rid(msg);
-        if (r !== undefined) errMsg.rid = r;
-        this.sendFrame(sock, errMsg);
-      });
+        {
+          text: msg.text,
+          rid: msg.rid,
+          images: msg.images ?? [],
+          image_data: msg.image_data ?? [],
+          overrides: msg.overrides,
+          signal: ctrl.signal,
+        },
+      )
+        .catch((e) => this.replyError(sock, msg, e))
+        .finally(() => {
+          if (sock.data.inflight === ctrl) sock.data.inflight = undefined;
+        });
+      return;
+    }
+
+    if (msg.type === "regen") {
+      if (this.opts.onRegen === undefined) {
+        this.replyError(sock, msg, new Error("regen handler not configured"));
+        return;
+      }
+      const ctrl = new AbortController();
+      sock.data.inflight = ctrl;
+      this.opts.onRegen(
+        { character: sock.data.character },
+        { rid: msg.rid, guidance: msg.guidance, signal: ctrl.signal },
+      )
+        .catch((e) => this.replyError(sock, msg, e))
+        .finally(() => {
+          if (sock.data.inflight === ctrl) sock.data.inflight = undefined;
+        });
+      return;
+    }
+
+    if (msg.type === "cancel") {
+      const ctrl = sock.data.inflight;
+      if (ctrl) ctrl.abort();
+      sock.data.inflight = undefined;
+      // No reply frame — the in-flight generation will surface its own
+      // stream_end or error frame when it unwinds.
+      return;
+    }
+
+    if (msg.type === "command") {
+      if (this.opts.onCommand === undefined) {
+        this.replyError(sock, msg, new Error("command handler not configured"));
+        return;
+      }
+      this.opts.onCommand(
+        { character: sock.data.character },
+        { rid: msg.rid, name: msg.name, args: msg.args },
+      ).catch((e) => this.replyError(sock, msg, e));
       return;
     }
 
     const errMsg: ServerMessage = {
       type: "error",
       code: "internal_error",
-      message: `shore-daemon-ts does not implement ${msg.type} yet (see REWRITE.md)`,
+      message: `shore-daemon-ts does not implement ${(msg as { type: string }).type} yet (see REWRITE.md)`,
     };
     const r = rid(msg);
+    if (r !== undefined) errMsg.rid = r;
+    this.sendFrame(sock, errMsg);
+  }
+
+  private replyError(
+    sock: Socket<SessionState>,
+    src: ClientMessage,
+    e: unknown,
+  ): void {
+    const errMsg: ServerMessage = {
+      type: "error",
+      code: "internal_error",
+      message: (e as Error).message,
+    };
+    const r = rid(src);
     if (r !== undefined) errMsg.rid = r;
     this.sendFrame(sock, errMsg);
   }

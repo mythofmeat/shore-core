@@ -85,6 +85,55 @@ export class ConversationEngine {
     this.writeQueue = next.catch(() => undefined);
     return next;
   }
+
+  /**
+   * Drop the trailing assistant turn (and any preceding tool-loop
+   * intermediates that belong to it) so a regen can start clean from
+   * the last user message. Returns the dropped messages so the caller
+   * can decide whether to surface them.
+   *
+   * Walks backward from the end: pops tool_result user turns and
+   * tool_use-only assistant turns, then pops the final assistant turn
+   * with text content. Stops if the history doesn't end on an
+   * assistant turn (regen is a no-op in that case).
+   */
+  rewindLastAssistantTurn(): Promise<Message[]> {
+    const task = async (): Promise<Message[]> => {
+      const msgs = this.store.all();
+      if (msgs.length === 0) return [];
+      const last = msgs[msgs.length - 1]!;
+      if (last.role !== "assistant") return [];
+
+      let cut = msgs.length - 1;
+      // Walk back past tool-loop intermediates that lead up to this asst.
+      while (cut > 0) {
+        const prev = msgs[cut - 1]!;
+        const isToolUseOnlyAsst =
+          prev.role === "assistant" &&
+          prev.content_blocks.some((b) => b.type === "tool_use") &&
+          !prev.content_blocks.some(
+            (b) => b.type === "text" && b.text.length > 0,
+          );
+        const isToolResultUser =
+          prev.role === "user" &&
+          prev.content_blocks.length > 0 &&
+          prev.content_blocks.every((b) => b.type === "tool_result");
+        if (isToolUseOnlyAsst || isToolResultUser) {
+          cut--;
+        } else {
+          break;
+        }
+      }
+      const dropped = msgs.slice(cut);
+      this.store.truncate(cut);
+      this.revision++;
+      this.broadcast?.onBroadcast(this.historySnapshot());
+      return dropped;
+    };
+    const next = this.writeQueue.then(task, task);
+    this.writeQueue = next.catch(() => undefined);
+    return next as Promise<Message[]>;
+  }
 }
 
 /**

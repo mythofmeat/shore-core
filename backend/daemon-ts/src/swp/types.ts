@@ -178,6 +178,14 @@ export interface ServerNewMessage {
   timestamp: string;
 }
 
+/** Response to a ClientCommand. Shape mirrors Rust's CommandOutput. */
+export interface ServerCommandOutput {
+  type: "command_output";
+  rid?: string;
+  name: string;
+  data: unknown;
+}
+
 export type ServerMessage =
   | ServerHello
   | ServerHistory
@@ -189,4 +197,5 @@ export type ServerMessage =
   | ServerStreamEnd
   | ServerToolCall
   | ServerToolResult
-  | ServerNewMessage;
+  | ServerNewMessage
+  | ServerCommandOutput;

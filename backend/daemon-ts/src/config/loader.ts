@@ -24,6 +24,7 @@ export interface LoadedConfig {
   app: {
     defaults: {
       model: string | undefined;
+      display_name: string | undefined;
     };
   };
 }
@@ -38,9 +39,22 @@ export function loadConfig(configDir: string): LoadedConfig {
     app: {
       defaults: {
         model: typeof defaultsTable["model"] === "string" ? defaultsTable["model"] : undefined,
+        display_name:
+          typeof defaultsTable["display_name"] === "string"
+            ? defaultsTable["display_name"]
+            : undefined,
       },
     },
   };
+}
+
+/**
+ * Resolve the display name like the Rust impl
+ * (`config.app.defaults.resolve_display_name()`): explicit config wins,
+ * else fall back to `$USER`, else "user".
+ */
+export function resolveDisplayName(config: LoadedConfig): string {
+  return config.app.defaults.display_name ?? process.env["USER"] ?? "user";
 }
 
 /**

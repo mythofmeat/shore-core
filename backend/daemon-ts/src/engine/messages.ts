@@ -196,6 +196,13 @@ export class MessageStore {
     this.persist();
   }
 
+  /** Keep only messages with index < `count` and persist. */
+  truncate(count: number): void {
+    if (count >= this.messages.length) return;
+    this.messages = this.messages.slice(0, count);
+    this.persist();
+  }
+
   private persist(): void {
     const buf = this.messages.map(serializeForStorage).join("\n") + (this.messages.length > 0 ? "\n" : "");
     atomicWrite(this.activeJsonlPath, buf);

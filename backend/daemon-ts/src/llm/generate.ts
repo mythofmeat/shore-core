@@ -39,6 +39,12 @@ import type {
   TurnMessage,
 } from "./types.ts";
 
+export interface GenerationOverrides {
+  temperature?: number;
+  top_p?: number;
+  thinking_budget?: number;
+}
+
 export interface GenerateOptions {
   engine: ConversationEngine;
   /** `$CONFIG_DIR/characters/<character>/`. */
@@ -51,6 +57,10 @@ export interface GenerateOptions {
   /** Request id for correlating frames to the originating ClientMessage. */
   rid?: string;
   isPrivate?: boolean;
+  /** Per-call sampler overrides from the ClientMessage frame. */
+  overrides?: GenerationOverrides;
+  /** AbortSignal for cancelling the generation mid-stream. */
+  signal?: AbortSignal;
 }
 
 export interface GenerateResult {
@@ -96,18 +106,23 @@ export async function generateResponse(
     inputSchema: t.inputSchema,
   }));
 
+  const thinking = buildThinkingConfig(opts.resolved, opts.overrides);
+  const temperature = opts.overrides?.temperature ?? opts.resolved.temperature;
+  const topP = opts.overrides?.top_p ?? opts.resolved.topP;
+
   const request: ChatRequest = {
     system: systemString,
     messages,
     tools,
-    thinking: { enabled: false },
+    thinking,
     cacheTtl: opts.resolved.cacheTtl ?? "",
     modelId: opts.resolved.modelId,
     apiKey,
     maxTokens: opts.resolved.maxTokens ?? 4096,
     ...(opts.resolved.baseUrl !== undefined ? { baseUrl: opts.resolved.baseUrl } : {}),
-    ...(opts.resolved.temperature !== undefined ? { temperature: opts.resolved.temperature } : {}),
-    ...(opts.resolved.topP !== undefined ? { topP: opts.resolved.topP } : {}),
+    ...(temperature !== undefined ? { temperature } : {}),
+    ...(topP !== undefined ? { topP } : {}),
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
   };
 
   // Stream-frame emitter — fired per ChatEvent during the loop. Aggregates
@@ -213,6 +228,39 @@ export async function generateResponse(
   return { finalText, turnCount };
 }
 
+/**
+ * Build the `ThinkingConfig` from catalog defaults + per-call overrides.
+ *
+ * Priority:
+ *   1. `overrides.thinking_budget` (set + > 0 enables thinking with that
+ *      explicit budget; 0 disables thinking even if catalog enables it).
+ *   2. Catalog `reasoning_effort` (low/medium/high/xhigh/max/adaptive) —
+ *      enables thinking, adapter maps to a budget at request build.
+ *   3. Catalog `budget_tokens` — enables thinking with explicit budget.
+ *   4. Otherwise off.
+ */
+export function buildThinkingConfig(
+  resolved: ResolvedModel,
+  overrides: GenerationOverrides | undefined,
+): import("./types.ts").ThinkingConfig {
+  if (overrides?.thinking_budget !== undefined) {
+    if (overrides.thinking_budget <= 0) return { enabled: false };
+    return { enabled: true, budgetTokens: overrides.thinking_budget };
+  }
+  if (resolved.reasoningEffort !== undefined) {
+    const cfg: import("./types.ts").ThinkingConfig = {
+      enabled: true,
+      effort: resolved.reasoningEffort,
+    };
+    if (resolved.budgetTokens !== undefined) cfg.budgetTokens = resolved.budgetTokens;
+    return cfg;
+  }
+  if (resolved.budgetTokens !== undefined) {
+    return { enabled: true, budgetTokens: resolved.budgetTokens };
+  }
+  return { enabled: false };
+}
+
 function buildProvider(sdk: ResolvedModel["sdk"]): ProviderClient {
   switch (sdk) {
     case "anthropic":
@@ -251,7 +299,9 @@ function promptMessagesToTurns(
       pm.content_blocks.length > 0
         ? pm.content_blocks
         : [{ type: "text" as const, text: pm.content }];
-    return { role: pm.role, content };
+    const turn: TurnMessage = { role: pm.role, content };
+    if (pm.images.length > 0) turn.images = pm.images;
+    return turn;
   });
 }
 

@@ -11,7 +11,13 @@
 import path from "node:path";
 
 import { characterMetadata, discoverCharacters } from "./characters/registry.ts";
-import { loadConfig, firstChatModelQualifiedName, type LoadedConfig } from "./config/loader.ts";
+import type { ImageRef } from "./engine/types.ts";
+import {
+  firstChatModelQualifiedName,
+  loadConfig,
+  resolveDisplayName,
+  type LoadedConfig,
+} from "./config/loader.ts";
 import { EngineRegistry } from "./engine/engine.ts";
 import type { Message } from "./engine/types.ts";
 import { loadCatalog, resolveModel, type ResolvedModel } from "./llm/catalog.ts";
@@ -134,6 +140,8 @@ async function main(): Promise<void> {
 
   const handshake = buildHandshakeProvider(config, dirs.config, engines);
   const onMessage = buildMessageHandler(engines, dirs.config, config, catalog, () => serverRef);
+  const onRegen = buildRegenHandler(engines, dirs.config, config, catalog, () => serverRef);
+  const onCommand = buildCommandHandler(engines, () => serverRef);
 
   const server = new SwpServer({
     host,
@@ -141,6 +149,8 @@ async function main(): Promise<void> {
     serverName: "shore-daemon-ts",
     handshake,
     onMessage,
+    onRegen,
+    onCommand,
     onClient: (clientType, clientName, character) => {
       console.log(
         `[shore-daemon-ts] client connected: type=${clientType} name=${clientName} character=${character ?? "<none>"}`,
@@ -244,11 +254,12 @@ function buildMessageHandler(
       throw new Error("client sent a message before selecting a character");
     }
     const engine = engines.get(session.character);
+    const images = buildImageRefs(msg.images, msg.image_data);
     const userMsg: Message = {
       msg_id: `m_${crypto.randomUUID()}`,
       role: "user",
       content: msg.text,
-      images: [],
+      images,
       content_blocks: [{ type: "text", text: msg.text }],
       timestamp: rfc3339LocalNow(),
     };
@@ -268,7 +279,7 @@ function buildMessageHandler(
     }
 
     const characterConfigDir = path.join(configDir, "characters", session.character);
-    const displayName = process.env["USER"] ?? "user";
+    const displayName = resolveDisplayName(config);
     const broadcast = (frame: Parameters<NonNullable<ReturnType<typeof getServer>>["broadcast"]>[0]): void => {
       getServer()?.broadcast(frame);
     };
@@ -281,15 +292,162 @@ function buildMessageHandler(
         resolved,
         registry: defaultRegistry(),
         broadcast,
+        signal: msg.signal,
+        ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
+        ...(msg.overrides ? { overrides: msg.overrides } : {}),
+      });
+    } catch (e) {
+      handleGenerationError(broadcast, msg.rid, e);
+    }
+  };
+}
+
+/**
+ * Decide what to do with a generation error. `AbortError` from the
+ * AbortSignal pathway is expected — clients see only the cancellation
+ * sentinel, not an internal_error frame. Anything else is surfaced.
+ */
+function handleGenerationError(
+  broadcast: (frame: import("./swp/types.ts").ServerMessage) => void,
+  rid: string | undefined,
+  e: unknown,
+): void {
+  const err = e as Error & { name?: string };
+  if (err.name === "AbortError" || /aborted/i.test(err.message ?? "")) {
+    broadcast({
+      type: "stream_end",
+      ...(rid !== undefined ? { rid } : {}),
+      content: "",
+      metadata: {
+        tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+        timing: { total_ms: 0, ttft_ms: 0 },
+        model: "",
+      },
+      finish_reason: "cancelled",
+      is_final: true,
+    });
+    return;
+  }
+  console.error(`[shore-daemon-ts] generation failed: ${err.message}`);
+  broadcast({
+    type: "error",
+    ...(rid !== undefined ? { rid } : {}),
+    code: "internal_error",
+    message: `generation failed: ${err.message}`,
+  });
+}
+
+/**
+ * Regen handler. Drops the trailing assistant turn (and any tool-loop
+ * intermediates) via `engine.rewindLastAssistantTurn`, optionally
+ * appends a system message with the client's guidance, then drives a
+ * fresh generation. The history broadcast after the truncate lets the
+ * client clear its rendered assistant turn before the new stream starts.
+ */
+function buildRegenHandler(
+  engines: EngineRegistry,
+  configDir: string,
+  config: LoadedConfig,
+  catalog: ReturnType<typeof loadCatalog>,
+  getServer: () => SwpServer | undefined,
+): import("./swp/server.ts").RegenHandler {
+  return async (session, msg) => {
+    if (session.character === undefined) {
+      throw new Error("client sent regen before selecting a character");
+    }
+    const engine = engines.get(session.character);
+    const dropped = await engine.rewindLastAssistantTurn();
+    if (dropped.length === 0) {
+      throw new Error("nothing to regen: no trailing assistant turn");
+    }
+
+    if (msg.guidance && msg.guidance.length > 0) {
+      const sys: Message = {
+        msg_id: `m_${crypto.randomUUID()}`,
+        role: "system",
+        content: msg.guidance,
+        images: [],
+        content_blocks: [{ type: "text", text: msg.guidance }],
+        timestamp: rfc3339LocalNow(),
+      };
+      await engine.appendMessage(sys);
+    }
+
+    const modelName = config.app.defaults.model;
+    if (!modelName) {
+      throw new Error("no app.defaults.model set");
+    }
+    const resolved = resolveModel(catalog, modelName);
+    const characterConfigDir = path.join(configDir, "characters", session.character);
+    const displayName = resolveDisplayName(config);
+    const broadcast = (frame: import("./swp/types.ts").ServerMessage): void => {
+      getServer()?.broadcast(frame);
+    };
+
+    try {
+      await generateResponse({
+        engine,
+        characterConfigDir,
+        displayName,
+        resolved,
+        registry: defaultRegistry(),
+        broadcast,
+        signal: msg.signal,
         ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
       });
     } catch (e) {
-      console.error(`[shore-daemon-ts] generation failed: ${(e as Error).message}`);
-      broadcast({
-        type: "error",
-        code: "internal_error",
-        message: `generation failed: ${(e as Error).message}`,
-      });
+      handleGenerationError(broadcast, msg.rid, e);
+    }
+  };
+}
+
+/**
+ * Command handler. Minimal dispatcher matching the Rust impl for the
+ * commands shore-daemon-ts currently understands:
+ *
+ *   - `inject_system_message`: append a Role::System Message to
+ *     active.jsonl (mirror of `commands/conversation.rs::handle_inject`).
+ *   - `model_settings`: return the resolved active-model fields
+ *     (mirror of `commands/usage.rs::handle_model_settings`).
+ *
+ * Anything else gets a clear "command X not implemented" error frame.
+ */
+function buildCommandHandler(
+  engines: EngineRegistry,
+  getServer: () => SwpServer | undefined,
+): import("./swp/server.ts").CommandHandler {
+  return async (session, msg) => {
+    const send = (frame: import("./swp/types.ts").ServerMessage): void => {
+      getServer()?.broadcast(frame);
+    };
+    switch (msg.name) {
+      case "inject_system_message": {
+        const args = (msg.args ?? {}) as { text?: string };
+        if (typeof args.text !== "string" || args.text.length === 0) {
+          throw new Error("inject_system_message requires args.text");
+        }
+        if (session.character === undefined) {
+          throw new Error("no character selected");
+        }
+        const engine = engines.get(session.character);
+        await engine.appendMessage({
+          msg_id: `m_${crypto.randomUUID()}`,
+          role: "system",
+          content: args.text,
+          images: [],
+          content_blocks: [{ type: "text", text: args.text }],
+          timestamp: rfc3339LocalNow(),
+        });
+        send({
+          type: "command_output",
+          ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
+          name: msg.name,
+          data: { injected: true },
+        });
+        return;
+      }
+      default:
+        throw new Error(`command "${msg.name}" not implemented`);
     }
   };
 }
@@ -299,6 +457,24 @@ function buildMessageHandler(
  * `chrono::Local::now().to_rfc3339()` in the Rust daemon. Node's
  * `Date.toISOString()` always emits UTC (`Z`), so we format manually.
  */
+/**
+ * Materialize the ClientMessage's `images` (file paths) + `image_data`
+ * (inline base64) into `ImageRef[]`. Inline data wins when both name the
+ * same file. The daemon strips `data` before persisting, matching Rust's
+ * `ImageRef::serialize` (skip-if-none); we mimic that by clearing `data`
+ * on disk later — but at message-build time we want the data attached so
+ * the provider can read it without going back to the filesystem.
+ */
+function buildImageRefs(
+  paths: string[],
+  inline: Array<{ filename: string; data: string }>,
+): ImageRef[] {
+  const out: ImageRef[] = [];
+  for (const p of paths) out.push({ path: p });
+  for (const i of inline) out.push({ path: i.filename, data: i.data });
+  return out;
+}
+
 function rfc3339LocalNow(): string {
   const now = new Date();
   const tzOffsetMinutes = -now.getTimezoneOffset();

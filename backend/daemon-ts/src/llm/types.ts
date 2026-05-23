@@ -16,7 +16,7 @@
  * normalize it. (This was a recurring Rust bug surface.)
  */
 
-import type { ContentBlock } from "../engine/types.ts";
+import type { ContentBlock, ImageRef } from "../engine/types.ts";
 
 export interface ToolDef {
   name: string;
@@ -36,6 +36,15 @@ export interface ToolDef {
 export interface TurnMessage {
   role: "user" | "assistant" | "system";
   content: ContentBlock[];
+  /**
+   * Images to prepend to the turn's content when building the
+   * provider-specific message. Stored separately (matching Rust's
+   * `Message.images`) so they're not entangled with the cache-stable
+   * `content_blocks` array. Each provider wraps these into its native
+   * image block shape — see `providers/anthropic.ts` and
+   * `providers/openai.ts`.
+   */
+  images?: ImageRef[];
 }
 
 export interface ThinkingConfig {
@@ -68,6 +77,8 @@ export interface ChatRequest {
   maxTokens: number;
   temperature?: number;
   topP?: number;
+  /** AbortSignal for cancelling the generation mid-stream. */
+  signal?: AbortSignal;
 }
 
 export interface UsageStats {
