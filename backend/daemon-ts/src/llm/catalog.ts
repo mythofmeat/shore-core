@@ -63,9 +63,10 @@ function hardcodedProviderDefaults(providerKey: string): Partial<ResolvedModel> 
     case "openrouter":
       return {
         ...base,
-        // NB: hardcoded default is openai SDK. The test config will set
-        // `sdk = "anthropic"` to route haiku/sonnet through the Anthropic
-        // wire protocol against OpenRouter's /v1/messages endpoint.
+        // OpenRouter's "default" SDK is openai-compat, but the catalog
+        // overrides this per-model based on `model_id` prefix (see
+        // defaultSdkForOpenRouterModel). Explicit per-model `sdk = "..."`
+        // in TOML always wins over the prefix default.
         sdk: "openai",
         apiKeyEnv: "OPENROUTER_API_KEY",
         baseUrl: "https://openrouter.ai/api/v1",
@@ -141,7 +142,26 @@ function parseCategory(
         ...modelFields,
       };
 
-      const sdk = parseSdk(merged["sdk"], hardcoded.sdk ?? "openai");
+      // SDK resolution priority:
+      //   1. Explicit `sdk = "..."` in per-model or per-provider TOML
+      //   2. For OpenRouter: derive from model_id prefix (anthropic/* →
+      //      anthropic SDK, etc.) so users get cache-correct routing out
+      //      of the box.
+      //   3. Hardcoded provider default.
+      const userExplicitSdk =
+        "sdk" in modelFields
+          ? modelFields["sdk"]
+          : "sdk" in providerScalars
+            ? providerScalars["sdk"]
+            : undefined;
+      let sdk: Sdk;
+      if (userExplicitSdk !== undefined) {
+        sdk = parseSdk(userExplicitSdk, hardcoded.sdk ?? "openai");
+      } else if (providerKey === "openrouter") {
+        sdk = defaultSdkForOpenRouterModel(modelId);
+      } else {
+        sdk = hardcoded.sdk ?? "openai";
+      }
       const qualifiedName = `${category}.${providerKey}.${modelName}`;
 
       // cache_ttl default = "1h" for Anthropic SDK unless explicitly set.
@@ -204,6 +224,24 @@ function parseSdk(v: unknown, fallback: Sdk): Sdk {
   if (v === "anthropic" || v === "openai" || v === "gemini" || v === "zai") return v;
   if (v === "deepseek" || v === "zhipuai") return "openai"; // deprecated aliases
   return fallback;
+}
+
+/**
+ * Map an OpenRouter model id to the SDK that should front it. First-match
+ * wins, so put exceptions above their parent prefix. Per-model TOML
+ * `sdk = "..."` always overrides this.
+ *
+ * The `gemini` and `zai` entries are deliberately speculative — adapter
+ * implementations land in later phases. Until then, requests for those
+ * models error at provider-construction time (not catalog resolution),
+ * which is the right failure surface. Users hitting it before adapters
+ * ship can pin `sdk = "openai"` per-model in TOML as the escape hatch.
+ */
+export function defaultSdkForOpenRouterModel(modelId: string): Sdk {
+  if (modelId.startsWith("anthropic/")) return "anthropic";
+  if (modelId.startsWith("google/")) return "gemini";
+  if (modelId.startsWith("z-ai/")) return "zai";
+  return "openai";
 }
 
 function asNumber(v: unknown): number | undefined {

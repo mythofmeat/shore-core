@@ -171,6 +171,21 @@ function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {
   // OpenAI splits a tool_result-containing user turn into one `tool`
   // role message per result, and assistant tool_use becomes `tool_calls`
   // on the assistant message. Plain text falls through.
+  if (turn.role === "system") {
+    // OpenAI accepts mid-history `role:"system"` natively — pass through
+    // verbatim. (The Rust impl defensively wrapped these in
+    // <system_instruction> in case OpenRouter routed to a non-OpenAI
+    // backend that rejects raw system messages. We don't: SDK selection
+    // by upstream is a config concern, not an adapter responsibility.
+    // Catalog auto-routes `anthropic/*` on OpenRouter to the Anthropic
+    // SDK so this adapter only fronts genuine OpenAI-compatible endpoints.)
+    const text = turn.content
+      .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+    return [{ role: "system", content: text }];
+  }
+
   if (turn.role === "assistant") {
     const text = turn.content
       .filter((b) => b.type === "text")

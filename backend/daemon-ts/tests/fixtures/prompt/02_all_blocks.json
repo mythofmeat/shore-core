@@ -1,0 +1,13 @@
+{
+  "character_name": "Casey",
+  "display_name": "Alice",
+  "tools_guidance": "Use the roll_dice tool when asked to roll dice.",
+  "character_definition": "Casey is a tabletop referee.",
+  "user_definition": "Alice is curious and asks many questions.",
+  "memory_index": "- `topics/dice.md` — rolling conventions\n- `topics/etiquette.md` — table manners",
+  "is_private": false,
+  "has_prior_context": false,
+  "messages": [],
+  "max_context_tokens": 200000,
+  "max_output_tokens": 4096
+}

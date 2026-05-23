@@ -1,0 +1,34 @@
+{
+  "character_name": "Casey",
+  "display_name": "Alice",
+  "is_private": false,
+  "has_prior_context": false,
+  "messages": [
+    {
+      "msg_id": "m1",
+      "role": "user",
+      "content": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "images": [],
+      "content_blocks": [],
+      "timestamp": "2026-04-04T09:00:00-07:00"
+    },
+    {
+      "msg_id": "m2",
+      "role": "assistant",
+      "content": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "images": [],
+      "content_blocks": [],
+      "timestamp": "2026-04-04T09:01:00-07:00"
+    },
+    {
+      "msg_id": "m3",
+      "role": "user",
+      "content": "Recent",
+      "images": [],
+      "content_blocks": [],
+      "timestamp": "2026-04-04T09:02:00-07:00"
+    }
+  ],
+  "max_context_tokens": 500,
+  "max_output_tokens": 100
+}

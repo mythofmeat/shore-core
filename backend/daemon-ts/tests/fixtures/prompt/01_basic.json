@@ -1,0 +1,28 @@
+{
+  "character_name": "TestChar",
+  "display_name": "TestUser",
+  "character_definition": "A friendly test character.",
+  "user_definition": "A developer.",
+  "is_private": false,
+  "has_prior_context": false,
+  "messages": [
+    {
+      "msg_id": "m1",
+      "role": "user",
+      "content": "Hello",
+      "images": [],
+      "content_blocks": [],
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "msg_id": "m2",
+      "role": "assistant",
+      "content": "Hi!",
+      "images": [],
+      "content_blocks": [],
+      "timestamp": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "max_context_tokens": 200000,
+  "max_output_tokens": 4096
+}

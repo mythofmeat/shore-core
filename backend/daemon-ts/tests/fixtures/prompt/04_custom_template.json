@@ -1,0 +1,10 @@
+{
+  "character_name": "Casey",
+  "display_name": "Alice",
+  "system_prompt": "You are {{char}}. Talking to {{user}}.{{#if memory}} Memory: {{memory}}.{{/if}}",
+  "is_private": false,
+  "has_prior_context": false,
+  "messages": [],
+  "max_context_tokens": 200000,
+  "max_output_tokens": 4096
+}

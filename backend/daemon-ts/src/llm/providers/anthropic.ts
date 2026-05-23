@@ -74,7 +74,12 @@ export class AnthropicProvider implements ProviderClient {
       : undefined;
     const system = buildSystem(req.system, cacheControl);
     const tools = buildTools(req.tools, cacheControl);
-    const messages = buildMessages(req.messages, cacheControl);
+    // Anthropic rejects role:"system" in the messages array — wrap any
+    // mid-history system turns into <system_instruction> blocks first.
+    const messages = buildMessages(
+      convertInlineSystemMessages(req.messages),
+      cacheControl,
+    );
     const thinking = buildThinking(req.thinking, req.maxTokens);
 
     const params: Parameters<typeof client.messages.stream>[0] = {
@@ -306,8 +311,52 @@ function buildTools(
   });
 }
 
+/** Wrap text in the canonical inline-system sentinel. Single source of
+ * truth for the tag spelling — matches Rust `stream_helpers.rs:209`. */
+export function wrapInlineSystemInstruction(text: string): string {
+  return `<system_instruction>${text}</system_instruction>`;
+}
+
+/** Post-conversion turn — system role has been wrapped away. */
+type WireTurn = { role: "user" | "assistant"; content: ContentBlock[] };
+
+/**
+ * Convert `role:"system"` turns into wrapped `role:"user"` turns. Anthropic
+ * rejects `role:"system"` in the `messages` array, so heartbeat recaps and
+ * compaction prompts ride as `<system_instruction>` text blocks. If the
+ * previous emitted turn is already a user message, append to it rather
+ * than emitting consecutive user turns (the API rejects those too).
+ *
+ * Mirrors Rust `convert_inline_system_messages` (`providers/anthropic.rs:391`).
+ */
+export function convertInlineSystemMessages(turns: TurnMessage[]): WireTurn[] {
+  const out: WireTurn[] = [];
+  for (const turn of turns) {
+    if (turn.role !== "system") {
+      out.push({ role: turn.role, content: turn.content.slice() });
+      continue;
+    }
+    const text = turn.content
+      .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+    const wrapped = wrapInlineSystemInstruction(text);
+
+    const prev = out[out.length - 1];
+    if (prev && prev.role === "user") {
+      prev.content.push({ type: "text", text: wrapped });
+      continue;
+    }
+    out.push({
+      role: "user",
+      content: [{ type: "text", text: wrapped }],
+    });
+  }
+  return out;
+}
+
 function buildMessages(
-  turns: TurnMessage[],
+  turns: WireTurn[],
   cacheControl: CacheControl | undefined,
 ): MessageParam[] {
   // Compute the "last stable" position (last assistant turn before the

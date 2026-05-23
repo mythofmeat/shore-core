@@ -1,0 +1,26 @@
+{
+  "character_name": "Casey",
+  "display_name": "Alice",
+  "is_private": false,
+  "has_prior_context": true,
+  "messages": [
+    {
+      "msg_id": "m1",
+      "role": "assistant",
+      "content": "…",
+      "images": [],
+      "content_blocks": [{"type": "text", "text": "…"}],
+      "timestamp": "2026-04-04T09:00:00-07:00"
+    },
+    {
+      "msg_id": "m2",
+      "role": "user",
+      "content": "Continuing on",
+      "images": [],
+      "content_blocks": [{"type": "text", "text": "Continuing on"}],
+      "timestamp": "2026-04-04T09:01:00-07:00"
+    }
+  ],
+  "max_context_tokens": 200000,
+  "max_output_tokens": 4096
+}

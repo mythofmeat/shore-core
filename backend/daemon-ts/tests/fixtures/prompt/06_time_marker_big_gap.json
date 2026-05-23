@@ -1,0 +1,34 @@
+{
+  "character_name": "Casey",
+  "display_name": "Alice",
+  "is_private": false,
+  "has_prior_context": false,
+  "messages": [
+    {
+      "msg_id": "m1",
+      "role": "user",
+      "content": "Good morning",
+      "images": [],
+      "content_blocks": [{"type": "text", "text": "Good morning"}],
+      "timestamp": "2026-04-04T09:00:00-07:00"
+    },
+    {
+      "msg_id": "m2",
+      "role": "assistant",
+      "content": "Morning!",
+      "images": [],
+      "content_blocks": [{"type": "text", "text": "Morning!"}],
+      "timestamp": "2026-04-04T09:01:00-07:00"
+    },
+    {
+      "msg_id": "m3",
+      "role": "user",
+      "content": "I'm back",
+      "images": [],
+      "content_blocks": [{"type": "text", "text": "I'm back"}],
+      "timestamp": "2026-04-04T15:30:00-07:00"
+    }
+  ],
+  "max_context_tokens": 200000,
+  "max_output_tokens": 4096
+}

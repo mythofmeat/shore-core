@@ -25,9 +25,16 @@ export interface ToolDef {
   inputSchema: Record<string, unknown>;
 }
 
-/** One turn in the message array sent to the provider. */
+/** One turn in the message array sent to the provider.
+ *
+ * `system` is allowed mid-history for heartbeat recaps and compaction
+ * prompts. Adapters handle it differently — Anthropic must wrap it in
+ * `<system_instruction>` user blocks (the Messages API rejects raw
+ * `role:"system"` in the messages array), while OpenAI passes it through
+ * natively. See providers/anthropic.ts::convertInlineSystemMessages.
+ */
 export interface TurnMessage {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: ContentBlock[];
 }
 

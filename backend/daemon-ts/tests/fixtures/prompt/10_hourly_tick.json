@@ -1,0 +1,66 @@
+{
+  "character_name": "Casey",
+  "display_name": "Alice",
+  "is_private": false,
+  "has_prior_context": false,
+  "messages": [
+    {
+      "msg_id": "m1",
+      "role": "user",
+      "content": "Morning",
+      "images": [],
+      "content_blocks": [{"type": "text", "text": "Morning"}],
+      "timestamp": "2026-04-04T09:00:00-07:00"
+    },
+    {
+      "msg_id": "m2",
+      "role": "assistant",
+      "content": "Hey",
+      "images": [],
+      "content_blocks": [{"type": "text", "text": "Hey"}],
+      "timestamp": "2026-04-04T09:01:00-07:00"
+    },
+    {
+      "msg_id": "m3",
+      "role": "user",
+      "content": "Back",
+      "images": [],
+      "content_blocks": [{"type": "text", "text": "Back"}],
+      "timestamp": "2026-04-04T15:30:00-07:00"
+    },
+    {
+      "msg_id": "m4",
+      "role": "assistant",
+      "content": "wb",
+      "images": [],
+      "content_blocks": [{"type": "text", "text": "wb"}],
+      "timestamp": "2026-04-04T15:35:00-07:00"
+    },
+    {
+      "msg_id": "m5",
+      "role": "user",
+      "content": "What's up",
+      "images": [],
+      "content_blocks": [{"type": "text", "text": "What's up"}],
+      "timestamp": "2026-04-04T15:50:00-07:00"
+    },
+    {
+      "msg_id": "m6",
+      "role": "assistant",
+      "content": "not much",
+      "images": [],
+      "content_blocks": [{"type": "text", "text": "not much"}],
+      "timestamp": "2026-04-04T16:20:00-07:00"
+    },
+    {
+      "msg_id": "m7",
+      "role": "user",
+      "content": "Still here",
+      "images": [],
+      "content_blocks": [{"type": "text", "text": "Still here"}],
+      "timestamp": "2026-04-04T16:34:00-07:00"
+    }
+  ],
+  "max_context_tokens": 200000,
+  "max_output_tokens": 4096
+}

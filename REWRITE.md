@@ -168,10 +168,49 @@ Test-design notes worth preserving (both load-bearing):
   iteration 1 but not iteration 2). The Rust regression dropped to 0
   here; the TS impl holds.
 
-**4b — full prompt assembly (pending):** port `engine/prompt.rs` (~1.5k
-lines): SOUL/USER/AGENTS/TOOLS/MEMORY assembly, time markers, message
-trimming, `<system_instruction>` mid-history wrapping for non-Anthropic
-SDKs. Until this lands, the Phase-4 daemon can't serve a real character.
+**4b — full prompt assembly (done, 2026-05-23):**
+
+- `engine/prompt.rs` ported as `src/engine/prompt.ts`. 1:1 surface —
+  `assemblePrompt`, `renderTemplate`, `xmlTagFromName`, `estimateTokens`,
+  `estimateMessageTokens`, `trimMessages`, `formatTimeMarker`,
+  `relativeGapPhrase` plus types. Builtin system template inlined verbatim
+  (same trailing-newline-strip behavior as Rust).
+- Anthropic adapter gained `convertInlineSystemMessages`. Hard requirement:
+  the Messages API rejects `role:"system"` in the messages array, so
+  heartbeat recaps and compaction prompts ride as `<system_instruction>`
+  text blocks inside a user turn (merged into the preceding user turn when
+  there is one). Wrap sentinel single-sourced in
+  `wrapInlineSystemInstruction`.
+- OpenAI adapter passes `role:"system"` through verbatim. The Rust impl
+  wrapped defensively in case OpenRouter routed to a non-OpenAI backend
+  that rejects it; we don't — picking the wrong SDK for an upstream is a
+  config concern, addressed by the catalog change below.
+- Catalog: `defaultSdkForOpenRouterModel` auto-routes by `model_id`
+  prefix on OpenRouter — `anthropic/*` → Anthropic SDK, `google/*` →
+  gemini (adapter pending), `z-ai/*` → zai (adapter pending), everything
+  else → openai-compat. Per-model TOML `sdk = "..."` still wins. The
+  speculative `gemini`/`zai` entries land now so users get the right
+  routing intent the day the adapters ship; until then, requests for those
+  models fail at provider construction, not catalog resolution.
+- Tests: ~50 Bun unit tests under `tests/prompt.test.ts` mirroring Rust's
+  `mod tests`, ~9 tests for `convertInlineSystemMessages`, ~12 for the new
+  catalog SDK resolution path.
+- Parity harness: `backend/daemon/examples/dump_assemble_prompt.rs`
+  dumps `AssembledPrompt` JSON for the Rust port, and
+  `backend/daemon-ts/scripts/parity-check-prompt.ts` runs both ports
+  against the same fixture set in `tests/fixtures/prompt/` (TZ pinned to
+  America/Los_Angeles for reproducible time markers). 10 fixtures green.
+
+Not in 4b:
+
+- Wiring `assemblePrompt` into the actual conversation flow — slots into
+  4c alongside the tool registry, since the engine wants real tools to
+  call before there's anything to assemble for.
+- Surfacing the resolved `sdk` in `shore model settings` — TS daemon has
+  no model-settings command surface yet (greenfield); deferred to the
+  command-dispatch phase. The catalog already exposes `sdk` on
+  `ResolvedModel`, so the surface change is a downstream display
+  addition.
 
 **4c — full tool registry (pending):** port the 9 real tools with
 path-traversal / symlink-escape protections (originally Phase 5).

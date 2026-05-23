@@ -1,0 +1,11 @@
+{
+  "character_name": "Casey",
+  "display_name": "Alice",
+  "character_definition": "Casey is a tabletop referee.",
+  "memory_index": "- secret topic",
+  "is_private": true,
+  "has_prior_context": false,
+  "messages": [],
+  "max_context_tokens": 200000,
+  "max_output_tokens": 4096
+}

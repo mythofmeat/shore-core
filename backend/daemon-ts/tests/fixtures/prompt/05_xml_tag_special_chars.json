@@ -1,0 +1,11 @@
+{
+  "character_name": "Dr. Bob — the great",
+  "display_name": "Shore v2",
+  "character_definition": "A peculiar character.",
+  "user_definition": "A peculiar user.",
+  "is_private": false,
+  "has_prior_context": false,
+  "messages": [],
+  "max_context_tokens": 200000,
+  "max_output_tokens": 4096
+}
