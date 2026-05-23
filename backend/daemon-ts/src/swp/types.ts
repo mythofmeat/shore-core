@@ -100,12 +100,93 @@ export interface ServerError {
   message: string;
 }
 
-// Many more (StreamStart, StreamChunk, StreamEnd, ToolCall, ToolResult,
-// CommandOutput, SendImage, etc.) — added as phases progress.
+/** Per-generation token counts. Mirrors `core/protocol/src/types.rs::TokenCounts`. */
+export interface TokenCounts {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+}
+
+/** Timing for a generation. Mirrors `core/protocol/src/types.rs::TimingInfo`. */
+export interface TimingInfo {
+  total_ms: number;
+  ttft_ms: number;
+}
+
+export interface StreamMetadata {
+  tokens: TokenCounts;
+  timing: TimingInfo;
+  model: string;
+}
+
+export interface ServerStreamStart {
+  type: "stream_start";
+  rid?: string;
+  regen?: boolean;
+}
+
+export interface ServerStreamChunk {
+  type: "stream_chunk";
+  rid?: string;
+  text: string;
+  /** "text" | "thinking" — defaults to "text" wire-side. */
+  content_type?: string;
+}
+
+/** One StreamEnd per LLM turn. `is_final=true` marks the terminal one. */
+export interface ServerStreamEnd {
+  type: "stream_end";
+  rid?: string;
+  msg_id?: string;
+  revision?: number;
+  content: string;
+  metadata: StreamMetadata;
+  finish_reason?: string;
+  is_final?: boolean;
+}
+
+export interface ServerToolCall {
+  type: "tool_call";
+  rid?: string;
+  tool_id: string;
+  tool_name: string;
+  input: unknown;
+}
+
+export interface ServerToolResult {
+  type: "tool_result";
+  rid?: string;
+  tool_id: string;
+  tool_name: string;
+  output: string;
+  is_error?: boolean;
+}
+
+export interface ServerNewMessage {
+  type: "new_message";
+  revision?: number;
+  character?: string;
+  origin?: "user_input" | "assistant_reply" | "autonomous";
+  // Message fields are flattened into this frame (matches Rust's
+  // #[serde(flatten)] on NewMessage.message).
+  msg_id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  images: unknown[];
+  content_blocks: unknown[];
+  timestamp: string;
+}
 
 export type ServerMessage =
   | ServerHello
   | ServerHistory
   | ServerShutdown
   | ServerPing
-  | ServerError;
+  | ServerError
+  | ServerStreamStart
+  | ServerStreamChunk
+  | ServerStreamEnd
+  | ServerToolCall
+  | ServerToolResult
+  | ServerNewMessage;

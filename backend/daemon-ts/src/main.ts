@@ -8,10 +8,16 @@
  * call yet — that's Phase 4.
  */
 
+import path from "node:path";
+
 import { characterMetadata, discoverCharacters } from "./characters/registry.ts";
 import { loadConfig, firstChatModelQualifiedName, type LoadedConfig } from "./config/loader.ts";
 import { EngineRegistry } from "./engine/engine.ts";
 import type { Message } from "./engine/types.ts";
+import { loadCatalog, resolveModel, type ResolvedModel } from "./llm/catalog.ts";
+import { loadConfigDotenv } from "./llm/env.ts";
+import { generateResponse } from "./llm/generate.ts";
+import { defaultRegistry } from "./llm/tools/registry.ts";
 import { resolveShoreDirs } from "./runtime/dirs.ts";
 import { Registry } from "./runtime/registry.ts";
 import { SwpServer } from "./swp/server.ts";
@@ -98,7 +104,13 @@ async function main(): Promise<void> {
   const dirs = resolveShoreDirs();
   const id = instanceId ?? generateInstanceId();
 
+  // Load .env into process.env so provider clients can resolve API
+  // keys via process.env[<api_key_env>]. Override semantics matches
+  // dotenvy::from_path_override in the Rust daemon.
+  loadConfigDotenv(dirs.config);
+
   const config = loadConfig(dirs.config);
+  const catalog = loadCatalog(dirs.config);
 
   // EngineRegistry is constructed before the server so we can wire the
   // broadcast callback at engine-construction time (engines are lazily
@@ -121,7 +133,7 @@ async function main(): Promise<void> {
   });
 
   const handshake = buildHandshakeProvider(config, dirs.config, engines);
-  const onMessage = buildMessageHandler(engines);
+  const onMessage = buildMessageHandler(engines, dirs.config, config, catalog, () => serverRef);
 
   const server = new SwpServer({
     host,
@@ -212,15 +224,21 @@ function buildHandshakeProvider(
 }
 
 /**
- * ClientMessage handler. Builds the user-turn `Message` to match the Rust
- * handler in `backend/daemon/src/handler/task.rs` (msg_id format,
- * timestamp format, role, single Text block) and appends via the engine.
+ * ClientMessage handler. Builds the user-turn `Message` matching the
+ * Rust handler in `backend/daemon/src/handler/task.rs` (msg_id format,
+ * timestamp format, role, single Text block), appends via the engine,
+ * and then drives the assistant generation through the LLM call layer.
  *
- * Phase 3 ignores `images` and `image_data` — those land with Phase 5.
- * If the client sends a message before selecting a character, we surface
- * an error instead of silently dropping.
+ * Phase 4c.1 wires the engine → catalog → provider → tool_loop path
+ * end-to-end. Images and the `overrides` field are still ignored.
  */
-function buildMessageHandler(engines: EngineRegistry): MessageHandler {
+function buildMessageHandler(
+  engines: EngineRegistry,
+  configDir: string,
+  config: LoadedConfig,
+  catalog: ReturnType<typeof loadCatalog>,
+  getServer: () => SwpServer | undefined,
+): MessageHandler {
   return async (session, msg) => {
     if (session.character === undefined) {
       throw new Error("client sent a message before selecting a character");
@@ -235,6 +253,44 @@ function buildMessageHandler(engines: EngineRegistry): MessageHandler {
       timestamp: rfc3339LocalNow(),
     };
     await engine.appendMessage(userMsg);
+
+    const modelName = config.app.defaults.model;
+    if (!modelName) {
+      console.error("[shore-daemon-ts] no app.defaults.model set; skipping generation");
+      return;
+    }
+    let resolved: ResolvedModel;
+    try {
+      resolved = resolveModel(catalog, modelName);
+    } catch (e) {
+      console.error(`[shore-daemon-ts] could not resolve model: ${(e as Error).message}`);
+      return;
+    }
+
+    const characterConfigDir = path.join(configDir, "characters", session.character);
+    const displayName = process.env["USER"] ?? "user";
+    const broadcast = (frame: Parameters<NonNullable<ReturnType<typeof getServer>>["broadcast"]>[0]): void => {
+      getServer()?.broadcast(frame);
+    };
+
+    try {
+      await generateResponse({
+        engine,
+        characterConfigDir,
+        displayName,
+        resolved,
+        registry: defaultRegistry(),
+        broadcast,
+        ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
+      });
+    } catch (e) {
+      console.error(`[shore-daemon-ts] generation failed: ${(e as Error).message}`);
+      broadcast({
+        type: "error",
+        code: "internal_error",
+        message: `generation failed: ${(e as Error).message}`,
+      });
+    }
   };
 }
 

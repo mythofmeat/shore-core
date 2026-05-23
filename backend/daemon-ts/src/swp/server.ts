@@ -41,7 +41,7 @@ export interface HandshakeProvider {
  */
 export type MessageHandler = (
   session: { character: string | undefined },
-  msg: { text: string },
+  msg: { text: string; rid: string | undefined },
 ) => Promise<void>;
 
 export interface SwpServerOptions {
@@ -192,7 +192,10 @@ export class SwpServer {
       // Fire and forget — the handler is responsible for broadcasting any
       // resulting state changes. We don't await here so a slow LLM call
       // (in later phases) doesn't block the read loop.
-      this.opts.onMessage({ character: sock.data.character }, { text: msg.text }).catch((e) => {
+      this.opts.onMessage(
+        { character: sock.data.character },
+        { text: msg.text, rid: msg.rid },
+      ).catch((e) => {
         const errMsg: ServerMessage = {
           type: "error",
           code: "internal_error",

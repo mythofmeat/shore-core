@@ -212,10 +212,44 @@ Not in 4b:
   `ResolvedModel`, so the surface change is a downstream display
   addition.
 
-**4c — full tool registry (pending):** port the 9 real tools with
+**4c — engine integration + full tool registry.** Split into 4c.1
+(engine wiring, done) and 4c.2 (real tools, pending).
+
+**4c.1 — engine wiring (done, 2026-05-23):**
+
+- SWP stream frame types ported: `stream_start`, `stream_chunk`,
+  `stream_end`, `tool_call`, `tool_result`, `new_message`,
+  `TokenCounts` / `TimingInfo` / `StreamMetadata`. The TS server
+  understands the same wire shape the Rust daemon emits.
+- `src/engine/context.ts` reads SOUL/USER/AGENTS/TOOLS/MEMORY from
+  `<config>/characters/<name>/workspace/` and calls `assemblePrompt`.
+  No deferred-edits snapshot dance yet — direct reads are stable
+  within a single turn; the snapshot path lands with Phase 6
+  compaction.
+- `src/llm/generate.ts` is the orchestrator. On a `client.message`,
+  it: resolves the active model via the catalog, picks the SDK,
+  reads the API key from `process.env`, calls `runToolLoop`, emits
+  stream frames per `ChatEvent`, and persists each new turn via
+  `engine.appendMessage` (which fans out the canonical `history`
+  broadcast).
+- End-to-end smoketest at `scripts/generate-smoketest.ts` against
+  haiku-4.5 via OpenRouter: handshake → user msg → stream_start →
+  stream_chunk × N → stream_end (is_final=true) → history (with
+  assistant turn). First successful real-character generation from
+  the TS daemon.
+
+Known gaps to close before 4c.2 (deliberate stubs, not deferred):
+  - `displayName` defaults to `$USER` — should read
+    `app.defaults.display_name` from config like Rust.
+  - `thinking` config hardcoded off — should flow through the
+    catalog (and accept the per-call `overrides` field).
+  - Image messages still ignored (`msg.images`, `msg.image_data`).
+  - SWP `regen` / `cancel` / `command` frames still rejected with
+    "not implemented" errors.
+
+**4c.2 — real tool registry (pending):** port the 9 real tools with
 path-traversal / symlink-escape protections (originally Phase 5).
-SWP `StreamStart`/`StreamChunk`/`StreamEnd` frame translation slots in
-here once the engine wires the provider call through `appendMessage`.
+Until this lands, `defaultRegistry()` exposes only `roll_dice`.
 
 ### Phase 5: tools
 
