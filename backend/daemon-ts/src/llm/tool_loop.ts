@@ -24,13 +24,15 @@
  */
 
 import type { ContentBlock } from "../engine/types.ts";
+import type { ToolContext, ToolRegistry } from "../tools/registry.ts";
 import type { ChatEvent, ChatRequest, ProviderClient, TurnMessage, UsageStats } from "./types.ts";
-import type { ToolRegistry } from "./tools/registry.ts";
 
 export interface ToolLoopOptions {
   provider: ProviderClient;
   request: Omit<ChatRequest, "messages"> & { messages: TurnMessage[] };
   registry: ToolRegistry;
+  /** Dependency-injection blob passed to every tool handler. */
+  toolContext: ToolContext;
   /** Max round-trips through the provider. Default 10. */
   maxIterations?: number;
   /** Called for every streamed event (text/thinking deltas, tool starts/ends). */
@@ -91,7 +93,7 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
         isError = true;
       } else {
         try {
-          result = await handler.execute(tu.input);
+          result = await handler.execute(tu.input, opts.toolContext);
         } catch (e) {
           result = `error: ${(e as Error).message}`;
           isError = true;

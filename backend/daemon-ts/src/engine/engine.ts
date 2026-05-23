@@ -58,6 +58,11 @@ export class ConversationEngine {
     return this.characterName;
   }
 
+  /** Returns `<data_dir>/<character_name>/` — the character's data root. */
+  dataDir(): string {
+    return this.characterDir;
+  }
+
   /** Current History snapshot for handshake / broadcast. */
   historySnapshot(): HistorySnapshot {
     const merged = mergeToolLoopMessages(this.store.all());

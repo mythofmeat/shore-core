@@ -37,8 +37,44 @@
 import { describe, expect, it } from "bun:test";
 
 import { AnthropicProvider } from "../src/llm/providers/anthropic.ts";
-import { defaultRegistry } from "../src/llm/tools/registry.ts";
+import { rollDiceHandler, ToolRegistry, type ToolContext } from "../src/tools/registry.ts";
 import { runToolLoop } from "../src/llm/tool_loop.ts";
+
+/**
+ * Minimal registry — just `roll_dice` — for the cache regression test.
+ * The full `defaultRegistry()` would inject the other 14 tools into the
+ * schema, which is fine but adds noise to a test whose only job is to
+ * force a single-tool loop.
+ */
+function diceRegistry(): ToolRegistry {
+  const reg = new ToolRegistry();
+  reg.register(rollDiceHandler);
+  return reg;
+}
+
+/**
+ * Empty stub context — `roll_dice` doesn't touch any context fields, so
+ * the runtime values don't matter. Required by `runToolLoop` post-4c.2.
+ */
+function stubCtx(): ToolContext {
+  return {
+    characterName: "test",
+    characterConfigDir: "/tmp/test-config",
+    characterDataDir: "/tmp/test-data",
+    workspaceDir: "/tmp/test-workspace",
+    configDir: "/tmp/test-config",
+    imageDir: "/tmp/test-images",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    engine: undefined as any,
+    searchConfig: {
+      api_key_env: "TAVILY_API_KEY",
+      max_results: 5,
+      search_depth: "basic",
+      include_answer: true,
+    },
+    retrievalConfig: { max_file_bytes: 1024 * 1024 },
+  };
+}
 import type { ChatRequest, TurnMessage } from "../src/llm/types.ts";
 
 const apiKey = process.env["OPENROUTER_API_KEY"] ?? process.env["ANTHROPIC_API_KEY"] ?? "";
@@ -98,7 +134,7 @@ function makeRequest(messages: TurnMessage[]): ChatRequest {
   return {
     system: SYSTEM,
     messages,
-    tools: defaultRegistry()
+    tools: diceRegistry()
       .list()
       .map((t) => ({
         name: t.name,
@@ -131,7 +167,8 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
     const r1 = await runToolLoop({
       provider: PROVIDER,
       request: makeRequest(turn1),
-      registry: defaultRegistry(),
+      registry: diceRegistry(),
+      toolContext: stubCtx(),
     });
     const totalInput1 = r1.usagePerCall[0]!.inputTokens
       + r1.usagePerCall[0]!.cacheReadInputTokens
@@ -146,7 +183,8 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
     const r2 = await runToolLoop({
       provider: PROVIDER,
       request: makeRequest(turn2),
-      registry: defaultRegistry(),
+      registry: diceRegistry(),
+      toolContext: stubCtx(),
     });
     console.log("turn2 usage:", r2.usagePerCall);
 
@@ -200,7 +238,8 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
     const r = await runToolLoop({
       provider: PROVIDER,
       request: req,
-      registry: defaultRegistry(),
+      registry: diceRegistry(),
+      toolContext: stubCtx(),
     });
     console.log("adaptive multi-iter usage per call:", r.usagePerCall);
 
@@ -264,7 +303,8 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
     const r1 = await runToolLoop({
       provider: PROVIDER,
       request: makeRequest(turn1),
-      registry: defaultRegistry(),
+      registry: diceRegistry(),
+      toolContext: stubCtx(),
     });
     console.log("tool-loop turn1 usage per call:", r1.usagePerCall);
     // We expect at least 2 provider calls inside the tool loop (call →
@@ -283,7 +323,8 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
     const r2 = await runToolLoop({
       provider: PROVIDER,
       request: makeRequest(turn2),
-      registry: defaultRegistry(),
+      registry: diceRegistry(),
+      toolContext: stubCtx(),
     });
     console.log("tool-loop turn2 usage per call:", r2.usagePerCall);
     expect(r2.usagePerCall[0]!.cacheReadInputTokens).toBeGreaterThan(0);
@@ -337,7 +378,7 @@ function openaiRequest(messages: TurnMessage[], modelOverride?: string): ChatReq
   return {
     system: OPENAI_SYSTEM,
     messages,
-    tools: defaultRegistry()
+    tools: diceRegistry()
       .list()
       .map((t) => ({
         name: t.name,
@@ -365,7 +406,8 @@ describe.if(openaiTransportKey !== "")("OpenAI-compatible adapter", () => {
           content: [{ type: "text", text: "Roll 2d6 and tell me the sum." }],
         },
       ]),
-      registry: defaultRegistry(),
+      registry: diceRegistry(),
+      toolContext: stubCtx(),
     });
     console.log("openai single-tool usage:", r.usagePerCall);
     // At least one provider call to emit tool_use, one more to read
@@ -403,7 +445,8 @@ describe.if(openaiTransportKey !== "")("OpenAI-compatible adapter", () => {
           ],
         },
       ]),
-      registry: defaultRegistry(),
+      registry: diceRegistry(),
+      toolContext: stubCtx(),
     });
     console.log("openai multi-iter usage per call:", r.usagePerCall);
     expect(r.usagePerCall.length).toBeGreaterThanOrEqual(3);
@@ -431,7 +474,8 @@ describe.if(openaiTransportKey !== "")("OpenAI-compatible adapter", () => {
     const r1 = await runToolLoop({
       provider,
       request: openaiRequest(turn1),
-      registry: defaultRegistry(),
+      registry: diceRegistry(),
+      toolContext: stubCtx(),
     });
     console.log("openai cache turn1 usage:", r1.usagePerCall);
 
@@ -442,7 +486,8 @@ describe.if(openaiTransportKey !== "")("OpenAI-compatible adapter", () => {
     const r2 = await runToolLoop({
       provider,
       request: openaiRequest(turn2),
-      registry: defaultRegistry(),
+      registry: diceRegistry(),
+      toolContext: stubCtx(),
     });
     console.log("openai cache turn2 usage:", r2.usagePerCall);
 

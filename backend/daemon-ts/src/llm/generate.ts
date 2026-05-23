@@ -23,14 +23,26 @@
  * rendering.
  */
 
+import path from "node:path";
+
 import type { ConversationEngine } from "../engine/engine.ts";
 import { buildChatContext } from "../engine/context.ts";
 import type { ContentBlock, Message } from "../engine/types.ts";
 import type { ServerMessage } from "../swp/types.ts";
+import type {
+  ImageGenConfig,
+  RetrievalConfig,
+  SearchConfig,
+  ToolContext,
+  ToolRegistry,
+} from "../tools/registry.ts";
+import {
+  defaultRetrievalConfig,
+  defaultSearchConfig,
+} from "../tools/registry.ts";
 import { AnthropicProvider } from "./providers/anthropic.ts";
 import { OpenAIProvider } from "./providers/openai.ts";
 import type { ResolvedModel } from "./catalog.ts";
-import type { ToolRegistry } from "./tools/registry.ts";
 import { runToolLoop } from "./tool_loop.ts";
 import type {
   ChatEvent,
@@ -49,6 +61,8 @@ export interface GenerateOptions {
   engine: ConversationEngine;
   /** `$CONFIG_DIR/characters/<character>/`. */
   characterConfigDir: string;
+  /** `$CONFIG_DIR` itself — for tool .env / search-config lookups. */
+  configDir: string;
   displayName: string;
   resolved: ResolvedModel;
   registry: ToolRegistry;
@@ -61,6 +75,10 @@ export interface GenerateOptions {
   overrides?: GenerationOverrides;
   /** AbortSignal for cancelling the generation mid-stream. */
   signal?: AbortSignal;
+  /** Tool-side config slices; defaults are used when omitted. */
+  searchConfig?: SearchConfig;
+  retrievalConfig?: RetrievalConfig;
+  imageGenConfig?: ImageGenConfig;
 }
 
 export interface GenerateResult {
@@ -205,10 +223,26 @@ export async function generateResponse(
     });
   };
 
+  const toolContext: ToolContext = {
+    characterName: opts.engine.name(),
+    characterConfigDir: opts.characterConfigDir,
+    characterDataDir: opts.engine.dataDir(),
+    workspaceDir: path.join(opts.characterConfigDir, "workspace"),
+    configDir: opts.configDir,
+    imageDir: path.join(opts.engine.dataDir(), "images"),
+    engine: opts.engine,
+    searchConfig: opts.searchConfig ?? defaultSearchConfig(),
+    retrievalConfig: opts.retrievalConfig ?? defaultRetrievalConfig(),
+    ...(opts.imageGenConfig !== undefined
+      ? { imageGenConfig: opts.imageGenConfig }
+      : {}),
+  };
+
   const result = await runToolLoop({
     provider,
     request,
     registry: opts.registry,
+    toolContext,
     onEvent,
     onToolResult,
   });

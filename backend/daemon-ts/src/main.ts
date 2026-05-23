@@ -23,7 +23,7 @@ import type { Message } from "./engine/types.ts";
 import { loadCatalog, resolveModel, type ResolvedModel } from "./llm/catalog.ts";
 import { loadConfigDotenv } from "./llm/env.ts";
 import { generateResponse } from "./llm/generate.ts";
-import { defaultRegistry } from "./llm/tools/registry.ts";
+import { defaultRegistry } from "./tools/registry.ts";
 import { resolveShoreDirs } from "./runtime/dirs.ts";
 import { Registry } from "./runtime/registry.ts";
 import { SwpServer } from "./swp/server.ts";
@@ -288,9 +288,13 @@ function buildMessageHandler(
       await generateResponse({
         engine,
         characterConfigDir,
+        configDir,
         displayName,
         resolved,
-        registry: defaultRegistry(),
+        registry: defaultRegistry({
+          characterName: session.character,
+          displayName,
+        }),
         broadcast,
         signal: msg.signal,
         ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
@@ -388,9 +392,13 @@ function buildRegenHandler(
       await generateResponse({
         engine,
         characterConfigDir,
+        configDir,
         displayName,
         resolved,
-        registry: defaultRegistry(),
+        registry: defaultRegistry({
+          characterName: session.character,
+          displayName,
+        }),
         broadcast,
         signal: msg.signal,
         ...(msg.rid !== undefined ? { rid: msg.rid } : {}),

@@ -259,20 +259,94 @@ Not in 4b:
     `inject_system_message`); unknown commands return a clear
     "not implemented" error.
 
-**4c.2 — real tool registry (pending):** port the 9 real tools with
-path-traversal / symlink-escape protections (originally Phase 5).
-Until this lands, `defaultRegistry()` exposes only `roll_dice`.
+**4c.2 — real tool registry (done, 2026-05-24):**
+
+- Full 15-tool surface ported under `backend/daemon-ts/src/tools/`:
+  - workspace (7): `read`, `write`, `edit`, `list_files`, `delete`,
+    `file_search`, `exec`
+  - basic (3): `check_time`, `roll_dice`, `set_next_wake`
+  - web (2): `web_search`, `fetch_url`
+  - history (1): `conversation_search`
+  - activity (1): `activity_heatmap`
+  - images (1): `generate_image`
+- Two name changes from Rust (the names were too easily conflated by
+  both humans and the model):
+  - `search` → `file_search`
+  - `search_history` → `conversation_search`
+  Tool_use blocks in pre-rewrite `active.jsonl` still reference the old
+  names. The schema mismatch in history doesn't fail the call — the
+  model adapts — but it's worth knowing during cutover.
+- `ToolHandler.execute` gained a `ToolContext` parameter (dependency
+  injection blob with characterName/workspaceDir/searchConfig/engine/…).
+  `runToolLoop` threads it through; `defaultRegistry({characterName,
+  displayName})` pre-renders `{{char}}`/`{{user}}` placeholders in
+  descriptions at registration time.
+- Path safety lives in `src/tools/paths.ts` — single source of truth
+  for the workspace-confinement rules. Mirrors Rust's `resolve_path` +
+  `is_prompt_visible_path` + `normalize_protected_path`:
+  - `..` traversal rejected
+  - absolute paths rejected
+  - resolved paths must canonicalize inside the workspace (symlink-escape
+    rejected)
+  - `memory/` and `workspace/` display prefixes tolerated
+- Exec sandbox is a hand-rolled POSIX shell-words splitter +
+  allowlist + path-arg validation. No shell invocation (`spawn` with
+  `shell: false`). Allowlist verbatim from Rust:
+  `ls cat rg git wc pwd sort uniq dirname basename file stat du df which
+   whoami date tree fd cargo rustc rustfmt clippy rust-analyzer npm pnpm
+   yarn make cmake`.
+- Graceful degradation for subsystems that don't ship until later phases:
+  - `set_next_wake` is always in the schema (cache stability); handler
+    refuses with "only available during heartbeat ticks" when
+    `ctx.scheduleNextWake` is undefined (Phase 8 wires it).
+  - `file_search` hybrid/vector modes fall back to lexical with
+    `semantic_unavailable: "embedder not configured"` (Phase 6 wires
+    the embedder).
+  - `conversation_search` reads whatever's on disk —
+    `active.jsonl` + `compaction.json` + `segments/*.jsonl` —
+    so the read path works the day compaction ships in Phase 6.
+  - `activity_heatmap` returns an empty 24-hour heatmap when
+    `ctx.activityStats` is undefined.
+  - `generate_image` requires `ctx.imageGenConfig`; errors cleanly
+    otherwise. Image gen itself uses the OpenAI SDK
+    `client.images.generate()` directly (most providers are
+    OpenAI-compatible for image gen).
+- `roll_dice` schema is `{ notation: "2d6+5" }` (matches Rust),
+  replacing the Phase 4a stub's `{count, sides}` shape.
+- Tests:
+  - `tools_workspace.test.ts` — read/write/edit/list/delete/file_search
+    happy path + safety
+  - `tools_exec.test.ts` — allowlist, path-arg validation,
+    shell-chaining rejection, shellSplit semantics
+  - `tools_web.test.ts` — Tavily key-required, fake-server fetch_url,
+    HTML stripper edge cases
+  - `tools_history.test.ts` — conversation_search across synthetic
+    segments + active, time range, alternatives
+  - `tools_basic.test.ts` — check_time format, dice parser, set_next_wake
+    gating + clamping
+- Smoketest: `scripts/tools-smoketest.ts` drives the model through
+  `check_time` + `roll_dice` against haiku-4.5 via OpenRouter and
+  verifies both tool_call frames appear before the final stream_end.
+- The Rust tool registry stays a dispatch-by-name match block; the TS
+  registry is a `Map<name, ToolHandler>` and per-character-built. The
+  shape difference is intentional — TS doesn't need the trait + boxed
+  futures, and per-character registry build lets `{{char}}/{{user}}`
+  render once instead of being re-templated at every call site.
+
+Tools that ship with graceful-fallback shims here will need re-testing
+once their dependencies land. See **Phase 6** for `file_search` (hybrid
+mode), `conversation_search` (real compacted segments), and `write`/`edit`
+(deferred-edits queue write); **Phase 8** for `set_next_wake` and
+`activity_heatmap`. `generate_image` is the odd one out — it's a single
+config wiring (`[image_generation]` table → `imageGenConfig` on
+`ToolContext`) with no phase dependency. Wire it whenever the config
+loader gains the `[image_generation]` section, and add a live-API test
+behind an env-gated key.
 
 ### Phase 5: tools
 
-- `read`, `write`, `edit`, `list_files`, `search`, `delete`, `exec`,
-  `web_search`, `fetch_url`, `check_time`, `roll_dice`, `activity_heatmap`,
-  `generate_image`, `search_history`, memory tools.
-- Path-traversal / symlink-escape protections preserved (load-bearing per
-  AGENTS.md).
-- `exec` must not invoke a shell.
-- **Exit criterion:** each tool tested via a CLI message that invokes it,
-  parity check against the Rust daemon's output.
+(Subsumed by Phase 4c.2 above — full registry already ported. Retained
+here as a placeholder so the original numbering still maps cleanly.)
 
 ### Phase 6: memory + dreaming + compaction
 
@@ -285,9 +359,31 @@ Until this lands, `defaultRegistry()` exposes only `roll_dice`.
   behavior before porting. *Do not* "rewrite from scratch" the memory
   subsystem — transcribe it.
 - Semantic search via embeddings (HTTP, no language preference).
+- **Wire up the tool-side fallbacks landed in 4c.2:**
+  - `file_search` currently falls back to lexical with
+    `semantic_unavailable: "embedder not configured"` whenever
+    `mode` is `hybrid` or `vector`. When the embedder lands, plumb
+    it (plus the workspace index path + retrieval config) onto
+    `ToolContext` and verify hybrid/vector mode actually engages
+    against a real index. Add live tests that match the Rust
+    `search_with_path_runs_hybrid_scoped_to_subtree` shape.
+  - `conversation_search` already reads `compaction.json` +
+    `segments/<file>.jsonl` if they exist, so the read path is
+    ready. Once the real compactor starts writing those files,
+    re-run `tests/tools_history.test.ts` against the production
+    segment shape to catch any field drift.
+  - `write` / `edit` on prompt-visible paths (SOUL/USER/AGENTS/
+    TOOLS/HEARTBEAT/MEMORY) already emit the
+    `deferred_until_compaction` markers in the result, but the
+    queue side (`deferred_edits.jsonl`) isn't wired — TS daemon
+    doesn't append. Phase 6 needs to (a) start writing those queue
+    entries from the workspace handlers AND (b) consume them at
+    compaction time. Add a unit test that asserts the queue file
+    contains the expected entry after a write to `SOUL.md`.
 - **Exit criterion:** trigger a compaction via the same conditions that
   trigger it in the Rust daemon. Resulting `MEMORY.md` is byte-identical
-  for a deterministic test input.
+  for a deterministic test input. AND the three tool integrations above
+  are exercised in tests.
 
 ### Phase 7: ledger + cache forensics
 
@@ -304,8 +400,22 @@ Until this lands, `defaultRegistry()` exposes only `roll_dice`.
 - Per-character autonomy state machine.
 - Keepalive pings to maintain the prompt cache TTL.
 - Heartbeat tick that rebuilds the warmed prefix.
+- **Wire up the tool-side fallbacks landed in 4c.2:**
+  - `set_next_wake` currently errors with "only available during
+    heartbeat ticks" when `ctx.scheduleNextWake` is undefined. Wire the
+    real scheduler onto the heartbeat context and add a test that
+    asserts the hook gets called with the clamped hours + reason. The
+    schema stays in the registry during normal user turns regardless —
+    that's load-bearing for cache stability.
+  - `activity_heatmap` currently returns an empty 24-hour heatmap when
+    `ctx.activityStats` is undefined. Wire the autonomy stats hook and
+    add a test that asserts real per-hour densities + classifications
+    flow through (mirror the Rust
+    `test_activity_heatmap_with_autonomy_data` case).
 - **Exit criterion:** keepalive interval respected, no stale-cache
   rebuilds, no extra LLM calls vs. the Rust daemon under the same input.
+  AND both heartbeat-dependent tools above are exercised in tests with
+  the real hooks in place.
 
 ### Phase 9: cutover
 
