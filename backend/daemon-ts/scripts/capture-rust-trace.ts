@@ -17,7 +17,7 @@
  * "did the TS daemon emit the same bytes" parity checks in later phases.
  */
 
-import { mkdtempSync } from "node:fs";
+import { cpSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 
@@ -44,8 +44,23 @@ if (!daemonPath || !outPath) {
 
 const runtimeDir = mkdtempSync(join(tmpdir(), "shore-rust-trace-runtime-"));
 const cacheDir = mkdtempSync(join(tmpdir(), "shore-rust-trace-cache-"));
-const configDir = fixtureDir ? join(fixtureDir, "config") : mkdtempSync(join(tmpdir(), "shore-rust-trace-config-"));
-const dataDir = fixtureDir ? join(fixtureDir, "data") : mkdtempSync(join(tmpdir(), "shore-rust-trace-data-"));
+
+// Copy the fixture to a tmp dir before pointing the daemon at it — the
+// Rust daemon scaffolds bootstrap files (workspace/HEARTBEAT.md,
+// active_prompt/*, ledger.db) on startup, which would otherwise pollute
+// the committed fixture and make captures non-reproducible.
+let configDir: string;
+let dataDir: string;
+if (fixtureDir) {
+  const workDir = mkdtempSync(join(tmpdir(), "shore-rust-trace-fixture-"));
+  cpSync(join(fixtureDir, "config"), join(workDir, "config"), { recursive: true });
+  cpSync(join(fixtureDir, "data"), join(workDir, "data"), { recursive: true });
+  configDir = join(workDir, "config");
+  dataDir = join(workDir, "data");
+} else {
+  configDir = mkdtempSync(join(tmpdir(), "shore-rust-trace-config-"));
+  dataDir = mkdtempSync(join(tmpdir(), "shore-rust-trace-data-"));
+}
 
 const env = {
   ...process.env,

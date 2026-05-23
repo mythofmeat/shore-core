@@ -15,7 +15,7 @@
  *   <dir>/data (matches capture-rust-trace.ts).
  */
 
-import { mkdtempSync, readFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 
@@ -50,12 +50,27 @@ const baseline = readFileSync(baselinePath, "utf8")
   .map((l) => JSON.parse(l) as { dir: "s2c" | "c2s"; frame: Record<string, unknown> });
 
 const tmp = mkdtempSync(join(tmpdir(), "shore-daemon-ts-parity-"));
+// Copy the fixture into a tmp working directory so the daemon can't
+// pollute the committed state (see capture-rust-trace.ts for the same
+// rationale).
+let configDir: string;
+let dataDir: string;
+if (fixtureDir) {
+  const workDir = mkdtempSync(join(tmpdir(), "shore-daemon-ts-parity-fixture-"));
+  cpSync(join(fixtureDir, "config"), join(workDir, "config"), { recursive: true });
+  cpSync(join(fixtureDir, "data"), join(workDir, "data"), { recursive: true });
+  configDir = join(workDir, "config");
+  dataDir = join(workDir, "data");
+} else {
+  configDir = join(tmp, "config");
+  dataDir = join(tmp, "data");
+}
 const env = {
   ...process.env,
   SHORE_RUNTIME_DIR: join(tmp, "runtime"),
   SHORE_CACHE_DIR: join(tmp, "cache"),
-  SHORE_CONFIG_DIR: fixtureDir ? join(fixtureDir, "config") : join(tmp, "config"),
-  SHORE_DATA_DIR: fixtureDir ? join(fixtureDir, "data") : join(tmp, "data"),
+  SHORE_CONFIG_DIR: configDir,
+  SHORE_DATA_DIR: dataDir,
 };
 
 const proc = Bun.spawn({
