@@ -294,49 +294,163 @@ describe.if(apiKey === "")("Anthropic cache regression (skipped — no API key)"
   it.skip("set OPENROUTER_API_KEY or ANTHROPIC_API_KEY to run", () => {});
 });
 
-// ── OpenAI smoke test ──────────────────────────────────────────────────
-// Phase 4a: prove the OpenAI-compatible adapter round-trips a tool call.
-// Caching on OpenAI is server-side automatic (no client knobs) so we
-// only assert the loop completes and produces text.
+// ── OpenAI-compatible adapter live tests ──────────────────────────────
+//
+// We don't have a direct OpenAI key on this machine, so we route OpenAI
+// models through OpenRouter (their `/chat/completions` endpoint speaks
+// the OpenAI wire format). This validates the same adapter code path
+// that would run against OpenAI direct, DeepSeek, xAI, etc. The Rust
+// impl had specific tool-use bugs on the openai-compatible endpoints;
+// these tests are the tripwire for the SDK route doing better.
+//
+// API-key resolution:
+//   - OPENAI_API_KEY set → direct OpenAI (no base URL)
+//   - OPENROUTER_API_KEY set → OpenRouter (`openai/<model>` namespace)
+//   - neither → skip
+//
+// Prompt caching on OpenAI is server-side automatic for prompts
+// ≥1024 tokens — no `cache_control` knobs. OpenRouter surfaces hits
+// as `usage.prompt_tokens_details.cached_tokens`; our adapter maps
+// that to `cacheReadInputTokens`.
 
-const openaiKey = process.env["OPENAI_API_KEY"] ?? "";
-const openaiModel = process.env["SHORE_TEST_OPENAI_MODEL"] ?? "gpt-5.4-mini";
+const openaiDirectKey = process.env["OPENAI_API_KEY"] ?? "";
+const openaiViaORKey = openaiDirectKey === "" ? (process.env["OPENROUTER_API_KEY"] ?? "") : "";
+const openaiTransportKey = openaiDirectKey || openaiViaORKey;
+const openaiBaseUrl = openaiDirectKey ? undefined : (openaiViaORKey ? "https://openrouter.ai/api/v1" : undefined);
+const openaiModel = process.env["SHORE_TEST_OPENAI_MODEL"]
+  ?? (openaiDirectKey ? "gpt-5.4-mini" : "openai/gpt-5.4-mini");
 
-describe.if(openaiKey !== "")("OpenAI adapter smoke", () => {
-  it("tool loop runs end-to-end and returns text", async () => {
+// One nonce per test run, same idea as the Anthropic side.
+const OPENAI_NONCE = process.env["SHORE_TEST_OPENAI_NONCE"] ?? crypto.randomUUID();
+
+// Cache threshold on OpenAI is documented as ≥1024 prompt tokens. Pad
+// well above that so we can unambiguously assert cached_tokens > 0 on
+// the second call.
+const OPENAI_SYSTEM = `nonce: ${OPENAI_NONCE}\n\n` + Array.from({ length: 60 }, () =>
+  "You are Quartermaster Vale, a curt and methodical inventory officer. " +
+    "When asked to roll dice (for randomized supply outcomes, morale " +
+    "checks, or skirmish resolution), call the roll_dice tool. Never " +
+    "invent dice results. Report results plainly and concisely.",
+).join("\n\n");
+
+function openaiRequest(messages: TurnMessage[], modelOverride?: string): ChatRequest {
+  return {
+    system: OPENAI_SYSTEM,
+    messages,
+    tools: defaultRegistry()
+      .list()
+      .map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+    thinking: { enabled: false },
+    cacheTtl: "",
+    modelId: modelOverride ?? openaiModel,
+    apiKey: openaiTransportKey,
+    ...(openaiBaseUrl ? { baseUrl: openaiBaseUrl } : {}),
+    maxTokens: 1024,
+  };
+}
+
+describe.if(openaiTransportKey !== "")("OpenAI-compatible adapter", () => {
+  it("single tool call: loop completes, returns text, reports usage", async () => {
     const { OpenAIProvider } = await import("../src/llm/providers/openai.ts");
     const provider = new OpenAIProvider();
     const r = await runToolLoop({
       provider,
-      request: {
-        system: "You roll dice via the roll_dice tool. Never invent results.",
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "text", text: "Roll 2d6 for me, then tell me the total." }],
-          },
-        ],
-        tools: defaultRegistry()
-          .list()
-          .map((t) => ({
-            name: t.name,
-            description: t.description,
-            inputSchema: t.inputSchema,
-          })),
-        thinking: { enabled: false },
-        cacheTtl: "",
-        modelId: openaiModel,
-        apiKey: openaiKey,
-        maxTokens: 1024,
-      },
+      request: openaiRequest([
+        {
+          role: "user",
+          content: [{ type: "text", text: "Roll 2d6 and tell me the sum." }],
+        },
+      ]),
       registry: defaultRegistry(),
     });
-    console.log("openai tool-loop usage:", r.usagePerCall);
+    console.log("openai single-tool usage:", r.usagePerCall);
+    // At least one provider call to emit tool_use, one more to read
+    // tool_result and produce the closing text. Total ≥ 2.
     expect(r.usagePerCall.length).toBeGreaterThanOrEqual(2);
     const finalText = r.finalContent
       .filter((b) => b.type === "text")
       .map((b) => (b as { text: string }).text)
       .join("");
     expect(finalText.length).toBeGreaterThan(0);
+  }, 120_000);
+
+  it("multi-iteration tool loop with dependent rolls", async () => {
+    // Same dependent-rolls pattern as the Anthropic adaptive scenario:
+    // the model literally cannot batch these because each outcome
+    // determines the next call. Forces 3+ tool round-trips so we
+    // exercise tool_use → tool_result → tool_use → ... cleanly.
+    const { OpenAIProvider } = await import("../src/llm/providers/openai.ts");
+    const provider = new OpenAIProvider();
+    const r = await runToolLoop({
+      provider,
+      request: openaiRequest([
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "Vale, resolve this branching scenario step by step. " +
+                "Step 1: roll 1d20 for the scouting check. " +
+                "Step 2: if the scouting roll is 10+, roll 1d8 for ambush damage; otherwise roll 1d20 for an athletics check to retreat. " +
+                "Step 3: if Step 2's damage was 5+, roll 1d4 for a follow-up shot; if Step 2's athletics succeeded (10+), roll 1d6 for distance; otherwise roll 1d20 for perception as you regroup. " +
+                "Each step must follow seeing the prior result. Use roll_dice three separate times.",
+            },
+          ],
+        },
+      ]),
+      registry: defaultRegistry(),
+    });
+    console.log("openai multi-iter usage per call:", r.usagePerCall);
+    expect(r.usagePerCall.length).toBeGreaterThanOrEqual(3);
+    const finalText = r.finalContent
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { text: string }).text)
+      .join("");
+    expect(finalText.length).toBeGreaterThan(0);
+  }, 240_000);
+
+  it("automatic prompt caching: turn 2 surfaces cached_tokens > 0", async () => {
+    // OpenAI's caching is server-side automatic; no client config.
+    // OpenRouter forwards usage.prompt_tokens_details.cached_tokens
+    // back, our adapter maps that to cacheReadInputTokens. We send
+    // a stable big prefix twice and assert the second call reads cache.
+    const { OpenAIProvider } = await import("../src/llm/providers/openai.ts");
+    const provider = new OpenAIProvider();
+
+    const turn1: TurnMessage[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Briefly: what kinds of dice do you use?" }],
+      },
+    ];
+    const r1 = await runToolLoop({
+      provider,
+      request: openaiRequest(turn1),
+      registry: defaultRegistry(),
+    });
+    console.log("openai cache turn1 usage:", r1.usagePerCall);
+
+    const turn2 = [...turn1, ...r1.newTurns, {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "And what's your background?" }],
+    }];
+    const r2 = await runToolLoop({
+      provider,
+      request: openaiRequest(turn2),
+      registry: defaultRegistry(),
+    });
+    console.log("openai cache turn2 usage:", r2.usagePerCall);
+
+    // The cache feature is automatic but the threshold + freshness
+    // semantics are out of our control. We assert *some* cache read
+    // on the second turn — if cached_tokens=0 then either the prefix
+    // didn't qualify (prompt too small? probably not at ~6k tokens)
+    // or our adapter is dropping the field.
+    expect(r2.usagePerCall[0]!.cacheReadInputTokens).toBeGreaterThan(0);
   }, 120_000);
 });

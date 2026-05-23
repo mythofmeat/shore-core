@@ -107,9 +107,14 @@ the bug this rewrite exists to kill.
 - `@anthropic-ai/sdk` adapter at `backend/daemon-ts/src/llm/providers/anthropic.ts`.
   Pointed at OpenRouter's `/v1/messages` by stripping the trailing `/v1`
   from the configured base URL.
-- `openai` SDK adapter at `.../providers/openai.ts` (smoke-tested only;
-  no live API key on this machine for OpenAI direct, but the build path
-  is exercised by the test suite under the `OPENAI_API_KEY` gate).
+- `openai` SDK adapter at `.../providers/openai.ts`. Live-validated
+  via OpenRouter against `openai/gpt-5.4-mini` (the OpenAI-compatible
+  endpoint is what every gateway in this family — OpenRouter, DeepSeek,
+  xAI, NanoGPT — exposes). Scenarios green: single tool call, 3-
+  iteration dependent-roll tool loop, automatic prompt caching (turn-2
+  `cacheReadInputTokens > 0` via `prompt_tokens_details.cached_tokens`).
+  OpenAI direct + the other gateway variants are base-URL swaps and
+  reuse the same code path; not separately exercised here.
 - Generic tool loop at `.../tool_loop.ts` that preserves block ordering
   verbatim across iterations (thinking → tool_use → tool_result → ...).
   This is what kills the cache regression.
@@ -117,7 +122,7 @@ the bug this rewrite exists to kill.
   system block, last tool def, last stable assistant turn, last message.
 - Live tests at `backend/daemon-ts/tests/cache_regression.test.ts`,
   gated on `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY`. All scenarios
-  green on **both haiku-4.5 and sonnet-4.5**:
+  green on **haiku-4.5, sonnet-4.5, and sonnet-4.6**:
     - plain chat 2-turn cache hit
     - 1-iteration tool loop (loop-entry cache + loop-exit cache)
     - **adaptive thinking + 3-iteration dependent-roll tool loop**,
