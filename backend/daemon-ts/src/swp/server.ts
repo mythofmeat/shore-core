@@ -16,6 +16,8 @@ import type { ClientMessage, ServerHistory, ServerMessage } from "./types.ts";
 interface SessionState {
   buf: Buffer;
   hello: boolean;
+  /** Character this client is attached to (after handshake). */
+  character: string | undefined;
 }
 
 /**
@@ -31,11 +33,24 @@ export interface HandshakeProvider {
   historySnapshot(selectedCharacter: string | undefined): Omit<ServerHistory, "type" | "rid">;
 }
 
+/**
+ * Application-level handler called when a client sends a ClientMessage.
+ * Returns a promise that resolves when the message has been persisted.
+ * The SWP server is transport-only; the actual append / broadcast / LLM
+ * call live behind this callback.
+ */
+export type MessageHandler = (
+  session: { character: string | undefined },
+  msg: { text: string },
+) => Promise<void>;
+
 export interface SwpServerOptions {
   host: string;
   port: number;
   serverName: string;
   handshake: HandshakeProvider;
+  /** Called when a client sends a ClientMessage. Optional — without it the server replies with an error. */
+  onMessage?: MessageHandler;
   onClient?: (clientType: string, clientName: string, character: string | undefined) => void;
 }
 
@@ -70,7 +85,7 @@ export class SwpServer {
   // ── connection callbacks ────────────────────────────────────────
 
   private onOpen(sock: Socket<SessionState>): void {
-    sock.data = { buf: Buffer.alloc(0), hello: false };
+    sock.data = { buf: Buffer.alloc(0), hello: false, character: undefined };
     this.clients.add(sock);
 
     const snapshot = this.opts.handshake.helloSnapshot();
@@ -146,6 +161,7 @@ export class SwpServer {
 
       const helloSnapshot = this.opts.handshake.helloSnapshot();
       const selected = resolveHandshakeCharacter(msg.character, helloSnapshot.characters);
+      sock.data.character = selected;
       this.opts.onClient?.(msg.client_type, msg.client_name, selected);
 
       const historyBody = this.opts.handshake.historySnapshot(selected);
@@ -164,6 +180,31 @@ export class SwpServer {
       return;
     }
 
+    if (msg.type === "message") {
+      if (this.opts.onMessage === undefined) {
+        this.sendFrame(sock, {
+          type: "error",
+          code: "internal_error",
+          message: "no message handler configured",
+        });
+        return;
+      }
+      // Fire and forget — the handler is responsible for broadcasting any
+      // resulting state changes. We don't await here so a slow LLM call
+      // (in later phases) doesn't block the read loop.
+      this.opts.onMessage({ character: sock.data.character }, { text: msg.text }).catch((e) => {
+        const errMsg: ServerMessage = {
+          type: "error",
+          code: "internal_error",
+          message: (e as Error).message,
+        };
+        const r = rid(msg);
+        if (r !== undefined) errMsg.rid = r;
+        this.sendFrame(sock, errMsg);
+      });
+      return;
+    }
+
     const errMsg: ServerMessage = {
       type: "error",
       code: "internal_error",
@@ -172,6 +213,17 @@ export class SwpServer {
     const r = rid(msg);
     if (r !== undefined) errMsg.rid = r;
     this.sendFrame(sock, errMsg);
+  }
+
+  /**
+   * Send a frame to every connected client. Used for `History`
+   * broadcasts after engine state changes.
+   */
+  broadcast(msg: ServerMessage): void {
+    const line = JSON.stringify(msg) + "\n";
+    for (const sock of this.clients) {
+      sock.write(line);
+    }
   }
 
   private sendFrame(sock: Socket<SessionState>, msg: ServerMessage): void {

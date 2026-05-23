@@ -3,18 +3,22 @@
 TypeScript reimplementation of `shore-daemon`. See `../../REWRITE.md` for the
 plan.
 
-## Current phase: 2 — config + workspace read
+## Current phase: 3 — message append + persistence
 
-Phases 0 (scaffold), 1 (compile + parity harness), and the handshake half
-of Phase 2 are done. Selecting a character now returns a real `History`
-snapshot with messages loaded from `active.jsonl`, normalized + tool-loop
-merged, byte-matching the Rust daemon for the fixture in
-`parity-traces/fixtures/handshake-character/`.
+Phases 0–2 are done. Phase 3 adds the user-message write path: clients
+send a `ClientMessage{text}`, the engine appends to `active.jsonl` via
+atomic rewrite, advances revision, and broadcasts the updated `History`
+to every connected client. The message persists across daemon restart.
+LLM calls are Phase 4.
 
-Still on Phase 2's "everything the handshake touches" list: the full model
-catalog (category → provider → model hierarchy) so `active_model` resolves
-to a real qualified name when defaults aren't set; image-data embedding;
-archive segments (display history shows them, handshake doesn't).
+Three parity scenarios green:
+- `handshake-empty` — no character selected.
+- `handshake-character` — single character with seeded messages.
+- `message-append` — empty fixture, client sends a message, restart,
+  verify the message survives in the next handshake's History.
+
+The message-append scenario uses fuzzy matching for `msg_id` (UUID) and
+`timestamp` (now-time) since neither is deterministic across runs.
 
 ## Run
 

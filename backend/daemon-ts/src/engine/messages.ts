@@ -1,14 +1,18 @@
 /**
- * `active.jsonl` reader + per-message normalize.
+ * `active.jsonl` reader + per-message normalize + MessageStore write path.
  *
- * Mirror of `backend/daemon/src/engine/messages.rs::MessageStore::load` and
- * `core/protocol/src/types.rs::Message::normalize`. Read-only for Phase 2:
- * we parse the file, normalize each entry, and hand back a flat array. The
- * write path (append, atomic rewrite, compaction) lives in later phases.
+ * Mirror of `backend/daemon/src/engine/messages.rs::MessageStore` and
+ * `core/protocol/src/types.rs::Message::normalize`.
+ *
+ * The on-disk format strips the derived `content` field and any inline
+ * image `data` (see Rust's `serialize_for_storage`); wire snapshots keep
+ * them. Persist is a FULL REWRITE via atomic tmp+rename — not append-only,
+ * because rewrites for regen/edit/delete need the same atomic guarantee.
  */
 
 import fs from "node:fs";
 
+import { atomicWrite } from "./atomic.ts";
 import type { ContentBlock, Message, MessageAlternative } from "./types.ts";
 
 /** Read `active.jsonl`, return normalized messages. Missing file → []. */
@@ -119,6 +123,83 @@ export function deriveContentFromBlocks(blocks: ContentBlock[], includeToolResul
     }
   }
   return parts.join("\n");
+}
+
+// ── storage / write path ──────────────────────────────────────────────
+
+/**
+ * Serialize a Message for on-disk storage.
+ *
+ * Mirror of `Message::serialize_for_storage`: drop the redundant `content`
+ * field (it's derived from `content_blocks` on load) and strip inline
+ * image `data` (disk uses paths, the wire embeds bytes).
+ */
+export function serializeForStorage(msg: Message): string {
+  const stored: Record<string, unknown> = {
+    msg_id: msg.msg_id,
+    role: msg.role,
+    timestamp: msg.timestamp,
+    images: msg.images.map((img) => {
+      const out: Record<string, unknown> = { path: img.path };
+      if (img.caption !== undefined) out["caption"] = img.caption;
+      return out;
+    }),
+    content_blocks: msg.content_blocks,
+  };
+  if (msg.alt_index !== undefined) stored["alt_index"] = msg.alt_index;
+  if (msg.alt_count !== undefined) stored["alt_count"] = msg.alt_count;
+  if (msg.alternatives && msg.alternatives.length > 0) {
+    stored["alternatives"] = msg.alternatives.map(serializeAlternativeForStorage);
+  }
+  return JSON.stringify(stored);
+}
+
+function serializeAlternativeForStorage(alt: MessageAlternative): Record<string, unknown> {
+  return {
+    images: alt.images.map((img) => {
+      const out: Record<string, unknown> = { path: img.path };
+      if (img.caption !== undefined) out["caption"] = img.caption;
+      return out;
+    }),
+    content_blocks: alt.content_blocks,
+    timestamp: alt.timestamp,
+  };
+}
+
+/**
+ * In-memory message store backed by `active.jsonl`. Persists via full
+ * rewrite (atomic tmp+rename) on every mutation — matches the Rust impl,
+ * which uses the same atomic write for regen/edit/delete and keeps the
+ * code path uniform.
+ */
+export class MessageStore {
+  constructor(
+    private readonly activeJsonlPath: string,
+    private messages: Message[] = [],
+  ) {}
+
+  static load(activeJsonlPath: string): MessageStore {
+    return new MessageStore(activeJsonlPath, loadActiveMessages(activeJsonlPath));
+  }
+
+  all(): Message[] {
+    return this.messages;
+  }
+
+  count(): number {
+    return this.messages.length;
+  }
+
+  /** Append a message and persist. */
+  append(msg: Message): void {
+    this.messages.push(msg);
+    this.persist();
+  }
+
+  private persist(): void {
+    const buf = this.messages.map(serializeForStorage).join("\n") + (this.messages.length > 0 ? "\n" : "");
+    atomicWrite(this.activeJsonlPath, buf);
+  }
 }
 
 // ── narrowing helpers ─────────────────────────────────────────────────

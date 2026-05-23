@@ -1,0 +1,2 @@
+# Parity-fixture config. Intentionally minimal — no defaults.model and no
+# [[models]] entries, so the handshake `active_model` falls back to null.

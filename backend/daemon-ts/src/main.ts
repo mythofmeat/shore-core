@@ -2,18 +2,20 @@
 /**
  * shore-daemon-ts entry point.
  *
- * Phase 2: resolve dirs, load config, discover characters, build the
- * handshake provider, then start the SWP server. No append/regen/LLM
- * yet — that's Phase 3+.
+ * Phase 3: handshake snapshot reads from a persistent EngineRegistry,
+ * ClientMessage appends to the active.jsonl via the engine, and engine
+ * broadcasts fan out to all connected clients as History frames. No LLM
+ * call yet — that's Phase 4.
  */
 
 import { characterMetadata, discoverCharacters } from "./characters/registry.ts";
 import { loadConfig, firstChatModelQualifiedName, type LoadedConfig } from "./config/loader.ts";
-import { engineForCharacter } from "./engine/engine.ts";
+import { EngineRegistry } from "./engine/engine.ts";
+import type { Message } from "./engine/types.ts";
 import { resolveShoreDirs } from "./runtime/dirs.ts";
 import { Registry } from "./runtime/registry.ts";
 import { SwpServer } from "./swp/server.ts";
-import type { HandshakeProvider } from "./swp/server.ts";
+import type { HandshakeProvider, MessageHandler } from "./swp/server.ts";
 
 interface ParsedArgs {
   addr: string;
@@ -97,19 +99,43 @@ async function main(): Promise<void> {
   const id = instanceId ?? generateInstanceId();
 
   const config = loadConfig(dirs.config);
-  const handshake = buildHandshakeProvider(config, dirs.config, dirs.data);
+
+  // EngineRegistry is constructed before the server so we can wire the
+  // broadcast callback at engine-construction time (engines are lazily
+  // created on first use; each one captures the broadcast target).
+  let serverRef: SwpServer | undefined;
+  const engines = new EngineRegistry(dirs.data, {
+    onBroadcast: (snapshot) => {
+      if (!serverRef) return;
+      serverRef.broadcast({
+        type: "history",
+        messages: snapshot.messages,
+        ...(snapshot.active_start !== 0 ? { active_start: snapshot.active_start } : {}),
+        // engine.broadcast_history in Rust emits config={} (the
+        // active_model/private fields are only added at handshake time).
+        config: {},
+        selected_character: snapshot.selected_character,
+        revision: snapshot.revision,
+      });
+    },
+  });
+
+  const handshake = buildHandshakeProvider(config, dirs.config, engines);
+  const onMessage = buildMessageHandler(engines);
 
   const server = new SwpServer({
     host,
     port,
     serverName: "shore-daemon-ts",
     handshake,
+    onMessage,
     onClient: (clientType, clientName, character) => {
       console.log(
         `[shore-daemon-ts] client connected: type=${clientType} name=${clientName} character=${character ?? "<none>"}`,
       );
     },
   });
+  serverRef = server;
   const listen = server.start();
 
   const registry = Registry.atDefault(dirs.runtime);
@@ -154,7 +180,7 @@ async function main(): Promise<void> {
 function buildHandshakeProvider(
   config: LoadedConfig,
   configDir: string,
-  dataDir: string,
+  engines: EngineRegistry,
 ): HandshakeProvider {
   const activeModel = (): string | null =>
     config.app.defaults.model ?? firstChatModelQualifiedName(config) ?? null;
@@ -173,7 +199,7 @@ function buildHandshakeProvider(
           revision: 0,
         };
       }
-      const snap = engineForCharacter(dataDir, selectedCharacter).historySnapshot();
+      const snap = engines.get(selectedCharacter).historySnapshot();
       return {
         messages: snap.messages,
         ...(snap.active_start !== 0 ? { active_start: snap.active_start } : {}),
@@ -183,6 +209,53 @@ function buildHandshakeProvider(
       };
     },
   };
+}
+
+/**
+ * ClientMessage handler. Builds the user-turn `Message` to match the Rust
+ * handler in `backend/daemon/src/handler/task.rs` (msg_id format,
+ * timestamp format, role, single Text block) and appends via the engine.
+ *
+ * Phase 3 ignores `images` and `image_data` — those land with Phase 5.
+ * If the client sends a message before selecting a character, we surface
+ * an error instead of silently dropping.
+ */
+function buildMessageHandler(engines: EngineRegistry): MessageHandler {
+  return async (session, msg) => {
+    if (session.character === undefined) {
+      throw new Error("client sent a message before selecting a character");
+    }
+    const engine = engines.get(session.character);
+    const userMsg: Message = {
+      msg_id: `m_${crypto.randomUUID()}`,
+      role: "user",
+      content: msg.text,
+      images: [],
+      content_blocks: [{ type: "text", text: msg.text }],
+      timestamp: rfc3339LocalNow(),
+    };
+    await engine.appendMessage(userMsg);
+  };
+}
+
+/**
+ * Produce an RFC3339 timestamp with the local timezone offset, matching
+ * `chrono::Local::now().to_rfc3339()` in the Rust daemon. Node's
+ * `Date.toISOString()` always emits UTC (`Z`), so we format manually.
+ */
+function rfc3339LocalNow(): string {
+  const now = new Date();
+  const tzOffsetMinutes = -now.getTimezoneOffset();
+  const sign = tzOffsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(tzOffsetMinutes);
+  const tzh = String(Math.floor(abs / 60)).padStart(2, "0");
+  const tzm = String(abs % 60).padStart(2, "0");
+  const pad = (n: number, w = 2) => String(n).padStart(w, "0");
+  const ms = String(now.getMilliseconds()).padStart(3, "0");
+  return (
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${ms}${sign}${tzh}:${tzm}`
+  );
 }
 
 await main();

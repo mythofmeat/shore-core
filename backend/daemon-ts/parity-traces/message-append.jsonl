@@ -1,0 +1,7 @@
+{"dir":"s2c","phase":"live","frame":{"type":"hello","v":1,"server_name":"shore-daemon","characters":[{"name":"scout"}]}}
+{"dir":"c2s","phase":"live","frame":{"type":"hello","client_type":"cli","client_name":"msg-append-capture","character":"scout"}}
+{"dir":"s2c","phase":"live","frame":{"type":"history","messages":[],"config":{"active_model":null,"private":false},"selected_character":"scout","revision":0}}
+{"dir":"c2s","phase":"live","frame":{"type":"message","text":"hello daemon"}}
+{"dir":"s2c","phase":"restart","frame":{"type":"hello","v":1,"server_name":"shore-daemon","characters":[{"name":"scout"}]}}
+{"dir":"c2s","phase":"restart","frame":{"type":"hello","client_type":"cli","client_name":"msg-append-capture-restart","character":"scout"}}
+{"dir":"s2c","phase":"restart","frame":{"type":"history","messages":[{"msg_id":"m_f4f86cb8-0d43-4e68-bdf9-d920b2feb249","role":"user","content":"hello daemon","images":[],"content_blocks":[{"type":"text","text":"hello daemon"}],"timestamp":"2026-05-23T12:30:56.197396936+10:00"}],"config":{"active_model":null,"private":false},"selected_character":"scout","revision":0}}

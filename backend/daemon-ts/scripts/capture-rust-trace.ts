@@ -117,11 +117,7 @@ try {
 
   sock.end();
 
-  const file = Bun.file(outPath).writer();
-  for (const entry of trace) {
-    file.write(JSON.stringify(entry) + "\n");
-  }
-  await file.end();
+  await Bun.write(outPath, trace.map((e) => JSON.stringify(e)).join("\n") + "\n");
 
   console.log(`wrote ${trace.length} frames → ${outPath}`);
   for (const entry of trace) {
