@@ -1,0 +1,20 @@
+{
+  "name": "shore-daemon-ts",
+  "version": "0.0.0-phase0",
+  "description": "Shore daemon (TypeScript reimplementation). See REWRITE.md.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "build": "bun build src/main.ts --compile --outfile dist/shore-daemon",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  }
+}
