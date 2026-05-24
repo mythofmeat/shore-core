@@ -892,12 +892,20 @@ What 8c does NOT do:
 - [x] Validation docs: `README.md`, `ARCHITECTURE.md`, and `AGENTS.md` now
   list the TS daemon preview install/typecheck/test/build/compiled-smoke gate
   alongside the existing Rust checks.
-- `shore-daemon-ts` ships alongside `shore-daemon` for one release. Users
-  opt in by installing/running the TS preview binary or service.
-- Once stable in the wild, `shore-daemon-ts` becomes the default.
-- Rust daemon code moves to `attic/` or is deleted — decide at cutover.
-- **Exit criterion:** no live failures reported on the TS daemon for one
-  release cycle. Rust daemon retired.
+- [ ] Preview soak starts: publish a `shore-daemon-ts-v*` tag, verify the
+  repo-arch package, install/run `shore-daemon-ts.service`, and record the
+  start evidence from `docs/DAEMON_TS_CUTOVER.md`.
+- [ ] Preview soak completes: one full release cycle of opt-in TS daemon
+  traffic finishes with no live failures attributable to the TS daemon. Any
+  code fix for a live TS-daemon failure restarts the soak clock from the fixed
+  preview release.
+- [ ] Default switch lands: `shore-daemon-ts` becomes the default daemon
+  package/service path, with migration and rollback notes captured in the
+  cutover PR.
+- [ ] Rust daemon retired: `backend/daemon` is moved to `attic/` or deleted by
+  the cutover decision.
+- **Exit criterion:** preview soak complete, TS daemon is the default, and the
+  Rust daemon is retired.
 
 ## Things to specifically preserve from the Rust impl
 
