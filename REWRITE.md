@@ -727,21 +727,86 @@ What 8a does NOT do (deferred to 8b/8c):
   (`heartbeat`/`heartbeat_tool_loop`/`keepalive` call types — the
   Phase-7 deferred item).
 
-#### Phase 8b–8d: scheduler + heartbeat + keepalive (pending)
+#### Phase 8b: heartbeat state machine + `set_next_wake` wiring (done, 2026-05-24)
 
-- Per-character autonomy state machine.
-- Keepalive pings to maintain the prompt cache TTL.
-- Heartbeat tick that rebuilds the warmed prefix.
-- **Wire up the tool-side fallbacks landed in 4c.2:**
-  - `set_next_wake` currently errors with "only available during
-    heartbeat ticks" when `ctx.scheduleNextWake` is undefined. Wire the
-    real scheduler onto the heartbeat context and add a test that
-    asserts the hook gets called with the clamped hours + reason. The
-    schema stays in the registry during normal user turns regardless —
-    that's load-bearing for cache stability.
+- [x] `src/autonomy/heartbeat.ts` — 1:1 port of
+  `backend/daemon/src/autonomy/heartbeat.rs`. Same constants
+  (`MIN_WAKE_INTERVAL_MS=1h`, `MAX_WAKE_INTERVAL_MS=48h`); same
+  `HeartbeatAction.{None,RunTick}` enum; same `HeartbeatClock` surface
+  (`tick`, `schedule`, `onUserMessage`, `restore`, `forceWake`,
+  `forceDormant`, `forceActive`, `nextWake`, `ticksWithoutUser`,
+  `maxIdleTicks`, `lastUserAt`, `default/minWake/maxSilent` accessors,
+  `isDormant`, `stateAt`). `performance.now()`-style monotonic ms
+  stands in for tokio's `Instant`. Preserves the four-step `tick()`
+  ordering verbatim (bootstrap-when-undefined → not-due → abandonment
+  guard → fire-and-clear), the `schedule()` clamp-to-bounds, and
+  `onUserMessage()`'s `max(existing, now+minWake)` deadline push.
+- [x] `src/autonomy/registry.ts` — `AutonomyRegistry` now owns a
+  `Map<string, HeartbeatClock>` alongside the activity trackers.
+  `ensureState(engine)` creates the clock if absent;
+  `notifyUserMessage(name)` forwards to `clock.onUserMessage(now)`;
+  new `scheduleNextWake(name, hours, reason)` is the implementation
+  behind the `ctx.scheduleNextWake` hook that `set_next_wake` consumes.
+  Returns the same plain-string payload as Rust's
+  `schedule_next_wake_in_state` (`json!(format!("Scheduled next moment
+  in {h:.1} hours."))`) so wire-shape parity is preserved through the
+  tool's downstream `JSON.stringify(result)`. Default `HeartbeatConfig`
+  lives in the registry until the config-loader hookup in 8c.
+- [x] `src/tools/registry.ts` — widened `ScheduleNextWake` return type
+  from `Record<string, unknown>` to `unknown` so the registry's string
+  return matches the Rust wire format. No other changes to
+  `set_next_wake` — the 4c.2 refusal path (throws when
+  `ctx.scheduleNextWake === undefined`) remains intact for user turns.
+- [x] Tests:
+  - `tests/heartbeat.test.ts` mirrors the full Rust
+    `heartbeat.rs::tests` block (21 tests: lifecycle, tick-count guard,
+    silent-duration guard, schedule clamping below/above bounds,
+    on_user_message reset/preserve/push/bootstrap-from-none/wake-from-
+    abandoned, restore with future and past wakes, state_at labels).
+  - `tests/autonomy_registry.test.ts` (5 tests) covers the integration:
+    ghost-character throw, end-to-end set_next_wake → clock mutation
+    with wire-shape assertion, below-minimum clamping, notifyUserMessage
+    forwarding into the clock, and the 4c.2 refusal path still firing.
+  - `bun test` 370 pass / 7 skip / 0 fail; `bun run typecheck` clean.
+- **Exit criterion:** `set_next_wake` is callable end-to-end through a
+  test harness with a real clock-backed `ctx.scheduleNextWake` hook —
+  no more "only available during heartbeat ticks" rejection when a
+  driver supplies the hook. Met as of 2026-05-24.
+
+What 8b does NOT do (deferred to 8c/8d):
+
+- The ~30s ticker loop / `tick_character` orchestrator that calls
+  `clock.tick()` per character — no production driver yet, the clock
+  is exercised only via tests (8c).
+- The actual LLM dispatch when `tick()` returns `RunTick` (the private
+  heartbeat call with tools + system marker) — 8d.
+- `CacheKeepalive` port (`cache_keepalive.rs`) and the cross-link from
+  `clock.schedule(...)` → `keepalive.set_next_wake(...)` — 8c.
+- HeartbeatConfig in `src/config/loader.ts` — still hardcoded inside
+  the registry for now; 8c hooks it into `shore-config`.
+- Persistence to `autonomy_state.json` (`save_state` / `load_state` /
+  `restore_from_persisted` in `manager.rs`) — 8c.
+- `HeartbeatLog` JSONL events and the autonomy/heartbeat ledger rows
+  (`heartbeat`/`heartbeat_tool_loop`/`keepalive` call types — the
+  Phase-7 deferred item) — 8d.
+
+#### Phase 8c–8d: ticker + keepalive + LLM dispatch (pending)
+
+- Per-character ~30s ticker loop in `main.ts` driving `clock.tick()`
+  and (8c) `keepalive.tick()`.
+- Port of `cache_keepalive.rs` — separate clock that pings to keep the
+  prompt cache TTL warm; mirrored from `clock.schedule()` so guard-trip
+  propagates.
+- Persistence: `autonomy_state.json` save/load, restore on daemon
+  startup (RFC3339 wall-clock ↔ monotonic bridge).
+- HeartbeatConfig loaded from `shore-config::app::HeartbeatConfig` via
+  the existing `src/config/loader.ts` pipeline.
+- (8d) Real LLM dispatch on `RunTick`: private message with tools,
+  `set_next_wake` hook wired through `GenerateOptions.scheduleNextWake`,
+  `HeartbeatLog` JSONL append, ledger rows with
+  `call_type='heartbeat'`/`'heartbeat_tool_loop'`/`'keepalive'`.
 - **Exit criterion:** keepalive interval respected, no stale-cache
   rebuilds, no extra LLM calls vs. the Rust daemon under the same input.
-  AND `set_next_wake` is exercised in tests with the real hook in place.
 
 ### Phase 9: cutover
 

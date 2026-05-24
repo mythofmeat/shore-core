@@ -221,7 +221,7 @@ export function normalizeRetrievalConfig(
 export type ScheduleNextWake = (
   hoursFromNow: number,
   reason: string,
-) => Promise<Record<string, unknown>> | Record<string, unknown>;
+) => Promise<unknown> | unknown;
 
 /**
  * Per-character activity stats hook, surfaced by `activity_heatmap`.
