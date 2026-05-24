@@ -1148,11 +1148,38 @@ scheduled soak/cutover items are blocked on these.
     (the wiring threads it through, but the LLM call falls back to fresh).
     Audit blocker #12 — needs a separate slice to land the cache-preserving
     path.
-- [ ] **Wire dreaming.** Drive `runLibrarianSweep` from the per-character
-  tick when `[memory.dreaming].enabled` is true, with the same
-  `next_dream_attempt_at` / `dream_failure_count` exponential backoff as
-  Rust (`autonomy/manager.rs:1290`). Add a `memory_dream` / `memory_dreams`
-  command path so manual `shore memory dream` works. (Audit blocker #2.)
+- [x] **Wire dreaming (done, 2026-05-24).** Mirror of
+  `autonomy/manager.rs:1279` `execute_scheduled_dream` landed in TS:
+  - `src/autonomy/inline_dreaming.ts` — resolves model + api key, calls
+    `runLibrarianSweep`, translates outcome into `notifyDreamingSuccess`
+    (clear backoff) / `notifyDreamingFailed` (increment + back off).
+  - `AutonomyRegistry` gained per-character dreaming state
+    (`nextAttemptAtMs`, `failureCount`, `running`) plus the
+    `notifyDreaming*` methods and `dreamingState` accessor. Tick arm
+    fires `runScheduledDream` when `autonomy.enabled &&
+    dreaming.enabled && !running && now >= nextAttemptAtMs`.
+    `backgroundRetryDelayMs` mirrors Rust's `background_retry_delay`
+    (60s × 2^n, capped at 1h).
+  - `src/memory/dreaming_schedule.ts` — `isDueNow(frequency, lastRunAt)`
+    using `croner` (new dep). Mirror of Rust's `is_due`
+    (`memory/dreaming.rs:1154`). Cron parsing as a battle-tested library
+    is preferable to hand-rolling the 460-line `core/config/src/cron.rs`.
+  - `runLibrarianSweep` now gates on `isDueNow` (matching Rust's check at
+    `dreaming.rs:258`). `force` and `dryRun` still skip the gate for
+    manual `shore memory dream` paths.
+  - `AutonomyRegistry` accepts a `dreamingConfig` option (defaults from
+    `config.memory.dreaming` already loaded by the loader).
+  - 12 new tests in `tests/dreaming_wiring.test.ts` cover `isDueNow`
+    (daily, weekly, never-ran, invalid cron, malformed timestamp), the
+    backoff state machine, and the tick-arm gating (enabled flags,
+    callback wired, backoff window, double-fire prevention).
+  - Live `scripts/dreaming-smoketest.ts` — sets a 1-minute cron,
+    handshakes the character, waits for the first 10s tick to fire
+    dreaming, asserts `DREAMS.md` is appended and `dreams/state.json`
+    has `runs >= 1`. Passes against haiku-4.5 via OpenRouter.
+  - Manual `memory_dream` / `memory_dreams` command path still pending —
+    requires the wider command dispatcher work (audit blocker #3). The
+    autonomous path that the audit actually flagged is live.
 - [ ] **Port the missing command surface.** Bring the TS dispatcher up from
   2 to 35 commands. At minimum, the following are user-visible cutover
   blockers: `status`, `list_characters`, `switch_character`, `list_models`,

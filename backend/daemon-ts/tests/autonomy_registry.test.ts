@@ -191,6 +191,7 @@ describe("AutonomyRegistry × set_next_wake", () => {
       keepalive: CacheKeepaliveAction.None,
       guardTripped: false,
       runIdleCompaction: false,
+      runScheduledDream: false,
     });
     now += 61_000;
     expect(registry.tickCharacter("dana").heartbeat).toBe(HeartbeatAction.RunTick);

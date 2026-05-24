@@ -42,6 +42,10 @@ import {
   DEFAULT_COMPACTION_CONFIG,
   type CompactionConfig,
 } from "../memory/compaction/types.ts";
+import {
+  defaultDreamingConfig,
+  type DreamingConfig,
+} from "../memory/dreaming.ts";
 
 const BACKFILL_WINDOW_DAYS = 90;
 const STATE_VERSION = 4;
@@ -70,6 +74,36 @@ interface CompactionStateEntry {
   pending: boolean;
   activeTurnCount: number;
   lastActivityMs: number;
+}
+
+/**
+ * Per-character dreaming retry state. Mirror of the dream-related fields
+ * on Rust's `AutonomyState` (manager.rs:138-141):
+ *
+ * - `nextAttemptAtMs` — earliest monotonic time at which the next
+ *   scheduled dream attempt is allowed. Updated by
+ *   `notifyDreamingFailed` to back the retry off; cleared by
+ *   `notifyDreamingSuccess` or a successful skip.
+ * - `failureCount` — consecutive scheduled dreaming failures.
+ *   Exponential backoff via `backgroundRetryDelay`.
+ * - `running` — set true while a dream is in flight so the tick doesn't
+ *   double-fire (analogous to compaction's `triggered`).
+ */
+interface DreamingStateEntry {
+  nextAttemptAtMs?: number;
+  failureCount: number;
+  running: boolean;
+}
+
+/**
+ * Mirror of `background_retry_delay` (manager.rs:150). Exponential
+ * backoff starting at 60 seconds, doubling each failure up to a 1-hour
+ * cap. failureCount must be ≥1 (the success path doesn't call this).
+ */
+function backgroundRetryDelayMs(failureCount: number): number {
+  const exponent = Math.min(6, Math.max(0, failureCount - 1));
+  const secs = Math.min(3600, 60 * Math.pow(2, exponent));
+  return secs * 1000;
 }
 
 const DEFAULT_AUTONOMY_CONFIG: AutonomyConfig = {
@@ -107,12 +141,22 @@ export interface TickActions {
    * up the pending flag on the user's next message.
    */
   runIdleCompaction: boolean;
+  /**
+   * True when the tick detected that dreaming is past its retry-backoff
+   * window AND `onScheduledDream` is wired. The runner itself re-checks
+   * the cron schedule (the tick only enforces backoff + the autonomy +
+   * dreaming enabled flags). Skip vs. real-work decision lives inside
+   * the runner so the same gating logic isn't duplicated in two places.
+   */
+  runScheduledDream: boolean;
 }
 
 export interface AutonomyRegistryOptions {
   autonomyConfig?: AutonomyConfig;
   /** Compaction config — drives the idle/max-turns trigger inside the tick. */
   compactionConfig?: CompactionConfig;
+  /** Dreaming config — drives the scheduled-dream tick + cron gate. */
+  dreamingConfig?: DreamingConfig;
   /** Start the per-character 10s ticker as states are first ensured. */
   autoStartTicker?: boolean;
   /** Injectable monotonic clock for deterministic tests. */
@@ -130,6 +174,15 @@ export interface AutonomyRegistryOptions {
    * `backend/daemon/src/autonomy/manager.rs:1172`.
    */
   onIdleCompaction?: (characterName: string) => Promise<void> | void;
+  /**
+   * Scheduled-dream runner. Invoked from the per-character tick when
+   * `autonomy.enabled && dreaming.enabled` AND the per-character
+   * backoff window is past. The runner is expected to itself call
+   * `runLibrarianSweep`, which re-checks the cron schedule via
+   * `isDueNow`; the tick does not duplicate that gate. Mirror of
+   * `execute_scheduled_dream` (manager.rs:1279).
+   */
+  onScheduledDream?: (characterName: string) => Promise<void> | void;
 }
 
 export class AutonomyRegistry {
@@ -139,12 +192,14 @@ export class AutonomyRegistry {
   private readonly heartbeatLogs = new Map<string, HeartbeatLog>();
   private readonly lastRequests = new Map<string, ChatRequest>();
   private readonly compactionStates = new Map<string, CompactionStateEntry>();
+  private readonly dreamingStates = new Map<string, DreamingStateEntry>();
   private readonly dataDirs = new Map<string, string>();
   private readonly dirty = new Set<string>();
   private readonly tickers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly ticking = new Set<string>();
   private readonly autonomyConfig: AutonomyConfig;
   private readonly compactionConfig: CompactionConfig;
+  private readonly dreamingConfig: DreamingConfig;
   private readonly autoStartTicker: boolean;
   private readonly nowMs: () => number;
   private readonly wallNow: () => Date;
@@ -154,17 +209,22 @@ export class AutonomyRegistry {
   private readonly onIdleCompaction:
     | ((characterName: string) => Promise<void> | void)
     | undefined;
+  private readonly onScheduledDream:
+    | ((characterName: string) => Promise<void> | void)
+    | undefined;
 
   constructor(options: AutonomyRegistryOptions = {}) {
     this.autonomyConfig = options.autonomyConfig ?? DEFAULT_AUTONOMY_CONFIG;
     this.compactionConfig = sanitizeCompactionConfig(
       options.compactionConfig ?? DEFAULT_COMPACTION_CONFIG,
     );
+    this.dreamingConfig = options.dreamingConfig ?? defaultDreamingConfig();
     this.autoStartTicker = options.autoStartTicker ?? false;
     this.nowMs = options.nowMs ?? (() => performance.now());
     this.wallNow = options.wallNow ?? (() => new Date());
     this.onTickActions = options.onTickActions;
     this.onIdleCompaction = options.onIdleCompaction;
+    this.onScheduledDream = options.onScheduledDream;
   }
 
   /** Idempotent — first call backfills from on-disk history. */
@@ -212,6 +272,7 @@ export class AutonomyRegistry {
       activeTurnCount: engine.messageCount(),
       lastActivityMs: this.nowMs(),
     });
+    this.dreamingStates.set(name, { failureCount: 0, running: false });
 
     const timestamps = collectBackfillTimestamps(engine);
     if (timestamps.length > 0) {
@@ -352,6 +413,51 @@ export class AutonomyRegistry {
   }
 
   /**
+   * Called by the dreaming runner after `runLibrarianSweep` returns
+   * (success OR a skip from the cron gate). Mirror of the Ok(_) arms of
+   * `execute_scheduled_dream` (manager.rs:1301-1322): clear retry
+   * backoff so the next tick is free to re-check the cron gate.
+   */
+  notifyDreamingSuccess(characterName: string): void {
+    const dreaming = this.dreamingStates.get(characterName);
+    if (dreaming === undefined) return;
+    dreaming.failureCount = 0;
+    delete dreaming.nextAttemptAtMs;
+    dreaming.running = false;
+    this.markDirty(characterName);
+  }
+
+  /**
+   * Called by the dreaming runner after `runLibrarianSweep` throws.
+   * Mirror of the Err(e) arm (manager.rs:1323-1337): increment failure
+   * count and back the next attempt off exponentially via
+   * `backgroundRetryDelay`.
+   */
+  notifyDreamingFailed(characterName: string): void {
+    const dreaming = this.dreamingStates.get(characterName);
+    if (dreaming === undefined) return;
+    dreaming.failureCount += 1;
+    dreaming.nextAttemptAtMs = this.nowMs() + backgroundRetryDelayMs(dreaming.failureCount);
+    dreaming.running = false;
+    this.markDirty(characterName);
+  }
+
+  /** Test/debug accessor for dreaming backoff state. */
+  dreamingState(characterName: string): {
+    failureCount: number;
+    nextAttemptAtMs: number | undefined;
+    running: boolean;
+  } | undefined {
+    const d = this.dreamingStates.get(characterName);
+    if (d === undefined) return undefined;
+    return {
+      failureCount: d.failureCount,
+      nextAttemptAtMs: d.nextAttemptAtMs,
+      running: d.running,
+    };
+  }
+
+  /**
    * Mirrors `AutonomyManager::activity_stats` — returns the cached stats
    * and the raw message count, or `undefined` if the character has no
    * state yet. The `messageCount` value is the tool's `total_messages` /
@@ -483,12 +589,34 @@ export class AutonomyRegistry {
       }
     }
 
+    let runScheduledDream = false;
+    const dreaming = this.dreamingStates.get(characterName);
+    if (
+      dreaming !== undefined
+      && !dreaming.running
+      && this.autonomyConfig.enabled
+      && this.dreamingConfig.enabled
+      && this.onScheduledDream !== undefined
+    ) {
+      const past = dreaming.nextAttemptAtMs === undefined
+        || now >= dreaming.nextAttemptAtMs;
+      if (past) {
+        // Mark `running` so subsequent ticks don't re-fire while the
+        // dispatch is in flight. The runner clears it via
+        // notifyDreamingSuccess / notifyDreamingFailed.
+        dreaming.running = true;
+        runScheduledDream = true;
+        this.markDirty(characterName);
+      }
+    }
+
     this.saveState(characterName);
     return {
       heartbeat,
       keepalive: keepaliveAction,
       guardTripped,
       runIdleCompaction,
+      runScheduledDream,
     };
   }
 
@@ -619,6 +747,20 @@ export class AutonomyRegistry {
             `[shore-daemon-ts] idle compaction failed for ${characterName}: ${(e as Error).message}`,
           );
           this.notifyCompactionFailed(characterName);
+        }
+      }
+      if (actions.runScheduledDream && this.onScheduledDream !== undefined) {
+        // Same pattern as compaction: the runner clears `running` via
+        // notifyDreamingSuccess / notifyDreamingFailed. A bare throw
+        // here (runner forgot to notify) is converted to "failed" so
+        // the state doesn't get stuck with `running=true` forever.
+        try {
+          await this.onScheduledDream(characterName);
+        } catch (e) {
+          console.warn(
+            `[shore-daemon-ts] scheduled dream failed for ${characterName}: ${(e as Error).message}`,
+          );
+          this.notifyDreamingFailed(characterName);
         }
       }
     } catch (e) {

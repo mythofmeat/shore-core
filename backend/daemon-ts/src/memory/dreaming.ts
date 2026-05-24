@@ -48,6 +48,7 @@ import {
   type MarkdownEntry,
 } from "./markdown_store.ts";
 import { workspaceIndexPath as buildWorkspaceIndexPath } from "./workspace_index.ts";
+import { isDueNow } from "./dreaming_schedule.ts";
 
 const DREAM_DATA_DIR = "dreams";
 const DREAM_STATE_FILE = "state.json";
@@ -201,6 +202,14 @@ export async function runLibrarianSweep(
   const memoryIndexPath = path.join(workspaceDir, MEMORY_INDEX_FILE);
   const statePath = dreamStatePath(opts.dataDir, opts.character);
   const state = readState(opts.dataDir, opts.configDir, opts.character);
+
+  // Cron-frequency gate. Mirror of Rust's `is_due` check at
+  // `memory/dreaming.rs:258`. `force` and `dryRun` skip the gate — those
+  // are the manual `shore memory dream` paths. Production scheduled
+  // sweeps go through here.
+  if (!force && !dryRun && !isDueNow(cfg.frequency, state.last_run_at)) {
+    return undefined;
+  }
   const store = MarkdownMemoryStore.open(memoryDir);
   const before = snapshotMemoryFiles(store, memoryIndexPath);
   const ranAtDate = new Date();

@@ -16,6 +16,10 @@ import {
   buildInlineCompactionRunner,
   type InlineCompactionRunner,
 } from "./autonomy/inline_compaction.ts";
+import {
+  buildInlineDreamingRunner,
+  type InlineDreamingRunner,
+} from "./autonomy/inline_dreaming.ts";
 import { AutonomyRegistry } from "./autonomy/registry.ts";
 import { characterMetadata, discoverCharacters } from "./characters/registry.ts";
 import type { ImageRef } from "./engine/types.ts";
@@ -197,11 +201,14 @@ async function main(): Promise<void> {
   });
   let autonomy: AutonomyRegistry;
   let inlineCompaction: InlineCompactionRunner;
+  let inlineDreaming: InlineDreamingRunner;
   autonomy = new AutonomyRegistry({
     autonomyConfig: config.app.behavior.autonomy,
     compactionConfig: config.memory.compaction,
+    dreamingConfig: config.memory.dreaming,
     autoStartTicker: true,
     onIdleCompaction: (characterName) => inlineCompaction(characterName),
+    onScheduledDream: (characterName) => inlineDreaming(characterName),
     onTickActions: (characterName, actions): Promise<void> => {
       const embedder = resolveOptionalEmbedder(config);
       return runAutonomyTickActions({
@@ -232,6 +239,23 @@ async function main(): Promise<void> {
     autonomy,
     ...(cacheForensics !== undefined ? { cacheForensics } : {}),
     broadcast: (frame) => serverRef?.broadcast(frame),
+  });
+  inlineDreaming = buildInlineDreamingRunner({
+    engines,
+    config,
+    dataDir: dirs.data,
+    configDir: dirs.config,
+    cacheDir: dirs.cache,
+    dreamingConfig: config.memory.dreaming,
+    catalog,
+    ledger,
+    autonomy,
+    ...(cacheForensics !== undefined ? { cacheForensics } : {}),
+    ...((): { embedder?: Embedder } => {
+      const e = resolveOptionalEmbedder(config);
+      return e !== undefined ? { embedder: e } : {};
+    })(),
+    retrievalConfig: config.memory.retrieval,
   });
 
   const handshake = buildHandshakeProvider(config, dirs.config, engines, autonomy);
