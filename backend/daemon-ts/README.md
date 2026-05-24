@@ -15,6 +15,7 @@ heartbeat/keepalive autonomy from the ticker.
 The remaining rewrite work is Phase 9 cutover: ship the TS daemon alongside
 the Rust daemon for one release cycle, gather live failure data, then decide
 when to make it the default and retire the Rust daemon.
+The cutover runbook lives at `../../docs/DAEMON_TS_CUTOVER.md`.
 
 Representative checks currently green:
 - `handshake-empty` — no character selected.

@@ -886,6 +886,9 @@ What 8c does NOT do:
 - [x] CI cutover gate: `.github/workflows/ci.yml` now runs the TS daemon's
   frozen Bun install, typecheck, full test suite, compiled build, and
   compiled smoketest on pushes and PRs alongside the Rust CI.
+- [x] Cutover runbook: `docs/DAEMON_TS_CUTOVER.md` defines the preview tag,
+  install/start, smoke, soak-evidence, failure-reset, default-switch, rollback,
+  and Rust-retirement decision gates for Phase 9b.
 - `shore-daemon-ts` ships alongside `shore-daemon` for one release. Users
   opt in by installing/running the TS preview binary or service.
 - Once stable in the wild, `shore-daemon-ts` becomes the default.

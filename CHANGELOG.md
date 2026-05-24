@@ -13,6 +13,8 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   Phase 9 side-by-side release soak.
 - Run the TypeScript daemon's Bun install, typecheck, test, build, and
   compiled smoke path in CI.
+- Add a `shore-daemon-ts` cutover runbook covering preview tagging,
+  install/start commands, soak evidence, and the default-switch decision gate.
 
 ### Removed (BREAKING)
 - The `claude_code` SDK provider, the `[chat.claude_code.*]` model namespace,

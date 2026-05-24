@@ -132,6 +132,8 @@ from crates.io):
 - [ARCHITECTURE.md](ARCHITECTURE.md) — runtime model, invariants, security,
   observability, and validation guidance.
 - [CONFIGURATION.md](CONFIGURATION.md) — config reference and examples.
+- [docs/DAEMON_TS_CUTOVER.md](docs/DAEMON_TS_CUTOVER.md) — TypeScript daemon
+  preview, soak, and default-switch runbook.
 - [AGENTS.md](AGENTS.md) — short entry map for coding agents.
 - [CLAUDE.md](CLAUDE.md) — shim for tools that look for a Claude-specific entry.
 - [CHANGELOG.md](CHANGELOG.md) — release history.
