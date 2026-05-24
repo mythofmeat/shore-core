@@ -1,12 +1,12 @@
 name: Build and publish Arch packages
 
-# Per-crate tags from release-plz drive separate Arch builds. shore-daemon
-# and shore-cli ship as independent packages so they can version (and
-# update) independently.
+# Per-crate tags from release-plz drive separate Arch builds. The TS daemon
+# preview is tagged manually during the side-by-side cutover soak.
 on:
   push:
     tags:
       - 'shore-daemon-v*'
+      - 'shore-daemon-ts-v*'
       - 'shore-cli-v*'
 
 jobs:
@@ -28,4 +28,13 @@ jobs:
     with:
       pkgbuild_dir: contrib/shore-cli
       extra_pacman_packages: "alsa-lib protobuf"
+    secrets: inherit
+
+  publish-daemon-ts:
+    if: startsWith(github.ref_name, 'shore-daemon-ts-v')
+    permissions:
+      contents: write
+    uses: mythofmeat/repo-arch/.github/workflows/publish-arch-rust.yml@main
+    with:
+      pkgbuild_dir: contrib/shore-daemon-ts
     secrets: inherit

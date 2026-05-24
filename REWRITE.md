@@ -878,6 +878,11 @@ What 8c does NOT do:
   `--config <PATH>` like the Rust daemon. The explicit file is loaded
   directly, while `.env`, `conf.d/`, character discovery, and prompt
   files are resolved relative to its parent directory.
+- [x] Preview release packaging: `.github/workflows/package.yml` now
+  listens for `shore-daemon-ts-v*` tags and publishes
+  `contrib/shore-daemon-ts`, so the TS daemon can enter the side-by-side
+  release soak through the same repo-arch package path as the Rust
+  daemon and CLI.
 - `shore-daemon-ts` ships alongside `shore-daemon` for one release. Users
   opt in by installing/running the TS preview binary or service.
 - Once stable in the wild, `shore-daemon-ts` becomes the default.

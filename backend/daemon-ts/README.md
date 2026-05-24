@@ -44,6 +44,10 @@ bun run build       # → dist/shore-daemon
 The preview Arch package installs that binary as `shore-daemon-ts` so it can
 live beside the Rust `shore-daemon`. See `../../contrib/shore-daemon-ts/`.
 
+Preview package releases are published from `shore-daemon-ts-v*` tags by the
+shared Arch packaging workflow. Use an Arch-safe tag suffix such as
+`shore-daemon-ts-v0.0.0_phase8d`; `makepkg` rejects hyphens in `pkgver`.
+
 ## Opt-in systemd service
 
 ```sh
