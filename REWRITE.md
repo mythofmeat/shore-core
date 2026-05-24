@@ -892,6 +892,9 @@ What 8c does NOT do:
 - [x] Validation docs: `README.md`, `ARCHITECTURE.md`, and `AGENTS.md` now
   list the TS daemon preview install/typecheck/test/build/compiled-smoke gate
   alongside the existing Rust checks.
+- [x] Mainline handoff: `daemon-ts-rewrite` is pushed to GitHub and draft PR
+  #36 (`https://github.com/mythofmeat/shore-core/pull/36`) is open against
+  `main`, giving the preview tag gate a path to an `origin/main` commit.
 - [ ] Preview soak starts: merge the rewrite branch to `origin/main`, publish
   a `shore-daemon-ts-v*` tag from that main commit, verify the repo-arch
   package, install/run `shore-daemon-ts.service`, and record the start
