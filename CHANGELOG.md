@@ -15,6 +15,8 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   compiled smoke path in CI.
 - Add a `shore-daemon-ts` cutover runbook covering preview tagging,
   install/start commands, soak evidence, and the default-switch decision gate.
+- Document the TypeScript daemon preview validation commands in the root
+  README, architecture validation guide, and agent entry map.
 
 ### Removed (BREAKING)
 - The `claude_code` SDK provider, the `[chat.claude_code.*]` model namespace,

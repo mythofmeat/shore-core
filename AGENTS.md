@@ -52,6 +52,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release -p shore-daemon -p shore-cli
 ```
 
+TypeScript daemon preview checks:
+
+```sh
+cd backend/daemon-ts
+bun install --frozen-lockfile
+bun run typecheck
+bun test
+bun run build
+bun run smoketest:compiled
+```
+
 Focused checks:
 
 ```sh

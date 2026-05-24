@@ -502,6 +502,17 @@ Release build gate:
 cargo build --release -p shore-daemon -p shore-cli
 ```
 
+TypeScript daemon preview gate:
+
+```sh
+cd backend/daemon-ts
+bun install --frozen-lockfile
+bun run typecheck
+bun test
+bun run build
+bun run smoketest:compiled
+```
+
 Before a release, also run relevant cache tests, live provider smoke tests if
 provider behavior changed, and Matrix live verification if Matrix behavior
 changed.
