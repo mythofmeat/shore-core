@@ -895,6 +895,8 @@ What 8c does NOT do:
 - [x] Mainline handoff: `daemon-ts-rewrite` is pushed to GitHub and draft PR
   #36 (`https://github.com/mythofmeat/shore-core/pull/36`) is open against
   `main`, giving the preview tag gate a path to an `origin/main` commit.
+- [x] PR verification: #36 is green after the rustfmt fix
+  (`ci / check`, `daemon-ts`, and `harness-check` passing).
 - [ ] Preview soak starts: merge the rewrite branch to `origin/main`, publish
   a `shore-daemon-ts-v*` tag from that main commit, verify the repo-arch
   package, install/run `shore-daemon-ts.service`, and record the start
