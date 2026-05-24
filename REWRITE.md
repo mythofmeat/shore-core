@@ -2,6 +2,188 @@
 
 **Status:** active, started 2026-05-23.
 
+## Parity audit (2026-05-24)
+
+The phase status lines below claim more than the code holds. This section is
+the corrective: every gap found in a top-to-bottom audit of
+`backend/daemon/src/` vs. `backend/daemon-ts/src/`, ordered by cutover impact.
+Phase 9b is **not** ready for soak until the cutover blockers below land.
+
+The per-phase notes after this section have been annotated in place to point at
+this audit where their original "done" claims overshoot.
+
+### Cutover blockers (Phase 9b cannot proceed)
+
+1. **Autonomous compaction is not wired.** `runCompaction`
+   (`backend/daemon-ts/src/memory/compaction/background.ts:77`) is implemented
+   and unit-tested, but no production code path imports `memory/compaction`.
+   Rust calls it from two sites: post-generation
+   (`backend/daemon/src/handler/task.rs:367` → `spawn_inline_compaction`, gated
+   on `AutonomyManager::should_compact_now`) and the per-character autonomy
+   tick (`backend/daemon/src/autonomy/manager.rs:1172` →
+   `execute_idle_compaction`). The TS handler (`src/llm/generate.ts`) has
+   neither. Net effect on a TS-only deployment: `active.jsonl` grows
+   unbounded, MEMORY.md is never refreshed from new turns, and the
+   `compact`/`memory` CLI commands don't exist.
+2. **Autonomous dreaming is not wired.** `runLibrarianSweep`
+   (`backend/daemon-ts/src/memory/dreaming.ts`) is implemented and
+   unit-tested; no production code path calls it. Rust drives it from
+   `autonomy/manager.rs:1290` (cron tick) and `commands/state/memory.rs:175`
+   (manual `shore memory dream`). No TS analogue for either. No `DREAMS.md`
+   audit entries are ever appended.
+3. **CLI command surface is ~6% implemented.** Rust's `commands/mod.rs:73`
+   dispatches **35** commands; the TS dispatcher
+   (`backend/daemon-ts/src/main.ts:697`) handles **2** (`inject_system_message`,
+   `usage`). Everything else returns `command "X" not implemented`. The
+   missing surface includes everything the CLI/TUI actually uses:
+   - Navigation: `list_characters`, `switch_character`, `character_info`
+   - Conversation: `log`, `history_page`, `get`, `edit`, `delete`, `alt`,
+     `list_alternatives`, `inject_system` (note also that the one inject
+     command TS ships is named `inject_system_message` — name drift from
+     Rust's `inject_system`)
+   - State: `status`, `list_models`, `model_info`, `switch_model`,
+     `reset_model`, `set_model_setting`, `model_settings`,
+     `memory_changelog`, `memory_dream`, `memory_dreams`, `memory`, `compact`,
+     `config`, `config_check`, `config_reset`, `diagnostics`, `heartbeat_log`,
+     `heartbeat_tick_now`, `heartbeat_set_dormant`, `heartbeat_set_active`
+   - Providers: `list_providers`, `refresh_provider_models`,
+     `refresh_all_provider_models`, `list_provider_models`
+4. **Preferences module is not ported.** Rust's `backend/daemon/src/preferences/mod.rs`
+   (1648 lines) owns global + per-character `models.toml` (selected model,
+   sampler defaults, per-`(provider, model)` temperature/top_p/thinking
+   overrides) and is the durable backing store for `switch_model`,
+   `set_model_setting`, `model_settings`, `reset_model`, plus the
+   `apply_sampler_overlay` call that overlays saved settings onto the
+   resolved model at request time (`handler/task.rs:134`). Nothing in TS
+   reads or writes those files; per-call overrides via SWP `overrides` are
+   the only way to bias a generation, and no settings survive a restart.
+5. **Multi-key credential fallback is not ported.** Rust wraps every LLM
+   call in `stream_with_credential_fallback`
+   (`backend/daemon/src/handler/key_fallback.rs`, 460 lines, invoked from
+   `handler/task.rs:283`). When a key fails with a credential-scoped
+   classifier (missing, invalid, exhausted quota, account rate limit), it
+   rotates non-stickily to the next configured key with the same
+   transient-retry budget. The TS adapters
+   (`backend/daemon-ts/src/llm/providers/*.ts`) resolve a single env var per
+   call and propagate failures unchanged. Anyone running multiple keys per
+   provider loses redundancy.
+
+### Major behavioral divergences (degraded relative to Rust)
+
+6. **Smart image resize + disk cache not ported.**
+   `backend/daemon/src/handler/resize.rs` (658 lines) does alpha detection
+   (transparent PNG stays PNG, opaque → JPEG), dimension floors at 2048px, an
+   XDG disk cache keyed on SHA-256, and async pre-warm via `spawn_blocking`
+   wired through `warm_image_cache` (`handler/task.rs:235`). TS
+   `backend/daemon-ts/src/llm/images.ts` (82 lines) does inline base64
+   conversion and a size cap — no resize, no format conversion, no caching.
+7. **Push notifications not ported.** `backend/daemon/src/notifications.rs`
+   (252 lines) ships notify-send / ntfy / custom shell backends gated on a
+   per-event toggle (autonomous message, cache warning, compaction complete,
+   error, message complete, usage warning). Threaded through the autonomy
+   manager, the handler, and the compaction task. TS has no equivalent.
+8. **Provider auto-discovery loop not ported.** Rust spawns a background task
+   on boot (`auto_discovery.rs`, 227 lines) that refreshes every enabled
+   provider's model catalog cache on a 24h cadence. TS catalog has a one-shot
+   `openrouter.ai/api/v1/models` fetcher (`llm/catalog.ts`) with no scheduler.
+9. **Config hot reload not ported.** Rust watches the config dir and reloads
+   on supported file changes (`hot_reload.rs`, 264 lines). TS reads config
+   once at startup; changing TOML requires a restart.
+10. **Prompt template upgrade manifest not ported.** Rust tracks SHA-256 of
+    stock templates in `templates.rs` (452 lines) so the daemon auto-upgrades
+    stock prompts without clobbering user edits in
+    `$XDG_CONFIG_HOME/shore/prompts/`. TS inlines templates as TS string
+    literals — there is no on-disk template override path at all, which is a
+    design regression, not just a port gap.
+11. **Diagnostics ring buffer absent.** Rust threads
+    `Arc<Mutex<Diagnostics>>` through every `CommandContext` for the
+    `diagnostics` command and key-fallback observability records. TS has
+    none, which is partly why `diagnostics` is in the missing-commands list
+    above.
+12. **Cached-prefix compaction LLM path is not threaded through.** The
+    `CompactionLlm.summarize(_, _, cachedRequest)` interface accepts a
+    cached request, but `runCompaction` never reads it from
+    `autonomy.cachedLastRequest(name)`. Even when compaction is wired
+    (blocker #1), it will start cold every time — the byte-for-byte cache
+    prefix reuse that Rust's `cached_compaction_request_matches_chat_prefix_byte_for_byte`
+    test pins won't fire.
+
+### Engine API surface
+
+13. **TS `ConversationEngine` is missing ~17 methods that Rust exposes.** The
+    TS class (`backend/daemon-ts/src/engine/engine.ts`) implements `name`,
+    `dataDir`, `historySnapshot`, `appendMessage`, and `rewindLastAssistantTurn`.
+    Rust additionally exposes `messages`, `message_count`, `turn_count`,
+    `segments`, `display_history`, `current_revision`,
+    `history_rewrite_generation`, `insert_message_by_timestamp`,
+    `edit_message`, `delete_message`, `truncate_after_last_user_turn`,
+    `messages_through_last_user_turn`, `pending_regen_alt`,
+    `replace_after_last_user_turn`, `set_alt`, `add_alt_candidate`,
+    `select_alt`, `reset`, `reload`, `broadcast_history`, `history_snapshot`
+    (with config). The conversation commands (edit/delete/alt/get/log)
+    cannot be wired without these.
+
+### Autonomy manager surface
+
+14. **`AutonomyManager` orchestration is mostly absent.** Rust's
+    `backend/daemon/src/autonomy/manager.rs` is 3582 lines. The TS
+    `AutonomyRegistry` (`src/autonomy/registry.ts`) is ~500 lines and ports
+    the activity tracker + heartbeat clock + cache-keepalive mirror only.
+    Rust additionally owns:
+    - `set_resources(llm_client, push_tx, loaded_config, notifier)` — the
+      dependency injection that lets the manager call into LLM, broadcast
+      to clients, and emit notifications. TS manager has no such handle.
+    - `reload_runtime_config(...)` — pumps in a fresh `LoadedConfig` after
+      `config_reset`; the autonomy + compaction subconfigs swap atomically.
+    - `notify_assistant_message` (TS only has `notifyUserMessage`).
+    - `notify_compaction_complete` / `notify_compaction_failed` — invalidate
+      cached request, reset trigger flags, log to heartbeat log, fire
+      notification.
+    - `should_compact_now(character, turn_count, context_tokens)` —
+      max_turns + max_context_tokens + idle pending gate.
+    - `heartbeat_tick_now` / `heartbeat_set_dormant` / `heartbeat_set_active`
+      / `set_paused` — debug commands.
+    - `status(character)` — the snapshot that powers the `status` command.
+    - `heartbeat_log(character, limit)` — the snapshot for `heartbeat_log`.
+    - `shutdown` — graceful drain of all tick tasks.
+    - The per-character tick loop body
+      (`character_tick_loop` → `tick_character`, ~250 lines): drives
+      compaction triggers (max_turns + idle), dreaming cron with
+      exponential backoff (`next_dream_attempt_at` / `dream_failure_count`),
+      dormant ping execution, post-action state save. None of this is in TS.
+
+### Catalog completeness (unverified gap)
+
+15. **`llm/catalog.ts` is 326 lines vs `effective_catalog.rs` at 1029 lines.**
+    The Rust file merges static catalog + provider registry + discovery cache
+    with explicit conflict rules (static wins by short or qualified name,
+    static-by-upstream-id wins over discovered for explicit fields).
+    Discovery cache refresh, `discovery.ignore`, and provider-key resolution
+    paths likely have gaps in TS. Needs a separate function-by-function
+    follow-up before cutover.
+
+### Subsystems intentionally or N/A-deferred (not blockers but flag)
+
+16. **`supervisor.rs`** (shore-matrix child process supervisor). N/A unless
+    the user is running the Matrix bridge.
+17. **`engine/tools.rs` (Rust, 890 lines)** is the in-engine tool dispatcher.
+    TS folded the equivalent surface into `tools/registry.ts` + the
+    `runToolLoop` orchestrator; behavior parity needs spot-checking but the
+    surface isn't a separate module.
+18. **`memory/markdown_query.rs`** and **`memory/retrieval.rs`** (267 lines
+    combined). Lexical+vector query helpers. TS folded these into
+    `memory/workspace_index.ts` and the tool-side dispatcher; spot-check
+    that the lexical fallback ranking matches.
+
+### Phase status corrections
+
+Where a phase below claims "done" but the audit found unwired or missing
+work, the phase section now carries an **Audit (2026-05-24)** note pointing
+at the specific gap above. Phases 4a–4c.1 and the cache-regression goal that
+motivated the rewrite remain genuinely done; the gaps cluster in 6b/6d
+(modules ported, wiring deferred and never landed) and 8a–8d (autonomy
+substrate ported, full state machine not).
+
 ## Why
 
 Months of bugs in the prompt path. We keep reimplementing provider semantics
@@ -498,6 +680,13 @@ What 6b does NOT do (intentionally deferred):
   TS land doesn't have the autonomy manager yet — that lives in Phase 8
   alongside heartbeat. `runCompaction` is a callable that can be wired
   in once the manager lands.
+  - **Audit (2026-05-24): still unwired.** Phase 8 landed the heartbeat +
+    keepalive substrate but did not extend `tick_character` to call
+    `runCompaction`, and `handler/task.rs::spawn_inline_compaction` has no
+    TS counterpart. See parity audit, blocker #1 + #12. The
+    `should_compact_now` callable, the `notify_compaction_complete` /
+    `notify_compaction_failed` notify hooks, and the cached-prefix LLM path
+    are all still missing on the TS side.
 - **No cached-prefix LLM path.** The fresh-prefix path is wired; the
   cache-preserving path that the Rust regression test
   `cached_compaction_request_matches_chat_prefix_byte_for_byte` pins is
@@ -600,6 +789,10 @@ What 6d does NOT do:
 
 - No autonomy/scheduler integration yet. Phase 8 owns cron due checks,
   background task spawning, and wake/heartbeat interaction.
+  - **Audit (2026-05-24): still unwired.** Phase 8 did not land the cron
+    integration for dreaming. `runLibrarianSweep` has no production caller in
+    TS. Rust drives it from `autonomy/manager.rs:1290` (cron) and
+    `commands/state/memory.rs:175` (manual). See parity audit, blocker #2.
 - No cached-request prefix reuse yet. Like compaction's cached-prefix
   optimization, this needs the Phase 8 autonomy manager's warmed request
   hook and the Phase 7 ledger/request mirror.
@@ -781,6 +974,29 @@ What 8b does NOT do (deferred to 8c/8d):
   (`heartbeat`/`heartbeat_tool_loop`/`keepalive` call types — the
   Phase-7 deferred item) — 8d.
 
+#### Phase 8a–8d audit note (2026-05-24)
+
+The substrate landed (activity tracker, heartbeat clock, keepalive, async
+heartbeat dispatch with system suffix + ledger rows + heartbeat.jsonl).
+What did NOT land, despite Phase 6b/6d implying these would be done here:
+
+- The 10s `tick_character` body in TS (`AutonomyRegistry.tickCharacter` /
+  `runTick`) drives heartbeat + keepalive only. It does not detect
+  compaction triggers (`max_turns`, `max_context_tokens`, `idle_trigger`),
+  does not check the dreaming cron window with backoff, and does not
+  execute `runCompaction` or `runLibrarianSweep`. See parity audit,
+  blockers #1, #2 and major item #14.
+- The notification surface (`NotificationService`) is not ported. Heartbeat
+  send / dormant / compaction-complete / cache-warning events have no fan-out.
+- The `set_resources(llm_client, push_tx, loaded_config, notifier)` shape
+  and `reload_runtime_config` are absent — there is no way for `config_reset`
+  to swap autonomy/compaction config without restart.
+- The autonomy-related commands (`heartbeat_log`, `heartbeat_tick_now`,
+  `heartbeat_set_dormant`, `heartbeat_set_active`, `status` insofar as it
+  needs `AutonomyStatus`) have no dispatcher entry on the TS side because
+  the command dispatcher itself stops at `inject_system_message` and
+  `usage`. See parity audit, blocker #3.
+
 #### Phase 8c: ticker + keepalive substrate (done, 2026-05-24)
 
 - [x] `src/autonomy/cache_keepalive.ts` ports `cache_keepalive.rs`:
@@ -897,6 +1113,97 @@ What 8c does NOT do:
   `main`, giving the preview tag gate a path to an `origin/main` commit.
 - [x] PR verification: #36 is green after the rustfmt fix
   (`ci / check`, `daemon-ts`, and `harness-check` passing).
+
+#### Phase 9b parity gaps (must land before preview soak starts)
+
+The 2026-05-24 audit found that the TS daemon's "ready for preview" state
+overstated what is wired. The items below must land — or be explicitly
+descoped with rationale — before the preview soak can begin. The previously
+scheduled soak/cutover items are blocked on these.
+
+- [x] **Wire autonomous compaction (done, 2026-05-24).** Mirror of
+  `handler/task.rs:367` `spawn_inline_compaction` + `tick_character`
+  compaction arm landed in TS:
+  - `src/autonomy/inline_compaction.ts` — emits `Phase{phase:"compacting"}`,
+    pulls `cachedLastRequest`, runs `runCompaction`, reloads engine,
+    notifies completion/failure.
+  - `AutonomyRegistry` gained `shouldCompactNow`, `notifyCompactionComplete`,
+    `notifyCompactionFailed`, `notifyAssistantMessage`, plus per-character
+    compaction state (`triggered`, `pending`, `activeTurnCount`,
+    `lastActivityMs`). `notifyUserMessage` now takes a message count.
+    `tickCharacter` checks the compaction trigger every 10s and either
+    fires `onIdleCompaction` inline or sets the `pending` flag for the
+    post-generation handler to pick up.
+  - `ConversationEngine` gained `reload()` and `messageCount()` (audit
+    item #13 — first two of the missing methods).
+  - `swp/types.ts` gained `ServerPhase` (`{type:"phase"}`) to match Rust's
+    `ServerMessage::Phase`.
+  - `LoadedConfig.memory.compaction` is now parsed from `[memory.compaction]`
+    (mirrors Rust defaults: 8 min, 16 max, 1800s idle, 200k tokens, 2 keep).
+  - 16 new tests in `tests/compaction_wiring.test.ts` cover the
+    `shouldCompactNow` decision matrix, the notify-complete/failed state
+    mutations, and the `tickCharacter` trigger (with/without
+    `onIdleCompaction` wired, idle threshold, min_turns floor).
+  - Caveat: `RealCompactionLlm.summarize` still ignores `cachedRequest`
+    (the wiring threads it through, but the LLM call falls back to fresh).
+    Audit blocker #12 — needs a separate slice to land the cache-preserving
+    path.
+- [ ] **Wire dreaming.** Drive `runLibrarianSweep` from the per-character
+  tick when `[memory.dreaming].enabled` is true, with the same
+  `next_dream_attempt_at` / `dream_failure_count` exponential backoff as
+  Rust (`autonomy/manager.rs:1290`). Add a `memory_dream` / `memory_dreams`
+  command path so manual `shore memory dream` works. (Audit blocker #2.)
+- [ ] **Port the missing command surface.** Bring the TS dispatcher up from
+  2 to 35 commands. At minimum, the following are user-visible cutover
+  blockers: `status`, `list_characters`, `switch_character`, `list_models`,
+  `model_info`, `switch_model`, `set_model_setting`, `model_settings`,
+  `reset_model`, `config`, `config_check`, `config_reset`, `compact`,
+  `memory`, `memory_dream`, `memory_dreams`, `memory_changelog`, `log`,
+  `history_page`, `get`, `edit`, `delete`, `alt`, `list_alternatives`,
+  `inject_system` (rename from current `inject_system_message`),
+  `heartbeat_log`, `heartbeat_tick_now`, `heartbeat_set_dormant`,
+  `heartbeat_set_active`, `list_providers`, `refresh_provider_models`,
+  `refresh_all_provider_models`, `list_provider_models`, `diagnostics`.
+  (Audit blocker #3.)
+- [ ] **Port the preferences module.** `backend/daemon/src/preferences/mod.rs`
+  → `src/preferences/`. Cover load/save for global + per-character
+  `models.toml`, `SamplerSettings`/`SamplerScopes` resolution,
+  `apply_sampler_overlay`, `resolve_active_for_character`,
+  `resolve_chat_model_for_character`, `resolve_background_model`. Wire the
+  overlay into the LLM-call request build in `src/llm/generate.ts`.
+  (Audit blocker #4.)
+- [ ] **Extend the `ConversationEngine` API.** Add the methods listed in
+  audit item #13 (edit/delete/alt machinery, segment accessors,
+  insert-by-timestamp, reload/reset, message_count/turn_count,
+  truncate_after_last_user_turn, etc.). Required by the new command
+  dispatchers above.
+- [ ] **Port multi-key credential fallback.** Decide first whether the
+  feature is in scope for cutover (single-key users don't need it).
+  If in scope: port `handler/key_fallback.rs` + the
+  `shore_llm::credentials` classifier into TS. (Audit blocker #5.)
+- [ ] **Decide on the major divergences.** For each of: smart image resize
+  (audit #6), push notifications (#7), provider auto-discovery refresh (#8),
+  config hot reload (#9), prompt template upgrade manifest (#10),
+  diagnostics ring buffer (#11) — either port, or write a short rationale
+  in this section for why cutover ships without it. The user-overridable
+  on-disk prompt template story (#10) is the only one of these that's a
+  *design regression*, not just a port gap; the others are degraded but
+  functional fallbacks.
+- [ ] **Catalog parity follow-up.** Walk
+  `effective_catalog.rs` (1029 lines) against `llm/catalog.ts` (326 lines)
+  function-by-function. Document what's actually missing and either port or
+  descope. (Audit item #15.)
+- [ ] **Autonomy manager orchestration.** Extend `AutonomyRegistry` with
+  the missing methods listed in audit item #14: `set_resources`,
+  `reload_runtime_config`, `notify_assistant_message`,
+  `notify_compaction_complete` / `_failed`, `should_compact_now`,
+  `heartbeat_tick_now` / `_set_dormant` / `_set_active`, `set_paused`,
+  `status` (returning `AutonomyStatus`), `heartbeat_log(name, limit)`,
+  graceful `shutdown`. Most are prerequisites for the commands listed in
+  the dispatcher item above.
+
+#### Phase 9b soak + cutover (blocked on parity gaps above)
+
 - [ ] Preview soak starts: merge the rewrite branch to `origin/main`, publish
   a `shore-daemon-ts-v*` tag from that main commit, verify the repo-arch
   package, install/run `shore-daemon-ts.service`, and record the start

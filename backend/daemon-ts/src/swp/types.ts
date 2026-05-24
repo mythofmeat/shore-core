@@ -186,6 +186,19 @@ export interface ServerCommandOutput {
   data: unknown;
 }
 
+/**
+ * Background-task phase marker. Mirrors `server_msg::Phase` — emitted by
+ * the daemon when long-running work (currently just `"compacting"`) begins
+ * after a generation. Clients render this as a status hint while they wait
+ * for the next history broadcast.
+ */
+export interface ServerPhase {
+  type: "phase";
+  rid?: string;
+  phase: string;
+  model?: string;
+}
+
 export type ServerMessage =
   | ServerHello
   | ServerHistory
@@ -198,4 +211,5 @@ export type ServerMessage =
   | ServerToolCall
   | ServerToolResult
   | ServerNewMessage
-  | ServerCommandOutput;
+  | ServerCommandOutput
+  | ServerPhase;

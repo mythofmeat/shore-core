@@ -38,11 +38,39 @@ import type { ConversationEngine } from "../engine/engine.ts";
 import type { Message } from "../engine/types.ts";
 import type { ChatRequest } from "../llm/types.ts";
 import type { AutonomyConfig } from "../config/loader.ts";
+import {
+  DEFAULT_COMPACTION_CONFIG,
+  type CompactionConfig,
+} from "../memory/compaction/types.ts";
 
 const BACKFILL_WINDOW_DAYS = 90;
 const STATE_VERSION = 4;
 const STATE_FILENAME = "autonomy_state.json";
 const TICK_INTERVAL_MS = 10_000;
+
+/**
+ * Per-character compaction trigger state. Mirror of the
+ * compaction-related fields on Rust's `AutonomyState`
+ * (`backend/daemon/src/autonomy/manager.rs:117`):
+ *
+ * - `triggered` — set when a trigger fires; cleared by
+ *   `notifyCompactionComplete` / `notifyCompactionFailed`. Prevents
+ *   re-firing the same compaction cycle from two paths (post-generation
+ *   handler and idle tick) at once.
+ * - `pending` — set by the idle tick when the trigger fired but no
+ *   inline compaction runner was wired. The post-generation handler's
+ *   `shouldCompactNow` consumes it on the user's next turn.
+ * - `activeTurnCount` — last observed `engine.messageCount()`. Compared
+ *   against `min_turns` / `max_turns`.
+ * - `lastActivityMs` — monotonic timestamp of the most recent user or
+ *   assistant message. Drives the idle trigger.
+ */
+interface CompactionStateEntry {
+  triggered: boolean;
+  pending: boolean;
+  activeTurnCount: number;
+  lastActivityMs: number;
+}
 
 const DEFAULT_AUTONOMY_CONFIG: AutonomyConfig = {
   enabled: false,
@@ -70,10 +98,21 @@ export interface TickActions {
   heartbeat: HeartbeatAction;
   keepalive: CacheKeepaliveAction;
   guardTripped: boolean;
+  /**
+   * True when the tick detected a compaction trigger (max_turns or
+   * idle_trigger) AND the registry has an `onIdleCompaction` callback
+   * wired — i.e. the tick is committing to run compaction inline. When
+   * no callback is wired, the trigger sets `pending` on the per-character
+   * state instead and this stays false; the post-generation handler picks
+   * up the pending flag on the user's next message.
+   */
+  runIdleCompaction: boolean;
 }
 
 export interface AutonomyRegistryOptions {
   autonomyConfig?: AutonomyConfig;
+  /** Compaction config — drives the idle/max-turns trigger inside the tick. */
+  compactionConfig?: CompactionConfig;
   /** Start the per-character 10s ticker as states are first ensured. */
   autoStartTicker?: boolean;
   /** Injectable monotonic clock for deterministic tests. */
@@ -82,6 +121,15 @@ export interface AutonomyRegistryOptions {
   wallNow?: () => Date;
   /** Async 8d driver for returned heartbeat/keepalive actions. */
   onTickActions?: (characterName: string, actions: TickActions) => Promise<void> | void;
+  /**
+   * Idle-compaction runner. Invoked from the per-character tick when the
+   * compaction trigger fires AND this callback is wired. When the callback
+   * is undefined, the tick sets the per-character `pending` flag instead;
+   * the next user message's post-generation hook picks it up. Mirror of
+   * the `execute_idle_compaction` arm in
+   * `backend/daemon/src/autonomy/manager.rs:1172`.
+   */
+  onIdleCompaction?: (characterName: string) => Promise<void> | void;
 }
 
 export class AutonomyRegistry {
@@ -90,24 +138,33 @@ export class AutonomyRegistry {
   private readonly keepalives = new Map<string, CacheKeepalive>();
   private readonly heartbeatLogs = new Map<string, HeartbeatLog>();
   private readonly lastRequests = new Map<string, ChatRequest>();
+  private readonly compactionStates = new Map<string, CompactionStateEntry>();
   private readonly dataDirs = new Map<string, string>();
   private readonly dirty = new Set<string>();
   private readonly tickers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly ticking = new Set<string>();
   private readonly autonomyConfig: AutonomyConfig;
+  private readonly compactionConfig: CompactionConfig;
   private readonly autoStartTicker: boolean;
   private readonly nowMs: () => number;
   private readonly wallNow: () => Date;
   private readonly onTickActions:
     | ((characterName: string, actions: TickActions) => Promise<void> | void)
     | undefined;
+  private readonly onIdleCompaction:
+    | ((characterName: string) => Promise<void> | void)
+    | undefined;
 
   constructor(options: AutonomyRegistryOptions = {}) {
     this.autonomyConfig = options.autonomyConfig ?? DEFAULT_AUTONOMY_CONFIG;
+    this.compactionConfig = sanitizeCompactionConfig(
+      options.compactionConfig ?? DEFAULT_COMPACTION_CONFIG,
+    );
     this.autoStartTicker = options.autoStartTicker ?? false;
     this.nowMs = options.nowMs ?? (() => performance.now());
     this.wallNow = options.wallNow ?? (() => new Date());
     this.onTickActions = options.onTickActions;
+    this.onIdleCompaction = options.onIdleCompaction;
   }
 
   /** Idempotent — first call backfills from on-disk history. */
@@ -144,6 +201,18 @@ export class AutonomyRegistry {
       HeartbeatLog.loadFrom(path.join(engine.dataDir(), "heartbeat.jsonl")),
     );
 
+    // Seed compaction state from on-disk message count so the idle trigger
+    // can fire for an existing character right after process restart, before
+    // the user sends a fresh message. Matches the Rust behavior: the autonomy
+    // tick's compaction arm uses `active_turn_count`, which is updated on
+    // every user / assistant notify but starts at whatever the engine reports.
+    this.compactionStates.set(name, {
+      triggered: false,
+      pending: false,
+      activeTurnCount: engine.messageCount(),
+      lastActivityMs: this.nowMs(),
+    });
+
     const timestamps = collectBackfillTimestamps(engine);
     if (timestamps.length > 0) {
       tracker.backfill(timestamps);
@@ -154,8 +223,15 @@ export class AutonomyRegistry {
     return tracker;
   }
 
-  /** Record a fresh user turn. Mirrors `notify_user_message`. */
-  notifyUserMessage(characterName: string): void {
+  /**
+   * Record a fresh user turn. Mirror of
+   * `AutonomyManager::notify_user_message` (manager.rs:507).
+   *
+   * `messageCount` is the post-append `engine.messageCount()` snapshot —
+   * the same value Rust stores in `active_turn_count` and compares against
+   * `min_turns`/`max_turns`.
+   */
+  notifyUserMessage(characterName: string, messageCount: number): void {
     const tracker = this.trackers.get(characterName);
     if (tracker === undefined) return;
     tracker.recordMessage();
@@ -168,6 +244,110 @@ export class AutonomyRegistry {
       keepalive.setNextWake(wake);
     }
     keepalive?.onCacheWarmed(now);
+    const compaction = this.compactionStates.get(characterName);
+    if (compaction !== undefined) {
+      compaction.activeTurnCount = messageCount;
+      compaction.lastActivityMs = now;
+    }
+    this.markDirty(characterName);
+  }
+
+  /**
+   * Record a fresh assistant turn. Mirror of
+   * `AutonomyManager::notify_assistant_message` (manager.rs:535).
+   *
+   * Updates compaction bookkeeping so the idle trigger's "no activity for N
+   * seconds" check uses the most recent message, not just user input. The
+   * post-generation handler calls this after persisting the assistant turn
+   * and any tool-loop intermediates.
+   */
+  notifyAssistantMessage(characterName: string, messageCount: number): void {
+    const compaction = this.compactionStates.get(characterName);
+    if (compaction === undefined) return;
+    compaction.activeTurnCount = messageCount;
+    compaction.lastActivityMs = this.nowMs();
+    this.markDirty(characterName);
+  }
+
+  /**
+   * Compaction trigger check called from the post-generation handler. Mirror of
+   * `AutonomyManager::should_compact_now` (manager.rs:619).
+   *
+   * Returns true if any trigger fires. Sets the per-character `triggered`
+   * flag so the autonomy tick won't double-fire while compaction runs, and
+   * consumes the `pending` flag set by an idle tick that ran without an
+   * inline compaction runner.
+   *
+   * Order matches Rust: max_turns → max_context_tokens → idle pending.
+   */
+  shouldCompactNow(
+    characterName: string,
+    turnCount: number,
+    contextTokens: number,
+  ): boolean {
+    const cfg = this.compactionConfig;
+    if (!cfg.enabled) return false;
+    const compaction = this.compactionStates.get(characterName);
+    if (compaction === undefined) return false;
+
+    if (
+      cfg.maxTurns > 0
+      && turnCount >= cfg.maxTurns
+      && turnCount >= cfg.minTurns
+    ) {
+      compaction.triggered = true;
+      this.markDirty(characterName);
+      return true;
+    }
+    if (
+      cfg.maxContextTokens > 0
+      && contextTokens >= cfg.maxContextTokens
+      && turnCount >= cfg.minTurns
+    ) {
+      compaction.triggered = true;
+      this.markDirty(characterName);
+      return true;
+    }
+    if (compaction.pending) {
+      compaction.pending = false;
+      this.markDirty(characterName);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Called by the compaction runner after `runCompaction` returns
+   * successfully and the engine has been reloaded. Mirror of
+   * `AutonomyManager::notify_compaction_complete` (manager.rs:575).
+   *
+   * Invalidates the cached request — its message tail is now stale relative
+   * to the freshly compacted active.jsonl. Clears the trigger flags so the
+   * next compaction cycle can fire, and re-anchors the idle timer.
+   */
+  notifyCompactionComplete(characterName: string, newTurnCount: number): void {
+    const compaction = this.compactionStates.get(characterName);
+    if (compaction === undefined) return;
+    compaction.triggered = false;
+    compaction.pending = false;
+    compaction.activeTurnCount = newTurnCount;
+    compaction.lastActivityMs = this.nowMs();
+    this.lastRequests.delete(characterName);
+    this.markDirty(characterName);
+  }
+
+  /**
+   * Called by the compaction runner after `runCompaction` throws. Mirror of
+   * `AutonomyManager::notify_compaction_failed` (manager.rs:602).
+   *
+   * Clears the trigger flag so a retry can fire; re-anchors the idle timer
+   * so the failed attempt doesn't immediately re-trigger on the next tick.
+   */
+  notifyCompactionFailed(characterName: string): void {
+    const compaction = this.compactionStates.get(characterName);
+    if (compaction === undefined) return;
+    compaction.triggered = false;
+    compaction.lastActivityMs = this.nowMs();
     this.markDirty(characterName);
   }
 
@@ -224,6 +404,16 @@ export class AutonomyRegistry {
    * One synchronous ticker pulse for a character. The async driver in 8d
    * consumes returned actions and performs the LLM work outside the state
    * mutation path.
+   *
+   * Compaction triggers (max_turns + idle_trigger) are evaluated here too.
+   * If a trigger fires AND an `onIdleCompaction` runner is wired,
+   * `runIdleCompaction` is set in the returned actions and the driver
+   * dispatches it. If no runner is wired (test contexts, or production
+   * before the dependency wiring lands), the per-character `pending` flag
+   * is set instead — the post-generation handler's `shouldCompactNow`
+   * picks it up on the user's next message. Matches the
+   * `have_deps ? run_compaction_now : compaction_pending = true` branch in
+   * `autonomy/manager.rs:1046`.
    */
   tickCharacter(characterName: string, now = this.nowMs()): TickActions {
     const clock = this.clocks.get(characterName);
@@ -256,8 +446,50 @@ export class AutonomyRegistry {
     }
 
     const keepaliveAction = keepalive.tick(now);
+
+    let runIdleCompaction = false;
+    const compaction = this.compactionStates.get(characterName);
+    const cfg = this.compactionConfig;
+    if (
+      compaction !== undefined
+      && this.autonomyConfig.enabled
+      && cfg.enabled
+      && !compaction.triggered
+    ) {
+      let shouldFire = false;
+      if (
+        cfg.maxTurns > 0
+        && compaction.activeTurnCount >= cfg.maxTurns
+        && compaction.activeTurnCount >= cfg.minTurns
+      ) {
+        shouldFire = true;
+      } else if (
+        compaction.activeTurnCount >= cfg.minTurns
+        && cfg.idleTriggerSecs > 0
+      ) {
+        const idleSecs = (now - compaction.lastActivityMs) / 1000;
+        if (idleSecs >= cfg.idleTriggerSecs) {
+          shouldFire = true;
+        }
+      }
+      if (shouldFire) {
+        compaction.triggered = true;
+        if (this.onIdleCompaction !== undefined) {
+          runIdleCompaction = true;
+        } else {
+          compaction.pending = true;
+        }
+        this.markDirty(characterName);
+      }
+    }
+
     this.saveState(characterName);
-    return { heartbeat, keepalive: keepaliveAction, guardTripped };
+    return {
+      heartbeat,
+      keepalive: keepaliveAction,
+      guardTripped,
+      runIdleCompaction,
+    };
   }
 
   startTicker(characterName: string): void {
@@ -375,6 +607,20 @@ export class AutonomyRegistry {
       ) {
         await this.onTickActions(characterName, actions);
       }
+      if (actions.runIdleCompaction && this.onIdleCompaction !== undefined) {
+        // The runner is responsible for calling notifyCompactionComplete /
+        // notifyCompactionFailed to clear the triggered flag — until then,
+        // the per-character `triggered` state set inside tickCharacter
+        // keeps future ticks from double-firing.
+        try {
+          await this.onIdleCompaction(characterName);
+        } catch (e) {
+          console.warn(
+            `[shore-daemon-ts] idle compaction failed for ${characterName}: ${(e as Error).message}`,
+          );
+          this.notifyCompactionFailed(characterName);
+        }
+      }
     } catch (e) {
       console.warn(
         `[shore-daemon-ts] autonomy tick failed for ${characterName}: ${(e as Error).message}`,
@@ -385,6 +631,31 @@ export class AutonomyRegistry {
       this.ticking.delete(characterName);
     }
   }
+}
+
+/**
+ * Mirror of `sanitize_compaction_config` (manager.rs:270): disables
+ * compaction if `min_turns` / `max_turns` are not strictly greater than
+ * `keep_recent_turns`, or if `max_turns < min_turns`. Logged-but-not-thrown
+ * here matches the Rust behavior: misconfigured users still get a working
+ * daemon (just without compaction).
+ */
+function sanitizeCompactionConfig(config: CompactionConfig): CompactionConfig {
+  if (!config.enabled) return config;
+  const k = config.keepRecentTurns;
+  if (config.minTurns <= k || config.maxTurns <= k) {
+    console.error(
+      `[shore-daemon-ts] Compaction disabled: min_turns (${config.minTurns}) and max_turns (${config.maxTurns}) must be greater than keep_recent_turns (${k})`,
+    );
+    return { ...config, enabled: false };
+  }
+  if (config.maxTurns < config.minTurns) {
+    console.error(
+      `[shore-daemon-ts] Compaction disabled: max_turns (${config.maxTurns}) must be >= min_turns (${config.minTurns})`,
+    );
+    return { ...config, enabled: false };
+  }
+  return config;
 }
 
 /**

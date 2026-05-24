@@ -63,6 +63,16 @@ export class ConversationEngine {
     return this.characterDir;
   }
 
+  /**
+   * Raw count of messages in `active.jsonl` (pre-merge — counts tool-loop
+   * intermediates separately). This is what the autonomy compaction trigger
+   * compares against `min_turns` / `max_turns`, matching Rust's
+   * `ConversationEngine::message_count`.
+   */
+  messageCount(): number {
+    return this.store.count();
+  }
+
   /** Current History snapshot for handshake / broadcast. */
   historySnapshot(): HistorySnapshot {
     const merged = mergeToolLoopMessages(this.store.all());
@@ -89,6 +99,28 @@ export class ConversationEngine {
     const next = this.writeQueue.then(task, task);
     this.writeQueue = next.catch(() => undefined);
     return next;
+  }
+
+  /**
+   * Re-read `active.jsonl` from disk and broadcast the fresh history.
+   * Used after compaction archives part of the active log into a frozen
+   * segment — the in-memory MessageStore otherwise still holds the
+   * pre-compaction view, and the next generation would re-send the
+   * already-archived turns to the model.
+   *
+   * Mirror of `engine/mod.rs::reload`. We don't refresh a segment cache
+   * because TS reads segments on-demand via `SegmentReader.load`; nothing
+   * stale needs invalidating there.
+   */
+  reload(): Promise<void> {
+    const task = async (): Promise<void> => {
+      this.store.reload();
+      this.revision++;
+      this.broadcast?.onBroadcast(this.historySnapshot());
+    };
+    const next = this.writeQueue.then(task, task);
+    this.writeQueue = next.catch(() => undefined);
+    return next as Promise<void>;
   }
 
   /**

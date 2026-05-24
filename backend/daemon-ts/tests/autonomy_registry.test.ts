@@ -26,6 +26,7 @@ function fakeEngine(name: string): ConversationEngine {
   return {
     name: () => name,
     dataDir: () => dir,
+    messageCount: () => 0,
     historySnapshot: () => ({
       messages: [],
       active_start: 0,
@@ -39,6 +40,7 @@ function fakeEngineAt(name: string, dir: string): ConversationEngine {
   return {
     name: () => name,
     dataDir: () => dir,
+    messageCount: () => 0,
     historySnapshot: () => ({
       messages: [],
       active_start: 0,
@@ -188,6 +190,7 @@ describe("AutonomyRegistry × set_next_wake", () => {
       heartbeat: HeartbeatAction.None,
       keepalive: CacheKeepaliveAction.None,
       guardTripped: false,
+      runIdleCompaction: false,
     });
     now += 61_000;
     expect(registry.tickCharacter("dana").heartbeat).toBe(HeartbeatAction.RunTick);

@@ -127,6 +127,19 @@ export interface GenerateResult {
   finalText: string;
   turnCount: number;
   newTurns: TurnMessage[];
+  /**
+   * Usage stats for the final (terminal) provider call, mirroring Rust's
+   * `result.usage` after the stream. The compaction trigger sums
+   * `inputTokens + cacheReadInputTokens + cacheCreationInputTokens` from
+   * this to decide whether the latest turn crossed `max_context_tokens`.
+   * Undefined when no provider call completed (e.g. budget-blocked path).
+   */
+  finalUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
+  };
 }
 
 export interface PrepareChatRequestOptions {
@@ -348,7 +361,22 @@ export async function generateResponse(
     .map((b) => b.text)
     .join("");
 
-  return { finalText, turnCount, newTurns: result.newTurns };
+  const lastCall = result.calls[result.calls.length - 1];
+  return {
+    finalText,
+    turnCount,
+    newTurns: result.newTurns,
+    ...(lastCall !== undefined
+      ? {
+          finalUsage: {
+            inputTokens: lastCall.usage.inputTokens,
+            outputTokens: lastCall.usage.outputTokens,
+            cacheReadInputTokens: lastCall.usage.cacheReadInputTokens,
+            cacheCreationInputTokens: lastCall.usage.cacheCreationInputTokens,
+          },
+        }
+      : {}),
+  };
 }
 
 function recordLedgerCalls(

@@ -12,6 +12,10 @@ import path from "node:path";
 import fs from "node:fs";
 
 import { runAutonomyTickActions } from "./autonomy/dispatch.ts";
+import {
+  buildInlineCompactionRunner,
+  type InlineCompactionRunner,
+} from "./autonomy/inline_compaction.ts";
 import { AutonomyRegistry } from "./autonomy/registry.ts";
 import { characterMetadata, discoverCharacters } from "./characters/registry.ts";
 import type { ImageRef } from "./engine/types.ts";
@@ -192,9 +196,12 @@ async function main(): Promise<void> {
     },
   });
   let autonomy: AutonomyRegistry;
+  let inlineCompaction: InlineCompactionRunner;
   autonomy = new AutonomyRegistry({
     autonomyConfig: config.app.behavior.autonomy,
+    compactionConfig: config.memory.compaction,
     autoStartTicker: true,
+    onIdleCompaction: (characterName) => inlineCompaction(characterName),
     onTickActions: (characterName, actions): Promise<void> => {
       const embedder = resolveOptionalEmbedder(config);
       return runAutonomyTickActions({
@@ -214,6 +221,18 @@ async function main(): Promise<void> {
       });
     },
   });
+  inlineCompaction = buildInlineCompactionRunner({
+    engines,
+    config,
+    dataDir: dirs.data,
+    configDir: dirs.config,
+    compactionConfig: config.memory.compaction,
+    catalog,
+    ledger,
+    autonomy,
+    ...(cacheForensics !== undefined ? { cacheForensics } : {}),
+    broadcast: (frame) => serverRef?.broadcast(frame),
+  });
 
   const handshake = buildHandshakeProvider(config, dirs.config, engines, autonomy);
   const onMessage = buildMessageHandler(
@@ -227,6 +246,7 @@ async function main(): Promise<void> {
     autonomy,
     cacheForensics,
     () => serverRef,
+    (characterName, rid) => inlineCompaction(characterName, rid),
   );
   const onRegen = buildRegenHandler(
     engines,
@@ -239,6 +259,7 @@ async function main(): Promise<void> {
     autonomy,
     cacheForensics,
     () => serverRef,
+    (characterName, rid) => inlineCompaction(characterName, rid),
   );
   const onCommand = buildCommandHandler(engines, config, ledger, pricing, () => serverRef);
 
@@ -357,6 +378,7 @@ function buildMessageHandler(
   autonomy: AutonomyRegistry,
   cacheForensics: CacheForensics | undefined,
   getServer: () => SwpServer | undefined,
+  inlineCompaction: InlineCompactionRunner,
 ): MessageHandler {
   return async (session, msg) => {
     if (session.character === undefined) {
@@ -376,7 +398,7 @@ function buildMessageHandler(
       timestamp: rfc3339LocalNow(),
     };
     await engine.appendMessage(userMsg);
-    autonomy.notifyUserMessage(session.character);
+    autonomy.notifyUserMessage(session.character, engine.messageCount());
 
     const modelName = config.app.defaults.model;
     if (!modelName) {
@@ -419,8 +441,9 @@ function buildMessageHandler(
       return;
     }
 
+    let generateResult: import("./llm/generate.ts").GenerateResult | undefined;
     try {
-      await generateResponse({
+      generateResult = await generateResponse({
         engine,
         characterConfigDir,
         configDir,
@@ -459,6 +482,30 @@ function buildMessageHandler(
       });
     } catch (e) {
       handleGenerationError(broadcast, msg.rid, e);
+    }
+
+    // Post-generation compaction trigger — mirror of
+    // `handler/task.rs:349-376`. Uses the fresh engine message count plus
+    // the final provider call's input + cache tokens; either max_turns,
+    // max_context_tokens, or a tick-pending flag can fire the check.
+    // Compaction is fire-and-forget here so the next user message isn't
+    // gated on the compaction LLM call completing.
+    if (generateResult !== undefined) {
+      const messageCount = engine.messageCount();
+      const usage = generateResult.finalUsage;
+      const contextTokens = usage !== undefined
+        ? usage.inputTokens
+          + usage.cacheReadInputTokens
+          + usage.cacheCreationInputTokens
+        : 0;
+      if (
+        autonomy.shouldCompactNow(session.character, messageCount, contextTokens)
+      ) {
+        void inlineCompaction(
+          session.character,
+          ...(msg.rid !== undefined ? [msg.rid] : []),
+        );
+      }
     }
 
     emitBudgetWarnings(broadcast, ledger, config.app.usage);
@@ -573,6 +620,7 @@ function buildRegenHandler(
   autonomy: AutonomyRegistry,
   cacheForensics: CacheForensics | undefined,
   getServer: () => SwpServer | undefined,
+  inlineCompaction: InlineCompactionRunner,
 ): import("./swp/server.ts").RegenHandler {
   return async (session, msg) => {
     if (session.character === undefined) {
@@ -627,8 +675,9 @@ function buildRegenHandler(
       return;
     }
 
+    let generateResult: import("./llm/generate.ts").GenerateResult | undefined;
     try {
-      await generateResponse({
+      generateResult = await generateResponse({
         engine,
         characterConfigDir,
         configDir,
@@ -666,6 +715,27 @@ function buildRegenHandler(
       });
     } catch (e) {
       handleGenerationError(broadcast, msg.rid, e);
+    }
+
+    // Same post-generation compaction trigger as the message handler; a
+    // regen produces new turns and can cross max_turns / max_context_tokens
+    // just like a fresh user message.
+    if (generateResult !== undefined) {
+      const messageCount = engine.messageCount();
+      const usage = generateResult.finalUsage;
+      const contextTokens = usage !== undefined
+        ? usage.inputTokens
+          + usage.cacheReadInputTokens
+          + usage.cacheCreationInputTokens
+        : 0;
+      if (
+        autonomy.shouldCompactNow(session.character, messageCount, contextTokens)
+      ) {
+        void inlineCompaction(
+          session.character,
+          ...(msg.rid !== undefined ? [msg.rid] : []),
+        );
+      }
     }
 
     emitBudgetWarnings(broadcast, ledger, config.app.usage);

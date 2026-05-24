@@ -31,6 +31,10 @@ import {
   type RetrievalConfig,
   type RetrievalMode,
 } from "../tools/registry.ts";
+import {
+  DEFAULT_COMPACTION_CONFIG,
+  type CompactionConfig,
+} from "../memory/compaction/types.ts";
 
 export interface LoadedConfig {
   app: {
@@ -49,6 +53,7 @@ export interface LoadedConfig {
   };
   embedding: Record<string, Record<string, unknown>>;
   memory: {
+    compaction: CompactionConfig;
     dreaming: DreamingConfig;
     retrieval: RetrievalConfig;
   };
@@ -104,6 +109,7 @@ export function loadConfig(input: string | ConfigInput): LoadedConfig {
     },
     embedding: parseEmbeddingProfiles(pickTable(merged, "embedding")),
     memory: {
+      compaction: parseCompactionConfig(pickCompactionTable(merged)),
       dreaming: parseDreamingConfig(pickDreamingTable(merged)),
       retrieval: parseRetrievalConfig(pickRetrievalTable(merged)),
     },
@@ -224,6 +230,14 @@ function pickDreamingTable(
   return pickTable(memory, "dreaming");
 }
 
+function pickCompactionTable(
+  obj: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const memory = pickTable(obj, "memory");
+  if (memory === undefined) return undefined;
+  return pickTable(memory, "compaction");
+}
+
 function pickAutonomyTable(
   obj: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
@@ -241,6 +255,40 @@ function parseEmbeddingProfiles(
     if (isPlainObject(value)) out[name] = value;
   }
   return out;
+}
+
+/**
+ * Mirrors `core/config/src/app.rs::CompactionConfig` defaults. Reads from
+ * `[memory.compaction]` with the same field names as Rust (snake_case TOML
+ * keys → camelCase TS struct).
+ *
+ * `idle_trigger` is a duration string ("30m", "1800s", or seconds as a
+ * number); Rust uses `ConfigDuration`, here we accept both numeric seconds
+ * and the standard `1h` / `30m` / `45s` shorthand parsed by `parseDurationSecs`.
+ */
+function parseCompactionConfig(
+  table: Record<string, unknown> | undefined,
+): CompactionConfig {
+  if (table === undefined) return { ...DEFAULT_COMPACTION_CONFIG };
+  return {
+    enabled:
+      typeof table["enabled"] === "boolean"
+        ? table["enabled"]
+        : DEFAULT_COMPACTION_CONFIG.enabled,
+    idleTriggerSecs:
+      parseDurationSecs(table["idle_trigger"]) ??
+      DEFAULT_COMPACTION_CONFIG.idleTriggerSecs,
+    minTurns:
+      asNumber(table["min_turns"]) ?? DEFAULT_COMPACTION_CONFIG.minTurns,
+    maxTurns:
+      asNumber(table["max_turns"]) ?? DEFAULT_COMPACTION_CONFIG.maxTurns,
+    maxContextTokens:
+      asNumber(table["max_context_tokens"]) ??
+      DEFAULT_COMPACTION_CONFIG.maxContextTokens,
+    keepRecentTurns:
+      asNumber(table["keep_recent_turns"]) ??
+      DEFAULT_COMPACTION_CONFIG.keepRecentTurns,
+  };
 }
 
 function parseDreamingConfig(

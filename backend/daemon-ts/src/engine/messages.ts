@@ -203,6 +203,15 @@ export class MessageStore {
     this.persist();
   }
 
+  /**
+   * Re-read the active.jsonl file from disk, replacing the in-memory
+   * messages. Used after compaction archives part of the active log into
+   * a frozen segment — the store needs to forget the pre-compaction tail.
+   */
+  reload(): void {
+    this.messages = loadActiveMessages(this.activeJsonlPath);
+  }
+
   private persist(): void {
     const buf = this.messages.map(serializeForStorage).join("\n") + (this.messages.length > 0 ? "\n" : "");
     atomicWrite(this.activeJsonlPath, buf);

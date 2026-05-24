@@ -43,6 +43,7 @@ import {
   type CompactionOutcome,
   type ConversationMessage,
 } from "./types.ts";
+import type { ChatRequest } from "../../llm/types.ts";
 
 const ACTIVE_FILE = "active.jsonl";
 
@@ -59,6 +60,15 @@ export interface RunCompactionOptions {
   /** Optional prompt template overrides (fall back to bundled defaults). */
   systemTemplate?: string;
   promptTemplate?: string;
+  /**
+   * Cache-warmed `ChatRequest` from the most recent chat call. When present,
+   * `CompactionLlm.summarize` is given the chance to replay its prefix so
+   * the compaction request hits the Anthropic prompt cache instead of
+   * paying for a fresh write. Currently `RealCompactionLlm` accepts the
+   * value but does not yet use it — see the note in `compaction/llm.ts`
+   * and audit blocker #12 in `REWRITE.md`.
+   */
+  cachedRequest?: ChatRequest;
 }
 
 export interface RunCompactionResult {
@@ -129,6 +139,9 @@ export async function runCompaction(
       markdownStore,
       dryRun: false,
       dataDir: opts.dataDir,
+      ...(opts.cachedRequest !== undefined
+        ? { cachedRequest: opts.cachedRequest }
+        : {}),
     });
 
     if (outcome.kind === "compacted") {
