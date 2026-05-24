@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { resolvePath } from "../src/tools/paths.ts";
+import type { Embedder } from "../src/llm/embed.ts";
 import type { ToolContext } from "../src/tools/registry.ts";
 import { ToolError } from "../src/tools/registry.ts";
 import {
@@ -28,6 +29,25 @@ import {
   readHandler,
   writeHandler,
 } from "../src/tools/workspace.ts";
+
+class TopicEmbedder implements Embedder {
+  constructor(private readonly topics: string[]) {}
+
+  async embed(inputs: string[]): Promise<number[][]> {
+    return inputs.map((input) => {
+      const lower = input.toLowerCase();
+      return this.topics.map((topic) => (lower.includes(topic) ? 1 : 0));
+    });
+  }
+
+  modelId(): string {
+    return "topic-test";
+  }
+
+  dimensions(): number {
+    return this.topics.length;
+  }
+}
 
 function setup(): { workspace: string; data: string; ctx: ToolContext } {
   const root = mkdtempSync(path.join(tmpdir(), "shore-ws-test-"));
@@ -386,6 +406,58 @@ describe("file_search lexical", () => {
     );
     expect(r.mode).toBe("lexical");
     expect(r.semantic_unavailable).toBeUndefined();
+  });
+
+  it("vector mode uses the configured embedder and index path", async () => {
+    const { data, ctx } = setup();
+    ctx.embedder = new TopicEmbedder(["tea", "garden", "tax"]);
+    ctx.workspaceIndexPath = path.join(data, "workspace_index.json");
+    await writeHandler.execute(
+      { path: "a.md", content: "# Notes\n\nThe garden is full of tea plants." },
+      ctx,
+    );
+    await writeHandler.execute(
+      { path: "b.md", content: "# Taxes\n\nThe accountant filed returns." },
+      ctx,
+    );
+
+    const r = JSON.parse(
+      await fileSearchHandler.execute(
+        { query: "growing tea in the garden", mode: "vector" },
+        ctx,
+      ),
+    );
+
+    expect(r.mode).toBe("vector");
+    expect(r.semantic_unavailable).toBeUndefined();
+    expect(r.results[0].path).toBe("a.md");
+    expect(r.results[0].semantic_score).toBeGreaterThan(0);
+    expect(fs.existsSync(ctx.workspaceIndexPath)).toBe(true);
+  });
+
+  it("path-scoped hybrid search filters to the requested subtree", async () => {
+    const { data, ctx } = setup();
+    ctx.embedder = new TopicEmbedder(["tea"]);
+    ctx.workspaceIndexPath = path.join(data, "workspace_index.json");
+    await writeHandler.execute(
+      { path: "notes/a.md", content: "tea time" },
+      ctx,
+    );
+    await writeHandler.execute(
+      { path: "other/b.md", content: "tea ceremony" },
+      ctx,
+    );
+
+    const r = JSON.parse(
+      await fileSearchHandler.execute(
+        { query: "tea", mode: "hybrid", path: "notes/" },
+        ctx,
+      ),
+    );
+
+    expect(r.mode).toBe("hybrid");
+    expect(r.results.length).toBe(1);
+    expect(r.results[0].path).toBe("notes/a.md");
   });
 
   it("rejects unknown mode", async () => {

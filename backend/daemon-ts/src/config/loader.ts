@@ -2,30 +2,33 @@
  * Config loader — minimal subset for Phase 2 handshake parity.
  *
  * Loads `config.toml` and `conf.d/*.toml` from `$SHORE_CONFIG_DIR` and
- * deep-merges the parsed objects. Exposes only the fields the handshake
- * snapshot actually reads:
- *   - `app.defaults.model`   → handshake `config.active_model` fallback
- *
- * The Rust loader (`core/config/src/lib.rs` + `core/config/src/models.rs`)
- * does provider catalog resolution, effective-config merging, validation,
- * etc. The handshake snapshot only needs `defaults.model` and a catalog
- * "first chat model" fallback. The full model catalog is a category →
- * provider → model hierarchy (`qualified_name = "{category}.{provider}.{name}"`);
- * porting it is its own phase — when we need it for LLM calls, not for the
- * handshake. Until then `firstChatModel` returns undefined and the snapshot
- * relies on `defaults.model` (or null) for `active_model`.
+ * deep-merges the parsed objects. Exposes the slices the TS daemon
+ * currently needs: default chat/display/embedding selectors, raw
+ * `[embedding.*]` profiles, and `[memory.retrieval]` caps.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 
+import {
+  defaultRetrievalConfig,
+  type RetrievalBinaryMode,
+  type RetrievalConfig,
+  type RetrievalMode,
+} from "../tools/registry.ts";
+
 export interface LoadedConfig {
   app: {
     defaults: {
       model: string | undefined;
+      embedding: string | undefined;
       display_name: string | undefined;
     };
+  };
+  embedding: Record<string, Record<string, unknown>>;
+  memory: {
+    retrieval: RetrievalConfig;
   };
 }
 
@@ -39,11 +42,19 @@ export function loadConfig(configDir: string): LoadedConfig {
     app: {
       defaults: {
         model: typeof defaultsTable["model"] === "string" ? defaultsTable["model"] : undefined,
+        embedding:
+          typeof defaultsTable["embedding"] === "string"
+            ? defaultsTable["embedding"]
+            : undefined,
         display_name:
           typeof defaultsTable["display_name"] === "string"
             ? defaultsTable["display_name"]
             : undefined,
       },
+    },
+    embedding: parseEmbeddingProfiles(pickTable(merged, "embedding")),
+    memory: {
+      retrieval: parseRetrievalConfig(pickRetrievalTable(merged)),
     },
   };
 }
@@ -139,6 +150,63 @@ function deepMerge(target: Record<string, unknown>, src: Record<string, unknown>
 function pickTable(obj: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
   const v = obj[key];
   return isPlainObject(v) ? v : undefined;
+}
+
+function pickRetrievalTable(
+  obj: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const memory = pickTable(obj, "memory");
+  if (memory === undefined) return undefined;
+  return pickTable(memory, "retrieval");
+}
+
+function parseEmbeddingProfiles(
+  table: Record<string, unknown> | undefined,
+): Record<string, Record<string, unknown>> {
+  if (table === undefined) return {};
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [name, value] of Object.entries(table)) {
+    if (isPlainObject(value)) out[name] = value;
+  }
+  return out;
+}
+
+function parseRetrievalConfig(
+  table: Record<string, unknown> | undefined,
+): RetrievalConfig {
+  const defaults = defaultRetrievalConfig();
+  if (table === undefined) return defaults;
+  return {
+    mode: parseRetrievalMode(table["mode"], defaults.mode),
+    max_file_bytes:
+      asNumber(table["max_file_bytes"]) ?? defaults.max_file_bytes,
+    max_indexed_files:
+      asNumber(table["max_indexed_files"]) ?? defaults.max_indexed_files,
+    max_total_indexed_bytes:
+      asNumber(table["max_total_indexed_bytes"]) ??
+      defaults.max_total_indexed_bytes,
+    max_embed_chars_per_file:
+      asNumber(table["max_embed_chars_per_file"]) ??
+      defaults.max_embed_chars_per_file,
+    binary: parseRetrievalBinary(table["binary"], defaults.binary),
+  };
+}
+
+function parseRetrievalMode(raw: unknown, fallback: RetrievalMode): RetrievalMode {
+  if (raw === "auto" || raw === "lexical" || raw === "hybrid") return raw;
+  return fallback;
+}
+
+function parseRetrievalBinary(
+  raw: unknown,
+  fallback: RetrievalBinaryMode,
+): RetrievalBinaryMode {
+  if (raw === "skip" || raw === "metadata" || raw === "try_embed") return raw;
+  return fallback;
+}
+
+function asNumber(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

@@ -516,10 +516,54 @@ What 6b does NOT do (intentionally deferred):
   input (the `writes MEMORY.md but refuses generated/protected/dreaming
   paths` case in `compaction_manager.test.ts` pins this).
 
-**6c — workspace_index + embedder + hybrid_search (pending):**
+**6c — workspace_index + embedder + hybrid_search (done, 2026-05-24):**
 
-- Wire `file_search` hybrid/vector modes against a real embedder hook
-  on `ToolContext`. Live test gated on an embedder endpoint.
+- `src/memory/workspace_index.ts` ports the Rust workspace embedding
+  index:
+  - persisted JSON cache at
+    `$SHORE_CACHE_DIR/characters/<Character>/workspace_index.json`
+  - per-index async lock around load → mutate → save
+  - stale detection by size, mtime, embedder model id, and
+    `max_embed_chars_per_file`
+  - symlink skip, max-file/max-indexed-files/max-total-bytes caps,
+    oversized/non-UTF8 skip entries, vector refresh batching, cosine
+    scoring, lexical/semantic score fusion, path-scoped filtering
+- `src/llm/embed.ts` ports the dyn-compatible embedder abstraction and
+  OpenAI-compatible `/v1/embeddings` provider. Resolution mirrors Rust:
+  `defaults.embedding` wins, otherwise the first `[embedding.*]` profile;
+  `provider = "local"` returns the migration error; instances are cached
+  by provider/model/api-key-env/base-url/dimensions.
+- Config loader now exposes `defaults.embedding`, raw `[embedding.*]`
+  profiles, and `[memory.retrieval]` caps. `main.ts` resolves the
+  embedder per generation (falling back cleanly when missing/unusable)
+  and threads both the embedder and `workspaceIndexPath` into
+  `ToolContext`.
+- `file_search` now uses real hybrid/vector search when `ctx.embedder`
+  and `ctx.workspaceIndexPath` are present. Transient index/embedder
+  failures fall back to lexical with `semantic_unavailable = <error>`.
+  No-embedder hybrid/vector still falls back to lexical with
+  `semantic_unavailable: "embedder not configured"`.
+- Tests:
+  - `workspace_index.test.ts` pins cosine edge cases, semantic ranking,
+    cached-vector reuse, and oversize skip entries.
+  - `tools_workspace.test.ts` covers real vector-mode dispatch and
+    path-scoped hybrid search through `file_search`.
+  - `config_loader.test.ts` covers embedding profile + retrieval config
+    parsing.
+  - `embed.test.ts` covers OpenAI-compatible response parsing,
+    resolution errors, and a live smoke test gated by
+    `SHORE_EMBED_LIVE=1` plus `SHORE_EMBED_*` endpoint env.
+- Verification: `bun run typecheck` green; `bun test` green
+  (276 pass / 7 provider-live skips).
+
+What 6c does NOT do:
+
+- No background/autonomy usage of the index yet. Heartbeat and dreaming
+  will pass the same embedder/index path once Phase 8/6d wire their
+  contexts.
+- The live embedder smoke test is intentionally opt-in and was not
+  exercised in the ordinary suite; set `SHORE_EMBED_LIVE=1` with an
+  OpenAI-compatible endpoint to run it.
 
 **6d — dreaming (pending):**
 

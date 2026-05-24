@@ -21,8 +21,10 @@ import {
 import { EngineRegistry } from "./engine/engine.ts";
 import type { Message } from "./engine/types.ts";
 import { loadCatalog, resolveModel, type ResolvedModel } from "./llm/catalog.ts";
+import { resolveEmbedder, type Embedder } from "./llm/embed.ts";
 import { loadConfigDotenv } from "./llm/env.ts";
 import { generateResponse } from "./llm/generate.ts";
+import { workspaceIndexPath } from "./memory/workspace_index.ts";
 import { defaultRegistry } from "./tools/registry.ts";
 import { resolveShoreDirs } from "./runtime/dirs.ts";
 import { Registry } from "./runtime/registry.ts";
@@ -139,8 +141,22 @@ async function main(): Promise<void> {
   });
 
   const handshake = buildHandshakeProvider(config, dirs.config, engines);
-  const onMessage = buildMessageHandler(engines, dirs.config, config, catalog, () => serverRef);
-  const onRegen = buildRegenHandler(engines, dirs.config, config, catalog, () => serverRef);
+  const onMessage = buildMessageHandler(
+    engines,
+    dirs.config,
+    dirs.cache,
+    config,
+    catalog,
+    () => serverRef,
+  );
+  const onRegen = buildRegenHandler(
+    engines,
+    dirs.config,
+    dirs.cache,
+    config,
+    catalog,
+    () => serverRef,
+  );
   const onCommand = buildCommandHandler(engines, () => serverRef);
 
   const server = new SwpServer({
@@ -245,6 +261,7 @@ function buildHandshakeProvider(
 function buildMessageHandler(
   engines: EngineRegistry,
   configDir: string,
+  cacheDir: string,
   config: LoadedConfig,
   catalog: ReturnType<typeof loadCatalog>,
   getServer: () => SwpServer | undefined,
@@ -280,6 +297,7 @@ function buildMessageHandler(
 
     const characterConfigDir = path.join(configDir, "characters", session.character);
     const displayName = resolveDisplayName(config);
+    const embedder = resolveOptionalEmbedder(config);
     const broadcast = (frame: Parameters<NonNullable<ReturnType<typeof getServer>>["broadcast"]>[0]): void => {
       getServer()?.broadcast(frame);
     };
@@ -296,6 +314,11 @@ function buildMessageHandler(
           displayName,
         }),
         broadcast,
+        retrievalConfig: config.memory.retrieval,
+        ...(embedder !== undefined ? { embedder } : {}),
+        ...(embedder !== undefined
+          ? { workspaceIndexPath: workspaceIndexPath(cacheDir, session.character) }
+          : {}),
         signal: msg.signal,
         ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
         ...(msg.overrides ? { overrides: msg.overrides } : {}),
@@ -341,6 +364,23 @@ function handleGenerationError(
   });
 }
 
+function resolveOptionalEmbedder(config: LoadedConfig): Embedder | undefined {
+  if (
+    config.app.defaults.embedding === undefined &&
+    Object.keys(config.embedding).length === 0
+  ) {
+    return undefined;
+  }
+  try {
+    return resolveEmbedder(config.app.defaults.embedding, config.embedding);
+  } catch (e) {
+    console.warn(
+      `[shore-daemon-ts] embedder unavailable; semantic file_search disabled: ${(e as Error).message}`,
+    );
+    return undefined;
+  }
+}
+
 /**
  * Regen handler. Drops the trailing assistant turn (and any tool-loop
  * intermediates) via `engine.rewindLastAssistantTurn`, optionally
@@ -351,6 +391,7 @@ function handleGenerationError(
 function buildRegenHandler(
   engines: EngineRegistry,
   configDir: string,
+  cacheDir: string,
   config: LoadedConfig,
   catalog: ReturnType<typeof loadCatalog>,
   getServer: () => SwpServer | undefined,
@@ -384,6 +425,7 @@ function buildRegenHandler(
     const resolved = resolveModel(catalog, modelName);
     const characterConfigDir = path.join(configDir, "characters", session.character);
     const displayName = resolveDisplayName(config);
+    const embedder = resolveOptionalEmbedder(config);
     const broadcast = (frame: import("./swp/types.ts").ServerMessage): void => {
       getServer()?.broadcast(frame);
     };
@@ -400,6 +442,11 @@ function buildRegenHandler(
           displayName,
         }),
         broadcast,
+        retrievalConfig: config.memory.retrieval,
+        ...(embedder !== undefined ? { embedder } : {}),
+        ...(embedder !== undefined
+          ? { workspaceIndexPath: workspaceIndexPath(cacheDir, session.character) }
+          : {}),
         signal: msg.signal,
         ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
       });

@@ -3,22 +3,19 @@
 TypeScript reimplementation of `shore-daemon`. See `../../REWRITE.md` for the
 plan.
 
-## Current phase: 3 — message append + persistence
+## Current phase: 6c — workspace_index + embedder + hybrid_search
 
-Phases 0–2 are done. Phase 3 adds the user-message write path: clients
-send a `ClientMessage{text}`, the engine appends to `active.jsonl` via
-atomic rewrite, advances revision, and broadcasts the updated `History`
-to every connected client. The message persists across daemon restart.
-LLM calls are Phase 4.
+Phases 0–6b are done. Phase 6c ports the Rust workspace embedding index
+and OpenAI-compatible embedder. `file_search` now uses real hybrid/vector
+search when an embedder + workspace index path are wired through
+`ToolContext`, and falls back cleanly to lexical when not.
 
-Three parity scenarios green:
+Representative checks currently green:
 - `handshake-empty` — no character selected.
 - `handshake-character` — single character with seeded messages.
-- `message-append` — empty fixture, client sends a message, restart,
-  verify the message survives in the next handshake's History.
-
-The message-append scenario uses fuzzy matching for `msg_id` (UUID) and
-`timestamp` (now-time) since neither is deterministic across runs.
+- `message-append` — client sends a message, restart, verify persistence.
+- `bun run typecheck`
+- `bun test` — unit/integration suite; provider-live tests are env-gated.
 
 ## Run
 

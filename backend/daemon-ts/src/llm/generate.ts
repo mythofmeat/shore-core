@@ -43,6 +43,7 @@ import {
 import { AnthropicProvider } from "./providers/anthropic.ts";
 import { OpenAIProvider } from "./providers/openai.ts";
 import type { ResolvedModel } from "./catalog.ts";
+import type { Embedder } from "./embed.ts";
 import { runToolLoop } from "./tool_loop.ts";
 import type {
   ChatEvent,
@@ -79,6 +80,8 @@ export interface GenerateOptions {
   searchConfig?: SearchConfig;
   retrievalConfig?: RetrievalConfig;
   imageGenConfig?: ImageGenConfig;
+  embedder?: Embedder;
+  workspaceIndexPath?: string;
 }
 
 export interface GenerateResult {
@@ -235,6 +238,10 @@ export async function generateResponse(
     engine: opts.engine,
     searchConfig: opts.searchConfig ?? defaultSearchConfig(),
     retrievalConfig: opts.retrievalConfig ?? defaultRetrievalConfig(),
+    ...(opts.embedder !== undefined ? { embedder: opts.embedder } : {}),
+    ...(opts.workspaceIndexPath !== undefined
+      ? { workspaceIndexPath: opts.workspaceIndexPath }
+      : {}),
     ...(opts.imageGenConfig !== undefined
       ? { imageGenConfig: opts.imageGenConfig }
       : {}),

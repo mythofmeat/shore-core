@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { queueDeferredEdit } from "../memory/deferred_edits.ts";
+import { hybridSearch, type HybridMode } from "../memory/workspace_index.ts";
 
 import {
   displayPathFor,
@@ -33,7 +34,7 @@ import {
   resolvePath,
 } from "./paths.ts";
 import type { ToolContext, ToolHandler } from "./registry.ts";
-import { ToolError } from "./registry.ts";
+import { normalizeRetrievalConfig, ToolError } from "./registry.ts";
 
 // ---------------------------------------------------------------------------
 // Descriptions (from prompts/tools/workspace/*.md, sans trailing newline)
@@ -722,93 +723,301 @@ export const fileSearchHandler: ToolHandler = {
         ? Math.min(SEARCH_MAX_RESULTS, Math.max(1, Math.floor(rawMaxResults)))
         : SEARCH_DEFAULT_MAX_RESULTS;
 
-    if (ctx.workspaceDir.length === 0) {
-      throw new ToolError("InvalidArgs", "workspace not configured");
-    }
+    const retrievalConfig = normalizeRetrievalConfig(ctx.retrievalConfig);
     const rawPath = obj["path"];
-    const root = resolveListPath(
-      ctx.workspaceDir,
-      typeof rawPath === "string" ? rawPath : undefined,
-    );
+    const pathStr = typeof rawPath === "string" ? rawPath : undefined;
+    const requestedHybrid = mode !== "lexical";
+    const canHybrid =
+      requestedHybrid &&
+      ctx.embedder !== undefined &&
+      ctx.workspaceIndexPath !== undefined;
 
-    if (!fs.existsSync(root)) {
-      return JSON.stringify({
-        query,
-        results: [],
-        count: 0,
-        note: "path does not exist",
-      });
-    }
-
-    const { candidates, skipped: initialSkipped } = await enumerateFiles(
-      root,
-      ctx.retrievalConfig,
-    );
-    let skipped = initialSkipped;
-
-    const results: Array<Record<string, unknown>> = [];
-    const filesSummary: Array<{ path: string; hits: number }> = [];
-    let searchedFiles = 0;
-
-    outer: for (const c of candidates) {
-      let content: string;
+    if (canHybrid) {
+      const hybridMode: HybridMode = mode === "vector" ? "vector" : "hybrid";
+      const scope =
+        pathStr !== undefined && pathStr.length > 0 && pathStr !== "."
+          ? scopePrefixFor(ctx.workspaceDir, pathStr)
+          : undefined;
       try {
-        content = fs.readFileSync(c.path, "utf8");
-      } catch {
-        continue;
-      }
-      // Heuristic for binary content matching Rust's `String::from_utf8`
-      // rejection: if the read produced a replacement character at a
-      // position that doesn't trace back to a valid UTF-8 sequence, treat
-      // as binary. fs.readFileSync with 'utf8' replaces invalid bytes
-      // with U+FFFD, so we use that as the marker.
-      if (content.includes("�")) {
-        skipped += 1;
-        continue;
-      }
-      searchedFiles += 1;
-      const display = displayPathFor(ctx.workspaceDir, c.path);
-      const lines = content.split("\n");
-      let fileHits = 0;
-      for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-        const m = findCaseInsensitiveMatch(lines[lineIdx]!, queryLower);
-        if (m === undefined) continue;
-        results.push({
-          path: display,
-          line: lineIdx + 1,
-          excerpt: excerptLine(lines[lineIdx]!, m.start, m.end),
+        return JSON.stringify(
+          await runHybridSearch({
+            query,
+            queryLower,
+            maxResults,
+            mode: hybridMode,
+            ctx,
+            retrievalConfig,
+            scope,
+          }),
+        );
+      } catch (e) {
+        console.warn(
+          `[file_search] hybrid search failed; falling back to lexical: ${(e as Error).message}`,
+        );
+        const response = await runLexicalSearch({
+          query,
+          queryLower,
+          maxResults,
+          pathStr,
+          ctx,
+          retrievalConfig,
         });
-        fileHits += 1;
-        if (results.length >= maxResults) {
-          if (fileHits > 0) filesSummary.push({ path: display, hits: fileHits });
-          break outer;
-        }
+        response["mode"] = "lexical";
+        response["semantic_unavailable"] = (e as Error).message;
+        return JSON.stringify(response);
       }
-      if (fileHits > 0) filesSummary.push({ path: display, hits: fileHits });
     }
 
-    const count = results.length;
-    const response: Record<string, unknown> = {
+    const response = await runLexicalSearch({
       query,
-      results,
-      count,
-      searched_files: searchedFiles,
-      skipped_binary_or_large: skipped,
-      mode: "lexical",
-    };
-    if (count > 0) {
-      response["files"] = filesSummary;
-      response["note"] =
-        "These are line-level excerpts, ordered by file recency. Call `read` on the top file paths to see surrounding context — excerpts almost never contain the full answer, and one file often references others worth reading too.";
-    }
-    // hybrid/vector modes are gracefully degraded: until the Phase 6
-    // embedder lands, we fall back to lexical and flag it.
-    if (mode !== "lexical") {
+      queryLower,
+      maxResults,
+      pathStr,
+      ctx,
+      retrievalConfig,
+    });
+    response["mode"] = "lexical";
+    if (requestedHybrid) {
       response["semantic_unavailable"] = "embedder not configured";
     }
     return JSON.stringify(response);
   },
 };
+
+async function runLexicalSearch(opts: {
+  query: string;
+  queryLower: string;
+  maxResults: number;
+  pathStr: string | undefined;
+  ctx: ToolContext;
+  retrievalConfig: ReturnType<typeof normalizeRetrievalConfig>;
+}): Promise<Record<string, unknown>> {
+  if (opts.ctx.workspaceDir.length === 0) {
+    throw new ToolError("InvalidArgs", "workspace not configured");
+  }
+  const root = resolveListPath(opts.ctx.workspaceDir, opts.pathStr);
+
+  if (!fs.existsSync(root)) {
+    return {
+      query: opts.query,
+      results: [],
+      count: 0,
+      note: "path does not exist",
+    };
+  }
+
+  const { candidates, skipped: initialSkipped } = await enumerateFiles(
+    root,
+    opts.retrievalConfig,
+  );
+  let skipped = initialSkipped;
+
+  const results: Array<Record<string, unknown>> = [];
+  const filesSummary: Array<{ path: string; hits: number }> = [];
+  let searchedFiles = 0;
+
+  outer: for (const c of candidates) {
+    let content: string;
+    try {
+      content = fs.readFileSync(c.path, "utf8");
+    } catch {
+      continue;
+    }
+    if (content.includes("�")) {
+      skipped += 1;
+      continue;
+    }
+    searchedFiles += 1;
+    const display = displayPathFor(opts.ctx.workspaceDir, c.path);
+    const lines = content.split("\n");
+    let fileHits = 0;
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+      const m = findCaseInsensitiveMatch(lines[lineIdx]!, opts.queryLower);
+      if (m === undefined) continue;
+      results.push({
+        path: display,
+        line: lineIdx + 1,
+        excerpt: excerptLine(lines[lineIdx]!, m.start, m.end),
+      });
+      fileHits += 1;
+      if (results.length >= opts.maxResults) {
+        if (fileHits > 0) filesSummary.push({ path: display, hits: fileHits });
+        break outer;
+      }
+    }
+    if (fileHits > 0) filesSummary.push({ path: display, hits: fileHits });
+  }
+
+  const count = results.length;
+  const response: Record<string, unknown> = {
+    query: opts.query,
+    results,
+    count,
+    searched_files: searchedFiles,
+    skipped_binary_or_large: skipped,
+  };
+  if (count > 0) {
+    response["files"] = filesSummary;
+    response["note"] =
+      "These are line-level excerpts, ordered by file recency. Call `read` on the top file paths to see surrounding context — excerpts almost never contain the full answer, and one file often references others worth reading too.";
+  }
+  return response;
+}
+
+async function runHybridSearch(opts: {
+  query: string;
+  queryLower: string;
+  maxResults: number;
+  mode: HybridMode;
+  ctx: ToolContext;
+  retrievalConfig: ReturnType<typeof normalizeRetrievalConfig>;
+  scope: string | undefined;
+}): Promise<Record<string, unknown>> {
+  if (opts.ctx.embedder === undefined || opts.ctx.workspaceIndexPath === undefined) {
+    throw new Error("embedder not configured");
+  }
+  const result = await hybridSearch(
+    opts.ctx.workspaceDir,
+    opts.retrievalConfig,
+    opts.query,
+    opts.mode,
+    opts.ctx.embedder,
+    opts.ctx.workspaceIndexPath,
+    opts.scope,
+  );
+
+  const results = result.files.slice(0, opts.maxResults).map((file) => {
+    const [lineNo, excerpt] = bestLineExcerpt(file.content ?? "", opts.queryLower);
+    return {
+      path: file.displayPath,
+      line: lineNo,
+      excerpt,
+      lexical_score: file.lexicalScore,
+      semantic_score: file.semanticScore,
+      combined_score: file.combinedScore,
+    };
+  });
+
+  const response: Record<string, unknown> = {
+    query: opts.query,
+    mode: opts.mode,
+    results,
+    count: results.length,
+    searched_files: result.searchedFiles,
+    embedded_files: result.embeddedFiles,
+    skipped_binary_or_large: result.skippedBinaryOrLarge,
+  };
+  if (results.length > 0) {
+    response["note"] =
+      "Files ranked by combined semantic + lexical score. Excerpts are best-effort line-level snippets; call `read` on the top paths for full context — one file often references others worth reading too.";
+  }
+  return response;
+}
+
+function scopePrefixFor(workspaceDir: string, raw: string): string {
+  const resolved = resolveListPath(workspaceDir, raw);
+  return displayPathFor(workspaceDir, resolved);
+}
+
+function bestLineExcerpt(content: string, qLower: string): [number, string] {
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const m = findCaseInsensitiveMatch(line, qLower);
+    if (m !== undefined) return [i + 1, excerptLine(line, m.start, m.end)];
+  }
+
+  const terms = searchExcerptTerms(qLower);
+  if (terms.length > 0) {
+    const frequencies = termLineFrequencies(content, terms);
+    const best =
+      bestTermMatchedLine(content, terms, frequencies, false) ??
+      bestTermMatchedLine(content, terms, frequencies, true);
+    if (best !== undefined) {
+      const m = findCaseInsensitiveMatch(best.line, best.term);
+      if (m !== undefined) {
+        return [best.lineNo, excerptLine(best.line, m.start, m.end)];
+      }
+      return [best.lineNo, truncateExcerptLine(best.line.trim())];
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i]!.trim();
+    if (trimmed.length > 0 && !trimmed.startsWith("#")) {
+      return [i + 1, truncateExcerptLine(trimmed)];
+    }
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i]!.trim();
+    if (trimmed.length > 0) return [i + 1, truncateExcerptLine(trimmed)];
+  }
+  return [1, ""];
+}
+
+function searchExcerptTerms(queryLower: string): string[] {
+  return queryLower
+    .split(/[^\p{Letter}\p{Number}_-]+/u)
+    .filter((term) => term.length >= 2);
+}
+
+function termLineFrequencies(content: string, terms: string[]): number[] {
+  const lines = content.split("\n");
+  return terms.map(
+    (term) =>
+      Math.max(
+        1,
+        lines.filter((line) => line.toLowerCase().includes(term)).length,
+      ),
+  );
+}
+
+function bestTermMatchedLine(
+  content: string,
+  terms: string[],
+  frequencies: number[],
+  allowHeading: boolean,
+): { lineNo: number; line: string; term: string } | undefined {
+  let best:
+    | { lineNo: number; line: string; term: string; score: number }
+    | undefined;
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    if (!allowHeading && trimmed.startsWith("#")) continue;
+
+    const lower = trimmed.toLowerCase();
+    let bestTerm: { term: string; score: number } | undefined;
+    let lineScore = 0;
+    for (let idx = 0; idx < terms.length; idx++) {
+      const term = terms[idx]!;
+      if (!lower.includes(term)) continue;
+      const termScore = Math.floor(100 / Math.max(1, frequencies[idx] ?? 1)) + term.length;
+      lineScore += termScore;
+      if (bestTerm === undefined || termScore > bestTerm.score) {
+        bestTerm = { term, score: termScore };
+      }
+    }
+    if (bestTerm === undefined) continue;
+    if (
+      best === undefined ||
+      lineScore > best.score ||
+      (lineScore === best.score && i + 1 < best.lineNo)
+    ) {
+      best = { lineNo: i + 1, line, term: bestTerm.term, score: lineScore };
+    }
+  }
+  if (best === undefined) return undefined;
+  return { lineNo: best.lineNo, line: best.line, term: best.term };
+}
+
+function truncateExcerptLine(line: string): string {
+  const chars = [...line];
+  if (chars.length <= SEARCH_EXCERPT_CHARS) return line;
+  return `${chars.slice(0, SEARCH_EXCERPT_CHARS).join("")}...`;
+}
 
 // ---------------------------------------------------------------------------
 // exec

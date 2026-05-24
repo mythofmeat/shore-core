@@ -23,6 +23,7 @@
 
 import type { ConversationEngine } from "../engine/engine.ts";
 import { renderTemplate } from "../engine/prompt.ts";
+import type { Embedder } from "../llm/embed.ts";
 
 import {
   activityHeatmapHandler,
@@ -168,17 +169,48 @@ export interface ImageGenConfig {
   image_size?: string;
 }
 
+export type RetrievalMode = "auto" | "lexical" | "hybrid";
+export type RetrievalBinaryMode = "skip" | "metadata" | "try_embed";
+
 /**
- * Maximum bytes for a file to be considered by `file_search`. Files
- * larger are counted in `skipped_binary_or_large` and not opened.
- * Defaults to 1 MiB (matches Rust's `RetrievalConfig::default()`).
+ * Workspace retrieval configuration. Defaults mirror Rust's
+ * `RetrievalConfig::default()`.
  */
 export interface RetrievalConfig {
+  mode: RetrievalMode;
   max_file_bytes: number;
+  max_indexed_files: number;
+  max_total_indexed_bytes: number;
+  max_embed_chars_per_file: number;
+  binary: RetrievalBinaryMode;
 }
 
 export function defaultRetrievalConfig(): RetrievalConfig {
-  return { max_file_bytes: 1024 * 1024 };
+  return {
+    mode: "auto",
+    max_file_bytes: 2 * 1024 * 1024,
+    max_indexed_files: 50_000,
+    max_total_indexed_bytes: 1024 * 1024 * 1024,
+    max_embed_chars_per_file: 4_000,
+    binary: "skip",
+  };
+}
+
+export function normalizeRetrievalConfig(
+  raw: Partial<RetrievalConfig> | undefined,
+): RetrievalConfig {
+  const defaults = defaultRetrievalConfig();
+  if (raw === undefined) return defaults;
+  return {
+    mode: raw.mode ?? defaults.mode,
+    max_file_bytes: raw.max_file_bytes ?? defaults.max_file_bytes,
+    max_indexed_files: raw.max_indexed_files ?? defaults.max_indexed_files,
+    max_total_indexed_bytes:
+      raw.max_total_indexed_bytes ?? defaults.max_total_indexed_bytes,
+    max_embed_chars_per_file:
+      raw.max_embed_chars_per_file ?? defaults.max_embed_chars_per_file,
+    binary: raw.binary ?? defaults.binary,
+  };
 }
 
 /**
@@ -228,6 +260,9 @@ export interface ToolContext {
   searchConfig: SearchConfig;
   imageGenConfig?: ImageGenConfig;
   retrievalConfig: RetrievalConfig;
+  /** Optional embedding provider + cache path for hybrid/vector file_search. */
+  embedder?: Embedder;
+  workspaceIndexPath?: string;
   /** Heartbeat-only hook for `set_next_wake`. Undefined during user turns. */
   scheduleNextWake?: ScheduleNextWake;
   /** Autonomy-stats hook for `activity_heatmap`. Undefined until Phase 8. */
