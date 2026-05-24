@@ -50,6 +50,14 @@ export interface HeartbeatConfig {
   minimumHeartbeatLatencySecs: number;
 }
 
+/** Rust defaults from `shore-config::app::HeartbeatConfig`. */
+export const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig = {
+  fallbackHeartbeatIntervalSecs: 3600,
+  dormantAfterHeartbeatTurns: 3,
+  dormantAfterIdleTimeSecs: 48 * 3600,
+  minimumHeartbeatLatencySecs: 3600,
+};
+
 // ── HeartbeatClock ──────────────────────────────────────────────────────
 
 /**

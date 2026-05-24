@@ -6,33 +6,46 @@
  *
  * Phase 8b slice: also owns a `HeartbeatClock` per character so that
  * `set_next_wake` has a real implementation behind the
- * `ctx.scheduleNextWake` hook. The production driver — the ~30s ticker
- * loop, persistence, and the actual LLM dispatch on `RunTick` — lands in
- * 8c/8d. Until then the clock is exercised only by tests; the
- * user-message path keeps `scheduleNextWake: undefined` in
- * `GenerateOptions`.
+ * `ctx.scheduleNextWake` hook.
+ *
+ * Phase 8c slice: restores/saves `autonomy_state.json`, mirrors heartbeat
+ * wake deadlines into `CacheKeepalive`, and can run the production ticker
+ * loop. The actual async LLM work for `RunTick` / keepalive `Ping` lands
+ * in 8d; `tickCharacter()` returns those actions for that driver.
  */
+
+import fs from "node:fs";
+import path from "node:path";
 
 import { ActivityTracker, type ActivityStats } from "./activity.ts";
 import {
+  CacheKeepalive,
+  CacheKeepaliveAction,
+} from "./cache_keepalive.ts";
+import {
+  DEFAULT_HEARTBEAT_CONFIG,
   HeartbeatClock,
+  HeartbeatAction,
   type HeartbeatConfig,
 } from "./heartbeat.ts";
 import { SegmentReader } from "../engine/segments.ts";
 import type { ConversationEngine } from "../engine/engine.ts";
 import type { Message } from "../engine/types.ts";
+import type { AutonomyConfig } from "../config/loader.ts";
 
 const BACKFILL_WINDOW_DAYS = 90;
+const STATE_VERSION = 4;
+const STATE_FILENAME = "autonomy_state.json";
+const TICK_INTERVAL_MS = 10_000;
 
-/**
- * Default HeartbeatConfig used until the config-loader hookup lands in
- * 8c. Mirrors the Rust defaults in `shore-config::app::HeartbeatConfig`.
- */
-const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig = {
-  fallbackHeartbeatIntervalSecs: 6 * 3600, // 6h
-  dormantAfterHeartbeatTurns: 12,
-  dormantAfterIdleTimeSecs: 7 * 86400, // 7 days
-  minimumHeartbeatLatencySecs: 3600, // 1h
+const DEFAULT_AUTONOMY_CONFIG: AutonomyConfig = {
+  enabled: false,
+  heartbeat: {
+    enabled: true,
+    ...DEFAULT_HEARTBEAT_CONFIG,
+    maxToolRounds: 12,
+    wrapUpGraceRounds: 3,
+  },
 };
 
 interface ActivityWithCount {
@@ -40,13 +53,46 @@ interface ActivityWithCount {
   messageCount: number;
 }
 
+interface PersistedState {
+  version: number;
+  ticks_without_user: number;
+  next_wake_at?: string | null;
+  last_user_at?: string | null;
+}
+
+export interface TickActions {
+  heartbeat: HeartbeatAction;
+  keepalive: CacheKeepaliveAction;
+  guardTripped: boolean;
+}
+
+export interface AutonomyRegistryOptions {
+  autonomyConfig?: AutonomyConfig;
+  /** Start the per-character 10s ticker as states are first ensured. */
+  autoStartTicker?: boolean;
+  /** Injectable monotonic clock for deterministic tests. */
+  nowMs?: () => number;
+  /** Injectable wall clock for persistence tests. */
+  wallNow?: () => Date;
+}
+
 export class AutonomyRegistry {
   private readonly trackers = new Map<string, ActivityTracker>();
   private readonly clocks = new Map<string, HeartbeatClock>();
-  private readonly heartbeatConfig: HeartbeatConfig;
+  private readonly keepalives = new Map<string, CacheKeepalive>();
+  private readonly dataDirs = new Map<string, string>();
+  private readonly dirty = new Set<string>();
+  private readonly tickers = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly autonomyConfig: AutonomyConfig;
+  private readonly autoStartTicker: boolean;
+  private readonly nowMs: () => number;
+  private readonly wallNow: () => Date;
 
-  constructor(heartbeatConfig: HeartbeatConfig = DEFAULT_HEARTBEAT_CONFIG) {
-    this.heartbeatConfig = heartbeatConfig;
+  constructor(options: AutonomyRegistryOptions = {}) {
+    this.autonomyConfig = options.autonomyConfig ?? DEFAULT_AUTONOMY_CONFIG;
+    this.autoStartTicker = options.autoStartTicker ?? false;
+    this.nowMs = options.nowMs ?? (() => performance.now());
+    this.wallNow = options.wallNow ?? (() => new Date());
   }
 
   /** Idempotent — first call backfills from on-disk history. */
@@ -57,17 +103,34 @@ export class AutonomyRegistry {
 
     const tracker = new ActivityTracker();
     this.trackers.set(name, tracker);
+    this.dataDirs.set(name, engine.dataDir());
 
     if (!this.clocks.has(name)) {
-      this.clocks.set(
-        name,
-        HeartbeatClock.withConfig(this.heartbeatConfig, performance.now()),
+      const clock = HeartbeatClock.withConfig(
+        heartbeatClockConfig(this.autonomyConfig.heartbeat),
+        this.nowMs(),
       );
+      const persisted = loadPersistedState(statePath(engine.dataDir()));
+      if (persisted !== undefined) {
+        restoreFromPersisted(persisted, clock, this.nowMs(), this.wallNow());
+      }
+      this.clocks.set(name, clock);
     }
+
+    const keepalive = new CacheKeepalive();
+    const wake = this.clocks.get(name)?.nextWake();
+    if (wake !== undefined) {
+      keepalive.setNextWake(wake);
+      keepalive.onCacheWarmed(this.nowMs());
+    }
+    this.keepalives.set(name, keepalive);
 
     const timestamps = collectBackfillTimestamps(engine);
     if (timestamps.length > 0) {
       tracker.backfill(timestamps);
+    }
+    if (this.autoStartTicker) {
+      this.startTicker(name);
     }
     return tracker;
   }
@@ -78,7 +141,15 @@ export class AutonomyRegistry {
     if (tracker === undefined) return;
     tracker.recordMessage();
     const clock = this.clocks.get(characterName);
-    clock?.onUserMessage(performance.now());
+    const now = this.nowMs();
+    clock?.onUserMessage(now);
+    const keepalive = this.keepalives.get(characterName);
+    const wake = clock?.nextWake();
+    if (keepalive !== undefined && wake !== undefined) {
+      keepalive.setNextWake(wake);
+    }
+    keepalive?.onCacheWarmed(now);
+    this.markDirty(characterName);
   }
 
   /**
@@ -121,10 +192,96 @@ export class AutonomyRegistry {
       );
     }
     const clamped = Math.min(48, Math.max(1, hoursFromNow));
-    const now = performance.now();
+    const now = this.nowMs();
     const when = now + clamped * 3600 * 1000;
     clock.schedule(when, now);
+    const scheduled = clock.nextWake() ?? when;
+    this.keepalives.get(characterName)?.setNextWake(scheduled);
+    this.markDirty(characterName);
     return `Scheduled next moment in ${clamped.toFixed(1)} hours.`;
+  }
+
+  /**
+   * One synchronous ticker pulse for a character. The async driver in 8d
+   * consumes returned actions and performs the LLM work outside the state
+   * mutation path.
+   */
+  tickCharacter(characterName: string, now = this.nowMs()): TickActions {
+    const clock = this.clocks.get(characterName);
+    const keepalive = this.keepalives.get(characterName);
+    if (clock === undefined || keepalive === undefined) {
+      throw new Error(`tickCharacter: no autonomy state for "${characterName}"`);
+    }
+
+    const hadDeadline = clock.nextWake() !== undefined;
+    let heartbeat = HeartbeatAction.None;
+    let guardTripped = false;
+    if (this.autonomyConfig.enabled && this.autonomyConfig.heartbeat.enabled) {
+      heartbeat = clock.tick(now);
+      if (heartbeat !== HeartbeatAction.None) {
+        this.markDirty(characterName);
+      }
+      guardTripped =
+        hadDeadline
+        && heartbeat === HeartbeatAction.None
+        && clock.nextWake() === undefined;
+      if (guardTripped) {
+        keepalive.setNextWake(undefined);
+        this.markDirty(characterName);
+      }
+    }
+
+    const keepaliveAction = keepalive.tick(now);
+    this.saveState(characterName);
+    return { heartbeat, keepalive: keepaliveAction, guardTripped };
+  }
+
+  startTicker(characterName: string): void {
+    if (this.tickers.has(characterName)) return;
+    const timer = setInterval(() => {
+      try {
+        this.tickCharacter(characterName);
+      } catch (e) {
+        console.warn(
+          `[shore-daemon-ts] autonomy tick failed for ${characterName}: ${(e as Error).message}`,
+        );
+      }
+    }, TICK_INTERVAL_MS);
+    this.tickers.set(characterName, timer);
+  }
+
+  stopAll(): void {
+    for (const timer of this.tickers.values()) {
+      clearInterval(timer);
+    }
+    this.tickers.clear();
+    for (const name of this.clocks.keys()) {
+      this.markDirty(name);
+      this.saveState(name);
+    }
+  }
+
+  saveState(characterName: string): void {
+    if (!this.dirty.has(characterName)) return;
+    const clock = this.clocks.get(characterName);
+    const dataDir = this.dataDirs.get(characterName);
+    if (clock === undefined || dataDir === undefined) return;
+    const now = this.nowMs();
+    const wall = this.wallNow();
+    const persisted: PersistedState = {
+      version: STATE_VERSION,
+      ticks_without_user: clock.ticksWithoutUser(),
+      next_wake_at: clock.nextWake() === undefined
+        ? null
+        : monotonicToRfc3339(clock.nextWake()!, now, wall),
+      last_user_at: clock.lastUserAt() === undefined
+        ? null
+        : monotonicToRfc3339(clock.lastUserAt()!, now, wall),
+    };
+    const file = statePath(dataDir);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(persisted, null, 2)}\n`);
+    this.dirty.delete(characterName);
   }
 
   /** Test/debug accessor. */
@@ -135,6 +292,17 @@ export class AutonomyRegistry {
   /** Test/debug accessor for the per-character heartbeat clock. */
   heartbeatClock(characterName: string): HeartbeatClock | undefined {
     return this.clocks.get(characterName);
+  }
+
+  /** Test/debug accessor for the per-character cache keepalive clock. */
+  cacheKeepalive(characterName: string): CacheKeepalive | undefined {
+    return this.keepalives.get(characterName);
+  }
+
+  private markDirty(characterName: string): void {
+    if (this.clocks.has(characterName)) {
+      this.dirty.add(characterName);
+    }
   }
 }
 
@@ -184,4 +352,79 @@ function isToolResultOnly(msg: Message): boolean {
     msg.content_blocks.length > 0
     && msg.content_blocks.every((b) => b.type === "tool_result")
   );
+}
+
+function heartbeatClockConfig(config: HeartbeatConfig): HeartbeatConfig {
+  return {
+    fallbackHeartbeatIntervalSecs: config.fallbackHeartbeatIntervalSecs,
+    dormantAfterHeartbeatTurns: config.dormantAfterHeartbeatTurns,
+    dormantAfterIdleTimeSecs: config.dormantAfterIdleTimeSecs,
+    minimumHeartbeatLatencySecs: config.minimumHeartbeatLatencySecs,
+  };
+}
+
+function statePath(characterDataDir: string): string {
+  return path.join(characterDataDir, STATE_FILENAME);
+}
+
+function loadPersistedState(file: string): PersistedState | undefined {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw e;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!isPlainObject(parsed)) return undefined;
+  if (parsed["version"] !== STATE_VERSION) return undefined;
+  const ticks = parsed["ticks_without_user"];
+  if (typeof ticks !== "number" || !Number.isFinite(ticks)) return undefined;
+  return {
+    version: STATE_VERSION,
+    ticks_without_user: ticks,
+    next_wake_at: typeof parsed["next_wake_at"] === "string"
+      ? parsed["next_wake_at"]
+      : null,
+    last_user_at: typeof parsed["last_user_at"] === "string"
+      ? parsed["last_user_at"]
+      : null,
+  };
+}
+
+function restoreFromPersisted(
+  persisted: PersistedState,
+  clock: HeartbeatClock,
+  nowMs: number,
+  wallNow: Date,
+): void {
+  clock.restore(
+    persisted.ticks_without_user,
+    rfc3339ToMonotonic(persisted.next_wake_at, nowMs, wallNow),
+    rfc3339ToMonotonic(persisted.last_user_at, nowMs, wallNow),
+  );
+}
+
+function monotonicToRfc3339(instantMs: number, nowMs: number, wallNow: Date): string {
+  return new Date(wallNow.getTime() + (instantMs - nowMs)).toISOString();
+}
+
+function rfc3339ToMonotonic(
+  raw: string | null | undefined,
+  nowMs: number,
+  wallNow: Date,
+): number | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) return undefined;
+  return nowMs + (parsed - wallNow.getTime());
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }

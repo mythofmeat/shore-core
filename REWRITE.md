@@ -775,33 +775,53 @@ What 8a does NOT do (deferred to 8b/8c):
 
 What 8b does NOT do (deferred to 8c/8d):
 
-- The ~30s ticker loop / `tick_character` orchestrator that calls
-  `clock.tick()` per character — no production driver yet, the clock
-  is exercised only via tests (8c).
 - The actual LLM dispatch when `tick()` returns `RunTick` (the private
   heartbeat call with tools + system marker) — 8d.
-- `CacheKeepalive` port (`cache_keepalive.rs`) and the cross-link from
-  `clock.schedule(...)` → `keepalive.set_next_wake(...)` — 8c.
-- HeartbeatConfig in `src/config/loader.ts` — still hardcoded inside
-  the registry for now; 8c hooks it into `shore-config`.
-- Persistence to `autonomy_state.json` (`save_state` / `load_state` /
-  `restore_from_persisted` in `manager.rs`) — 8c.
 - `HeartbeatLog` JSONL events and the autonomy/heartbeat ledger rows
   (`heartbeat`/`heartbeat_tool_loop`/`keepalive` call types — the
   Phase-7 deferred item) — 8d.
 
-#### Phase 8c–8d: ticker + keepalive + LLM dispatch (pending)
+#### Phase 8c: ticker + keepalive substrate (done, 2026-05-24)
 
-- Per-character ~30s ticker loop in `main.ts` driving `clock.tick()`
-  and (8c) `keepalive.tick()`.
-- Port of `cache_keepalive.rs` — separate clock that pings to keep the
-  prompt cache TTL warm; mirrored from `clock.schedule()` so guard-trip
-  propagates.
-- Persistence: `autonomy_state.json` save/load, restore on daemon
-  startup (RFC3339 wall-clock ↔ monotonic bridge).
-- HeartbeatConfig loaded from `shore-config::app::HeartbeatConfig` via
-  the existing `src/config/loader.ts` pipeline.
-- (8d) Real LLM dispatch on `RunTick`: private message with tools,
+- [x] `src/autonomy/cache_keepalive.ts` ports `cache_keepalive.rs`:
+  same 55-minute default ping interval (with
+  `SHORE_KEEPALIVE_INTERVAL_SECS` override), same 18-hour breakeven,
+  same retry backoff, and the same "caller confirms success with
+  `onCacheWarmed`" contract.
+- [x] `AutonomyRegistry` now restores/saves `autonomy_state.json`
+  version 4 in each character data dir, converting RFC3339 wall-clock
+  deadlines to/from the monotonic-ms clock used by `HeartbeatClock`.
+- [x] `AutonomyRegistry` owns a per-character `CacheKeepalive` and
+  mirrors wake deadlines from `notifyUserMessage` and `scheduleNextWake`.
+  Guard trips clear the keepalive wake so dormant characters stop
+  pinging, matching Rust's propagation.
+- [x] Production ticker substrate wired: `main.ts` constructs the
+  registry with the loaded autonomy config and `autoStartTicker`, and
+  handshakes ensure state for the selected character. `tickCharacter()`
+  drives `clock.tick()` + `keepalive.tick()` and returns the resulting
+  actions for the async 8d driver.
+- [x] Config loader exposes `[behavior.autonomy]` and
+  `[behavior.autonomy.heartbeat]` with Rust defaults
+  (`enabled=false` for autonomy, heartbeat enabled, 1h fallback, 3
+  idle ticks, 48h idle duration, 1h minimum latency, 12 tool rounds,
+  3 wrap-up rounds).
+- Tests: `cache_keepalive.test.ts` mirrors the Rust cache-keepalive
+  block; `autonomy_registry.test.ts` adds persistence/restore +
+  keepalive-mirror coverage; `config_loader.test.ts` covers heartbeat
+  TOML parsing. Verification: targeted Bun tests and `bun run
+  typecheck` green.
+
+What 8c does NOT do:
+
+- No async execution for returned `HeartbeatAction.RunTick` or
+  `CacheKeepaliveAction.Ping` yet. The ticker computes and persists the
+  actions; 8d will consume them.
+- No `HeartbeatLog` JSONL persistence yet.
+- No autonomy/heartbeat ledger rows yet.
+
+#### Phase 8d: heartbeat + keepalive LLM dispatch (pending)
+
+- Real LLM dispatch on `RunTick`: private message with tools,
   `set_next_wake` hook wired through `GenerateOptions.scheduleNextWake`,
   `HeartbeatLog` JSONL append, ledger rows with
   `call_type='heartbeat'`/`'heartbeat_tool_loop'`/`'keepalive'`.

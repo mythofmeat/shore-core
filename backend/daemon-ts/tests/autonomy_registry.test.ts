@@ -9,11 +9,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AutonomyRegistry } from "../src/autonomy/registry.ts";
+import { CacheKeepaliveAction } from "../src/autonomy/cache_keepalive.ts";
+import { HeartbeatAction } from "../src/autonomy/heartbeat.ts";
 import { setNextWakeHandler } from "../src/tools/basic.ts";
 import { ToolError } from "../src/tools/registry.ts";
 import type { ConversationEngine } from "../src/engine/engine.ts";
@@ -21,6 +23,19 @@ import type { ToolContext } from "../src/tools/registry.ts";
 
 function fakeEngine(name: string): ConversationEngine {
   const dir = mkdtempSync(join(tmpdir(), `autonomy-reg-test-${name}-`));
+  return {
+    name: () => name,
+    dataDir: () => dir,
+    historySnapshot: () => ({
+      messages: [],
+      active_start: 0,
+      selected_character: name,
+      revision: 0,
+    }),
+  } as unknown as ConversationEngine;
+}
+
+function fakeEngineAt(name: string, dir: string): ConversationEngine {
   return {
     name: () => name,
     dataDir: () => dir,
@@ -131,6 +146,7 @@ describe("AutonomyRegistry × set_next_wake", () => {
     registry.notifyUserMessage("carol");
     expect(clock.lastUserAt()).not.toBeUndefined();
     expect(clock.ticksWithoutUser()).toBe(0);
+    expect(registry.cacheKeepalive("carol")!.nextWakeAt()).toBe(clock.nextWake());
   });
 
   test("set_next_wake without a heartbeat context hook still rejects at the tool layer", async () => {
@@ -144,5 +160,68 @@ describe("AutonomyRegistry × set_next_wake", () => {
         ctx,
       ),
     ).rejects.toBeInstanceOf(ToolError);
+  });
+
+  test("tickCharacter drives the heartbeat clock and persists state", () => {
+    let now = 10_000;
+    const wall = new Date("2026-05-24T00:00:00.000Z");
+    const registry = new AutonomyRegistry({
+      autonomyConfig: {
+        enabled: true,
+        heartbeat: {
+          enabled: true,
+          fallbackHeartbeatIntervalSecs: 60,
+          dormantAfterHeartbeatTurns: 3,
+          dormantAfterIdleTimeSecs: 7200,
+          minimumHeartbeatLatencySecs: 3600,
+          maxToolRounds: 12,
+          wrapUpGraceRounds: 3,
+        },
+      },
+      nowMs: () => now,
+      wallNow: () => wall,
+    });
+    const dir = mkdtempSync(join(tmpdir(), "autonomy-state-test-"));
+    registry.ensureState(fakeEngineAt("dana", dir));
+
+    expect(registry.tickCharacter("dana")).toEqual({
+      heartbeat: HeartbeatAction.None,
+      keepalive: CacheKeepaliveAction.None,
+      guardTripped: false,
+    });
+    now += 61_000;
+    expect(registry.tickCharacter("dana").heartbeat).toBe(HeartbeatAction.RunTick);
+    registry.saveState("dana");
+
+    const file = join(dir, "autonomy_state.json");
+    expect(existsSync(file)).toBe(true);
+    const persisted = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    expect(persisted.version).toBe(4);
+    expect(persisted.ticks_without_user).toBe(1);
+  });
+
+  test("ensureState restores persisted heartbeat deadlines and primes keepalive", () => {
+    const dir = mkdtempSync(join(tmpdir(), "autonomy-restore-test-"));
+    writeFileSync(
+      join(dir, "autonomy_state.json"),
+      JSON.stringify({
+        version: 4,
+        ticks_without_user: 2,
+        next_wake_at: "2026-05-24T02:00:00.000Z",
+        last_user_at: "2026-05-24T00:30:00.000Z",
+      }),
+    );
+    const registry = new AutonomyRegistry({
+      nowMs: () => 1_000_000,
+      wallNow: () => new Date("2026-05-24T00:00:00.000Z"),
+    });
+    registry.ensureState(fakeEngineAt("erin", dir));
+
+    const clock = registry.heartbeatClock("erin")!;
+    expect(clock.ticksWithoutUser()).toBe(2);
+    expect(clock.nextWake()).toBe(1_000_000 + 2 * 3600 * 1000);
+    expect(clock.lastUserAt()).toBe(1_000_000 + 30 * 60 * 1000);
+    expect(registry.cacheKeepalive("erin")!.nextWakeAt()).toBe(clock.nextWake());
+    expect(registry.cacheKeepalive("erin")!.nextPingAt()).not.toBeUndefined();
   });
 });

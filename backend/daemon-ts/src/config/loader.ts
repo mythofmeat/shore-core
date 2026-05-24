@@ -12,6 +12,10 @@ import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 
 import {
+  DEFAULT_HEARTBEAT_CONFIG,
+  type HeartbeatConfig,
+} from "../autonomy/heartbeat.ts";
+import {
   defaultSpikeWarningsConfig,
   defaultUsageBudgetConfig,
   type BudgetWeekday,
@@ -35,6 +39,9 @@ export interface LoadedConfig {
       embedding: string | undefined;
       display_name: string | undefined;
     };
+    behavior: {
+      autonomy: AutonomyConfig;
+    };
     advanced: {
       cache_forensics: boolean;
     };
@@ -51,6 +58,17 @@ export interface DreamingConfig {
   enabled: boolean;
   frequency: string;
   max_tool_rounds: number;
+}
+
+export interface AutonomyConfig {
+  enabled: boolean;
+  heartbeat: LoadedHeartbeatConfig;
+}
+
+export interface LoadedHeartbeatConfig extends HeartbeatConfig {
+  enabled: boolean;
+  maxToolRounds: number;
+  wrapUpGraceRounds: number;
 }
 
 /** Load config from a Shore config directory. Missing files are tolerated. */
@@ -71,6 +89,9 @@ export function loadConfig(configDir: string): LoadedConfig {
           typeof defaultsTable["display_name"] === "string"
             ? defaultsTable["display_name"]
             : undefined,
+      },
+      behavior: {
+        autonomy: parseAutonomyConfig(pickAutonomyTable(merged)),
       },
       advanced: parseAdvancedConfig(pickTable(merged, "advanced")),
       usage: parseUsageConfig(pickTable(merged, "usage")),
@@ -192,6 +213,14 @@ function pickDreamingTable(
   return pickTable(memory, "dreaming");
 }
 
+function pickAutonomyTable(
+  obj: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const behavior = pickTable(obj, "behavior");
+  if (behavior === undefined) return undefined;
+  return pickTable(behavior, "autonomy");
+}
+
 function parseEmbeddingProfiles(
   table: Record<string, unknown> | undefined,
 ): Record<string, Record<string, unknown>> {
@@ -223,6 +252,44 @@ function parseDreamingConfig(
         : defaults.frequency,
     max_tool_rounds:
       asNumber(table["max_tool_rounds"]) ?? defaults.max_tool_rounds,
+  };
+}
+
+function parseAutonomyConfig(
+  table: Record<string, unknown> | undefined,
+): AutonomyConfig {
+  const heartbeat = table === undefined ? undefined : pickTable(table, "heartbeat");
+  return {
+    enabled:
+      table !== undefined && typeof table["enabled"] === "boolean"
+        ? table["enabled"]
+        : false,
+    heartbeat: parseHeartbeatConfig(heartbeat),
+  };
+}
+
+function parseHeartbeatConfig(
+  table: Record<string, unknown> | undefined,
+): LoadedHeartbeatConfig {
+  return {
+    enabled:
+      table !== undefined && typeof table["enabled"] === "boolean"
+        ? table["enabled"]
+        : true,
+    fallbackHeartbeatIntervalSecs:
+      parseDurationSecs(table?.["fallback_heartbeat_interval"]) ??
+      DEFAULT_HEARTBEAT_CONFIG.fallbackHeartbeatIntervalSecs,
+    dormantAfterHeartbeatTurns:
+      asNumber(table?.["dormant_after_heartbeat_turns"]) ??
+      DEFAULT_HEARTBEAT_CONFIG.dormantAfterHeartbeatTurns,
+    dormantAfterIdleTimeSecs:
+      parseDurationSecs(table?.["dormant_after_idle_time"]) ??
+      DEFAULT_HEARTBEAT_CONFIG.dormantAfterIdleTimeSecs,
+    minimumHeartbeatLatencySecs:
+      parseDurationSecs(table?.["minimum_heartbeat_latency"]) ??
+      DEFAULT_HEARTBEAT_CONFIG.minimumHeartbeatLatencySecs,
+    maxToolRounds: asNumber(table?.["max_tool_rounds"]) ?? 12,
+    wrapUpGraceRounds: asNumber(table?.["wrap_up_grace_rounds"]) ?? 3,
   };
 }
 
@@ -382,6 +449,29 @@ function parseRetrievalBinary(
 
 function asNumber(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+function parseDurationSecs(raw: unknown): number | undefined {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  const match = /^(\d+(?:\.\d+)?)(ms|s|m|h|d)?$/.exec(trimmed);
+  if (match === null) return undefined;
+  const value = Number.parseFloat(match[1]!);
+  const unit = match[2] ?? "s";
+  switch (unit) {
+    case "ms":
+      return value / 1000;
+    case "s":
+      return value;
+    case "m":
+      return value * 60;
+    case "h":
+      return value * 3600;
+    case "d":
+      return value * 86400;
+  }
+  return undefined;
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

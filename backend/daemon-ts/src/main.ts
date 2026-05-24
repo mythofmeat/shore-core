@@ -132,7 +132,10 @@ async function main(): Promise<void> {
   const catalog = loadCatalog(dirs.config);
   const ledger = Ledger.open(path.join(dirs.data, "ledger.db"));
   const pricing = new PricingEngine(ledger);
-  const autonomy = new AutonomyRegistry();
+  const autonomy = new AutonomyRegistry({
+    autonomyConfig: config.app.behavior.autonomy,
+    autoStartTicker: true,
+  });
   const cacheForensics = config.app.advanced.cache_forensics
     ? CacheForensics.open(dirs.cache)
     : undefined;
@@ -160,7 +163,7 @@ async function main(): Promise<void> {
     },
   });
 
-  const handshake = buildHandshakeProvider(config, dirs.config, engines);
+  const handshake = buildHandshakeProvider(config, dirs.config, engines, autonomy);
   const onMessage = buildMessageHandler(
     engines,
     dirs.config,
@@ -224,6 +227,7 @@ async function main(): Promise<void> {
     } catch (e) {
       console.error(`[shore-daemon-ts] registry unregister failed: ${(e as Error).message}`);
     }
+    autonomy.stopAll();
     ledger.close();
     server.stop();
     process.exit(0);
@@ -248,6 +252,7 @@ function buildHandshakeProvider(
   config: LoadedConfig,
   configDir: string,
   engines: EngineRegistry,
+  autonomy: AutonomyRegistry,
 ): HandshakeProvider {
   const activeModel = (): string | null =>
     config.app.defaults.model ?? firstChatModelQualifiedName(config) ?? null;
@@ -266,7 +271,9 @@ function buildHandshakeProvider(
           revision: 0,
         };
       }
-      const snap = engines.get(selectedCharacter).historySnapshot();
+      const engine = engines.get(selectedCharacter);
+      autonomy.ensureState(engine);
+      const snap = engine.historySnapshot();
       return {
         messages: snap.messages,
         ...(snap.active_start !== 0 ? { active_start: snap.active_start } : {}),
@@ -518,6 +525,7 @@ function buildRegenHandler(
       throw new Error("client sent regen before selecting a character");
     }
     const engine = engines.get(session.character);
+    autonomy.ensureState(engine);
     const dropped = await engine.rewindLastAssistantTurn();
     if (dropped.length === 0) {
       throw new Error("nothing to regen: no trailing assistant turn");

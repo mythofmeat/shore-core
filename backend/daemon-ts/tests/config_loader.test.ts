@@ -44,6 +44,18 @@ cache_forensics = true
 [usage]
 timezone = "utc"
 allow_compaction_over_budget = false
+
+[behavior.autonomy]
+enabled = true
+
+[behavior.autonomy.heartbeat]
+enabled = false
+fallback_heartbeat_interval = "2h"
+dormant_after_heartbeat_turns = 7
+dormant_after_idle_time = "3d"
+minimum_heartbeat_latency = "45m"
+max_tool_rounds = 5
+wrap_up_grace_rounds = 2
 `);
 
     const config = loadConfig(dir);
@@ -74,6 +86,18 @@ allow_compaction_over_budget = false
         period: "hour",
         multiplier: 3,
         min_cost_usd: 1,
+      },
+    });
+    expect(config.app.behavior.autonomy).toEqual({
+      enabled: true,
+      heartbeat: {
+        enabled: false,
+        fallbackHeartbeatIntervalSecs: 7200,
+        dormantAfterHeartbeatTurns: 7,
+        dormantAfterIdleTimeSecs: 259200,
+        minimumHeartbeatLatencySecs: 2700,
+        maxToolRounds: 5,
+        wrapUpGraceRounds: 2,
       },
     });
   });
