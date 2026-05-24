@@ -1180,18 +1180,27 @@ scheduled soak/cutover items are blocked on these.
   - Manual `memory_dream` / `memory_dreams` command path still pending —
     requires the wider command dispatcher work (audit blocker #3). The
     autonomous path that the audit actually flagged is live.
-- [ ] **Port the missing command surface.** Bring the TS dispatcher up from
-  2 to 35 commands. At minimum, the following are user-visible cutover
-  blockers: `status`, `list_characters`, `switch_character`, `list_models`,
-  `model_info`, `switch_model`, `set_model_setting`, `model_settings`,
-  `reset_model`, `config`, `config_check`, `config_reset`, `compact`,
-  `memory`, `memory_dream`, `memory_dreams`, `memory_changelog`, `log`,
-  `history_page`, `get`, `edit`, `delete`, `alt`, `list_alternatives`,
-  `inject_system` (rename from current `inject_system_message`),
+- [x] **Port the missing command surface (done, 2026-05-25).** The TS
+  daemon now has a Rust-shaped command dispatcher under `src/commands/`
+  with category handlers for navigation, conversation, state, and
+  providers, wired through `main.ts` for all 35 Rust command names. Fully
+  backed commands: `status`, `list_characters`, `switch_character`,
+  `character_info`, `list_models`, `model_info`, `switch_model`,
+  `set_model_setting`, `model_settings`, `reset_model`, `config`,
+  `config_check`, `config_reset`, `compact`, `memory`, `memory_dream`,
+  `memory_dreams`, `memory_changelog`, `log`, `history_page`, `get`,
+  `edit`, `delete`, `alt`, `list_alternatives`, `inject_system`,
   `heartbeat_log`, `heartbeat_tick_now`, `heartbeat_set_dormant`,
-  `heartbeat_set_active`, `list_providers`, `refresh_provider_models`,
-  `refresh_all_provider_models`, `list_provider_models`, `diagnostics`.
-  (Audit blocker #3.)
+  `heartbeat_set_active`, `list_providers`, `list_provider_models`,
+  and `usage`. `inject_system_message` remains as a one-release
+  compatibility alias for the earlier TS-only command name. Explicit
+  stubs: `diagnostics` returns the Rust section shape with
+  `diagnostics ring buffer not ported in TS daemon` (audit #11), and
+  `refresh_provider_models` / `refresh_all_provider_models` return
+  clear `provider model refresh not implemented in TS daemon` payloads
+  because the provider discovery refresh path / scheduler remains audit
+  #8. Four command test files cover the category payloads and common Rust
+  error paths; `bun test` and `bun run typecheck` are green.
 - [x] **Port the preferences module (done, 2026-05-25).**
   `backend/daemon/src/preferences/mod.rs` → `src/preferences/` landed:
   - `src/preferences/{types,store,resolve,overlay,index}.ts` mirrors the

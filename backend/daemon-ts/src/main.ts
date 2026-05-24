@@ -22,6 +22,9 @@ import {
 } from "./autonomy/inline_dreaming.ts";
 import { AutonomyRegistry } from "./autonomy/registry.ts";
 import { characterMetadata, discoverCharacters } from "./characters/registry.ts";
+import { dispatchCommand } from "./commands/dispatch.ts";
+import { loadProviderRegistry } from "./commands/providers.ts";
+import type { RuntimeConfigState } from "./commands/types.ts";
 import type { ImageRef } from "./engine/types.ts";
 import {
   firstChatModelQualifiedName,
@@ -41,7 +44,6 @@ import {
 import { CacheForensics } from "./ledger/cache_forensics.ts";
 import { Ledger } from "./ledger/ledger.ts";
 import { PricingEngine } from "./ledger/pricing.ts";
-import { usagePayload } from "./ledger/usage.ts";
 import { resolveEmbedder, type Embedder } from "./llm/embed.ts";
 import { loadConfigDotenv } from "./llm/env.ts";
 import { generateResponse } from "./llm/generate.ts";
@@ -167,10 +169,15 @@ async function main(): Promise<void> {
   loadConfigDotenv(dirs.config);
 
   const configSource = explicitConfigFile === undefined
-    ? dirs.config
+    ? { configDir: dirs.config }
     : { configDir: dirs.config, configFile: explicitConfigFile };
-  const config = loadConfig(configSource);
-  const catalog = loadCatalog(configSource);
+  const runtime: RuntimeConfigState = {
+    config: loadConfig(configSource),
+    catalog: loadCatalog(configSource),
+    providers: loadProviderRegistry(configSource),
+  };
+  let config = runtime.config;
+  let catalog = runtime.catalog;
   const ledger = Ledger.open(path.join(dirs.data, "ledger.db"));
   const pricing = new PricingEngine(ledger);
   const cacheForensics = config.app.advanced.cache_forensics
@@ -285,7 +292,25 @@ async function main(): Promise<void> {
     () => serverRef,
     (characterName, rid) => inlineCompaction(characterName, rid),
   );
-  const onCommand = buildCommandHandler(engines, config, ledger, pricing, () => serverRef);
+  const onCommand = buildCommandHandler(
+    engines,
+    dirs.config,
+    dirs.data,
+    dirs.cache,
+    configSource,
+    runtime,
+    autonomy,
+    ledger,
+    pricing,
+    (next) => {
+      runtime.config = next.config;
+      runtime.catalog = next.catalog;
+      runtime.providers = next.providers;
+      config = next.config;
+      catalog = next.catalog;
+    },
+    () => serverRef,
+  );
 
   const server = new SwpServer({
     host,
@@ -766,67 +791,95 @@ function buildRegenHandler(
   };
 }
 
-/**
- * Command handler. Minimal dispatcher matching the Rust impl for the
- * commands shore-daemon-ts currently understands:
- *
- *   - `inject_system_message`: append a Role::System Message to
- *     active.jsonl (mirror of `commands/conversation.rs::handle_inject`).
- *   - `model_settings`: return the resolved active-model fields
- *     (mirror of `commands/usage.rs::handle_model_settings`).
- *
- * Anything else gets a clear "command X not implemented" error frame.
- */
 function buildCommandHandler(
   engines: EngineRegistry,
-  config: LoadedConfig,
+  configDir: string,
+  dataDir: string,
+  cacheDir: string,
+  configSource: { configDir: string; configFile?: string },
+  runtime: RuntimeConfigState,
+  autonomy: AutonomyRegistry,
   ledger: Ledger,
   pricing: PricingEngine,
+  reloadRuntimeConfig: (next: RuntimeConfigState) => void,
   getServer: () => SwpServer | undefined,
 ): import("./swp/server.ts").CommandHandler {
   return async (session, msg) => {
-    const send = (frame: import("./swp/types.ts").ServerMessage): void => {
+    const send = session.send ?? ((frame: import("./swp/types.ts").ServerMessage): void => {
       getServer()?.broadcast(frame);
+    });
+    const characterless = session.character === undefined
+      && (
+        msg.name === "list_characters"
+        || msg.name === "list_models"
+        || msg.name === "list_providers"
+        || msg.name === "list_provider_models"
+        || msg.name === "refresh_provider_models"
+        || msg.name === "refresh_all_provider_models"
+      );
+    const engine = characterless || session.character === undefined
+      ? undefined
+      : engines.get(session.character);
+    if (engine !== undefined) autonomy.ensureState(engine);
+
+    const ctx = {
+      configSource,
+      runtime,
+      dataDir,
+      cacheDir,
+      engines,
+      autonomy,
+      ledger,
+      pricing,
+      ...(session.character !== undefined ? { characterName: session.character } : {}),
+      reloadRuntimeConfig,
     };
-    switch (msg.name) {
-      case "inject_system_message": {
-        const args = (msg.args ?? {}) as { text?: string };
-        if (typeof args.text !== "string" || args.text.length === 0) {
-          throw new Error("inject_system_message requires args.text");
+
+    try {
+      const data = await dispatchCommand({
+        ctx,
+        ...(engine !== undefined ? { engine } : {}),
+        name: msg.name,
+        args: msg.args,
+      });
+
+      if (msg.name === "switch_character" && isRecord(data)) {
+        const selected = typeof data["character"] === "string" ? data["character"] : undefined;
+        if (selected !== undefined) {
+          session.setCharacter?.(selected);
+          const selectedEngine = engines.get(selected);
+          autonomy.ensureState(selectedEngine);
+          const activeModel = runtime.config.app.defaults.model ?? firstChatModelQualifiedName(runtime.config) ?? null;
+          const snap = selectedEngine.historySnapshot({ active_model: activeModel, private: false });
+          data["selected_character"] = selected;
+          data["active_model"] = activeModel;
+          data["private"] = false;
+          send({
+            type: "history",
+            ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
+            messages: snap.messages,
+            ...(snap.active_start !== 0 ? { active_start: snap.active_start } : {}),
+            config: snap.config,
+            selected_character: snap.selected_character,
+            revision: snap.revision,
+          });
         }
-        if (session.character === undefined) {
-          throw new Error("no character selected");
-        }
-        const engine = engines.get(session.character);
-        await engine.appendMessage({
-          msg_id: `m_${crypto.randomUUID()}`,
-          role: "system",
-          content: args.text,
-          images: [],
-          content_blocks: [{ type: "text", text: args.text }],
-          timestamp: rfc3339LocalNow(),
-        });
-        send({
-          type: "command_output",
-          ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
-          name: msg.name,
-          data: { injected: true },
-        });
-        return;
       }
-      case "usage": {
-        const args = (msg.args ?? {}) as Record<string, unknown>;
-        const data = await usagePayload(ledger, args, config.app.usage, pricing);
-        send({
-          type: "command_output",
-          ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
-          name: msg.name,
-          data,
-        });
-        return;
-      }
-      default:
-        throw new Error(`command "${msg.name}" not implemented`);
+
+      send({
+        type: "command_output",
+        ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
+        name: msg.name,
+        data,
+      });
+    } catch (e) {
+      const err = e as Error & { code?: string };
+      send({
+        type: "error",
+        ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
+        code: err.code ?? "internal_error",
+        message: err.message,
+      });
     }
   };
 }
@@ -867,6 +920,10 @@ function rfc3339LocalNow(): string {
     `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
     `T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${ms}${sign}${tzh}:${tzm}`
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 await main();

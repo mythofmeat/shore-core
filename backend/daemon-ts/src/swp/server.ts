@@ -70,8 +70,14 @@ export type RegenHandler = (
   msg: { rid: string | undefined; guidance: string | undefined; signal: AbortSignal },
 ) => Promise<void>;
 
+export interface CommandSession {
+  character: string | undefined;
+  setCharacter?: (character: string | undefined) => void;
+  send?: (frame: ServerMessage) => void;
+}
+
 export type CommandHandler = (
-  session: { character: string | undefined },
+  session: CommandSession,
   msg: { rid: string | undefined; name: string; args: unknown },
 ) => Promise<void>;
 
@@ -285,7 +291,13 @@ export class SwpServer {
         return;
       }
       this.opts.onCommand(
-        { character: sock.data.character },
+        {
+          character: sock.data.character,
+          setCharacter: (character) => {
+            sock.data.character = character;
+          },
+          send: (frame) => this.sendFrame(sock, frame),
+        },
         { rid: msg.rid, name: msg.name, args: msg.args },
       ).catch((e) => this.replyError(sock, msg, e));
       return;
