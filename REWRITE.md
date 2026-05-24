@@ -892,9 +892,10 @@ What 8c does NOT do:
 - [x] Validation docs: `README.md`, `ARCHITECTURE.md`, and `AGENTS.md` now
   list the TS daemon preview install/typecheck/test/build/compiled-smoke gate
   alongside the existing Rust checks.
-- [ ] Preview soak starts: publish a `shore-daemon-ts-v*` tag, verify the
-  repo-arch package, install/run `shore-daemon-ts.service`, and record the
-  start evidence from `docs/DAEMON_TS_CUTOVER.md`.
+- [ ] Preview soak starts: merge the rewrite branch to `origin/main`, publish
+  a `shore-daemon-ts-v*` tag from that main commit, verify the repo-arch
+  package, install/run `shore-daemon-ts.service`, and record the start
+  evidence from `docs/DAEMON_TS_CUTOVER.md`.
 - [ ] Preview soak completes: one full release cycle of opt-in TS daemon
   traffic finishes with no live failures attributable to the TS daemon. Any
   code fix for a live TS-daemon failure restarts the soak clock from the fixed

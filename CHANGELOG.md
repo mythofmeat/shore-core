@@ -17,6 +17,8 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   install/start commands, soak evidence, and the default-switch decision gate.
 - Document the TypeScript daemon preview validation commands in the root
   README, architecture validation guide, and agent entry map.
+- Document that `shore-daemon-ts` preview tags must point at `origin/main`
+  because the package workflow rejects non-main tags.
 
 ### Removed (BREAKING)
 - The `claude_code` SDK provider, the `[chat.claude_code.*]` model namespace,

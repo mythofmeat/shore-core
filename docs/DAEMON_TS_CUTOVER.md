@@ -38,6 +38,9 @@ placement, tool loops, or background LLM calls.
 
 ## Publish The Preview
 
+The preview tag must point at a commit already on `origin/main`. The packaging
+workflow verifies this before building, so merge the rewrite/cutover PR first.
+
 Create a preview tag from the exact commit being soaked:
 
 ```sh
