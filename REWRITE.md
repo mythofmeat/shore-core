@@ -1192,13 +1192,27 @@ scheduled soak/cutover items are blocked on these.
   `heartbeat_set_active`, `list_providers`, `refresh_provider_models`,
   `refresh_all_provider_models`, `list_provider_models`, `diagnostics`.
   (Audit blocker #3.)
-- [ ] **Port the preferences module.** `backend/daemon/src/preferences/mod.rs`
-  → `src/preferences/`. Cover load/save for global + per-character
-  `models.toml`, `SamplerSettings`/`SamplerScopes` resolution,
-  `apply_sampler_overlay`, `resolve_active_for_character`,
-  `resolve_chat_model_for_character`, `resolve_background_model`. Wire the
-  overlay into the LLM-call request build in `src/llm/generate.ts`.
-  (Audit blocker #4.)
+- [x] **Port the preferences module (done, 2026-05-25).**
+  `backend/daemon/src/preferences/mod.rs` → `src/preferences/` landed:
+  - `src/preferences/{types,store,resolve,overlay,index}.ts` mirrors the
+    Rust `models.toml` schema for global + per-character preferences,
+    flattened per-model sampler entries, strict unknown-field rejection,
+    sticky per-model setters, and selection/reset helpers for the command
+    dispatcher slice.
+  - Resolver parity covers selected model layering, sampler settings +
+    sampler scope attribution, static-catalog defaults, discovered-model
+    restoration through the provider cache / provider registry fallback,
+    chat model resolution, and background-task model resolution.
+  - `applySamplerOverlay` is wired into `src/llm/generate.ts` request
+    building so saved sampler settings apply before SWP per-call
+    `overrides`, preserving Rust's per-call > character > global >
+    catalog precedence.
+  - 3 new test files (`preferences_store`, `preferences_resolve`,
+    `preferences_overlay`) mirror the Rust module tests and cover load/save,
+    malformed TOML, resolver precedence, reasoning `"off"`, and request
+    overlay edge cases. `bun test` and `bun run typecheck` green.
+  - Command handlers that call these setters remain part of the wider
+    dispatcher work (audit blocker #3).
 - [x] **Extend the `ConversationEngine` API (done, 2026-05-25).**
   ConversationEngine ported — `engine.ts` + `messages.ts` extended,
   17-test suite green. Audit item #13's edit/delete/alt machinery,

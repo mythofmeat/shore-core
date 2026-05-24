@@ -49,6 +49,12 @@ import { OpenAIProvider } from "./providers/openai.ts";
 import type { ResolvedModel } from "./catalog.ts";
 import type { Embedder } from "./embed.ts";
 import { runToolLoop } from "./tool_loop.ts";
+import {
+  applySamplerOverlay,
+  isSamplerSettingsEmpty,
+  loadForCharacter,
+  resolveSamplerSettings,
+} from "../preferences/index.ts";
 import type {
   ChatEvent,
   ChatRequest,
@@ -158,6 +164,7 @@ export interface PrepareChatRequestOptions {
 }
 
 export function prepareChatRequest(opts: PrepareChatRequestOptions): ChatRequest {
+  const resolved = resolveRequestModel(opts);
   const snapshot = opts.engine.historySnapshot();
   const ctx = buildChatContext({
     characterName: opts.engine.name(),
@@ -168,11 +175,11 @@ export function prepareChatRequest(opts: PrepareChatRequestOptions): ChatRequest
     isPrivate: opts.isPrivate ?? false,
     hasPriorContext: false,
     messages: snapshot.messages,
-    ...(opts.resolved.maxContextTokens !== undefined
-      ? { maxContextTokens: opts.resolved.maxContextTokens }
+    ...(resolved.maxContextTokens !== undefined
+      ? { maxContextTokens: resolved.maxContextTokens }
       : {}),
-    ...(opts.resolved.maxTokens !== undefined
-      ? { maxOutputTokens: opts.resolved.maxTokens }
+    ...(resolved.maxTokens !== undefined
+      ? { maxOutputTokens: resolved.maxTokens }
       : {}),
   });
 
@@ -183,20 +190,20 @@ export function prepareChatRequest(opts: PrepareChatRequestOptions): ChatRequest
     description: t.description,
     inputSchema: t.inputSchema,
   }));
-  const thinking = buildThinkingConfig(opts.resolved, opts.overrides);
-  const temperature = opts.overrides?.temperature ?? opts.resolved.temperature;
-  const topP = opts.overrides?.top_p ?? opts.resolved.topP;
+  const thinking = buildThinkingConfig(resolved, opts.overrides);
+  const temperature = opts.overrides?.temperature ?? resolved.temperature;
+  const topP = opts.overrides?.top_p ?? resolved.topP;
 
   return {
     system: systemString,
     messages,
     tools,
     thinking,
-    cacheTtl: opts.resolved.cacheTtl ?? "",
-    modelId: opts.resolved.modelId,
+    cacheTtl: resolved.cacheTtl ?? "",
+    modelId: resolved.modelId,
     apiKey: opts.apiKey,
-    maxTokens: opts.resolved.maxTokens ?? 4096,
-    ...(opts.resolved.baseUrl !== undefined ? { baseUrl: opts.resolved.baseUrl } : {}),
+    maxTokens: resolved.maxTokens ?? 4096,
+    ...(resolved.baseUrl !== undefined ? { baseUrl: resolved.baseUrl } : {}),
     ...(temperature !== undefined ? { temperature } : {}),
     ...(topP !== undefined ? { topP } : {}),
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
@@ -401,7 +408,7 @@ function recordLedgerCalls(
       ttftMs: call.ttftMs,
       finishReason: call.stopReason,
       thinkingEnabled: request.thinking.enabled,
-      ...(opts.resolved.cacheTtl !== undefined ? { cacheTtl: opts.resolved.cacheTtl } : {}),
+      ...(request.cacheTtl.length > 0 ? { cacheTtl: request.cacheTtl } : {}),
       ...(opts.pricing !== undefined ? { pricing: opts.pricing } : {}),
     };
     try {
@@ -492,6 +499,27 @@ export function cloneChatRequest(request: ChatRequest): ChatRequest {
       inputSchema: { ...t.inputSchema },
     })),
   };
+}
+
+function resolveRequestModel(opts: PrepareChatRequestOptions): ResolvedModel {
+  const dataDir = path.dirname(opts.engine.dataDir());
+  const character = opts.engine.name();
+  try {
+    const [globalPrefs, characterPrefs] = loadForCharacter(dataDir, character);
+    const overlay = resolveSamplerSettings(
+      globalPrefs,
+      characterPrefs,
+      opts.resolved.providerKey,
+      opts.resolved.modelId,
+    );
+    if (isSamplerSettingsEmpty(overlay)) return opts.resolved;
+    return applySamplerOverlay(opts.resolved, overlay);
+  } catch (e) {
+    console.warn(
+      `[shore-daemon-ts] preferences load failed for ${character}; using raw model settings: ${(e as Error).message}`,
+    );
+    return opts.resolved;
+  }
 }
 
 /** Convert assembled PromptMessage[] into the TurnMessage[] the providers want. */
