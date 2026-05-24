@@ -21,6 +21,9 @@ import {
 import { EngineRegistry } from "./engine/engine.ts";
 import type { Message } from "./engine/types.ts";
 import { loadCatalog, resolveModel, type ResolvedModel } from "./llm/catalog.ts";
+import { CacheForensics } from "./ledger/cache_forensics.ts";
+import { Ledger } from "./ledger/ledger.ts";
+import { usagePayload } from "./ledger/usage.ts";
 import { resolveEmbedder, type Embedder } from "./llm/embed.ts";
 import { loadConfigDotenv } from "./llm/env.ts";
 import { generateResponse } from "./llm/generate.ts";
@@ -119,6 +122,13 @@ async function main(): Promise<void> {
 
   const config = loadConfig(dirs.config);
   const catalog = loadCatalog(dirs.config);
+  const ledger = Ledger.open(path.join(dirs.data, "ledger.db"));
+  const cacheForensics = config.app.advanced.cache_forensics
+    ? CacheForensics.open(dirs.cache)
+    : undefined;
+  if (cacheForensics !== undefined) {
+    console.log(`[shore-daemon-ts] cache forensics: ${path.join(dirs.cache, "cache_forensics.jsonl")}`);
+  }
 
   // EngineRegistry is constructed before the server so we can wire the
   // broadcast callback at engine-construction time (engines are lazily
@@ -147,6 +157,8 @@ async function main(): Promise<void> {
     dirs.cache,
     config,
     catalog,
+    ledger,
+    cacheForensics,
     () => serverRef,
   );
   const onRegen = buildRegenHandler(
@@ -155,9 +167,11 @@ async function main(): Promise<void> {
     dirs.cache,
     config,
     catalog,
+    ledger,
+    cacheForensics,
     () => serverRef,
   );
-  const onCommand = buildCommandHandler(engines, () => serverRef);
+  const onCommand = buildCommandHandler(engines, config, ledger, () => serverRef);
 
   const server = new SwpServer({
     host,
@@ -196,6 +210,7 @@ async function main(): Promise<void> {
     } catch (e) {
       console.error(`[shore-daemon-ts] registry unregister failed: ${(e as Error).message}`);
     }
+    ledger.close();
     server.stop();
     process.exit(0);
   };
@@ -264,6 +279,8 @@ function buildMessageHandler(
   cacheDir: string,
   config: LoadedConfig,
   catalog: ReturnType<typeof loadCatalog>,
+  ledger: Ledger,
+  cacheForensics: CacheForensics | undefined,
   getServer: () => SwpServer | undefined,
 ): MessageHandler {
   return async (session, msg) => {
@@ -314,6 +331,8 @@ function buildMessageHandler(
           displayName,
         }),
         broadcast,
+        ledger,
+        ...(cacheForensics !== undefined ? { cacheForensics } : {}),
         retrievalConfig: config.memory.retrieval,
         ...(embedder !== undefined ? { embedder } : {}),
         ...(embedder !== undefined
@@ -394,6 +413,8 @@ function buildRegenHandler(
   cacheDir: string,
   config: LoadedConfig,
   catalog: ReturnType<typeof loadCatalog>,
+  ledger: Ledger,
+  cacheForensics: CacheForensics | undefined,
   getServer: () => SwpServer | undefined,
 ): import("./swp/server.ts").RegenHandler {
   return async (session, msg) => {
@@ -442,6 +463,8 @@ function buildRegenHandler(
           displayName,
         }),
         broadcast,
+        ledger,
+        ...(cacheForensics !== undefined ? { cacheForensics } : {}),
         retrievalConfig: config.memory.retrieval,
         ...(embedder !== undefined ? { embedder } : {}),
         ...(embedder !== undefined
@@ -469,6 +492,8 @@ function buildRegenHandler(
  */
 function buildCommandHandler(
   engines: EngineRegistry,
+  config: LoadedConfig,
+  ledger: Ledger,
   getServer: () => SwpServer | undefined,
 ): import("./swp/server.ts").CommandHandler {
   return async (session, msg) => {
@@ -498,6 +523,16 @@ function buildCommandHandler(
           ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
           name: msg.name,
           data: { injected: true },
+        });
+        return;
+      }
+      case "usage": {
+        const args = (msg.args ?? {}) as Record<string, unknown>;
+        send({
+          type: "command_output",
+          ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
+          name: msg.name,
+          data: usagePayload(ledger, args, config.app.usage),
         });
         return;
       }

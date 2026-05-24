@@ -48,14 +48,24 @@ export interface ToolLoopResult {
   newTurns: TurnMessage[];
   /** Per-call usage stats, in order. */
   usagePerCall: UsageStats[];
+  /** Per-call telemetry rows, in provider call order. */
+  calls: ToolLoopCall[];
   /** Last call's stop reason. */
   stopReason: string;
+}
+
+export interface ToolLoopCall {
+  usage: UsageStats;
+  stopReason: string;
+  totalMs: number;
+  ttftMs: number;
 }
 
 export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult> {
   const maxIter = opts.maxIterations ?? 10;
   const newTurns: TurnMessage[] = [];
   const usagePerCall: UsageStats[] = [];
+  const calls: ToolLoopCall[] = [];
 
   let messages = opts.request.messages;
   let lastContent: ContentBlock[] = [];
@@ -63,11 +73,12 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
 
   for (let iter = 0; iter < maxIter; iter++) {
     const req: ChatRequest = { ...opts.request, messages };
-    const { content, stopReason, usage } = await consumeStream(
+    const { content, stopReason, usage, totalMs, ttftMs } = await consumeStream(
       opts.provider.stream(req),
       opts.onEvent,
     );
     usagePerCall.push(usage);
+    calls.push({ usage, stopReason, totalMs, ttftMs });
     lastContent = content;
     lastStopReason = stopReason;
 
@@ -114,17 +125,35 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
     newTurns.push(toolUserTurn);
   }
 
-  return { finalContent: lastContent, newTurns, usagePerCall, stopReason: lastStopReason };
+  return { finalContent: lastContent, newTurns, usagePerCall, calls, stopReason: lastStopReason };
 }
 
 async function consumeStream(
   events: AsyncIterable<ChatEvent>,
   onEvent: ((e: ChatEvent) => void) | undefined,
-): Promise<{ content: ContentBlock[]; stopReason: string; usage: UsageStats }> {
+): Promise<{
+  content: ContentBlock[];
+  stopReason: string;
+  usage: UsageStats;
+  totalMs: number;
+  ttftMs: number;
+}> {
+  const start = Date.now();
+  let firstOutputAt: number | undefined;
   for await (const event of events) {
+    if (event.kind !== "done" && firstOutputAt === undefined) {
+      firstOutputAt = Date.now();
+    }
     onEvent?.(event);
     if (event.kind === "done") {
-      return { content: event.content, stopReason: event.stopReason, usage: event.usage };
+      const totalMs = Date.now() - start;
+      return {
+        content: event.content,
+        stopReason: event.stopReason,
+        usage: event.usage,
+        totalMs,
+        ttftMs: firstOutputAt === undefined ? totalMs : firstOutputAt - start,
+      };
     }
   }
   throw new Error("provider stream ended without a 'done' event");

@@ -37,6 +37,13 @@ binary = "metadata"
 enabled = true
 frequency = "0 6 * * 1"
 max_tool_rounds = 4
+
+[advanced]
+cache_forensics = true
+
+[usage]
+timezone = "utc"
+allow_compaction_over_budget = false
 `);
 
     const config = loadConfig(dir);
@@ -56,6 +63,11 @@ max_tool_rounds = 4
       enabled: true,
       frequency: "0 6 * * 1",
       max_tool_rounds: 4,
+    });
+    expect(config.app.advanced.cache_forensics).toBe(true);
+    expect(config.app.usage).toEqual({
+      timezone: "utc",
+      allow_compaction_over_budget: false,
     });
   });
 });

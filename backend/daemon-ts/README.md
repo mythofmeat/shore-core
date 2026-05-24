@@ -3,14 +3,21 @@
 TypeScript reimplementation of `shore-daemon`. See `../../REWRITE.md` for the
 plan.
 
-## Current phase: 6d — dreaming
+## Current phase: 7 in progress — ledger + cache forensics
 
-Phases 0–6c are done. Phase 6d ports the AI-librarian `run_librarian_sweep`
-path: a private tool loop drives `read`/`write`/`edit`/search tools to
-refresh `MEMORY.md`, with `exec` blocked, dry-run write blocking, and
-`DREAMS.md` audit entries written via the existing `dreams_log` module.
-Deferred edits keep regenerated `MEMORY.md` out of the active prompt
-until the next compaction/reload.
+Phases 0–6d are done. The TS daemon can handshake with existing Rust
+clients, append and persist user messages, generate via the provider SDKs,
+run the full tool registry, compact memory, apply deferred prompt edits,
+use the workspace embedding index for `file_search` hybrid/vector mode
+when an OpenAI-compatible embedder is configured, and run the callable AI
+librarian dreaming pass.
+
+The Phase 7 ledger foundation is in place: chat/tool-loop provider calls
+write Rust-compatible `ledger.db` rows, compaction and AI-librarian
+dreaming can write their own call types when handed the shared ledger,
+cache anomalies are tracked, `shore usage` summary/export/anomaly modes
+read the TS ledger, and request/response `cache_forensics.jsonl` logging is
+enabled by `[advanced].cache_forensics = true`.
 
 Representative checks currently green:
 - `handshake-empty` — no character selected.
@@ -18,6 +25,10 @@ Representative checks currently green:
 - `message-append` — client sends a message, restart, verify persistence.
 - `bun run typecheck`
 - `bun test` — unit/integration suite; provider-live tests are env-gated.
+
+The remaining Phase 7 work is full Rust parity for pricing/budget usage
+modes plus production scheduler/autonomy integration for the non-chat call
+paths.
 
 ## Run
 

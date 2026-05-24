@@ -607,13 +607,27 @@ What 6d does NOT do:
   it only for dry-run diagnostics and fallback-oriented unit coverage;
   production dreaming uses the AI librarian path above.
 
-### Phase 7: ledger + cache forensics
+### Phase 7: ledger + cache forensics (in progress)
 
-- `bun:sqlite` against the existing `ledger.db`.
-- Record every LLM call with token counts, cache reads/writes, finish
-  reason. Same columns the Rust ledger writes.
-- Cache anomaly detection (`unexpected_write` etc.).
-- `cache_forensics.jsonl` append-only log.
+- [x] `bun:sqlite` against the existing `ledger.db`, with the Rust-compatible
+  `calls`, `pricing`, and `usage_budget_warnings` tables plus best-effort
+  migrations for `cache_ttl`, `api_key_name`, and `cost_source`.
+- [x] Chat generation records one row per provider round-trip, including
+  message vs. tool-loop call type, token counts, cache reads/writes, cache
+  TTL, timing, finish reason, and thinking flag.
+- [x] Cache anomaly detection (`unexpected_write`, `keepalive_miss`) is
+  ported for ledger writes and cache-health summaries.
+- [x] `shore usage` command payloads are backed by the TS ledger for summary,
+  by-call-type, by-kind, by-api-key, anomaly, CSV, and TSV modes.
+- [x] `cache_forensics.jsonl` request-side breakpoint logging and
+  response-side cache metric logging are wired when
+  `[advanced].cache_forensics = true`.
+- [x] Compaction and AI-librarian dreaming provider calls can write
+  `compaction`/`dreaming` ledger rows when those paths are given the shared
+  ledger sink.
+- [ ] Remaining parity: pricing refresh/recalculation, budget/spike-warning
+  payloads, production scheduler/autonomy integration for non-chat call
+  paths, and autonomy/heartbeat ledger rows once Phase 8 lands.
 - **Exit criterion:** `shore usage` command output matches Rust daemon for
   the same conversation.
 

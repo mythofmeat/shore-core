@@ -20,6 +20,7 @@ import {
   runLibrarianSweep,
 } from "../src/memory/dreaming.ts";
 import { dreamsLogPath } from "../src/memory/dreams_log.ts";
+import { Ledger } from "../src/ledger/ledger.ts";
 
 class QueuedProvider implements ProviderClient {
   readonly requests: ChatRequest[] = [];
@@ -225,6 +226,22 @@ describe("runLibrarianSweep", () => {
     expect(loadMemoryIndex(path.join(s.dataDir, "alice"), s.configDir, "alice")).toBeUndefined();
     const dreams = fs.readFileSync(dreamsLogPath(s.dataDir, "alice"), "utf8");
     expect(dreams).toContain("daemon fallback");
+  });
+
+  it("records private librarian provider calls as dreaming ledger rows", async () => {
+    const s = setup();
+    const ledger = Ledger.openInMemory();
+    s.provider.enqueueText("No changes needed.");
+
+    await runLibrarianSweep({ ...sweepOpts(s), ledger });
+
+    const rows = ledger.recent(1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.call_type).toBe("dreaming");
+    expect(rows[0]?.character).toBe("alice");
+    expect(rows[0]?.input_tokens).toBe(1);
+    expect(rows[0]?.cache_state).toBeUndefined();
+    ledger.close();
   });
 
   it("zero max tool rounds sends no provider request and still creates fallback index", async () => {

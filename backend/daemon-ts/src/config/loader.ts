@@ -4,7 +4,7 @@
  * Loads `config.toml` and `conf.d/*.toml` from `$SHORE_CONFIG_DIR` and
  * deep-merges the parsed objects. Exposes the slices the TS daemon
  * currently needs: default chat/display/embedding selectors, raw
- * `[embedding.*]` profiles, and `[memory.retrieval]` caps.
+ * `[embedding.*]` profiles, and `[memory.*]` config slices.
  */
 
 import fs from "node:fs";
@@ -24,6 +24,13 @@ export interface LoadedConfig {
       model: string | undefined;
       embedding: string | undefined;
       display_name: string | undefined;
+    };
+    advanced: {
+      cache_forensics: boolean;
+    };
+    usage: {
+      timezone: string;
+      allow_compaction_over_budget: boolean;
     };
   };
   embedding: Record<string, Record<string, unknown>>;
@@ -58,6 +65,8 @@ export function loadConfig(configDir: string): LoadedConfig {
             ? defaultsTable["display_name"]
             : undefined,
       },
+      advanced: parseAdvancedConfig(pickTable(merged, "advanced")),
+      usage: parseUsageConfig(pickTable(merged, "usage")),
     },
     embedding: parseEmbeddingProfiles(pickTable(merged, "embedding")),
     memory: {
@@ -207,6 +216,31 @@ function parseDreamingConfig(
         : defaults.frequency,
     max_tool_rounds:
       asNumber(table["max_tool_rounds"]) ?? defaults.max_tool_rounds,
+  };
+}
+
+function parseAdvancedConfig(
+  table: Record<string, unknown> | undefined,
+): LoadedConfig["app"]["advanced"] {
+  return {
+    cache_forensics:
+      table !== undefined && typeof table["cache_forensics"] === "boolean"
+        ? table["cache_forensics"]
+        : false,
+  };
+}
+
+function parseUsageConfig(
+  table: Record<string, unknown> | undefined,
+): LoadedConfig["app"]["usage"] {
+  const timezone =
+    table !== undefined && table["timezone"] === "utc" ? "utc" : "local";
+  return {
+    timezone,
+    allow_compaction_over_budget:
+      table !== undefined && typeof table["allow_compaction_over_budget"] === "boolean"
+        ? table["allow_compaction_over_budget"]
+        : true,
   };
 }
 

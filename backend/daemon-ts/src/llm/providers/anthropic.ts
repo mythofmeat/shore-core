@@ -77,10 +77,15 @@ export class AnthropicProvider implements ProviderClient {
     const tools = buildTools(req.tools, cacheControl);
     // Anthropic rejects role:"system" in the messages array — wrap any
     // mid-history system turns into <system_instruction> blocks first.
-    const messages = buildMessages(
-      convertInlineSystemMessages(req.messages),
-      cacheControl,
-    );
+    const wireTurns = convertInlineSystemMessages(req.messages);
+    const msgBreakpoints = cacheControl === undefined
+      ? []
+      : messageBreakpointIndices(wireTurns);
+    const sysBreakpoints = cacheControl !== undefined && system.length > 0
+      ? [system.length - 1]
+      : [];
+    const messages = buildMessages(wireTurns, cacheControl, msgBreakpoints);
+    logRequestForensics(req, system, messages, msgBreakpoints, sysBreakpoints, cacheControl !== undefined);
     const thinking = buildThinking(req.thinking, req.maxTokens);
 
     const params: Parameters<typeof client.messages.stream>[0] = {
@@ -368,6 +373,9 @@ export function convertInlineSystemMessages(turns: TurnMessage[]): WireTurn[] {
 function buildMessages(
   turns: WireTurn[],
   cacheControl: CacheControl | undefined,
+  msgBreakpoints: number[] = cacheControl === undefined
+    ? []
+    : messageBreakpointIndices(turns),
 ): MessageParam[] {
   // Compute the "last stable" position (last assistant turn before the
   // pending tail) and the absolute last message position. The Anthropic
@@ -376,6 +384,23 @@ function buildMessages(
   // iteration too (the last tool_result for a tool loop, or the latest
   // user message for plain chat). Up to two breakpoints in messages,
   // combined with the two in system/tools, = the 4-breakpoint budget.
+  const breakpoints = new Set(msgBreakpoints);
+
+  return turns.map((turn, i) => {
+    const imageBlocks = imagesToAnthropicBlocks(turn.images);
+    const content: ContentBlockParam[] = [
+      ...imageBlocks,
+      ...turn.content.map((b) => toAnthropicBlockParam(b)),
+    ];
+    if (cacheControl && breakpoints.has(i)) {
+      applyMessageBreakpoint(content, cacheControl);
+    }
+    return { role: turn.role, content };
+  });
+}
+
+function messageBreakpointIndices(turns: WireTurn[]): number[] {
+  if (turns.length === 0) return [];
   const lastIdx = turns.length - 1;
   let stableIdx = -1;
   for (let i = lastIdx - 1; i >= 0; i--) {
@@ -384,18 +409,52 @@ function buildMessages(
       break;
     }
   }
+  return [...new Set([stableIdx, lastIdx].filter((idx) => idx >= 0))].sort(
+    (a, b) => a - b,
+  );
+}
 
-  return turns.map((turn, i) => {
-    const imageBlocks = imagesToAnthropicBlocks(turn.images);
-    const content: ContentBlockParam[] = [
-      ...imageBlocks,
-      ...turn.content.map((b) => toAnthropicBlockParam(b)),
-    ];
-    if (cacheControl && (i === stableIdx || i === lastIdx)) {
-      applyMessageBreakpoint(content, cacheControl);
-    }
-    return { role: turn.role, content };
+function logRequestForensics(
+  req: ChatRequest,
+  system: TextBlockParam[],
+  messages: MessageParam[],
+  msgBreakpoints: number[],
+  sysBreakpoints: number[],
+  cacheEnabled: boolean,
+): void {
+  if (req.cacheForensics === undefined) return;
+  const end = msgBreakpoints.length > 0 ? msgBreakpoints[0]! + 1 : 0;
+  const callId = req.cacheForensics.nextCallId();
+  req.cacheForensics.logRequest({
+    callId,
+    ...(req.forensicCharacter !== undefined
+      ? { character: req.forensicCharacter }
+      : {}),
+    model: req.modelId,
+    msgCount: messages.length,
+    msgBreakpoints,
+    sysBreakpoints,
+    sysBlocks: system.length,
+    prefixHash: hashForensicsPrefix(system, messages.slice(0, end)),
+    hasExistingMarkers: false,
+    cacheEnabled,
+    ...(req.forensicRid !== undefined ? { rid: req.forensicRid } : {}),
   });
+}
+
+function hashForensicsPrefix(
+  system: TextBlockParam[],
+  messagePrefix: MessageParam[],
+): string {
+  const bytes = new TextEncoder().encode(JSON.stringify({ system, messages: messagePrefix }));
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = (hash * prime) & mask;
+  }
+  return hash.toString(16).padStart(16, "0");
 }
 
 function imagesToAnthropicBlocks(

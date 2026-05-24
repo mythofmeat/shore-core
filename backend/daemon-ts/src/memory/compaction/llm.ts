@@ -22,11 +22,14 @@
 import { AnthropicProvider } from "../../llm/providers/anthropic.ts";
 import { OpenAIProvider } from "../../llm/providers/openai.ts";
 import type { ResolvedModel } from "../../llm/catalog.ts";
+import type { CacheForensics } from "../../ledger/cache_forensics.ts";
+import type { Ledger } from "../../ledger/ledger.ts";
 import type {
   ChatEvent,
   ChatRequest,
   ProviderClient,
   TurnMessage,
+  UsageStats,
 } from "../../llm/types.ts";
 
 import { CompactionError, type CompactionLlm } from "./types.ts";
@@ -38,6 +41,12 @@ export interface RealCompactionLlmOptions {
   baseUrl?: string;
   /** Cache TTL applied to the compaction call — defaults to "1h" for Anthropic. */
   cacheTtl?: string;
+  /** Optional test/diagnostic provider override. */
+  provider?: ProviderClient;
+  /** Optional ledger sinks for Phase 7 accounting. */
+  ledger?: Ledger;
+  cacheForensics?: CacheForensics;
+  character?: string;
 }
 
 export class RealCompactionLlm implements CompactionLlm {
@@ -56,7 +65,7 @@ export class RealCompactionLlm implements CompactionLlm {
       // the autonomy manager lands.
     }
 
-    const provider = buildProvider(this.opts.resolved.sdk);
+    const provider = this.opts.provider ?? buildProvider(this.opts.resolved.sdk);
     const turns = messages.map<TurnMessage>((m) => ({
       role: m.role,
       content: [{ type: "text", text: m.content }],
@@ -82,9 +91,23 @@ export class RealCompactionLlm implements CompactionLlm {
     };
 
     let text = "";
+    let usage: UsageStats = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    };
+    let stopReason = "end_turn";
+    const started = Date.now();
+    let firstOutputAt: number | undefined;
     try {
       for await (const ev of provider.stream(req)) {
+        if (ev.kind !== "done" && firstOutputAt === undefined) {
+          firstOutputAt = Date.now();
+        }
         if (ev.kind === "done") {
+          usage = ev.usage;
+          stopReason = ev.stopReason;
           for (const block of ev.content) {
             if (block.type === "text") text += block.text;
           }
@@ -93,7 +116,45 @@ export class RealCompactionLlm implements CompactionLlm {
     } catch (e) {
       throw new CompactionError("llm", (e as Error).message);
     }
+    const totalMs = Date.now() - started;
+    this.recordLedger({
+      usage,
+      stopReason,
+      totalMs,
+      ttftMs: firstOutputAt === undefined ? totalMs : firstOutputAt - started,
+    });
     return text;
+  }
+
+  private recordLedger(call: {
+    usage: UsageStats;
+    stopReason: string;
+    totalMs: number;
+    ttftMs: number;
+  }): void {
+    if (this.opts.ledger === undefined || this.opts.character === undefined) return;
+    try {
+      this.opts.ledger.recordCall(
+        {
+          provider: this.opts.resolved.providerKey,
+          model: this.opts.resolved.modelId,
+          callType: "compaction",
+          character: this.opts.character,
+          inputTokens: call.usage.inputTokens,
+          outputTokens: call.usage.outputTokens,
+          cacheReadTokens: call.usage.cacheReadInputTokens,
+          cacheWriteTokens: call.usage.cacheCreationInputTokens,
+          totalMs: call.totalMs,
+          ttftMs: call.ttftMs,
+          finishReason: call.stopReason,
+          thinkingEnabled: false,
+          ...(this.opts.cacheTtl !== undefined ? { cacheTtl: this.opts.cacheTtl } : {}),
+        },
+        this.opts.cacheForensics,
+      );
+    } catch (e) {
+      console.error(`[compaction] ledger record failed: ${(e as Error).message}`);
+    }
   }
 }
 

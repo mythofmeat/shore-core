@@ -79,6 +79,27 @@ export interface ChatRequest {
   topP?: number;
   /** AbortSignal for cancelling the generation mid-stream. */
   signal?: AbortSignal;
+  /** Optional cache-forensics sink used by Anthropic request construction. */
+  cacheForensics?: CacheForensicsSink;
+  forensicCharacter?: string;
+  forensicRid?: string;
+}
+
+export interface CacheForensicsSink {
+  nextCallId(): number;
+  logRequest(entry: {
+    callId: number;
+    character?: string;
+    model: string;
+    msgCount: number;
+    msgBreakpoints: number[];
+    sysBreakpoints: number[];
+    sysBlocks: number;
+    prefixHash: string;
+    hasExistingMarkers: boolean;
+    cacheEnabled: boolean;
+    rid?: string;
+  }): void;
 }
 
 export interface UsageStats {

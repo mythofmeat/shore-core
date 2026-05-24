@@ -10,7 +10,12 @@
  * Run as part of CI (no API key required).
  */
 import { describe, expect, it } from "bun:test";
+import fs from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
+import { CacheForensics } from "../src/ledger/cache_forensics.ts";
 import { AnthropicProvider } from "../src/llm/providers/anthropic.ts";
 import type {
   ChatEvent,
@@ -119,6 +124,46 @@ describe("cache placement (offline)", () => {
         "system[0]",
         "tools[1]",
       ]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("logs request-side cache forensics when enabled", async () => {
+    const server = await startFakeAnthropic([
+      {
+        blocks: [{ type: "text", text: "Hello back." }],
+        stopReason: "end_turn",
+      } satisfies CannedResponse,
+    ]);
+    try {
+      const cacheDir = mkdtempSync(path.join(tmpdir(), "shore-cache-forensics-test-"));
+      const req: ChatRequest = {
+        ...baseRequest([
+          { role: "user", content: [{ type: "text", text: "Hi" }] },
+        ]),
+        baseUrl: server.baseUrl,
+        cacheForensics: CacheForensics.open(cacheDir),
+        forensicCharacter: "casey",
+        forensicRid: "rid_1",
+      };
+      await drain(new AnthropicProvider().stream(req));
+
+      const lines = fs
+        .readFileSync(path.join(cacheDir, "cache_forensics.jsonl"), "utf8")
+        .trim()
+        .split("\n");
+      expect(lines).toHaveLength(1);
+      const entry = JSON.parse(lines[0]!) as Record<string, unknown>;
+      expect(entry["type"]).toBe("request");
+      expect(entry["character"]).toBe("casey");
+      expect(entry["rid"]).toBe("rid_1");
+      expect(entry["msg_count"]).toBe(1);
+      expect(entry["msg_breakpoints"]).toEqual([0]);
+      expect(entry["sys_breakpoints"]).toEqual([0]);
+      expect(entry["sys_blocks"]).toBe(1);
+      expect(entry["cache_enabled"]).toBe(true);
+      expect(entry["prefix_hash"]).toMatch(/^[0-9a-f]{16}$/);
     } finally {
       await server.close();
     }

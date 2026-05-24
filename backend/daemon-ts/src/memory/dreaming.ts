@@ -12,6 +12,8 @@ import path from "node:path";
 
 import type { ConversationEngine } from "../engine/engine.ts";
 import type { ContentBlock } from "../engine/types.ts";
+import type { CacheForensics } from "../ledger/cache_forensics.ts";
+import type { Ledger } from "../ledger/ledger.ts";
 import type { Embedder } from "../llm/embed.ts";
 import type { ChatEvent, ChatRequest, ProviderClient, TurnMessage, UsageStats } from "../llm/types.ts";
 import type { ResolvedModel } from "../llm/catalog.ts";
@@ -179,6 +181,8 @@ export interface LibrarianSweepOptions {
   retrievalConfig?: RetrievalConfig;
   imageGenConfig?: ImageGenConfig;
   embedder?: Embedder;
+  ledger?: Ledger;
+  cacheForensics?: CacheForensics;
 }
 
 type MemorySnapshot = Map<string, string>;
@@ -218,6 +222,8 @@ export async function runLibrarianSweep(
     maxToolRounds: cfg.max_tool_rounds,
     dryRun,
   });
+  recordDreamingLedger(opts, request, loopResult);
+
   if (dryRun) {
     return {
       character: opts.character,
@@ -577,6 +583,40 @@ async function consumeStream(
     }
   }
   throw new Error("provider stream ended without a 'done' event");
+}
+
+function recordDreamingLedger(
+  opts: LibrarianSweepOptions,
+  request: ChatRequest,
+  result: LibrarianLoopResult,
+): void {
+  if (opts.ledger === undefined) return;
+  for (const call of result.calls) {
+    try {
+      opts.ledger.recordCall(
+        {
+          provider: opts.resolved.providerKey,
+          model: opts.resolved.modelId,
+          callType: "dreaming",
+          character: opts.character,
+          inputTokens: call.usage.inputTokens,
+          outputTokens: call.usage.outputTokens,
+          cacheReadTokens: call.usage.cacheReadInputTokens,
+          cacheWriteTokens: call.usage.cacheCreationInputTokens,
+          totalMs: call.totalMs,
+          ttftMs: call.ttftMs,
+          finishReason: call.stopReason,
+          thinkingEnabled: request.thinking.enabled,
+          ...(opts.resolved.cacheTtl !== undefined
+            ? { cacheTtl: opts.resolved.cacheTtl }
+            : {}),
+        },
+        opts.cacheForensics,
+      );
+    } catch (e) {
+      console.error(`[dreaming] ledger record failed: ${(e as Error).message}`);
+    }
+  }
 }
 
 function rememberFinalReport(

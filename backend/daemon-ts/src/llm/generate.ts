@@ -28,6 +28,8 @@ import path from "node:path";
 import type { ConversationEngine } from "../engine/engine.ts";
 import { buildChatContext } from "../engine/context.ts";
 import type { ContentBlock, Message } from "../engine/types.ts";
+import type { CacheForensics } from "../ledger/cache_forensics.ts";
+import type { Ledger } from "../ledger/ledger.ts";
 import type { ServerMessage } from "../swp/types.ts";
 import type {
   ImageGenConfig,
@@ -76,6 +78,11 @@ export interface GenerateOptions {
   overrides?: GenerationOverrides;
   /** AbortSignal for cancelling the generation mid-stream. */
   signal?: AbortSignal;
+  /** Test/diagnostic provider override. Real daemon calls leave this unset. */
+  provider?: ProviderClient;
+  /** Optional ledger sinks for Phase 7 accounting. */
+  ledger?: Ledger;
+  cacheForensics?: CacheForensics;
   /** Tool-side config slices; defaults are used when omitted. */
   searchConfig?: SearchConfig;
   retrievalConfig?: RetrievalConfig;
@@ -97,8 +104,8 @@ export interface GenerateResult {
 export async function generateResponse(
   opts: GenerateOptions,
 ): Promise<GenerateResult> {
-  const apiKey = resolveApiKey(opts.resolved);
-  const provider = buildProvider(opts.resolved.sdk);
+  const apiKey = opts.provider === undefined ? resolveApiKey(opts.resolved) : "";
+  const provider = opts.provider ?? buildProvider(opts.resolved.sdk);
 
   const snapshot = opts.engine.historySnapshot();
   const ctx = buildChatContext({
@@ -146,6 +153,13 @@ export async function generateResponse(
     ...(temperature !== undefined ? { temperature } : {}),
     ...(topP !== undefined ? { topP } : {}),
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    ...(opts.cacheForensics !== undefined
+      ? {
+          cacheForensics: opts.cacheForensics,
+          forensicCharacter: opts.engine.name(),
+          ...(opts.rid !== undefined ? { forensicRid: opts.rid } : {}),
+        }
+      : {}),
   };
 
   // Stream-frame emitter — fired per ChatEvent during the loop. Aggregates
@@ -256,6 +270,8 @@ export async function generateResponse(
     onToolResult,
   });
 
+  recordLedgerCalls(opts, request, result);
+
   // Persist the new turns. Each appendMessage triggers a History
   // broadcast — clients use that as the canonical post-stream view.
   for (const turn of result.newTurns) {
@@ -269,6 +285,36 @@ export async function generateResponse(
     .join("");
 
   return { finalText, turnCount };
+}
+
+function recordLedgerCalls(
+  opts: GenerateOptions,
+  request: ChatRequest,
+  result: Awaited<ReturnType<typeof runToolLoop>>,
+): void {
+  if (opts.ledger === undefined) return;
+  for (const [idx, call] of result.calls.entries()) {
+    const input = {
+      provider: opts.resolved.providerKey,
+      model: opts.resolved.modelId,
+      callType: idx === 0 ? "message" : "tool_loop",
+      character: opts.engine.name(),
+      inputTokens: call.usage.inputTokens,
+      outputTokens: call.usage.outputTokens,
+      cacheReadTokens: call.usage.cacheReadInputTokens,
+      cacheWriteTokens: call.usage.cacheCreationInputTokens,
+      totalMs: call.totalMs,
+      ttftMs: call.ttftMs,
+      finishReason: call.stopReason,
+      thinkingEnabled: request.thinking.enabled,
+      ...(opts.resolved.cacheTtl !== undefined ? { cacheTtl: opts.resolved.cacheTtl } : {}),
+    };
+    try {
+      opts.ledger.recordCall(input, opts.cacheForensics);
+    } catch (e) {
+      console.error(`[shore-daemon-ts] ledger record failed: ${(e as Error).message}`);
+    }
+  }
 }
 
 /**
