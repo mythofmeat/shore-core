@@ -1,0 +1,25 @@
+[Unit]
+Description=Shore daemon TS preview - persistent AI character engine
+Documentation=https://github.com/mythofmeat/shore-core
+After=network.target
+
+[Service]
+Type=simple
+ExecSearchPath=%h/.local/bin /usr/bin
+ExecStart=shore-daemon-ts
+Restart=on-failure
+RestartSec=5
+
+Environment=NODE_ENV=production
+Environment=XDG_CONFIG_HOME=%h/.config
+Environment=XDG_DATA_HOME=%h/.local/share
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/shore %h/.config/shore /run/user/%U/shore
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

@@ -860,8 +860,22 @@ What 8c does NOT do:
 
 ### Phase 9: cutover
 
+#### Phase 9a: side-by-side opt-in packaging (done, 2026-05-24)
+
+- [x] `contrib/shore-daemon-ts/PKGBUILD` builds the Bun single-binary
+  daemon from `backend/daemon-ts`, runs typecheck/tests/compiled
+  smoketest in `check()`, and installs it as `/usr/bin/shore-daemon-ts`
+  so it can coexist with the Rust `/usr/bin/shore-daemon`.
+- [x] `contrib/shore-daemon-ts.service` provides an opt-in user service
+  with the same Shore config/data/runtime paths as the Rust service but
+  `ExecStart=shore-daemon-ts`.
+- [x] `backend/daemon-ts/README.md` now reflects Phase 8d status and
+  documents the preview service.
+
+#### Phase 9b: default + Rust retirement (pending)
+
 - `shore-daemon-ts` ships alongside `shore-daemon` for one release. Users
-  opt in via config flag or env var.
+  opt in by installing/running the TS preview binary or service.
 - Once stable in the wild, `shore-daemon-ts` becomes the default.
 - Rust daemon code moves to `attic/` or is deleted — decide at cutover.
 - **Exit criterion:** no live failures reported on the TS daemon for one

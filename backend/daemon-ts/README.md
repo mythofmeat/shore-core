@@ -3,21 +3,18 @@
 TypeScript reimplementation of `shore-daemon`. See `../../REWRITE.md` for the
 plan.
 
-## Current phase: 7 in progress — ledger + cache forensics
+## Current phase: 8d complete — cutover prep
 
-Phases 0–6d are done. The TS daemon can handshake with existing Rust
-clients, append and persist user messages, generate via the provider SDKs,
-run the full tool registry, compact memory, apply deferred prompt edits,
-use the workspace embedding index for `file_search` hybrid/vector mode
-when an OpenAI-compatible embedder is configured, and run the callable AI
-librarian dreaming pass.
+Phases 0–8d are implemented. The TS daemon can handshake with existing Rust
+clients, append and persist messages, generate through provider SDKs, run
+the full tool registry, compact memory, apply deferred prompt edits, use the
+workspace embedding index for `file_search`, run AI-librarian dreaming,
+write Rust-compatible usage ledger rows, track activity heatmaps, and drive
+heartbeat/keepalive autonomy from the ticker.
 
-The Phase 7 ledger foundation is in place: chat/tool-loop provider calls
-write Rust-compatible `ledger.db` rows, compaction and AI-librarian
-dreaming can write their own call types when handed the shared ledger,
-cache anomalies are tracked, `shore usage` summary/export/anomaly modes
-read the TS ledger, and request/response `cache_forensics.jsonl` logging is
-enabled by `[advanced].cache_forensics = true`.
+The remaining rewrite work is Phase 9 cutover: ship the TS daemon alongside
+the Rust daemon for one release cycle, gather live failure data, then decide
+when to make it the default and retire the Rust daemon.
 
 Representative checks currently green:
 - `handshake-empty` — no character selected.
@@ -25,10 +22,6 @@ Representative checks currently green:
 - `message-append` — client sends a message, restart, verify persistence.
 - `bun run typecheck`
 - `bun test` — unit/integration suite; provider-live tests are env-gated.
-
-The remaining Phase 7 work is full Rust parity for pricing/budget usage
-modes plus production scheduler/autonomy integration for the non-chat call
-paths.
 
 ## Run
 
@@ -46,6 +39,19 @@ CLI can discover it.
 ```sh
 bun run build       # → dist/shore-daemon
 ```
+
+The preview Arch package installs that binary as `shore-daemon-ts` so it can
+live beside the Rust `shore-daemon`. See `../../contrib/shore-daemon-ts/`.
+
+## Opt-in systemd service
+
+```sh
+systemctl --user enable --now shore-daemon-ts.service
+```
+
+Do not run `shore-daemon.service` and `shore-daemon-ts.service` at the same
+time against the same Shore directories unless you intentionally want two
+daemon instances in the runtime registry.
 
 ## Smoketest
 
