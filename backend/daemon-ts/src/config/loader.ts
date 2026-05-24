@@ -28,8 +28,15 @@ export interface LoadedConfig {
   };
   embedding: Record<string, Record<string, unknown>>;
   memory: {
+    dreaming: DreamingConfig;
     retrieval: RetrievalConfig;
   };
+}
+
+export interface DreamingConfig {
+  enabled: boolean;
+  frequency: string;
+  max_tool_rounds: number;
 }
 
 /** Load config from a Shore config directory. Missing files are tolerated. */
@@ -54,6 +61,7 @@ export function loadConfig(configDir: string): LoadedConfig {
     },
     embedding: parseEmbeddingProfiles(pickTable(merged, "embedding")),
     memory: {
+      dreaming: parseDreamingConfig(pickDreamingTable(merged)),
       retrieval: parseRetrievalConfig(pickRetrievalTable(merged)),
     },
   };
@@ -160,6 +168,14 @@ function pickRetrievalTable(
   return pickTable(memory, "retrieval");
 }
 
+function pickDreamingTable(
+  obj: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const memory = pickTable(obj, "memory");
+  if (memory === undefined) return undefined;
+  return pickTable(memory, "dreaming");
+}
+
 function parseEmbeddingProfiles(
   table: Record<string, unknown> | undefined,
 ): Record<string, Record<string, unknown>> {
@@ -169,6 +185,29 @@ function parseEmbeddingProfiles(
     if (isPlainObject(value)) out[name] = value;
   }
   return out;
+}
+
+function parseDreamingConfig(
+  table: Record<string, unknown> | undefined,
+): DreamingConfig {
+  const defaults: DreamingConfig = {
+    enabled: false,
+    frequency: "0 3 * * *",
+    max_tool_rounds: 12,
+  };
+  if (table === undefined) return defaults;
+  return {
+    enabled:
+      typeof table["enabled"] === "boolean"
+        ? table["enabled"]
+        : defaults.enabled,
+    frequency:
+      typeof table["frequency"] === "string"
+        ? table["frequency"]
+        : defaults.frequency,
+    max_tool_rounds:
+      asNumber(table["max_tool_rounds"]) ?? defaults.max_tool_rounds,
+  };
 }
 
 function parseRetrievalConfig(

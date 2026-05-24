@@ -565,9 +565,47 @@ What 6c does NOT do:
   exercised in the ordinary suite; set `SHORE_EMBED_LIVE=1` with an
   OpenAI-compatible endpoint to run it.
 
-**6d — dreaming (pending):**
+**6d — dreaming (done, 2026-05-24):**
 
-- `run_librarian_sweep` port + `dreams_log` audit trail.
+- `src/memory/dreaming.ts` ports the production AI-librarian
+  `run_librarian_sweep` path:
+  - builds the private librarian prompt from the Rust template, including
+    active-prompt `SOUL.md` / `USER.md` identity blocks
+  - exposes `[memory.dreaming]` config shape (`enabled`, `frequency`,
+    `max_tool_rounds`) through the TS config loader
+  - runs a private tool loop with the librarian tool subset
+    (`read`, `write`, `edit`, `list_files`, `file_search`,
+    `conversation_search`, `check_time`)
+  - blocks `exec` and all non-librarian tools during the pass; dry-run
+    also blocks `write` / `edit`
+  - records inspected paths/searches, changed tool paths, tools used,
+    tool rounds, and the final internal report
+  - writes canonical `workspace/MEMORY.md` fallback when the model leaves
+    it missing/empty, and queues `MEMORY.md` through deferred edits so it
+    does not become prompt-active before the next compaction/reload
+  - writes daemon-owned `DREAMS.md` audit entries in the character data
+    dir via the already-ported `dreams_log` module
+  - writes machine state to
+    `$SHORE_DATA_DIR/<Character>/dreams/state.json`, not legacy
+    workspace `.dreams/`
+- Tests at `tests/dreaming.test.ts` cover successful tool-driven
+  librarian passes, dry-run write blocking, MEMORY.md fallback + audit,
+  zero-tool-round fallback behavior, and protected prompt-file deferred
+  edits. Config parsing for `[memory.dreaming]` is covered in
+  `config_loader.test.ts`.
+- Verification: `bun run typecheck` green; `bun test` green
+  (281 pass / 7 provider-live skips).
+
+What 6d does NOT do:
+
+- No autonomy/scheduler integration yet. Phase 8 owns cron due checks,
+  background task spawning, and wake/heartbeat interaction.
+- No cached-request prefix reuse yet. Like compaction's cached-prefix
+  optimization, this needs the Phase 8 autonomy manager's warmed request
+  hook and the Phase 7 ledger/request mirror.
+- The legacy deterministic diagnostic sweep remains unported. Rust keeps
+  it only for dry-run diagnostics and fallback-oriented unit coverage;
+  production dreaming uses the AI librarian path above.
 
 ### Phase 7: ledger + cache forensics
 

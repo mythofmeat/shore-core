@@ -32,6 +32,11 @@ max_indexed_files = 77
 max_total_indexed_bytes = 9999
 max_embed_chars_per_file = 333
 binary = "metadata"
+
+[memory.dreaming]
+enabled = true
+frequency = "0 6 * * 1"
+max_tool_rounds = 4
 `);
 
     const config = loadConfig(dir);
@@ -46,6 +51,11 @@ binary = "metadata"
       max_total_indexed_bytes: 9999,
       max_embed_chars_per_file: 333,
       binary: "metadata",
+    });
+    expect(config.memory.dreaming).toEqual({
+      enabled: true,
+      frequency: "0 6 * * 1",
+      max_tool_rounds: 4,
     });
   });
 });

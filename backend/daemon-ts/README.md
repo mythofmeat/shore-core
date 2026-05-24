@@ -3,12 +3,14 @@
 TypeScript reimplementation of `shore-daemon`. See `../../REWRITE.md` for the
 plan.
 
-## Current phase: 6c — workspace_index + embedder + hybrid_search
+## Current phase: 6d — dreaming
 
-Phases 0–6b are done. Phase 6c ports the Rust workspace embedding index
-and OpenAI-compatible embedder. `file_search` now uses real hybrid/vector
-search when an embedder + workspace index path are wired through
-`ToolContext`, and falls back cleanly to lexical when not.
+Phases 0–6c are done. Phase 6d ports the AI-librarian `run_librarian_sweep`
+path: a private tool loop drives `read`/`write`/`edit`/search tools to
+refresh `MEMORY.md`, with `exec` blocked, dry-run write blocking, and
+`DREAMS.md` audit entries written via the existing `dreams_log` module.
+Deferred edits keep regenerated `MEMORY.md` out of the active prompt
+until the next compaction/reload.
 
 Representative checks currently green:
 - `handshake-empty` — no character selected.
