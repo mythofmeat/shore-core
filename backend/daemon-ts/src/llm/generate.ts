@@ -101,6 +101,8 @@ export async function generateResponse(
   const ctx = buildChatContext({
     characterName: opts.engine.name(),
     characterConfigDir: opts.characterConfigDir,
+    configDir: opts.configDir,
+    characterDataDir: opts.engine.dataDir(),
     displayName: opts.displayName,
     isPrivate: opts.isPrivate ?? false,
     // 4c.1 minimum: no compaction yet, so the in-prompt history is the

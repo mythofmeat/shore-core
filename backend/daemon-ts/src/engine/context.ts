@@ -2,15 +2,27 @@
  * Per-turn chat context loader.
  *
  * Reads the four prompt files (SOUL.md / USER.md / AGENTS.md / TOOLS.md)
- * + MEMORY.md from the character's workspace, calls `assemblePrompt`, and
- * returns the assembled prompt ready for the LLM call. Mirrors
- * `backend/daemon/src/handler/context.rs::prepare_chat_context` but
- * skipped the deferred-edits snapshot dance — until Phase 6 lands real
- * compaction-time file edits, reading directly from workspace is
- * stable-enough across a single turn.
+ * from the character's workspace and MEMORY.md from the active-prompt
+ * snapshot, calls `assemblePrompt`, and returns the assembled prompt
+ * ready for the LLM call. Mirrors
+ * `backend/daemon/src/handler/context.rs::prepare_chat_context`.
+ *
+ * Why the active snapshot for MEMORY.md: writes to MEMORY.md (compaction
+ * + workspace.write/edit on the prompt-visible index) hit disk
+ * immediately, but the deferred-edits queue holds them out of the prompt
+ * until the next compaction boundary fires `applyDeferredEdits`. The
+ * active snapshot is the version the prompt reads. SOUL/USER/AGENTS/
+ * TOOLS still come straight from workspace for now — direct reads are
+ * stable enough within a single turn, and protected-file edits land on
+ * the same deferred queue (the workspace copy and the snapshot drift
+ * out of sync until apply, but the active snapshot file isn't yet
+ * consulted for those slots — that wiring lands when the snapshot path
+ * grows ergonomic helpers for the four non-MEMORY files).
  */
 import fs from "node:fs";
 import path from "node:path";
+
+import { loadMemoryIndex } from "../memory/deferred_edits.ts";
 
 import {
   type AssembledPrompt,
@@ -23,6 +35,10 @@ export interface ChatContextParams {
   characterName: string;
   /** `$CONFIG_DIR/characters/<character>/`. */
   characterConfigDir: string;
+  /** `$CONFIG_DIR` itself — required for the MEMORY.md active-snapshot read. */
+  configDir: string;
+  /** `<dataDir>/<character>/` — required for the MEMORY.md active-snapshot read. */
+  characterDataDir: string;
   displayName: string;
   isPrivate: boolean;
   hasPriorContext: boolean;
@@ -42,7 +58,6 @@ const PROMPT_FILES = {
   user: "USER.md",
   agents: "AGENTS.md",
   tools: "TOOLS.md",
-  memory: "MEMORY.md",
 } as const;
 
 /** Read a file or return undefined if it doesn't exist. */
@@ -67,7 +82,11 @@ export function buildChatContext(params: ChatContextParams): ChatContext {
   const userDefinition = tryRead(path.join(workspace, PROMPT_FILES.user));
   const systemPrompt = tryRead(path.join(workspace, PROMPT_FILES.agents));
   const toolsGuidance = tryRead(path.join(workspace, PROMPT_FILES.tools));
-  const memoryIndex = tryRead(path.join(workspace, PROMPT_FILES.memory));
+  const memoryIndex = loadMemoryIndex(
+    params.characterDataDir,
+    params.configDir,
+    params.characterName,
+  );
 
   const promptParams: PromptParams = {
     character_name: params.characterName,

@@ -401,16 +401,120 @@ What 6a does NOT do:
   producing snapshots in 6b; until then, direct read is correct.
 - Embedder/hybrid_search still falls back to lexical (6c).
 
-**6b — compaction (pending):**
+**6b — compaction (done, 2026-05-24):**
 
-- LLM-driven memory-write loop, archive-and-retain into `segments/`.
-- Single-flight `try_begin_compaction` keyed on character data root.
-- IdleTimer + activity gating, force-compact threshold.
-- MEMORY.md throughline carry-forward.
-- Fire `applyDeferredEdits` at the compaction boundary so 6a's queue
-  entries actually activate.
+- `src/memory/compaction/types.ts` ports the trait-equivalent interfaces
+  + `CompactionConfig` (inlined from `core/config/src/app.rs` — the TS
+  loader doesn't yet expose `app.memory.compaction`; defaults match Rust
+  byte-for-byte). `CompactionLlm` keeps the `cachedRequest?: ChatRequest`
+  hook on the signature even though the fresh-prefix path is the only
+  one wired today (see notes below). `CompactionError` mirrors the Rust
+  error tags.
+- `src/memory/compaction/parser.ts` ports `parse_compaction_response`,
+  `extract_xml_tag`, and the bundled `DEFAULT_COMPACT_SYSTEM` /
+  `DEFAULT_COMPACT_PROMPT` templates (inlined verbatim from
+  `prompts/memory/compaction/*.md` so the daemon bundles as a single
+  binary).
+- `src/memory/compaction/lock.ts` ports `try_begin_compaction` +
+  `CompactionRunGuard`. JS is single-threaded, so the lock is a
+  `Set<string>` of locked keys with a release callback — no
+  `try_lock_owned` race semantics to mirror. Same keying as Rust
+  (character data root, so test instances reusing the same name in
+  different data dirs don't collide). `withCompactionLock` is the safe
+  helper.
+- `src/memory/compaction/idle_timer.ts` ports `IdleTimer` +
+  `ActivityNotify` (the minimal Tokio `Notify` equivalent the timer
+  needs). `waitForIdle` resets on `notify()` exactly like Rust's
+  `tokio::select!` arm.
+- `src/memory/compaction/manager.ts` ports `CompactionManager`. Static
+  helpers (`findTurnSplit`, `countTurns`, `isToolLoopMessage`,
+  `shouldForceCompact`, `hasEnoughTurns`, `buildSystem`,
+  `buildFinalMessage`, `buildMessages`, `buildPrompt`,
+  `buildExistingMemoryContext`, `dedupeFileOps`, `writeAllowedPath`,
+  `filterFileOps`, `isMemoryIndexPath`) all match the Rust shapes 1:1.
+  `compact()` implements the full pass: split, build prompt, call LLM,
+  parse, filter, write markdown files into the workspace (handling the
+  MEMORY.md special case via `noteMemoryIndexDeferred`), archive via the
+  ConversationManager, append a dreams-log entry — and rolls back the
+  markdown writes on archive failure via compensating deletes.
+- `src/memory/compaction/conversation_manager.ts` ports
+  `RealConversationManager`. Reads the pre-captured `activeContent`,
+  splits at `keepLastN`, writes the head into a numbered
+  `segments/NNNN.jsonl` file, updates `compaction.json`, and atomically
+  rewrites `active.jsonl`. Mirrors Rust's archive-with-malformed-jsonl
+  semantics (line-count counts, JSON validity isn't policed).
+- `src/memory/compaction/llm.ts` ports `RealCompactionLlm` as a thin
+  wrapper around the existing `AnthropicProvider` / `OpenAIProvider`
+  adapters. Single-shot, no tools, collects text deltas. The cached-
+  prefix optimization the Rust impl wires through `LedgerClient::
+  build_request_with_provider_keys` + `convert_inline_system_messages`
+  is **deferred** — it needs the autonomy manager's
+  `cached_last_request` hook (Phase 8) and the ledger (Phase 7), neither
+  of which exist in TS-land yet. The fresh path is semantically
+  correct, just suboptimal for cache. The `cachedRequest` parameter
+  stays on the interface so the optimization can land later without an
+  ABI change.
+- `src/memory/compaction/background.ts` ports `run_compaction`. Single
+  read of `active.jsonl` (parse + raw content for the segment archive,
+  eliminating the TOCTOU window). Acquires the guard, loads templates,
+  calls `compact()`, and — critically — fires `applyDeferredEdits` at
+  the compaction boundary so the MEMORY.md sentinel produced by 6a's
+  workspace writes plus the new MEMORY.md throughline from this pass
+  become prompt-active.
+- `src/engine/context.ts` now reads MEMORY.md via `loadMemoryIndex`
+  (active snapshot if present, else canonical) instead of reading
+  workspace/MEMORY.md directly. SOUL/USER/AGENTS/TOOLS still come
+  straight from workspace — protected-file edits also queue, but those
+  four don't yet route through the active-snapshot reader (deferred to
+  when there's an ergonomic helper for the non-MEMORY slots, or when
+  the heartbeat flow lands in Phase 8 and the routing matters).
+- `src/memory/dreams_log.ts` ports `dreams_log.rs`. Lives outside
+  `compaction/` because dreaming uses it too (Phase 6d will).
+- Tests:
+  - `compaction_parser.test.ts` — 13 cases mirroring Rust's `parser::tests`
+  - `compaction_lock.test.ts` — 5 cases pinning the single-flight semantics
+  - `compaction_idle_timer.test.ts` — 2 cases (real-time, not faked)
+  - `compaction_manager.test.ts` — 23 cases mirroring Rust's
+    `compaction::tests`: prompt building, turn-split + tool-loop,
+    force-compact gating, the end-to-end compact() table (writes,
+    archive, dream log, deferred-edit queue, dry run, private skip,
+    insufficient messages, rollback)
+  - `compaction_conversation_manager.test.ts` — 5 cases mirroring the
+    `RealConversationManager` test block (archive split, keep-all,
+    segment numbering, malformed-line behavior, empty-content no-op)
+  - `compaction_background.test.ts` — 3 cases pinning the lock +
+    apply-deferred boundary end-to-end
+  - `context_memory_snapshot.test.ts` — 3 cases pinning the
+    `engine/context.ts` → snapshot wiring (canonical when no snapshot,
+    deferred edits stay invisible, sentinel-blocked writes activate
+    after apply)
+
+What 6b does NOT do (intentionally deferred):
+
+- **No autonomy manager wiring.** Rust's `handler/task.rs` calls
+  `should_compact_now`, then `spawn_inline_compaction`, then
+  `run_compaction` after each generation; on completion it reloads the
+  engine + applies deferred edits + notifies the autonomy state machine.
+  TS land doesn't have the autonomy manager yet — that lives in Phase 8
+  alongside heartbeat. `runCompaction` is a callable that can be wired
+  in once the manager lands.
+- **No cached-prefix LLM path.** The fresh-prefix path is wired; the
+  cache-preserving path that the Rust regression test
+  `cached_compaction_request_matches_chat_prefix_byte_for_byte` pins is
+  deferred until the autonomy manager grows a `cached_last_request`
+  hook and the ledger lands the `LlmRequest` mirror. The interface
+  keeps `cachedRequest` so the optimization is a drop-in later.
+- **No idle-timer task spawned by the engine.** `IdleTimer` is ported
+  and tested standalone; nothing in the engine actually spawns the
+  wait-for-idle loop yet. That's an autonomy-manager job and lands
+  with Phase 8.
+- **Config loader doesn't expose `[app.memory.compaction]`.** Callers
+  build `CompactionConfig` directly today. The loader extension is a
+  one-liner once Phase 6c/8 needs it.
+
 - **Exit criterion:** byte-identical MEMORY.md for a deterministic test
-  input.
+  input (the `writes MEMORY.md but refuses generated/protected/dreaming
+  paths` case in `compaction_manager.test.ts` pins this).
 
 **6c — workspace_index + embedder + hybrid_search (pending):**
 
