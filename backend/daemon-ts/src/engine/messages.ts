@@ -13,7 +13,24 @@
 import fs from "node:fs";
 
 import { atomicWrite } from "./atomic.ts";
+import { mergeToolLoopMessages } from "./merge.ts";
 import type { ContentBlock, Message, MessageAlternative } from "./types.ts";
+
+export interface PendingAlt {
+  alternatives: MessageAlternative[];
+}
+
+export interface AltSelection {
+  msg_id: string;
+  alt_index: number;
+  alt_count: number;
+  content: string;
+}
+
+export interface AttachedAlt {
+  alt_index: number;
+  alt_count: number;
+}
 
 /** Read `active.jsonl`, return normalized messages. Missing file → []. */
 export function loadActiveMessages(activeJsonlPath: string): Message[] {
@@ -156,6 +173,7 @@ export function serializeForStorage(msg: Message): string {
 
 function serializeAlternativeForStorage(alt: MessageAlternative): Record<string, unknown> {
   return {
+    content: alt.content,
     images: alt.images.map((img) => {
       const out: Record<string, unknown> = { path: img.path };
       if (img.caption !== undefined) out["caption"] = img.caption;
@@ -190,9 +208,59 @@ export class MessageStore {
     return this.messages.length;
   }
 
+  turnCount(): number {
+    return this.messages.filter(isRealUserTurn).length;
+  }
+
+  /** Clear all messages and truncate the backing file. */
+  clear(): void {
+    this.messages = [];
+    this.persist();
+  }
+
   /** Append a message and persist. */
   append(msg: Message): void {
     this.messages.push(msg);
+    this.persist();
+  }
+
+  /**
+   * Insert a message at its chronological position by timestamp.
+   * Unparseable new timestamps append; unparseable existing timestamps
+   * compare as <= so malformed legacy lines are never silently reordered
+   * after newer data.
+   */
+  insertByTimestamp(msg: Message): void {
+    const newTs = Date.parse(msg.timestamp);
+    let insertPos = this.messages.length;
+    if (Number.isFinite(newTs)) {
+      insertPos = 0;
+      for (let i = this.messages.length - 1; i >= 0; i--) {
+        const existingTs = Date.parse(this.messages[i]!.timestamp);
+        if (!Number.isFinite(existingTs) || existingTs <= newTs) {
+          insertPos = i + 1;
+          break;
+        }
+      }
+    }
+    this.messages.splice(insertPos, 0, msg);
+    this.persist();
+  }
+
+  /** Edit the content of a message by id. */
+  edit(msgId: string, newContent: string): void {
+    const msg = this.messages.find((m) => m.msg_id === msgId);
+    if (msg === undefined) throw messageNotFound(msgId);
+    msg.content = newContent;
+    msg.content_blocks = [{ type: "text", text: newContent }];
+    this.persist();
+  }
+
+  /** Delete a raw active message by id. */
+  delete(msgId: string): void {
+    const idx = this.messages.findIndex((m) => m.msg_id === msgId);
+    if (idx < 0) throw messageNotFound(msgId);
+    this.messages.splice(idx, 1);
     this.persist();
   }
 
@@ -201,6 +269,154 @@ export class MessageStore {
     if (count >= this.messages.length) return;
     this.messages = this.messages.slice(0, count);
     this.persist();
+  }
+
+  /** Clone conversation messages through the last real user turn. */
+  messagesThroughLastUserTurn(): Message[] {
+    const keep = this.lastRealUserTurnKeepIndex();
+    return this.messages.slice(0, keep).map(cloneMessage);
+  }
+
+  /** Remove every message after the last real user turn. */
+  truncateAfterLastUserTurn(): number {
+    const keep = this.lastRealUserTurnKeepIndex();
+    const removed = this.messages.length - keep;
+    if (removed > 0) {
+      this.messages = this.messages.slice(0, keep);
+      this.persist();
+    }
+    return removed;
+  }
+
+  /** Replace every message after the last real user turn. */
+  replaceAfterLastUserTurn(newMessages: Message[]): number {
+    const keep = this.lastRealUserTurnKeepIndex();
+    const removed = this.messages.length - keep;
+    this.messages = this.messages.slice(0, keep);
+    this.messages.push(...newMessages);
+    this.persist();
+    return removed;
+  }
+
+  /** Set alternate-response metadata on a message. */
+  setAlt(msgId: string, index: number, count: number): void {
+    const msg = this.messages.find((m) => m.msg_id === msgId);
+    if (msg === undefined) throw messageNotFound(msgId);
+    msg.alt_index = index;
+    msg.alt_count = count;
+    this.persist();
+  }
+
+  /** Increment alt_count and point at the newest candidate. */
+  addAltCandidate(msgId: string): number {
+    const msg = this.messages.find((m) => m.msg_id === msgId);
+    if (msg === undefined) throw messageNotFound(msgId);
+    const newCount = (msg.alt_count ?? 1) + 1;
+    msg.alt_count = newCount;
+    msg.alt_index = newCount - 1;
+    this.persist();
+    return newCount;
+  }
+
+  /** Capture alternatives for the assistant response about to be regenerated. */
+  pendingRegenAlt(): PendingAlt | undefined {
+    const keep = this.lastRealUserTurnKeepIndex();
+    const tail = this.messages.slice(keep);
+    const active = [...mergeToolLoopMessages(tail)]
+      .reverse()
+      .find((m) => m.role === "assistant");
+    if (active === undefined) return undefined;
+
+    const alternatives = (active.alternatives ?? []).map(cloneAlternative);
+    const current = alternativeFromMessage(active);
+    if (alternatives.length === 0) {
+      alternatives.push(current);
+    } else {
+      const fallback = Math.max(0, alternatives.length - 1);
+      const idx = Math.min(active.alt_index ?? fallback, fallback);
+      alternatives[idx] = current;
+    }
+    return { alternatives };
+  }
+
+  /**
+   * Attach prior alternatives plus the active generated response to the
+   * final assistant message in `messages`.
+   */
+  static attachGeneratedAlt(
+    messages: Message[],
+    prior: MessageAlternative[],
+  ): AttachedAlt | undefined {
+    const merged = mergeToolLoopMessages(messages);
+    const active = [...merged].reverse().find((m) => m.role === "assistant");
+    if (active === undefined) return undefined;
+
+    const alternatives = prior.map(cloneAlternative);
+    const altIndex = alternatives.length;
+    alternatives.push(alternativeFromMessage(active));
+    const altCount = alternatives.length;
+
+    const target = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.msg_id === active.msg_id);
+    if (target === undefined) return undefined;
+
+    target.alt_index = altIndex;
+    target.alt_count = altCount;
+    target.alternatives = alternatives;
+    return { alt_index: altIndex, alt_count: altCount };
+  }
+
+  /** Select a stored alternate response on a message. */
+  selectAlt(msgId: string, index: number): AltSelection {
+    const merged = mergeToolLoopMessages(this.messages);
+    const target = merged.find((m) => m.msg_id === msgId);
+    if (target === undefined) throw messageNotFound(msgId);
+
+    const alternatives = target.alternatives ?? [];
+    const altCount = alternatives.length;
+    if (altCount === 0) {
+      throw new Error(`message ${msgId} has no alternate responses`);
+    }
+    if (index >= altCount) {
+      throw new Error(
+        `alternate index ${index + 1} out of range (message has ${altCount} alternate response(s))`,
+      );
+    }
+
+    const currentIndex = target.alt_index ?? 0;
+    if (currentIndex === index) {
+      return {
+        msg_id: target.msg_id,
+        alt_index: index,
+        alt_count: altCount,
+        content: target.content,
+      };
+    }
+
+    const selected = messageFromAlternative(target, index);
+    const keep = this.lastRealUserTurnKeepIndex();
+    const tailMerged = mergeToolLoopMessages(this.messages.slice(keep));
+    const currentTail = [...tailMerged]
+      .reverse()
+      .find((m) => m.role === "assistant");
+
+    if (currentTail?.msg_id === msgId) {
+      this.messages = this.messages.slice(0, keep);
+      this.messages.push(selected);
+    } else {
+      const rawIdx = this.messages.findIndex((m) => m.msg_id === msgId);
+      if (rawIdx < 0) throw messageNotFound(msgId);
+      this.messages[rawIdx] = selected;
+    }
+
+    this.persist();
+    return {
+      msg_id: selected.msg_id,
+      alt_index: index,
+      alt_count: altCount,
+      content: selected.content,
+    };
   }
 
   /**
@@ -212,10 +428,98 @@ export class MessageStore {
     this.messages = loadActiveMessages(this.activeJsonlPath);
   }
 
+  private lastRealUserTurnKeepIndex(): number {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      if (isRealUserTurn(this.messages[i]!)) return i + 1;
+    }
+    return 0;
+  }
+
   private persist(): void {
     const buf = this.messages.map(serializeForStorage).join("\n") + (this.messages.length > 0 ? "\n" : "");
     atomicWrite(this.activeJsonlPath, buf);
   }
+}
+
+function isRealUserTurn(msg: Message): boolean {
+  return msg.role === "user" && !isToolResultOnly(msg);
+}
+
+function isToolResultOnly(msg: Message): boolean {
+  return (
+    msg.role === "user"
+    && msg.content_blocks.length > 0
+    && msg.content_blocks.every((b) => b.type === "tool_result")
+  );
+}
+
+function alternativeFromMessage(msg: Message): MessageAlternative {
+  let contentBlocks: ContentBlock[] = msg.content_blocks
+    .filter((block): block is Extract<ContentBlock, { type: "text" }> =>
+      block.type === "text" && block.text.trim() !== ""
+    )
+    .map((block) => ({ type: "text", text: block.text }));
+  let content = deriveContentFromBlocks(contentBlocks, false);
+  if (content === "" && msg.content.trim() !== "") {
+    content = msg.content;
+    contentBlocks = [{ type: "text", text: msg.content }];
+  }
+  return {
+    content,
+    images: msg.images.map((img) => ({ ...img })),
+    content_blocks: contentBlocks,
+    timestamp: msg.timestamp,
+  };
+}
+
+function messageFromAlternative(template: Message, index: number): Message {
+  const alternatives = (template.alternatives ?? []).map(cloneAlternative);
+  const alt = alternatives[index]!;
+  const msg: Message = {
+    msg_id: template.msg_id,
+    role: "assistant",
+    content: alt.content,
+    images: alt.images.map((img) => ({ ...img })),
+    content_blocks: alt.content_blocks.map((block) => ({ ...block }) as ContentBlock),
+    alt_index: index,
+    alt_count: alternatives.length,
+    alternatives,
+    timestamp: alt.timestamp === "" ? template.timestamp : alt.timestamp,
+  };
+  normalizeMessageObject(msg);
+  return msg;
+}
+
+function normalizeMessageObject(msg: Message): void {
+  if (msg.content_blocks.length === 0 && msg.content !== "") {
+    msg.content_blocks = [{ type: "text", text: msg.content }];
+  } else if (msg.content_blocks.length > 0) {
+    msg.content = deriveContentFromBlocks(msg.content_blocks, true);
+  }
+}
+
+function cloneMessage(msg: Message): Message {
+  return {
+    ...msg,
+    images: msg.images.map((img) => ({ ...img })),
+    content_blocks: msg.content_blocks.map((block) => ({ ...block }) as ContentBlock),
+    ...(msg.alternatives !== undefined
+      ? { alternatives: msg.alternatives.map(cloneAlternative) }
+      : {}),
+  };
+}
+
+function cloneAlternative(alt: MessageAlternative): MessageAlternative {
+  return {
+    content: alt.content,
+    images: alt.images.map((img) => ({ ...img })),
+    content_blocks: alt.content_blocks.map((block) => ({ ...block }) as ContentBlock),
+    timestamp: alt.timestamp,
+  };
+}
+
+function messageNotFound(msgId: string): Error {
+  return new Error(`message not found: ${msgId}`);
 }
 
 // ── narrowing helpers ─────────────────────────────────────────────────

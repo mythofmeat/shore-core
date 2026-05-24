@@ -37,7 +37,7 @@ import { SegmentReader } from "../engine/segments.ts";
 import type { ConversationEngine } from "../engine/engine.ts";
 import type { Message } from "../engine/types.ts";
 import type { ChatRequest } from "../llm/types.ts";
-import type { AutonomyConfig } from "../config/loader.ts";
+import type { AutonomyConfig, LoadedConfig } from "../config/loader.ts";
 import {
   DEFAULT_COMPACTION_CONFIG,
   type CompactionConfig,
@@ -128,6 +128,28 @@ interface PersistedState {
   last_user_at?: string | null;
 }
 
+export interface AutonomyStatus {
+  paused: boolean;
+  heartbeat_state: string;
+  ticks_without_user: number;
+  dormant_after_heartbeat_turns: number;
+  effective_interval_secs: number;
+  next_wake_at?: string;
+  seconds_until_wake?: number;
+  last_user_at?: string;
+  seconds_since_user?: number;
+  minimum_heartbeat_latency_secs: number;
+  dormant_after_idle_time_secs: number;
+  recent_events: HeartbeatEvent[];
+}
+
+interface RuntimeResources {
+  llmClient: unknown;
+  pushTx: unknown;
+  loadedConfig: LoadedConfig;
+  notifier: unknown;
+}
+
 export interface TickActions {
   heartbeat: HeartbeatAction;
   keepalive: CacheKeepaliveAction;
@@ -193,13 +215,17 @@ export class AutonomyRegistry {
   private readonly lastRequests = new Map<string, ChatRequest>();
   private readonly compactionStates = new Map<string, CompactionStateEntry>();
   private readonly dreamingStates = new Map<string, DreamingStateEntry>();
+  private readonly paused = new Map<string, boolean>();
   private readonly dataDirs = new Map<string, string>();
   private readonly dirty = new Set<string>();
   private readonly tickers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly ticking = new Set<string>();
-  private readonly autonomyConfig: AutonomyConfig;
-  private readonly compactionConfig: CompactionConfig;
-  private readonly dreamingConfig: DreamingConfig;
+  private readonly inFlightTicks = new Map<string, Promise<void>>();
+  private autonomyConfig: AutonomyConfig;
+  private compactionConfig: CompactionConfig;
+  private dreamingConfig: DreamingConfig;
+  private resources: RuntimeResources | undefined;
+  private loadedConfig: LoadedConfig | undefined;
   private readonly autoStartTicker: boolean;
   private readonly nowMs: () => number;
   private readonly wallNow: () => Date;
@@ -225,6 +251,44 @@ export class AutonomyRegistry {
     this.onTickActions = options.onTickActions;
     this.onIdleCompaction = options.onIdleCompaction;
     this.onScheduledDream = options.onScheduledDream;
+  }
+
+  /**
+   * Set dependency handles used by autonomous background work. The TS port
+   * keeps the concrete capabilities opaque here; call sites wire the actual
+   * runners separately, but this mirrors Rust's manager-level resource seam.
+   */
+  setResources(
+    llmClient: unknown,
+    pushTx: unknown,
+    loadedConfig: LoadedConfig,
+    notifier: unknown,
+  ): void {
+    this.resources = {
+      llmClient,
+      pushTx,
+      loadedConfig,
+      notifier,
+    };
+    this.loadedConfig = loadedConfig;
+  }
+
+  /** Reload autonomy + compaction runtime config after config_reset. */
+  reloadRuntimeConfig(newLoadedConfig: LoadedConfig): void {
+    this.autonomyConfig = cloneAutonomyConfig(
+      newLoadedConfig.app.behavior.autonomy,
+    );
+    this.compactionConfig = sanitizeCompactionConfig({
+      ...newLoadedConfig.memory.compaction,
+    });
+    this.dreamingConfig = { ...newLoadedConfig.memory.dreaming };
+    this.loadedConfig = newLoadedConfig;
+    if (this.resources !== undefined) {
+      this.resources = {
+        ...this.resources,
+        loadedConfig: newLoadedConfig,
+      };
+    }
   }
 
   /** Idempotent — first call backfills from on-disk history. */
@@ -273,6 +337,7 @@ export class AutonomyRegistry {
       lastActivityMs: this.nowMs(),
     });
     this.dreamingStates.set(name, { failureCount: 0, running: false });
+    this.paused.set(name, false);
 
     const timestamps = collectBackfillTimestamps(engine);
     if (timestamps.length > 0) {
@@ -322,10 +387,12 @@ export class AutonomyRegistry {
    * post-generation handler calls this after persisting the assistant turn
    * and any tool-loop intermediates.
    */
-  notifyAssistantMessage(characterName: string, messageCount: number): void {
+  notifyAssistantMessage(characterName: string, messageCount?: number): void {
     const compaction = this.compactionStates.get(characterName);
     if (compaction === undefined) return;
-    compaction.activeTurnCount = messageCount;
+    if (messageCount !== undefined) {
+      compaction.activeTurnCount = messageCount;
+    }
     compaction.lastActivityMs = this.nowMs();
     this.markDirty(characterName);
   }
@@ -472,6 +539,68 @@ export class AutonomyRegistry {
     };
   }
 
+  heartbeatTickNow(characterName: string): boolean | undefined {
+    const clock = this.clocks.get(characterName);
+    if (clock === undefined) return undefined;
+    const dormant = clock.isDormant(this.nowMs());
+    clock.forceWake(this.nowMs());
+    this.markDirty(characterName);
+    return dormant;
+  }
+
+  heartbeatSetDormant(characterName: string): boolean {
+    const clock = this.clocks.get(characterName);
+    if (clock === undefined) return false;
+    clock.forceDormant();
+    this.markDirty(characterName);
+    return true;
+  }
+
+  heartbeatSetActive(characterName: string): boolean {
+    const clock = this.clocks.get(characterName);
+    if (clock === undefined) return false;
+    clock.forceActive(this.nowMs());
+    this.markDirty(characterName);
+    return true;
+  }
+
+  setPaused(characterName: string, paused: boolean): boolean | undefined {
+    if (!this.trackers.has(characterName)) return undefined;
+    this.paused.set(characterName, paused);
+    this.markDirty(characterName);
+    return paused;
+  }
+
+  status(characterName: string): AutonomyStatus | undefined {
+    const clock = this.clocks.get(characterName);
+    const log = this.heartbeatLogs.get(characterName);
+    if (clock === undefined || log === undefined) return undefined;
+
+    const now = this.nowMs();
+    const wall = this.wallNow();
+    const nextWake = clock.nextWake();
+    const lastUser = clock.lastUserAt();
+    const status: AutonomyStatus = {
+      paused: this.paused.get(characterName) ?? false,
+      heartbeat_state: clock.stateAt(now),
+      ticks_without_user: clock.ticksWithoutUser(),
+      dormant_after_heartbeat_turns: clock.maxIdleTicks(),
+      effective_interval_secs: clock.defaultIntervalSecs(),
+      minimum_heartbeat_latency_secs: clock.minWakeIntervalSecs(),
+      dormant_after_idle_time_secs: clock.maxSilentDurationSecs(),
+      recent_events: log.recent(5),
+    };
+    if (nextWake !== undefined) {
+      status.next_wake_at = monotonicToRfc3339(nextWake, now, wall);
+      status.seconds_until_wake = secondsDelta(now, nextWake);
+    }
+    if (lastUser !== undefined) {
+      status.last_user_at = monotonicToRfc3339(lastUser, now, wall);
+      status.seconds_since_user = Math.floor((now - lastUser) / 1000);
+    }
+    return status;
+  }
+
   /**
    * Implementation behind the `set_next_wake` tool hook. Mirrors
    * `schedule_next_wake_in_state` in `backend/daemon/src/autonomy/manager.rs`.
@@ -531,7 +660,11 @@ export class AutonomyRegistry {
     const hadDeadline = clock.nextWake() !== undefined;
     let heartbeat = HeartbeatAction.None;
     let guardTripped = false;
-    if (this.autonomyConfig.enabled && this.autonomyConfig.heartbeat.enabled) {
+    if (
+      this.autonomyConfig.enabled
+      && this.autonomyConfig.heartbeat.enabled
+      && !(this.paused.get(characterName) ?? false)
+    ) {
       heartbeat = clock.tick(now);
       if (heartbeat !== HeartbeatAction.None) {
         this.markDirty(characterName);
@@ -623,21 +756,21 @@ export class AutonomyRegistry {
   startTicker(characterName: string): void {
     if (this.tickers.has(characterName)) return;
     const timer = setInterval(() => {
-      void this.runTickerPulse(characterName);
+      this.startTickerPulse(characterName);
     }, TICK_INTERVAL_MS);
     this.tickers.set(characterName, timer);
   }
 
   stopAll(): void {
-    for (const timer of this.tickers.values()) {
-      clearInterval(timer);
-    }
-    this.tickers.clear();
-    for (const name of this.clocks.keys()) {
-      this.markDirty(name);
-      this.saveState(name);
-      this.flushHeartbeatLog(name);
-    }
+    this.clearTickers();
+    this.persistAllStates();
+  }
+
+  async shutdown(): Promise<void> {
+    this.clearTickers();
+    const pending = Array.from(this.inFlightTicks.values());
+    await Promise.allSettled(pending);
+    this.persistAllStates();
   }
 
   saveState(characterName: string): void {
@@ -721,6 +854,32 @@ export class AutonomyRegistry {
     if (this.clocks.has(characterName)) {
       this.dirty.add(characterName);
     }
+  }
+
+  private clearTickers(): void {
+    for (const timer of this.tickers.values()) {
+      clearInterval(timer);
+    }
+    this.tickers.clear();
+  }
+
+  private persistAllStates(): void {
+    for (const name of this.clocks.keys()) {
+      this.markDirty(name);
+      this.saveState(name);
+      this.flushHeartbeatLog(name);
+    }
+  }
+
+  private startTickerPulse(characterName: string): void {
+    if (this.inFlightTicks.has(characterName)) return;
+    const pulse = this.runTickerPulse(characterName);
+    this.inFlightTicks.set(characterName, pulse);
+    void pulse.finally(() => {
+      if (this.inFlightTicks.get(characterName) === pulse) {
+        this.inFlightTicks.delete(characterName);
+      }
+    });
   }
 
   private async runTickerPulse(characterName: string): Promise<void> {
@@ -855,6 +1014,21 @@ function heartbeatClockConfig(config: HeartbeatConfig): HeartbeatConfig {
     dormantAfterIdleTimeSecs: config.dormantAfterIdleTimeSecs,
     minimumHeartbeatLatencySecs: config.minimumHeartbeatLatencySecs,
   };
+}
+
+function cloneAutonomyConfig(config: AutonomyConfig): AutonomyConfig {
+  return {
+    enabled: config.enabled,
+    heartbeat: {
+      ...config.heartbeat,
+    },
+  };
+}
+
+function secondsDelta(nowMs: number, targetMs: number): number {
+  const delta = targetMs - nowMs;
+  const seconds = Math.floor(Math.abs(delta) / 1000);
+  return delta >= 0 ? seconds : -seconds;
 }
 
 function statePath(characterDataDir: string): string {

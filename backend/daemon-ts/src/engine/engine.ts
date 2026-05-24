@@ -16,13 +16,41 @@ import path from "node:path";
 
 import { MessageStore, loadActiveMessages } from "./messages.ts";
 import { mergeToolLoopMessages } from "./merge.ts";
-import type { Message } from "./types.ts";
+import { SegmentReader } from "./segments.ts";
+import type {
+  AltSelection,
+  PendingAlt,
+} from "./messages.ts";
+import type { ImageRef, Message } from "./types.ts";
 
 export interface HistorySnapshot {
   messages: Message[];
   active_start: number;
+  config: unknown;
   selected_character: string;
   revision: number;
+}
+
+export interface DisplayHistory {
+  messages: Message[];
+  active_start: number;
+}
+
+export interface ListedAlternative {
+  index: number;
+  position: number;
+  active: boolean;
+  content: string;
+  images: ImageRef[];
+  timestamp: string;
+}
+
+export interface AlternativeList {
+  ref: string;
+  alt_index: number | null;
+  position: number | null;
+  alt_count: number;
+  alternatives: ListedAlternative[];
 }
 
 export interface BroadcastTarget {
@@ -40,7 +68,9 @@ export interface BroadcastTarget {
 
 export class ConversationEngine {
   private readonly store: MessageStore;
+  private segmentsReader: SegmentReader;
   private revision = 0;
+  private historyRewriteGenerationValue = 0;
 
   /** Promise chain used to serialize concurrent appends. */
   private writeQueue: Promise<unknown> = Promise.resolve();
@@ -52,6 +82,7 @@ export class ConversationEngine {
     private readonly broadcast: BroadcastTarget | undefined = undefined,
   ) {
     this.store = MessageStore.load(path.join(characterDir, "active.jsonl"));
+    this.segmentsReader = SegmentReader.load(characterDir);
   }
 
   name(): string {
@@ -73,15 +104,70 @@ export class ConversationEngine {
     return this.store.count();
   }
 
+  /** Raw active messages in storage order. */
+  messages(): Message[] {
+    return this.store.all();
+  }
+
+  /** Number of real user turns in the active context window. */
+  turnCount(): number {
+    return this.store.turnCount();
+  }
+
+  /** Access the frozen segment reader for archived conversation history. */
+  segments(): SegmentReader {
+    return this.segmentsReader;
+  }
+
+  /** Archived scrollback followed by the active context tail. */
+  displayHistory(): DisplayHistory {
+    const archivedRaw: Message[] = [];
+    for (let index = 0; index < this.segmentsReader.segmentCount(); index++) {
+      try {
+        archivedRaw.push(...this.segmentsReader.readSegment(index));
+      } catch {
+        // Rust logs and keeps rendering the rest of history.
+      }
+    }
+
+    const archived = mergeToolLoopMessages(archivedRaw);
+    const activeStart = archived.length;
+    archived.push(...mergeToolLoopMessages(this.store.all()));
+    return { messages: archived, active_start: activeStart };
+  }
+
+  currentRevision(): number {
+    return this.revision;
+  }
+
+  historyRewriteGeneration(): number {
+    return this.historyRewriteGenerationValue;
+  }
+
   /** Current History snapshot for handshake / broadcast. */
-  historySnapshot(): HistorySnapshot {
+  historySnapshot(config: unknown = {}): HistorySnapshot {
     const merged = mergeToolLoopMessages(this.store.all());
     return {
       messages: merged,
       active_start: 0,
+      config,
       selected_character: this.characterName,
       revision: this.revision,
     };
+  }
+
+  private advanceRevision(): void {
+    this.revision += 1;
+  }
+
+  private advanceHistoryRewriteGeneration(): void {
+    this.historyRewriteGenerationValue += 1;
+  }
+
+  private enqueueMutation<T>(task: () => T | Promise<T>): Promise<T> {
+    const next = this.writeQueue.then(task, task);
+    this.writeQueue = next.catch(() => undefined);
+    return next as Promise<T>;
   }
 
   /**
@@ -91,14 +177,144 @@ export class ConversationEngine {
    * persists.
    */
   appendMessage(msg: Message): Promise<void> {
-    const task = async () => {
+    return this.enqueueMutation(() => {
       this.store.append(msg);
-      this.revision++;
-      this.broadcast?.onBroadcast(this.historySnapshot());
+      this.advanceRevision();
+      this.broadcastHistory();
+    });
+  }
+
+  /** Insert a message at its chronological position and broadcast. */
+  insertMessageByTimestamp(msg: Message): Promise<void> {
+    return this.enqueueMutation(() => {
+      this.store.insertByTimestamp(msg);
+      this.advanceRevision();
+      this.broadcastHistory();
+    });
+  }
+
+  /** Edit a raw active message by id. */
+  editMessage(msgId: string, newContent: string): Promise<void> {
+    return this.enqueueMutation(() => {
+      this.store.edit(msgId, newContent);
+      this.advanceHistoryRewriteGeneration();
+      this.advanceRevision();
+      this.broadcastHistory();
+    });
+  }
+
+  /** Delete a raw active message by id. */
+  deleteMessage(msgId: string): Promise<void> {
+    return this.enqueueMutation(() => {
+      this.store.delete(msgId);
+      this.advanceHistoryRewriteGeneration();
+      this.advanceRevision();
+      this.broadcastHistory();
+    });
+  }
+
+  /** Remove every message after the last real user turn. */
+  truncateAfterLastUserTurn(): Promise<number> {
+    return this.enqueueMutation(() => {
+      const removed = this.store.truncateAfterLastUserTurn();
+      if (removed > 0) {
+        this.advanceHistoryRewriteGeneration();
+        this.advanceRevision();
+        this.broadcastHistory();
+      }
+      return removed;
+    });
+  }
+
+  /** Clone messages through the last real user turn for regeneration. */
+  messagesThroughLastUserTurn(): Message[] {
+    return this.store.messagesThroughLastUserTurn();
+  }
+
+  /** Capture existing alternatives for the response being regenerated. */
+  pendingRegenAlt(): PendingAlt | undefined {
+    return this.store.pendingRegenAlt();
+  }
+
+  /** Replace the current response tail after a successful regeneration. */
+  replaceAfterLastUserTurn(newMessages: Message[]): Promise<number> {
+    return this.enqueueMutation(() => {
+      const removed = this.store.replaceAfterLastUserTurn(newMessages);
+      this.advanceHistoryRewriteGeneration();
+      this.advanceRevision();
+      this.broadcastHistory();
+      return removed;
+    });
+  }
+
+  /** Set alternate-response state on a message. */
+  setAlt(msgId: string, index: number, count: number): Promise<void> {
+    return this.enqueueMutation(() => {
+      this.store.setAlt(msgId, index, count);
+      this.advanceRevision();
+      this.broadcastHistory();
+    });
+  }
+
+  /** Add an alternate-response candidate to a message. */
+  addAltCandidate(msgId: string): Promise<number> {
+    return this.enqueueMutation(() => {
+      const count = this.store.addAltCandidate(msgId);
+      this.advanceRevision();
+      this.broadcastHistory();
+      return count;
+    });
+  }
+
+  /** Select a stored alternate response. */
+  selectAlt(msgId: string, index: number): Promise<AltSelection> {
+    return this.enqueueMutation(() => {
+      const selection = this.store.selectAlt(msgId, index);
+      this.advanceHistoryRewriteGeneration();
+      this.advanceRevision();
+      this.broadcastHistory();
+      return selection;
+    });
+  }
+
+  /**
+   * List stored alternate responses for an assistant message.
+   * `reference` accepts Rust command refs: omitted/latest, positive or
+   * negative 1-based indices, or a literal msg_id.
+   */
+  listAlternatives(reference?: string): AlternativeList {
+    const merged = mergeToolLoopMessages(this.store.all());
+    const msgId = this.resolveAssistantRef(merged, reference);
+    const msg = merged.find((m) => m.msg_id === msgId);
+    if (msg === undefined) throw new Error(`message not found: ${msgId}`);
+
+    const alternatives = msg.alternatives ?? [];
+    const altCount = alternatives.length;
+    const current = Math.min(msg.alt_index ?? 0, Math.max(0, altCount - 1));
+    return {
+      ref: msgId,
+      alt_index: msg.alt_index ?? null,
+      position: msg.alt_index === undefined ? null : msg.alt_index + 1,
+      alt_count: altCount,
+      alternatives: alternatives.map((alt, index) => ({
+        index,
+        position: index + 1,
+        active: index === current,
+        content: alt.content,
+        images: alt.images.map((img) => ({ ...img })),
+        timestamp: alt.timestamp,
+      })),
     };
-    const next = this.writeQueue.then(task, task);
-    this.writeQueue = next.catch(() => undefined);
-    return next;
+  }
+
+  /** Clear all active messages and broadcast. */
+  reset(): Promise<void> {
+    return this.enqueueMutation(() => {
+      this.store.clear();
+      this.advanceHistoryRewriteGeneration();
+      this.advanceRevision();
+      this.broadcastHistory();
+    });
   }
 
   /**
@@ -113,14 +329,13 @@ export class ConversationEngine {
    * stale needs invalidating there.
    */
   reload(): Promise<void> {
-    const task = async (): Promise<void> => {
+    return this.enqueueMutation(() => {
       this.store.reload();
-      this.revision++;
-      this.broadcast?.onBroadcast(this.historySnapshot());
-    };
-    const next = this.writeQueue.then(task, task);
-    this.writeQueue = next.catch(() => undefined);
-    return next as Promise<void>;
+      this.segmentsReader = SegmentReader.load(this.characterDir);
+      this.advanceHistoryRewriteGeneration();
+      this.advanceRevision();
+      this.broadcastHistory();
+    });
   }
 
   /**
@@ -135,7 +350,7 @@ export class ConversationEngine {
    * assistant turn (regen is a no-op in that case).
    */
   rewindLastAssistantTurn(): Promise<Message[]> {
-    const task = async (): Promise<Message[]> => {
+    return this.enqueueMutation((): Message[] => {
       const msgs = this.store.all();
       if (msgs.length === 0) return [];
       const last = msgs[msgs.length - 1]!;
@@ -163,13 +378,56 @@ export class ConversationEngine {
       }
       const dropped = msgs.slice(cut);
       this.store.truncate(cut);
-      this.revision++;
-      this.broadcast?.onBroadcast(this.historySnapshot());
+      this.advanceHistoryRewriteGeneration();
+      this.advanceRevision();
+      this.broadcastHistory();
       return dropped;
-    };
-    const next = this.writeQueue.then(task, task);
-    this.writeQueue = next.catch(() => undefined);
-    return next as Promise<Message[]>;
+    });
+  }
+
+  /** Broadcast the current active History snapshot with Rust's `{}` config. */
+  broadcastHistory(): void {
+    this.broadcast?.onBroadcast(this.historySnapshot({}));
+  }
+
+  private resolveAssistantRef(messages: Message[], reference: string | undefined): string {
+    if (reference === undefined || reference === "last" || reference === "latest") {
+      const found = [...messages].reverse().find((m) => m.role === "assistant");
+      if (found === undefined) throw new Error("No assistant messages in conversation");
+      return found.msg_id;
+    }
+
+    const msgId = this.resolveRef(messages, reference);
+    const msg = messages.find((m) => m.msg_id === msgId);
+    if (msg === undefined) throw new Error(`message not found: ${msgId}`);
+    if (msg.role !== "assistant") {
+      throw new Error("Alternate response selection only applies to assistant messages");
+    }
+    return msgId;
+  }
+
+  private resolveRef(messages: Message[], reference: string): string {
+    if (reference === "last" || reference === "latest") {
+      const last = messages.at(-1);
+      if (last === undefined) throw new Error("No messages in conversation");
+      return last.msg_id;
+    }
+
+    const parsed = Number.parseInt(reference, 10);
+    if (String(parsed) === reference) {
+      if (parsed === 0) {
+        throw new Error("Message index must be non-zero (use 1 for first, -1 for last)");
+      }
+      const idx = parsed < 0 ? messages.length + parsed : parsed - 1;
+      if (idx < 0 || idx >= messages.length) {
+        throw new Error(
+          `Message index ${reference} out of range (conversation has ${messages.length} messages)`,
+        );
+      }
+      return messages[idx]!.msg_id;
+    }
+
+    return reference;
   }
 }
 

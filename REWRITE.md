@@ -1199,11 +1199,12 @@ scheduled soak/cutover items are blocked on these.
   `resolve_chat_model_for_character`, `resolve_background_model`. Wire the
   overlay into the LLM-call request build in `src/llm/generate.ts`.
   (Audit blocker #4.)
-- [ ] **Extend the `ConversationEngine` API.** Add the methods listed in
-  audit item #13 (edit/delete/alt machinery, segment accessors,
-  insert-by-timestamp, reload/reset, message_count/turn_count,
-  truncate_after_last_user_turn, etc.). Required by the new command
-  dispatchers above.
+- [x] **Extend the `ConversationEngine` API (done, 2026-05-25).**
+  ConversationEngine ported — `engine.ts` + `messages.ts` extended,
+  17-test suite green. Audit item #13's edit/delete/alt machinery,
+  segment accessors, insert-by-timestamp, reload/reset,
+  message_count/turn_count, and truncate-after-last-user-turn surface is
+  now present for the command dispatcher slice.
 - [ ] **Port multi-key credential fallback.** Decide first whether the
   feature is in scope for cutover (single-key users don't need it).
   If in scope: port `handler/key_fallback.rs` + the
@@ -1220,14 +1221,12 @@ scheduled soak/cutover items are blocked on these.
   `effective_catalog.rs` (1029 lines) against `llm/catalog.ts` (326 lines)
   function-by-function. Document what's actually missing and either port or
   descope. (Audit item #15.)
-- [ ] **Autonomy manager orchestration.** Extend `AutonomyRegistry` with
-  the missing methods listed in audit item #14: `set_resources`,
-  `reload_runtime_config`, `notify_assistant_message`,
-  `notify_compaction_complete` / `_failed`, `should_compact_now`,
-  `heartbeat_tick_now` / `_set_dormant` / `_set_active`, `set_paused`,
-  `status` (returning `AutonomyStatus`), `heartbeat_log(name, limit)`,
-  graceful `shutdown`. Most are prerequisites for the commands listed in
-  the dispatcher item above.
+- [x] **Autonomy manager orchestration (done, 2026-05-25).**
+  AutonomyRegistry orchestration surface added — `setResources`,
+  `reloadRuntimeConfig`, `notifyAssistantMessage`, heartbeat debug
+  methods, `setPaused`, `status`, `heartbeatLog`, `shutdown`.
+  `notifyCompactionComplete` / `_Failed` and `shouldCompactNow` were
+  spot-checked against Rust and remain the already-landed parity surface.
 
 #### Phase 9b soak + cutover (blocked on parity gaps above)
 
