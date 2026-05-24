@@ -28,6 +28,7 @@ import path from "node:path";
 import type { ConversationEngine } from "../engine/engine.ts";
 import { buildChatContext } from "../engine/context.ts";
 import type { ContentBlock, Message } from "../engine/types.ts";
+import type { ActivityStatsHook, ScheduleNextWake } from "../tools/registry.ts";
 import type { CacheForensics } from "../ledger/cache_forensics.ts";
 import type { Ledger } from "../ledger/ledger.ts";
 import type { PricingEngine } from "../ledger/pricing.ts";
@@ -97,6 +98,10 @@ export interface GenerateOptions {
   imageGenConfig?: ImageGenConfig;
   embedder?: Embedder;
   workspaceIndexPath?: string;
+  /** Autonomy stats hook for `activity_heatmap`. Undefined keeps the empty heatmap fallback. */
+  activityStats?: ActivityStatsHook;
+  /** Heartbeat-only `set_next_wake` hook. Undefined during user turns. */
+  scheduleNextWake?: ScheduleNextWake;
 }
 
 export interface GenerateResult {
@@ -267,6 +272,8 @@ export async function generateResponse(
     ...(opts.imageGenConfig !== undefined
       ? { imageGenConfig: opts.imageGenConfig }
       : {}),
+    ...(opts.activityStats !== undefined ? { activityStats: opts.activityStats } : {}),
+    ...(opts.scheduleNextWake !== undefined ? { scheduleNextWake: opts.scheduleNextWake } : {}),
   };
 
   const result = await runToolLoop({

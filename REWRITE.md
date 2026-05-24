@@ -670,6 +670,65 @@ What 7 does NOT do (intentionally deferred to Phase 8):
 
 ### Phase 8: heartbeat + autonomy
 
+Split into 8a → 8d in dependency order so each slice can land + ship on
+its own. The full state machine — keepalive, heartbeat ticks, scheduler
+— lands in 8b/8c; 8a only covers the rhythm-tracker substrate and the
+first tool that consumes it.
+
+#### Phase 8a: activity tracker + heatmap wiring (done, 2026-05-24)
+
+- [x] `src/autonomy/activity.ts` — 1:1 port of
+  `backend/daemon/src/autonomy/activity.rs`. Same constants
+  (`SESSION_GAP_SECS=1800`, `SUFFICIENT_DATA_MSGS=5`,
+  `SUFFICIENT_HEATMAP_MSGS=20`, `WEEKDAY_HEATMAP_MIN=5`,
+  `PEAK/TROUGH_HOUR_THRESHOLD`, `STATS_CACHE_TTL_SECS=60`,
+  `SESSION_MEDIANS_WINDOW=30`, `SESSION_TEMPO_WINDOW=10`,
+  `ANOMALY_Z_SCORE=1.5`); `performance.now()` stands in for tokio's
+  monotonic `Instant`; chrono `num_days_from_monday` is mirrored via
+  `(getDay()+6)%7` so the Monday-indexed weekday histogram lines up
+  byte-for-byte with the Rust output on the same input.
+- [x] `src/autonomy/registry.ts` — `AutonomyRegistry` wrapping
+  `Map<string, ActivityTracker>`. `ensureState(engine)` is idempotent
+  and back-fills from `active.jsonl` + all segments on first call
+  (90-day cutoff, skip tool-result-only user turns). Exposes the
+  `activity_stats(name) -> (stats, message_count)` API the Rust
+  heartbeat/keepalive loop needs in 8b.
+- [x] Wired through `src/llm/generate.ts` + `src/main.ts`: the daemon
+  instantiates `const autonomy = new AutonomyRegistry()`, calls
+  `autonomy.ensureState(engine)` + `autonomy.notifyUserMessage(...)` on
+  each fresh user turn, and passes an `activityStats` adapter into the
+  `ToolContext` that maps the autonomy struct → the tools-side
+  `ActivityStats` shape (turnCount sourced from `snap.messageCount`).
+- [x] Tests: `tests/activity.test.ts` mirrors the full Rust
+  `activity.rs::tests` block (tempo-score logistic at 30s/5min/15min/30min/
+  empty, median odd/even/empty, hour-histogram weekday filtering + global
+  fallback, peak/trough/all-zero classification, session detection +
+  single-session, engagement score, sufficient/insufficient data,
+  z-score anomaly, cache invalidation, session-medians window cap,
+  backfill noop/empty/sort/then-record). Plus the integration check
+  `activity_heatmap tool > returns real density + classifications when
+  the autonomy hook is wired` covers the empty-shape vs. wired-shape
+  divergence end-to-end through the tool handler. `bun test` 344 pass /
+  7 skip / 0 fail.
+- **Exit criterion:** `activity_heatmap` returns non-empty densities
+  + classifications for a character that's had `≥WEEKDAY_HEATMAP_MIN`
+  messages on the current weekday (or `≥SUFFICIENT_DATA_MSGS` overall
+  via global fallback). Met as of 2026-05-24.
+
+What 8a does NOT do (deferred to 8b/8c):
+
+- Heartbeat/keepalive ticks — the autonomy *state machine* (idle
+  detection, due checks, warm-prefix rebuild scheduling) isn't started.
+- `set_next_wake` still errors with "only available during heartbeat
+  ticks" because `ctx.scheduleNextWake` stays undefined during user
+  turns. The schema stays in the registry regardless — that's
+  load-bearing for cache stability.
+- Autonomy/heartbeat ledger rows
+  (`heartbeat`/`heartbeat_tool_loop`/`keepalive` call types — the
+  Phase-7 deferred item).
+
+#### Phase 8b–8d: scheduler + heartbeat + keepalive (pending)
+
 - Per-character autonomy state machine.
 - Keepalive pings to maintain the prompt cache TTL.
 - Heartbeat tick that rebuilds the warmed prefix.
@@ -680,15 +739,9 @@ What 7 does NOT do (intentionally deferred to Phase 8):
     asserts the hook gets called with the clamped hours + reason. The
     schema stays in the registry during normal user turns regardless —
     that's load-bearing for cache stability.
-  - `activity_heatmap` currently returns an empty 24-hour heatmap when
-    `ctx.activityStats` is undefined. Wire the autonomy stats hook and
-    add a test that asserts real per-hour densities + classifications
-    flow through (mirror the Rust
-    `test_activity_heatmap_with_autonomy_data` case).
 - **Exit criterion:** keepalive interval respected, no stale-cache
   rebuilds, no extra LLM calls vs. the Rust daemon under the same input.
-  AND both heartbeat-dependent tools above are exercised in tests with
-  the real hooks in place.
+  AND `set_next_wake` is exercised in tests with the real hook in place.
 
 ### Phase 9: cutover
 

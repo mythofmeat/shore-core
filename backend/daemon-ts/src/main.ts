@@ -10,6 +10,7 @@
 
 import path from "node:path";
 
+import { AutonomyRegistry } from "./autonomy/registry.ts";
 import { characterMetadata, discoverCharacters } from "./characters/registry.ts";
 import type { ImageRef } from "./engine/types.ts";
 import {
@@ -131,6 +132,7 @@ async function main(): Promise<void> {
   const catalog = loadCatalog(dirs.config);
   const ledger = Ledger.open(path.join(dirs.data, "ledger.db"));
   const pricing = new PricingEngine(ledger);
+  const autonomy = new AutonomyRegistry();
   const cacheForensics = config.app.advanced.cache_forensics
     ? CacheForensics.open(dirs.cache)
     : undefined;
@@ -167,6 +169,7 @@ async function main(): Promise<void> {
     catalog,
     ledger,
     pricing,
+    autonomy,
     cacheForensics,
     () => serverRef,
   );
@@ -178,6 +181,7 @@ async function main(): Promise<void> {
     catalog,
     ledger,
     pricing,
+    autonomy,
     cacheForensics,
     () => serverRef,
   );
@@ -291,6 +295,7 @@ function buildMessageHandler(
   catalog: ReturnType<typeof loadCatalog>,
   ledger: Ledger,
   pricing: PricingEngine,
+  autonomy: AutonomyRegistry,
   cacheForensics: CacheForensics | undefined,
   getServer: () => SwpServer | undefined,
 ): MessageHandler {
@@ -299,6 +304,9 @@ function buildMessageHandler(
       throw new Error("client sent a message before selecting a character");
     }
     const engine = engines.get(session.character);
+    // Lazy autonomy state: first message of the process lifetime triggers
+    // a 90-day history backfill so heatmap data isn't empty after restart.
+    autonomy.ensureState(engine);
     const images = buildImageRefs(msg.images, msg.image_data);
     const userMsg: Message = {
       msg_id: `m_${crypto.randomUUID()}`,
@@ -309,6 +317,7 @@ function buildMessageHandler(
       timestamp: rfc3339LocalNow(),
     };
     await engine.appendMessage(userMsg);
+    autonomy.notifyUserMessage(session.character);
 
     const modelName = config.app.defaults.model;
     if (!modelName) {
@@ -371,6 +380,18 @@ function buildMessageHandler(
         ...(embedder !== undefined
           ? { workspaceIndexPath: workspaceIndexPath(cacheDir, session.character) }
           : {}),
+        activityStats: (name) => {
+          const snap = autonomy.activityStats(name);
+          if (snap === undefined) return undefined;
+          return {
+            hourHistogram: snap.stats.hourHistogram,
+            hourClassifications: snap.stats.hourClassifications,
+            hasSufficientHeatmap: snap.stats.hasSufficientHeatmap,
+            engagementScore: snap.stats.engagementScore,
+            sessionsPerDay: snap.stats.sessionsPerDay,
+            turnCount: snap.messageCount,
+          };
+        },
         signal: msg.signal,
         ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
         ...(msg.overrides ? { overrides: msg.overrides } : {}),
@@ -488,6 +509,7 @@ function buildRegenHandler(
   catalog: ReturnType<typeof loadCatalog>,
   ledger: Ledger,
   pricing: PricingEngine,
+  autonomy: AutonomyRegistry,
   cacheForensics: CacheForensics | undefined,
   getServer: () => SwpServer | undefined,
 ): import("./swp/server.ts").RegenHandler {
@@ -563,6 +585,18 @@ function buildRegenHandler(
         ...(embedder !== undefined
           ? { workspaceIndexPath: workspaceIndexPath(cacheDir, session.character) }
           : {}),
+        activityStats: (name) => {
+          const snap = autonomy.activityStats(name);
+          if (snap === undefined) return undefined;
+          return {
+            hourHistogram: snap.stats.hourHistogram,
+            hourClassifications: snap.stats.hourClassifications,
+            hasSufficientHeatmap: snap.stats.hasSufficientHeatmap,
+            engagementScore: snap.stats.engagementScore,
+            sessionsPerDay: snap.stats.sessionsPerDay,
+            turnCount: snap.messageCount,
+          };
+        },
         signal: msg.signal,
         ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
       });
