@@ -39,6 +39,12 @@ export interface ToolLoopOptions {
   onEvent?: (event: ChatEvent) => void;
   /** Called when a tool finishes executing — useful for SWP ToolResult frames. */
   onToolResult?: (id: string, name: string, result: string, isError: boolean) => void;
+  /** Optional heartbeat-only wrap-up nudge before grace iterations begin. */
+  wrapUp?: {
+    afterIterations: number;
+    text: string;
+    onNudge?: () => void;
+  };
 }
 
 export interface ToolLoopResult {
@@ -70,8 +76,18 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
   let messages = opts.request.messages;
   let lastContent: ContentBlock[] = [];
   let lastStopReason = "end_turn";
+  let wrapUpNudged = false;
 
   for (let iter = 0; iter < maxIter; iter++) {
+    if (
+      opts.wrapUp !== undefined
+      && !wrapUpNudged
+      && iter >= opts.wrapUp.afterIterations
+    ) {
+      messages = appendWrapUpNudge(messages, opts.wrapUp.text);
+      wrapUpNudged = true;
+      opts.wrapUp.onNudge?.();
+    }
     const req: ChatRequest = { ...opts.request, messages };
     const { content, stopReason, usage, totalMs, ttftMs } = await consumeStream(
       opts.provider.stream(req),
@@ -126,6 +142,18 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
   }
 
   return { finalContent: lastContent, newTurns, usagePerCall, calls, stopReason: lastStopReason };
+}
+
+function appendWrapUpNudge(messages: TurnMessage[], text: string): TurnMessage[] {
+  const block: ContentBlock = { type: "text", text };
+  const last = messages[messages.length - 1];
+  if (last?.role === "user") {
+    return [
+      ...messages.slice(0, -1),
+      { ...last, content: [...last.content, block] },
+    ];
+  }
+  return [...messages, { role: "user", content: [block] }];
 }
 
 async function consumeStream(

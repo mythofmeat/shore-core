@@ -10,6 +10,7 @@
 
 import path from "node:path";
 
+import { runAutonomyTickActions } from "./autonomy/dispatch.ts";
 import { AutonomyRegistry } from "./autonomy/registry.ts";
 import { characterMetadata, discoverCharacters } from "./characters/registry.ts";
 import type { ImageRef } from "./engine/types.ts";
@@ -132,10 +133,6 @@ async function main(): Promise<void> {
   const catalog = loadCatalog(dirs.config);
   const ledger = Ledger.open(path.join(dirs.data, "ledger.db"));
   const pricing = new PricingEngine(ledger);
-  const autonomy = new AutonomyRegistry({
-    autonomyConfig: config.app.behavior.autonomy,
-    autoStartTicker: true,
-  });
   const cacheForensics = config.app.advanced.cache_forensics
     ? CacheForensics.open(dirs.cache)
     : undefined;
@@ -159,6 +156,29 @@ async function main(): Promise<void> {
         config: {},
         selected_character: snapshot.selected_character,
         revision: snapshot.revision,
+      });
+    },
+  });
+  let autonomy: AutonomyRegistry;
+  autonomy = new AutonomyRegistry({
+    autonomyConfig: config.app.behavior.autonomy,
+    autoStartTicker: true,
+    onTickActions: (characterName, actions): Promise<void> => {
+      const embedder = resolveOptionalEmbedder(config);
+      return runAutonomyTickActions({
+        characterName,
+        actions,
+        engines,
+        configDir: dirs.config,
+        cacheDir: dirs.cache,
+        config,
+        catalog,
+        ledger,
+        pricing,
+        autonomy,
+        ...(cacheForensics !== undefined ? { cacheForensics } : {}),
+        ...(embedder !== undefined ? { embedder } : {}),
+        broadcast: (frame) => serverRef?.broadcast(frame),
       });
     },
   });
@@ -402,6 +422,8 @@ function buildMessageHandler(
         signal: msg.signal,
         ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
         ...(msg.overrides ? { overrides: msg.overrides } : {}),
+        onPreparedRequest: (request) =>
+          autonomy.notifyLastRequest(session.character!, request),
       });
     } catch (e) {
       handleGenerationError(broadcast, msg.rid, e);
@@ -607,6 +629,8 @@ function buildRegenHandler(
         },
         signal: msg.signal,
         ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
+        onPreparedRequest: (request) =>
+          autonomy.notifyLastRequest(session.character!, request),
       });
     } catch (e) {
       handleGenerationError(broadcast, msg.rid, e);

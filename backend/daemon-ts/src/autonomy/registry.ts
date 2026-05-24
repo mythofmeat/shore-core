@@ -28,9 +28,15 @@ import {
   HeartbeatAction,
   type HeartbeatConfig,
 } from "./heartbeat.ts";
+import {
+  HeartbeatLog,
+  type HeartbeatEvent,
+  type HeartbeatEventKind,
+} from "./heartbeat_log.ts";
 import { SegmentReader } from "../engine/segments.ts";
 import type { ConversationEngine } from "../engine/engine.ts";
 import type { Message } from "../engine/types.ts";
+import type { ChatRequest } from "../llm/types.ts";
 import type { AutonomyConfig } from "../config/loader.ts";
 
 const BACKFILL_WINDOW_DAYS = 90;
@@ -74,25 +80,34 @@ export interface AutonomyRegistryOptions {
   nowMs?: () => number;
   /** Injectable wall clock for persistence tests. */
   wallNow?: () => Date;
+  /** Async 8d driver for returned heartbeat/keepalive actions. */
+  onTickActions?: (characterName: string, actions: TickActions) => Promise<void> | void;
 }
 
 export class AutonomyRegistry {
   private readonly trackers = new Map<string, ActivityTracker>();
   private readonly clocks = new Map<string, HeartbeatClock>();
   private readonly keepalives = new Map<string, CacheKeepalive>();
+  private readonly heartbeatLogs = new Map<string, HeartbeatLog>();
+  private readonly lastRequests = new Map<string, ChatRequest>();
   private readonly dataDirs = new Map<string, string>();
   private readonly dirty = new Set<string>();
   private readonly tickers = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly ticking = new Set<string>();
   private readonly autonomyConfig: AutonomyConfig;
   private readonly autoStartTicker: boolean;
   private readonly nowMs: () => number;
   private readonly wallNow: () => Date;
+  private readonly onTickActions:
+    | ((characterName: string, actions: TickActions) => Promise<void> | void)
+    | undefined;
 
   constructor(options: AutonomyRegistryOptions = {}) {
     this.autonomyConfig = options.autonomyConfig ?? DEFAULT_AUTONOMY_CONFIG;
     this.autoStartTicker = options.autoStartTicker ?? false;
     this.nowMs = options.nowMs ?? (() => performance.now());
     this.wallNow = options.wallNow ?? (() => new Date());
+    this.onTickActions = options.onTickActions;
   }
 
   /** Idempotent — first call backfills from on-disk history. */
@@ -124,6 +139,10 @@ export class AutonomyRegistry {
       keepalive.onCacheWarmed(this.nowMs());
     }
     this.keepalives.set(name, keepalive);
+    this.heartbeatLogs.set(
+      name,
+      HeartbeatLog.loadFrom(path.join(engine.dataDir(), "heartbeat.jsonl")),
+    );
 
     const timestamps = collectBackfillTimestamps(engine);
     if (timestamps.length > 0) {
@@ -227,6 +246,11 @@ export class AutonomyRegistry {
         && clock.nextWake() === undefined;
       if (guardTripped) {
         keepalive.setNextWake(undefined);
+        this.pushHeartbeatEvent(
+          characterName,
+          "dormant",
+          `Abandonment guard tripped (ticks without user: ${clock.ticksWithoutUser()})`,
+        );
         this.markDirty(characterName);
       }
     }
@@ -239,13 +263,7 @@ export class AutonomyRegistry {
   startTicker(characterName: string): void {
     if (this.tickers.has(characterName)) return;
     const timer = setInterval(() => {
-      try {
-        this.tickCharacter(characterName);
-      } catch (e) {
-        console.warn(
-          `[shore-daemon-ts] autonomy tick failed for ${characterName}: ${(e as Error).message}`,
-        );
-      }
+      void this.runTickerPulse(characterName);
     }, TICK_INTERVAL_MS);
     this.tickers.set(characterName, timer);
   }
@@ -258,6 +276,7 @@ export class AutonomyRegistry {
     for (const name of this.clocks.keys()) {
       this.markDirty(name);
       this.saveState(name);
+      this.flushHeartbeatLog(name);
     }
   }
 
@@ -284,6 +303,45 @@ export class AutonomyRegistry {
     this.dirty.delete(characterName);
   }
 
+  notifyLastRequest(characterName: string, request: ChatRequest): void {
+    this.lastRequests.set(characterName, cloneChatRequestForCache(request));
+  }
+
+  cachedLastRequest(characterName: string): ChatRequest | undefined {
+    const request = this.lastRequests.get(characterName);
+    return request === undefined ? undefined : cloneChatRequestForCache(request);
+  }
+
+  onCacheWarmed(characterName: string): void {
+    const keepalive = this.keepalives.get(characterName);
+    if (keepalive === undefined) return;
+    keepalive.onCacheWarmed(this.nowMs());
+    this.markDirty(characterName);
+  }
+
+  onKeepaliveFailed(characterName: string): void {
+    const keepalive = this.keepalives.get(characterName);
+    if (keepalive === undefined) return;
+    keepalive.onPingFailed(this.nowMs());
+    this.markDirty(characterName);
+  }
+
+  pushHeartbeatEvent(
+    characterName: string,
+    kind: HeartbeatEventKind,
+    detail: string,
+  ): void {
+    this.heartbeatLogs.get(characterName)?.push(kind, detail);
+  }
+
+  flushHeartbeatLog(characterName: string): void {
+    this.heartbeatLogs.get(characterName)?.flushIfDirty();
+  }
+
+  heartbeatLog(characterName: string, limit: number): HeartbeatEvent[] {
+    return this.heartbeatLogs.get(characterName)?.recent(limit) ?? [];
+  }
+
   /** Test/debug accessor. */
   hasState(characterName: string): boolean {
     return this.trackers.has(characterName);
@@ -302,6 +360,29 @@ export class AutonomyRegistry {
   private markDirty(characterName: string): void {
     if (this.clocks.has(characterName)) {
       this.dirty.add(characterName);
+    }
+  }
+
+  private async runTickerPulse(characterName: string): Promise<void> {
+    if (this.ticking.has(characterName)) return;
+    this.ticking.add(characterName);
+    try {
+      const actions = this.tickCharacter(characterName);
+      if (
+        this.onTickActions !== undefined
+        && (actions.heartbeat !== HeartbeatAction.None
+          || actions.keepalive !== CacheKeepaliveAction.None)
+      ) {
+        await this.onTickActions(characterName, actions);
+      }
+    } catch (e) {
+      console.warn(
+        `[shore-daemon-ts] autonomy tick failed for ${characterName}: ${(e as Error).message}`,
+      );
+    } finally {
+      this.flushHeartbeatLog(characterName);
+      this.saveState(characterName);
+      this.ticking.delete(characterName);
     }
   }
 }
@@ -427,4 +508,24 @@ function rfc3339ToMonotonic(
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function cloneChatRequestForCache(request: ChatRequest): ChatRequest {
+  const {
+    signal: _signal,
+    cacheForensics: _cacheForensics,
+    ...rest
+  } = request;
+  return {
+    ...rest,
+    messages: request.messages.map((m) => ({
+      ...m,
+      content: m.content.map((b) => ({ ...b }) as Message["content_blocks"][number]),
+      ...(m.images !== undefined ? { images: m.images.map((i) => ({ ...i })) } : {}),
+    })),
+    tools: request.tools.map((t) => ({
+      ...t,
+      inputSchema: { ...t.inputSchema },
+    })),
+  };
 }

@@ -814,19 +814,49 @@ What 8b does NOT do (deferred to 8c/8d):
 What 8c does NOT do:
 
 - No async execution for returned `HeartbeatAction.RunTick` or
-  `CacheKeepaliveAction.Ping` yet. The ticker computes and persists the
-  actions; 8d will consume them.
-- No `HeartbeatLog` JSONL persistence yet.
-- No autonomy/heartbeat ledger rows yet.
+  `CacheKeepaliveAction.Ping`; 8d consumes those actions.
 
-#### Phase 8d: heartbeat + keepalive LLM dispatch (pending)
+#### Phase 8d: heartbeat + keepalive LLM dispatch (done, 2026-05-24)
 
-- Real LLM dispatch on `RunTick`: private message with tools,
-  `set_next_wake` hook wired through `GenerateOptions.scheduleNextWake`,
-  `HeartbeatLog` JSONL append, ledger rows with
-  `call_type='heartbeat'`/`'heartbeat_tool_loop'`/`'keepalive'`.
-- **Exit criterion:** keepalive interval respected, no stale-cache
-  rebuilds, no extra LLM calls vs. the Rust daemon under the same input.
+- [x] `src/autonomy/dispatch.ts` consumes ticker actions. `RunTick`
+  builds the same private heartbeat suffix shape (active HEARTBEAT.md
+  guidance + dynamic current-time affordance prompt), runs the full tool
+  registry without persisting ephemeral heartbeat/tool-loop turns, wires
+  `set_next_wake` through the registry-backed scheduler hook, and
+  persists only extracted `<sendMessage>...</sendMessage>` content as
+  an autonomous assistant message.
+- [x] `GenerateOptions` now supports the heartbeat call shape:
+  `systemSuffix`, `persistTurns=false`, `maxIterations`,
+  `ledgerCallTypes`, `onPreparedRequest`, and a wrap-up nudge inserted
+  after `max_tool_rounds` before `wrap_up_grace_rounds` begins. Normal
+  user-message generation keeps the old defaults.
+- [x] `AutonomyRegistry` stores the cache-stable last chat request from
+  user/regen calls. Keepalive pings clone that request, set
+  `maxTokens=1`, append the minimal `"."` user turn, and record
+  `call_type='keepalive'`. If the process restarted and no cached
+  request exists, the dispatcher rebuilds from disk only when history is
+  between turns (last message is assistant), avoiding mid-turn cache
+  divergence.
+- [x] `src/autonomy/heartbeat_log.ts` ports the JSONL ring buffer
+  persistence shape (100-event cap, malformed-line skip, atomic rewrite
+  on flush). Ticks, message sent/skipped events, wrap-up nudges,
+  dormant guard trips, and keepalive success/skip/failure are appended
+  to `<character data>/heartbeat.jsonl`.
+- [x] Ledger rows are written with
+  `call_type='heartbeat'`, `'heartbeat_tool_loop'`, and `'keepalive'`,
+  preserving the Phase-7 usage-kind mapping. Usage budgets are checked
+  before heartbeat and keepalive calls; over-budget background work is
+  skipped and logged.
+- Tests: `generate_ledger.test.ts` covers private heartbeat-style
+  generation (system suffix, no persistence, wrap-up nudge, heartbeat
+  ledger call types, and pre-suffix cached-request capture).
+  `heartbeat_log.test.ts` covers JSONL load/flush behavior. Full
+  `bun test` and `bun run typecheck` should stay green after this slice.
+- **Exit criterion:** keepalive interval/action math is pinned by
+  `cache_keepalive.test.ts`; request reuse/rebuild is wired through
+  the dispatcher. Live provider parity is still opt-in with the
+  existing env-gated cache tests; ordinary verification does not spend
+  API credits.
 
 ### Phase 9: cutover
 

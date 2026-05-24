@@ -55,6 +55,7 @@ import type {
   ProviderClient,
   TurnMessage,
 } from "./types.ts";
+import type { CallType } from "../ledger/budget.ts";
 
 export interface GenerationOverrides {
   temperature?: number;
@@ -102,24 +103,48 @@ export interface GenerateOptions {
   activityStats?: ActivityStatsHook;
   /** Heartbeat-only `set_next_wake` hook. Undefined during user turns. */
   scheduleNextWake?: ScheduleNextWake;
+  /**
+   * Private/background calls append a trailing system message and can opt
+   * out of persisting every provider/tool-loop turn.
+   */
+  systemSuffix?: string;
+  persistTurns?: boolean;
+  maxIterations?: number;
+  wrapUp?: {
+    afterIterations: number;
+    text: string;
+    onNudge?: () => void;
+  };
+  ledgerCallTypes?: {
+    first: CallType;
+    loop: CallType;
+  };
+  /** Called with the cache-stable request shape before any systemSuffix is appended. */
+  onPreparedRequest?: (request: ChatRequest) => void;
 }
 
 export interface GenerateResult {
   finalText: string;
   turnCount: number;
+  newTurns: TurnMessage[];
 }
 
-/**
- * Drive a single assistant generation end-to-end. Caller has already
- * `appendMessage`'d the user turn; this reads the current history and
- * appends the resulting assistant (+ tool_result) turns.
- */
-export async function generateResponse(
-  opts: GenerateOptions,
-): Promise<GenerateResult> {
-  const apiKey = opts.provider === undefined ? resolveApiKey(opts.resolved) : "";
-  const provider = opts.provider ?? buildProvider(opts.resolved.sdk);
+export interface PrepareChatRequestOptions {
+  engine: ConversationEngine;
+  characterConfigDir: string;
+  configDir: string;
+  displayName: string;
+  resolved: ResolvedModel;
+  registry: ToolRegistry;
+  apiKey: string;
+  isPrivate?: boolean;
+  overrides?: GenerationOverrides;
+  signal?: AbortSignal;
+  cacheForensics?: CacheForensics;
+  rid?: string;
+}
 
+export function prepareChatRequest(opts: PrepareChatRequestOptions): ChatRequest {
   const snapshot = opts.engine.historySnapshot();
   const ctx = buildChatContext({
     characterName: opts.engine.name(),
@@ -128,8 +153,6 @@ export async function generateResponse(
     characterDataDir: opts.engine.dataDir(),
     displayName: opts.displayName,
     isPrivate: opts.isPrivate ?? false,
-    // 4c.1 minimum: no compaction yet, so the in-prompt history is the
-    // full retained history; nothing was archived.
     hasPriorContext: false,
     messages: snapshot.messages,
     ...(opts.resolved.maxContextTokens !== undefined
@@ -142,25 +165,23 @@ export async function generateResponse(
 
   const systemString = ctx.prompt.system.map((b) => b.content).join("\n\n");
   const messages = promptMessagesToTurns(ctx.prompt.messages);
-
   const tools = opts.registry.list().map((t) => ({
     name: t.name,
     description: t.description,
     inputSchema: t.inputSchema,
   }));
-
   const thinking = buildThinkingConfig(opts.resolved, opts.overrides);
   const temperature = opts.overrides?.temperature ?? opts.resolved.temperature;
   const topP = opts.overrides?.top_p ?? opts.resolved.topP;
 
-  const request: ChatRequest = {
+  return {
     system: systemString,
     messages,
     tools,
     thinking,
     cacheTtl: opts.resolved.cacheTtl ?? "",
     modelId: opts.resolved.modelId,
-    apiKey,
+    apiKey: opts.apiKey,
     maxTokens: opts.resolved.maxTokens ?? 4096,
     ...(opts.resolved.baseUrl !== undefined ? { baseUrl: opts.resolved.baseUrl } : {}),
     ...(temperature !== undefined ? { temperature } : {}),
@@ -174,6 +195,30 @@ export async function generateResponse(
         }
       : {}),
   };
+}
+
+/**
+ * Drive a single assistant generation end-to-end. Caller has already
+ * `appendMessage`'d the user turn; this reads the current history and
+ * appends the resulting assistant (+ tool_result) turns.
+ */
+export async function generateResponse(
+  opts: GenerateOptions,
+): Promise<GenerateResult> {
+  const apiKey = opts.provider === undefined ? resolveApiKey(opts.resolved) : "";
+  const provider = opts.provider ?? buildProvider(opts.resolved.sdk);
+
+  const request = prepareChatRequest({ ...opts, apiKey });
+  opts.onPreparedRequest?.(cloneChatRequest(request));
+  if (opts.systemSuffix !== undefined && opts.systemSuffix.length > 0) {
+    request.messages = [
+      ...request.messages,
+      {
+        role: "system",
+        content: [{ type: "text", text: opts.systemSuffix }],
+      },
+    ];
+  }
 
   // Stream-frame emitter — fired per ChatEvent during the loop. Aggregates
   // text per turn so we can emit a stream_end carrying the final
@@ -283,15 +328,19 @@ export async function generateResponse(
     toolContext,
     onEvent,
     onToolResult,
+    ...(opts.maxIterations !== undefined ? { maxIterations: opts.maxIterations } : {}),
+    ...(opts.wrapUp !== undefined ? { wrapUp: opts.wrapUp } : {}),
   });
 
   recordLedgerCalls(opts, request, result);
 
   // Persist the new turns. Each appendMessage triggers a History
   // broadcast — clients use that as the canonical post-stream view.
-  for (const turn of result.newTurns) {
-    const msg = turnToMessage(turn);
-    await opts.engine.appendMessage(msg);
+  if (opts.persistTurns ?? true) {
+    for (const turn of result.newTurns) {
+      const msg = turnToMessage(turn);
+      await opts.engine.appendMessage(msg);
+    }
   }
 
   const finalText = result.finalContent
@@ -299,7 +348,7 @@ export async function generateResponse(
     .map((b) => b.text)
     .join("");
 
-  return { finalText, turnCount };
+  return { finalText, turnCount, newTurns: result.newTurns };
 }
 
 function recordLedgerCalls(
@@ -312,7 +361,9 @@ function recordLedgerCalls(
     const input = {
       provider: opts.resolved.providerKey,
       model: opts.resolved.modelId,
-      callType: idx === 0 ? "message" : "tool_loop",
+      callType: idx === 0
+        ? opts.ledgerCallTypes?.first ?? "message"
+        : opts.ledgerCallTypes?.loop ?? "tool_loop",
       character: opts.engine.name(),
       inputTokens: call.usage.inputTokens,
       outputTokens: call.usage.outputTokens,
@@ -366,7 +417,7 @@ export function buildThinkingConfig(
   return { enabled: false };
 }
 
-function buildProvider(sdk: ResolvedModel["sdk"]): ProviderClient {
+export function buildProvider(sdk: ResolvedModel["sdk"]): ProviderClient {
   switch (sdk) {
     case "anthropic":
       return new AnthropicProvider();
@@ -380,7 +431,7 @@ function buildProvider(sdk: ResolvedModel["sdk"]): ProviderClient {
   }
 }
 
-function resolveApiKey(resolved: ResolvedModel): string {
+export function resolveApiKey(resolved: ResolvedModel): string {
   if (!resolved.apiKeyEnv) {
     throw new Error(
       `model ${resolved.qualifiedName} has no api_key_env set; cannot resolve credentials`,
@@ -393,6 +444,26 @@ function resolveApiKey(resolved: ResolvedModel): string {
     );
   }
   return key;
+}
+
+export function cloneChatRequest(request: ChatRequest): ChatRequest {
+  const {
+    signal: _signal,
+    cacheForensics: _cacheForensics,
+    ...rest
+  } = request;
+  return {
+    ...rest,
+    messages: request.messages.map((m) => ({
+      ...m,
+      content: m.content.map((b) => ({ ...b }) as ContentBlock),
+      ...(m.images !== undefined ? { images: m.images.map((i) => ({ ...i })) } : {}),
+    })),
+    tools: request.tools.map((t) => ({
+      ...t,
+      inputSchema: { ...t.inputSchema },
+    })),
+  };
 }
 
 /** Convert assembled PromptMessage[] into the TurnMessage[] the providers want. */

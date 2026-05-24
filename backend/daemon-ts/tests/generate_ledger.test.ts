@@ -144,4 +144,83 @@ describe("generateResponse ledger recording", () => {
     expect(streamEnds).toHaveLength(2);
     ledger.close();
   });
+
+  it("supports private heartbeat-style calls without persisting loop turns", async () => {
+    const { root, engine, characterConfigDir } = await setup();
+    const ledger = Ledger.openInMemory();
+    const provider = new QueuedProvider([
+      [
+        {
+          kind: "done",
+          content: [{ type: "tool_use", id: "toolu_1", name: "lookup", input: {} }],
+          stopReason: "tool_use",
+          usage: {
+            inputTokens: 100,
+            outputTokens: 10,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 50,
+          },
+        },
+      ],
+      [
+        { kind: "text_delta", text: "<sendMessage>hi</sendMessage>" },
+        {
+          kind: "done",
+          content: [{ type: "text", text: "<sendMessage>hi</sendMessage>" }],
+          stopReason: "end_turn",
+          usage: {
+            inputTokens: 120,
+            outputTokens: 12,
+            cacheReadInputTokens: 50,
+            cacheCreationInputTokens: 10,
+          },
+        },
+      ],
+    ]);
+
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "lookup",
+      description: "lookup",
+      inputSchema: { type: "object" },
+      execute: async () => "tool result",
+    });
+
+    let prepared: ChatRequest | undefined;
+    const result = await generateResponse({
+      engine,
+      characterConfigDir,
+      configDir: path.join(root, "config"),
+      displayName: "Ren",
+      resolved: resolvedModel(),
+      registry,
+      broadcast: () => {},
+      provider,
+      ledger,
+      persistTurns: false,
+      systemSuffix: "heartbeat suffix",
+      maxIterations: 2,
+      ledgerCallTypes: { first: "heartbeat", loop: "heartbeat_tool_loop" },
+      wrapUp: {
+        afterIterations: 1,
+        text: "wrap up now",
+      },
+      onPreparedRequest: (request) => {
+        prepared = request;
+      },
+    });
+
+    expect(result.finalText).toBe("<sendMessage>hi</sendMessage>");
+    expect(result.newTurns.length).toBe(3);
+    expect(engine.historySnapshot().messages).toHaveLength(1);
+    expect(prepared?.messages.at(-1)?.role).toBe("user");
+    expect(provider.requests[0]?.messages.at(-1)?.role).toBe("system");
+    const lastContent = provider.requests[1]?.messages.at(-1)?.content ?? [];
+    expect(lastContent.some((b) => b.type === "text" && b.text === "wrap up now")).toBe(true);
+
+    const rows = ledger.recent(2);
+    expect(rows[0]?.call_type).toBe("heartbeat_tool_loop");
+    expect(rows[1]?.call_type).toBe("heartbeat");
+    ledger.close();
+  });
 });
