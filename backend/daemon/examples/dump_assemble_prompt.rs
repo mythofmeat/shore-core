@@ -10,7 +10,7 @@ use std::io::Read;
 
 use serde::{Deserialize, Serialize};
 use shore_daemon::engine::prompt::{
-    AssembledPrompt, PromptMessage, PromptParams, SystemBlock, assemble_prompt,
+    assemble_prompt, AssembledPrompt, PromptMessage, PromptParams, SystemBlock,
 };
 use shore_protocol::types::{ContentBlock, ImageRef, Message, Role};
 
