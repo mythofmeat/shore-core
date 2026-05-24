@@ -11,6 +11,8 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 - Publish the `shore-daemon-ts` preview Arch package from
   `shore-daemon-ts-v*` tags so the TypeScript daemon can run through the
   Phase 9 side-by-side release soak.
+- Run the TypeScript daemon's Bun install, typecheck, test, build, and
+  compiled smoke path in CI.
 
 ### Removed (BREAKING)
 - The `claude_code` SDK provider, the `[chat.claude_code.*]` model namespace,

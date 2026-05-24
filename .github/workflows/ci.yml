@@ -12,3 +12,33 @@ jobs:
     uses: mythofmeat/repo-arch/.github/workflows/ci-rust.yml@main
     with:
       system_deps: "libasound2-dev protobuf-compiler"
+
+  daemon-ts:
+    name: daemon-ts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        working-directory: backend/daemon-ts
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: backend/daemon-ts
+        run: bun run typecheck
+
+      - name: Test
+        working-directory: backend/daemon-ts
+        run: bun test
+
+      - name: Build compiled daemon
+        working-directory: backend/daemon-ts
+        run: bun run build
+
+      - name: Smoke compiled daemon
+        working-directory: backend/daemon-ts
+        run: bun run smoketest:compiled

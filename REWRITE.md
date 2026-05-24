@@ -883,6 +883,9 @@ What 8c does NOT do:
   `contrib/shore-daemon-ts`, so the TS daemon can enter the side-by-side
   release soak through the same repo-arch package path as the Rust
   daemon and CLI.
+- [x] CI cutover gate: `.github/workflows/ci.yml` now runs the TS daemon's
+  frozen Bun install, typecheck, full test suite, compiled build, and
+  compiled smoketest on pushes and PRs alongside the Rust CI.
 - `shore-daemon-ts` ships alongside `shore-daemon` for one release. Users
   opt in by installing/running the TS preview binary or service.
 - Once stable in the wild, `shore-daemon-ts` becomes the default.
