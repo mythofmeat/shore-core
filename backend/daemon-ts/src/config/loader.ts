@@ -12,6 +12,16 @@ import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 
 import {
+  defaultSpikeWarningsConfig,
+  defaultUsageBudgetConfig,
+  type BudgetWeekday,
+  type UsageBudgetAction,
+  type UsageBudgetConfig,
+  type UsageBudgetPeriod,
+  type UsageConfig,
+  type UsageSpikeWarningsConfig,
+} from "../ledger/budget.ts";
+import {
   defaultRetrievalConfig,
   type RetrievalBinaryMode,
   type RetrievalConfig,
@@ -28,10 +38,7 @@ export interface LoadedConfig {
     advanced: {
       cache_forensics: boolean;
     };
-    usage: {
-      timezone: string;
-      allow_compaction_over_budget: boolean;
-    };
+    usage: UsageConfig;
   };
   embedding: Record<string, Record<string, unknown>>;
   memory: {
@@ -232,16 +239,111 @@ function parseAdvancedConfig(
 
 function parseUsageConfig(
   table: Record<string, unknown> | undefined,
-): LoadedConfig["app"]["usage"] {
+): UsageConfig {
   const timezone =
     table !== undefined && table["timezone"] === "utc" ? "utc" : "local";
+  const allowCompaction =
+    table !== undefined && typeof table["allow_compaction_over_budget"] === "boolean"
+      ? table["allow_compaction_over_budget"]
+      : true;
+  const budgetsRaw = table === undefined ? undefined : table["budgets"];
+  const budgets = Array.isArray(budgetsRaw)
+    ? budgetsRaw
+        .filter(isPlainObject)
+        .map((entry) => parseBudget(entry))
+        .filter((b): b is UsageBudgetConfig => b !== undefined)
+    : [];
+  const spike = table === undefined ? undefined : pickTable(table, "spike_warnings");
   return {
     timezone,
-    allow_compaction_over_budget:
-      table !== undefined && typeof table["allow_compaction_over_budget"] === "boolean"
-        ? table["allow_compaction_over_budget"]
-        : true,
+    allow_compaction_over_budget: allowCompaction,
+    budgets,
+    spike_warnings: parseSpikeWarnings(spike),
   };
+}
+
+function parseBudget(table: Record<string, unknown>): UsageBudgetConfig | undefined {
+  const cost = asNumber(table["cost_usd"]);
+  if (cost === undefined) return undefined;
+
+  const defaults = defaultUsageBudgetConfig();
+  const warnAtRaw = table["warn_at"];
+  const warnAt = Array.isArray(warnAtRaw)
+    ? warnAtRaw.filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+    : defaults.warn_at;
+  const usageKindRaw = table["usage_kind"];
+  const usageKind = Array.isArray(usageKindRaw)
+    ? usageKindRaw.filter((v): v is string => typeof v === "string")
+    : [];
+
+  const out: UsageBudgetConfig = {
+    name: typeof table["name"] === "string" ? table["name"] : "",
+    period: parsePeriod(table["period"], defaults.period),
+    cost_usd: cost,
+    warn_at: warnAt.length > 0 ? warnAt : defaults.warn_at,
+    limit: parseLimit(table["limit"], defaults.limit),
+    usage_kind: usageKind,
+  };
+  if (typeof table["character"] === "string") out.character = table["character"];
+  if (typeof table["provider"] === "string") out.provider = table["provider"];
+  if (typeof table["api_key"] === "string") out.api_key = table["api_key"];
+  if (typeof table["model"] === "string") out.model = table["model"];
+  if (typeof table["call_type"] === "string") out.call_type = table["call_type"];
+  if (typeof table["allow_compaction_over_budget"] === "boolean") {
+    out.allow_compaction_over_budget = table["allow_compaction_over_budget"];
+  }
+  const resetHour = asNumber(table["reset_hour"]);
+  if (resetHour !== undefined) out.reset_hour = Math.max(0, Math.min(23, Math.floor(resetHour)));
+  const weekday = parseWeekday(table["reset_day_of_week"]);
+  if (weekday !== undefined) out.reset_day_of_week = weekday;
+  const dayOfMonth = asNumber(table["reset_day_of_month"]);
+  if (dayOfMonth !== undefined) {
+    out.reset_day_of_month = Math.max(1, Math.min(31, Math.floor(dayOfMonth)));
+  }
+  return out;
+}
+
+function parseSpikeWarnings(
+  table: Record<string, unknown> | undefined,
+): UsageSpikeWarningsConfig {
+  const defaults = defaultSpikeWarningsConfig();
+  if (table === undefined) return defaults;
+  return {
+    enabled: typeof table["enabled"] === "boolean" ? table["enabled"] : defaults.enabled,
+    period: parsePeriod(table["period"], defaults.period),
+    multiplier: asNumber(table["multiplier"]) ?? defaults.multiplier,
+    min_cost_usd: asNumber(table["min_cost_usd"]) ?? defaults.min_cost_usd,
+  };
+}
+
+function parsePeriod(
+  raw: unknown,
+  fallback: UsageBudgetPeriod,
+): UsageBudgetPeriod {
+  if (raw === "hour" || raw === "day" || raw === "week" || raw === "month") {
+    return raw;
+  }
+  return fallback;
+}
+
+function parseLimit(raw: unknown, fallback: UsageBudgetAction): UsageBudgetAction {
+  if (raw === "warn" || raw === "block" || raw === "pause_background") return raw;
+  return fallback;
+}
+
+function parseWeekday(raw: unknown): BudgetWeekday | undefined {
+  if (
+    raw === "monday"
+    || raw === "tuesday"
+    || raw === "wednesday"
+    || raw === "thursday"
+    || raw === "friday"
+    || raw === "saturday"
+    || raw === "sunday"
+  ) {
+    return raw;
+  }
+  return undefined;
 }
 
 function parseRetrievalConfig(

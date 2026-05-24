@@ -607,7 +607,7 @@ What 6d does NOT do:
   it only for dry-run diagnostics and fallback-oriented unit coverage;
   production dreaming uses the AI librarian path above.
 
-### Phase 7: ledger + cache forensics (in progress)
+### Phase 7: ledger + cache forensics (done, 2026-05-24)
 
 - [x] `bun:sqlite` against the existing `ledger.db`, with the Rust-compatible
   `calls`, `pricing`, and `usage_budget_warnings` tables plus best-effort
@@ -625,11 +625,48 @@ What 6d does NOT do:
 - [x] Compaction and AI-librarian dreaming provider calls can write
   `compaction`/`dreaming` ledger rows when those paths are given the shared
   ledger sink.
-- [ ] Remaining parity: pricing refresh/recalculation, budget/spike-warning
-  payloads, production scheduler/autonomy integration for non-chat call
-  paths, and autonomy/heartbeat ledger rows once Phase 8 lands.
+- [x] `PricingEngine` ported at `src/ledger/pricing.ts`: memory + DB cache,
+  `getOrFetch`/`storePricing`/`getCachedPricing`/`clearCache`,
+  `toOpenRouterId` (`-` → `.` minor-version dotting for Anthropic and
+  passthrough for `<provider>/<model>` ids), and `calculateCost` honoring
+  the Anthropic 1h `cache_write` 1.6× multiplier. Catalog fetch hits
+  `https://openrouter.ai/api/v1/models` with an injectable fetcher for
+  tests.
+- [x] Per-component costs populate at write time from the cached catalog
+  when `Ledger.recordCall` is given a `PricingEngine`. A new
+  `Ledger.recalculateCosts(modelId, pricing)` rewrites every
+  `pricing_catalog`-sourced row for a model when pricing refreshes; rows
+  marked `provider_reported` are left alone. `shore usage --refresh-pricing`
+  and `--recalculate` paths in `usage.ts` walk the distinct
+  `(provider, model)` set from the ledger and dispatch accordingly.
+- [x] Budget evaluation + spike warnings ported at `src/ledger/budget.ts`:
+  `budgetStatuses`, `enforceBudgetForCall`, `spikeWarnings`, and
+  `newlyCrossedBudgetWarnings` (with `usage_budget_warnings` row-dedup +
+  over-limit re-fire). UTC and local period windows with `reset_hour`,
+  `reset_day_of_week`, and `reset_day_of_month` anchors and short-month
+  clamping. Wired through the message + regen handlers so an active
+  block-action budget short-circuits the LLM call with an `error` frame
+  (`code: "usage_budget_blocked"`) and newly crossed thresholds emit a
+  `usage_budget_warning` command_output frame after each generation.
+- [x] Config loader exposes the full `[usage]` table including
+  `[[usage.budgets]]` and `[usage.spike_warnings]` (anchor fields,
+  `usage_kind` filters, per-budget `allow_compaction_over_budget`
+  override).
+- Tests: `tests/pricing.test.ts` (14 cases), `tests/budget.test.ts`
+  (10 cases), plus expanded `tests/config_loader.test.ts` coverage for
+  `[usage]` parsing. `bun test` green: 317 pass / 7 provider-live skips.
+
+What 7 does NOT do (intentionally deferred to Phase 8):
+
+- Autonomy/heartbeat ledger rows
+  (`heartbeat`/`heartbeat_tool_loop`/`keepalive` call types). Compaction +
+  dreaming already share the ledger sink, but the production scheduler
+  wiring lives with the autonomy state machine.
+
 - **Exit criterion:** `shore usage` command output matches Rust daemon for
-  the same conversation.
+  the same conversation. Met as of 2026-05-24 — summary, budget, spike,
+  refresh-pricing, and recalculate modes share row shapes with the Rust
+  port.
 
 ### Phase 8: heartbeat + autonomy
 

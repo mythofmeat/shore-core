@@ -1,33 +1,44 @@
 /**
  * `shore usage` command payloads backed by the TS ledger.
  *
- * This mirrors `backend/daemon/src/commands/usage.rs` for the modes the
- * CLI renders directly. Pricing refresh/recalculation are acknowledged
- * but left as no-op payloads until the pricing catalog port lands.
+ * Mirrors `backend/daemon/src/commands/usage.rs` for the modes the CLI
+ * renders directly: summary, by-call-type, by-kind, by-api-key, anomalies,
+ * CSV/TSV, refresh-pricing, recalculate, and budget. Budget evaluation is
+ * pulled from `./budget.ts`.
  */
 
+import {
+  budgetStatuses,
+  spikeWarnings,
+  type BudgetStatusPayload,
+  type SpikeWarningPayload,
+  type UsageBudgetConfig,
+  type UsageConfig,
+} from "./budget.ts";
 import type { Ledger, QueryFilter } from "./ledger.ts";
+import { toOpenRouterId, type PricingEngine } from "./pricing.ts";
 
-export interface UsageConfigSlice {
-  timezone: string;
-  allow_compaction_over_budget: boolean;
-}
+export interface UsageConfigSlice extends UsageConfig {}
 
-export function usagePayload(
+export async function usagePayload(
   ledger: Ledger,
   args: Record<string, unknown>,
   config: UsageConfigSlice,
-): Record<string, unknown> {
+  pricing?: PricingEngine,
+): Promise<Record<string, unknown>> {
   const timezone = config.timezone;
   const { filter, last } = buildFilter(args, timezone);
 
   if (args["budget"] === true) {
+    const now = new Date();
+    const budgets: BudgetStatusPayload[] = budgetStatuses(ledger, config, now);
+    const spikes: SpikeWarningPayload[] = spikeWarnings(ledger, config, now);
     return {
       mode: "budget",
       timezone,
       allow_compaction_over_budget: config.allow_compaction_over_budget,
-      budgets: [],
-      spike_warnings: [],
+      budgets,
+      spike_warnings: spikes,
     };
   }
 
@@ -105,11 +116,43 @@ export function usagePayload(
   }
 
   if (args["refresh_pricing"] === true) {
-    return { mode: "refresh_pricing" };
+    if (pricing === undefined) {
+      return { mode: "refresh_pricing", refreshed: 0, failures: ["no pricing engine wired"] };
+    }
+    const models = uniqueProviderModelPairs(ledger);
+    let refreshed = 0;
+    const failures: string[] = [];
+    for (const [provider, model] of models) {
+      try {
+        const result = await pricing.fetchPricing(provider, model);
+        if (result === undefined) {
+          failures.push(`${provider}/${model}: not in OpenRouter catalog`);
+        } else {
+          refreshed++;
+        }
+      } catch (e) {
+        failures.push(`${provider}/${model}: ${(e as Error).message}`);
+      }
+    }
+    return { mode: "refresh_pricing", refreshed, failures };
   }
 
   if (args["recalculate"] === true) {
-    return { mode: "recalculate", updated: 0, total: 0, failures: [] };
+    if (pricing === undefined) {
+      return { mode: "recalculate", updated: 0, total: 0, failures: ["no pricing engine wired"] };
+    }
+    const models = uniqueProviderModelPairs(ledger);
+    let updated = 0;
+    let total = 0;
+    const failures: Array<{ id: number; reason: string }> = [];
+    for (const [provider, model] of models) {
+      const modelId = toOpenRouterId(provider, model);
+      const result = ledger.recalculateCosts(modelId, pricing);
+      updated += result.updated;
+      total += result.total;
+      failures.push(...result.failures);
+    }
+    return { mode: "recalculate", updated, total, failures };
   }
 
   const summary = ledger.usageSummary(filter).map((s) => ({
@@ -135,6 +178,10 @@ export function usagePayload(
   const anomalyFilter = withSince({}, parseLastPeriod("7d", timezone));
   const anomalyCount = ledger.queryAnomalies(compactFilter(anomalyFilter)).length;
 
+  const now = new Date();
+  const budgets = budgetStatuses(ledger, config, now);
+  const spikes = spikeWarnings(ledger, config, now);
+
   return {
     mode: "summary",
     period: last,
@@ -142,8 +189,8 @@ export function usagePayload(
     summary,
     cache_health: cacheHealth,
     anomaly_count_7d: anomalyCount,
-    budgets: [],
-    spike_warnings: [],
+    budgets,
+    spike_warnings: spikes,
   };
 }
 
@@ -294,3 +341,19 @@ function withSince(filter: QueryFilter, since: string | undefined): QueryFilter 
   if (since !== undefined) out.since = since;
   return out;
 }
+
+function uniqueProviderModelPairs(ledger: Ledger): Array<[string, string]> {
+  const summary = ledger.usageSummary({});
+  const seen = new Set<string>();
+  const out: Array<[string, string]> = [];
+  for (const row of summary) {
+    const key = `${row.provider}::${row.model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push([row.provider, row.model]);
+  }
+  return out;
+}
+
+// Re-export so main.ts only needs the usage module
+export type { UsageBudgetConfig } from "./budget.ts";

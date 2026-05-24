@@ -68,6 +68,65 @@ allow_compaction_over_budget = false
     expect(config.app.usage).toEqual({
       timezone: "utc",
       allow_compaction_over_budget: false,
+      budgets: [],
+      spike_warnings: {
+        enabled: false,
+        period: "hour",
+        multiplier: 3,
+        min_cost_usd: 1,
+      },
+    });
+  });
+
+  it("parses [[usage.budgets]] entries and [usage.spike_warnings]", () => {
+    const dir = setupConfig(`
+[usage]
+timezone = "utc"
+
+[usage.spike_warnings]
+enabled = true
+period = "day"
+multiplier = 2.5
+min_cost_usd = 5
+
+[[usage.budgets]]
+name = "daily"
+period = "day"
+cost_usd = 25
+warn_at = [0.5, 0.9]
+limit = "block"
+reset_hour = 6
+
+[[usage.budgets]]
+name = "monthly"
+period = "month"
+cost_usd = 500
+reset_day_of_month = 15
+usage_kind = ["heartbeat", "compaction"]
+`);
+
+    const config = loadConfig(dir);
+    expect(config.app.usage.spike_warnings).toEqual({
+      enabled: true,
+      period: "day",
+      multiplier: 2.5,
+      min_cost_usd: 5,
+    });
+    expect(config.app.usage.budgets.length).toBe(2);
+    expect(config.app.usage.budgets[0]).toMatchObject({
+      name: "daily",
+      period: "day",
+      cost_usd: 25,
+      warn_at: [0.5, 0.9],
+      limit: "block",
+      reset_hour: 6,
+    });
+    expect(config.app.usage.budgets[1]).toMatchObject({
+      name: "monthly",
+      period: "month",
+      cost_usd: 500,
+      reset_day_of_month: 15,
+      usage_kind: ["heartbeat", "compaction"],
     });
   });
 });

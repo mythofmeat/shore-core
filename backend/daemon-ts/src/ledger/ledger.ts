@@ -12,6 +12,7 @@ import path from "node:path";
 
 import type { CacheForensics } from "./cache_forensics.ts";
 import { CacheTracker, type CacheAnomaly, type CacheState } from "./cache_tracker.ts";
+import { isAnthropicPricing, toOpenRouterId, type PricingEngine } from "./pricing.ts";
 
 type SqlValue = string | bigint | NodeJS.TypedArray | number | boolean | null;
 type NamedBindings = Record<string, SqlValue>;
@@ -127,6 +128,18 @@ export interface RecordCallInput {
   thinkingEnabled: boolean;
   cacheTtl?: string;
   ts?: string;
+  /**
+   * Provider-reported total cost (e.g. OpenRouter `cost`). When set, the row
+   * is recorded with `cost_source = "provider_reported"` and per-component
+   * costs are nulled to match the Rust ledger.
+   */
+  totalCostOverride?: number;
+  /**
+   * Optional pricing engine used to populate per-component costs from the
+   * cached catalog. Best-effort: a missing entry leaves the cost columns
+   * null without failing the insert.
+   */
+  pricing?: PricingEngine;
 }
 
 export interface QueryFilter {
@@ -225,7 +238,7 @@ export class Ledger {
 
     if (
       callTypeAffectsCacheTracker(input.callType) &&
-      (hasCacheMetrics || input.provider === "anthropic")
+      (hasCacheMetrics || isAnthropicPricing(input.provider, input.model))
     ) {
       let tracker = this.cacheTrackers.get(input.character);
       if (tracker === undefined) {
@@ -257,6 +270,19 @@ export class Ledger {
       });
     }
 
+    const totalCostOverride = input.totalCostOverride;
+    const cost = totalCostOverride === undefined
+      ? input.pricing?.calculateCost({
+          provider: input.provider,
+          model: input.model,
+          inputTokens: input.inputTokens,
+          outputTokens: input.outputTokens,
+          cacheReadTokens: input.cacheReadTokens,
+          cacheWriteTokens: input.cacheWriteTokens,
+          cacheTtl: input.cacheTtl,
+        })
+      : undefined;
+
     return this.insert({
       ts,
       character: input.character,
@@ -275,8 +301,96 @@ export class Ledger {
       thinking_enabled: input.thinkingEnabled,
       ...(cacheState !== undefined ? { cache_state: cacheState } : {}),
       ...(cacheAnomaly !== undefined ? { cache_anomaly: cacheAnomaly } : {}),
-      cost_source: "pricing_catalog",
+      ...(cost !== undefined ? { input_cost: cost.input } : {}),
+      ...(cost !== undefined ? { output_cost: cost.output } : {}),
+      ...(cost !== undefined ? { cache_read_cost: cost.cache_read } : {}),
+      ...(cost !== undefined ? { cache_write_cost: cost.cache_write } : {}),
+      cost_source: totalCostOverride !== undefined ? "provider_reported" : "pricing_catalog",
+      ...(totalCostOverride !== undefined
+        ? { total_cost: totalCostOverride }
+        : cost !== undefined
+          ? { total_cost: cost.total }
+          : {}),
     });
+  }
+
+  /**
+   * Rewrite per-component cost columns and `total_cost` for every row whose
+   * `(provider, model)` resolves to the given OpenRouter model id and whose
+   * cost_source is `pricing_catalog`. Provider-reported rows are left
+   * untouched. Returns the number of rows updated.
+   *
+   * Mirrors `backend/daemon/src/commands/usage.rs::recalculate_costs` to
+   * the extent the catalog port covers: per-model recalc against the
+   * memory/DB pricing cache.
+   */
+  recalculateCosts(modelId: string, pricing: PricingEngine): {
+    updated: number;
+    total: number;
+    failures: Array<{ id: number; reason: string }>;
+  } {
+    const target = pricing.getCachedPricing(modelId);
+    if (target === undefined) {
+      return { updated: 0, total: 0, failures: [{ id: 0, reason: `no cached pricing for ${modelId}` }] };
+    }
+
+    const rows = this.db
+      .query<{
+        id: number;
+        provider: string;
+        model: string;
+        input_tokens: number;
+        output_tokens: number;
+        cache_read_tokens: number;
+        cache_write_tokens: number;
+        cache_ttl: string | null;
+        cost_source: string | null;
+      }, []>(
+        `SELECT id, provider, model, input_tokens, output_tokens,
+                cache_read_tokens, cache_write_tokens, cache_ttl, cost_source
+           FROM calls
+          WHERE cost_source IS NULL OR cost_source = 'pricing_catalog'`,
+      )
+      .all();
+
+    const matching = rows.filter((row) => toOpenRouterId(row.provider, row.model) === modelId);
+    let updated = 0;
+    const failures: Array<{ id: number; reason: string }> = [];
+    const update = this.db.query(
+      `UPDATE calls
+          SET input_cost = $input_cost,
+              output_cost = $output_cost,
+              cache_read_cost = $cache_read_cost,
+              cache_write_cost = $cache_write_cost,
+              total_cost = $total_cost,
+              cost_source = 'pricing_catalog'
+        WHERE id = $id`,
+    );
+    for (const row of matching) {
+      const cost = pricing.calculateCost({
+        provider: row.provider,
+        model: row.model,
+        inputTokens: row.input_tokens,
+        outputTokens: row.output_tokens,
+        cacheReadTokens: row.cache_read_tokens,
+        cacheWriteTokens: row.cache_write_tokens,
+        cacheTtl: row.cache_ttl ?? undefined,
+      });
+      if (cost === undefined) {
+        failures.push({ id: row.id, reason: `pricing missing for ${modelId}` });
+        continue;
+      }
+      update.run({
+        $input_cost: cost.input,
+        $output_cost: cost.output,
+        $cache_read_cost: cost.cache_read,
+        $cache_write_cost: cost.cache_write,
+        $total_cost: cost.total,
+        $id: row.id,
+      });
+      updated++;
+    }
+    return { updated, total: matching.length, failures };
   }
 
   recent(limit: number): CallRow[] {
@@ -491,6 +605,18 @@ export class Ledger {
          AND cache_write_cost IS NULL
     `);
   }
+}
+
+/**
+ * Internal accessor for sibling modules (PricingEngine, budget evaluation)
+ * that need to share the same SQLite handle. Intentionally not part of
+ * Ledger's public surface.
+ */
+export function ledgerDatabase(ledger: Ledger): Database {
+  // Reach through the private field. `Ledger`'s constructor + `open` flows
+  // keep the DB lifecycle bound to the Ledger instance, so callers must not
+  // close this handle directly.
+  return (ledger as unknown as { db: Database }).db;
 }
 
 function rowToParams(row: CallRow): NamedBindings {

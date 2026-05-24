@@ -107,7 +107,7 @@ describe("Ledger", () => {
     ledger.close();
   });
 
-  it("summarizes by usage kind, call type, and api key", () => {
+  it("summarizes by usage kind, call type, and api key", async () => {
     const ledger = Ledger.openInMemory();
     ledger.insert(sampleRow({ finish_reason: "tool_use", total_cost: 0.01 }));
     ledger.insert(sampleRow({
@@ -127,9 +127,16 @@ describe("Ledger", () => {
       total_cost: 0.03,
     }));
 
-    const kindPayload = usagePayload(ledger, { last: "all", by_kind: true }, {
+    const kindPayload = await usagePayload(ledger, { last: "all", by_kind: true }, {
       timezone: "utc",
       allow_compaction_over_budget: true,
+      budgets: [],
+      spike_warnings: {
+        enabled: false,
+        period: "hour",
+        multiplier: 3,
+        min_cost_usd: 1,
+      },
     });
     expect(kindPayload["mode"]).toBe("summary_by_usage_kind");
     const byKind = new Map(

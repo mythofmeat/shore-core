@@ -30,6 +30,7 @@ import { buildChatContext } from "../engine/context.ts";
 import type { ContentBlock, Message } from "../engine/types.ts";
 import type { CacheForensics } from "../ledger/cache_forensics.ts";
 import type { Ledger } from "../ledger/ledger.ts";
+import type { PricingEngine } from "../ledger/pricing.ts";
 import type { ServerMessage } from "../swp/types.ts";
 import type {
   ImageGenConfig,
@@ -83,6 +84,13 @@ export interface GenerateOptions {
   /** Optional ledger sinks for Phase 7 accounting. */
   ledger?: Ledger;
   cacheForensics?: CacheForensics;
+  /**
+   * Optional pricing engine. When set, per-component costs are computed
+   * from the cached catalog and written to the ledger row alongside the
+   * usage totals; otherwise `cost_source` stays `pricing_catalog` but
+   * cost columns are null until the catalog hydrates.
+   */
+  pricing?: PricingEngine;
   /** Tool-side config slices; defaults are used when omitted. */
   searchConfig?: SearchConfig;
   retrievalConfig?: RetrievalConfig;
@@ -308,6 +316,7 @@ function recordLedgerCalls(
       finishReason: call.stopReason,
       thinkingEnabled: request.thinking.enabled,
       ...(opts.resolved.cacheTtl !== undefined ? { cacheTtl: opts.resolved.cacheTtl } : {}),
+      ...(opts.pricing !== undefined ? { pricing: opts.pricing } : {}),
     };
     try {
       opts.ledger.recordCall(input, opts.cacheForensics);

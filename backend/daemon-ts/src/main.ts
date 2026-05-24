@@ -21,8 +21,15 @@ import {
 import { EngineRegistry } from "./engine/engine.ts";
 import type { Message } from "./engine/types.ts";
 import { loadCatalog, resolveModel, type ResolvedModel } from "./llm/catalog.ts";
+import {
+  enforceBudgetForCall,
+  newlyCrossedBudgetWarnings,
+  type BudgetBlock,
+  type CallType,
+} from "./ledger/budget.ts";
 import { CacheForensics } from "./ledger/cache_forensics.ts";
 import { Ledger } from "./ledger/ledger.ts";
+import { PricingEngine } from "./ledger/pricing.ts";
 import { usagePayload } from "./ledger/usage.ts";
 import { resolveEmbedder, type Embedder } from "./llm/embed.ts";
 import { loadConfigDotenv } from "./llm/env.ts";
@@ -123,6 +130,7 @@ async function main(): Promise<void> {
   const config = loadConfig(dirs.config);
   const catalog = loadCatalog(dirs.config);
   const ledger = Ledger.open(path.join(dirs.data, "ledger.db"));
+  const pricing = new PricingEngine(ledger);
   const cacheForensics = config.app.advanced.cache_forensics
     ? CacheForensics.open(dirs.cache)
     : undefined;
@@ -158,6 +166,7 @@ async function main(): Promise<void> {
     config,
     catalog,
     ledger,
+    pricing,
     cacheForensics,
     () => serverRef,
   );
@@ -168,10 +177,11 @@ async function main(): Promise<void> {
     config,
     catalog,
     ledger,
+    pricing,
     cacheForensics,
     () => serverRef,
   );
-  const onCommand = buildCommandHandler(engines, config, ledger, () => serverRef);
+  const onCommand = buildCommandHandler(engines, config, ledger, pricing, () => serverRef);
 
   const server = new SwpServer({
     host,
@@ -280,6 +290,7 @@ function buildMessageHandler(
   config: LoadedConfig,
   catalog: ReturnType<typeof loadCatalog>,
   ledger: Ledger,
+  pricing: PricingEngine,
   cacheForensics: CacheForensics | undefined,
   getServer: () => SwpServer | undefined,
 ): MessageHandler {
@@ -319,6 +330,27 @@ function buildMessageHandler(
       getServer()?.broadcast(frame);
     };
 
+    // Best-effort pricing warm-up: populates the catalog cache so the
+    // ledger row gets per-component costs without blocking generation if
+    // OpenRouter is slow or unreachable.
+    void pricing.getOrFetch(resolved.providerKey, resolved.modelId);
+
+    const block = enforceBudgetForCall(
+      ledger,
+      config.app.usage,
+      {
+        provider: resolved.providerKey,
+        model: resolved.modelId,
+        call_type: "message",
+        character: session.character,
+      },
+      new Date(),
+    );
+    if (block !== undefined) {
+      emitBudgetBlock(broadcast, msg.rid, block);
+      return;
+    }
+
     try {
       await generateResponse({
         engine,
@@ -332,6 +364,7 @@ function buildMessageHandler(
         }),
         broadcast,
         ledger,
+        pricing,
         ...(cacheForensics !== undefined ? { cacheForensics } : {}),
         retrievalConfig: config.memory.retrieval,
         ...(embedder !== undefined ? { embedder } : {}),
@@ -345,7 +378,47 @@ function buildMessageHandler(
     } catch (e) {
       handleGenerationError(broadcast, msg.rid, e);
     }
+
+    emitBudgetWarnings(broadcast, ledger, config.app.usage);
   };
+}
+
+function emitBudgetBlock(
+  broadcast: (frame: import("./swp/types.ts").ServerMessage) => void,
+  rid: string | undefined,
+  block: BudgetBlock,
+): void {
+  console.warn(
+    `[shore-daemon-ts] budget block: ${block.budget_name} ($${block.current_cost.toFixed(2)}/$${block.cost_limit.toFixed(2)} ${block.period}); action=${block.action}`,
+  );
+  broadcast({
+    type: "error",
+    ...(rid !== undefined ? { rid } : {}),
+    code: "usage_budget_blocked",
+    message: block.message,
+  });
+}
+
+function emitBudgetWarnings(
+  broadcast: (frame: import("./swp/types.ts").ServerMessage) => void,
+  ledger: Ledger,
+  config: import("./ledger/budget.ts").UsageConfig,
+): void {
+  let events;
+  try {
+    events = newlyCrossedBudgetWarnings(ledger, config, new Date());
+  } catch (e) {
+    console.warn(`[shore-daemon-ts] budget warning check failed: ${(e as Error).message}`);
+    return;
+  }
+  for (const event of events) {
+    console.warn(`[shore-daemon-ts] budget warning: ${event.message}`);
+    broadcast({
+      type: "command_output",
+      name: "usage_budget_warning",
+      data: event as unknown as Record<string, unknown>,
+    });
+  }
 }
 
 /**
@@ -414,6 +487,7 @@ function buildRegenHandler(
   config: LoadedConfig,
   catalog: ReturnType<typeof loadCatalog>,
   ledger: Ledger,
+  pricing: PricingEngine,
   cacheForensics: CacheForensics | undefined,
   getServer: () => SwpServer | undefined,
 ): import("./swp/server.ts").RegenHandler {
@@ -451,6 +525,24 @@ function buildRegenHandler(
       getServer()?.broadcast(frame);
     };
 
+    void pricing.getOrFetch(resolved.providerKey, resolved.modelId);
+
+    const block = enforceBudgetForCall(
+      ledger,
+      config.app.usage,
+      {
+        provider: resolved.providerKey,
+        model: resolved.modelId,
+        call_type: "message",
+        character: session.character,
+      },
+      new Date(),
+    );
+    if (block !== undefined) {
+      emitBudgetBlock(broadcast, msg.rid, block);
+      return;
+    }
+
     try {
       await generateResponse({
         engine,
@@ -464,6 +556,7 @@ function buildRegenHandler(
         }),
         broadcast,
         ledger,
+        pricing,
         ...(cacheForensics !== undefined ? { cacheForensics } : {}),
         retrievalConfig: config.memory.retrieval,
         ...(embedder !== undefined ? { embedder } : {}),
@@ -476,6 +569,8 @@ function buildRegenHandler(
     } catch (e) {
       handleGenerationError(broadcast, msg.rid, e);
     }
+
+    emitBudgetWarnings(broadcast, ledger, config.app.usage);
   };
 }
 
@@ -494,6 +589,7 @@ function buildCommandHandler(
   engines: EngineRegistry,
   config: LoadedConfig,
   ledger: Ledger,
+  pricing: PricingEngine,
   getServer: () => SwpServer | undefined,
 ): import("./swp/server.ts").CommandHandler {
   return async (session, msg) => {
@@ -528,11 +624,12 @@ function buildCommandHandler(
       }
       case "usage": {
         const args = (msg.args ?? {}) as Record<string, unknown>;
+        const data = await usagePayload(ledger, args, config.app.usage, pricing);
         send({
           type: "command_output",
           ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
           name: msg.name,
-          data: usagePayload(ledger, args, config.app.usage),
+          data,
         });
         return;
       }
