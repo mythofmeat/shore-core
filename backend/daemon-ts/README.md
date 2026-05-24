@@ -28,6 +28,7 @@ Representative checks currently green:
 ```sh
 bun install
 bun run src/main.ts --addr 127.0.0.1:0
+bun run src/main.ts --config /path/to/config.toml --addr 127.0.0.1:0
 ```
 
 The daemon prints the resolved listen address and registers itself in

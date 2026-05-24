@@ -60,6 +60,11 @@ export interface DreamingConfig {
   max_tool_rounds: number;
 }
 
+export interface ConfigInput {
+  configDir: string;
+  configFile?: string;
+}
+
 export interface AutonomyConfig {
   enabled: boolean;
   heartbeat: LoadedHeartbeatConfig;
@@ -72,8 +77,9 @@ export interface LoadedHeartbeatConfig extends HeartbeatConfig {
 }
 
 /** Load config from a Shore config directory. Missing files are tolerated. */
-export function loadConfig(configDir: string): LoadedConfig {
-  const merged = mergeAll(readAllConfigTables(configDir));
+export function loadConfig(input: string | ConfigInput): LoadedConfig {
+  const source = normalizeConfigInput(input);
+  const merged = mergeAll(readAllConfigTables(source));
 
   const defaultsTable = pickTable(merged, "defaults") ?? {};
 
@@ -125,14 +131,14 @@ export function firstChatModelQualifiedName(_config: LoadedConfig): string | und
 
 // ── internals ──────────────────────────────────────────────────────────
 
-function readAllConfigTables(configDir: string): Record<string, unknown>[] {
+function readAllConfigTables(source: ConfigInput): Record<string, unknown>[] {
   const tables: Record<string, unknown>[] = [];
 
-  const baseFile = path.join(configDir, "config.toml");
+  const baseFile = source.configFile ?? path.join(source.configDir, "config.toml");
   const baseContent = tryReadText(baseFile);
   if (baseContent !== undefined) tables.push(parseTomlOrFail(baseContent, baseFile));
 
-  const confDir = path.join(configDir, "conf.d");
+  const confDir = path.join(source.configDir, "conf.d");
   let extras: string[] = [];
   try {
     extras = fs.readdirSync(confDir).filter((n) => n.endsWith(".toml")).sort();
@@ -155,6 +161,11 @@ function tryReadText(file: string): string | undefined {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw e;
   }
+}
+
+function normalizeConfigInput(input: string | ConfigInput): ConfigInput {
+  if (typeof input === "string") return { configDir: input };
+  return input;
 }
 
 function parseTomlOrFail(content: string, sourcePath: string): Record<string, unknown> {

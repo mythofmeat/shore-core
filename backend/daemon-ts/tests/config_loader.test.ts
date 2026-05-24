@@ -153,4 +153,22 @@ usage_kind = ["heartbeat", "compaction"]
       usage_kind: ["heartbeat", "compaction"],
     });
   });
+
+  it("loads an explicit config file and merges conf.d relative to its parent", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "shore-explicit-config-test-"));
+    fs.mkdirSync(path.join(dir, "conf.d"));
+    const file = path.join(dir, "preview.toml");
+    fs.writeFileSync(file, `
+[defaults]
+model = "base"
+`);
+    fs.writeFileSync(path.join(dir, "conf.d", "10-overlay.toml"), `
+[defaults]
+display_name = "Preview User"
+`);
+
+    const config = loadConfig({ configDir: dir, configFile: file });
+    expect(config.app.defaults.model).toBe("base");
+    expect(config.app.defaults.display_name).toBe("Preview User");
+  });
 });

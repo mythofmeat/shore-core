@@ -257,18 +257,23 @@ function isObject(v: unknown): v is Record<string, unknown> {
  * the catalog. Mirrors the merging done in config/loader.ts but exposes
  * the raw catalog so callers can resolve by qualified name.
  */
-export function loadCatalog(configDir: string): Map<string, ResolvedModel> {
-  const raw = readMergedConfig(configDir);
+export interface CatalogConfigInput {
+  configDir: string;
+  configFile?: string;
+}
+
+export function loadCatalog(input: string | CatalogConfigInput): Map<string, ResolvedModel> {
+  const raw = readMergedConfig(normalizeConfigInput(input));
   return parseCatalog(raw);
 }
 
-function readMergedConfig(configDir: string): Record<string, unknown> {
+function readMergedConfig(source: CatalogConfigInput): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  const baseFile = path.join(configDir, "config.toml");
+  const baseFile = source.configFile ?? path.join(source.configDir, "config.toml");
   if (fs.existsSync(baseFile)) {
     deepMerge(out, parseToml(fs.readFileSync(baseFile, "utf8")) as Record<string, unknown>);
   }
-  const confDir = path.join(configDir, "conf.d");
+  const confDir = path.join(source.configDir, "conf.d");
   if (fs.existsSync(confDir)) {
     for (const name of fs.readdirSync(confDir).filter((n) => n.endsWith(".toml")).sort()) {
       const content = fs.readFileSync(path.join(confDir, name), "utf8");
@@ -276,6 +281,11 @@ function readMergedConfig(configDir: string): Record<string, unknown> {
     }
   }
   return out;
+}
+
+function normalizeConfigInput(input: string | CatalogConfigInput): CatalogConfigInput {
+  if (typeof input === "string") return { configDir: input };
+  return input;
 }
 
 function deepMerge(target: Record<string, unknown>, src: Record<string, unknown>): void {

@@ -7,15 +7,32 @@
  * deviates from the expected sequence.
  *
  * Usage:
- *   bun scripts/handshake-smoketest.ts                    # runs `bun src/main.ts`
- *   bun scripts/handshake-smoketest.ts dist/shore-daemon  # runs compiled binary
+ *   bun scripts/handshake-smoketest.ts                         # runs `bun src/main.ts`
+ *   bun scripts/handshake-smoketest.ts dist/shore-daemon       # runs compiled binary
+ *   bun scripts/handshake-smoketest.ts dist/shore-daemon -- --config /tmp/shore/config.toml
  */
 
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const cmdArg = process.argv[2];
+const rawArgs = process.argv.slice(2);
+const sep = rawArgs.indexOf("--");
+const positional = sep >= 0
+  ? rawArgs.slice(0, sep)
+  : rawArgs[0]?.startsWith("--")
+    ? []
+    : rawArgs.slice(0, 1);
+const daemonArgs = sep >= 0
+  ? rawArgs.slice(sep + 1)
+  : rawArgs[0]?.startsWith("--")
+    ? rawArgs
+    : rawArgs.slice(1);
+if (positional.length > 1) {
+  console.error("usage: handshake-smoketest.ts [daemon-bin] [-- <daemon-args>...]");
+  process.exit(2);
+}
+const cmdArg = positional[0];
 const cmd: string[] = cmdArg ? [cmdArg] : ["bun", "src/main.ts"];
 
 const tmp = mkdtempSync(join(tmpdir(), "shore-daemon-ts-smoketest-"));
@@ -28,7 +45,7 @@ const env = {
 };
 
 const proc = Bun.spawn({
-  cmd: [...cmd, "--addr", "127.0.0.1:0"],
+  cmd: [...cmd, ...daemonArgs, "--addr", "127.0.0.1:0"],
   env,
   stdout: "pipe",
   stderr: "inherit",

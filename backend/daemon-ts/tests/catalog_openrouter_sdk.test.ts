@@ -3,8 +3,13 @@
  * and that explicit per-model TOML still wins.
  */
 import { describe, expect, it } from "bun:test";
+import fs from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   defaultSdkForOpenRouterModel,
+  loadCatalog,
   parseCatalog,
 } from "../src/llm/catalog.ts";
 
@@ -112,5 +117,23 @@ describe("parseCatalog SDK resolution for OpenRouter", () => {
     const catalog = parseCatalog(config);
     expect(catalog.get("chat.anthropic.haiku45")!.sdk).toBe("anthropic");
     expect(catalog.get("chat.openai.gpt5mini")!.sdk).toBe("openai");
+  });
+
+  it("loads an explicit config file and conf.d overlay from the same directory", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "shore-catalog-config-test-"));
+    fs.mkdirSync(path.join(dir, "conf.d"));
+    const file = path.join(dir, "preview.toml");
+    fs.writeFileSync(file, `
+[chat.openrouter.haiku45]
+model_id = "anthropic/claude-haiku-4.5"
+`);
+    fs.writeFileSync(path.join(dir, "conf.d", "10-overlay.toml"), `
+[chat.openrouter.gpt5mini]
+model_id = "openai/gpt-5.4-mini"
+`);
+
+    const catalog = loadCatalog({ configDir: dir, configFile: file });
+    expect(catalog.get("chat.openrouter.haiku45")?.sdk).toBe("anthropic");
+    expect(catalog.get("chat.openrouter.gpt5mini")?.sdk).toBe("openai");
   });
 });

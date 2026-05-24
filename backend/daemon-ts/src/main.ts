@@ -9,6 +9,7 @@
  */
 
 import path from "node:path";
+import fs from "node:fs";
 
 import { runAutonomyTickActions } from "./autonomy/dispatch.ts";
 import { AutonomyRegistry } from "./autonomy/registry.ts";
@@ -46,18 +47,22 @@ import type { HandshakeProvider, MessageHandler } from "./swp/server.ts";
 interface ParsedArgs {
   addr: string;
   instanceId: string | undefined;
+  configPath: string | undefined;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
   let addr: string | undefined;
   let instanceId: string | undefined;
+  let configPath: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--addr") {
-      addr = argv[++i];
+      addr = takeArgValue(argv, ++i, arg);
     } else if (arg === "--instance-id") {
-      instanceId = argv[++i];
+      instanceId = takeArgValue(argv, ++i, arg);
+    } else if (arg === "--config") {
+      configPath = takeArgValue(argv, ++i, arg);
     } else if (arg === "--help" || arg === "-h") {
       printHelpAndExit(0);
     } else if (arg !== undefined) {
@@ -70,7 +75,16 @@ function parseArgs(argv: string[]): ParsedArgs {
     addr = process.env["SHORE_ADDR"] ?? "127.0.0.1:0";
   }
 
-  return { addr, instanceId };
+  return { addr, instanceId, configPath };
+}
+
+function takeArgValue(argv: string[], idx: number, flag: string): string {
+  const value = argv[idx];
+  if (value === undefined || value.startsWith("--")) {
+    console.error(`error: ${flag} requires a value`);
+    process.exit(2);
+  }
+  return value;
 }
 
 function printHelpAndExit(code: number): never {
@@ -82,6 +96,7 @@ function printHelpAndExit(code: number): never {
       "  shore-daemon-ts [OPTIONS]",
       "",
       "OPTIONS:",
+      "  --config <PATH>       Config file to load (parent becomes config dir)",
       "  --addr <HOST:PORT>     TCP listen address (default: 127.0.0.1:0)",
       "  --instance-id <ID>     Pin the registered instance ID",
       "  -h, --help             Print this help",
@@ -90,6 +105,19 @@ function printHelpAndExit(code: number): never {
     ].join("\n"),
   );
   process.exit(code);
+}
+
+function resolveExplicitConfigPath(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  if (!fs.existsSync(raw)) {
+    console.error(`error: invalid --config path ${raw}: file does not exist`);
+    process.exit(2);
+  }
+  if (fs.statSync(raw).isDirectory()) {
+    console.error(`error: invalid --config path ${raw}: expected a config.toml file, not a directory`);
+    process.exit(2);
+  }
+  return raw;
 }
 
 function splitAddr(addr: string): { host: string; port: number } {
@@ -118,10 +146,11 @@ function generateInstanceId(): string {
 }
 
 async function main(): Promise<void> {
-  const { addr, instanceId } = parseArgs(process.argv.slice(2));
+  const { addr, instanceId, configPath } = parseArgs(process.argv.slice(2));
   const { host, port } = splitAddr(addr);
 
-  const dirs = resolveShoreDirs();
+  const explicitConfigFile = resolveExplicitConfigPath(configPath);
+  const dirs = resolveShoreDirs(explicitConfigFile);
   const id = instanceId ?? generateInstanceId();
 
   // Load .env into process.env so provider clients can resolve API
@@ -129,8 +158,11 @@ async function main(): Promise<void> {
   // dotenvy::from_path_override in the Rust daemon.
   loadConfigDotenv(dirs.config);
 
-  const config = loadConfig(dirs.config);
-  const catalog = loadCatalog(dirs.config);
+  const configSource = explicitConfigFile === undefined
+    ? dirs.config
+    : { configDir: dirs.config, configFile: explicitConfigFile };
+  const config = loadConfig(configSource);
+  const catalog = loadCatalog(configSource);
   const ledger = Ledger.open(path.join(dirs.data, "ledger.db"));
   const pricing = new PricingEngine(ledger);
   const cacheForensics = config.app.advanced.cache_forensics

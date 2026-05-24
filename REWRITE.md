@@ -874,6 +874,10 @@ What 8c does NOT do:
 
 #### Phase 9b: default + Rust retirement (pending)
 
+- [x] Startup CLI parity: `shore-daemon-ts` now accepts
+  `--config <PATH>` like the Rust daemon. The explicit file is loaded
+  directly, while `.env`, `conf.d/`, character discovery, and prompt
+  files are resolved relative to its parent directory.
 - `shore-daemon-ts` ships alongside `shore-daemon` for one release. Users
   opt in by installing/running the TS preview binary or service.
 - Once stable in the wild, `shore-daemon-ts` becomes the default.

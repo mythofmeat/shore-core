@@ -73,11 +73,15 @@ function platformCacheDir(): string {
   return path.join(os.homedir(), ".cache");
 }
 
-export function resolveShoreDirs(): ShoreDirs {
-  return {
+export function resolveShoreDirs(configFile?: string): ShoreDirs {
+  const dirs = {
     config: resolveXdgDir("SHORE_CONFIG_DIR", "XDG_CONFIG_HOME", platformConfigDir, "~/.config"),
     data: resolveXdgDir("SHORE_DATA_DIR", "XDG_DATA_HOME", platformDataDir, "~/.local/share"),
     runtime: resolveXdgDir("SHORE_RUNTIME_DIR", "XDG_RUNTIME_DIR", platformRuntimeDir, ""),
     cache: resolveXdgDir("SHORE_CACHE_DIR", "XDG_CACHE_HOME", platformCacheDir, "~/.cache"),
   };
+  if (configFile !== undefined) {
+    dirs.config = path.dirname(configFile);
+  }
+  return dirs;
 }
