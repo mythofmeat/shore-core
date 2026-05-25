@@ -13,14 +13,28 @@
  *      never inspect `signature` on thinking blocks or `id` on tool_use
  *      blocks — we just hand the array back unchanged when echoing the
  *      assistant turn.
- *   3. Place exactly 4 cache_control breakpoints on a fixed schedule:
- *        a. Last system block  (cache the system + everything before it)
- *        b. Last tool          (cache the tool definitions)
- *        c. Last "stable" turn (last assistant message before the
- *           current pending turn) — caches the entire frozen history
- *        d. Last message in the current turn (advances as the tool
+ *   3. Place up to 3 cache_control breakpoints on a fixed schedule:
+ *        a. Last *stable* system block — last block that is NOT
+ *           `memory_index`. memory_index churns after every dreaming
+ *           pass and every compaction; putting the marker on it would
+ *           bust the system prefix on every memory refresh. Anything
+ *           before memory_index (system base, tools_guidance,
+ *           character, user) is stable across turns, so caching there
+ *           lets memory_index land in the uncached tail without
+ *           disturbing the cached prefix.
+ *        b. Last "stable" turn (last assistant message before the
+ *           current pending turn) — caches the entire frozen history.
+ *        c. Last message in the current turn (advances as the tool
  *           loop iterates, so each tool_result hop hits and extends
- *           the cache)
+ *           the cache).
+ *
+ * Tools deliberately do NOT carry their own breakpoint. Anthropic
+ * evaluates the cache prefix in `tools → system → messages` order, so
+ * the system breakpoint already caches the tools as part of its prefix.
+ * A separate tools-only breakpoint would only matter for a "tools
+ * present, no messages yet" request, which never happens in practice.
+ * Skipping it leaves one of Anthropic's 4 breakpoint slots free and
+ * keeps the schedule simpler.
  *
  * Why this exact schedule:
  *
@@ -60,6 +74,7 @@ import type {
   ChatRequest,
   GenerateResult,
   ProviderClient,
+  SystemPromptBlock,
   ToolDef,
   TurnMessage,
   UsageStats,
@@ -263,14 +278,12 @@ function buildAnthropicCall(
 
   const cacheControl = req.cacheTtl ? makeCacheControl(req.cacheTtl) : undefined;
   const system = buildSystem(req.system, cacheControl);
-  const tools = buildTools(req.tools, cacheControl);
+  const tools = buildTools(req.tools);
   const wireTurns = convertInlineSystemMessages(req.messages);
   const msgBreakpoints = cacheControl === undefined
     ? []
     : messageBreakpointIndices(wireTurns);
-  const sysBreakpoints = cacheControl !== undefined && system.length > 0
-    ? [system.length - 1]
-    : [];
+  const sysBreakpoints = collectCacheControlIndices(system);
   const messages = buildMessages(wireTurns, cacheControl, msgBreakpoints);
   logRequestForensics(
     req,
@@ -377,31 +390,44 @@ function buildSystem(
   // upside on the wire. Mirrors Rust's strip step at
   // `backend/llm/src/providers/anthropic.rs:301-306`. Pinned by
   // `_label_never_reaches_wire` in this file's test suite.
-  const blocks = system.map((b) => {
-    const block: TextBlockParam = { type: "text", text: b.text };
-    return block;
-  });
-  if (cacheControl && blocks.length > 0) {
-    blocks[blocks.length - 1]!.cache_control = cacheControl;
+  const blocks = system.map((b): TextBlockParam => ({ type: "text", text: b.text }));
+  if (cacheControl) {
+    const bpIdx = lastStableSystemIndex(system);
+    if (bpIdx >= 0) blocks[bpIdx]!.cache_control = cacheControl;
   }
   return blocks;
 }
 
-function buildTools(
-  tools: ToolDef[],
-  cacheControl: CacheControl | undefined,
-): Tool[] {
+/**
+ * Last system block whose label is NOT `memory_index`. See the file
+ * docstring for why memory_index is excluded. Returns -1 if there are
+ * no stable blocks (only happens if every block is memory_index, which
+ * `assemblePrompt` never produces — but the guard is cheap).
+ */
+function lastStableSystemIndex(system: SystemPromptBlock[]): number {
+  for (let i = system.length - 1; i >= 0; i--) {
+    if (system[i]!._label !== "memory_index") return i;
+  }
+  return -1;
+}
+
+function buildTools(tools: ToolDef[]): Tool[] {
   if (tools.length === 0) return [];
-  return tools.map((t, i) => {
-    const tool: Tool = {
-      name: t.name,
-      description: t.description,
-      input_schema: t.inputSchema as Tool["input_schema"],
-    };
-    // Cache breakpoint on the final tool covers all tool definitions.
-    if (cacheControl && i === tools.length - 1) tool.cache_control = cacheControl;
-    return tool;
-  });
+  return tools.map((t) => ({
+    name: t.name,
+    description: t.description,
+    input_schema: t.inputSchema as Tool["input_schema"],
+  }));
+}
+
+function collectCacheControlIndices(blocks: TextBlockParam[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < blocks.length; i++) {
+    if ((blocks[i] as { cache_control?: unknown }).cache_control !== undefined) {
+      out.push(i);
+    }
+  }
+  return out;
 }
 
 /** Wrap text in the canonical inline-system sentinel. Single source of

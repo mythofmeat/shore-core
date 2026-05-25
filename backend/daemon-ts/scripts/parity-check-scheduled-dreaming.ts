@@ -358,8 +358,18 @@ function compareDreamsState(rust: unknown, ts: unknown): number {
 }
 
 function compareDreamsLog(rust: string, ts: string): number {
+  // Three timestamp sites to fuzz: the markdown heading
+  // (`## YYYY-MM-DD HH:MM - AI librarian dreaming pass`), the
+  // dream_cycle frontmatter, and the body line. The heading can flip a
+  // minute between the rust and ts runs when they straddle the wall
+  // clock — same flakiness window the MEMORY.md `Last updated:`
+  // normalizer covers.
   const normalize = (s: string): string =>
     s
+      .replace(
+        /## \d{4}-\d{2}-\d{2} \d{2}:\d{2} - AI librarian dreaming pass/g,
+        "## <ts> - AI librarian dreaming pass",
+      )
       .replace(/dream_cycle\s+[^\n]+/g, "dream_cycle <ts>")
       .replace(/AI librarian dreaming pass at `[^`]+`/g, "AI librarian dreaming pass at `<ts>`");
   const nRust = normalize(rust);

@@ -97,7 +97,7 @@ describe("cache placement (offline)", () => {
     }
   });
 
-  it("with tools: system + last-tool + last-message, 3 markers", async () => {
+  it("with tools: system + last-message only, no tools cache_control", async () => {
     const server = await startFakeAnthropic([
       {
         blocks: [{ type: "text", text: "ack" }],
@@ -116,13 +116,12 @@ describe("cache placement (offline)", () => {
 
       const body = server.bodies[0] as Record<string, unknown>;
       const paths = findCacheControlPaths(body);
-      // The breakpoint on the final tool definition is keyed by tool
-      // count — SAMPLE_TOOLS has 2, so the cache_control lands on
-      // tools[1].
+      // No `tools[N]` breakpoint by design — Anthropic evaluates the
+      // cache prefix in tools → system → messages order, so the system
+      // breakpoint already caches the tools as part of its prefix.
       expect(paths.sort()).toEqual([
         "messages[0].content[0]",
         "system[0]",
-        "tools[1]",
       ]);
     } finally {
       await server.close();
@@ -236,14 +235,13 @@ describe("cache placement (offline)", () => {
       const iter2 = server.bodies[1] as Record<string, unknown>;
       const paths = findCacheControlPaths(iter2);
 
-      // 4 markers expected: system, last tool, last block of stable
-      // assistant turn (messages[1]), last block of pending user turn
-      // (messages[2]).
+      // 3 markers expected: system, last block of stable assistant
+      // turn (messages[1]), last block of pending user turn
+      // (messages[2]). No tools[N] — see "with tools" test for why.
       expect(paths.sort()).toEqual([
         "messages[1].content[0]",
         "messages[2].content[0]",
         "system[0]",
-        "tools[1]",
       ]);
     } finally {
       await server.close();
@@ -434,7 +432,6 @@ describe("cache placement (offline)", () => {
         "messages[1].content[0]",
         "messages[3].content[0]",
         "system[0]",
-        "tools[1]",
       ]);
     } finally {
       await server.close();
@@ -457,6 +454,82 @@ describe("cache placement (offline)", () => {
 
       const body = server.bodies[0] as Record<string, unknown>;
       expect(findCacheControlPaths(body)).toEqual([]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("system breakpoint skips memory_index (churns post-dream)", async () => {
+    // Real-world prompt assembly produces a multi-block system array
+    // with labels [system, tools_guidance, character, user, memory_index].
+    // memory_index changes every time the dreamer touches MEMORY.md or
+    // a compaction lands, so the breakpoint must sit on the last
+    // *stable* block (`user` here) — caching everything up through it
+    // and leaving memory_index in the uncached tail.
+    const server = await startFakeAnthropic([
+      { blocks: [{ type: "text", text: "ack" }], stopReason: "end_turn" },
+    ]);
+    try {
+      const req: ChatRequest = {
+        ...baseRequest([
+          { role: "user", content: [{ type: "text", text: "Hi" }] },
+        ]),
+        system: [
+          { type: "text", text: "You are Casey.", _label: "system" },
+          { type: "text", text: "Use tools sparingly.", _label: "tools_guidance" },
+          { type: "text", text: "<casey>Concise.</casey>", _label: "character" },
+          { type: "text", text: "<user>Friendly.</user>", _label: "user" },
+          { type: "text", text: "## Memory areas\n- foo", _label: "memory_index" },
+        ],
+        baseUrl: server.baseUrl,
+      };
+      await drain(new AnthropicProvider().stream(req));
+
+      const body = server.bodies[0] as Record<string, unknown>;
+      const paths = findCacheControlPaths(body);
+      // system[3] = `user` (the last stable block); system[4] =
+      // memory_index, intentionally left uncached.
+      expect(paths.sort()).toEqual([
+        "messages[0].content[0]",
+        "system[3]",
+      ]);
+
+      // And _label is still stripped — it must not reach the wire.
+      const sys = body.system as Array<Record<string, unknown>>;
+      for (const block of sys) {
+        expect(block).not.toHaveProperty("_label");
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("system breakpoint falls back to last block when no memory_index", async () => {
+    // When memory_index is absent (private convo, or empty MEMORY.md),
+    // the breakpoint reverts to system[last] — same as a single-string
+    // system. Pins that the skip rule degrades cleanly.
+    const server = await startFakeAnthropic([
+      { blocks: [{ type: "text", text: "ack" }], stopReason: "end_turn" },
+    ]);
+    try {
+      const req: ChatRequest = {
+        ...baseRequest([
+          { role: "user", content: [{ type: "text", text: "Hi" }] },
+        ]),
+        system: [
+          { type: "text", text: "You are Casey.", _label: "system" },
+          { type: "text", text: "Use tools sparingly.", _label: "tools_guidance" },
+          { type: "text", text: "<casey>Concise.</casey>", _label: "character" },
+        ],
+        baseUrl: server.baseUrl,
+      };
+      await drain(new AnthropicProvider().stream(req));
+
+      const body = server.bodies[0] as Record<string, unknown>;
+      expect(findCacheControlPaths(body).sort()).toEqual([
+        "messages[0].content[0]",
+        "system[2]",
+      ]);
     } finally {
       await server.close();
     }

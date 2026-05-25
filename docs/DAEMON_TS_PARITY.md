@@ -284,20 +284,38 @@ that are *not* parity-test bugs. Each blocks preview soak.
   First surfaced by `parity-check-inline-compaction.ts` after flipping
   the fixture from `cache_ttl=""` to `"1h"` on 2026-05-25; confirmed
   on every chat-path T3 check after the 2026-05-26 `cache_ttl="1h"`
-  variant sweep (`bun run parity:<name>:cached`).
-  - Rust marks **system block 1** (`tools_guidance`) and the
-    **second-to-last stable user message** as cache breakpoints.
-  - TS marks **system block 2** (`character`) and the
-    **second-to-last stable assistant message** as cache breakpoints.
+  variant sweep (`bun run parity:<name>:cached`). TS adopted its
+  preferred schedule on 2026-05-26: system breakpoint skips
+  `memory_index`, tools carry no breakpoint of their own. The
+  Rust/TS placements still differ — resolution is gated on live-API
+  validation. Current state:
+  - **Rust** marks `system[1]` (`tools_guidance`) + the
+    **second-to-last stable user** message.
+  - **TS** marks the **last stable system block** (i.e., the last
+    block whose `_label != "memory_index"` — `<user>` when USER.md is
+    populated, `<character>` otherwise) + the **second-to-last
+    stable assistant** message.
+  - Rationale for the TS placement: tools→system→messages eval order
+    means the system breakpoint already caches `tools` as part of its
+    prefix, so a separate tools breakpoint adds nothing for the
+    real-traffic case (no request ever has tools but zero messages).
+    Pinning the system breakpoint *before* `memory_index` keeps the
+    cached prefix alive across dreaming cycles and compactions that
+    rewrite `MEMORY.md` — without it, every dream invalidates the
+    system-level cache. Documented in the file docstring at
+    `backend/daemon-ts/src/llm/providers/anthropic.ts`.
   - Same conversation → different cache-key hashes → no cross-daemon
-    cache reuse. Worse, the *correct* placement strategy isn't
-    obvious from offline reasoning alone — Anthropic charges
-    differently for cache_creation vs cache_read at each position,
-    and the optimal breakpoint depends on actual cache_read accounting
-    on real traffic. **Resolution requires live API runs** comparing
+    cache reuse. The *correct* strategy isn't obvious from offline
+    reasoning alone — Anthropic charges differently for
+    cache_creation vs cache_read at each position, and the optimum
+    depends on actual cache_read accounting on real traffic.
+    **Resolution requires live API runs** comparing
     `cache_creation_input_tokens` / `cache_read_input_tokens` deltas
-    across the two strategies on a multi-turn conversation; pick the
-    winner, bring both daemons into agreement, then drop this entry.
+    across the two strategies on a multi-turn conversation
+    (especially: does the stable-assistant or stable-user marker
+    yield more cache_reads under realistic regen patterns?); pick
+    the winner, bring both daemons into agreement, then drop this
+    entry.
   - Until then: existing TS users do not share cache with existing
     Rust users (no regression vs status quo); both daemons cache
     *within themselves*; the cost penalty is one cold-cache pass per
@@ -305,54 +323,33 @@ that are *not* parity-test bugs. Each blocks preview soak.
   - Surfaces in: `parity:generation:cached`, `parity:regen:cached`,
     `parity:tool-loop:cached`, `parity:compaction:cached`,
     `parity:heartbeat-tick:cached`, `parity:scheduled-dreaming:cached`
-    (system-block side); `parity:regen:cached`, `parity:compaction:cached`,
-    `parity:heartbeat-tick:cached`, `parity:scheduled-dreaming:cached`
-    (stable-message side — needs ≥1 prior assistant turn to differ).
+    (system-block side); `parity:regen:cached`,
+    `parity:compaction:cached`, `parity:heartbeat-tick:cached`,
+    `parity:scheduled-dreaming:cached` (stable-message side — needs
+    ≥1 prior assistant turn to differ).
   - **Blocks preview soak.**
 
-- **Extra `cache_control` on `tools[last]` (TS only).** Surfaced by
-  the 2026-05-26 `cache_ttl="1h"` variant sweep across T3 fixtures
-  that pass tool definitions to the provider.
-  - Rust emits a `tools` array with no `cache_control` on any entry.
-  - TS emits `cache_control: {type: "ephemeral", ttl: "1h"}` on the
-    final element of `tools[]`.
-  - Anthropic allows at most 4 cache breakpoints per request. TS is
-    burning one of them on the tools-array tail, where it provides
-    little caching value (tool definitions rarely change *within* a
-    daemon process anyway, and the prefix block hash will not match
-    Rust). Wastes a breakpoint slot and breaks cross-daemon cache key
-    agreement on every tools-bearing call.
-  - Surfaces in: `parity:tool-loop:cached`, `parity:heartbeat-tick:cached`,
-    `parity:dreaming:cached`. Does **not** surface in
-    `parity:scheduled-dreaming:cached` because the cached-prefix
-    librarian path reuses the chat request's prefix without re-marking
-    `tools[]`.
-  - Resolution: drop the `cache_control` from `tools[last]` in the
-    TS Anthropic adapter; align with Rust. Likely safe to fix
-    immediately (no live-API dependency — Rust's behavior is
-    unambiguous here), but rolled into the same change as the
-    breakpoint-placement gate so live-API verification covers all
-    four divergences in one pass.
-  - **Blocks preview soak.**
+- **~~Extra `cache_control` on `tools[last]` (TS only).~~ Closed
+  2026-05-26.** Dropped the tools cache_control entirely in the TS
+  adapter after confirming with the design call: since Anthropic
+  evaluates `tools → system → messages` for the cache prefix hash,
+  the system breakpoint already covers tools as part of its prefix,
+  and no request type ever sends tools without a message. `bun run
+  parity:dreaming:cached` (which only diverged on this one item)
+  now passes; the other tools-bearing checks no longer show a
+  `tools[N]` cache_control entry. Pinned by the "with tools"
+  cache_placement test in `tests/cache_placement.test.ts`.
 
-- **Extra `cache_control` on assistant `tool_use` block (TS only).**
-  Surfaced by `parity:tool-loop:cached` request 2 (the tool-result
-  follow-up turn) during the 2026-05-26 sweep.
-  - Rust emits the assistant `tool_use` content block with no
-    `cache_control`.
-  - TS adds `cache_control: {type: "ephemeral", ttl: "1h"}` to the
-    assistant `tool_use` block, in addition to whatever stable-tail
-    marker the algorithm picks.
-  - Same category as `tools[last]`: TS is consuming an extra
-    breakpoint slot. Combined with the other TS-side over-marking,
-    a tool-bearing chat call can hit Anthropic's 4-breakpoint cap
-    purely through TS over-emission, before the daemon's intended
-    stable-tail marker even applies.
-  - Surfaces in: `parity:tool-loop:cached` (request 2 only).
-  - Resolution: drop the per-block `cache_control` on assistant
-    `tool_use`; align with Rust. Same rollup as the `tools[last]`
-    fix — bundle with the live-API gate.
-  - **Blocks preview soak.**
+- **~~Extra `cache_control` on assistant `tool_use` block (TS
+  only).~~ Folded into the stable-message divergence above on
+  2026-05-26.** Re-triaged: this was not a separate divergence —
+  it's just what the stable-assistant breakpoint *looks like* when
+  the stable assistant turn is `[tool_use]`-only. The breakpoint
+  walker in `applyMessageBreakpoint` picks the last
+  cache_control-eligible block in the marked message; for a
+  tool_use-only assistant turn that's the tool_use block. Same
+  root cause as the stable-user vs stable-assistant choice; same
+  resolution (live-API gate).
 
 - **Compaction trailer content form.** After implementing the
   cached-prefix path (audit #12, 2026-05-25), TS compaction request

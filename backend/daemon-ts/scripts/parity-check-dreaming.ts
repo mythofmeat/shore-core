@@ -268,12 +268,18 @@ function compareDreamsState(rust: unknown, ts: unknown): number {
 }
 
 function compareDreamsLog(rust: string, ts: string): number {
-  // DREAMS.md is dream_cycle-prefixed markdown with timestamps in the
-  // heading + the "AI librarian dreaming pass at `<ts>`" body line.
-  // Normalize both substitution sites to a sentinel so the body of the
-  // entry is the actual byte-for-byte check.
+  // DREAMS.md is dream_cycle-prefixed markdown with timestamps in
+  // three places: the `## YYYY-MM-DD HH:MM` heading, the dream_cycle
+  // frontmatter, and the "AI librarian dreaming pass at `<ts>`" body
+  // line. Normalize all three to sentinels so the entry body is the
+  // actual byte-for-byte check; the heading site can otherwise flip
+  // when rust and ts runs straddle a minute boundary.
   const normalize = (s: string): string =>
     s
+      .replace(
+        /## \d{4}-\d{2}-\d{2} \d{2}:\d{2} - AI librarian dreaming pass/g,
+        "## <ts> - AI librarian dreaming pass",
+      )
       .replace(/dream_cycle\s+[^\n]+/g, "dream_cycle <ts>")
       .replace(/AI librarian dreaming pass at `[^`]+`/g, "AI librarian dreaming pass at `<ts>`");
   const nRust = normalize(rust);
