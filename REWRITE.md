@@ -1278,8 +1278,14 @@ scheduled soak/cutover items are blocked on these.
     ported; users refresh on demand.
   - **#9 config hot reload.** Descoped. Restart-required is a UX
     downgrade, not a correctness regression. Post-cutover follow-up.
-  - **#10 prompt template upgrade manifest.** Pending decision (design
-    regression, not just port gap).
+  - **#10 prompt template upgrade manifest.** Descoped (2026-05-25). The
+    only active user doesn't override stock prompts — workspace
+    customization happens through AGENTS/SOUL/USER/TOOL files in the
+    character workspace, which the TS daemon already reads end-to-end.
+    Bundled prompts stay as TS string literals (`parser.ts` etc.); no
+    on-disk override path. If override demand surfaces later, port
+    `templates.rs` (~450 lines) + write the bundled defaults to
+    `$XDG_CONFIG_HOME/shore/prompts/` on first run.
   - **#11 diagnostics ring buffer.** Descoped. Same observability is
     available via the ledger (`shore usage`); the dispatcher already
     returns "diagnostics ring buffer not ported in TS daemon" with the
