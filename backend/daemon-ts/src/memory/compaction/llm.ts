@@ -192,6 +192,7 @@ export class RealCompactionLlm implements CompactionLlm {
       this.opts.ledger.recordCall(
         {
           provider: this.opts.resolved.providerKey,
+          apiKeyName: "default",
           model: this.opts.resolved.modelId,
           callType: "compaction",
           character: this.opts.character,

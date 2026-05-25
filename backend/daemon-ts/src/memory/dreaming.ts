@@ -17,6 +17,7 @@ import type { Ledger } from "../ledger/ledger.ts";
 import type { Embedder } from "../llm/embed.ts";
 import type { ChatRequest, ProviderClient, UsageStats } from "../llm/types.ts";
 import type { ResolvedModel } from "../llm/catalog.ts";
+import { cloneChatRequest } from "../llm/generate.ts";
 import {
   defaultRegistry,
   defaultRetrievalConfig,
@@ -184,6 +185,7 @@ export interface LibrarianSweepOptions {
   embedder?: Embedder;
   ledger?: Ledger;
   cacheForensics?: CacheForensics;
+  cachedRequest?: ChatRequest;
 }
 
 type MemorySnapshot = Map<string, string>;
@@ -385,6 +387,20 @@ function buildLibrarianRequest(
   const userPrompt = dryRun
     ? "Run the dry-run memory librarian pass now. Inspect memory files with read-only tools and finish with a proposed plan. Do not write, edit, or emit a user-facing message."
     : "Run the memory librarian pass now. Use memory tools to inspect and improve workspace/memory, update MEMORY.md (at the workspace root), and finish with a concise summary of what you inspected and changed. The daemon writes the dreams audit log automatically; do not try to write DREAMS.md yourself. Do not emit a user-facing message.";
+  if (opts.cachedRequest !== undefined) {
+    const request = cloneChatRequest(opts.cachedRequest);
+    delete request.forensicRid;
+    request.forensicCharacter = opts.character;
+    request.messages = [
+      ...request.messages,
+      {
+        role: "system",
+        content: [{ type: "text", text: `${system}\n\n${userPrompt}` }],
+      },
+    ];
+    return request;
+  }
+
   const usesAnthropicPromptCache = opts.resolved.sdk === "anthropic";
 
   return {
@@ -660,6 +676,7 @@ function recordDreamingLedger(
       opts.ledger.recordCall(
         {
           provider: opts.resolved.providerKey,
+          apiKeyName: "default",
           model: opts.resolved.modelId,
           callType: "dreaming",
           character: opts.character,

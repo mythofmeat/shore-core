@@ -1,0 +1,38 @@
+{
+  "responses": [
+    {
+      "provider": "anthropic",
+      "model": "claude-parity",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Setup reply for scheduled dreaming parity."
+        }
+      ],
+      "stop_reason": "end_turn",
+      "usage": {
+        "input_tokens": 43,
+        "output_tokens": 6,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0
+      }
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-parity",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Scheduled dreaming parity pass: no edits needed."
+        }
+      ],
+      "stop_reason": "end_turn",
+      "usage": {
+        "input_tokens": 57,
+        "output_tokens": 8,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  ]
+}

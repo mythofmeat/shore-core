@@ -496,6 +496,7 @@ function recordLedgerCalls(
   for (const [idx, call] of result.calls.entries()) {
     const input = {
       provider: opts.resolved.providerKey,
+      apiKeyName: "default",
       model: opts.resolved.modelId,
       callType: idx === 0
         ? opts.ledgerCallTypes?.first ?? "message"

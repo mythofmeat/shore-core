@@ -15,7 +15,8 @@ soak is for catching the *unexpected* divergence, not the expected one.
 > Anthropic regen persistence, a one-tool Anthropic loop, inline
 > compaction end-to-end (trigger → memory writes → segment archive →
 > active.jsonl truncation → restart history), autonomous heartbeat
-> message dispatch, and the manual `memory_dream` command path. These
+> message dispatch, the manual `memory_dream` command path, and
+> scheduled dreaming through the autonomy tick. These
 > compare SWP output,
 > canonical provider request bodies, and the post-restart on-disk state
 > where relevant.
@@ -46,8 +47,9 @@ The first T3 content checks are separate for now:
 `bun run parity:regen` for Anthropic regen,
 `bun run parity:tool-loop` for the one-tool Anthropic loop,
 `bun run parity:compaction` for inline compaction end-to-end,
-`bun run parity:heartbeat-tick` for autonomous heartbeat dispatch, and
-`bun run parity:dreaming` for the manual memory-dream command path (all
+`bun run parity:heartbeat-tick` for autonomous heartbeat dispatch,
+`bun run parity:dreaming` for the manual memory-dream command path, and
+`bun run parity:scheduled-dreaming` for the scheduled cron/tick path (all
 require `/usr/bin/shore-daemon`).
 
 ## Coverage tiers
@@ -187,7 +189,13 @@ restart history, and notify-send argv. The dreaming check,
 `backend/daemon-ts/scripts/parity-check-dreaming.ts`, sends
 `memory_dream force=true`, then diffs the command output, librarian
 request body, `dreams/state.json`, `DREAMS.md`, and fallback
-`MEMORY.md`.
+`MEMORY.md`. The scheduled dreaming check,
+`backend/daemon-ts/scripts/parity-check-scheduled-dreaming.ts`, seeds a
+future dream state to absorb the first autonomy tick, sends one setup
+turn to cache the completed chat request, deletes the dream state to make
+the cron due, then waits for the next tick and diffs the cached-prefix
+librarian request, the same dream artifacts, and the `dreaming` ledger
+row.
 
 Once the rest of that infra exists:
 
@@ -219,8 +227,13 @@ Once the rest of that infra exists:
   exercises the no-tool fallback MEMORY.md path, and diffs the SWP
   output, request body, dreams state, dreams log, and fallback memory
   index. `bun run parity:dreaming`.
-- [ ] **scheduled dreaming cron firing end-to-end** — trigger via the
-  autonomy tick path → wait → diff memory files written + ledger rows.
+- [x] **scheduled dreaming cron firing end-to-end (done 2026-05-26)** —
+  setup turn creates autonomy state + cached request, the fixture's
+  future dream state suppresses the first tick, then the check makes the
+  cron due and waits for the autonomy tick to run the scheduled
+  librarian pass. Diffs the cached-prefix request body, dreams state,
+  dreams log, fallback memory index, and `dreaming` ledger row.
+  `bun run parity:scheduled-dreaming`.
 - [x] **autonomous-message dispatch (done 2026-05-25)** — setup turn
   creates autonomy state → `heartbeat_tick_now` fast-forwards the clock
   → diff autonomous SWP frames, setup + heartbeat request bodies,

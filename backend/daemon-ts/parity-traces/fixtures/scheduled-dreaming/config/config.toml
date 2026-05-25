@@ -1,0 +1,51 @@
+[defaults]
+model = "chat.anthropic.parity"
+display_name = "Parity User"
+
+[behavior.tool_use]
+enabled = false
+
+[behavior.tool_use.tools]
+activity_heatmap = false
+check_time = false
+conversation_search = false
+delete = false
+edit = false
+exec = false
+fetch_url = false
+file_search = false
+generate_image = false
+list_files = false
+roll_dice = false
+search = false
+search_history = false
+set_next_wake = false
+web_search = false
+write = false
+
+[behavior.autonomy]
+enabled = true
+
+[behavior.autonomy.heartbeat]
+enabled = false
+
+[notifications]
+enabled = false
+
+[memory.compaction]
+enabled = false
+max_turns = 0
+max_context_tokens = 0
+
+[memory.dreaming]
+enabled = true
+frequency = "0 3 * * *"
+max_tool_rounds = 1
+
+[chat.anthropic.parity]
+model_id = "claude-parity"
+api_key_env = "SHORE_PARITY_ANTHROPIC_KEY"
+base_url = "{{LLM_PROXY_BASE_URL}}"
+max_tokens = 64
+temperature = 1
+cache_ttl = ""

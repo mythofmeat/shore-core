@@ -28,6 +28,8 @@
     "parity:heartbeat-tick:compiled": "bun scripts/parity-check-heartbeat-tick.ts --rust /usr/bin/shore-daemon --ts ./dist/shore-daemon",
     "parity:dreaming": "bun scripts/parity-check-dreaming.ts --rust /usr/bin/shore-daemon",
     "parity:dreaming:compiled": "bun scripts/parity-check-dreaming.ts --rust /usr/bin/shore-daemon --ts ./dist/shore-daemon",
+    "parity:scheduled-dreaming": "bun scripts/parity-check-scheduled-dreaming.ts --rust /usr/bin/shore-daemon",
+    "parity:scheduled-dreaming:compiled": "bun scripts/parity-check-scheduled-dreaming.ts --rust /usr/bin/shore-daemon --ts ./dist/shore-daemon",
     "parity:capture-commands": "bun scripts/capture-command.ts /usr/bin/shore-daemon --all",
     "capture-trace": "bun scripts/capture-rust-trace.ts /usr/bin/shore-daemon"
   },

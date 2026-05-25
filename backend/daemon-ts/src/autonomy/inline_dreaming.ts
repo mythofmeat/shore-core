@@ -105,6 +105,7 @@ export function buildInlineDreamingRunner(
     const engine = deps.engines.get(characterName);
     const provider = buildProvider(resolved.sdk);
     const displayName = resolveDisplayName(deps.config);
+    const cachedRequest = deps.autonomy.cachedLastRequest(characterName);
 
     try {
       await runLibrarianSweep({
@@ -118,6 +119,7 @@ export function buildInlineDreamingRunner(
         provider,
         engine,
         dreamingConfig: deps.dreamingConfig,
+        ...(cachedRequest !== undefined ? { cachedRequest } : {}),
         ledger: deps.ledger,
         ...(deps.cacheForensics !== undefined
           ? { cacheForensics: deps.cacheForensics }
