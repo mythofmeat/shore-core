@@ -47,15 +47,23 @@ flows are the ones whose state mutation happens **before** any LLM call
 — without a working provider key (the capture/check default), any
 post-LLM state change never happens.
 
-- [ ] **multi-turn dialog** — N user msgs → kill → restart → diff full
-  history. Extends the existing message-append flow to multiple turns.
-- [ ] **edit command** — append → `edit` command → kill → restart →
-  diff. The edit command dispatcher mutates state directly, no LLM.
-- [ ] **delete command** — append → `delete` command → kill → restart
-  → diff.
-- [ ] **alt command (add + select)** — append → `add_alt` →
-  `select_alt` → kill → restart → diff. Both alt operations mutate
-  without LLM.
+- [x] **multi-turn dialog (done 2026-05-25).** 3 user messages →
+  restart → all persisted. `capture-multi-turn.ts` /
+  `parity-check-multi-turn.ts`.
+- [x] **edit command (done 2026-05-25).** Edit seeded msg →
+  restart → edited content persists. `capture-edit.ts` /
+  `parity-check-edit.ts`. Two-frame command response (history broadcast
+  + command_output) is sorted by type to absorb racy emission order
+  between event_tx and direct_tx; same pattern reused by delete + alt.
+- [x] **delete command (done 2026-05-25).** Delete seeded msg →
+  restart → message gone. `capture-delete.ts` / `parity-check-delete.ts`.
+- [x] **alt command (done 2026-05-25).** Switch selected alternative on
+  pre-seeded multi-alt message → restart → new alt is active +
+  `alt_index` updated + alternatives preserved.
+  `parity-traces/fixtures/alt-cycle/` carries the seeded m2 with two
+  alternatives. `capture-alt.ts` / `parity-check-alt.ts`. Note: the
+  Rust `alt` command is select-only; adding alternatives requires
+  successful regen, which is covered under Tier 3.
 
 Capture scripts live next to `capture-message-append.ts`; baselines under
 `backend/daemon-ts/parity-traces/`; check scripts next to

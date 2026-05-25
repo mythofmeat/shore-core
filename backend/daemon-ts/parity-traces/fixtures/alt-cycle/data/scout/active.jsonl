@@ -1,0 +1,2 @@
+{"msg_id":"m1","role":"user","content_blocks":[{"type":"text","text":"hello"}],"timestamp":"2026-01-01T00:00:00Z"}
+{"msg_id":"m2","role":"assistant","content_blocks":[{"type":"text","text":"hi there"}],"alt_index":0,"alt_count":2,"alternatives":[{"content_blocks":[{"type":"text","text":"hi there"}],"timestamp":"2026-01-01T00:00:01Z"},{"content_blocks":[{"type":"text","text":"hello back"}],"timestamp":"2026-01-01T00:00:02Z"}],"timestamp":"2026-01-01T00:00:01Z"}
