@@ -35,6 +35,12 @@ import {
   DEFAULT_COMPACTION_CONFIG,
   type CompactionConfig,
 } from "../memory/compaction/types.ts";
+import {
+  DEFAULT_NOTIFICATIONS_CONFIG,
+  DEFAULT_NOTIFICATION_EVENTS,
+  type NotificationEventsConfig,
+  type NotificationsConfig,
+} from "../notifications/types.ts";
 
 export interface LoadedConfig {
   app: {
@@ -50,6 +56,7 @@ export interface LoadedConfig {
       cache_forensics: boolean;
     };
     usage: UsageConfig;
+    notifications: NotificationsConfig;
   };
   embedding: Record<string, Record<string, unknown>>;
   memory: {
@@ -106,6 +113,7 @@ export function loadConfig(input: string | ConfigInput): LoadedConfig {
       },
       advanced: parseAdvancedConfig(pickTable(merged, "advanced")),
       usage: parseUsageConfig(pickTable(merged, "usage")),
+      notifications: parseNotificationsConfig(pickTable(merged, "notifications")),
     },
     embedding: parseEmbeddingProfiles(pickTable(merged, "embedding")),
     memory: {
@@ -349,6 +357,28 @@ function parseHeartbeatConfig(
       DEFAULT_HEARTBEAT_CONFIG.minimumHeartbeatLatencySecs,
     maxToolRounds: asNumber(table?.["max_tool_rounds"]) ?? 12,
     wrapUpGraceRounds: asNumber(table?.["wrap_up_grace_rounds"]) ?? 3,
+  };
+}
+
+function parseNotificationsConfig(
+  table: Record<string, unknown> | undefined,
+): NotificationsConfig {
+  if (table === undefined) return { ...DEFAULT_NOTIFICATIONS_CONFIG, events: { ...DEFAULT_NOTIFICATION_EVENTS } };
+
+  const eventsTable = pickTable(table, "events");
+  const events: NotificationEventsConfig = { ...DEFAULT_NOTIFICATION_EVENTS };
+  if (eventsTable !== undefined) {
+    for (const key of Object.keys(events) as Array<keyof NotificationEventsConfig>) {
+      const raw = eventsTable[key];
+      if (typeof raw === "boolean") events[key] = raw;
+    }
+  }
+
+  return {
+    enabled: typeof table["enabled"] === "boolean" ? table["enabled"] : false,
+    generation_threshold_ms:
+      (parseDurationSecs(table["generation_threshold"]) ?? 0) * 1000,
+    events,
   };
 }
 

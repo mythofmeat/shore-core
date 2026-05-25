@@ -1232,14 +1232,56 @@ scheduled soak/cutover items are blocked on these.
   feature is in scope for cutover (single-key users don't need it).
   If in scope: port `handler/key_fallback.rs` + the
   `shore_llm::credentials` classifier into TS. (Audit blocker #5.)
-- [ ] **Decide on the major divergences.** For each of: smart image resize
-  (audit #6), push notifications (#7), provider auto-discovery refresh (#8),
-  config hot reload (#9), prompt template upgrade manifest (#10),
-  diagnostics ring buffer (#11) — either port, or write a short rationale
-  in this section for why cutover ships without it. The user-overridable
-  on-disk prompt template story (#10) is the only one of these that's a
-  *design regression*, not just a port gap; the others are degraded but
-  functional fallbacks.
+- **Major divergences — decisions (2026-05-25):**
+  - **#6 smart image resize.** Descoped from cutover. Tracked in GH #40.
+    Bun has no `image`/`fast_image_resize` equivalent without a native
+    dep (`sharp`) that complicates `bun build --compile`. To remove the
+    silent-drop correctness issue, oversized-image handling needs to
+    error visibly rather than `console.warn`-skip — pending follow-up.
+  - [x] **#7 push notifications (done, 2026-05-25).** Re-scoped: notify-send
+    backend only; ntfy and custom-command backends dropped. The Rust CLI's
+    `shore notify` listener stays (it's in `clients/cli`, which the rewrite
+    doesn't touch).
+    - `src/notifications/types.ts` ports `NotificationsConfig` with the
+      reduced surface (`enabled`, `generation_threshold_ms`, `events.{autonomous_message,compaction_complete,error,message_complete,usage_warning}`).
+      `cache_warning` is omitted because Rust defined the enum variant but
+      no call site ever fired it.
+    - `src/notifications/service.ts` ports `NotificationService` — fire-and-
+      forget `Bun.spawn(["notify-send", "--app-name=shore", ...])`, no shell.
+      Bodies truncated to 200 chars. Defaults match Rust
+      (`message_complete=false`, everything else true).
+    - Config loader exposes `app.notifications` from `[notifications]` +
+      `[notifications.events]`; `generation_threshold` accepts the same
+      duration strings as the rest of the loader.
+    - Fan-out sites match Rust:
+      - `message_complete` after every user/regen turn (`main.ts`
+        `buildMessageHandler` + `buildRegenHandler`), threshold-gated.
+      - `error` from `handleGenerationError` and inline-compaction failures.
+      - `usage_warning` from `emitBudgetWarnings` for each newly crossed
+        budget.
+      - `compaction_complete` from `inline_compaction.ts` on success
+        (entries-from-turns body matches Rust).
+      - `autonomous_message` from `autonomy/dispatch.ts::persistAutonomousMessage`.
+    - Tests: `tests/notifications.test.ts` (7 cases — master switch,
+      per-event toggles, truncation, threshold gate, reload),
+      plus 2 new cases in `tests/config_loader.test.ts` for the TOML
+      surface (defaults + overrides).
+    - `bun test`: 501 pass / 7 skip / 0 fail. `bun run typecheck` green.
+  - [x] **#8 provider auto-discovery refresh.** Manual refresh ported
+    (2026-05-25). `refresh_provider_models` and
+    `refresh_all_provider_models` now hit the configured discovery
+    endpoint via `src/llm/discovery.ts` (Anthropic native + OpenAI
+    `/v1/models`) and write `ProviderModelsCache` atomically. The 24h
+    auto-discovery scheduler (`auto_discovery.rs`) is intentionally not
+    ported; users refresh on demand.
+  - **#9 config hot reload.** Descoped. Restart-required is a UX
+    downgrade, not a correctness regression. Post-cutover follow-up.
+  - **#10 prompt template upgrade manifest.** Pending decision (design
+    regression, not just port gap).
+  - **#11 diagnostics ring buffer.** Descoped. Same observability is
+    available via the ledger (`shore usage`); the dispatcher already
+    returns "diagnostics ring buffer not ported in TS daemon" with the
+    correct section shape.
 - [ ] **Catalog parity follow-up.** Walk
   `effective_catalog.rs` (1029 lines) against `llm/catalog.ts` (326 lines)
   function-by-function. Document what's actually missing and either port or

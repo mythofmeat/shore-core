@@ -154,6 +154,46 @@ usage_kind = ["heartbeat", "compaction"]
     });
   });
 
+  it("notifications default to disabled with Rust-matching event defaults", () => {
+    const dir = setupConfig("");
+    const config = loadConfig({ configDir: dir });
+    expect(config.app.notifications).toEqual({
+      enabled: false,
+      generation_threshold_ms: 0,
+      events: {
+        autonomous_message: true,
+        compaction_complete: true,
+        error: true,
+        message_complete: false,
+        usage_warning: true,
+      },
+    });
+  });
+
+  it("notifications honors [notifications] + [notifications.events] overrides", () => {
+    const dir = setupConfig(`
+[notifications]
+enabled = true
+generation_threshold = "30s"
+
+[notifications.events]
+message_complete = true
+usage_warning = false
+`);
+    const config = loadConfig({ configDir: dir });
+    expect(config.app.notifications).toEqual({
+      enabled: true,
+      generation_threshold_ms: 30_000,
+      events: {
+        autonomous_message: true,
+        compaction_complete: true,
+        error: true,
+        message_complete: true,
+        usage_warning: false,
+      },
+    });
+  });
+
   it("loads an explicit config file and merges conf.d relative to its parent", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "shore-explicit-config-test-"));
     fs.mkdirSync(path.join(dir, "conf.d"));

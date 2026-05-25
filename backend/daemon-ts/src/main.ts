@@ -44,6 +44,7 @@ import {
 import { CacheForensics } from "./ledger/cache_forensics.ts";
 import { Ledger } from "./ledger/ledger.ts";
 import { PricingEngine } from "./ledger/pricing.ts";
+import { NotificationService } from "./notifications/service.ts";
 import { resolveEmbedder, type Embedder } from "./llm/embed.ts";
 import { loadConfigDotenv } from "./llm/env.ts";
 import { generateResponse } from "./llm/generate.ts";
@@ -180,6 +181,7 @@ async function main(): Promise<void> {
   let catalog = runtime.catalog;
   const ledger = Ledger.open(path.join(dirs.data, "ledger.db"));
   const pricing = new PricingEngine(ledger);
+  const notifier = new NotificationService(config.app.notifications);
   const cacheForensics = config.app.advanced.cache_forensics
     ? CacheForensics.open(dirs.cache)
     : undefined;
@@ -229,6 +231,7 @@ async function main(): Promise<void> {
         ledger,
         pricing,
         autonomy,
+        notifier,
         ...(cacheForensics !== undefined ? { cacheForensics } : {}),
         ...(embedder !== undefined ? { embedder } : {}),
         broadcast: (frame) => serverRef?.broadcast(frame),
@@ -244,6 +247,7 @@ async function main(): Promise<void> {
     catalog,
     ledger,
     autonomy,
+    notifier,
     ...(cacheForensics !== undefined ? { cacheForensics } : {}),
     broadcast: (frame) => serverRef?.broadcast(frame),
   });
@@ -275,6 +279,7 @@ async function main(): Promise<void> {
     ledger,
     pricing,
     autonomy,
+    notifier,
     cacheForensics,
     () => serverRef,
     (characterName, rid) => inlineCompaction(characterName, rid),
@@ -288,6 +293,7 @@ async function main(): Promise<void> {
     ledger,
     pricing,
     autonomy,
+    notifier,
     cacheForensics,
     () => serverRef,
     (characterName, rid) => inlineCompaction(characterName, rid),
@@ -425,6 +431,7 @@ function buildMessageHandler(
   ledger: Ledger,
   pricing: PricingEngine,
   autonomy: AutonomyRegistry,
+  notifier: NotificationService,
   cacheForensics: CacheForensics | undefined,
   getServer: () => SwpServer | undefined,
   inlineCompaction: InlineCompactionRunner,
@@ -491,6 +498,7 @@ function buildMessageHandler(
     }
 
     let generateResult: import("./llm/generate.ts").GenerateResult | undefined;
+    const startedAtMs = Date.now();
     try {
       generateResult = await generateResponse({
         engine,
@@ -531,6 +539,19 @@ function buildMessageHandler(
       });
     } catch (e) {
       handleGenerationError(broadcast, msg.rid, e);
+      notifier.notify(
+        "error",
+        `Shore — ${session.character}`,
+        (e as Error).message,
+      );
+    }
+
+    if (generateResult !== undefined) {
+      notifier.notifyMessageComplete(
+        `Shore — ${session.character}`,
+        generateResult.finalText,
+        Date.now() - startedAtMs,
+      );
     }
 
     // Post-generation compaction trigger — mirror of
@@ -557,7 +578,7 @@ function buildMessageHandler(
       }
     }
 
-    emitBudgetWarnings(broadcast, ledger, config.app.usage);
+    emitBudgetWarnings(broadcast, ledger, config.app.usage, notifier);
   };
 }
 
@@ -581,6 +602,7 @@ function emitBudgetWarnings(
   broadcast: (frame: import("./swp/types.ts").ServerMessage) => void,
   ledger: Ledger,
   config: import("./ledger/budget.ts").UsageConfig,
+  notifier: NotificationService,
 ): void {
   let events;
   try {
@@ -596,6 +618,7 @@ function emitBudgetWarnings(
       name: "usage_budget_warning",
       data: event as unknown as Record<string, unknown>,
     });
+    notifier.notify("usage_warning", "Shore usage warning", event.message);
   }
 }
 
@@ -667,6 +690,7 @@ function buildRegenHandler(
   ledger: Ledger,
   pricing: PricingEngine,
   autonomy: AutonomyRegistry,
+  notifier: NotificationService,
   cacheForensics: CacheForensics | undefined,
   getServer: () => SwpServer | undefined,
   inlineCompaction: InlineCompactionRunner,
@@ -725,6 +749,7 @@ function buildRegenHandler(
     }
 
     let generateResult: import("./llm/generate.ts").GenerateResult | undefined;
+    const startedAtMs = Date.now();
     try {
       generateResult = await generateResponse({
         engine,
@@ -764,6 +789,19 @@ function buildRegenHandler(
       });
     } catch (e) {
       handleGenerationError(broadcast, msg.rid, e);
+      notifier.notify(
+        "error",
+        `Shore — ${session.character}`,
+        (e as Error).message,
+      );
+    }
+
+    if (generateResult !== undefined) {
+      notifier.notifyMessageComplete(
+        `Shore — ${session.character}`,
+        generateResult.finalText,
+        Date.now() - startedAtMs,
+      );
     }
 
     // Same post-generation compaction trigger as the message handler; a
@@ -787,7 +825,7 @@ function buildRegenHandler(
       }
     }
 
-    emitBudgetWarnings(broadcast, ledger, config.app.usage);
+    emitBudgetWarnings(broadcast, ledger, config.app.usage, notifier);
   };
 }
 

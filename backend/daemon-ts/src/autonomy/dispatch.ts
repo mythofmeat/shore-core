@@ -11,6 +11,7 @@ import {
 import type { CacheForensics } from "../ledger/cache_forensics.ts";
 import type { Ledger } from "../ledger/ledger.ts";
 import type { PricingEngine } from "../ledger/pricing.ts";
+import type { NotificationService } from "../notifications/service.ts";
 import {
   buildProvider,
   cloneChatRequest,
@@ -54,6 +55,7 @@ export interface AutonomyDispatchOptions {
   ledger: Ledger;
   pricing: PricingEngine;
   autonomy: AutonomyRegistry;
+  notifier?: NotificationService;
   cacheForensics?: CacheForensics;
   embedder?: Embedder;
   broadcast: (frame: ServerMessage) => void;
@@ -409,6 +411,11 @@ async function persistAutonomousMessage(
     opts.characterName,
     "message_sent",
     `Autonomous message sent: ${text.slice(0, 80)}`,
+  );
+  opts.notifier?.notify(
+    "autonomous_message",
+    `Shore — ${opts.characterName}`,
+    text,
   );
 }
 

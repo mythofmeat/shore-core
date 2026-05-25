@@ -39,6 +39,7 @@ import type { LoadedConfig } from "../config/loader.ts";
 import type { EngineRegistry } from "../engine/engine.ts";
 import type { Ledger } from "../ledger/ledger.ts";
 import type { CacheForensics } from "../ledger/cache_forensics.ts";
+import type { NotificationService } from "../notifications/service.ts";
 import type { ServerMessage } from "../swp/types.ts";
 import type { ResolvedModel } from "../llm/catalog.ts";
 import type { CompactionConfig } from "../memory/compaction/types.ts";
@@ -58,6 +59,7 @@ export interface InlineCompactionDeps {
   ledger: Ledger;
   cacheForensics?: CacheForensics;
   autonomy: AutonomyRegistry;
+  notifier: NotificationService;
   broadcast: (frame: ServerMessage) => void;
 }
 
@@ -140,11 +142,23 @@ export function buildInlineCompactionRunner(
         characterName,
         result.retainedTurns,
       );
+      if (result.outcome?.kind === "compacted") {
+        deps.notifier.notify(
+          "compaction_complete",
+          `Shore — ${characterName}`,
+          `Compaction complete: ${result.outcome.result.memoryFilesWritten.length} entries from ${result.outcome.result.compactedTurns} turns`,
+        );
+      }
     } catch (e) {
       console.warn(
         `[shore-daemon-ts] inline compaction failed for ${characterName}: ${(e as Error).message}`,
       );
       deps.autonomy.notifyCompactionFailed(characterName);
+      deps.notifier.notify(
+        "error",
+        `Shore — ${characterName}`,
+        `Compaction failed: ${(e as Error).message}`,
+      );
     }
   };
 }
