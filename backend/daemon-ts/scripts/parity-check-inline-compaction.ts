@@ -26,6 +26,8 @@
  */
 
 import fs from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { join, resolve as resolvePath } from "node:path";
 
@@ -86,11 +88,16 @@ interface NormalizedHistory {
   }>;
 }
 
+interface NotifyCall {
+  argv: string[];
+}
+
 interface ScenarioResult {
   summary: ChatSummary;
   snapshot: Snapshot;
   history: NormalizedHistory;
   requests: CapturedLlmRequest[];
+  notifications: NotifyCall[];
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -109,6 +116,7 @@ failures += compareChatRequest(rust.requests, ts.requests);
 captureCompactionRequest(rust.requests, ts.requests);
 failures += compareSnapshot(rust.snapshot, ts.snapshot);
 failures += compareHistory(rust.history, ts.history);
+failures += compareNotifications(rust.notifications, ts.notifications);
 
 if (failures > 0) {
   console.error(`\n${failures} inline-compaction parity failure(s)`);
@@ -131,7 +139,20 @@ async function runScenario(
       `shore-compaction-${label}-`,
     );
     patchProxyBaseUrl(configDir, proxy.baseUrl);
-    const env = buildDaemonEnv({ configDir, dataDir, prefix: `shore-compaction-${label}-` });
+    // Fresh notify-log per scenario — each daemon writes via the shim
+    // PATH-installed by buildDaemonEnv. Compaction completion fires
+    // a `notify-send --app-name=shore <title> <body>` on both daemons.
+    const notifyLog = join(
+      mkdtempSync(join(tmpdir(), `shore-compaction-notify-${label}-`)),
+      "notify.jsonl",
+    );
+    fs.writeFileSync(notifyLog, "");
+    const env = buildDaemonEnv({
+      configDir,
+      dataDir,
+      prefix: `shore-compaction-${label}-`,
+      notifyLog,
+    });
     env["SHORE_PARITY_ANTHROPIC_KEY"] = "sk-parity";
     env["TZ"] = "UTC";
 
@@ -173,15 +194,52 @@ async function runScenario(
 
     const snapshot = readSnapshot(dataDir, configDir);
     const restartHistory = await readRestartHistory(label, cmd, env);
+    const notifications = readNotifyLog(notifyLog);
     return {
       summary: summarize(framesSeen, "compact-1"),
       snapshot,
       history: normalizeHistory(restartHistory),
       requests: [...proxy.requests],
+      notifications,
     };
   } finally {
     await proxy.stop();
   }
+}
+
+function readNotifyLog(path: string): NotifyCall[] {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  return raw
+    .split("\n")
+    .filter((l) => l.trim().length > 0)
+    .map((l) => JSON.parse(l) as NotifyCall);
+}
+
+function compareNotifications(rust: NotifyCall[], ts: NotifyCall[]): number {
+  // `notify-send` is fire-and-forget on both daemons; both call out
+  // with `--app-name=shore <title> <body>`. The expected outcome of
+  // the inline-compaction scenario is exactly one "compaction
+  // complete" call on each side. Body text differences are real
+  // parity issues (different summaries to the user).
+  const diffs = compareFrames(
+    { type: "notify_log", calls: rust },
+    { type: "notify_log", calls: ts },
+    {},
+  );
+  if (diffs.length === 0) {
+    console.log(`  ok    notify-send calls (${rust.length} per daemon)`);
+    return 0;
+  }
+  console.error("  FAIL  notify-send calls");
+  for (const diff of diffs) console.error(`        ${diff}`);
+  console.error(`        rust: ${JSON.stringify(rust)}`);
+  console.error(`        ts:   ${JSON.stringify(ts)}`);
+  return 1;
 }
 
 async function readUntilFinal(

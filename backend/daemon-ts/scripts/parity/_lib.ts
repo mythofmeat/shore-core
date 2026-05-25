@@ -12,7 +12,7 @@
  */
 
 import type { Subprocess } from "bun";
-import { cpSync, mkdtempSync } from "node:fs";
+import { chmodSync, cpSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -183,6 +183,11 @@ export function copyFixtureToTmp(
 /**
  * Build the env block for a parity daemon spawn. `runtimeDir` /
  * `cacheDir` default to fresh tmp dirs.
+ *
+ * When `notifyLog` is set, a `notify-send` intercept shim is dropped
+ * into a tmp dir at the front of PATH so both daemons' fire-and-forget
+ * notification calls land in the same JSON-lines log file instead of
+ * the real desktop bus. See `installNotifySendShim`.
  */
 export function buildDaemonEnv(opts: {
   configDir: string;
@@ -190,15 +195,51 @@ export function buildDaemonEnv(opts: {
   runtimeDir?: string;
   cacheDir?: string;
   prefix?: string;
+  notifyLog?: string;
 }): Record<string, string | undefined> {
   const prefix = opts.prefix ?? "shore-parity-";
-  return {
+  const base: Record<string, string | undefined> = {
     ...process.env,
     SHORE_RUNTIME_DIR: opts.runtimeDir ?? mkdtempSync(join(tmpdir(), `${prefix}runtime-`)),
     SHORE_CACHE_DIR: opts.cacheDir ?? mkdtempSync(join(tmpdir(), `${prefix}cache-`)),
     SHORE_CONFIG_DIR: opts.configDir,
     SHORE_DATA_DIR: opts.dataDir,
   };
+  if (opts.notifyLog !== undefined) {
+    const shimDir = installNotifySendShim();
+    base["PATH"] = `${shimDir}:${process.env["PATH"] ?? ""}`;
+    base["SHORE_PARITY_NOTIFY_LOG"] = opts.notifyLog;
+  }
+  return base;
+}
+
+/**
+ * Drop a `notify-send` shim into a fresh tmp dir and return that dir,
+ * intended for prepending to PATH. Each invocation appends one JSON
+ * object to `$SHORE_PARITY_NOTIFY_LOG` recording the argv the daemon
+ * tried to send to `notify-send`, then exits 0. The shim never blocks
+ * — both daemons treat notify-send as fire-and-forget anyway.
+ *
+ * Python3 is used because it's available on every Linux dev/CI host
+ * and gives us safe JSON escape with zero external deps. The shim is
+ * a script (not a binary), so file-locking on append from concurrent
+ * daemon processes is fine on a local FS — at worst lines interleave
+ * if two notify calls happen in the same microsecond. Test scenarios
+ * here serialize the two daemons so that's a non-issue.
+ */
+export function installNotifySendShim(): string {
+  const shimDir = mkdtempSync(join(tmpdir(), "shore-parity-notifyshim-"));
+  const shimPath = join(shimDir, "notify-send");
+  const script = `#!/usr/bin/env python3
+import json, os, sys
+log = os.environ.get("SHORE_PARITY_NOTIFY_LOG")
+if log:
+    with open(log, "a") as f:
+        f.write(json.dumps({"argv": sys.argv[1:]}) + "\\n")
+`;
+  writeFileSync(shimPath, script);
+  chmodSync(shimPath, 0o755);
+  return shimDir;
 }
 
 // ── structural diff ────────────────────────────────────────────────────

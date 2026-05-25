@@ -209,11 +209,22 @@ Once the rest of that infra exists:
   that triggers a `read` tool call → diff tool-call/tool-result frames,
   both provider request bodies, final assistant text, and post-restart
   history. `bun run parity:tool-loop`.
-- [ ] **notification fan-out** — intercept `Bun.spawn(["notify-send", ...])`
-  and the Rust equivalent; diff the (event, title, body) tuples emitted
-  for the same scenario
-- [ ] **inline compaction LLM body** — pin that the compaction LLM call
-  reuses the cached prefix (audit #12 regression pin)
+- [x] **notification fan-out (done 2026-05-25)** — `notify-send`
+  shim installed via PATH override in `buildDaemonEnv` (helper
+  `installNotifySendShim` in `scripts/parity/_lib.ts`). Each daemon's
+  `notify-send` invocation is captured as a JSON line in a shared log
+  file; the inline-compaction check compares both daemons' captured
+  argv arrays. Compaction emits exactly one notification per daemon
+  with identical `--app-name=shore <title> <body>` content. Piggybacks
+  on the inline-compaction fixture (notifications enabled via
+  `[notifications]` block).
+- [x] **inline compaction LLM body / cached prefix (audit #12, done
+  2026-05-25)** — TS `RealCompactionLlm` now reuses the cached chat
+  request prefix (system + tools + messages) and appends compaction
+  tail via the non-streaming generate() path. Bodies match Rust
+  structurally; one known wire-form divergence (trailing-user
+  content string-vs-array) is parked in "Known divergences" along
+  with the breakpoint-placement gate.
 
 ### Tier 4 — out of scope for automation
 

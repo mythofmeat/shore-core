@@ -5,6 +5,10 @@ display_name = "Parity User"
 [behavior.tool_use]
 enabled = false
 
+[notifications]
+enabled = true
+backend = "notify_send"
+
 [memory.compaction]
 enabled = true
 min_turns = 2
