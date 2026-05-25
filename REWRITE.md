@@ -35,6 +35,45 @@ Parity coverage build-out: [`docs/DAEMON_TS_PARITY.md`](docs/DAEMON_TS_PARITY.md
   in [`docs/DAEMON_TS_PARITY.md`](docs/DAEMON_TS_PARITY.md) (T1
   persistence flows, T2 command dispatcher round-trips, T3 content-level
   parity via LLM proxy stub).
+- [ ] **Live-API validation of every T3 fixture.** All T3 parity checks
+  today run against `scripts/parity/llm-proxy.ts` serving canned
+  responses. That proves logic parity *assuming the mock matches
+  reality* — and the original cache regression that motivated this
+  rewrite was precisely a mock-vs-real divergence, so passing-on-mock
+  is not proof. Before preview soak, run each T3 check once in
+  forward-record mode (real provider URL, `recordMissing: true`) with
+  real API keys; both daemons must still agree on the canonical request
+  body, and the recorded response gets committed as the canned fixture
+  for the mock-mode CI run going forward. Covers Anthropic +
+  OpenAI-compatible + (when ported) OpenRouter. See
+  [`docs/DAEMON_TS_PARITY.md`](docs/DAEMON_TS_PARITY.md) "Infrastructure
+  work" → "Live-API validation pass" for the runbook once all T3 checks
+  are in place.
+- [ ] **Cache-breakpoint placement parity (must-fix before soak).**
+  Inline-compaction parity check with `cache_ttl = "1h"` surfaced
+  divergent breakpoint placement on the chat call: Rust marks system
+  block 1 (`tools_guidance`) and the second-to-last stable *user*
+  message; TS marks system block 2 (`character`) and the second-to-last
+  stable *assistant* message. Same conversation, different cache keys —
+  cross-daemon cache fragmentation, and the "correct" placement strategy
+  itself needs validation against real Anthropic before either daemon
+  ships. Resolution requires live API runs (cache_creation vs
+  cache_read accounting on a real conversation) to determine which
+  strategy actually wins; document the answer in
+  `docs/DAEMON_TS_PARITY.md` and bring both daemons into agreement.
+  Listed in DAEMON_TS_PARITY.md "Known divergences" as the canonical
+  reference.
+- [ ] **Audit all T3 fixtures for `cache_ttl = ""` blind spot.** Every
+  pre-2026-05-25 T3 fixture (`generation-basic`, `regen-basic`,
+  `tool-loop-read`, original `inline-compaction`) disabled caching via
+  `cache_ttl = ""`. This skipped the breakpoint-placement + label-strip
+  code paths entirely — which is how the `_label` wire leak and
+  breakpoint divergence both shipped without detection. Add a
+  `cache_ttl = "1h"` variant for every T3 fixture (keep the original
+  too — both paths matter). Each variant will surface its own
+  divergences to triage. Pin `_label_never_reaches_wire` regression
+  test in `tests/cache_placement.test.ts` already lands the lower-level
+  guard; this gate is about end-to-end coverage.
 
 ### Soak + cutover
 

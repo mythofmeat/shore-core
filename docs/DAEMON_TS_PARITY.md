@@ -11,10 +11,12 @@ soak is for catching the *unexpected* divergence, not the expected one.
 > handshake, message append, multi-turn, edit, delete, and alt. Tier 2
 > command-dispatcher coverage is green for the manifest-backed batch under
 > `backend/daemon-ts/parity-traces/commands/`. The first Tier 3 slice is
-> also green for Anthropic and OpenAI-compatible text generation, plus
-> Anthropic regen persistence and a one-tool Anthropic loop: these compare
-> SWP output, canonical provider request bodies, and the post-restart
-> history where relevant.
+> also green for Anthropic and OpenAI-compatible text generation,
+> Anthropic regen persistence, a one-tool Anthropic loop, and inline
+> compaction end-to-end (trigger → memory writes → segment archive →
+> active.jsonl truncation → restart history). These compare SWP output,
+> canonical provider request bodies, and the post-restart on-disk state
+> where relevant.
 
 ## Existing harness recap
 
@@ -36,11 +38,13 @@ soak is for catching the *unexpected* divergence, not the expected one.
 The `bun run parity` package script chains the three live checks; the
 prompt-assembly check has its own `bun run parity:prompt` (requires
 `cargo build -p shore-daemon --example dump_assemble_prompt`).
-The first T3 content check is separate for now:
+The first T3 content checks are separate for now:
 `bun run parity:generation` for Anthropic,
-`bun run parity:generation:openai` for OpenAI-compatible, and
-`bun run parity:regen` / `bun run parity:tool-loop` for Anthropic regen
-and tool loop coverage (all require `/usr/bin/shore-daemon`).
+`bun run parity:generation:openai` for OpenAI-compatible,
+`bun run parity:regen` for Anthropic regen,
+`bun run parity:tool-loop` for the one-tool Anthropic loop, and
+`bun run parity:compaction` for inline compaction end-to-end (all require
+`/usr/bin/shore-daemon`).
 
 ## Coverage tiers
 
@@ -156,8 +160,21 @@ A and regen receives response B before the restart-history diff. The
 tool-loop check, `backend/daemon-ts/scripts/parity-check-tool-loop.ts`,
 queues a `tool_use` response followed by a final text response, then diffs
 the intermediate tool frames, both provider request bodies, and persisted
-history. The generation check currently has Anthropic and
-OpenAI-compatible fixtures.
+history. The inline-compaction check,
+`backend/daemon-ts/scripts/parity-check-inline-compaction.ts`, seeds two
+user/assistant turns into `active.jsonl`, sends a third turn that crosses
+`max_turns=3`, waits for the post-stream `phase{compacting}` and the
+`segments/0001.jsonl` archive to land, then diffs the chat-call request
+body, the compaction-truncated `active.jsonl`, the archived segment, the
+written memory files (`memory/people/parity-user.md` + `MEMORY.md`), the
+`compaction.json` manifest, and the post-restart history. The
+compaction-call request body is captured to
+`/tmp/parity-compaction-{rust,ts}-req2.json` but **not** asserted on
+here — that's the [audit #12 cache-prefix regression pin](#tier-3--content-level-parity-requires-llm-stub),
+tracked separately. The generation check currently has Anthropic and
+OpenAI-compatible fixtures. The LLM proxy serves SSE for streaming
+requests and a single JSON message for non-streaming requests (compaction
+calls go through the latter path).
 
 Once the rest of that infra exists:
 
@@ -171,10 +188,19 @@ Once the rest of that infra exists:
   response A) → regen (deterministic response B) → kill → restart → diff
   history, including `alt_index` / `alt_count` and alternatives.
   `bun run parity:regen`.
-- [ ] **inline compaction trigger end-to-end** — append until trigger
-  threshold → wait for compaction → kill → restart → diff `active.jsonl`
-  truncation + memory files written + ledger rows. Requires the LLM stub
-  for the compaction LLM call.
+- [x] **inline compaction trigger end-to-end (done 2026-05-25)** —
+  seeded `active.jsonl` + a third user turn crosses `max_turns` → diff
+  post-`stream_end` `phase{compacting}`, chat request body, retained
+  `active.jsonl` (fuzzy `msg_id`/`timestamp`), archived
+  `segments/0001.jsonl`, written memory files, `compaction.json`
+  (fuzzy `compacted_at`), and post-restart history. The
+  compaction-call request body is captured to
+  `/tmp/parity-compaction-{rust,ts}-req2.json` but not asserted on —
+  the **inline compaction LLM body** item below is the assertion lift
+  for that. `bun run parity:compaction`. Surfaced and fixed a TS-side
+  bug where the prompt-assembly time marker was leaking into the
+  persisted user message (`engine/prompt.ts` shallow `content_blocks.slice()`
+  vs deep block copy).
 - [ ] **dreaming cron firing end-to-end** — trigger via debug command → wait
   → diff memory files written + ledger rows
 - [ ] **autonomous-message dispatch** — fast-forward heartbeat (debug cmd)
@@ -205,6 +231,44 @@ covered by deterministic unit tests on both sides:
 Spot-check during soak; daemon-internal unit tests cover the deterministic
 parts.
 
+## Known divergences (must-resolve gates)
+
+These are real wire-level divergences uncovered by the parity harness
+that are *not* parity-test bugs. Each blocks preview soak.
+
+- **Cache-breakpoint placement (chat call, `cache_ttl="1h"`).**
+  Surfaced by `parity-check-inline-compaction.ts` after flipping the
+  fixture from `cache_ttl=""` to `"1h"` on 2026-05-25.
+  - Rust marks **system block 1** (`tools_guidance`) and the
+    **second-to-last stable user message** as cache breakpoints.
+  - TS marks **system block 2** (`character`) and the
+    **second-to-last stable assistant message** as cache breakpoints.
+  - Same conversation → different cache-key hashes → no cross-daemon
+    cache reuse. Worse, the *correct* placement strategy isn't
+    obvious from offline reasoning alone — Anthropic charges
+    differently for cache_creation vs cache_read at each position,
+    and the optimal breakpoint depends on actual cache_read accounting
+    on real traffic. **Resolution requires live API runs** comparing
+    `cache_creation_input_tokens` / `cache_read_input_tokens` deltas
+    across the two strategies on a multi-turn conversation; pick the
+    winner, bring both daemons into agreement, then drop this entry.
+  - Until then: existing TS users do not share cache with existing
+    Rust users (no regression vs status quo); both daemons cache
+    *within themselves*; the cost penalty is one cold-cache pass per
+    daemon-switch (= the cutover event).
+  - **Blocks preview soak.**
+
+- **`_label` wire leak (fixed 2026-05-25).** TS was copying
+  `SystemPromptBlock._label` onto Anthropic request bodies. Anthropic
+  silently ignores unknown fields but they pollute the cache-key hash.
+  Rust strips at `backend/llm/src/providers/anthropic.rs:301-306`; TS
+  port at `backend/daemon-ts/src/llm/providers/anthropic.ts:308` was
+  doing the opposite. Fixed and pinned by
+  `_label_never_reaches_wire` in `tests/cache_placement.test.ts`.
+  Surfaced only because the inline-compaction fixture was switched to
+  `cache_ttl="1h"` — every other T3 fixture had caching disabled and
+  never exercised the wire-build path.
+
 ## Infrastructure work
 
 - [x] **T1 harness consolidation (done 2026-05-25).** Shared helpers
@@ -225,11 +289,40 @@ parts.
   HTTP server, preserves Anthropic and OpenAI-compatible SSE streaming,
   captures canonical request bodies, and can use a content-addressed
   fixture directory. Real-provider forward-record mode is still deferred
-  until we need provider-captured fixtures.
+  until we need provider-captured fixtures. The proxy serves SSE when
+  the request body has `stream: true` and a single JSON message
+  otherwise — added 2026-05-25 for inline-compaction parity, since
+  `LedgerClient::generate` (compaction's call path) is non-streaming.
 - [ ] **T3 notify-send intercept.** Shim that both daemons can shell out
   to instead of the real `notify-send`, logs the (title, body) args, both
   daemons under test write to the same log file → diff. Cheaper than
   intercepting `Bun.spawn` directly.
+- [ ] **Live-API validation pass (pre-soak gate).** Every T3 check
+  today runs against `parity/llm-proxy.ts` serving canned responses.
+  That proves *daemon-vs-daemon* parity against the mock; it does not
+  prove the mock is faithful to the real provider. Since the rewrite's
+  motivating bug (cache prefix regression) was a mock-vs-real
+  divergence, mock-only confidence is insufficient before preview
+  soak. Procedure once all T3 checks land:
+
+  1. Point each T3 fixture's `base_url` at the real provider
+     (`api.anthropic.com`, `api.openai.com`, OpenRouter when ported).
+  2. Run the check in forward-record mode (`startParityLlmProxy({
+     ..., recordMissing: true, fixtureDir })`) — the proxy still
+     captures canonical request bodies, lets the real response stream
+     through to the daemon, and writes the response to a content-
+     addressed fixture under `parity-traces/llm-fixtures/recorded/`.
+  3. The pass succeeds if both daemons agree on the *outgoing*
+     canonical request body for every LLM call. The recorded provider
+     responses are non-deterministic in text, but parity is a property
+     of what each daemon *sends*, not what it gets back.
+  4. The recorded fixture is then committed and used by the mock-mode
+     CI run going forward, replacing the hand-authored canned response.
+     If a future provider-side change drifts the mock from reality, a
+     re-record pass catches it.
+
+  Each check pays one round-trip per fixture in real API cost (~cents);
+  manual gate, not CI.
 
 ## How to add a new parity case
 
