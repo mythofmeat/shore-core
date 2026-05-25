@@ -189,6 +189,51 @@ describe("selected-model resolution", () => {
     expect(synthesized?.modelId).toBe("anthropic/claude-sonnet-4.5");
     expect(synthesized?.baseUrl).toBe("https://openrouter.ai/api/v1");
   });
+
+  it("does not restore ignored discovery metadata for selected models", () => {
+    const dataDir = tempDir();
+    const cacheDir = path.join(dataDir, "cache");
+    fs.mkdirSync(path.join(cacheDir, "providers", "openrouter"), { recursive: true });
+    fs.writeFileSync(path.join(cacheDir, "providers", "openrouter", "models.json"), JSON.stringify({
+      version: 1,
+      provider_key: "openrouter",
+      fetched_at: "2026-05-25T00:00:00Z",
+      base_url: "https://openrouter.ai/api/v1",
+      models: [{
+        provider_key: "openrouter",
+        model_id: "anthropic/claude-sonnet-4.5",
+        sdk: "openai",
+        base_url: "https://openrouter.ai/api/v1",
+        context_length: 12345,
+        max_output_tokens: 6789,
+        raw_provider_metadata: null,
+        discovered_at: "2026-05-25T00:00:00Z",
+      }],
+    }));
+    const cfg = config(dataDir, {
+      cacheDir,
+      providers: {
+        openrouter: {
+          api_key_env: "OR_KEY",
+          base_url: "https://openrouter.ai/api/v1",
+          discovery: { enabled: true, ignore: ["anthropic/*"] },
+        },
+      },
+    });
+    const character = defaultModelPreferences();
+    setSelectedModel(character, "openrouter", "anthropic/claude-sonnet-4.5");
+
+    const resolved = resolveActiveForCharacter(
+      cfg,
+      dataDir,
+      defaultModelPreferences(),
+      character,
+    );
+    expect(resolved?.providerKey).toBe("openrouter");
+    expect(resolved?.modelId).toBe("anthropic/claude-sonnet-4.5");
+    expect(resolved?.maxContextTokens).toBe(200_000);
+    expect(resolved?.maxTokens).toBe(8192);
+  });
 });
 
 describe("sampler resolver and scopes", () => {

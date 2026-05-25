@@ -5,6 +5,11 @@ import type { ConversationEngine } from "../engine/engine.ts";
 import type { Message } from "../engine/types.ts";
 import { loadConfig, resolveDisplayName } from "../config/loader.ts";
 import { loadCatalog, type ResolvedModel } from "../llm/catalog.ts";
+import {
+  findEffectiveModel,
+  listEffectiveModels,
+  type EffectiveModel,
+} from "../llm/effective_catalog.ts";
 import { buildProvider, resolveApiKey } from "../llm/generate.ts";
 import { MarkdownMemoryStore, type MarkdownEntry } from "../memory/markdown_store.ts";
 import { runCompaction, type RunCompactionResult } from "../memory/compaction/background.ts";
@@ -44,18 +49,9 @@ import {
   type RuntimeConfigState,
 } from "./types.ts";
 import {
-  discoveredModelToResolved,
-  isVisible,
   loadProviderRegistry,
   providersForPreferences,
-  readProviderCache,
 } from "./providers.ts";
-
-interface EffectiveModel {
-  resolved: ResolvedModel;
-  source: "static" | "discovered";
-  hidden: boolean;
-}
 
 export function status(ctx: CommandContext, engine: ConversationEngine): Record<string, unknown> {
   ctx.autonomy.ensureState(engine);
@@ -632,71 +628,6 @@ function resolveActiveModelOrThrow(ctx: CommandContext): ResolvedModel {
 
 function activeModelName(ctx: CommandContext, entries: EffectiveModel[]): string | null {
   return resolveActiveModel(ctx, true)?.qualifiedName ?? entries[0]?.resolved.qualifiedName ?? null;
-}
-
-function listEffectiveModels(ctx: CommandContext, includeHidden: boolean): EffectiveModel[] {
-  const out: EffectiveModel[] = [];
-  const staticPairs = new Set<string>();
-  for (const model of [...ctx.runtime.catalog.values()].filter((m) => m.category === "chat")) {
-    out.push({ resolved: model, source: "static", hidden: false });
-    staticPairs.add(`${model.providerKey}\0${model.modelId}`);
-  }
-  for (const [provider, entry] of Object.entries(ctx.runtime.providers)) {
-    const cache = readProviderCache(ctx.cacheDir, provider);
-    for (const discovered of cache?.models ?? []) {
-      if (staticPairs.has(`${provider}\0${discovered.model_id}`)) continue;
-      const hidden = !isVisible(entry.discovery, discovered.model_id);
-      if (hidden && !includeHidden) continue;
-      out.push({
-        resolved: discoveredModelToResolved(provider, entry, discovered),
-        source: "discovered",
-        hidden,
-      });
-    }
-  }
-  out.sort((a, b) => a.resolved.qualifiedName.localeCompare(b.resolved.qualifiedName));
-  return out;
-}
-
-function findEffectiveModel(ctx: CommandContext, name: string, includeHidden: boolean): ResolvedModel {
-  const staticExact = ctx.runtime.catalog.get(name);
-  if (staticExact !== undefined && staticExact.category === "chat") return staticExact;
-  const staticMatches = [...ctx.runtime.catalog.values()].filter(
-    (m) => m.category === "chat" && m.name === name,
-  );
-  if (staticMatches.length === 1) return staticMatches[0]!;
-  if (staticMatches.length > 1) {
-    throw new CommandError(
-      "invalid_request",
-      `ambiguous model name "${name}" — matches: ${staticMatches.map((m) => m.qualifiedName).join(", ")}`,
-    );
-  }
-
-  const entries = listEffectiveModels(ctx, includeHidden).filter((entry) => entry.source === "discovered");
-  const providerSplit = name.indexOf(":");
-  if (providerSplit > 0) {
-    const provider = name.slice(0, providerSplit);
-    const modelId = name.slice(providerSplit + 1);
-    const found = entries.find((entry) => entry.resolved.providerKey === provider && entry.resolved.modelId === modelId);
-    if (found !== undefined) return found.resolved;
-  }
-  const byQualified = entries.find((entry) => entry.resolved.qualifiedName === name);
-  if (byQualified !== undefined) return byQualified.resolved;
-  const byModelId = entries.filter((entry) => entry.resolved.modelId === name || entry.resolved.name === name);
-  if (byModelId.length === 1) return byModelId[0]!.resolved;
-  if (byModelId.length > 1) {
-    throw new CommandError(
-      "invalid_request",
-      `ambiguous model name "${name}" — matches: ${byModelId.map((m) => m.resolved.qualifiedName).join(", ")}`,
-    );
-  }
-  const hidden = listEffectiveModels(ctx, true).find((entry) => {
-    return entry.hidden && (entry.resolved.modelId === name || entry.resolved.qualifiedName === name);
-  });
-  if (hidden !== undefined && !includeHidden) {
-    throw new CommandError("not_found", `model ${JSON.stringify(name)} is hidden by provider discovery filters`);
-  }
-  throw new CommandError("not_found", `model not found: ${name}`);
 }
 
 function preferenceConfig(ctx: CommandContext) {

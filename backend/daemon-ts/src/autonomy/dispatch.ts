@@ -20,7 +20,11 @@ import {
   resolveApiKey,
 } from "../llm/generate.ts";
 import type { Embedder } from "../llm/embed.ts";
-import { loadCatalog, resolveModel, type ResolvedModel } from "../llm/catalog.ts";
+import { loadCatalog, type ResolvedModel } from "../llm/catalog.ts";
+import {
+  findEffectiveModel,
+  type EffectiveProviderRegistry,
+} from "../llm/effective_catalog.ts";
 import type { ChatEvent, ChatRequest, UsageStats } from "../llm/types.ts";
 import {
   ensureActivePromptSnapshot,
@@ -52,6 +56,7 @@ export interface AutonomyDispatchOptions {
   cacheDir: string;
   config: LoadedConfig;
   catalog: ReturnType<typeof loadCatalog>;
+  providers: EffectiveProviderRegistry;
   ledger: Ledger;
   pricing: PricingEngine;
   autonomy: AutonomyRegistry;
@@ -284,7 +289,15 @@ function resolveActiveModel(opts: AutonomyDispatchOptions): ResolvedModel | unde
   const modelName = opts.config.app.defaults.model;
   if (!modelName) return undefined;
   try {
-    return resolveModel(opts.catalog, modelName);
+    return findEffectiveModel(
+      {
+        catalog: opts.catalog,
+        providers: opts.providers,
+        cacheDir: opts.cacheDir,
+      },
+      modelName,
+      true,
+    );
   } catch (e) {
     console.warn(
       `[shore-daemon-ts] autonomy model resolution failed for ${opts.characterName}: ${(e as Error).message}`,

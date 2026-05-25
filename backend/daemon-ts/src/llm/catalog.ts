@@ -11,11 +11,6 @@
  *   - `[chat.openrouter.<m>]` → sdk=anthropic against openrouter base, model_id="anthropic/..."
  *   - `[chat.openai.<m>]`     → sdk=openai against api.openai.com
  *
- * We deliberately don't port `[providers.<name>]` registry, discovery
- * cache, sampler overlays, or the per-character preferences resolver —
- * those bring along a few thousand lines that aren't on the cache test's
- * critical path. Phase 4b absorbs them.
- *
  * Key semantic preserved from the Rust impl: `cache_ttl` defaults to
  * "1h" for the Anthropic SDK so the test config doesn't need to set it
  * (see ResolvedModel::from_parts in models.rs:293).

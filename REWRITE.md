@@ -1290,10 +1290,17 @@ scheduled soak/cutover items are blocked on these.
     available via the ledger (`shore usage`); the dispatcher already
     returns "diagnostics ring buffer not ported in TS daemon" with the
     correct section shape.
-- [ ] **Catalog parity follow-up.** Walk
-  `effective_catalog.rs` (1029 lines) against `llm/catalog.ts` (326 lines)
-  function-by-function. Document what's actually missing and either port or
-  descope. (Audit item #15.)
+- [x] **Catalog parity follow-up.** Done 2026-05-25. TS catalog
+  resolution/listing is consolidated in
+  `backend/daemon-ts/src/llm/effective_catalog.ts`, with command state,
+  preference restoration, chat, regen, and autonomy callsites wired through
+  the shared effective resolver. Parity decisions: reject synthetic
+  `chat.<provider>.<model_id>` discovered qualified names as resolver input,
+  and match Rust append-then-discovered `list_effective_models` ordering
+  (no TS `qualifiedName` sort). Ported Rust regression coverage for
+  synthetic-name rejection, short static aliases/static upstream overrides,
+  bare/provider-prefixed ambiguity, hidden visibility, and provider/discovery
+  gating. `bun test`: 512 pass / 7 skip / 0 fail. `bun run typecheck` green.
 - [x] **Autonomy manager orchestration (done, 2026-05-25).**
   AutonomyRegistry orchestration surface added — `setResources`,
   `reloadRuntimeConfig`, `notifyAssistantMessage`, heartbeat debug

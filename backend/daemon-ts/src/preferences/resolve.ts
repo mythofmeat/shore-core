@@ -6,6 +6,7 @@ import {
   type ResolvedModel,
   type Sdk,
 } from "../llm/catalog.ts";
+import { findEffectiveModel } from "../llm/effective_catalog.ts";
 import { applySamplerOverlay } from "./overlay.ts";
 import {
   SAMPLER_KEYS,
@@ -62,23 +63,6 @@ export interface PreferenceResolutionConfig {
     };
   };
   providers?: Record<string, ProviderConfigEntry>;
-}
-
-interface DiscoveredModel {
-  provider_key: string;
-  model_id: string;
-  display_name?: string;
-  sdk?: string;
-  base_url?: string;
-  context_length?: number;
-  max_output_tokens?: number;
-}
-
-interface ProviderModelsCache {
-  version: number;
-  provider_key: string;
-  base_url?: string;
-  models: DiscoveredModel[];
 }
 
 export function resolveSelectedModel(
@@ -281,24 +265,34 @@ function resolveProviderModel(
   const staticModel = findStaticModel(config.catalog, provider, modelId);
   if (staticModel !== undefined) return { ...staticModel };
 
-  const discovered = resolveDiscoveredProviderModel(config, provider, modelId);
-  if (discovered !== undefined) return discovered;
+  const effective = resolveEffectiveProviderModel(config, provider, modelId);
+  if (effective !== undefined) return effective;
 
   return synthesizeSelectedProviderModel(config, provider, modelId);
 }
 
-function resolveDiscoveredProviderModel(
+function resolveEffectiveProviderModel(
   config: PreferenceResolutionConfig,
   provider: string,
   modelId: string,
 ): ResolvedModel | undefined {
-  const entry = providerEntry(config, provider);
-  if (entry === undefined || entry.discovery?.enabled !== true) return undefined;
   const cacheDir = cacheDirOf(config);
   if (cacheDir === undefined) return undefined;
-  const discovered = readProviderDiscovery(cacheDir, provider, modelId);
-  if (discovered === undefined) return undefined;
-  return buildResolvedFromDiscovered(provider, entry, discovered);
+  try {
+    return {
+      ...findEffectiveModel(
+        {
+          catalog: config.catalog,
+          cacheDir,
+          ...(config.providers !== undefined ? { providers: config.providers } : {}),
+        },
+        `${provider}:${modelId}`,
+        false,
+      ),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function synthesizeSelectedProviderModel(
@@ -330,33 +324,6 @@ function synthesizeSelectedProviderModel(
   };
 }
 
-function buildResolvedFromDiscovered(
-  provider: string,
-  entry: ProviderConfigEntry,
-  discovered: DiscoveredModel,
-): ResolvedModel {
-  const defaults = hardcodedProviderDefaults(provider, discovered.model_id);
-  const sdk = parseSdk(entry.sdk) ?? parseSdk(discovered.sdk) ?? defaults.sdk;
-  return {
-    name: discovered.model_id,
-    qualifiedName: `chat.${provider}.${discovered.model_id}`,
-    category: "chat",
-    providerKey: provider,
-    sdk,
-    modelId: discovered.model_id,
-    apiKeyEnv: entry.api_key_env ?? firstEnabledKeyEnv(entry) ?? defaults.apiKeyEnv,
-    baseUrl: entry.base_url ?? discovered.base_url ?? defaults.baseUrl,
-    maxTokens: asU32(discovered.max_output_tokens) ?? defaults.maxTokens,
-    maxContextTokens: asU32(discovered.context_length) ?? defaults.maxContextTokens,
-    temperature: defaults.temperature,
-    topP: undefined,
-    reasoningEffort: undefined,
-    budgetTokens: undefined,
-    cacheTtl: sdk === "anthropic" ? "1h" : undefined,
-    openrouterProvider: undefined,
-  };
-}
-
 function tryResolveModel(
   catalog: Map<string, ResolvedModel>,
   name: string,
@@ -374,30 +341,6 @@ function firstChatModel(catalog: Map<string, ResolvedModel>): ResolvedModel | un
     .sort((a, b) => a.qualifiedName.localeCompare(b.qualifiedName));
   const first = chatModels[0];
   return first === undefined ? undefined : { ...first };
-}
-
-function readProviderDiscovery(
-  cacheDir: string,
-  provider: string,
-  modelId: string,
-): DiscoveredModel | undefined {
-  const cachePath = path.join(cacheDir, "providers", provider, "models.json");
-  let raw: string;
-  try {
-    raw = fs.readFileSync(cachePath, "utf8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw e;
-  }
-
-  let parsed: ProviderModelsCache;
-  try {
-    parsed = JSON.parse(raw) as ProviderModelsCache;
-  } catch {
-    return undefined;
-  }
-  if (parsed.version > 1 || !Array.isArray(parsed.models)) return undefined;
-  return parsed.models.find((m) => m.model_id === modelId);
 }
 
 function resolveBackgroundModelName(
@@ -498,18 +441,6 @@ function parseSdk(raw: string | undefined): Sdk | undefined {
   }
   if (raw === "deepseek" || raw === "zhipuai") return "openai";
   return undefined;
-}
-
-function asU32(value: unknown): number | undefined {
-  if (
-    typeof value !== "number"
-    || !Number.isInteger(value)
-    || value < 0
-    || value > 0xffff_ffff
-  ) {
-    return undefined;
-  }
-  return value;
 }
 
 function firstEnabledKeyEnv(entry: ProviderConfigEntry): string | undefined {

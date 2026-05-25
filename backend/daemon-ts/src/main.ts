@@ -34,7 +34,8 @@ import {
 } from "./config/loader.ts";
 import { EngineRegistry } from "./engine/engine.ts";
 import type { Message } from "./engine/types.ts";
-import { loadCatalog, resolveModel, type ResolvedModel } from "./llm/catalog.ts";
+import { loadCatalog, type ResolvedModel } from "./llm/catalog.ts";
+import { findEffectiveModel } from "./llm/effective_catalog.ts";
 import {
   enforceBudgetForCall,
   newlyCrossedBudgetWarnings,
@@ -228,6 +229,7 @@ async function main(): Promise<void> {
         cacheDir: dirs.cache,
         config,
         catalog,
+        providers: runtime.providers,
         ledger,
         pricing,
         autonomy,
@@ -276,6 +278,7 @@ async function main(): Promise<void> {
     dirs.cache,
     config,
     catalog,
+    runtime.providers,
     ledger,
     pricing,
     autonomy,
@@ -290,6 +293,7 @@ async function main(): Promise<void> {
     dirs.cache,
     config,
     catalog,
+    runtime.providers,
     ledger,
     pricing,
     autonomy,
@@ -428,6 +432,7 @@ function buildMessageHandler(
   cacheDir: string,
   config: LoadedConfig,
   catalog: ReturnType<typeof loadCatalog>,
+  providers: RuntimeConfigState["providers"],
   ledger: Ledger,
   pricing: PricingEngine,
   autonomy: AutonomyRegistry,
@@ -463,7 +468,7 @@ function buildMessageHandler(
     }
     let resolved: ResolvedModel;
     try {
-      resolved = resolveModel(catalog, modelName);
+      resolved = findEffectiveModel({ catalog, providers, cacheDir }, modelName, true);
     } catch (e) {
       console.error(`[shore-daemon-ts] could not resolve model: ${(e as Error).message}`);
       return;
@@ -687,6 +692,7 @@ function buildRegenHandler(
   cacheDir: string,
   config: LoadedConfig,
   catalog: ReturnType<typeof loadCatalog>,
+  providers: RuntimeConfigState["providers"],
   ledger: Ledger,
   pricing: PricingEngine,
   autonomy: AutonomyRegistry,
@@ -722,7 +728,7 @@ function buildRegenHandler(
     if (!modelName) {
       throw new Error("no app.defaults.model set");
     }
-    const resolved = resolveModel(catalog, modelName);
+    const resolved = findEffectiveModel({ catalog, providers, cacheDir }, modelName, true);
     const characterConfigDir = path.join(configDir, "characters", session.character);
     const displayName = resolveDisplayName(config);
     const embedder = resolveOptionalEmbedder(config);
