@@ -50,7 +50,7 @@ import { resolveEmbedder, type Embedder } from "./llm/embed.ts";
 import { loadConfigDotenv } from "./llm/env.ts";
 import { generateResponse } from "./llm/generate.ts";
 import { workspaceIndexPath } from "./memory/workspace_index.ts";
-import { defaultRegistry, ToolRegistry } from "./tools/registry.ts";
+import { defaultRegistry, togglesFromConfig, ToolRegistry } from "./tools/registry.ts";
 import { resolveShoreDirs } from "./runtime/dirs.ts";
 import { Registry } from "./runtime/registry.ts";
 import { SwpServer } from "./swp/server.ts";
@@ -689,7 +689,11 @@ function registryForGeneration(
   displayName: string,
 ): ToolRegistry {
   if (!config.app.behavior.tool_use.enabled) return new ToolRegistry();
-  return defaultRegistry({ characterName, displayName });
+  return defaultRegistry({
+    characterName,
+    displayName,
+    toggles: togglesFromConfig(config.app.behavior.tool_use.tools),
+  });
 }
 
 function resolveOptionalEmbedder(config: LoadedConfig): Embedder | undefined {

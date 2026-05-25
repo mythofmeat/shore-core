@@ -60,6 +60,10 @@ wrap_up_grace_rounds = 2
 [behavior.tool_use]
 enabled = false
 max_iterations = 3
+
+[behavior.tool_use.tools]
+roll_dice = false
+web_search = false
 `);
 
     const config = loadConfig(dir);
@@ -107,6 +111,10 @@ max_iterations = 3
     expect(config.app.behavior.tool_use).toEqual({
       enabled: false,
       max_iterations: 3,
+      tools: {
+        roll_dice: false,
+        web_search: false,
+      },
     });
   });
 

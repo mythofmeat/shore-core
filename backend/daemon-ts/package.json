@@ -20,6 +20,8 @@
     "parity:generation:openai:compiled": "bun scripts/parity-check-generation.ts --rust /usr/bin/shore-daemon --ts ./dist/shore-daemon --fixture parity-traces/fixtures/generation-openai-compatible --response parity-traces/llm-fixtures/generation-openai-compatible.json",
     "parity:regen": "bun scripts/parity-check-regen.ts --rust /usr/bin/shore-daemon",
     "parity:regen:compiled": "bun scripts/parity-check-regen.ts --rust /usr/bin/shore-daemon --ts ./dist/shore-daemon",
+    "parity:tool-loop": "bun scripts/parity-check-tool-loop.ts --rust /usr/bin/shore-daemon",
+    "parity:tool-loop:compiled": "bun scripts/parity-check-tool-loop.ts --rust /usr/bin/shore-daemon --ts ./dist/shore-daemon",
     "parity:capture-commands": "bun scripts/capture-command.ts /usr/bin/shore-daemon --all",
     "capture-trace": "bun scripts/capture-rust-trace.ts /usr/bin/shore-daemon"
   },

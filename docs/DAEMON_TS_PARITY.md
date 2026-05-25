@@ -12,8 +12,9 @@ soak is for catching the *unexpected* divergence, not the expected one.
 > command-dispatcher coverage is green for the manifest-backed batch under
 > `backend/daemon-ts/parity-traces/commands/`. The first Tier 3 slice is
 > also green for Anthropic and OpenAI-compatible text generation, plus
-> Anthropic regen persistence: these compare SWP output, canonical
-> provider request bodies, and the post-restart history where relevant.
+> Anthropic regen persistence and a one-tool Anthropic loop: these compare
+> SWP output, canonical provider request bodies, and the post-restart
+> history where relevant.
 
 ## Existing harness recap
 
@@ -38,8 +39,8 @@ prompt-assembly check has its own `bun run parity:prompt` (requires
 The first T3 content check is separate for now:
 `bun run parity:generation` for Anthropic,
 `bun run parity:generation:openai` for OpenAI-compatible, and
-`bun run parity:regen` for Anthropic regen (all require
-`/usr/bin/shore-daemon`).
+`bun run parity:regen` / `bun run parity:tool-loop` for Anthropic regen
+and tool loop coverage (all require `/usr/bin/shore-daemon`).
 
 ## Coverage tiers
 
@@ -152,7 +153,11 @@ generation summary and the canonical provider request body. The regen
 check, `backend/daemon-ts/scripts/parity-check-regen.ts`, uses the same
 proxy with a queued response pair so the initial message receives response
 A and regen receives response B before the restart-history diff. The
-generation check currently has Anthropic and OpenAI-compatible fixtures.
+tool-loop check, `backend/daemon-ts/scripts/parity-check-tool-loop.ts`,
+queues a `tool_use` response followed by a final text response, then diffs
+the intermediate tool frames, both provider request bodies, and persisted
+history. The generation check currently has Anthropic and
+OpenAI-compatible fixtures.
 
 Once the rest of that infra exists:
 
@@ -174,8 +179,10 @@ Once the rest of that infra exists:
   → diff memory files written + ledger rows
 - [ ] **autonomous-message dispatch** — fast-forward heartbeat (debug cmd)
   → wait for autonomous turn → diff history + notification spawn
-- [ ] **tool loop multi-turn** — message that triggers ≥2 tool calls →
-  diff tool-call frames + final assistant text
+- [x] **tool loop multi-turn (Anthropic, done 2026-05-25)** — message
+  that triggers a `read` tool call → diff tool-call/tool-result frames,
+  both provider request bodies, final assistant text, and post-restart
+  history. `bun run parity:tool-loop`.
 - [ ] **notification fan-out** — intercept `Bun.spawn(["notify-send", ...])`
   and the Rust equivalent; diff the (event, title, body) tuples emitted
   for the same scenario

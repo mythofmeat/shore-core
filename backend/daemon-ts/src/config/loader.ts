@@ -86,6 +86,7 @@ export interface AutonomyConfig {
 export interface ToolUseConfig {
   enabled: boolean;
   max_iterations: number;
+  tools: Record<string, boolean>;
 }
 
 export interface LoadedHeartbeatConfig extends HeartbeatConfig {
@@ -357,7 +358,19 @@ function parseToolUseConfig(table: Record<string, unknown> | undefined): ToolUse
         ? table["enabled"]
         : true,
     max_iterations: asNumber(table?.["max_iterations"]) ?? 10,
+    tools: parseToolToggles(table === undefined ? undefined : pickTable(table, "tools")),
   };
+}
+
+function parseToolToggles(
+  table: Record<string, unknown> | undefined,
+): Record<string, boolean> {
+  if (table === undefined) return {};
+  const out: Record<string, boolean> = {};
+  for (const [name, enabled] of Object.entries(table)) {
+    if (typeof enabled === "boolean") out[name] = enabled;
+  }
+  return out;
 }
 
 function parseHeartbeatConfig(

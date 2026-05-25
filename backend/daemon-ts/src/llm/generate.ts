@@ -273,7 +273,6 @@ export async function generateResponse(
     opts.broadcast(m);
   };
 
-  emit({ type: "stream_start", regen: opts.regen ?? false });
   let pendingFinalStreamEnd: ServerMessage | undefined;
 
   const onEvent = (event: ChatEvent): void => {
@@ -286,14 +285,6 @@ export async function generateResponse(
       case "thinking_delta":
         if (firstTokenTs === null) firstTokenTs = Date.now();
         emit({ type: "stream_chunk", text: event.text, content_type: "thinking" });
-        break;
-      case "tool_use_start":
-        emit({
-          type: "tool_call",
-          tool_id: event.id,
-          tool_name: event.name,
-          input: {},
-        });
         break;
       case "done": {
         turnCount++;
@@ -341,7 +332,7 @@ export async function generateResponse(
       tool_id: id,
       tool_name: name,
       output,
-      ...(isError ? { is_error: true } : {}),
+      is_error: isError,
     });
   };
 
@@ -371,6 +362,14 @@ export async function generateResponse(
     request,
     registry: opts.registry,
     toolContext,
+    onCallStart: () => emit({ type: "stream_start", regen: opts.regen ?? false }),
+    onToolCall: (id, name, input) =>
+      emit({
+        type: "tool_call",
+        tool_id: id,
+        tool_name: name,
+        input,
+      }),
     onEvent,
     onToolResult,
     ...(opts.maxIterations !== undefined ? { maxIterations: opts.maxIterations } : {}),

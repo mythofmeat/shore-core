@@ -35,6 +35,10 @@ export interface ToolLoopOptions {
   toolContext: ToolContext;
   /** Max round-trips through the provider. Default 10. */
   maxIterations?: number;
+  /** Called at the start of each provider round-trip. */
+  onCallStart?: (iteration: number) => void;
+  /** Called after a tool-use response has completed and before dispatch. */
+  onToolCall?: (id: string, name: string, input: unknown) => void;
   /** Called for every streamed event (text/thinking deltas, tool starts/ends). */
   onEvent?: (event: ChatEvent) => void;
   /** Called when a tool finishes executing — useful for SWP ToolResult frames. */
@@ -89,6 +93,7 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
       opts.wrapUp.onNudge?.();
     }
     const req: ChatRequest = { ...opts.request, messages };
+    opts.onCallStart?.(iter);
     const { content, stopReason, usage, totalMs, ttftMs } = await consumeStream(
       opts.provider.stream(req),
       opts.onEvent,
@@ -112,6 +117,7 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
     // Execute each tool, collect results in the same order.
     const resultBlocks: ContentBlock[] = [];
     for (const tu of toolUses) {
+      opts.onToolCall?.(tu.id, tu.name, tu.input);
       const handler = opts.registry.get(tu.name);
       let result: string;
       let isError = false;
@@ -131,8 +137,8 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
         type: "tool_result",
         tool_use_id: tu.id,
         content: result,
+        is_error: isError,
       };
-      if (isError) block.is_error = true;
       resultBlocks.push(block);
     }
 

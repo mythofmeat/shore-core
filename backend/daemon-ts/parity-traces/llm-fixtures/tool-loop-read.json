@@ -1,0 +1,42 @@
+{
+  "responses": [
+    {
+      "provider": "anthropic",
+      "model": "claude-parity",
+      "blocks": [
+        {
+          "type": "tool_use",
+          "id": "toolu_parity_read",
+          "name": "read",
+          "input": {
+            "path": "tool-data.txt"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "usage": {
+        "input_tokens": 41,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0
+      }
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-parity",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Tool loop parity complete."
+        }
+      ],
+      "stop_reason": "end_turn",
+      "usage": {
+        "input_tokens": 58,
+        "output_tokens": 6,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  ]
+}
