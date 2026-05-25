@@ -1303,6 +1303,13 @@ scheduled soak/cutover items are blocked on these.
 
 #### Phase 9b soak + cutover (blocked on parity gaps above)
 
+- [ ] **Automated parity coverage lands.** The existing harness only
+  covers handshake, one message-append, and offline prompt-assembly. The
+  cutover gate ("one full release cycle with no live failures") is a
+  user-observation parity test; this work makes it a defense-in-depth
+  observation, not the only signal. Tracked in
+  `docs/DAEMON_TS_PARITY.md` (T1 persistence flows, T2 command
+  dispatcher round-trips, T3 content-level parity via LLM proxy stub).
 - [ ] Preview soak starts: merge the rewrite branch to `origin/main`, publish
   a `shore-daemon-ts-v*` tag from that main commit, verify the repo-arch
   package, install/run `shore-daemon-ts.service`, and record the start
