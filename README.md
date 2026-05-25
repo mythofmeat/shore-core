@@ -124,6 +124,7 @@ from crates.io):
 
 - `shore-tui` — [mythofmeat/shore-tui](https://github.com/mythofmeat/shore-tui)
 - `shore-gui` (Tauri desktop) — [mythofmeat/shore-gui](https://github.com/mythofmeat/shore-gui)
+- `shore-gui-godot` (Godot client) — [mythofmeat/shore-gui-godot](https://github.com/mythofmeat/shore-gui-godot)
 - `shore-matrix` (Matrix bridge) — [mythofmeat/shore-matrix](https://github.com/mythofmeat/shore-matrix)
 - `shore-mcp` (debug/development MCP) — [mythofmeat/shore-mcp](https://github.com/mythofmeat/shore-mcp)
 

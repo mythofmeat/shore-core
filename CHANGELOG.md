@@ -7,6 +7,13 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 
 ## [Unreleased]
 
+### Removed
+- `clients/gui-godot/` moved to its own repository at
+  [mythofmeat/shore-gui-godot](https://github.com/mythofmeat/shore-gui-godot).
+  It was already excluded from the root Cargo workspace, so the daemon and CLI
+  builds are unaffected. The new repo consumes `shore-protocol` and
+  `shore-swp-client` from crates.io.
+
 ### Removed (BREAKING)
 - The `claude_code` SDK provider, the `[chat.claude_code.*]` model namespace,
   the `sdk = "claude_code"` setting, the `[daemon.http]` MCP callback listener,
