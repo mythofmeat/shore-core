@@ -4,6 +4,14 @@ import { parse as parseToml } from "smol-toml";
 
 import { defaultSdkForOpenRouterModel, type ResolvedModel, type Sdk } from "../llm/catalog.ts";
 import {
+  discoverAnthropic,
+  discoverOpenAICompatible,
+  DiscoveryError,
+  PROVIDER_CACHE_VERSION,
+  writeProviderCache,
+  type DiscoveryFetcher,
+} from "../llm/discovery.ts";
+import {
   asArgs,
   CommandError,
   type CommandContext,
@@ -193,9 +201,26 @@ export function listProviderModels(ctx: CommandContext, rawArgs: unknown): Recor
   };
 }
 
-export function refreshProviderModels(ctx: CommandContext, rawArgs: unknown): Record<string, unknown> {
-  const args = asArgs(rawArgs);
-  const provider = requireProvider(args);
+interface RefreshOutcome {
+  modelCount: number;
+  fetchedAt: string;
+  cachePath: string;
+}
+
+/**
+ * Fetch a provider's discovery endpoint with the first usable key, then
+ * write the cache atomically. Failures throw `CommandError` — callers map
+ * them to either a thrown error (single-provider) or a per-provider row
+ * (bulk).
+ *
+ * Decoupled from `refreshProviderModels` so the bulk path can call it once
+ * per provider without re-running the arg validation.
+ */
+async function refreshOne(
+  ctx: CommandContext,
+  provider: string,
+  fetcher?: DiscoveryFetcher,
+): Promise<RefreshOutcome> {
   const entry = ctx.runtime.providers[provider];
   if (entry === undefined) {
     throw new CommandError("not_found", `provider ${JSON.stringify(provider)} is not configured`);
@@ -209,17 +234,87 @@ export function refreshProviderModels(ctx: CommandContext, rawArgs: unknown): Re
       `provider ${JSON.stringify(provider)} has discovery disabled`,
     );
   }
+
+  const baseUrl = entry.base_url ?? defaultBaseUrl(provider);
+  if (baseUrl === undefined) {
+    throw new CommandError(
+      "invalid_request",
+      `provider ${JSON.stringify(provider)} has no base_url; required for provider discovery`,
+    );
+  }
+
+  // Pick the first enabled key whose env var holds a non-empty value. We
+  // don't rotate on failure here — multi-key fallback (REWRITE.md #5) is
+  // a chat-traffic concern; a discovery failure is reported back so the
+  // user can fix credentials and retry.
+  let apiKey: string | undefined;
+  for (const key of entry.keys) {
+    if (!key.enabled) continue;
+    const value = process.env[key.env];
+    if (value !== undefined && value.trim().length > 0) {
+      apiKey = value;
+      break;
+    }
+  }
+  if (apiKey === undefined) {
+    throw new CommandError(
+      "provider_error",
+      `provider ${JSON.stringify(provider)} has no API key configured (no enabled key's env var is set)`,
+    );
+  }
+
+  const sdk = entry.sdk ?? defaultSdk(provider);
+  let models;
+  try {
+    models = sdk === "anthropic"
+      ? await discoverAnthropic(provider, baseUrl, apiKey, fetcher)
+      : await discoverOpenAICompatible(provider, baseUrl, apiKey, fetcher);
+  } catch (e) {
+    if (e instanceof DiscoveryError) {
+      // Preserve the previous cache on failure — writeProviderCache is
+      // only reached on success below.
+      throw new CommandError("internal_error", e.message);
+    }
+    throw e;
+  }
+
+  const fetchedAt = new Date().toISOString();
+  const cachePath = providerCachePath(ctx.cacheDir, provider);
+  try {
+    writeProviderCache(cachePath, {
+      version: PROVIDER_CACHE_VERSION,
+      provider_key: provider,
+      fetched_at: fetchedAt,
+      base_url: baseUrl,
+      models,
+    });
+  } catch (e) {
+    throw new CommandError("internal_error", `failed to write provider cache: ${(e as Error).message}`);
+  }
+
+  return { modelCount: models.length, fetchedAt, cachePath };
+}
+
+export async function refreshProviderModels(
+  ctx: CommandContext,
+  rawArgs: unknown,
+  fetcher?: DiscoveryFetcher,
+): Promise<Record<string, unknown>> {
+  const args = asArgs(rawArgs);
+  const provider = requireProvider(args);
+  const outcome = await refreshOne(ctx, provider, fetcher);
   return {
     provider,
-    model_count: 0,
-    fetched_at: null,
-    cache_path: providerCachePath(ctx.cacheDir, provider),
-    status: "not_implemented",
-    message: "provider model refresh not implemented in TS daemon",
+    model_count: outcome.modelCount,
+    fetched_at: outcome.fetchedAt,
+    cache_path: outcome.cachePath,
   };
 }
 
-export function refreshAllProviderModels(ctx: CommandContext): Record<string, unknown> {
+export async function refreshAllProviderModels(
+  ctx: CommandContext,
+  fetcher?: DiscoveryFetcher,
+): Promise<Record<string, unknown>> {
   const results: unknown[] = [];
   const skipped: unknown[] = [];
   for (const [provider, entry] of Object.entries(ctx.runtime.providers).sort(([a], [b]) => a.localeCompare(b))) {
@@ -231,11 +326,19 @@ export function refreshAllProviderModels(ctx: CommandContext): Record<string, un
       skipped.push({ provider, reason: "discovery disabled" });
       continue;
     }
-    results.push({
-      provider,
-      ok: false,
-      error: "provider model refresh not implemented in TS daemon",
-    });
+    try {
+      const outcome = await refreshOne(ctx, provider, fetcher);
+      results.push({
+        provider,
+        ok: true,
+        model_count: outcome.modelCount,
+        fetched_at: outcome.fetchedAt,
+        cache_path: outcome.cachePath,
+      });
+    } catch (e) {
+      const message = e instanceof CommandError ? e.message : (e as Error).message;
+      results.push({ provider, ok: false, error: message });
+    }
   }
   return { results, skipped };
 }

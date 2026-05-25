@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { AutonomyRegistry } from "../src/autonomy/registry.ts";
-import { loadProviderRegistry, providerCachePath } from "../src/commands/providers.ts";
+import {
+  loadProviderRegistry,
+  providerCachePath,
+  refreshAllProviderModels,
+  refreshProviderModels,
+} from "../src/commands/providers.ts";
 import type { CommandContext, RuntimeConfigState } from "../src/commands/types.ts";
 import { dispatchCommand } from "../src/commands/dispatch.ts";
 import { loadConfig } from "../src/config/loader.ts";
@@ -13,6 +18,7 @@ import { EngineRegistry } from "../src/engine/engine.ts";
 import { Ledger } from "../src/ledger/ledger.ts";
 import { PricingEngine } from "../src/ledger/pricing.ts";
 import { loadCatalog } from "../src/llm/catalog.ts";
+import type { DiscoveryFetcher } from "../src/llm/discovery.ts";
 
 function tempDir(): string {
   return mkdtempSync(path.join(tmpdir(), "shore-commands-providers-"));
@@ -69,6 +75,14 @@ model_id = "moonshotai/kimi-k2"
     },
   };
   return { ctx, ledger, cacheDir };
+}
+
+function mockFetcher(body: { data: Array<Record<string, unknown>> }): DiscoveryFetcher {
+  return async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(body),
+  });
 }
 
 function writeCache(cacheDir: string): void {
@@ -149,24 +163,107 @@ describe("command dispatcher providers", () => {
     ledger.close();
   });
 
-  it("provider refresh commands are explicit TS stubs", async () => {
-    const { ctx, ledger } = makeHarness();
-    const one = await dispatchCommand({
-      ctx,
-      name: "refresh_provider_models",
-      args: { provider: "openrouter" },
-    });
-    expect(one).toMatchObject({
-      provider: "openrouter",
-      status: "not_implemented",
-      message: "provider model refresh not implemented in TS daemon",
+  it("refresh_provider_models writes cache atomically and returns summary", async () => {
+    const { ctx, ledger, cacheDir } = makeHarness();
+    process.env["SHORE_COMMANDS_PROVIDER_KEY"] = "sk-test-refresh";
+    const fetcher = mockFetcher({
+      data: [
+        { id: "anthropic/claude-sonnet-4.5", context_length: 200_000 },
+        { id: "meta-llama/free", owned_by: "meta" },
+      ],
     });
 
-    const all = await dispatchCommand({ ctx, name: "refresh_all_provider_models", args: {} });
-    expect(all).toMatchObject({
+    const out = await refreshProviderModels(ctx, { provider: "openrouter" }, fetcher);
+    expect(out).toMatchObject({
+      provider: "openrouter",
+      model_count: 2,
+    });
+    expect(typeof (out as { fetched_at: string }).fetched_at).toBe("string");
+    expect((out as { cache_path: string }).cache_path).toBe(
+      providerCachePath(cacheDir, "openrouter"),
+    );
+
+    const cached = JSON.parse(
+      fs.readFileSync(providerCachePath(cacheDir, "openrouter"), "utf8"),
+    ) as { models: Array<{ model_id: string; sdk: string }> };
+    expect(cached.models).toHaveLength(2);
+    expect(cached.models[0].model_id).toBe("anthropic/claude-sonnet-4.5");
+    expect(cached.models[0].sdk).toBe("openai");
+    delete process.env["SHORE_COMMANDS_PROVIDER_KEY"];
+    ledger.close();
+  });
+
+  it("refresh_provider_models leaves prior cache intact on HTTP failure", async () => {
+    const { ctx, ledger, cacheDir } = makeHarness();
+    process.env["SHORE_COMMANDS_PROVIDER_KEY"] = "sk-test-fail";
+    writeCache(cacheDir);
+    const fetcher: DiscoveryFetcher = async () => ({
+      ok: false,
+      status: 500,
+      text: async () => "upstream boom",
+    });
+
+    await expect(refreshProviderModels(ctx, { provider: "openrouter" }, fetcher))
+      .rejects.toMatchObject({ code: "internal_error" });
+
+    const cached = JSON.parse(
+      fs.readFileSync(providerCachePath(cacheDir, "openrouter"), "utf8"),
+    ) as { models: unknown[] };
+    expect(cached.models).toHaveLength(2);
+    delete process.env["SHORE_COMMANDS_PROVIDER_KEY"];
+    ledger.close();
+  });
+
+  it("refresh_provider_models rejects unknown / disabled / discovery-disabled providers", async () => {
+    const { ctx, ledger } = makeHarness();
+    await expect(dispatchCommand({
+      ctx,
+      name: "refresh_provider_models",
+      args: { provider: "ghost" },
+    })).rejects.toMatchObject({ code: "not_found" });
+    await expect(dispatchCommand({
+      ctx,
+      name: "refresh_provider_models",
+      args: { provider: "disabled" },
+    })).rejects.toMatchObject({ code: "invalid_request" });
+    ledger.close();
+  });
+
+  it("refresh_provider_models surfaces missing API key as provider_error", async () => {
+    const { ctx, ledger } = makeHarness();
+    delete process.env["SHORE_COMMANDS_PROVIDER_KEY"];
+    await expect(refreshProviderModels(ctx, { provider: "openrouter" }))
+      .rejects.toMatchObject({ code: "provider_error" });
+    ledger.close();
+  });
+
+  it("refresh_all_provider_models aggregates results and skips disabled providers", async () => {
+    const { ctx, ledger } = makeHarness();
+    process.env["SHORE_COMMANDS_PROVIDER_KEY"] = "sk-test-all";
+    const fetcher = mockFetcher({
+      data: [{ id: "anthropic/claude-sonnet-4.5" }],
+    });
+    const out = await refreshAllProviderModels(ctx, fetcher);
+    expect(out).toMatchObject({
+      results: [{ provider: "openrouter", ok: true, model_count: 1 }],
+      skipped: [{ provider: "disabled", reason: "disabled" }],
+    });
+    delete process.env["SHORE_COMMANDS_PROVIDER_KEY"];
+    ledger.close();
+  });
+
+  it("refresh_all_provider_models continues after one provider fails", async () => {
+    const { ctx, ledger } = makeHarness();
+    // openrouter is the only enabled+discoverable provider in the harness;
+    // simulate a failure by leaving the API key unset.
+    delete process.env["SHORE_COMMANDS_PROVIDER_KEY"];
+    const out = await refreshAllProviderModels(ctx);
+    expect(out).toMatchObject({
       results: [{ provider: "openrouter", ok: false }],
       skipped: [{ provider: "disabled", reason: "disabled" }],
     });
+    expect((out as { results: Array<{ error: string }> }).results[0].error)
+      .toMatch(/API key/);
     ledger.close();
   });
 
