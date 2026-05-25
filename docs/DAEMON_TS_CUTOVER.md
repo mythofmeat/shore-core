@@ -4,17 +4,14 @@ This runbook tracks the Phase 9 path from opt-in TypeScript daemon preview to
 default daemon. It does not declare the cutover complete; it defines the
 evidence required before `shore-daemon-ts` can replace the Rust daemon.
 
-> **Audit gate (2026-05-24).** The TypeScript daemon currently cannot
-> stand in for the Rust daemon for the full surface a normal user touches:
-> the CLI command dispatcher implements 2 of 35 commands, autonomous
-> compaction and dreaming are unwired, the preferences module and multi-key
-> credential fallback are not ported, and several subsystems (image resize +
-> cache, notifications, hot reload, auto-discovery, template upgrade) are
-> absent. See `REWRITE.md` "Parity audit (2026-05-24)" for the full list and
-> the "Phase 9b parity gaps" checklist. Do not run the steps below against a
-> daily-driver Shore directory until those gaps land or are explicitly
-> descoped — a TS-preview soak that breaks `shore status` or runs without
-> compaction is not a useful soak.
+> **Audit gate (cleared 2026-05-25).** The 2026-05-24 parity audit
+> identified 15 blockers / divergences. All have been ported or
+> explicitly descoped — see
+> [`DAEMON_TS_REWRITE_HISTORY.md`](DAEMON_TS_REWRITE_HISTORY.md) for the
+> per-item resolutions. One pre-soak item remains: automated parity
+> coverage build-out, tracked in
+> [`DAEMON_TS_PARITY.md`](DAEMON_TS_PARITY.md). Until that lands, the
+> soak below is the only parity signal in production.
 
 ## Scope
 
