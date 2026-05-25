@@ -18,6 +18,15 @@ Parity coverage build-out: [`docs/DAEMON_TS_PARITY.md`](docs/DAEMON_TS_PARITY.md
 
 ### Pre-soak
 
+- [ ] **Update stale documentation.** Various docs still frame the
+  rewrite as in-progress or assume the Rust daemon is the only daemon.
+  Known offenders: `backend/daemon-ts/README.md` ("Current phase: 8d
+  complete — cutover prep" is stale; phase 9b is done), top-level
+  `README.md` + `ARCHITECTURE.md` (Rust-daemon-centric framing — the TS
+  daemon is currently described as a preview gate, will need real
+  parity rewriting at cutover), `AGENTS.md` (entry-map should mention
+  daemon-ts as the live target). Pass once now to fix the obviously
+  stale lines, then a second pass at cutover to rewrite the framing.
 - [ ] **Automated parity coverage lands.** The existing harness only
   covers handshake, one message-append, and offline prompt-assembly. The
   cutover gate ("one full release cycle with no live failures") is a
