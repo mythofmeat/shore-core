@@ -12,9 +12,10 @@ soak is for catching the *unexpected* divergence, not the expected one.
 > command-dispatcher coverage is green for the manifest-backed batch under
 > `backend/daemon-ts/parity-traces/commands/`. The first Tier 3 slice is
 > also green for Anthropic and OpenAI-compatible text generation,
-> Anthropic regen persistence, a one-tool Anthropic loop, and inline
+> Anthropic regen persistence, a one-tool Anthropic loop, inline
 > compaction end-to-end (trigger → memory writes → segment archive →
-> active.jsonl truncation → restart history). These compare SWP output,
+> active.jsonl truncation → restart history), and autonomous heartbeat
+> message dispatch. These compare SWP output,
 > canonical provider request bodies, and the post-restart on-disk state
 > where relevant.
 
@@ -43,8 +44,9 @@ The first T3 content checks are separate for now:
 `bun run parity:generation:openai` for OpenAI-compatible,
 `bun run parity:regen` for Anthropic regen,
 `bun run parity:tool-loop` for the one-tool Anthropic loop, and
-`bun run parity:compaction` for inline compaction end-to-end (all require
-`/usr/bin/shore-daemon`).
+`bun run parity:compaction` for inline compaction end-to-end, and
+`bun run parity:heartbeat-tick` for autonomous heartbeat dispatch (all
+require `/usr/bin/shore-daemon`).
 
 ## Coverage tiers
 
@@ -174,7 +176,12 @@ here — that's the [audit #12 cache-prefix regression pin](#tier-3--content-lev
 tracked separately. The generation check currently has Anthropic and
 OpenAI-compatible fixtures. The LLM proxy serves SSE for streaming
 requests and a single JSON message for non-streaming requests (compaction
-calls go through the latter path).
+and heartbeat calls go through the latter path). The heartbeat check,
+`backend/daemon-ts/scripts/parity-check-heartbeat-tick.ts`, sends one
+deterministic setup turn to create autonomy state, forces
+`heartbeat_tick_now`, waits for an autonomous `new_message`, then diffs
+setup and heartbeat request bodies, tick SWP frames, `active.jsonl`,
+restart history, and notify-send argv.
 
 Once the rest of that infra exists:
 
@@ -203,8 +210,10 @@ Once the rest of that infra exists:
   vs deep block copy).
 - [ ] **dreaming cron firing end-to-end** — trigger via debug command → wait
   → diff memory files written + ledger rows
-- [ ] **autonomous-message dispatch** — fast-forward heartbeat (debug cmd)
-  → wait for autonomous turn → diff history + notification spawn
+- [x] **autonomous-message dispatch (done 2026-05-25)** — setup turn
+  creates autonomy state → `heartbeat_tick_now` fast-forwards the clock
+  → diff autonomous SWP frames, setup + heartbeat request bodies,
+  `active.jsonl`, restart history, and notify-send spawn.
 - [x] **tool loop multi-turn (Anthropic, done 2026-05-25)** — message
   that triggers a `read` tool call → diff tool-call/tool-result frames,
   both provider request bodies, final assistant text, and post-restart
@@ -330,10 +339,10 @@ that are *not* parity-test bugs. Each blocks preview soak.
   the request body has `stream: true` and a single JSON message
   otherwise — added 2026-05-25 for inline-compaction parity, since
   `LedgerClient::generate` (compaction's call path) is non-streaming.
-- [ ] **T3 notify-send intercept.** Shim that both daemons can shell out
-  to instead of the real `notify-send`, logs the (title, body) args, both
-  daemons under test write to the same log file → diff. Cheaper than
-  intercepting `Bun.spawn` directly.
+- [x] **T3 notify-send intercept (done 2026-05-25).** Shim that both
+  daemons can shell out to instead of the real `notify-send`, logs the
+  argv to JSONL, and lets T3 checks diff notification title/body content.
+  Used by inline compaction and autonomous heartbeat dispatch.
 - [ ] **Live-API validation pass (pre-soak gate).** Every T3 check
   today runs against `parity/llm-proxy.ts` serving canned responses.
   That proves *daemon-vs-daemon* parity against the mock; it does not

@@ -1,0 +1,38 @@
+{
+  "responses": [
+    {
+      "provider": "anthropic",
+      "model": "claude-parity",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Setup reply for heartbeat parity."
+        }
+      ],
+      "stop_reason": "end_turn",
+      "usage": {
+        "input_tokens": 41,
+        "output_tokens": 6,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0
+      }
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-parity",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "<sendMessage>Autonomous parity ping.</sendMessage>"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "usage": {
+        "input_tokens": 53,
+        "output_tokens": 9,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  ]
+}
