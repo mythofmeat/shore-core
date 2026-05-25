@@ -42,22 +42,32 @@ explicitly out of scope for automation.
 ### Tier 1 — persistence-based flows (no new infra)
 
 Same pattern as `parity-check-message-append.ts`: drive the daemon with a
-scripted client, kill it, restart, diff the persisted state.
+scripted client, kill it, restart, diff the persisted state. Eligible
+flows are the ones whose state mutation happens **before** any LLM call
+— without a working provider key (the capture/check default), any
+post-LLM state change never happens.
 
-- [ ] **regen** — append user msg → regen → kill → restart → diff history
-- [ ] **edit** — append → edit-message → kill → restart → diff
-- [ ] **delete** — append → delete-message → kill → restart → diff
-- [ ] **alt-cycle** — append → add_alt → select_alt → kill → restart → diff
-- [ ] **multi-turn dialog** — N user msgs → kill → restart → diff full history
-- [ ] **inline compaction trigger** — append until trigger → wait for
-  compaction → kill → restart → diff `active.jsonl` truncation + memory
-  files written
-- [ ] **truncate-after-last-user-turn** — pin the engine API gap closed by
-  audit #13
+- [ ] **multi-turn dialog** — N user msgs → kill → restart → diff full
+  history. Extends the existing message-append flow to multiple turns.
+- [ ] **edit command** — append → `edit` command → kill → restart →
+  diff. The edit command dispatcher mutates state directly, no LLM.
+- [ ] **delete command** — append → `delete` command → kill → restart
+  → diff.
+- [ ] **alt command (add + select)** — append → `add_alt` →
+  `select_alt` → kill → restart → diff. Both alt operations mutate
+  without LLM.
 
 Capture scripts live next to `capture-message-append.ts`; baselines under
 `backend/daemon-ts/parity-traces/`; check scripts next to
 `parity-check-message-append.ts`. One capture + check pair per flow.
+
+**Moved out of Tier 1** (require working LLM, covered under Tier 3 below):
+- **regen** — state mutation only happens on LLM success
+  (`handler/persistence.rs:138` `replace_after_last_user_turn`). With a
+  failed LLM, history is unchanged, so persistence diff is trivial.
+- **inline compaction trigger** — compaction is itself an LLM call.
+- **truncate-after-last-user-turn** — not SWP-triggerable; internal
+  engine API. Covered by unit tests, not parity.
 
 ### Tier 2 — command dispatcher round-trips (no LLM involved)
 
@@ -113,6 +123,13 @@ Once that infra exists:
 
 - [ ] **generation content parity** — send msg → diff the assistant text
   frame body (not just persistence)
+- [ ] **regen** — send msg (deterministic LLM response) → regen (different
+  deterministic response) → kill → restart → diff history. Requires the
+  LLM stub because state only mutates on LLM success.
+- [ ] **inline compaction trigger end-to-end** — append until trigger
+  threshold → wait for compaction → kill → restart → diff `active.jsonl`
+  truncation + memory files written + ledger rows. Requires the LLM stub
+  for the compaction LLM call.
 - [ ] **dreaming cron firing end-to-end** — trigger via debug command → wait
   → diff memory files written + ledger rows
 - [ ] **autonomous-message dispatch** — fast-forward heartbeat (debug cmd)
