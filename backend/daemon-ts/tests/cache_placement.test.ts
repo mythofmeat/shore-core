@@ -538,4 +538,45 @@ describe("cache placement (offline)", () => {
       await server.close();
     }
   });
+
+  // Regression pin for the `_label` wire leak. Rust strips `_label` from
+  // system blocks before sending (`backend/llm/src/providers/anthropic.rs:301-306`)
+  // because it's internal metadata. The TS port at one point copied
+  // `_label` onto the wire, causing cross-daemon cache-key fragmentation
+  // — TS-written cache entries didn't match Rust-written entries for the
+  // same conversation. Every existing T3 parity check missed this
+  // because their fixtures had `cache_ttl = ""`, which short-circuits
+  // the breakpoint code path entirely. This test exercises the path
+  // with caching on and pins the wire shape.
+  it("_label never reaches the wire on system blocks", async () => {
+    const server = await startFakeAnthropic([
+      {
+        blocks: [{ type: "text", text: "ack" }],
+        stopReason: "end_turn",
+      } satisfies CannedResponse,
+    ]);
+    try {
+      const req: ChatRequest = {
+        ...baseRequest([
+          { role: "user", content: [{ type: "text", text: "Hi" }] },
+        ]),
+        system: [
+          { type: "text", text: "You are Casey.", _label: "system" },
+          { type: "text", text: "# TOOLS\n…", _label: "tools_guidance" },
+          { type: "text", text: "<casey>…</casey>", _label: "character" },
+        ],
+        baseUrl: server.baseUrl,
+      };
+      await drain(new AnthropicProvider().stream(req));
+
+      const body = server.bodies[0] as Record<string, unknown>;
+      const system = body.system as Array<Record<string, unknown>>;
+      expect(system).toHaveLength(3);
+      for (const block of system) {
+        expect(block).not.toHaveProperty("_label");
+      }
+    } finally {
+      await server.close();
+    }
+  });
 });

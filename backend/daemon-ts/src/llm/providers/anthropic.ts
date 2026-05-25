@@ -304,12 +304,14 @@ function buildSystem(
     return [block];
   }
 
+  // `_label` is internal metadata and must NOT reach the provider —
+  // Anthropic ignores unknown fields silently, but they pollute the
+  // cache-key hash (cross-daemon cache fragmentation) and have no
+  // upside on the wire. Mirrors Rust's strip step at
+  // `backend/llm/src/providers/anthropic.rs:301-306`. Pinned by
+  // `_label_never_reaches_wire` in this file's test suite.
   const blocks = system.map((b) => {
-    const block: TextBlockParam & { _label?: string } = {
-      type: "text",
-      text: b.text,
-    };
-    if (b._label !== undefined) block._label = b._label;
+    const block: TextBlockParam = { type: "text", text: b.text };
     return block;
   });
   if (cacheControl && blocks.length > 0) {

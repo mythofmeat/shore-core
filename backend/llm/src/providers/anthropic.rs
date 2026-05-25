@@ -204,6 +204,22 @@ fn resolve_pinned_positions(
 /// `SHORE_CACHE_PINNED_POSITION` environment variables (comma-separated).
 ///
 /// Combined total must not exceed 4 (Anthropic's limit).
+/// Remove the internal-only `_label` metadata field from system blocks
+/// so it never reaches the Anthropic wire. Called from both the
+/// cache-enabled and cache-disabled paths — leaving it inside
+/// `apply_cache_control` would silently leak `_label` to every request
+/// made with `cache_ttl = ""`. Pinned by `_label_never_reaches_wire`
+/// regression test below.
+fn strip_label_fields(system: &mut Value) {
+    if let Some(arr) = system.as_array_mut() {
+        for block in arr.iter_mut() {
+            if let Some(obj) = block.as_object_mut() {
+                obj.remove("_label");
+            }
+        }
+    }
+}
+
 fn apply_cache_control(
     messages: &[Value],
     system: &Value,
@@ -298,13 +314,8 @@ fn apply_cache_control(
                 tracing::debug!(idx, "apply_cache_control: system breakpoint placed");
             }
         }
-        // Strip _label fields — internal metadata, not part of the API.
-        for block in arr.iter_mut() {
-            if let Some(obj) = block.as_object_mut() {
-                obj.remove("_label");
-            }
-        }
     }
+    strip_label_fields(&mut sys);
 
     // Message breakpoints.
     for &pos in &msg_bp {
@@ -483,9 +494,17 @@ fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
             &pinned_positions,
         )
     } else {
+        // `_label` is internal metadata; strip it before the request
+        // hits the wire so the cache-disabled path matches the
+        // cache-enabled path. Both daemons (Rust and TS) used to leak
+        // `_label` here because the strip lived inside
+        // `apply_cache_control`, which this branch skips. See the
+        // `strip_label_fields` doc comment.
+        let mut sys = request.system.clone().unwrap_or(json!(null));
+        strip_label_fields(&mut sys);
         (
             converted_messages,
-            request.system.clone().unwrap_or(json!(null)),
+            sys,
             CachePlacement {
                 msg_breakpoints: vec![],
                 sys_breakpoints: vec![],
@@ -1148,6 +1167,37 @@ mod tests {
         // _label fields should be stripped.
         assert!(blocks[0].get("_label").is_none());
         assert!(blocks[1].get("_label").is_none());
+    }
+
+    #[test]
+    fn test_strip_label_fields_removes_from_array() {
+        // Regression pin: `_label` must never reach the Anthropic wire,
+        // regardless of whether caching is enabled. Before the fix
+        // (2026-05-25) `_label` only got stripped as a side effect of
+        // `apply_cache_control`, which the cache-disabled branch
+        // skips, leaking `_label` to every `cache_ttl = ""` request.
+        // The TS port shared the bug; surfaced by inline-compaction
+        // parity. See `docs/DAEMON_TS_PARITY.md` "Known divergences".
+        let mut sys = json!([
+            { "type": "text", "text": "a", "_label": "system" },
+            { "type": "text", "text": "b", "_label": "character" },
+        ]);
+        strip_label_fields(&mut sys);
+        let blocks = sys.as_array().unwrap();
+        assert!(blocks[0].get("_label").is_none());
+        assert!(blocks[1].get("_label").is_none());
+        assert_eq!(blocks[0].get("text").unwrap().as_str(), Some("a"));
+    }
+
+    #[test]
+    fn test_strip_label_fields_is_a_noop_on_non_array() {
+        let mut sys = json!(null);
+        strip_label_fields(&mut sys);
+        assert!(sys.is_null());
+
+        let mut sys2 = json!("legacy string system");
+        strip_label_fields(&mut sys2);
+        assert_eq!(sys2.as_str(), Some("legacy string system"));
     }
 
     #[test]
