@@ -40,8 +40,9 @@ export class OpenAIProvider implements ProviderClient {
     });
 
     const messages: ChatCompletionMessageParam[] = [];
-    if (req.system) {
-      messages.push({ role: "system", content: req.system });
+    const systemText = systemToText(req.system);
+    if (systemText) {
+      messages.push({ role: "system", content: systemText });
     }
     for (const turn of req.messages) {
       messages.push(...turnToOpenAI(turn));
@@ -171,6 +172,11 @@ export class OpenAIProvider implements ProviderClient {
 
 // ── conversion ──────────────────────────────────────────────────────────
 
+function systemToText(system: ChatRequest["system"]): string {
+  if (typeof system === "string") return system;
+  return system.map((b) => b.text).join("");
+}
+
 function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {
   // OpenAI splits a tool_result-containing user turn into one `tool`
   // role message per result, and assistant tool_use becomes `tool_calls`
@@ -217,7 +223,7 @@ function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {
   // ride on a single user message. Images become image_url parts in the
   // user message's multipart content array, prepended before text.
   const out: ChatCompletionMessageParam[] = [];
-  const userBlocks: string[] = [];
+  const textParts: Array<{ type: "text"; text: string }> = [];
   for (const b of turn.content) {
     if (b.type === "tool_result") {
       const toolMsg: ChatCompletionToolMessageParam = {
@@ -227,22 +233,15 @@ function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {
       };
       out.push(toolMsg);
     } else if (b.type === "text") {
-      userBlocks.push(b.text);
+      textParts.push({ type: "text", text: b.text });
     }
   }
   const imageParts = imagesToOpenAIParts(turn.images);
-  if (imageParts.length > 0 || userBlocks.length > 0) {
-    if (imageParts.length === 0) {
-      out.push({ role: "user", content: userBlocks.join("\n") });
-    } else {
-      const parts: Array<
-        { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }
-      > = [...imageParts];
-      if (userBlocks.length > 0) {
-        parts.push({ type: "text", text: userBlocks.join("\n") });
-      }
-      out.push({ role: "user", content: parts });
-    }
+  if (imageParts.length > 0 || textParts.length > 0) {
+    const parts: Array<
+      { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }
+    > = [...imageParts, ...textParts];
+    out.push({ role: "user", content: parts });
   }
   return out;
 }

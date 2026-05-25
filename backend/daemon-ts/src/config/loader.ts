@@ -51,6 +51,7 @@ export interface LoadedConfig {
     };
     behavior: {
       autonomy: AutonomyConfig;
+      tool_use: ToolUseConfig;
     };
     advanced: {
       cache_forensics: boolean;
@@ -82,6 +83,11 @@ export interface AutonomyConfig {
   heartbeat: LoadedHeartbeatConfig;
 }
 
+export interface ToolUseConfig {
+  enabled: boolean;
+  max_iterations: number;
+}
+
 export interface LoadedHeartbeatConfig extends HeartbeatConfig {
   enabled: boolean;
   maxToolRounds: number;
@@ -110,6 +116,7 @@ export function loadConfig(input: string | ConfigInput): LoadedConfig {
       },
       behavior: {
         autonomy: parseAutonomyConfig(pickAutonomyTable(merged)),
+        tool_use: parseToolUseConfig(pickToolUseTable(merged)),
       },
       advanced: parseAdvancedConfig(pickTable(merged, "advanced")),
       usage: parseUsageConfig(pickTable(merged, "usage")),
@@ -254,6 +261,14 @@ function pickAutonomyTable(
   return pickTable(behavior, "autonomy");
 }
 
+function pickToolUseTable(
+  obj: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const behavior = pickTable(obj, "behavior");
+  if (behavior === undefined) return undefined;
+  return pickTable(behavior, "tool_use");
+}
+
 function parseEmbeddingProfiles(
   table: Record<string, unknown> | undefined,
 ): Record<string, Record<string, unknown>> {
@@ -332,6 +347,16 @@ function parseAutonomyConfig(
         ? table["enabled"]
         : false,
     heartbeat: parseHeartbeatConfig(heartbeat),
+  };
+}
+
+function parseToolUseConfig(table: Record<string, unknown> | undefined): ToolUseConfig {
+  return {
+    enabled:
+      table !== undefined && typeof table["enabled"] === "boolean"
+        ? table["enabled"]
+        : true,
+    max_iterations: asNumber(table?.["max_iterations"]) ?? 10,
   };
 }
 

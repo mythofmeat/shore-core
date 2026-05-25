@@ -56,6 +56,10 @@ dormant_after_idle_time = "3d"
 minimum_heartbeat_latency = "45m"
 max_tool_rounds = 5
 wrap_up_grace_rounds = 2
+
+[behavior.tool_use]
+enabled = false
+max_iterations = 3
 `);
 
     const config = loadConfig(dir);
@@ -99,6 +103,10 @@ wrap_up_grace_rounds = 2
         maxToolRounds: 5,
         wrapUpGraceRounds: 2,
       },
+    });
+    expect(config.app.behavior.tool_use).toEqual({
+      enabled: false,
+      max_iterations: 3,
     });
   });
 

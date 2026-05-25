@@ -14,6 +14,12 @@
     "parity": "bun scripts/parity-check.ts parity-traces/handshake-empty.jsonl && bun scripts/parity-check.ts parity-traces/handshake-character.jsonl --fixture parity-traces/fixtures/handshake-character && bun scripts/parity-check-message-append.ts && bun scripts/parity-check-multi-turn.ts && bun scripts/parity-check-edit.ts && bun scripts/parity-check-delete.ts && bun scripts/parity-check-alt.ts && bun scripts/parity-check-commands.ts",
     "parity:compiled": "bun scripts/parity-check.ts parity-traces/handshake-empty.jsonl ./dist/shore-daemon && bun scripts/parity-check.ts parity-traces/handshake-character.jsonl ./dist/shore-daemon --fixture parity-traces/fixtures/handshake-character && bun scripts/parity-check-message-append.ts ./dist/shore-daemon && bun scripts/parity-check-multi-turn.ts ./dist/shore-daemon && bun scripts/parity-check-edit.ts ./dist/shore-daemon && bun scripts/parity-check-delete.ts ./dist/shore-daemon && bun scripts/parity-check-alt.ts ./dist/shore-daemon && bun scripts/parity-check-commands.ts ./dist/shore-daemon",
     "parity:commands": "bun scripts/parity-check-commands.ts",
+    "parity:generation": "bun scripts/parity-check-generation.ts --rust /usr/bin/shore-daemon",
+    "parity:generation:compiled": "bun scripts/parity-check-generation.ts --rust /usr/bin/shore-daemon --ts ./dist/shore-daemon",
+    "parity:generation:openai": "bun scripts/parity-check-generation.ts --rust /usr/bin/shore-daemon --fixture parity-traces/fixtures/generation-openai-compatible --response parity-traces/llm-fixtures/generation-openai-compatible.json",
+    "parity:generation:openai:compiled": "bun scripts/parity-check-generation.ts --rust /usr/bin/shore-daemon --ts ./dist/shore-daemon --fixture parity-traces/fixtures/generation-openai-compatible --response parity-traces/llm-fixtures/generation-openai-compatible.json",
+    "parity:regen": "bun scripts/parity-check-regen.ts --rust /usr/bin/shore-daemon",
+    "parity:regen:compiled": "bun scripts/parity-check-regen.ts --rust /usr/bin/shore-daemon --ts ./dist/shore-daemon",
     "parity:capture-commands": "bun scripts/capture-command.ts /usr/bin/shore-daemon --all",
     "capture-trace": "bun scripts/capture-rust-trace.ts /usr/bin/shore-daemon"
   },

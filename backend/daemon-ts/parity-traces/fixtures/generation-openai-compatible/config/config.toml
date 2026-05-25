@@ -1,0 +1,17 @@
+[defaults]
+model = "chat.openai.parity"
+display_name = "Parity User"
+
+[behavior.tool_use]
+enabled = false
+
+[memory.compaction]
+max_turns = 0
+max_context_tokens = 0
+
+[chat.openai.parity]
+model_id = "gpt-parity"
+api_key_env = "SHORE_PARITY_OPENAI_KEY"
+base_url = "{{LLM_PROXY_BASE_URL}}"
+max_tokens = 64
+temperature = 1

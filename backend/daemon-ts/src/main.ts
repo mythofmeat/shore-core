@@ -50,7 +50,7 @@ import { resolveEmbedder, type Embedder } from "./llm/embed.ts";
 import { loadConfigDotenv } from "./llm/env.ts";
 import { generateResponse } from "./llm/generate.ts";
 import { workspaceIndexPath } from "./memory/workspace_index.ts";
-import { defaultRegistry } from "./tools/registry.ts";
+import { defaultRegistry, ToolRegistry } from "./tools/registry.ts";
 import { resolveShoreDirs } from "./runtime/dirs.ts";
 import { Registry } from "./runtime/registry.ts";
 import { SwpServer } from "./swp/server.ts";
@@ -458,6 +458,14 @@ function buildMessageHandler(
       timestamp: rfc3339LocalNow(),
     };
     await engine.appendMessage(userMsg);
+    const userRevision = engine.historySnapshot().revision;
+    broadcastNewMessage(
+      getServer,
+      session.character,
+      "user_input",
+      userRevision,
+      userMsg,
+    );
     autonomy.notifyUserMessage(session.character, engine.messageCount());
 
     const modelName = config.app.defaults.model;
@@ -510,10 +518,8 @@ function buildMessageHandler(
         configDir,
         displayName,
         resolved,
-        registry: defaultRegistry({
-          characterName: session.character,
-          displayName,
-        }),
+        registry: registryForGeneration(config, session.character, displayName),
+        maxIterations: config.app.behavior.tool_use.max_iterations,
         broadcast,
         ledger,
         pricing,
@@ -626,6 +632,22 @@ function emitBudgetWarnings(
   }
 }
 
+function broadcastNewMessage(
+  getServer: () => SwpServer | undefined,
+  character: string,
+  origin: "user_input" | "assistant_reply" | "autonomous",
+  revision: number,
+  message: Message,
+): void {
+  getServer()?.broadcast({
+    type: "new_message",
+    revision,
+    character,
+    origin,
+    ...message,
+  } as import("./swp/types.ts").ServerMessage);
+}
+
 /**
  * Decide what to do with a generation error. `AbortError` from the
  * AbortSignal pathway is expected — clients see only the cancellation
@@ -661,6 +683,15 @@ function handleGenerationError(
   });
 }
 
+function registryForGeneration(
+  config: LoadedConfig,
+  characterName: string,
+  displayName: string,
+): ToolRegistry {
+  if (!config.app.behavior.tool_use.enabled) return new ToolRegistry();
+  return defaultRegistry({ characterName, displayName });
+}
+
 function resolveOptionalEmbedder(config: LoadedConfig): Embedder | undefined {
   if (
     config.app.defaults.embedding === undefined &&
@@ -679,11 +710,10 @@ function resolveOptionalEmbedder(config: LoadedConfig): Embedder | undefined {
 }
 
 /**
- * Regen handler. Drops the trailing assistant turn (and any tool-loop
- * intermediates) via `engine.rewindLastAssistantTurn`, optionally
- * appends a system message with the client's guidance, then drives a
- * fresh generation. The history broadcast after the truncate lets the
- * client clear its rendered assistant turn before the new stream starts.
+ * Regen handler. Mirrors Rust's successful-regen path: build the provider
+ * request from history through the last real user turn, then atomically replace
+ * the old assistant tail after the fresh response completes. The replaced
+ * response is preserved as an alternate on the new assistant message.
  */
 function buildRegenHandler(
   engines: EngineRegistry,
@@ -706,21 +736,9 @@ function buildRegenHandler(
     }
     const engine = engines.get(session.character);
     autonomy.ensureState(engine);
-    const dropped = await engine.rewindLastAssistantTurn();
-    if (dropped.length === 0) {
+    const pendingRegenAlt = engine.pendingRegenAlt();
+    if (pendingRegenAlt === undefined) {
       throw new Error("nothing to regen: no trailing assistant turn");
-    }
-
-    if (msg.guidance && msg.guidance.length > 0) {
-      const sys: Message = {
-        msg_id: `m_${crypto.randomUUID()}`,
-        role: "system",
-        content: msg.guidance,
-        images: [],
-        content_blocks: [{ type: "text", text: msg.guidance }],
-        timestamp: rfc3339LocalNow(),
-      };
-      await engine.appendMessage(sys);
     }
 
     const modelName = config.app.defaults.model;
@@ -762,10 +780,8 @@ function buildRegenHandler(
         configDir,
         displayName,
         resolved,
-        registry: defaultRegistry({
-          characterName: session.character,
-          displayName,
-        }),
+        registry: registryForGeneration(config, session.character, displayName),
+        maxIterations: config.app.behavior.tool_use.max_iterations,
         broadcast,
         ledger,
         pricing,
@@ -788,6 +804,8 @@ function buildRegenHandler(
           };
         },
         signal: msg.signal,
+        regen: true,
+        regenAlt: pendingRegenAlt,
         ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
         onPreparedRequest: (request) =>
           autonomy.notifyLastRequest(session.character!, request),

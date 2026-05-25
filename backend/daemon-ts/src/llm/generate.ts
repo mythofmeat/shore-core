@@ -27,6 +27,7 @@ import path from "node:path";
 
 import type { ConversationEngine } from "../engine/engine.ts";
 import { buildChatContext } from "../engine/context.ts";
+import { MessageStore, type PendingAlt } from "../engine/messages.ts";
 import type { ContentBlock, Message } from "../engine/types.ts";
 import type { ActivityStatsHook, ScheduleNextWake } from "../tools/registry.ts";
 import type { CacheForensics } from "../ledger/cache_forensics.ts";
@@ -82,6 +83,10 @@ export interface GenerateOptions {
   broadcast: (frame: ServerMessage) => void;
   /** Request id for correlating frames to the originating ClientMessage. */
   rid?: string;
+  /** True for ClientRegen; controls the SWP stream_start flag and prompt view. */
+  regen?: boolean;
+  /** Prior alternatives captured before a regen replaces the active response. */
+  regenAlt?: PendingAlt;
   isPrivate?: boolean;
   /** Per-call sampler overrides from the ClientMessage frame. */
   overrides?: GenerationOverrides;
@@ -161,11 +166,14 @@ export interface PrepareChatRequestOptions {
   signal?: AbortSignal;
   cacheForensics?: CacheForensics;
   rid?: string;
+  /** Optional prompt-history override, used by regen to omit the replaced tail. */
+  historyMessages?: Message[];
 }
 
 export function prepareChatRequest(opts: PrepareChatRequestOptions): ChatRequest {
   const resolved = resolveRequestModel(opts);
   const snapshot = opts.engine.historySnapshot();
+  const historyMessages = opts.historyMessages ?? snapshot.messages;
   const ctx = buildChatContext({
     characterName: opts.engine.name(),
     characterConfigDir: opts.characterConfigDir,
@@ -174,7 +182,7 @@ export function prepareChatRequest(opts: PrepareChatRequestOptions): ChatRequest
     displayName: opts.displayName,
     isPrivate: opts.isPrivate ?? false,
     hasPriorContext: false,
-    messages: snapshot.messages,
+    messages: historyMessages,
     ...(resolved.maxContextTokens !== undefined
       ? { maxContextTokens: resolved.maxContextTokens }
       : {}),
@@ -183,7 +191,11 @@ export function prepareChatRequest(opts: PrepareChatRequestOptions): ChatRequest
       : {}),
   });
 
-  const systemString = ctx.prompt.system.map((b) => b.content).join("\n\n");
+  const system = ctx.prompt.system.map((b) => ({
+    type: "text" as const,
+    text: b.content,
+    _label: b.label,
+  }));
   const messages = promptMessagesToTurns(ctx.prompt.messages);
   const tools = opts.registry.list().map((t) => ({
     name: t.name,
@@ -195,7 +207,7 @@ export function prepareChatRequest(opts: PrepareChatRequestOptions): ChatRequest
   const topP = opts.overrides?.top_p ?? resolved.topP;
 
   return {
-    system: systemString,
+    system,
     messages,
     tools,
     thinking,
@@ -228,7 +240,14 @@ export async function generateResponse(
   const apiKey = opts.provider === undefined ? resolveApiKey(opts.resolved) : "";
   const provider = opts.provider ?? buildProvider(opts.resolved.sdk);
 
-  const request = prepareChatRequest({ ...opts, apiKey });
+  const historyMessages = opts.regen === true
+    ? opts.engine.messagesThroughLastUserTurn()
+    : undefined;
+  const request = prepareChatRequest({
+    ...opts,
+    apiKey,
+    ...(historyMessages !== undefined ? { historyMessages } : {}),
+  });
   opts.onPreparedRequest?.(cloneChatRequest(request));
   if (opts.systemSuffix !== undefined && opts.systemSuffix.length > 0) {
     request.messages = [
@@ -254,7 +273,8 @@ export async function generateResponse(
     opts.broadcast(m);
   };
 
-  emit({ type: "stream_start", regen: false });
+  emit({ type: "stream_start", regen: opts.regen ?? false });
+  let pendingFinalStreamEnd: ServerMessage | undefined;
 
   const onEvent = (event: ChatEvent): void => {
     switch (event.kind) {
@@ -280,7 +300,7 @@ export async function generateResponse(
         const isFinal = event.stopReason !== "tool_use";
         const elapsed = Date.now() - startTs;
         const ttft = firstTokenTs !== null ? firstTokenTs - startTs : elapsed;
-        emit({
+        const endFrame: ServerMessage = {
           type: "stream_end",
           content: turnText,
           metadata: {
@@ -295,7 +315,12 @@ export async function generateResponse(
           },
           finish_reason: event.stopReason,
           is_final: isFinal,
-        });
+        };
+        if (isFinal) {
+          pendingFinalStreamEnd = endFrame;
+        } else {
+          emit(endFrame);
+        }
         // Reset for the next loop iteration's stream_end.
         turnText = "";
         break;
@@ -354,13 +379,53 @@ export async function generateResponse(
 
   recordLedgerCalls(opts, request, result);
 
-  // Persist the new turns. Each appendMessage triggers a History
-  // broadcast — clients use that as the canonical post-stream view.
+  // Persist the new turns. Normal generation appends; regen replaces the
+  // assistant tail so prior responses become selectable alternatives.
+  let persistedMsgId: string | undefined;
+  let persistedRevision: number | undefined;
+  let assistantEventMessage: Message | undefined;
   if (opts.persistTurns ?? true) {
-    for (const turn of result.newTurns) {
-      const msg = turnToMessage(turn);
-      await opts.engine.appendMessage(msg);
+    const generatedMessages = result.newTurns.map(turnToMessage);
+    if (opts.regenAlt !== undefined) {
+      MessageStore.attachGeneratedAlt(
+        generatedMessages,
+        opts.regenAlt.alternatives,
+      );
+      await opts.engine.replaceAfterLastUserTurn(generatedMessages);
+    } else {
+      for (const msg of generatedMessages) {
+        await opts.engine.appendMessage(msg);
+      }
     }
+    const persisted = opts.engine.historySnapshot();
+    const last = persisted.messages[persisted.messages.length - 1];
+    if (last !== undefined) {
+      persistedMsgId = last.msg_id;
+    }
+    persistedRevision = persisted.revision;
+    assistantEventMessage = [...generatedMessages]
+      .reverse()
+      .find((msg) => msg.role === "assistant");
+  }
+
+  if (assistantEventMessage !== undefined && persistedRevision !== undefined) {
+    opts.broadcast({
+      type: "new_message",
+      revision: persistedRevision,
+      character: opts.engine.name(),
+      origin: "assistant_reply",
+      ...assistantEventMessage,
+    } as ServerMessage);
+  }
+
+  if (pendingFinalStreamEnd !== undefined) {
+    if (persistedMsgId !== undefined) {
+      (pendingFinalStreamEnd as { msg_id?: string }).msg_id = persistedMsgId;
+    }
+    if (persistedRevision !== undefined) {
+      (pendingFinalStreamEnd as { revision?: number }).revision = persistedRevision;
+    }
+    emit(pendingFinalStreamEnd);
   }
 
   const finalText = result.finalContent
@@ -489,6 +554,9 @@ export function cloneChatRequest(request: ChatRequest): ChatRequest {
   } = request;
   return {
     ...rest,
+    system: Array.isArray(request.system)
+      ? request.system.map((b) => ({ ...b }))
+      : request.system,
     messages: request.messages.map((m) => ({
       ...m,
       content: m.content.map((b) => ({ ...b }) as ContentBlock),

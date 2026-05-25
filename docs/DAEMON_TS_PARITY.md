@@ -10,7 +10,10 @@ soak is for catching the *unexpected* divergence, not the expected one.
 > **Status (2026-05-25).** Tier 1 persistence coverage is green for
 > handshake, message append, multi-turn, edit, delete, and alt. Tier 2
 > command-dispatcher coverage is green for the manifest-backed batch under
-> `backend/daemon-ts/parity-traces/commands/`.
+> `backend/daemon-ts/parity-traces/commands/`. The first Tier 3 slice is
+> also green for Anthropic and OpenAI-compatible text generation, plus
+> Anthropic regen persistence: these compare SWP output, canonical
+> provider request bodies, and the post-restart history where relevant.
 
 ## Existing harness recap
 
@@ -32,6 +35,11 @@ soak is for catching the *unexpected* divergence, not the expected one.
 The `bun run parity` package script chains the three live checks; the
 prompt-assembly check has its own `bun run parity:prompt` (requires
 `cargo build -p shore-daemon --example dump_assemble_prompt`).
+The first T3 content check is separate for now:
+`bun run parity:generation` for Anthropic,
+`bun run parity:generation:openai` for OpenAI-compatible, and
+`bun run parity:regen` for Anthropic regen (all require
+`/usr/bin/shore-daemon`).
 
 ## Coverage tiers
 
@@ -136,13 +144,28 @@ daemon needs to know it's being mocked. The proxy lives in
 `backend/daemon-ts/scripts/parity/llm-proxy.ts` and the fixtures in
 `backend/daemon-ts/parity-traces/llm-fixtures/`.
 
-Once that infra exists:
+Initial implementation lives in
+`backend/daemon-ts/scripts/parity/llm-proxy.ts`. The first check,
+`backend/daemon-ts/scripts/parity-check-generation.ts`, runs Rust and TS
+against the same canned provider SSE stream, then diffs both the SWP
+generation summary and the canonical provider request body. The regen
+check, `backend/daemon-ts/scripts/parity-check-regen.ts`, uses the same
+proxy with a queued response pair so the initial message receives response
+A and regen receives response B before the restart-history diff. The
+generation check currently has Anthropic and OpenAI-compatible fixtures.
 
-- [ ] **generation content parity** — send msg → diff the assistant text
-  frame body (not just persistence)
-- [ ] **regen** — send msg (deterministic LLM response) → regen (different
-  deterministic response) → kill → restart → diff history. Requires the
-  LLM stub because state only mutates on LLM success.
+Once the rest of that infra exists:
+
+- [x] **generation content parity (Anthropic, done 2026-05-25)** — send
+  msg → diff assistant text/tokens/finish reason and canonical Anthropic
+  provider request body. `bun run parity:generation`.
+- [x] **generation content parity (OpenAI-compatible, done 2026-05-25)**
+  — same as above for `/chat/completions` SSE.
+  `bun run parity:generation:openai`.
+- [x] **regen (Anthropic, done 2026-05-25)** — send msg (deterministic
+  response A) → regen (deterministic response B) → kill → restart → diff
+  history, including `alt_index` / `alt_count` and alternatives.
+  `bun run parity:regen`.
 - [ ] **inline compaction trigger end-to-end** — append until trigger
   threshold → wait for compaction → kill → restart → diff `active.jsonl`
   truncation + memory files written + ledger rows. Requires the LLM stub
@@ -190,9 +213,12 @@ parts.
   `backend/daemon-ts/scripts/parity-check-commands.ts` iterates
   `parity-traces/commands/manifest.json`; adding a command case is a
   manifest entry plus one captured baseline, no new runner script.
-- [ ] **T3 LLM proxy.** Design above. Bun's built-in HTTP server + a
-  content-addressable fixture store under `parity-traces/llm-fixtures/`.
-  Record/replay flag. Streaming response preservation.
+- [x] **T3 LLM proxy, first slice (done 2026-05-25).**
+  `backend/daemon-ts/scripts/parity/llm-proxy.ts` uses Bun's built-in
+  HTTP server, preserves Anthropic and OpenAI-compatible SSE streaming,
+  captures canonical request bodies, and can use a content-addressed
+  fixture directory. Real-provider forward-record mode is still deferred
+  until we need provider-captured fixtures.
 - [ ] **T3 notify-send intercept.** Shim that both daemons can shell out
   to instead of the real `notify-send`, logs the (title, body) args, both
   daemons under test write to the same log file → diff. Cheaper than

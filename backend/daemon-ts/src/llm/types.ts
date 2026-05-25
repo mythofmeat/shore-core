@@ -60,9 +60,15 @@ export interface ThinkingConfig {
   effort?: string;
 }
 
+export interface SystemPromptBlock {
+  type: "text";
+  text: string;
+  _label?: string;
+}
+
 export interface ChatRequest {
-  /** System prompt as a single string — adapter wraps it into blocks. */
-  system: string;
+  /** System prompt as text blocks, or a legacy single string from tests/background callers. */
+  system: string | SystemPromptBlock[];
   messages: TurnMessage[];
   tools: ToolDef[];
   thinking: ThinkingConfig;

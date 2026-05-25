@@ -294,13 +294,28 @@ function makeCacheControl(ttl: string): CacheControl {
 }
 
 function buildSystem(
-  system: string,
+  system: ChatRequest["system"],
   cacheControl: CacheControl | undefined,
 ): TextBlockParam[] {
-  if (!system) return [];
-  const block: TextBlockParam = { type: "text", text: system };
-  if (cacheControl) block.cache_control = cacheControl;
-  return [block];
+  if (typeof system === "string") {
+    if (!system) return [];
+    const block: TextBlockParam = { type: "text", text: system };
+    if (cacheControl) block.cache_control = cacheControl;
+    return [block];
+  }
+
+  const blocks = system.map((b) => {
+    const block: TextBlockParam & { _label?: string } = {
+      type: "text",
+      text: b.text,
+    };
+    if (b._label !== undefined) block._label = b._label;
+    return block;
+  });
+  if (cacheControl && blocks.length > 0) {
+    blocks[blocks.length - 1]!.cache_control = cacheControl;
+  }
+  return blocks;
 }
 
 function buildTools(

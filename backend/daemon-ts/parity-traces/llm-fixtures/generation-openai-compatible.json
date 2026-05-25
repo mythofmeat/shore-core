@@ -1,0 +1,12 @@
+{
+  "provider": "openai_compatible",
+  "model": "gpt-parity",
+  "text": "OpenAI-compatible parity fixture response from the deterministic LLM.",
+  "finish_reason": "stop",
+  "usage": {
+    "prompt_tokens": 29,
+    "completion_tokens": 8,
+    "cached_tokens": 0,
+    "cache_write_tokens": 0
+  }
+}
