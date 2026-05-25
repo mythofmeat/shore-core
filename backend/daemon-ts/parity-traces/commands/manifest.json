@@ -1,0 +1,323 @@
+{
+  "cases": [
+    {
+      "name": "list_characters",
+      "rid": null,
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "list_characters.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "character_info",
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "character_info.jsonl",
+      "expected_frames": 1,
+      "fuzzy": {
+        "command_output": ["data.config_dir", "data.workspace_dir", "data.data_dir"]
+      },
+      "outcome": "ok"
+    },
+    {
+      "name": "switch_character",
+      "args": { "name": "guide" },
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "switch_character.jsonl",
+      "expected_frames": 2,
+      "outcome": "ok"
+    },
+    {
+      "id": "switch_character-missing",
+      "name": "switch_character",
+      "args": { "name": "nonexistent" },
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "switch_character-missing.jsonl",
+      "expected_frames": 1,
+      "outcome": "error"
+    },
+    {
+      "name": "log",
+      "args": { "count": 2 },
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "log.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "history_page",
+      "args": { "count": 1 },
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "history_page.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "get",
+      "args": { "ref": "m1" },
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "get.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "id": "get-missing-ref",
+      "name": "get",
+      "args": {},
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "get-missing-ref.jsonl",
+      "expected_frames": 1,
+      "outcome": "error"
+    },
+    {
+      "name": "list_alternatives",
+      "args": { "ref": "m2" },
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "list_alternatives.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "inject_system",
+      "args": { "text": "Test injection from parity capture." },
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "inject_system.jsonl",
+      "expected_frames": 2,
+      "fuzzy": {
+        "history": ["messages[*].msg_id", "messages[*].timestamp"]
+      },
+      "outcome": "ok"
+    },
+    {
+      "name": "status",
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "status.jsonl",
+      "expected_frames": 1,
+      "fuzzy": {
+        "command_output": ["data.config_dir", "data.data_dir", "data.cache_dir"]
+      },
+      "outcome": "ok"
+    },
+    {
+      "name": "memory",
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "memory.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "memory_changelog",
+      "args": { "limit": 1 },
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "memory_changelog.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "memory_dreams",
+      "args": { "limit": 1 },
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "memory_dreams.jsonl",
+      "expected_frames": 1,
+      "fuzzy": {
+        "command_output": ["data.path"]
+      },
+      "outcome": "ok"
+    },
+    {
+      "name": "config",
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "config.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "config_check",
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "config_check.jsonl",
+      "expected_frames": 1,
+      "fuzzy": {
+        "command_output": ["data.config_dir", "data.data_dir", "data.cache_dir"]
+      },
+      "outcome": "ok"
+    },
+    {
+      "name": "config_reset",
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "config_reset.jsonl",
+      "expected_frames": 2,
+      "fuzzy": {
+        "command_output": ["data.config_path"]
+      },
+      "outcome": "ok"
+    },
+    {
+      "name": "diagnostics",
+      "args": { "count": 3 },
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "diagnostics.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "heartbeat_log",
+      "args": { "count": 3 },
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "heartbeat_log.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "heartbeat_tick_now",
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "heartbeat_tick_now.jsonl",
+      "expected_frames": 1,
+      "outcome": "error"
+    },
+    {
+      "name": "heartbeat_set_dormant",
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "heartbeat_set_dormant.jsonl",
+      "expected_frames": 1,
+      "outcome": "error"
+    },
+    {
+      "name": "heartbeat_set_active",
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "heartbeat_set_active.jsonl",
+      "expected_frames": 1,
+      "outcome": "error"
+    },
+    {
+      "name": "usage",
+      "args": { "last": "all" },
+      "fixture": "commands-base",
+      "character": "scout",
+      "baseline": "usage.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "list_models",
+      "fixture": "commands-with-models",
+      "character": "scout",
+      "baseline": "list_models.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "model_info",
+      "args": { "name": "sonnet" },
+      "fixture": "commands-with-models",
+      "character": "scout",
+      "baseline": "model_info.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "model_settings",
+      "fixture": "commands-with-models",
+      "character": "scout",
+      "baseline": "model_settings.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "set_model_setting",
+      "args": { "key": "temperature", "value": 0.7 },
+      "fixture": "commands-with-models",
+      "character": "scout",
+      "baseline": "set_model_setting.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "id": "set_model_setting-invalid-key",
+      "name": "set_model_setting",
+      "args": { "key": "typo", "value": 0.5 },
+      "fixture": "commands-with-models",
+      "character": "scout",
+      "baseline": "set_model_setting-invalid-key.jsonl",
+      "expected_frames": 1,
+      "outcome": "error"
+    },
+    {
+      "name": "switch_model",
+      "args": { "name": "gpt4o" },
+      "fixture": "commands-with-models",
+      "character": "scout",
+      "baseline": "switch_model.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "id": "switch_model-missing",
+      "name": "switch_model",
+      "args": { "name": "nonexistent" },
+      "fixture": "commands-with-models",
+      "character": "scout",
+      "baseline": "switch_model-missing.jsonl",
+      "expected_frames": 1,
+      "outcome": "error"
+    },
+    {
+      "name": "reset_model",
+      "fixture": "commands-with-models",
+      "character": "scout",
+      "baseline": "reset_model.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "list_providers",
+      "rid": null,
+      "fixture": "commands-with-models",
+      "character": "scout",
+      "baseline": "list_providers.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "name": "list_provider_models",
+      "rid": null,
+      "args": { "provider": "openrouter" },
+      "fixture": "commands-with-models",
+      "character": "scout",
+      "baseline": "list_provider_models.jsonl",
+      "expected_frames": 1,
+      "outcome": "ok"
+    },
+    {
+      "id": "list_provider_models-missing-provider",
+      "name": "list_provider_models",
+      "rid": null,
+      "args": {},
+      "fixture": "commands-with-models",
+      "character": "scout",
+      "baseline": "list_provider_models-missing-provider.jsonl",
+      "expected_frames": 1,
+      "outcome": "error"
+    }
+  ]
+}

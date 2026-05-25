@@ -38,7 +38,9 @@ import {
 import {
   SAMPLER_KEYS,
   isSelectedModelSet,
+  type SamplerScopes,
   type SamplerSettingValue,
+  type SamplerSettings,
 } from "../preferences/types.ts";
 import {
   asArgs,
@@ -54,7 +56,6 @@ import {
 } from "./providers.ts";
 
 export function status(ctx: CommandContext, engine: ConversationEngine): Record<string, unknown> {
-  ctx.autonomy.ensureState(engine);
   const pending = pendingDeferredEditPaths(engine.dataDir());
   const active = ctx.activeModel
     ?? resolveActiveModel(ctx, true)?.qualifiedName
@@ -88,16 +89,12 @@ export function status(ctx: CommandContext, engine: ConversationEngine): Record<
   };
 }
 
-export function diagnostics(_ctx: CommandContext, rawArgs: unknown): Record<string, unknown> {
-  const args = asArgs(rawArgs);
-  const count = typeof args["count"] === "number" ? Math.max(0, Math.floor(args["count"])) : 10;
+export function diagnostics(_ctx: CommandContext, _rawArgs: unknown): Record<string, unknown> {
   return {
-    message: "diagnostics ring buffer not ported in TS daemon",
-    not_implemented: true,
     api_calls: { count: 0, recent: [] },
     tool_calls: { count: 0, recent: [] },
     errors: { count: 0, recent: [] },
-    requested_count: count,
+    key_fallbacks: { count: 0, recent: [] },
   };
 }
 
@@ -276,10 +273,10 @@ export function modelSettings(ctx: CommandContext, rawArgs: unknown): Record<str
     model: active.qualifiedName,
     provider: active.providerKey,
     model_id: active.modelId,
-    effective_sampler: sampler,
-    saved_global: modelPreference(global, active.providerKey, active.modelId)?.sampler ?? null,
-    saved_character: modelPreference(character, active.providerKey, active.modelId)?.sampler ?? null,
-    scopes,
+    effective_sampler: samplerPayload(sampler),
+    saved_global: optionalSamplerPayload(modelPreference(global, active.providerKey, active.modelId)?.sampler),
+    saved_character: optionalSamplerPayload(modelPreference(character, active.providerKey, active.modelId)?.sampler),
+    scopes: scopesPayload(scopes),
   };
 }
 
@@ -500,7 +497,7 @@ export function config(ctx: CommandContext, rawArgs: unknown): Record<string, un
   const key = typeof args["key"] === "string" ? args["key"] : undefined;
   const value = typeof args["value"] === "string" ? args["value"] : undefined;
   if (key !== undefined && value !== undefined) return configSet(ctx, key, value);
-  const app = ctx.runtime.config.app as unknown as Record<string, unknown>;
+  const app = rustAppConfig(ctx);
   if (key === undefined || key.length === 0) return { config: app };
   const section = app[key];
   if (section === undefined) {
@@ -529,6 +526,13 @@ export function configCheck(ctx: CommandContext): Record<string, unknown> {
   }
   if (toolModels === 0) info.push("No tool models configured (chat models will be used for tools)");
   else info.push(`${toolModels} tool model(s) configured`);
+  warnings.push("No LLM service configured. Set [services.llm].command or [services.llm].socket.");
+  for (const model of ctx.runtime.catalog.values()) {
+    if (model.category !== "chat" || model.apiKeyEnv === undefined) continue;
+    if (process.env[model.apiKeyEnv] === undefined) {
+      warnings.push(`API key env var $${model.apiKeyEnv} not set (needed by model ${model.qualifiedName})`);
+    }
+  }
   return {
     valid: warnings.length === 0,
     warnings,
@@ -538,7 +542,6 @@ export function configCheck(ctx: CommandContext): Record<string, unknown> {
     cache_dir: ctx.cacheDir,
     chat_models: chatModels,
     tool_models: toolModels,
-    embedding_models: Object.keys(ctx.runtime.config.embedding).length,
     memory_mode: "markdown",
   };
 }
@@ -595,6 +598,128 @@ function configSet(ctx: CommandContext, key: string, value: string): Record<stri
   }
 }
 
+function rustAppConfig(ctx: CommandContext): Record<string, unknown> {
+  const cfg = ctx.runtime.config;
+  const heartbeat = cfg.app.behavior.autonomy.heartbeat;
+  const compaction = cfg.memory.compaction;
+  const notifications = cfg.app.notifications;
+  return {
+    daemon: {
+      addr: "127.0.0.1:7320",
+      unsafe_allow_remote_access: false,
+      allowed_hosts: [],
+    },
+    defaults: {
+      model: cfg.app.defaults.model ?? null,
+      background: {
+        model: null,
+        heartbeat: null,
+        compaction: null,
+        dreaming: null,
+      },
+      heartbeat: null,
+      dreaming: null,
+      embedding: cfg.app.defaults.embedding ?? null,
+      image_generation: null,
+      display_name: cfg.app.defaults.display_name ?? null,
+      stream: true,
+    },
+    behavior: {
+      autonomy: {
+        enabled: cfg.app.behavior.autonomy.enabled,
+        heartbeat: {
+          enabled: heartbeat.enabled,
+          fallback_heartbeat_interval: formatDurationSecs(heartbeat.fallbackHeartbeatIntervalSecs),
+          dormant_after_heartbeat_turns: heartbeat.dormantAfterHeartbeatTurns,
+          dormant_after_idle_time: formatDurationSecs(heartbeat.dormantAfterIdleTimeSecs),
+          minimum_heartbeat_latency: formatDurationSecs(heartbeat.minimumHeartbeatLatencySecs),
+          max_tool_rounds: heartbeat.maxToolRounds,
+          wrap_up_grace_rounds: heartbeat.wrapUpGraceRounds,
+        },
+      },
+      tool_use: {
+        enabled: true,
+        max_iterations: 10,
+        tools: {},
+        search: {
+          api_key_env: "TAVILY_API_KEY",
+          max_results: 5,
+          search_depth: "basic",
+          include_answer: true,
+        },
+      },
+    },
+    memory: {
+      compaction: {
+        enabled: compaction.enabled,
+        idle_trigger: formatDurationSecs(compaction.idleTriggerSecs),
+        min_turns: compaction.minTurns,
+        max_turns: compaction.maxTurns,
+        max_context_tokens: compaction.maxContextTokens,
+        keep_recent_turns: compaction.keepRecentTurns,
+      },
+      dreaming: {
+        enabled: cfg.memory.dreaming.enabled,
+        frequency: cfg.memory.dreaming.frequency,
+        max_tool_rounds: cfg.memory.dreaming.max_tool_rounds,
+      },
+      thinking: {
+        preserve_prior_turns: true,
+      },
+      retrieval: cfg.memory.retrieval,
+    },
+    connections: {
+      matrix: null,
+      telegram: null,
+      discord: null,
+    },
+    services: {
+      llm: {
+        command: null,
+        socket: null,
+      },
+    },
+    notifications: {
+      enabled: notifications.enabled,
+      backend: "notify_send",
+      ntfy: {
+        url: "https://ntfy.sh",
+        topic: "",
+        token: "",
+      },
+      command: {
+        template: "",
+      },
+      generation_threshold: formatDurationSecs(notifications.generation_threshold_ms / 1000),
+      events: {
+        autonomous_message: notifications.events.autonomous_message,
+        cache_warning: true,
+        compaction_complete: notifications.events.compaction_complete,
+        error: notifications.events.error,
+        message_complete: notifications.events.message_complete,
+        usage_warning: notifications.events.usage_warning,
+      },
+    },
+    usage: cfg.app.usage,
+    advanced: {
+      api_payload_logging: false,
+      cache_forensics: cfg.app.advanced.cache_forensics,
+      editor: null,
+      max_retries: null,
+      retry_backoff: null,
+      max_image_size: 2_000_000,
+    },
+  };
+}
+
+function formatDurationSecs(seconds: number): string {
+  if (seconds === 0) return "0s";
+  if (Number.isInteger(seconds) && seconds % 86_400 === 0) return `${seconds / 86_400}d`;
+  if (Number.isInteger(seconds) && seconds % 3_600 === 0) return `${seconds / 3_600}h`;
+  if (Number.isInteger(seconds) && seconds % 60 === 0) return `${seconds / 60}m`;
+  return `${seconds}s`;
+}
+
 function resolveActiveModel(ctx: CommandContext, includeHidden: boolean): ResolvedModel | undefined {
   if (ctx.characterName !== undefined) {
     const resolved = resolveChatModelForCharacter(preferenceConfig(ctx), ctx.characterName);
@@ -645,20 +770,36 @@ function preferenceConfig(ctx: CommandContext) {
 function addSamplerInfo(ctx: CommandContext, resolved: ResolvedModel, data: Record<string, unknown>): void {
   if (ctx.characterName === undefined) return;
   const [global, character] = loadForCharacter(ctx.dataDir, ctx.characterName);
-  data["effective_sampler"] = resolveSamplerSettings(
+  data["effective_sampler"] = samplerPayload(resolveSamplerSettings(
     global,
     character,
     resolved.providerKey,
     resolved.modelId,
     resolved,
-  );
-  data["scopes"] = resolveSamplerScopes(
+  ));
+  data["scopes"] = scopesPayload(resolveSamplerScopes(
     global,
     character,
     resolved.providerKey,
     resolved.modelId,
     resolved,
-  );
+  ));
+}
+
+function samplerPayload(sampler: SamplerSettings): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of SAMPLER_KEYS) out[key] = sampler[key] ?? null;
+  return out;
+}
+
+function optionalSamplerPayload(sampler: SamplerSettings | undefined): Record<string, unknown> | null {
+  return sampler === undefined ? null : samplerPayload(sampler);
+}
+
+function scopesPayload(scopes: SamplerScopes): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of SAMPLER_KEYS) out[key] = scopes[key] ?? null;
+  return out;
 }
 
 function parseSamplerValue(key: SamplerKey, value: SamplerSettingValue): SamplerSettingValue {

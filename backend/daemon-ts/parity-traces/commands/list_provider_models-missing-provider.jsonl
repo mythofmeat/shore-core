@@ -1,0 +1,5 @@
+{"dir":"s2c","frame":{"type":"hello","v":1,"server_name":"shore-daemon","characters":[{"name":"guide"},{"name":"scout"}]}}
+{"dir":"c2s","frame":{"type":"hello","client_type":"cli","client_name":"cmd-capture-list_provider_models-missing-provider","character":"scout"}}
+{"dir":"s2c","frame":{"type":"history","messages":[{"msg_id":"m1","role":"user","content":"hello","images":[],"content_blocks":[{"type":"text","text":"hello"}],"timestamp":"2026-01-01T00:00:00Z"},{"msg_id":"m2","role":"assistant","content":"hi there","images":[],"content_blocks":[{"type":"text","text":"hi there"}],"timestamp":"2026-01-01T00:00:01Z"}],"config":{"active_model":"chat.anthropic.sonnet","private":false},"selected_character":"scout","revision":0}}
+{"dir":"c2s","frame":{"type":"command","name":"list_provider_models","args":{}}}
+{"dir":"s2c","frame":{"type":"error","code":"invalid_request","message":"missing required argument: provider"}}

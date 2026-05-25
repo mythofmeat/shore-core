@@ -1,0 +1,22 @@
+[defaults]
+model = "chat.anthropic.sonnet"
+
+[chat.anthropic.sonnet]
+model_id = "claude-sonnet-4-20250514"
+
+[chat.openrouter.gpt4o]
+model_id = "openai/gpt-4o"
+sdk = "openai"
+
+[providers.openrouter]
+sdk = "openai"
+base_url = "https://openrouter.ai/api/v1"
+
+[[providers.openrouter.keys]]
+name = "parity"
+env = "SHORE_PARITY_OPENROUTER_KEY"
+warn_on_fallback = false
+
+[providers.openrouter.discovery]
+enabled = false
+ignore = []

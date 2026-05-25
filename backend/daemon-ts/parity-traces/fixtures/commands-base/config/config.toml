@@ -1,0 +1,3 @@
+# Command-dispatcher parity fixture. Intentionally minimal — no
+# defaults.model and no [chat.*] entries, so the handshake active_model
+# falls back to null.

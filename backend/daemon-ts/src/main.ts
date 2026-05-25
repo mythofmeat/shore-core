@@ -404,7 +404,6 @@ function buildHandshakeProvider(
         };
       }
       const engine = engines.get(selectedCharacter);
-      autonomy.ensureState(engine);
       const snap = engine.historySnapshot();
       return {
         messages: snap.messages,
@@ -852,19 +851,20 @@ function buildCommandHandler(
     const send = session.send ?? ((frame: import("./swp/types.ts").ServerMessage): void => {
       getServer()?.broadcast(frame);
     });
-    const characterless = session.character === undefined
-      && (
-        msg.name === "list_characters"
-        || msg.name === "list_models"
-        || msg.name === "list_providers"
-        || msg.name === "list_provider_models"
-        || msg.name === "refresh_provider_models"
-        || msg.name === "refresh_all_provider_models"
-      );
+    const alwaysCharacterless =
+      msg.name === "list_characters"
+      || msg.name === "list_providers"
+      || msg.name === "list_provider_models";
+    const characterless = alwaysCharacterless
+      || (session.character === undefined
+        && (
+          msg.name === "list_models"
+          || msg.name === "refresh_provider_models"
+          || msg.name === "refresh_all_provider_models"
+        ));
     const engine = characterless || session.character === undefined
       ? undefined
       : engines.get(session.character);
-    if (engine !== undefined) autonomy.ensureState(engine);
 
     const ctx = {
       configSource,
@@ -908,6 +908,26 @@ function buildCommandHandler(
             revision: snap.revision,
           });
         }
+      }
+
+      if (msg.name === "config_reset" && isRecord(data) && session.character !== undefined) {
+        const invalidated = isRecord(data["invalidated"]) ? data["invalidated"] : {};
+        invalidated["character_discovery"] = false;
+        invalidated["merged_character_configs"] = true;
+        invalidated["removed_character_engines"] = 0;
+        data["invalidated"] = invalidated;
+
+        const selectedEngine = engines.get(session.character);
+        const activeModel = runtime.config.app.defaults.model ?? firstChatModelQualifiedName(runtime.config) ?? null;
+        const snap = selectedEngine.historySnapshot({ active_model: activeModel, private: false });
+        send({
+          type: "history",
+          messages: snap.messages,
+          ...(snap.active_start !== 0 ? { active_start: snap.active_start } : {}),
+          config: snap.config,
+          selected_character: snap.selected_character,
+          revision: snap.revision,
+        });
       }
 
       send({

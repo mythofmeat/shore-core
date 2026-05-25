@@ -1,0 +1,5 @@
+{"dir":"s2c","frame":{"type":"hello","v":1,"server_name":"shore-daemon","characters":[{"name":"guide"},{"name":"scout"}]}}
+{"dir":"c2s","frame":{"type":"hello","client_type":"cli","client_name":"cmd-capture-memory_dreams","character":"scout"}}
+{"dir":"s2c","frame":{"type":"history","messages":[{"msg_id":"m1","role":"user","content":"hello","images":[],"content_blocks":[{"type":"text","text":"hello"}],"timestamp":"2026-01-01T00:00:00Z"},{"msg_id":"m2","role":"assistant","content":"hi there","images":[],"content_blocks":[{"type":"text","text":"hi there"}],"timestamp":"2026-01-01T00:00:01Z"}],"config":{"active_model":null,"private":false},"selected_character":"scout","revision":0}}
+{"dir":"c2s","frame":{"type":"command","rid":"r1","name":"memory_dreams","args":{"limit":1}}}
+{"dir":"s2c","frame":{"type":"command_output","rid":"r1","name":"memory_dreams","data":{"character":"scout","entries":["## 2026-01-02T03:04:05Z - update\n\nRefined the tea memory fixture."],"path":"/tmp/shore-cmd-capture-memory_dreams-7eyoVO/data/scout/DREAMS.md","exists":true}}}

@@ -122,6 +122,15 @@ export function toSnakeModel(model: ResolvedModel): Record<string, unknown> {
     reasoning_effort: model.reasoningEffort ?? null,
     budget_tokens: model.budgetTokens ?? null,
     cache_ttl: model.cacheTtl ?? null,
+    keepalive_enabled: null,
+    keepalive_ttl: null,
+    keepalive_max_pings: null,
     openrouter_provider: model.openrouterProvider ?? null,
+    vertex_project: null,
+    vertex_location: null,
+    gemini_generation: null,
+    gemini_web_search: null,
+    zai_clear_thinking: null,
+    zai_subscription: null,
   };
 }

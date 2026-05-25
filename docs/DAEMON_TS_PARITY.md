@@ -7,10 +7,10 @@ live failures attributable to the TS daemon." That's a user-observation
 gate; this document tracks the automated coverage that closes the gap so
 soak is for catching the *unexpected* divergence, not the expected one.
 
-> **Status (2026-05-25).** Coverage is currently three narrow slices:
-> handshake (empty + character), one message-append round-trip, and an
-> offline `AssembledPrompt` JSON diff across 10 prompt fixtures. Everything
-> else in this document is target state.
+> **Status (2026-05-25).** Tier 1 persistence coverage is green for
+> handshake, message append, multi-turn, edit, delete, and alt. Tier 2
+> command-dispatcher coverage is green for the manifest-backed batch under
+> `backend/daemon-ts/parity-traces/commands/`.
 
 ## Existing harness recap
 
@@ -79,32 +79,41 @@ Capture scripts live next to `capture-message-append.ts`; baselines under
 
 ### Tier 2 — command dispatcher round-trips (no LLM involved)
 
-Pure command/response. One fixture per dispatcher command: handshake →
-send command frame → read response frame → diff. No daemon kill required.
+Done 2026-05-25. The shared runner is manifest-backed:
 
-The complete command surface lives in
-`backend/daemon-ts/src/commands/dispatch.ts`. Coverage tracks against the
-Rust dispatcher in `backend/daemon/src/commands/`.
+- `backend/daemon-ts/parity-traces/commands/manifest.json` names each
+  case, fixture, expected post-command frame count, baseline, fuzzy paths,
+  and expected outcome.
+- `backend/daemon-ts/scripts/capture-command.ts` captures Rust baselines
+  from the manifest.
+- `backend/daemon-ts/scripts/parity-check-commands.ts` replays the
+  manifest against TS. Each case gets a fresh fixture copy and daemon.
 
-- [ ] State commands: `get_state`, `set_state`, `model_settings`,
-  `set_model_setting`, `reset_model`, `set_model`, `list_models`,
-  `find_model`
-- [ ] Provider commands: `list_provider_models`, `provider_cache_summary`,
-  `refresh_provider_models`, `refresh_all_provider_models`
-- [ ] Memory commands: the full memory-state surface in
-  `commands/state/memory.rs`
-- [ ] Status commands: `status`, `heartbeat_log`, `activity_heatmap`
-- [ ] Preferences commands: get / set / reset
-- [ ] Autonomy debug commands: `heartbeat_tick_now`,
-  `heartbeat_set_dormant`, `heartbeat_set_active`, `set_paused`
-- [ ] Usage commands: `shore usage` backing surface
-- [ ] Misc: `diagnostics` (TS returns the explicit not-ported shape; pin
-  that), `set_next_wake`, plus anything else listed in
-  `dispatch.ts`
+Captured command cases:
 
-Each command goes in `backend/daemon-ts/parity-traces/commands/<name>.jsonl`
-with a shared `parity-check-command.ts` runner that iterates the directory.
-Use `EXPECTED_DIFFS` for known-divergent fields (timestamps, request ids).
+- [x] Navigation: `list_characters`, `character_info`,
+  `switch_character`, `switch_character` missing-target error.
+- [x] Conversation: `log`, `history_page`, `get`, `get` missing-arg
+  error, `list_alternatives`, `inject_system`.
+- [x] State/read: `status`, `memory`, `memory_changelog`,
+  `memory_dreams`, `config`, `config_check`, `config_reset`,
+  `diagnostics`, `usage`.
+- [x] Heartbeat debug: `heartbeat_log`, `heartbeat_tick_now`,
+  `heartbeat_set_dormant`, `heartbeat_set_active`. The three mutators
+  currently pin Rust's minimal-fixture error shape when no autonomy state
+  exists.
+- [x] Models/providers: `list_models`, `model_info`, `model_settings`,
+  `set_model_setting`, `set_model_setting` invalid-key error,
+  `switch_model`, `switch_model` missing-model error, `reset_model`,
+  `list_providers`, `list_provider_models`,
+  `list_provider_models` missing-provider error.
+
+Already covered by Tier 1: `edit`, `delete`, `alt`.
+
+Deferred to Tier 3: `compact`, `memory_dream`, `refresh_provider_models`,
+`refresh_all_provider_models`. `inject_system_message` is a TS-only alias
+for `inject_system`; Rust has no equivalent command name, so parity does
+not cover it.
 
 ### Tier 3 — content-level parity (requires LLM stub)
 
@@ -177,9 +186,10 @@ parts.
   `parity-check.ts`, `parity-check-message-append.ts`) refactored to
   import from it. `bun run parity` green; per-flow scripts now ~100
   lines each instead of ~280.
-- [ ] **T2 runner.** `parity-check-command.ts` that iterates
-  `parity-traces/commands/*.jsonl` so adding a new command is one fixture
-  file, no new script.
+- [x] **T2 runner (done 2026-05-25).**
+  `backend/daemon-ts/scripts/parity-check-commands.ts` iterates
+  `parity-traces/commands/manifest.json`; adding a command case is a
+  manifest entry plus one captured baseline, no new runner script.
 - [ ] **T3 LLM proxy.** Design above. Bun's built-in HTTP server + a
   content-addressable fixture store under `parity-traces/llm-fixtures/`.
   Record/replay flag. Streaming response preservation.
@@ -192,16 +202,24 @@ parts.
 
 1. Pick the tier. T1 if it's state-touching, T2 if it's a dispatcher
    command, T3 if it requires an LLM response.
-2. Capture against the Rust daemon: write or extend a capture script,
-   produce a `.jsonl` baseline under `parity-traces/`. For T2, just hand-
-   author the request/response fixture if simpler than scripted capture.
-3. Wire the check: for T1, follow the kill+restart+diff pattern; for T2,
-   the shared runner picks up new fixtures automatically; for T3, ensure
-   the LLM proxy has the response recorded.
-4. Add `EXPECTED_DIFFS` entries only for *structurally* expected
+2. For T2, add a case to
+   `backend/daemon-ts/parity-traces/commands/manifest.json`. Use
+   `expected_frames` for the exact number of post-command s2c frames;
+   mutators that broadcast history generally need `2`.
+3. Reuse an existing fixture under `parity-traces/fixtures/` or add a
+   new named fixture when the command needs different config/data.
+4. Capture against Rust:
+   `bun scripts/capture-command.ts /usr/bin/shore-daemon --id <case-id>`
+   from `backend/daemon-ts/`.
+5. Run `bun run parity:commands`; add fuzzy paths only for known
+   non-semantic differences such as temp paths, generated ids, and
+   timestamps.
+6. For T1, follow the kill+restart+diff pattern; for T3, ensure the LLM
+   proxy has the response recorded.
+7. Add fuzzy entries only for *structurally* expected
    divergences (server name, request ids, timestamps). Anything content-
    bearing that diverges is a parity bug, not an expected diff.
-5. Add the script invocation to the `parity` package script so CI runs it.
+8. Add the script invocation to the `parity` package script so CI runs it.
 
 ## CI integration
 

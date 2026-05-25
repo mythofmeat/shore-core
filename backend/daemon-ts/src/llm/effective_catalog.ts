@@ -178,7 +178,10 @@ export function findEffectiveModel(
     if (hidden !== undefined) throw hiddenModel(name, hidden.provider);
   }
 
-  throw new CommandError("not_found", `model not found: ${name}`);
+  throw new CommandError(
+    "not_found",
+    `model ${JSON.stringify(name)} not found in static catalog or discovered models`,
+  );
 }
 
 function normalizeSource(source: EffectiveCatalogSource): Required<EffectiveCatalogConfig> {

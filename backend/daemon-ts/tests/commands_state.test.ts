@@ -200,13 +200,16 @@ describe("command dispatcher state", () => {
     expect(await dispatchCommand({ ctx, engine, name: "config", args: { key: "defaults" } }))
       .toMatchObject({ key: "defaults" });
     const check = await dispatchCommand({ ctx, engine, name: "config_check", args: {} });
-    expect(check).toMatchObject({ valid: true, chat_models: 2, tool_models: 0, memory_mode: "markdown" });
+    expect(check).toMatchObject({ valid: false, chat_models: 2, tool_models: 0, memory_mode: "markdown" });
+    expect((check as { warnings: string[] }).warnings).toContain(
+      "No LLM service configured. Set [services.llm].command or [services.llm].socket.",
+    );
     const diagnostics = await dispatchCommand({ ctx, engine, name: "diagnostics", args: { count: 3 } });
     expect(diagnostics).toMatchObject({
-      message: "diagnostics ring buffer not ported in TS daemon",
       api_calls: { count: 0, recent: [] },
       tool_calls: { count: 0, recent: [] },
       errors: { count: 0, recent: [] },
+      key_fallbacks: { count: 0, recent: [] },
     });
     const usage = await dispatchCommand({ ctx, engine, name: "usage", args: {} });
     expect(usage).toMatchObject({ mode: "summary", summary: [] });
