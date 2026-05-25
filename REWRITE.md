@@ -1228,10 +1228,12 @@ scheduled soak/cutover items are blocked on these.
   segment accessors, insert-by-timestamp, reload/reset,
   message_count/turn_count, and truncate-after-last-user-turn surface is
   now present for the command dispatcher slice.
-- [ ] **Port multi-key credential fallback.** Decide first whether the
-  feature is in scope for cutover (single-key users don't need it).
-  If in scope: port `handler/key_fallback.rs` + the
-  `shore_llm::credentials` classifier into TS. (Audit blocker #5.)
+- [x] **Multi-key credential fallback descoped (2026-05-25).** Single-key
+  is the only configuration anyone actually runs; `handler/key_fallback.rs`
+  + the `shore_llm::credentials` classifier are not being ported. TS
+  adapters keep their single-env-var resolve-and-propagate behavior.
+  Anyone who later wants multi-key redundancy gets it as a post-cutover
+  add-on, not a cutover blocker. (Audit blocker #5.)
 - **Major divergences — decisions (2026-05-25):**
   - **#6 smart image resize.** Descoped from cutover. Tracked in GH #40.
     Bun has no `image`/`fast_image_resize` equivalent without a native
