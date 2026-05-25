@@ -572,14 +572,10 @@ fn print_model_settings(data: &serde_json::Value) {
         "cache_ttl",
     ];
     for key in keys {
-        let value = match sampler.get(key) {
-            Some(v) if v.is_null() => "(unset)".to_string(),
-            Some(v) => v
-                .as_str()
-                .map(String::from)
-                .unwrap_or_else(|| v.to_string()),
-            None => "(unset)".to_string(),
-        };
+        let value = sampler
+            .get(key)
+            .map(|v| format_sampler_value(key, v))
+            .unwrap_or_else(|| "(unset)".to_string());
         let scope = scopes
             .get(key)
             .and_then(|v| v.as_str())
@@ -594,16 +590,42 @@ fn print_model_settings(data: &serde_json::Value) {
 fn print_set_model_setting(data: &serde_json::Value) {
     let key = data["key"].as_str().unwrap_or("?");
     let scope = data["scope"].as_str().unwrap_or("?");
-    let value = match data.get("value") {
-        Some(v) if v.is_null() => "(cleared)".to_string(),
-        Some(v) => v
-            .as_str()
-            .map(String::from)
-            .unwrap_or_else(|| v.to_string()),
-        None => "(cleared)".to_string(),
-    };
+    let value = data
+        .get("value")
+        .map(|v| {
+            if v.is_null() {
+                "(cleared)".to_string()
+            } else {
+                format_sampler_value(key, v)
+            }
+        })
+        .unwrap_or_else(|| "(cleared)".to_string());
     let model = data["model"].as_str().unwrap_or("?");
     println!("[{scope}] {key} = {value}  ({})", abbreviate_model(model));
+}
+
+fn format_sampler_value(key: &str, value: &serde_json::Value) -> String {
+    if value.is_null() {
+        return "(unset)".to_string();
+    }
+    if matches!(key, "temperature" | "top_p") {
+        if let Some(formatted) = format_float_value(value) {
+            return formatted;
+        }
+    }
+    value
+        .as_str()
+        .map(String::from)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn format_float_value(value: &serde_json::Value) -> Option<String> {
+    let n = value.as_f64()?;
+    if n.is_finite() && n.fract() == 0.0 {
+        Some(format!("{n:.1}"))
+    } else {
+        Some(n.to_string())
+    }
 }
 
 /// Print the configured provider list with key + cache status.
@@ -1089,7 +1111,9 @@ fn print_config_section(out: &mut impl Write, value: &serde_json::Value, depth: 
                         let display = match v {
                             serde_json::Value::String(s) => s.clone(),
                             serde_json::Value::Bool(b) => b.to_string(),
-                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::Number(n) => {
+                                format_config_number(k, n).unwrap_or_else(|| n.to_string())
+                            }
                             serde_json::Value::Array(arr) => {
                                 let items: Vec<String> = arr
                                     .iter()
@@ -1111,6 +1135,18 @@ fn print_config_section(out: &mut impl Write, value: &serde_json::Value, depth: 
         _ => {
             let _ = writeln!(out, "{indent}{value}");
         }
+    }
+}
+
+fn format_config_number(key: &str, n: &serde_json::Number) -> Option<String> {
+    if !matches!(key, "cost_usd" | "multiplier" | "min_cost_usd") {
+        return None;
+    }
+    let f = n.as_f64()?;
+    if f.is_finite() && f.fract() == 0.0 {
+        Some(format!("{f:.1}"))
+    } else {
+        Some(f.to_string())
     }
 }
 
@@ -2249,6 +2285,41 @@ mod tests {
             // Sanity: no line should exceed a reasonable cap width.
             assert!(line.chars().count() <= 120, "line too wide: {line:?}");
         }
+    }
+
+    #[test]
+    fn sampler_float_values_keep_decimal_for_integral_values() {
+        assert_eq!(
+            format_sampler_value("temperature", &serde_json::json!(1)),
+            "1.0"
+        );
+        assert_eq!(
+            format_sampler_value("temperature", &serde_json::json!(0.7)),
+            "0.7"
+        );
+        assert_eq!(
+            format_sampler_value("max_tokens", &serde_json::json!(8192)),
+            "8192"
+        );
+    }
+
+    #[test]
+    fn config_float_fields_keep_decimal_for_integral_values() {
+        let one = serde_json::json!(1);
+        let three_point_five = serde_json::json!(3.5);
+        let five = serde_json::json!(5);
+        assert_eq!(
+            format_config_number("min_cost_usd", one.as_number().unwrap()).as_deref(),
+            Some("1.0")
+        );
+        assert_eq!(
+            format_config_number("multiplier", three_point_five.as_number().unwrap()).as_deref(),
+            Some("3.5")
+        );
+        assert_eq!(
+            format_config_number("max_results", five.as_number().unwrap()),
+            None
+        );
     }
 
     #[test]
