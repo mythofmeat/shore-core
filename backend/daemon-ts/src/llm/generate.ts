@@ -132,6 +132,20 @@ export interface GenerateOptions {
   };
   /** Called with the cache-stable request shape before any systemSuffix is appended. */
   onPreparedRequest?: (request: ChatRequest) => void;
+  /**
+   * Called once the generation (including the full tool loop) has
+   * completed, with the request shape extended to include every
+   * assistant turn that was just produced. Used by autonomy to cache
+   * the "last request" for compaction's prompt-cache prefix reuse —
+   * compaction needs the full conversation including the assistant
+   * reply so the cached prefix bytes match what a future compaction
+   * call will be appended onto.
+   *
+   * Mirrors Rust's `handler/persistence.rs:113` call to
+   * `ctx.autonomy.notify_last_request(char_name, full_request)`,
+   * which also fires *after* `append_response_messages_to_request`.
+   */
+  onCompletedRequest?: (request: ChatRequest) => void;
 }
 
 export interface GenerateResult {
@@ -377,6 +391,26 @@ export async function generateResponse(
   });
 
   recordLedgerCalls(opts, request, result);
+
+  // Fire the post-completion hook with the assistant's new turns
+  // appended so the cached snapshot reflects history-as-of-now. Skip
+  // the systemSuffix wrap when it was applied above — the cached
+  // request must not carry compaction's own trailing system message
+  // (which only exists for the in-flight compaction call), or the next
+  // compaction would double-append.
+  if (opts.onCompletedRequest !== undefined) {
+    const completed = cloneChatRequest(request);
+    if (opts.systemSuffix !== undefined && opts.systemSuffix.length > 0) {
+      // Drop the systemSuffix tail we appended above. The tail is
+      // always the last message and always role:"system".
+      completed.messages = completed.messages.slice(
+        0,
+        completed.messages.length - 1,
+      );
+    }
+    completed.messages = [...completed.messages, ...result.newTurns];
+    opts.onCompletedRequest(completed);
+  }
 
   // Persist the new turns. Normal generation appends; regen replaces the
   // assistant tail so prior responses become selectable alternatives.

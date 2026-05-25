@@ -57,26 +57,116 @@ export class RealCompactionLlm implements CompactionLlm {
     messages: Array<{ role: "user" | "assistant"; content: string }>,
     cachedRequest: ChatRequest | undefined,
   ): Promise<string> {
-    if (cachedRequest !== undefined) {
-      // See module docstring + REWRITE.md: cached-prefix path is not
-      // wired up in TS-land yet. Falling back to the fresh path is
-      // semantically correct (just suboptimal for cache); callers
-      // expecting the cache-preserving wire shape need to wait until
-      // the autonomy manager lands.
+    const provider = this.opts.provider ?? buildProvider(this.opts.resolved.sdk);
+    const req =
+      cachedRequest !== undefined
+        ? this.buildCachedPrefixRequest(cachedRequest, messages, system)
+        : this.buildFreshRequest(system, messages);
+
+    const started = Date.now();
+    let result;
+    try {
+      // Compaction is always non-streaming: no client is watching token-
+      // by-token output, and the non-streaming wire shape (no `stream:
+      // true` in the body) is what Rust sends, so it's also what the
+      // Anthropic prompt cache will see when comparing against a future
+      // compaction's prefix.
+      result = await provider.generate(req);
+    } catch (e) {
+      throw new CompactionError("llm", (e as Error).message);
+    }
+    const totalMs = Date.now() - started;
+
+    let text = "";
+    for (const block of result.content) {
+      if (block.type === "text") text += block.text;
     }
 
-    const provider = this.opts.provider ?? buildProvider(this.opts.resolved.sdk);
-    const turns = messages.map<TurnMessage>((m) => ({
+    this.recordLedger({
+      usage: result.usage,
+      stopReason: result.stopReason,
+      totalMs,
+      // Non-streaming: no first-token observation point. Report
+      // ttft = totalMs so the metric exists and downstream code that
+      // reads ttftMs doesn't get garbage.
+      ttftMs: totalMs,
+    });
+    return text;
+  }
+
+  /**
+   * Cache-preserving compaction request: reuse the chat call's cached
+   * prefix (system + tools + history bytes) so Anthropic's prompt
+   * cache hits. Appends the compaction prompt as a single user turn,
+   * then a trailing `role:"system"` message that the Anthropic adapter
+   * wraps as `<system_instruction>` and folds into the preceding user
+   * turn (see `convertInlineSystemMessages`). Mirrors Rust
+   * `build_compaction_request` cached branch at
+   * `backend/daemon/src/memory/compaction_impls.rs:217-263`.
+   */
+  private buildCachedPrefixRequest(
+    cached: ChatRequest,
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    compactionSystem: string,
+  ): ChatRequest {
+    // `manager.ts` always passes a single user message in the cached
+    // path (the compaction prompt rendered via `buildFinalMessage`).
+    // Mirrors Rust's COMPACTION_TAIL_USER_PROMPT_COUNT == 1 invariant;
+    // see compaction_impls.rs `append_compaction_tail`.
+    if (messages.length !== 1 || messages[0]!.role !== "user") {
+      throw new CompactionError(
+        "llm",
+        `cached-prefix compaction expects exactly 1 trailing user message, got ${messages.length}`,
+      );
+    }
+    const compactionUser: TurnMessage = {
+      role: "user",
+      content: [{ type: "text", text: messages[0]!.content }],
+    };
+    const compactionSystemTurn: TurnMessage = {
+      role: "system",
+      content: [{ type: "text", text: compactionSystem }],
+    };
+
+    // Drop signal/forensicRid from the cached request — this is a
+    // separate LLM call with its own observability needs; the chat
+    // call's AbortController must not cancel a background compaction.
+    const { signal: _sig, forensicRid: _rid, ...inherited } = cached;
+    void _sig;
+    void _rid;
+    return {
+      ...inherited,
+      messages: [...cached.messages, compactionUser, compactionSystemTurn],
+      // Override sampling for the compaction model; everything else
+      // (system, tools, modelId, apiKey, baseUrl, cacheTtl) stays from
+      // the cached request so the prefix bytes match.
+      maxTokens: this.opts.resolved.maxTokens ?? cached.maxTokens,
+      ...(this.opts.resolved.temperature !== undefined
+        ? { temperature: this.opts.resolved.temperature }
+        : {}),
+    };
+  }
+
+  /**
+   * Fresh-prefix compaction request — used when there's no cached chat
+   * request to inherit. The compacted slice is sent as the messages
+   * array; the compaction system rides as top-level `system` (matches
+   * the existing pre-2026-05-25 wire shape).
+   */
+  private buildFreshRequest(
+    system: string,
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+  ): ChatRequest {
+    const turns: TurnMessage[] = messages.map((m) => ({
       role: m.role,
       content: [{ type: "text", text: m.content }],
     }));
-
-    const req: ChatRequest = {
+    return {
       system,
       messages: turns,
       tools: [],
       thinking: { enabled: false },
-      cacheTtl: this.opts.cacheTtl ?? "1h",
+      cacheTtl: this.opts.cacheTtl ?? this.opts.resolved.cacheTtl ?? "",
       modelId: this.opts.resolved.modelId,
       apiKey: this.opts.apiKey,
       maxTokens: this.opts.resolved.maxTokens ?? 4096,
@@ -89,41 +179,6 @@ export class RealCompactionLlm implements CompactionLlm {
         ? { temperature: this.opts.resolved.temperature }
         : {}),
     };
-
-    let text = "";
-    let usage: UsageStats = {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-    };
-    let stopReason = "end_turn";
-    const started = Date.now();
-    let firstOutputAt: number | undefined;
-    try {
-      for await (const ev of provider.stream(req)) {
-        if (ev.kind !== "done" && firstOutputAt === undefined) {
-          firstOutputAt = Date.now();
-        }
-        if (ev.kind === "done") {
-          usage = ev.usage;
-          stopReason = ev.stopReason;
-          for (const block of ev.content) {
-            if (block.type === "text") text += block.text;
-          }
-        }
-      }
-    } catch (e) {
-      throw new CompactionError("llm", (e as Error).message);
-    }
-    const totalMs = Date.now() - started;
-    this.recordLedger({
-      usage,
-      stopReason,
-      totalMs,
-      ttftMs: firstOutputAt === undefined ? totalMs : firstOutputAt - started,
-    });
-    return text;
   }
 
   private recordLedger(call: {

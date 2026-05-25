@@ -544,7 +544,7 @@ function buildMessageHandler(
         signal: msg.signal,
         ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
         ...(msg.overrides ? { overrides: msg.overrides } : {}),
-        onPreparedRequest: (request) =>
+        onCompletedRequest: (request) =>
           autonomy.notifyLastRequest(session.character!, request),
       });
     } catch (e) {
@@ -811,7 +811,7 @@ function buildRegenHandler(
         regen: true,
         regenAlt: pendingRegenAlt,
         ...(msg.rid !== undefined ? { rid: msg.rid } : {}),
-        onPreparedRequest: (request) =>
+        onCompletedRequest: (request) =>
           autonomy.notifyLastRequest(session.character!, request),
       });
     } catch (e) {

@@ -1,9 +1,30 @@
 import { describe, expect, it } from "bun:test";
 
 import type { ResolvedModel } from "../src/llm/catalog.ts";
-import type { ChatEvent, ChatRequest, ProviderClient } from "../src/llm/types.ts";
+import type {
+  ChatEvent,
+  ChatRequest,
+  GenerateResult,
+  ProviderClient,
+} from "../src/llm/types.ts";
 import { Ledger } from "../src/ledger/ledger.ts";
 import { RealCompactionLlm } from "../src/memory/compaction/llm.ts";
+
+const ONE_SHOT_RESPONSE = {
+  content: [
+    {
+      type: "text" as const,
+      text: "<memory><write path=\"MEMORY.md\">ok</write></memory>",
+    },
+  ],
+  stopReason: "end_turn",
+  usage: {
+    inputTokens: 200,
+    outputTokens: 40,
+    cacheReadInputTokens: 150,
+    cacheCreationInputTokens: 20,
+  },
+} as const;
 
 class OneShotProvider implements ProviderClient {
   readonly requests: ChatRequest[] = [];
@@ -11,16 +32,15 @@ class OneShotProvider implements ProviderClient {
   async *stream(req: ChatRequest): AsyncIterable<ChatEvent> {
     this.requests.push(req);
     yield { kind: "text_delta", text: "<memory><write path=\"MEMORY.md\">ok" };
-    yield {
-      kind: "done",
-      content: [{ type: "text", text: "<memory><write path=\"MEMORY.md\">ok</write></memory>" }],
-      stopReason: "end_turn",
-      usage: {
-        inputTokens: 200,
-        outputTokens: 40,
-        cacheReadInputTokens: 150,
-        cacheCreationInputTokens: 20,
-      },
+    yield { kind: "done", ...ONE_SHOT_RESPONSE };
+  }
+
+  async generate(req: ChatRequest): Promise<GenerateResult> {
+    this.requests.push(req);
+    return {
+      content: [...ONE_SHOT_RESPONSE.content],
+      stopReason: ONE_SHOT_RESPONSE.stopReason,
+      usage: { ...ONE_SHOT_RESPONSE.usage },
     };
   }
 }
