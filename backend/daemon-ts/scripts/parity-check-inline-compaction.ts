@@ -370,8 +370,12 @@ function compareChatRequest(rust: CapturedLlmRequest[], ts: CapturedLlmRequest[]
 
 /**
  * Save compaction-call bodies to /tmp for forensic diffing without
- * asserting on them. Audit #12 will lift this once TS reuses the cached
- * chat prefix the way Rust does.
+ * asserting on them. As of 2026-05-25 the only known remaining
+ * divergence is the trailing user message's content form (Rust string
+ * vs TS single-element array) — see DAEMON_TS_PARITY.md "Known
+ * divergences" → "Compaction trailer content form". Lifting this to
+ * an assertion needs the bundled live-API breakpoint-placement
+ * gate; until then, capture the bodies for forensics.
  */
 function captureCompactionRequest(
   rust: CapturedLlmRequest[],
@@ -391,7 +395,9 @@ function captureCompactionRequest(
   const match = rust[1]!.canonical === ts[1]!.canonical;
   console.log(
     `  note  provider request 2 / compaction call ${
-      match ? "matches" : "diverges (expected — audit #12 pin)"
+      match
+        ? "matches"
+        : "diverges (known: trailing-user content form, see DAEMON_TS_PARITY.md)"
     }: wrote ${rustPath} + ${tsPath}`,
   );
 }

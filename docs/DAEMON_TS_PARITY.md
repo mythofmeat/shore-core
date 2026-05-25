@@ -258,6 +258,32 @@ that are *not* parity-test bugs. Each blocks preview soak.
     daemon-switch (= the cutover event).
   - **Blocks preview soak.**
 
+- **Compaction trailer content form.** After implementing the
+  cached-prefix path (audit #12, 2026-05-25), TS compaction request
+  bodies match Rust's structurally — same system/tools/messages
+  prefix, same trailing-user content text, same wrapped
+  `<system_instruction>` payload. The only remaining diff is the
+  **content form of the trailing user message**: Rust emits
+  `content: "..."` (string), TS emits
+  `content: [{"type":"text","text":"..."}]` (single-element array).
+  Both are valid Anthropic Messages API forms, but different bytes →
+  different cache-key hashes → no cross-daemon cache reuse for the
+  *compaction-written* prefix. Within each daemon: chat-call prefix
+  matches compaction-call prefix (both daemons use array-content for
+  the historical messages), so cache reads from the chat write
+  succeed.
+  - Root cause: Rust's `compaction_impls.rs` builds the trailing
+    user as `json!({"role":"user", "content": <string>})` directly,
+    bypassing the structured-block path. TS goes through
+    `TurnMessage` which mandates `content: ContentBlock[]`. A
+    string-content path would also change *chat-call* wire shape
+    (which currently does byte-match Rust at array form), so this
+    can't be unified without an Anthropic-adapter special case for
+    single-text-block content.
+  - Same category as the breakpoint-placement divergence: blocks
+    cross-daemon cache reuse, not within-daemon caching. Resolution
+    bundled with the breakpoint live-API gate.
+
 - **`_label` wire leak (fixed 2026-05-25).** TS was copying
   `SystemPromptBlock._label` onto Anthropic request bodies. Anthropic
   silently ignores unknown fields but they pollute the cache-key hash.
