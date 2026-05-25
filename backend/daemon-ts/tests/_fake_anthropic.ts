@@ -39,6 +39,45 @@ export interface FakeServer {
 }
 
 /**
+ * Build the single-JSON-message wire body for a non-streaming canned
+ * response. Mirrors Anthropic's documented Messages non-streaming
+ * response (`POST /v1/messages` with no `stream: true`).
+ */
+function buildJsonMessage(resp: CannedResponse): unknown {
+  const content = resp.blocks.map((b) => {
+    switch (b.type) {
+      case "text":
+        return { type: "text", text: b.text };
+      case "thinking":
+        return {
+          type: "thinking",
+          thinking: b.thinking,
+          ...(b.signature !== undefined ? { signature: b.signature } : {}),
+        };
+      case "redacted_thinking":
+        return { type: "redacted_thinking", data: b.data };
+      case "tool_use":
+        return { type: "tool_use", id: b.id, name: b.name, input: b.input ?? {} };
+    }
+  });
+  return {
+    id: "msg_fake",
+    type: "message",
+    role: "assistant",
+    model: "fake-model",
+    content,
+    stop_reason: resp.stopReason,
+    stop_sequence: null,
+    usage: {
+      input_tokens: resp.usage?.input_tokens ?? 10,
+      output_tokens: resp.usage?.output_tokens ?? 5,
+      cache_read_input_tokens: resp.usage?.cache_read_input_tokens ?? 0,
+      cache_creation_input_tokens: resp.usage?.cache_creation_input_tokens ?? 0,
+    },
+  };
+}
+
+/**
  * Build the SSE wire bytes for one canned response. Mirrors Anthropic's
  * documented Messages streaming format closely enough that
  * `@anthropic-ai/sdk` parses it without complaint.
@@ -176,7 +215,7 @@ export async function startFakeAnthropic(
       if (!url.pathname.endsWith("/v1/messages")) {
         return new Response("not found", { status: 404 });
       }
-      const body = await req.json();
+      const body = (await req.json()) as Record<string, unknown> | null;
       bodies.push(body);
       const next = queue.shift();
       if (!next) {
@@ -184,6 +223,17 @@ export async function startFakeAnthropic(
           `event: error\ndata: ${JSON.stringify({ error: "fake-server: response queue empty" })}\n\n`,
           { status: 500, headers: { "Content-Type": "text/event-stream" } },
         );
+      }
+      // Branch on the request's `stream` field — non-streaming requests
+      // get a single JSON Message, streaming requests get the SSE form.
+      // The SDK uses one of two methods (`messages.create` vs
+      // `messages.stream`) which is the only difference between the two
+      // wire shapes.
+      const streaming = body !== null && body["stream"] === true;
+      if (!streaming) {
+        return new Response(JSON.stringify(buildJsonMessage(next)), {
+          headers: { "Content-Type": "application/json" },
+        });
       }
       return new Response(buildSse(next), {
         headers: { "Content-Type": "text/event-stream" },

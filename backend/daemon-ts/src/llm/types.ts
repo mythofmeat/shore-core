@@ -130,7 +130,29 @@ export type ChatEvent =
       usage: UsageStats;
     };
 
+/**
+ * Resolved result of a non-streaming provider call. Same shape as the
+ * payload of the streaming `{kind: "done"}` event so a non-streaming
+ * caller can be a drop-in replacement when no token-by-token UI is
+ * needed (background tasks like compaction, dreaming, heartbeat, plus
+ * any future "no-stream" chat mode).
+ */
+export interface GenerateResult {
+  content: ContentBlock[];
+  stopReason: string;
+  usage: UsageStats;
+}
+
 export interface ProviderClient {
   /** Async iterator over streaming events. Caller must consume until "done". */
   stream(req: ChatRequest): AsyncIterable<ChatEvent>;
+  /**
+   * Single-shot non-streaming call. Sends the request without
+   * `stream: true` on the wire (Anthropic returns a JSON Message,
+   * OpenAI-compatible returns a single ChatCompletion). Use for
+   * background tasks that don't need progressive output and where
+   * matching the non-streaming wire shape matters (cache-prefix
+   * parity, ledger accounting, etc.).
+   */
+  generate(req: ChatRequest): Promise<GenerateResult>;
 }

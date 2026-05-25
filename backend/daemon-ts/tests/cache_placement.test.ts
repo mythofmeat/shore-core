@@ -539,6 +539,48 @@ describe("cache placement (offline)", () => {
     }
   });
 
+  // Regression pin for `generate()` (non-streaming). Compaction goes
+  // through this path, as does any future user-configured no-stream
+  // chat mode. The wire shape must omit `stream: true` so the request
+  // bytes match Rust's compaction path and the Anthropic prompt cache
+  // hits at the same prefix. The fake server branches on the request
+  // body's `stream` field to pick SSE vs JSON.
+  it("generate() sends non-streaming wire shape and parses single Message", async () => {
+    const server = await startFakeAnthropic([
+      {
+        blocks: [{ type: "text", text: "non-stream reply" }],
+        stopReason: "end_turn",
+        usage: { input_tokens: 7, output_tokens: 3 },
+      } satisfies CannedResponse,
+    ]);
+    try {
+      const req: ChatRequest = {
+        ...baseRequest([
+          { role: "user", content: [{ type: "text", text: "Hello" }] },
+        ]),
+        baseUrl: server.baseUrl,
+      };
+      const result = await new AnthropicProvider().generate(req);
+
+      // Wire shape: no `stream` field at all.
+      expect(server.bodies).toHaveLength(1);
+      const body = server.bodies[0] as Record<string, unknown>;
+      expect(body).not.toHaveProperty("stream");
+
+      // Response parsing.
+      expect(result.content).toEqual([{ type: "text", text: "non-stream reply" }]);
+      expect(result.stopReason).toBe("end_turn");
+      expect(result.usage).toEqual({
+        inputTokens: 7,
+        outputTokens: 3,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   // Regression pin for the `_label` wire leak. Rust strips `_label` from
   // system blocks before sending (`backend/llm/src/providers/anthropic.rs:301-306`)
   // because it's internal metadata. The TS port at one point copied

@@ -26,6 +26,7 @@ import { resolveImage } from "../images.ts";
 import type {
   ChatEvent,
   ChatRequest,
+  GenerateResult,
   ProviderClient,
   ToolDef,
   TurnMessage,
@@ -34,50 +35,7 @@ import type {
 
 export class OpenAIProvider implements ProviderClient {
   async *stream(req: ChatRequest): AsyncIterable<ChatEvent> {
-    const client = new OpenAI({
-      apiKey: req.apiKey,
-      ...(req.baseUrl ? { baseURL: req.baseUrl } : {}),
-    });
-
-    const messages: ChatCompletionMessageParam[] = [];
-    const systemText = systemToText(req.system);
-    if (systemText) {
-      messages.push({ role: "system", content: systemText });
-    }
-    for (const turn of req.messages) {
-      messages.push(...turnToOpenAI(turn));
-    }
-
-    const tools: ChatCompletionTool[] = req.tools.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema as Record<string, unknown>,
-      },
-    }));
-
-    const params: Parameters<typeof client.chat.completions.create>[0] = {
-      model: req.modelId,
-      messages,
-      max_tokens: req.maxTokens,
-      stream: true,
-      stream_options: { include_usage: true },
-    };
-    if (tools.length > 0) params.tools = tools;
-    if (req.temperature !== undefined) params.temperature = req.temperature;
-    if (req.topP !== undefined) params.top_p = req.topP;
-    if (req.thinking.enabled && req.thinking.effort) {
-      // OpenAI's reasoning models accept reasoning_effort: low/medium/high.
-      // For non-reasoning models the field is ignored by the gateway.
-      const effort = mapReasoningEffort(req.thinking.effort);
-      if (effort) {
-        // Cast — the OpenAI SDK's typing accepts this on the reasoning
-        // models only; on others it's a no-op on the server.
-        (params as { reasoning_effort?: typeof effort }).reasoning_effort = effort;
-      }
-    }
-
+    const { client, params } = buildOpenAICall(req, /*streaming*/ true);
     const stream = (await client.chat.completions.create(
       params,
       req.signal ? { signal: req.signal } : undefined,
@@ -168,6 +126,116 @@ export class OpenAIProvider implements ProviderClient {
 
     yield { kind: "done", content, stopReason, usage };
   }
+
+  async generate(req: ChatRequest): Promise<GenerateResult> {
+    const { client, params } = buildOpenAICall(req, /*streaming*/ false);
+    const completion = await client.chat.completions.create(
+      params,
+      req.signal ? { signal: req.signal } : undefined,
+    );
+    // `params.stream` is false; the SDK returns a single ChatCompletion
+    // (the streaming branch returns AsyncIterable). The SDK's discriminated
+    // union doesn't narrow on a runtime boolean, so the cast is safe but
+    // necessary.
+    const c = completion as Awaited<
+      ReturnType<typeof client.chat.completions.create>
+    > & { choices: Array<{ message: { content?: string; tool_calls?: unknown[] }; finish_reason: string | null }>; usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } };
+
+    const choice = c.choices[0];
+    const content: ContentBlock[] = [];
+    if (choice?.message.content) {
+      content.push({ type: "text", text: choice.message.content });
+    }
+    if (Array.isArray(choice?.message.tool_calls)) {
+      for (const tc of choice.message.tool_calls) {
+        const tool = tc as { id?: string; function?: { name?: string; arguments?: string } };
+        let input: unknown;
+        try {
+          const raw = tool.function?.arguments ?? "";
+          input = raw.trim() === "" ? {} : JSON.parse(raw);
+        } catch {
+          input = {};
+        }
+        content.push({
+          type: "tool_use",
+          id: tool.id ?? "tc_0",
+          name: tool.function?.name ?? "",
+          input,
+        });
+      }
+    }
+
+    const usage: UsageStats = {
+      inputTokens: c.usage?.prompt_tokens ?? 0,
+      outputTokens: c.usage?.completion_tokens ?? 0,
+      cacheReadInputTokens: c.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      cacheCreationInputTokens: 0,
+    };
+
+    return {
+      content,
+      stopReason: choice?.finish_reason
+        ? mapStopReason(choice.finish_reason)
+        : "end_turn",
+      usage,
+    };
+  }
+}
+
+/**
+ * Shared per-call setup for streaming + non-streaming. Returns the
+ * configured client and the request params; the caller picks the
+ * SDK method and consumes the response shape.
+ */
+function buildOpenAICall(
+  req: ChatRequest,
+  streaming: boolean,
+): {
+  client: OpenAI;
+  params: Parameters<typeof OpenAI.prototype.chat.completions.create>[0];
+} {
+  const client = new OpenAI({
+    apiKey: req.apiKey,
+    ...(req.baseUrl ? { baseURL: req.baseUrl } : {}),
+  });
+
+  const messages: ChatCompletionMessageParam[] = [];
+  const systemText = systemToText(req.system);
+  if (systemText) {
+    messages.push({ role: "system", content: systemText });
+  }
+  for (const turn of req.messages) {
+    messages.push(...turnToOpenAI(turn));
+  }
+
+  const tools: ChatCompletionTool[] = req.tools.map((t) => ({
+    type: "function",
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.inputSchema as Record<string, unknown>,
+    },
+  }));
+
+  const params: Parameters<typeof client.chat.completions.create>[0] = {
+    model: req.modelId,
+    messages,
+    max_tokens: req.maxTokens,
+    ...(streaming
+      ? { stream: true, stream_options: { include_usage: true } }
+      : {}),
+  };
+  if (tools.length > 0) params.tools = tools;
+  if (req.temperature !== undefined) params.temperature = req.temperature;
+  if (req.topP !== undefined) params.top_p = req.topP;
+  if (req.thinking.enabled && req.thinking.effort) {
+    const effort = mapReasoningEffort(req.thinking.effort);
+    if (effort) {
+      (params as { reasoning_effort?: typeof effort }).reasoning_effort = effort;
+    }
+  }
+
+  return { client, params };
 }
 
 // ── conversion ──────────────────────────────────────────────────────────

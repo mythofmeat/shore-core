@@ -44,6 +44,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
   ContentBlockParam,
+  Message,
   MessageParam,
   RawMessageStreamEvent,
   TextBlockParam,
@@ -57,6 +58,7 @@ import { resolveImage } from "../images.ts";
 import type {
   ChatEvent,
   ChatRequest,
+  GenerateResult,
   ProviderClient,
   ToolDef,
   TurnMessage,
@@ -65,61 +67,7 @@ import type {
 
 export class AnthropicProvider implements ProviderClient {
   async *stream(req: ChatRequest): AsyncIterable<ChatEvent> {
-    const client = new Anthropic({
-      apiKey: req.apiKey,
-      ...(req.baseUrl ? { baseURL: stripTrailingV1(req.baseUrl) } : {}),
-    });
-
-    const cacheControl = req.cacheTtl
-      ? makeCacheControl(req.cacheTtl)
-      : undefined;
-    const system = buildSystem(req.system, cacheControl);
-    const tools = buildTools(req.tools, cacheControl);
-    // Anthropic rejects role:"system" in the messages array — wrap any
-    // mid-history system turns into <system_instruction> blocks first.
-    const wireTurns = convertInlineSystemMessages(req.messages);
-    const msgBreakpoints = cacheControl === undefined
-      ? []
-      : messageBreakpointIndices(wireTurns);
-    const sysBreakpoints = cacheControl !== undefined && system.length > 0
-      ? [system.length - 1]
-      : [];
-    const messages = buildMessages(wireTurns, cacheControl, msgBreakpoints);
-    logRequestForensics(req, system, messages, msgBreakpoints, sysBreakpoints, cacheControl !== undefined);
-    const thinking = buildThinking(req.thinking, req.maxTokens);
-
-    const params: Parameters<typeof client.messages.stream>[0] = {
-      model: req.modelId,
-      max_tokens: req.maxTokens,
-      messages,
-      ...(system.length > 0 ? { system } : {}),
-      ...(tools.length > 0 ? { tools } : {}),
-      ...(thinking ? { thinking } : {}),
-    };
-
-    // OpenRouter-specific: pin provider routing to Anthropic so the
-    // request actually hits Anthropic's API (which honors cache_control
-    // on system + tools + messages). Without this, OpenRouter may route
-    // to Bedrock or Vertex, where `cache_control` on system blocks is
-    // silently ignored — manifesting as turn-0 cache_creation=0 despite
-    // breakpoints being present. See OpenRouter docs:
-    // https://openrouter.ai/docs/features/prompt-caching (Anthropic
-    // section: "Automatic caching is only supported when requests are
-    // routed to the Anthropic provider directly").
-    if (req.baseUrl && req.baseUrl.includes("openrouter.ai")) {
-      (params as { provider?: unknown }).provider = {
-        order: ["anthropic"],
-        allow_fallbacks: false,
-      };
-    }
-
-    // Anthropic rejects temperature/top_p when thinking is on (must use
-    // defaults). Only forward sampling knobs when thinking is disabled.
-    if (!thinking) {
-      if (req.temperature !== undefined) params.temperature = req.temperature;
-      if (req.topP !== undefined) params.top_p = req.topP;
-    }
-
+    const { client, params } = buildAnthropicCall(req);
     const stream = client.messages.stream(
       params,
       req.signal ? { signal: req.signal } : undefined,
@@ -237,6 +185,125 @@ export class AnthropicProvider implements ProviderClient {
       usage,
     };
   }
+
+  async generate(req: ChatRequest): Promise<GenerateResult> {
+    const { client, params } = buildAnthropicCall(req);
+    // `client.messages.create` POSTs without `stream: true`; Anthropic
+    // returns a single Message object instead of an SSE stream. The
+    // wire shape differs from `stream()` only by the absence of
+    // `stream: true` in the request body and the JSON-vs-SSE response
+    // — the cache_control hashing, system blocks, tools, etc. are
+    // identical, so cache hits transfer between streaming and
+    // non-streaming requests against the same prefix.
+    //
+    // The SDK overloads `create` by `stream: true|false` literal; our
+    // shared param-builder leaves `stream` unset (we never pass `false`
+    // explicitly because the wire shouldn't carry a redundant `stream:
+    // false` field). The cast is safe — passing no `stream` field
+    // lands on the non-streaming overload at runtime.
+    const message = (await client.messages.create(
+      params as Parameters<typeof client.messages.create>[0],
+      req.signal ? { signal: req.signal } : undefined,
+    )) as Message;
+
+    const content: ContentBlock[] = [];
+    for (const block of message.content) {
+      if (block.type === "text") {
+        content.push({ type: "text", text: block.text });
+      } else if (block.type === "thinking") {
+        content.push({
+          type: "thinking",
+          thinking: block.thinking,
+          signature: block.signature,
+        });
+      } else if (block.type === "redacted_thinking") {
+        content.push({ type: "redacted_thinking", data: block.data });
+      } else if (block.type === "tool_use") {
+        content.push({
+          type: "tool_use",
+          id: block.id,
+          name: block.name,
+          input: block.input,
+        });
+      }
+    }
+
+    const usage: UsageStats = {
+      inputTokens: message.usage.input_tokens ?? 0,
+      outputTokens: message.usage.output_tokens ?? 0,
+      cacheReadInputTokens: message.usage.cache_read_input_tokens ?? 0,
+      cacheCreationInputTokens: message.usage.cache_creation_input_tokens ?? 0,
+    };
+
+    return {
+      content,
+      stopReason: message.stop_reason ?? "end_turn",
+      usage,
+    };
+  }
+}
+
+/**
+ * Shared per-call setup. The streaming and non-streaming entrypoints
+ * use the same client config, the same param shape, and the same
+ * cache-breakpoint placement — the only difference is which SDK method
+ * gets called and how the response is consumed. Extract here so the
+ * two paths can never silently diverge on wire-relevant fields.
+ */
+function buildAnthropicCall(
+  req: ChatRequest,
+): {
+  client: Anthropic;
+  params: Parameters<typeof Anthropic.prototype.messages.stream>[0];
+} {
+  const client = new Anthropic({
+    apiKey: req.apiKey,
+    ...(req.baseUrl ? { baseURL: stripTrailingV1(req.baseUrl) } : {}),
+  });
+
+  const cacheControl = req.cacheTtl ? makeCacheControl(req.cacheTtl) : undefined;
+  const system = buildSystem(req.system, cacheControl);
+  const tools = buildTools(req.tools, cacheControl);
+  const wireTurns = convertInlineSystemMessages(req.messages);
+  const msgBreakpoints = cacheControl === undefined
+    ? []
+    : messageBreakpointIndices(wireTurns);
+  const sysBreakpoints = cacheControl !== undefined && system.length > 0
+    ? [system.length - 1]
+    : [];
+  const messages = buildMessages(wireTurns, cacheControl, msgBreakpoints);
+  logRequestForensics(
+    req,
+    system,
+    messages,
+    msgBreakpoints,
+    sysBreakpoints,
+    cacheControl !== undefined,
+  );
+  const thinking = buildThinking(req.thinking, req.maxTokens);
+
+  const params: Parameters<typeof client.messages.stream>[0] = {
+    model: req.modelId,
+    max_tokens: req.maxTokens,
+    messages,
+    ...(system.length > 0 ? { system } : {}),
+    ...(tools.length > 0 ? { tools } : {}),
+    ...(thinking ? { thinking } : {}),
+  };
+
+  if (req.baseUrl && req.baseUrl.includes("openrouter.ai")) {
+    (params as { provider?: unknown }).provider = {
+      order: ["anthropic"],
+      allow_fallbacks: false,
+    };
+  }
+
+  if (!thinking) {
+    if (req.temperature !== undefined) params.temperature = req.temperature;
+    if (req.topP !== undefined) params.top_p = req.topP;
+  }
+
+  return { client, params };
 }
 
 /**
