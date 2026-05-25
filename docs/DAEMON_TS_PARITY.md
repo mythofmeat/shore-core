@@ -143,11 +143,15 @@ parts.
 
 ## Infrastructure work
 
-- [ ] **T1 harness consolidation.** Factor the daemon-spawn + frame-queue
-  + readListenAddr helpers out of `capture-message-append.ts` and
-  `parity-check.ts` into a shared `parity-traces/_lib.ts` so per-flow
-  capture/check scripts are minimal. Existing scripts already duplicate
-  ~100 lines.
+- [x] **T1 harness consolidation (done 2026-05-25).** Shared helpers
+  live in `backend/daemon-ts/scripts/parity/_lib.ts`:
+  `spawnDaemon`, `readListenAddr`, `openConnection`, `FrameQueue`,
+  `readFrame`, `copyFixtureToTmp`, `buildDaemonEnv`, `compareFrames`,
+  `pathToMatcher`, `fail`. All four existing scripts
+  (`capture-rust-trace.ts`, `capture-message-append.ts`,
+  `parity-check.ts`, `parity-check-message-append.ts`) refactored to
+  import from it. `bun run parity` green; per-flow scripts now ~100
+  lines each instead of ~280.
 - [ ] **T2 runner.** `parity-check-command.ts` that iterates
   `parity-traces/commands/*.jsonl` so adding a new command is one fixture
   file, no new script.
