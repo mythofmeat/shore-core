@@ -44,12 +44,9 @@ describe("convertInlineSystemMessages", () => {
     const result = convertInlineSystemMessages(turns);
     expect(result.length).toBe(2);
     expect(result[1]!.role).toBe("user");
-    expect(result[1]!.content).toEqual([
-      {
-        type: "text",
-        text: "<system_instruction>Be concise.</system_instruction>",
-      },
-    ]);
+    expect(result[1]!.content).toBe(
+      "<system_instruction>Be concise.</system_instruction>",
+    );
   });
 
   it("system after user message merges into the preceding user turn", () => {
@@ -78,12 +75,9 @@ describe("convertInlineSystemMessages", () => {
     const result = convertInlineSystemMessages(turns);
     expect(result.length).toBe(3);
     expect(result[2]!.role).toBe("user");
-    expect(result[2]!.content).toEqual([
-      {
-        type: "text",
-        text: "<system_instruction>Recap.</system_instruction>",
-      },
-    ]);
+    expect(result[2]!.content).toBe(
+      "<system_instruction>Recap.</system_instruction>",
+    );
   });
 
   it("preserves structured preceding user content when merging", () => {
@@ -125,12 +119,9 @@ describe("convertInlineSystemMessages", () => {
     const result = convertInlineSystemMessages(turns);
     expect(result.length).toBe(1);
     expect(result[0]!.role).toBe("user");
-    expect(result[0]!.content).toEqual([
-      {
-        type: "text",
-        text: "<system_instruction>First. Second.</system_instruction>",
-      },
-    ]);
+    expect(result[0]!.content).toBe(
+      "<system_instruction>First. Second.</system_instruction>",
+    );
   });
 
   it("does not mutate the input array", () => {

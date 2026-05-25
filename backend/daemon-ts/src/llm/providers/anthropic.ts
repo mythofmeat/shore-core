@@ -413,7 +413,7 @@ export function wrapInlineSystemInstruction(text: string): string {
 /** Post-conversion turn — system role has been wrapped away. */
 type WireTurn = {
   role: "user" | "assistant";
-  content: ContentBlock[];
+  content: ContentBlock[] | string;
   images?: ImageRef[];
 };
 
@@ -443,12 +443,16 @@ export function convertInlineSystemMessages(turns: TurnMessage[]): WireTurn[] {
 
     const prev = out[out.length - 1];
     if (prev && prev.role === "user") {
-      prev.content.push({ type: "text", text: wrapped });
+      if (typeof prev.content === "string") {
+        prev.content = `${prev.content}\n\n${wrapped}`;
+      } else {
+        prev.content.push({ type: "text", text: wrapped });
+      }
       continue;
     }
     out.push({
       role: "user",
-      content: [{ type: "text", text: wrapped }],
+      content: wrapped,
     });
   }
   return out;
@@ -472,11 +476,21 @@ function buildMessages(
 
   return turns.map((turn, i) => {
     const imageBlocks = imagesToAnthropicBlocks(turn.images);
-    const content: ContentBlockParam[] = [
-      ...imageBlocks,
-      ...turn.content.map((b) => toAnthropicBlockParam(b)),
-    ];
-    if (cacheControl && breakpoints.has(i)) {
+    let content: MessageParam["content"];
+    if (typeof turn.content === "string" && imageBlocks.length === 0) {
+      content = cacheControl
+        ? [{ type: "text", text: turn.content }]
+        : turn.content;
+    } else {
+      const blocks = [
+        ...imageBlocks,
+        ...(typeof turn.content === "string"
+          ? [{ type: "text" as const, text: turn.content }]
+          : turn.content.map((b) => toAnthropicBlockParam(b))),
+      ];
+      content = blocks;
+    }
+    if (cacheControl && breakpoints.has(i) && Array.isArray(content)) {
       applyMessageBreakpoint(content, cacheControl);
     }
     return { role: turn.role, content };
