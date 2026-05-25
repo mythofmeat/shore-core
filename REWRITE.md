@@ -63,17 +63,20 @@ Parity coverage build-out: [`docs/DAEMON_TS_PARITY.md`](docs/DAEMON_TS_PARITY.md
   `docs/DAEMON_TS_PARITY.md` and bring both daemons into agreement.
   Listed in DAEMON_TS_PARITY.md "Known divergences" as the canonical
   reference.
-- [ ] **Audit all T3 fixtures for `cache_ttl = ""` blind spot.** Every
-  pre-2026-05-25 T3 fixture (`generation-basic`, `regen-basic`,
-  `tool-loop-read`, original `inline-compaction`) disabled caching via
-  `cache_ttl = ""`. This skipped the breakpoint-placement + label-strip
-  code paths entirely — which is how the `_label` wire leak and
-  breakpoint divergence both shipped without detection. Add a
-  `cache_ttl = "1h"` variant for every T3 fixture (keep the original
-  too — both paths matter). Each variant will surface its own
-  divergences to triage. Pin `_label_never_reaches_wire` regression
-  test in `tests/cache_placement.test.ts` already lands the lower-level
-  guard; this gate is about end-to-end coverage.
+- [x] **Audit all T3 fixtures for `cache_ttl = ""` blind spot
+  (done 2026-05-26).** Every pre-2026-05-25 T3 fixture
+  (`generation-basic`, `regen-basic`, `tool-loop-read`, original
+  `inline-compaction`) disabled caching via `cache_ttl = ""`. This
+  skipped the breakpoint-placement + label-strip code paths entirely
+  — which is how the `_label` wire leak and breakpoint divergence
+  both shipped without detection. Each T3 parity script now accepts
+  `--cache-ttl <value>`; package.json carries paired `:cached`
+  entries (`parity:<name>:cached[:compiled]`) that pass `1h`. Sweep
+  surfaced two new TS-only divergences on top of the known system /
+  stable-message breakpoint placement diffs — see "Known divergences"
+  in `docs/DAEMON_TS_PARITY.md` for the full triage and resolution
+  plan. The fixes themselves are bundled with the live-API
+  breakpoint-placement gate below.
 
 ### Soak + cutover
 

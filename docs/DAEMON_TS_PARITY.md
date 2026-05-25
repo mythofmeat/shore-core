@@ -281,8 +281,10 @@ These are real wire-level divergences uncovered by the parity harness
 that are *not* parity-test bugs. Each blocks preview soak.
 
 - **Cache-breakpoint placement (chat call, `cache_ttl="1h"`).**
-  Surfaced by `parity-check-inline-compaction.ts` after flipping the
-  fixture from `cache_ttl=""` to `"1h"` on 2026-05-25.
+  First surfaced by `parity-check-inline-compaction.ts` after flipping
+  the fixture from `cache_ttl=""` to `"1h"` on 2026-05-25; confirmed
+  on every chat-path T3 check after the 2026-05-26 `cache_ttl="1h"`
+  variant sweep (`bun run parity:<name>:cached`).
   - Rust marks **system block 1** (`tools_guidance`) and the
     **second-to-last stable user message** as cache breakpoints.
   - TS marks **system block 2** (`character`) and the
@@ -300,6 +302,56 @@ that are *not* parity-test bugs. Each blocks preview soak.
     Rust users (no regression vs status quo); both daemons cache
     *within themselves*; the cost penalty is one cold-cache pass per
     daemon-switch (= the cutover event).
+  - Surfaces in: `parity:generation:cached`, `parity:regen:cached`,
+    `parity:tool-loop:cached`, `parity:compaction:cached`,
+    `parity:heartbeat-tick:cached`, `parity:scheduled-dreaming:cached`
+    (system-block side); `parity:regen:cached`, `parity:compaction:cached`,
+    `parity:heartbeat-tick:cached`, `parity:scheduled-dreaming:cached`
+    (stable-message side — needs ≥1 prior assistant turn to differ).
+  - **Blocks preview soak.**
+
+- **Extra `cache_control` on `tools[last]` (TS only).** Surfaced by
+  the 2026-05-26 `cache_ttl="1h"` variant sweep across T3 fixtures
+  that pass tool definitions to the provider.
+  - Rust emits a `tools` array with no `cache_control` on any entry.
+  - TS emits `cache_control: {type: "ephemeral", ttl: "1h"}` on the
+    final element of `tools[]`.
+  - Anthropic allows at most 4 cache breakpoints per request. TS is
+    burning one of them on the tools-array tail, where it provides
+    little caching value (tool definitions rarely change *within* a
+    daemon process anyway, and the prefix block hash will not match
+    Rust). Wastes a breakpoint slot and breaks cross-daemon cache key
+    agreement on every tools-bearing call.
+  - Surfaces in: `parity:tool-loop:cached`, `parity:heartbeat-tick:cached`,
+    `parity:dreaming:cached`. Does **not** surface in
+    `parity:scheduled-dreaming:cached` because the cached-prefix
+    librarian path reuses the chat request's prefix without re-marking
+    `tools[]`.
+  - Resolution: drop the `cache_control` from `tools[last]` in the
+    TS Anthropic adapter; align with Rust. Likely safe to fix
+    immediately (no live-API dependency — Rust's behavior is
+    unambiguous here), but rolled into the same change as the
+    breakpoint-placement gate so live-API verification covers all
+    four divergences in one pass.
+  - **Blocks preview soak.**
+
+- **Extra `cache_control` on assistant `tool_use` block (TS only).**
+  Surfaced by `parity:tool-loop:cached` request 2 (the tool-result
+  follow-up turn) during the 2026-05-26 sweep.
+  - Rust emits the assistant `tool_use` content block with no
+    `cache_control`.
+  - TS adds `cache_control: {type: "ephemeral", ttl: "1h"}` to the
+    assistant `tool_use` block, in addition to whatever stable-tail
+    marker the algorithm picks.
+  - Same category as `tools[last]`: TS is consuming an extra
+    breakpoint slot. Combined with the other TS-side over-marking,
+    a tool-bearing chat call can hit Anthropic's 4-breakpoint cap
+    purely through TS over-emission, before the daemon's intended
+    stable-tail marker even applies.
+  - Surfaces in: `parity:tool-loop:cached` (request 2 only).
+  - Resolution: drop the per-block `cache_control` on assistant
+    `tool_use`; align with Rust. Same rollup as the `tools[last]`
+    fix — bundle with the live-API gate.
   - **Blocks preview soak.**
 
 - **Compaction trailer content form.** After implementing the

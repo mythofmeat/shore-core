@@ -12,7 +12,7 @@
  */
 
 import type { Subprocess } from "bun";
-import { chmodSync, cpSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -178,6 +178,24 @@ export function copyFixtureToTmp(
     configDir: join(workDir, "config"),
     dataDir: join(workDir, "data"),
   };
+}
+
+/**
+ * Rewrite every `cache_ttl = "…"` line under `<configDir>/config.toml` to
+ * the given value. Used by T3 parity checks to flip a fixture's cache
+ * mode between `""` (no Anthropic cache_control on the wire) and `"1h"`
+ * (cache markers emitted, label-strip + breakpoint-placement code paths
+ * exercised). Throws if the config has no `cache_ttl` line — that means
+ * the caller is patching a fixture that never opted into caching.
+ */
+export function setCacheTtl(configDir: string, value: string): void {
+  const configPath = join(configDir, "config.toml");
+  const raw = readFileSync(configPath, "utf8");
+  const next = raw.replace(/^cache_ttl\s*=\s*".*"\s*$/gm, `cache_ttl = "${value}"`);
+  if (next === raw) {
+    throw new Error(`setCacheTtl: no cache_ttl line found in ${configPath}`);
+  }
+  writeFileSync(configPath, next);
 }
 
 /**

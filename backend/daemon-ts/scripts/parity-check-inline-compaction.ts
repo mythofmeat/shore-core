@@ -38,6 +38,7 @@ import {
   openConnection,
   readFrame,
   readListenAddr,
+  setCacheTtl,
   spawnDaemon,
   type FrameQueue,
 } from "./parity/_lib.ts";
@@ -57,6 +58,7 @@ interface Args {
   ts: string | undefined;
   fixture: string;
   response: string;
+  cacheTtl: string | undefined;
 }
 
 interface ChatSummary {
@@ -107,8 +109,8 @@ if (responses.length < 2) {
   throw new Error(`${args.response} must contain at least two canned responses`);
 }
 
-const rust = await runScenario("rust", [args.rust], resolvePath(args.fixture), responses);
-const ts = await runScenario("ts", tsCmd, resolvePath(args.fixture), responses);
+const rust = await runScenario("rust", [args.rust], resolvePath(args.fixture), responses, args.cacheTtl);
+const ts = await runScenario("ts", tsCmd, resolvePath(args.fixture), responses, args.cacheTtl);
 
 let failures = 0;
 failures += compareSummary(rust.summary, ts.summary);
@@ -130,6 +132,7 @@ async function runScenario(
   cmd: string[],
   fixtureDir: string,
   responses: CannedLlmResponse[],
+  cacheTtl: string | undefined,
 ): Promise<ScenarioResult> {
   console.log(`-- inline-compaction: ${label} --`);
   const proxy = startParityLlmProxy({ response: responses });
@@ -139,6 +142,7 @@ async function runScenario(
       `shore-compaction-${label}-`,
     );
     patchProxyBaseUrl(configDir, proxy.baseUrl);
+    if (cacheTtl !== undefined) setCacheTtl(configDir, cacheTtl);
     // Fresh notify-log per scenario — each daemon writes via the shim
     // PATH-installed by buildDaemonEnv. Compaction completion fires
     // a `notify-send --app-name=shore <title> <body>` on both daemons.
@@ -605,6 +609,7 @@ function parseArgs(argv: string[]): Args {
     ts: undefined,
     fixture: DEFAULT_FIXTURE,
     response: DEFAULT_RESPONSE,
+    cacheTtl: undefined,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -613,6 +618,7 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--ts") parsed.ts = takeValue(argv, ++i, arg);
     else if (arg === "--fixture") parsed.fixture = takeValue(argv, ++i, arg);
     else if (arg === "--response") parsed.response = takeValue(argv, ++i, arg);
+    else if (arg === "--cache-ttl") parsed.cacheTtl = takeValue(argv, ++i, arg);
     else {
       console.error(`unknown arg: ${arg}`);
       process.exit(2);

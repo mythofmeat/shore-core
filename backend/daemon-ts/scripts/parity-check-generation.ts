@@ -25,6 +25,7 @@ import {
   openConnection,
   readFrame,
   readListenAddr,
+  setCacheTtl,
   spawnDaemon,
 } from "./parity/_lib.ts";
 import {
@@ -42,6 +43,7 @@ interface Args {
   ts: string | undefined;
   fixture: string;
   response: string;
+  cacheTtl: string | undefined;
 }
 
 interface GenerationSummary {
@@ -59,8 +61,8 @@ const response = loadCannedResponse(resolvePath(args.response));
 const proxy = startParityLlmProxy({ response });
 
 try {
-  const rust = await runScenario("rust", [args.rust], resolvePath(args.fixture), proxy.baseUrl);
-  const ts = await runScenario("ts", tsCmd, resolvePath(args.fixture), proxy.baseUrl);
+  const rust = await runScenario("rust", [args.rust], resolvePath(args.fixture), proxy.baseUrl, args.cacheTtl);
+  const ts = await runScenario("ts", tsCmd, resolvePath(args.fixture), proxy.baseUrl, args.cacheTtl);
 
   let failures = 0;
   failures += compareSummary("generation summary", rust.summary, ts.summary);
@@ -81,10 +83,12 @@ async function runScenario(
   cmd: string[],
   fixtureDir: string,
   proxyBaseUrl: string,
+  cacheTtl: string | undefined,
 ): Promise<{ summary: GenerationSummary; frames: Record<string, unknown>[] }> {
   console.log(`-- generation: ${label} --`);
   const { configDir, dataDir } = copyFixtureToTmp(fixtureDir, `shore-gen-${label}-`);
   patchProxyBaseUrl(configDir, proxyBaseUrl);
+  if (cacheTtl !== undefined) setCacheTtl(configDir, cacheTtl);
   const env = buildDaemonEnv({ configDir, dataDir, prefix: `shore-gen-${label}-` });
   env["SHORE_PARITY_ANTHROPIC_KEY"] = "sk-parity";
   env["SHORE_PARITY_OPENAI_KEY"] = "sk-parity";
@@ -219,6 +223,7 @@ function parseArgs(argv: string[]): Args {
     ts: undefined,
     fixture: DEFAULT_FIXTURE,
     response: DEFAULT_RESPONSE,
+    cacheTtl: undefined,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -227,6 +232,7 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--ts") parsed.ts = takeValue(argv, ++i, arg);
     else if (arg === "--fixture") parsed.fixture = takeValue(argv, ++i, arg);
     else if (arg === "--response") parsed.response = takeValue(argv, ++i, arg);
+    else if (arg === "--cache-ttl") parsed.cacheTtl = takeValue(argv, ++i, arg);
     else {
       console.error(`unknown arg: ${arg}`);
       process.exit(2);

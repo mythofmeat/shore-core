@@ -20,6 +20,7 @@ import {
   copyFixtureToTmp,
   openConnection,
   readFrame,
+  setCacheTtl,
   spawnDaemon,
   type FrameQueue,
 } from "./parity/_lib.ts";
@@ -43,6 +44,7 @@ interface Args {
   ts: string | undefined;
   fixture: string;
   response: string;
+  cacheTtl: string | undefined;
 }
 
 interface ScenarioResult {
@@ -60,8 +62,8 @@ if (responses.length < 2) {
   throw new Error(`${args.response} must contain at least two canned responses`);
 }
 
-const rust = await runScenario("rust", [args.rust], resolvePath(args.fixture), responses);
-const ts = await runScenario("ts", tsCmd, resolvePath(args.fixture), responses);
+const rust = await runScenario("rust", [args.rust], resolvePath(args.fixture), responses, args.cacheTtl);
+const ts = await runScenario("ts", tsCmd, resolvePath(args.fixture), responses, args.cacheTtl);
 
 let failures = 0;
 failures += compareDreamRequests(rust.requests, ts.requests);
@@ -82,6 +84,7 @@ async function runScenario(
   cmd: string[],
   fixtureDir: string,
   responses: CannedLlmResponse[],
+  cacheTtl: string | undefined,
 ): Promise<ScenarioResult> {
   console.log(`-- scheduled-dreaming: ${label} --`);
   const proxy = startParityLlmProxy({ response: responses });
@@ -91,6 +94,7 @@ async function runScenario(
       `shore-scheduled-dreaming-${label}-`,
     );
     patchProxyBaseUrl(configDir, proxy.baseUrl);
+    if (cacheTtl !== undefined) setCacheTtl(configDir, cacheTtl);
     const env = buildDaemonEnv({
       configDir,
       dataDir,
@@ -431,6 +435,7 @@ function parseArgs(argv: string[]): Args {
     ts: undefined,
     fixture: DEFAULT_FIXTURE,
     response: DEFAULT_RESPONSE,
+    cacheTtl: undefined,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -439,6 +444,7 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--ts") parsed.ts = takeValue(argv, ++i, arg);
     else if (arg === "--fixture") parsed.fixture = takeValue(argv, ++i, arg);
     else if (arg === "--response") parsed.response = takeValue(argv, ++i, arg);
+    else if (arg === "--cache-ttl") parsed.cacheTtl = takeValue(argv, ++i, arg);
     else {
       console.error(`unknown arg: ${arg}`);
       process.exit(2);
