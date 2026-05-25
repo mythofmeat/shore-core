@@ -1074,7 +1074,7 @@ async fn write_fallback_memory_index(
     body.push_str("Core user facts and standing behavior guidance are already loaded from USER.md and AGENTS.md; do not duplicate them here unless needed as pointers to memory files.\n\n");
     body.push_str(&format!("Character: {character}\n"));
     body.push_str(&format!("Last updated: {ran_at}\n"));
-    body.push_str("Fallback note: Rust created this minimal index because the AI librarian pass did not leave a usable MEMORY.md.\n\n");
+    body.push_str("Fallback note: daemon created this minimal index because the AI librarian pass did not leave a usable MEMORY.md.\n\n");
     body.push_str("## Memory areas\n\n");
     if entries.is_empty() {
         body.push_str("- No ordinary memory files were found yet.\n");
@@ -1120,7 +1120,7 @@ async fn append_librarian_audit(
     push_markdown_list_or_none(&mut body, changed);
     body.push_str("\nMEMORY.md updated:\n");
     body.push_str(if memory_created_by_fallback {
-        "- Yes, by Rust fallback (the model left it missing or empty).\n"
+        "- Yes, by daemon fallback (the model left it missing or empty).\n"
     } else {
         "- Present after the pass.\n"
     });

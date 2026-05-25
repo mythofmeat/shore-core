@@ -15,7 +15,7 @@ import type { ContentBlock } from "../engine/types.ts";
 import type { CacheForensics } from "../ledger/cache_forensics.ts";
 import type { Ledger } from "../ledger/ledger.ts";
 import type { Embedder } from "../llm/embed.ts";
-import type { ChatEvent, ChatRequest, ProviderClient, TurnMessage, UsageStats } from "../llm/types.ts";
+import type { ChatRequest, ProviderClient, UsageStats } from "../llm/types.ts";
 import type { ResolvedModel } from "../llm/catalog.ts";
 import {
   defaultRegistry,
@@ -80,7 +80,7 @@ Finish with a concise summary covering:
 - unresolved issues
 - whether \`MEMORY.md\` was updated
 
-The daemon writes a timestamped audit entry to the dreams log automatically once you finish -- you do not (and cannot) write \`DREAMS.md\` yourself.
+The daemon writes a timestamped audit entry to the dreams log automatically once you finish — you do not (and cannot) write \`DREAMS.md\` yourself.
 
 Generated dreaming artifacts are not durable memory sources. Do not mine legacy \`.dreams/**\`, \`dreams.md\`, \`MEMORY.md\`, or \`dreaming/**\` as facts; you may read \`MEMORY.md\` for index continuity.
 
@@ -512,7 +512,7 @@ async function runPrivateLibrarianLoop(opts: {
 
   for (let iteration = 0; iteration < opts.maxToolRounds; iteration++) {
     const req: ChatRequest = { ...opts.request, messages };
-    const response = await consumeStream(opts.provider.stream(req));
+    const response = await runOneRound(opts.provider, req);
     result.calls.push({
       usage: response.usage,
       stopReason: response.stopReason,
@@ -565,8 +565,17 @@ async function runPrivateLibrarianLoop(opts: {
   return result;
 }
 
-async function consumeStream(
-  events: AsyncIterable<ChatEvent>,
+/**
+ * Dreaming uses the non-streaming `generate()` path to match Rust's
+ * `LedgerClient::generate_with_config_fallback` wire shape — Anthropic
+ * SDK sends `stream: false`, returns a JSON Message. Same forcing
+ * function that motivated the heartbeat-tick non-streaming switch:
+ * canonical request body must match cross-daemon, and any divergence
+ * here fragments the Anthropic prompt-cache prefix.
+ */
+async function runOneRound(
+  provider: ProviderClient,
+  req: ChatRequest,
 ): Promise<{
   content: ContentBlock[];
   stopReason: string;
@@ -575,23 +584,15 @@ async function consumeStream(
   ttftMs: number;
 }> {
   const start = Date.now();
-  let firstOutputAt: number | undefined;
-  for await (const event of events) {
-    if (event.kind !== "done" && firstOutputAt === undefined) {
-      firstOutputAt = Date.now();
-    }
-    if (event.kind === "done") {
-      const totalMs = Date.now() - start;
-      return {
-        content: event.content,
-        stopReason: event.stopReason,
-        usage: event.usage,
-        totalMs,
-        ttftMs: firstOutputAt === undefined ? totalMs : firstOutputAt - start,
-      };
-    }
-  }
-  throw new Error("provider stream ended without a 'done' event");
+  const result = await provider.generate(req);
+  const totalMs = Date.now() - start;
+  return {
+    content: result.content,
+    stopReason: result.stopReason,
+    usage: result.usage,
+    totalMs,
+    ttftMs: totalMs,
+  };
 }
 
 function recordDreamingLedger(
@@ -847,7 +848,18 @@ function readState(
 function writeState(dataDir: string, character: string, state: DreamState): void {
   const p = dreamStatePath(dataDir, character);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(state, null, 2));
+  // Rust serializes the legacy multi-phase fields as explicit `null`s
+  // via `Option<String>` serde defaults. Match that on-disk shape so
+  // cross-daemon `dreams/state.json` reads byte-identically.
+  const onDisk = {
+    last_run_at: state.last_run_at ?? null,
+    runs: state.runs,
+    last_candidates_path: state.last_candidates_path ?? null,
+    last_signals_path: state.last_signals_path ?? null,
+    last_promotions_path: state.last_promotions_path ?? null,
+    seen_candidates: state.seen_candidates,
+  };
+  fs.writeFileSync(p, JSON.stringify(onDisk, null, 2));
 }
 
 function normalizeState(raw: unknown): DreamState {
