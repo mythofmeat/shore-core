@@ -49,6 +49,8 @@ export interface ToolLoopOptions {
     text: string;
     onNudge?: () => void;
   };
+  /** Use provider.generate() instead of provider.stream(). */
+  transport?: "stream" | "generate";
 }
 
 export interface ToolLoopResult {
@@ -94,10 +96,9 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
     }
     const req: ChatRequest = { ...opts.request, messages };
     opts.onCallStart?.(iter);
-    const { content, stopReason, usage, totalMs, ttftMs } = await consumeStream(
-      opts.provider.stream(req),
-      opts.onEvent,
-    );
+    const { content, stopReason, usage, totalMs, ttftMs } = opts.transport === "generate"
+      ? await consumeGenerate(opts.provider.generate(req), opts.onEvent)
+      : await consumeStream(opts.provider.stream(req), opts.onEvent);
     usagePerCall.push(usage);
     calls.push({ usage, stopReason, totalMs, ttftMs });
     lastContent = content;
@@ -148,6 +149,38 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
   }
 
   return { finalContent: lastContent, newTurns, usagePerCall, calls, stopReason: lastStopReason };
+}
+
+async function consumeGenerate(
+  response: Promise<{
+    content: ContentBlock[];
+    stopReason: string;
+    usage: UsageStats;
+  }>,
+  onEvent: ((e: ChatEvent) => void) | undefined,
+): Promise<{
+  content: ContentBlock[];
+  stopReason: string;
+  usage: UsageStats;
+  totalMs: number;
+  ttftMs: number;
+}> {
+  const start = Date.now();
+  const result = await response;
+  const totalMs = Date.now() - start;
+  onEvent?.({
+    kind: "done",
+    content: result.content,
+    stopReason: result.stopReason,
+    usage: result.usage,
+  });
+  return {
+    content: result.content,
+    stopReason: result.stopReason,
+    usage: result.usage,
+    totalMs,
+    ttftMs: totalMs,
+  };
 }
 
 function appendWrapUpNudge(messages: TurnMessage[], text: string): TurnMessage[] {

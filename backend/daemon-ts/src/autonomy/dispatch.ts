@@ -33,7 +33,7 @@ import {
 } from "../memory/deferred_edits.ts";
 import { workspaceIndexPath } from "../memory/workspace_index.ts";
 import type { ServerMessage } from "../swp/types.ts";
-import { defaultRegistry } from "../tools/registry.ts";
+import { defaultRegistry, togglesFromConfig, ToolRegistry } from "../tools/registry.ts";
 
 import { CacheKeepaliveAction } from "./cache_keepalive.ts";
 import { HeartbeatAction } from "./heartbeat.ts";
@@ -121,10 +121,7 @@ async function executeHeartbeatTick(opts: AutonomyDispatchOptions): Promise<void
     displayName,
     heartbeat.fallbackHeartbeatIntervalSecs,
   );
-  const registry = defaultRegistry({
-    characterName: opts.characterName,
-    displayName,
-  });
+  const registry = registryForHeartbeat(opts.config, opts.characterName, displayName);
 
   try {
     const result = await generateResponse({
@@ -160,6 +157,7 @@ async function executeHeartbeatTick(opts: AutonomyDispatchOptions): Promise<void
       systemSuffix,
       persistTurns: false,
       maxIterations: heartbeat.maxToolRounds + heartbeat.wrapUpGraceRounds,
+      providerTransport: "generate",
       ledgerCallTypes: { first: "heartbeat", loop: "heartbeat_tool_loop" },
       ...(heartbeat.wrapUpGraceRounds > 0
         ? {
@@ -199,6 +197,19 @@ async function executeHeartbeatTick(opts: AutonomyDispatchOptions): Promise<void
       `[shore-daemon-ts] heartbeat failed for ${opts.characterName}: ${(e as Error).message}`,
     );
   }
+}
+
+function registryForHeartbeat(
+  config: LoadedConfig,
+  characterName: string,
+  displayName: string,
+): ToolRegistry {
+  if (!config.app.behavior.tool_use.enabled) return new ToolRegistry();
+  return defaultRegistry({
+    characterName,
+    displayName,
+    toggles: togglesFromConfig(config.app.behavior.tool_use.tools),
+  });
 }
 
 async function executeKeepalivePing(opts: AutonomyDispatchOptions): Promise<void> {
@@ -331,9 +342,9 @@ function buildHeartbeatPrompt(userName: string, defaultInterval: string): string
     + "this current heartbeat session.\n\n"
     + `- Send a message to ${userName}: wrap it in <sendMessage>...</sendMessage>. `
     + `You have the ability to autonomously and spontaneously send messages to ${userName}. `
-    + `Any text included in the sendMessage tags will be delivered to ${userName}.\n\n`
+    + `Any text included in the \`sendMessage\` tags will be delivered to ${userName}.\n\n`
     + "Thoughts, tool-use results, and any text in your response that is not part of "
-    + "<sendMessage> tags are private and ephemeral. If you want to carry something "
+    + "`<sendMessage>` tags are private and ephemeral. If you want to carry something "
     + "forward, write it down with a workspace tool.\n\n"
     + "If you have a multi-step task in progress and want future-you to pick it up, "
     + "edit HEARTBEAT.md to record what you were doing and what to come back to. "
@@ -345,14 +356,12 @@ function buildHeartbeatPrompt(userName: string, defaultInterval: string): string
 
 function formatHeartbeatNow(): string {
   const now = new Date();
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: "long",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(now);
+  const weekday = new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(now);
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  const hour24 = now.getHours();
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  const ampm = hour24 < 12 ? "AM" : "PM";
+  return `${weekday} ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} · ${hour12}:${pad(now.getMinutes())} ${ampm}`;
 }
 
 function formatInterval(secs: number): string {

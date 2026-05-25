@@ -130,6 +130,8 @@ export interface GenerateOptions {
     first: CallType;
     loop: CallType;
   };
+  /** Background tasks can use the provider's non-streaming JSON endpoint. */
+  providerTransport?: "stream" | "generate";
   /** Called with the cache-stable request shape before any systemSuffix is appended. */
   onPreparedRequest?: (request: ChatRequest) => void;
   /**
@@ -388,6 +390,7 @@ export async function generateResponse(
     onToolResult,
     ...(opts.maxIterations !== undefined ? { maxIterations: opts.maxIterations } : {}),
     ...(opts.wrapUp !== undefined ? { wrapUp: opts.wrapUp } : {}),
+    ...(opts.providerTransport !== undefined ? { transport: opts.providerTransport } : {}),
   });
 
   recordLedgerCalls(opts, request, result);
