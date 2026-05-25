@@ -284,7 +284,10 @@ export function trimMessages(
         role: msg.role,
         content: msg.content,
         images: msg.images.slice(),
-        content_blocks: msg.content_blocks.slice(),
+        // Deep-clone each block; the time-marker pass below mutates
+        // the first text block in place, and a shallow `.slice()` would
+        // leak that mutation back into the engine's persisted Message.
+        content_blocks: msg.content_blocks.map((b) => ({ ...b })),
       },
       ts: msg.timestamp,
     });
