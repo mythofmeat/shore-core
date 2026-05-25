@@ -1,0 +1,22 @@
+[defaults]
+model = "chat.anthropic.parity"
+display_name = "Parity User"
+
+[behavior.tool_use]
+enabled = false
+
+[memory.compaction]
+enabled = true
+min_turns = 2
+max_turns = 3
+keep_recent_turns = 1
+max_context_tokens = 0
+idle_trigger = "24h"
+
+[chat.anthropic.parity]
+model_id = "claude-parity"
+api_key_env = "SHORE_PARITY_ANTHROPIC_KEY"
+base_url = "{{LLM_PROXY_BASE_URL}}"
+max_tokens = 64
+temperature = 1
+cache_ttl = ""

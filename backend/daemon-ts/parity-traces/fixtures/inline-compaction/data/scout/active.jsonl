@@ -1,0 +1,4 @@
+{"msg_id":"m1","role":"user","content_blocks":[{"type":"text","text":"first user message"}],"timestamp":"2026-01-01T00:00:00Z"}
+{"msg_id":"m2","role":"assistant","content_blocks":[{"type":"text","text":"first assistant reply"}],"timestamp":"2026-01-01T00:00:01Z"}
+{"msg_id":"m3","role":"user","content_blocks":[{"type":"text","text":"second user message"}],"timestamp":"2026-01-01T00:00:02Z"}
+{"msg_id":"m4","role":"assistant","content_blocks":[{"type":"text","text":"second assistant reply"}],"timestamp":"2026-01-01T00:00:03Z"}

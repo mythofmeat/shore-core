@@ -22,6 +22,8 @@
     "parity:regen:compiled": "bun scripts/parity-check-regen.ts --rust /usr/bin/shore-daemon --ts ./dist/shore-daemon",
     "parity:tool-loop": "bun scripts/parity-check-tool-loop.ts --rust /usr/bin/shore-daemon",
     "parity:tool-loop:compiled": "bun scripts/parity-check-tool-loop.ts --rust /usr/bin/shore-daemon --ts ./dist/shore-daemon",
+    "parity:compaction": "bun scripts/parity-check-inline-compaction.ts --rust /usr/bin/shore-daemon",
+    "parity:compaction:compiled": "bun scripts/parity-check-inline-compaction.ts --rust /usr/bin/shore-daemon --ts ./dist/shore-daemon",
     "parity:capture-commands": "bun scripts/capture-command.ts /usr/bin/shore-daemon --all",
     "capture-trace": "bun scripts/capture-rust-trace.ts /usr/bin/shore-daemon"
   },

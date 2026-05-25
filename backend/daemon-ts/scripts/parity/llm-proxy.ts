@@ -118,11 +118,23 @@ export function startParityLlmProxy(opts: StartParityLlmProxyOptions): ParityLlm
       const fixture = fixturePath === undefined ? undefined : readStoredFixture(fixturePath);
       if (fixture !== undefined) return responseFromFixture(fixture);
 
-      const defaultFixture: StoredFixture = {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-        body: buildSse(response),
-      };
+      // Compaction (and any other LedgerClient.generate path) calls the
+      // provider without `stream: true`. Anthropic returns a single JSON
+      // message object then; OpenAI-compatible returns one ChatCompletion
+      // object. Branch on the request body to keep one canned response
+      // usable for both shapes.
+      const streaming = isStreamingRequest(body);
+      const defaultFixture: StoredFixture = streaming
+        ? {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+            body: buildSse(response),
+          }
+        : {
+            status: 200,
+            headers: { "content-type": "application/json" },
+            body: buildJson(response),
+          };
       if (opts.recordMissing === true && fixturePath !== undefined) {
         writeFileSync(fixturePath, JSON.stringify(defaultFixture, null, 2) + "\n");
       }
@@ -156,6 +168,19 @@ function buildSse(resp: CannedLlmResponse): string {
     case "openai_compatible":
       return buildOpenAICompatibleSse(resp);
   }
+}
+
+function buildJson(resp: CannedLlmResponse): string {
+  switch (resp.provider) {
+    case "anthropic":
+      return buildAnthropicJson(resp);
+    case "openai_compatible":
+      return buildOpenAICompatibleJson(resp);
+  }
+}
+
+function isStreamingRequest(body: unknown): boolean {
+  return isObject(body) && body["stream"] === true;
 }
 
 export function canonicalizeJson(value: unknown): string {
@@ -350,6 +375,71 @@ function buildOpenAICompatibleSse(resp: OpenAICompatibleCannedResponse): string 
   lines.push("");
 
   return lines.join("\n") + "\n";
+}
+
+function buildAnthropicJson(resp: AnthropicCannedResponse): string {
+  const content = resp.blocks.map((block) => {
+    switch (block.type) {
+      case "text":
+        return { type: "text", text: block.text };
+      case "thinking":
+        return {
+          type: "thinking",
+          thinking: block.thinking,
+          ...(block.signature !== undefined ? { signature: block.signature } : {}),
+        };
+      case "redacted_thinking":
+        return { type: "redacted_thinking", data: block.data };
+      case "tool_use":
+        return {
+          type: "tool_use",
+          id: block.id,
+          name: block.name,
+          input: block.input ?? {},
+        };
+    }
+  });
+  return JSON.stringify({
+    id: "msg_parity",
+    type: "message",
+    role: "assistant",
+    model: resp.model,
+    content,
+    stop_reason: resp.stop_reason,
+    stop_sequence: null,
+    usage: {
+      input_tokens: resp.usage?.input_tokens ?? 10,
+      output_tokens: resp.usage?.output_tokens ?? 5,
+      cache_read_input_tokens: resp.usage?.cache_read_input_tokens ?? 0,
+      cache_creation_input_tokens: resp.usage?.cache_creation_input_tokens ?? 0,
+    },
+  });
+}
+
+function buildOpenAICompatibleJson(resp: OpenAICompatibleCannedResponse): string {
+  return JSON.stringify({
+    id: "chatcmpl-parity",
+    object: "chat.completion",
+    created: 1_778_284_800,
+    model: resp.model,
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: resp.text },
+        finish_reason: resp.finish_reason ?? "stop",
+      },
+    ],
+    usage: {
+      prompt_tokens: resp.usage?.prompt_tokens ?? 10,
+      completion_tokens: resp.usage?.completion_tokens ?? 5,
+      total_tokens:
+        (resp.usage?.prompt_tokens ?? 10) + (resp.usage?.completion_tokens ?? 5),
+      prompt_tokens_details: {
+        cached_tokens: resp.usage?.cached_tokens ?? 0,
+        cache_write_tokens: resp.usage?.cache_write_tokens ?? 0,
+      },
+    },
+  });
 }
 
 function sortJson(value: unknown): unknown {

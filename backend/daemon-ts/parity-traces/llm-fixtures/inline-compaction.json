@@ -1,0 +1,38 @@
+{
+  "responses": [
+    {
+      "provider": "anthropic",
+      "model": "claude-parity",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Acknowledged."
+        }
+      ],
+      "stop_reason": "end_turn",
+      "usage": {
+        "input_tokens": 42,
+        "output_tokens": 4,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0
+      }
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-parity",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "<memory>\n<write path=\"memory/people/parity-user.md\">\n# Parity User\n\n- Drove an inline-compaction parity scenario on 2026-01-01.\n- Sent two seeded turns followed by a third turn that crossed the max_turns gate.\n</write>\n<write path=\"MEMORY.md\">\n# Memory Index\n\n## Throughline\n- Parity scenario archived two seeded turns and retained the most recent exchange.\n\n## Recent files\n- memory/people/parity-user.md\n</write>\n</memory>"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "usage": {
+        "input_tokens": 96,
+        "output_tokens": 64,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  ]
+}
