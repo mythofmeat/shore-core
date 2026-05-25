@@ -7,7 +7,7 @@ import path from "node:path";
 import { engineForCharacter } from "../src/engine/engine.ts";
 import type { ContentBlock } from "../src/engine/types.ts";
 import type { ResolvedModel } from "../src/llm/catalog.ts";
-import type { ChatEvent, ChatRequest, ProviderClient } from "../src/llm/types.ts";
+import type { ChatEvent, ChatRequest, GenerateResult, ProviderClient } from "../src/llm/types.ts";
 import {
   characterMemoryDir,
   characterWorkspaceDir,
@@ -40,12 +40,16 @@ class QueuedProvider implements ProviderClient {
     });
   }
 
-  async *stream(req: ChatRequest): AsyncIterable<ChatEvent> {
-    this.requests.push(req);
-    const response = this.responses.shift() ?? {
+  private nextResponse(): { content: ContentBlock[]; stopReason: string } {
+    return this.responses.shift() ?? {
       content: [{ type: "text" as const, text: "done" }],
       stopReason: "end_turn",
     };
+  }
+
+  async *stream(req: ChatRequest): AsyncIterable<ChatEvent> {
+    this.requests.push(req);
+    const response = this.nextResponse();
     for (const block of response.content) {
       if (block.type === "tool_use") {
         yield { kind: "tool_use_start", id: block.id, name: block.name };
@@ -53,6 +57,21 @@ class QueuedProvider implements ProviderClient {
     }
     yield {
       kind: "done",
+      content: response.content,
+      stopReason: response.stopReason,
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+    };
+  }
+
+  async generate(req: ChatRequest): Promise<GenerateResult> {
+    this.requests.push(req);
+    const response = this.nextResponse();
+    return {
       content: response.content,
       stopReason: response.stopReason,
       usage: {
@@ -147,7 +166,7 @@ describe("runLibrarianSweep", () => {
 
     s.provider.enqueueToolUse("t_list", "list_files", { path: "memory" });
     s.provider.enqueueToolUse("t_read", "read", { path: "memory/daily/2026-04.md" });
-    s.provider.enqueueToolUse("t_search", "file_search", {
+    s.provider.enqueueToolUse("t_search", "search", {
       path: "memory",
       query: "MEMORY.md",
       mode: "lexical",
@@ -171,7 +190,7 @@ describe("runLibrarianSweep", () => {
     expect(result?.tools_used).toEqual([
       "list_files",
       "read",
-      "file_search",
+      "search",
       "write",
       "write",
     ]);

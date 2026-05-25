@@ -385,10 +385,23 @@ function buildLibrarianRequest(
   const userPrompt = dryRun
     ? "Run the dry-run memory librarian pass now. Inspect memory files with read-only tools and finish with a proposed plan. Do not write, edit, or emit a user-facing message."
     : "Run the memory librarian pass now. Use memory tools to inspect and improve workspace/memory, update MEMORY.md (at the workspace root), and finish with a concise summary of what you inspected and changed. The daemon writes the dreams audit log automatically; do not try to write DREAMS.md yourself. Do not emit a user-facing message.";
+  const usesAnthropicPromptCache = opts.resolved.sdk === "anthropic";
 
   return {
-    system,
-    messages: [{ role: "user", content: [{ type: "text", text: userPrompt }] }],
+    system: usesAnthropicPromptCache ? "" : system,
+    messages: usesAnthropicPromptCache
+      ? [
+          // Rust builds the fresh Anthropic dreaming request with a
+          // string-content user turn and `system_suffix`; the Anthropic
+          // adapter then folds the suffix into that user as
+          // `<system_instruction>...`. Preserve that wire shape here for
+          // prompt-cache parity. The in-process TurnMessage type is block
+          // oriented, so this is intentionally a narrow background-call
+          // escape hatch.
+          { role: "user", content: userPrompt as unknown as ContentBlock[] },
+          { role: "system", content: [{ type: "text", text: system }] },
+        ]
+      : [{ role: "user", content: [{ type: "text", text: userPrompt }] }],
     tools: buildLibrarianToolDefs(opts.character, opts.displayName, dryRun),
     thinking: { enabled: false },
     cacheTtl: opts.resolved.cacheTtl ?? "",
@@ -437,31 +450,72 @@ function buildLibrarianToolDefs(
   displayName: string,
   dryRun: boolean,
 ): ChatRequest["tools"] {
-  return defaultRegistry({ characterName: character, displayName })
-    .list()
-    .filter((tool) => librarianToolAllowed(tool.name, dryRun))
-    .map((tool) => ({
-      name: tool.name,
-      description: tool.description,
+  const byName = new Map(
+    defaultRegistry({ characterName: character, displayName })
+      .list()
+      .map((tool) => [tool.name, tool]),
+  );
+  const order = dryRun ? LIBRARIAN_DRY_RUN_TOOLS : LIBRARIAN_WRITE_TOOLS;
+  return order.map(({ registryName, wireName }) => {
+    const tool = byName.get(registryName);
+    if (tool === undefined) {
+      throw new Error(`missing librarian tool definition: ${registryName}`);
+    }
+    return {
+      name: wireName,
+      description: rustLibrarianToolDescription(tool.description),
       inputSchema: tool.inputSchema,
-    }));
+    };
+  });
+}
+
+const LIBRARIAN_DRY_RUN_TOOLS = [
+  { registryName: "check_time", wireName: "check_time" },
+  { registryName: "read", wireName: "read" },
+  { registryName: "list_files", wireName: "list_files" },
+  { registryName: "file_search", wireName: "search" },
+  { registryName: "conversation_search", wireName: "search_history" },
+] as const;
+
+const LIBRARIAN_WRITE_TOOLS = [
+  { registryName: "check_time", wireName: "check_time" },
+  { registryName: "read", wireName: "read" },
+  { registryName: "write", wireName: "write" },
+  { registryName: "edit", wireName: "edit" },
+  { registryName: "list_files", wireName: "list_files" },
+  { registryName: "file_search", wireName: "search" },
+  { registryName: "conversation_search", wireName: "search_history" },
+] as const;
+
+function rustLibrarianToolDescription(description: string): string {
+  return description
+    .replaceAll("`file_search`", "`search`")
+    .replaceAll("`conversation_search`", "`search_history`")
+    .replaceAll("file_search", "search")
+    .replaceAll("conversation_search", "search_history");
 }
 
 function librarianToolAllowed(name: string, dryRun: boolean): boolean {
   if (dryRun) {
-    return ["read", "list_files", "file_search", "conversation_search", "check_time"].includes(
+    return ["check_time", "read", "list_files", "search", "search_history"].includes(
       name,
     );
   }
   return [
+    "check_time",
     "read",
     "write",
     "edit",
     "list_files",
-    "file_search",
-    "conversation_search",
-    "check_time",
+    "search",
+    "search_history",
   ].includes(name);
+}
+
+function librarianRuntimeToolName(name: string): string {
+  if (name === "search") return "file_search";
+  if (name === "search_history") return "conversation_search";
+  return name;
 }
 
 function buildLibrarianToolContext(
@@ -656,7 +710,7 @@ async function executeLibrarianTool(
       isError: true,
     };
   }
-  const handler = registry.get(name);
+  const handler = registry.get(librarianRuntimeToolName(name));
   if (handler === undefined) {
     return { output: `unknown tool "${name}"`, isError: true };
   }
@@ -694,7 +748,7 @@ function recordLibrarianToolIntent(
   if (name === "read" || name === "list_files") {
     const p = toolPath(input);
     if (p !== undefined) pushUnique(result.inspected, p);
-  } else if (name === "file_search" || name === "conversation_search") {
+  } else if (name === "search" || name === "search_history") {
     const obj = asRecord(input);
     const query =
       typeof obj["query"] === "string" ? obj["query"] : "<missing query>";

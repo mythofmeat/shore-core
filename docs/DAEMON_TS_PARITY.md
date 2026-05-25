@@ -14,8 +14,9 @@ soak is for catching the *unexpected* divergence, not the expected one.
 > also green for Anthropic and OpenAI-compatible text generation,
 > Anthropic regen persistence, a one-tool Anthropic loop, inline
 > compaction end-to-end (trigger → memory writes → segment archive →
-> active.jsonl truncation → restart history), and autonomous heartbeat
-> message dispatch. These compare SWP output,
+> active.jsonl truncation → restart history), autonomous heartbeat
+> message dispatch, and the manual `memory_dream` command path. These
+> compare SWP output,
 > canonical provider request bodies, and the post-restart on-disk state
 > where relevant.
 
@@ -43,9 +44,10 @@ The first T3 content checks are separate for now:
 `bun run parity:generation` for Anthropic,
 `bun run parity:generation:openai` for OpenAI-compatible,
 `bun run parity:regen` for Anthropic regen,
-`bun run parity:tool-loop` for the one-tool Anthropic loop, and
-`bun run parity:compaction` for inline compaction end-to-end, and
-`bun run parity:heartbeat-tick` for autonomous heartbeat dispatch (all
+`bun run parity:tool-loop` for the one-tool Anthropic loop,
+`bun run parity:compaction` for inline compaction end-to-end,
+`bun run parity:heartbeat-tick` for autonomous heartbeat dispatch, and
+`bun run parity:dreaming` for the manual memory-dream command path (all
 require `/usr/bin/shore-daemon`).
 
 ## Coverage tiers
@@ -125,7 +127,7 @@ Captured command cases:
 
 Already covered by Tier 1: `edit`, `delete`, `alt`.
 
-Deferred to Tier 3: `compact`, `memory_dream`, `refresh_provider_models`,
+Deferred to Tier 3: `compact`, `refresh_provider_models`,
 `refresh_all_provider_models`. `inject_system_message` is a TS-only alias
 for `inject_system`; Rust has no equivalent command name, so parity does
 not cover it.
@@ -181,7 +183,11 @@ and heartbeat calls go through the latter path). The heartbeat check,
 deterministic setup turn to create autonomy state, forces
 `heartbeat_tick_now`, waits for an autonomous `new_message`, then diffs
 setup and heartbeat request bodies, tick SWP frames, `active.jsonl`,
-restart history, and notify-send argv.
+restart history, and notify-send argv. The dreaming check,
+`backend/daemon-ts/scripts/parity-check-dreaming.ts`, sends
+`memory_dream force=true`, then diffs the command output, librarian
+request body, `dreams/state.json`, `DREAMS.md`, and fallback
+`MEMORY.md`.
 
 Once the rest of that infra exists:
 
@@ -208,8 +214,13 @@ Once the rest of that infra exists:
   bug where the prompt-assembly time marker was leaking into the
   persisted user message (`engine/prompt.ts` shallow `content_blocks.slice()`
   vs deep block copy).
-- [ ] **dreaming cron firing end-to-end** — trigger via debug command → wait
-  → diff memory files written + ledger rows
+- [x] **manual memory-dream command (done 2026-05-25)** —
+  `memory_dream force=true` runs one non-streaming librarian call,
+  exercises the no-tool fallback MEMORY.md path, and diffs the SWP
+  output, request body, dreams state, dreams log, and fallback memory
+  index. `bun run parity:dreaming`.
+- [ ] **scheduled dreaming cron firing end-to-end** — trigger via the
+  autonomy tick path → wait → diff memory files written + ledger rows.
 - [x] **autonomous-message dispatch (done 2026-05-25)** — setup turn
   creates autonomy state → `heartbeat_tick_now` fast-forwards the clock
   → diff autonomous SWP frames, setup + heartbeat request bodies,
