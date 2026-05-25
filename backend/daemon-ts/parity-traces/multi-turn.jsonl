@@ -1,0 +1,9 @@
+{"dir":"s2c","phase":"live","frame":{"type":"hello","v":1,"server_name":"shore-daemon","characters":[{"name":"scout"}]}}
+{"dir":"c2s","phase":"live","frame":{"type":"hello","client_type":"cli","client_name":"multi-turn-capture","character":"scout"}}
+{"dir":"s2c","phase":"live","frame":{"type":"history","messages":[],"config":{"active_model":null,"private":false},"selected_character":"scout","revision":0}}
+{"dir":"c2s","phase":"live","frame":{"type":"message","text":"first message"}}
+{"dir":"c2s","phase":"live","frame":{"type":"message","text":"second message"}}
+{"dir":"c2s","phase":"live","frame":{"type":"message","text":"third message"}}
+{"dir":"s2c","phase":"restart","frame":{"type":"hello","v":1,"server_name":"shore-daemon","characters":[{"name":"scout"}]}}
+{"dir":"c2s","phase":"restart","frame":{"type":"hello","client_type":"cli","client_name":"multi-turn-capture-restart","character":"scout"}}
+{"dir":"s2c","phase":"restart","frame":{"type":"history","messages":[{"msg_id":"m_b84cc2b6-436c-49bf-8ea5-8a0e3c36cdb1","role":"user","content":"first message","images":[],"content_blocks":[{"type":"text","text":"first message"}],"timestamp":"2026-05-25T12:43:54.024209790+10:00"},{"msg_id":"m_5aecffe6-ef75-457c-b633-65872f9a1317","role":"user","content":"second message","images":[],"content_blocks":[{"type":"text","text":"second message"}],"timestamp":"2026-05-25T12:43:54.623643267+10:00"},{"msg_id":"m_081dbcba-e27c-42d2-ab0d-06ba4d65952a","role":"user","content":"third message","images":[],"content_blocks":[{"type":"text","text":"third message"}],"timestamp":"2026-05-25T12:43:55.224011669+10:00"}],"config":{"active_model":null,"private":false},"selected_character":"scout","revision":0}}
