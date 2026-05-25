@@ -21,10 +21,6 @@ security boundaries, observability, and validation expectations.
 | `clients/cli` | `shore-cli` | CLI client |
 | `dev/test-harness` | `shore-test-harness` | integration harness and mock server |
 
-`clients/gui-godot/rust` is intentionally outside the root Cargo workspace
-because it has Godot-specific tooling and produces a `shore_bridge` dynamic
-library.
-
 Out-of-tree clients live in separate repositories and consume the core
 library crates (`shore-protocol`, `shore-config`, `shore-swp-client`,
 `shore-diagnostics`) from crates.io:
@@ -33,6 +29,7 @@ library crates (`shore-protocol`, `shore-config`, `shore-swp-client`,
 | --- | --- |
 | `shore-tui` (terminal UI) | [mythofmeat/shore-tui](https://github.com/mythofmeat/shore-tui) |
 | `shore-gui` (Tauri desktop) | [mythofmeat/shore-gui](https://github.com/mythofmeat/shore-gui) |
+| `shore-gui-godot` (Godot client) | [mythofmeat/shore-gui-godot](https://github.com/mythofmeat/shore-gui-godot) |
 | `shore-matrix` (Matrix bridge) | [mythofmeat/shore-matrix](https://github.com/mythofmeat/shore-matrix) |
 | `shore-mcp` (debug/development MCP) | [mythofmeat/shore-mcp](https://github.com/mythofmeat/shore-mcp) |
 
