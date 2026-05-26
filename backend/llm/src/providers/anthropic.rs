@@ -1239,8 +1239,7 @@ mod tests {
 
         // depth=2: 2 real user turns back from end → breakpoint before turn 2
         // (the assistant response at index 1).
-        assert_eq!(p.msg_breakpoints.len(), 1);
-        assert!(p.msg_breakpoints[0] < messages.len());
+        assert_eq!(p.msg_breakpoints, vec![1]);
     }
 
     #[test]

@@ -132,19 +132,22 @@ send_msg() {
 _check_latest_response() {
     local path
     path="$(forensics_path)"
-    [[ -f "$path" ]] || return
+    [[ -f "$path" ]] || harness_fail "missing forensics log: $path"
 
     local last_resp
     last_resp="$(grep '"type":"response"' "$path" | tail -1)"
-    [[ -n "$last_resp" ]] || return
+    [[ -n "$last_resp" ]] || harness_fail "no response records found in $path"
 
     local write read
-    write="$(echo "$last_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cache_creation_tokens', 0))" 2>/dev/null)" || return
-    read="$(echo "$last_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cache_read_tokens', 0))" 2>/dev/null)" || return
+    write="$(echo "$last_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cache_creation_tokens', 0))" 2>/dev/null)" \
+        || harness_fail "failed to parse cache_creation_tokens from response record"
+    read="$(echo "$last_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cache_read_tokens', 0))" 2>/dev/null)" \
+        || harness_fail "failed to parse cache_read_tokens from response record"
 
     if [[ $_MSG_INDEX -eq 0 ]]; then
         # First message: must be a write (cold start).
         _FIRST_WRITE="$write"
+        [[ "$_FIRST_WRITE" -gt 0 ]] || harness_fail "turn 0 did not create a cache entry (cache_w=0)"
         # Threshold: half the first write. Any write bigger than this
         # after the first message is a full prefix rewrite = failure.
         _WRITE_THRESHOLD=$((_FIRST_WRITE / 2))
