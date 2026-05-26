@@ -330,18 +330,28 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
     expect(r2.usagePerCall[0]!.cacheReadInputTokens).toBeGreaterThan(0);
   }, 240_000);
 
-  it("adaptive thinking + multi-iter tool loop + follow-up message holds cache", async () => {
-    // The combination this rewrite was created to fix: a multi-iteration
-    // tool loop running under ADAPTIVE thinking (variable thinking-block
-    // shape each iteration), followed by a NEW user turn that should
-    // reuse the entire tool-loop-exit prefix as cache. Rust historically
-    // dropped the cache on the follow-up turn because the thinking-block
-    // round-trip subtly changed the cached prefix bytes.
+  it("adaptive + effort:high through tool loop + follow-up: zero invalidations", async () => {
+    // The prod-config regression test the rewrite exists to win:
+    // adaptive thinking + `output_config.effort = "high"` (selected by
+    // setting `reasoning_effort = "high"` on the daemon), driven through
+    // a multi-iteration tool loop and then a plain follow-up turn.
     //
-    // Default model: claude-haiku-4.5 (cheap). Set
-    // `SHORE_TEST_MODEL=anthropic/claude-sonnet-4.6` to validate against
-    // the model class the user actually runs (where the original
-    // regression bit hardest).
+    // Run with `SHORE_TEST_MODEL=anthropic/claude-sonnet-4-6` to
+    // exercise the model where the original Rust cache regression bit
+    // hardest. Default (no env) runs against Haiku 4.5 for cheap CI.
+    //
+    // The contract this test pins:
+    //   1. Call 1 is the ONLY large cache_write (cold start writes
+    //      the full system + first-message prefix).
+    //   2. Every subsequent call has cache_read > 0 (the prior cache
+    //      is being hit — no full invalidation).
+    //   3. Every subsequent call's cache_write is small relative to
+    //      call 1's — only the delta (new turn + new thinking block)
+    //      gets written, never the full prefix.
+    //
+    // If any of those fail, we're back in the Rust regression where
+    // some byte mutation between turns invalidates the cached prefix
+    // and forces a full re-cache.
     const initial: TurnMessage[] = [
       {
         role: "user",
@@ -364,7 +374,12 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
       },
     ];
     const req1 = makeRequest(initial);
-    req1.thinking = { enabled: true, effort: "adaptive" };
+    // `effort: "high"` post-2026-05-26 emits
+    // `thinking: {type: "adaptive"}` + `output_config: {effort: "high"}`.
+    // Mirrors the prod-prod daemon config.
+    req1.thinking = { enabled: true, effort: "high" };
+    req1.cacheTtl = "1h"; // long-running test; 5m TTL could race the cache
+    req1.maxTokens = 16384; // adaptive+high needs room for thinking
 
     const r1 = await runToolLoop({
       provider: PROVIDER,
@@ -372,22 +387,35 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
       registry: diceRegistry(),
       toolContext: stubCtx(),
     });
-    console.log("adaptive tool-loop turn1 usage per call:", r1.usagePerCall);
+    console.log("turn1 usage per call:", r1.usagePerCall);
 
     // Turn 1 must have iterated enough to exercise a real adaptive
     // thinking-block shape transition. ≥3 calls = ≥2 in-loop iterations
-    // plus the closing text turn. Adaptive thinking varies the budget
-    // per call and tends to emit thinking on the first iteration and
-    // skip it on later ones — that's the shape change we care about.
+    // plus the closing text turn.
     expect(r1.usagePerCall.length).toBeGreaterThanOrEqual(3);
+
+    const coldCacheWrite = r1.usagePerCall[0]!.cacheCreationInputTokens;
+    // Call 1 must actually engage the cache: a cold write here = the
+    // prompt is over the per-model cache threshold (otherwise the rest
+    // of the assertions reduce to vacuous).
+    expect(coldCacheWrite).toBeGreaterThan(0);
+
+    // Calls 2..N within turn 1: each must read the prior prefix,
+    // AND must not re-cache the full prefix. Per-call cache_write is
+    // allowed (the new tool_use + tool_result + thinking block extend
+    // the cached tail), but it must be much smaller than the cold
+    // write — anything ≥ half of the cold write means we lost the
+    // prefix and re-cached most of it.
     for (let i = 1; i < r1.usagePerCall.length; i++) {
-      expect(r1.usagePerCall[i]!.cacheReadInputTokens).toBeGreaterThan(0);
+      const u = r1.usagePerCall[i]!;
+      expect(u.cacheReadInputTokens).toBeGreaterThan(0);
+      expect(u.cacheCreationInputTokens).toBeLessThan(coldCacheWrite / 2);
     }
 
     // Turn 2: a plain follow-up user message after the tool loop is
-    // closed. This is the high-risk case — Rust's regression killed
-    // the cache here because the round-tripped thinking signatures or
-    // block ordering subtly didn't byte-match the cached prefix.
+    // closed. This is the highest-risk regression — Rust historically
+    // killed the cache here because thinking-signature round-trip
+    // mutations broke the cached prefix between turns.
     const turn2 = [
       ...initial,
       ...r1.newTurns,
@@ -399,7 +427,9 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
       },
     ];
     const req2 = makeRequest(turn2);
-    req2.thinking = { enabled: true, effort: "adaptive" };
+    req2.thinking = { enabled: true, effort: "high" };
+    req2.cacheTtl = "1h";
+    req2.maxTokens = 16384;
 
     const r2 = await runToolLoop({
       provider: PROVIDER,
@@ -407,13 +437,16 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
       registry: diceRegistry(),
       toolContext: stubCtx(),
     });
-    console.log("adaptive tool-loop turn2 usage per call:", r2.usagePerCall);
+    console.log("turn2 usage per call:", r2.usagePerCall);
 
-    // KEY assertion: the FIRST call of the follow-up turn must read
-    // cache. If cache_read=0 here, a thinking-block round-trip
-    // mutation broke the prefix between turns — the exact regression
-    // this rewrite exists to prevent.
-    expect(r2.usagePerCall[0]!.cacheReadInputTokens).toBeGreaterThan(0);
+    // Every call on turn 2 must read cache (no invalidation crossing
+    // the turn boundary) AND must not produce a large cache_write
+    // (the turn 1 prefix is being extended, not re-cached).
+    for (let i = 0; i < r2.usagePerCall.length; i++) {
+      const u = r2.usagePerCall[i]!;
+      expect(u.cacheReadInputTokens).toBeGreaterThan(0);
+      expect(u.cacheCreationInputTokens).toBeLessThan(coldCacheWrite / 2);
+    }
   }, 360_000);
 });
 
