@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "mode": "generation",
+  "fixture": "parity-traces/fixtures/generation-openai-compatible",
+  "response": "parity-traces/llm-fixtures/generation-openai-compatible.json",
+  "cacheTtl": null,
+  "summary": {
+    "streamStarts": [
+      {
+        "regen": false
+      }
+    ],
+    "textChunks": [
+      "OpenAI-compatible parity fixture response from the deterministic LLM."
+    ],
+    "finalContent": "OpenAI-compatible parity fixture response from the deterministic LLM.",
+    "finishReason": "end_turn",
+    "tokens": {
+      "input": 29,
+      "output": 8,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "model": "gpt-parity"
+  },
+  "providerRequest": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "body": {
+      "model": "gpt-parity",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are scout, in conversation with Parity User.\nThis is a text conversation. Communicate directly rather than narrating actions or using roleplay formatting.\nBe consistent with established details and avoid fabricating memory.# TOOLS\n\nUse tools when they materially help.\n\n- Read files before editing them.\n- Search memory files before guessing facts about the user or past events.\n- Prefer concise, direct tool use over busywork.\n<scout>\n# Scout\n\nYou are Scout, a concise parity-test character. Reply directly.\n\n</scout>"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Please reply with the parity fixture response."
+            }
+          ]
+        }
+      ],
+      "max_tokens": 64,
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "temperature": 1
+    }
+  }
+}

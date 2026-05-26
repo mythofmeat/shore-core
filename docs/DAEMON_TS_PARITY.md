@@ -5,7 +5,10 @@
 > the entire premise of cross-daemon comparison is going away. The
 > "freeze parity examples" task in `REWRITE.md` will convert each
 > `parity-check-*.ts` script to a TS-vs-frozen-baseline regression
-> check; this doc will be deleted once that conversion lands.
+> check; this doc will be deleted once that conversion lands. The first
+> frozen slice landed 2026-05-26: Anthropic and OpenAI-compatible
+> generation checks now compare TS against committed baselines in
+> `backend/daemon-ts/parity-traces/frozen/`.
 >
 > **All "must-resolve gates" below are resolved or obsolete** — see
 > the Known divergences section for the per-item disposition. The
@@ -53,15 +56,18 @@ The `bun run parity` package script chains the three live checks; the
 prompt-assembly check has its own `bun run parity:prompt` (requires
 `cargo build -p shore-daemon --example dump_assemble_prompt`).
 The first T3 content checks are separate for now:
-`bun run parity:generation` for Anthropic,
-`bun run parity:generation:openai` for OpenAI-compatible,
+`bun run parity:generation` for Anthropic generation against the
+frozen TS baseline,
+`bun run parity:generation:openai` for OpenAI-compatible generation
+against the frozen TS baseline,
 `bun run parity:regen` for Anthropic regen,
 `bun run parity:tool-loop` for the one-tool Anthropic loop,
 `bun run parity:compaction` for inline compaction end-to-end,
 `bun run parity:heartbeat-tick` for autonomous heartbeat dispatch,
 `bun run parity:dreaming` for the manual memory-dream command path, and
-`bun run parity:scheduled-dreaming` for the scheduled cron/tick path (all
-require `/usr/bin/shore-daemon`).
+`bun run parity:scheduled-dreaming` for the scheduled cron/tick path. The
+generation checks no longer require `/usr/bin/shore-daemon`; the remaining
+unfrozen cross-daemon checks still do.
 
 ## Coverage tiers
 
@@ -168,9 +174,12 @@ daemon needs to know it's being mocked. The proxy lives in
 
 Initial implementation lives in
 `backend/daemon-ts/scripts/parity/llm-proxy.ts`. The first check,
-`backend/daemon-ts/scripts/parity-check-generation.ts`, runs Rust and TS
-against the same canned provider SSE stream, then diffs both the SWP
-generation summary and the canonical provider request body. The regen
+`backend/daemon-ts/scripts/parity-check-generation.ts`, now supports a
+frozen-baseline mode: TS runs against the same canned provider SSE stream,
+then diffs both the SWP generation summary and the canonical provider
+request body against `parity-traces/frozen/*.json`. The legacy
+`--rust` cross-daemon mode remains available while the rest of the
+conversion is in progress. The regen
 check, `backend/daemon-ts/scripts/parity-check-regen.ts`, uses the same
 proxy with a queued response pair so the initial message receives response
 A and regen receives response B before the restart-history diff. The
@@ -210,11 +219,15 @@ row.
 
 Once the rest of that infra exists:
 
-- [x] **generation content parity (Anthropic, done 2026-05-25)** — send
-  msg → diff assistant text/tokens/finish reason and canonical Anthropic
-  provider request body. `bun run parity:generation`.
-- [x] **generation content parity (OpenAI-compatible, done 2026-05-25)**
-  — same as above for `/chat/completions` SSE.
+- [x] **generation content parity (Anthropic, done 2026-05-25; frozen
+  2026-05-26)** — send msg → diff assistant text/tokens/finish reason
+  and canonical Anthropic provider request body against
+  `parity-traces/frozen/generation-basic.json`.
+  `bun run parity:generation`.
+- [x] **generation content parity (OpenAI-compatible, done 2026-05-25;
+  frozen 2026-05-26)** — same as above for `/chat/completions` SSE,
+  frozen in
+  `parity-traces/frozen/generation-openai-compatible.json`.
   `bun run parity:generation:openai`.
 - [x] **regen (Anthropic, done 2026-05-25)** — send msg (deterministic
   response A) → regen (deterministic response B) → kill → restart → diff
@@ -452,18 +465,21 @@ Original entries kept below as historical receipts.
    mutators that broadcast history generally need `2`.
 3. Reuse an existing fixture under `parity-traces/fixtures/` or add a
    new named fixture when the command needs different config/data.
-4. Capture against Rust:
+4. For still-cross-daemon T2/T3 cases, capture against Rust:
    `bun scripts/capture-command.ts /usr/bin/shore-daemon --id <case-id>`
    from `backend/daemon-ts/`.
-5. Run `bun run parity:commands`; add fuzzy paths only for known
+5. For frozen T3 cases, capture the current TS daemon with the relevant
+   script's `--write-baseline <path>` mode, then run the normal package
+   script to verify the committed baseline.
+6. Run `bun run parity:commands`; add fuzzy paths only for known
    non-semantic differences such as temp paths, generated ids, and
    timestamps.
-6. For T1, follow the kill+restart+diff pattern; for T3, ensure the LLM
+7. For T1, follow the kill+restart+diff pattern; for T3, ensure the LLM
    proxy has the response recorded.
-7. Add fuzzy entries only for *structurally* expected
+8. Add fuzzy entries only for *structurally* expected
    divergences (server name, request ids, timestamps). Anything content-
    bearing that diverges is a parity bug, not an expected diff.
-8. Add the script invocation to the `parity` package script so CI runs it.
+9. Add the script invocation to the `parity` package script so CI runs it.
 
 ## CI integration
 

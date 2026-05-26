@@ -8,10 +8,10 @@ evidence required before `shore-daemon-ts` can replace the Rust daemon.
 > identified 15 blockers / divergences. All have been ported or
 > explicitly descoped — see
 > [`DAEMON_TS_REWRITE_HISTORY.md`](DAEMON_TS_REWRITE_HISTORY.md) for the
-> per-item resolutions. One pre-soak item remains: automated parity
-> coverage build-out, tracked in
-> [`DAEMON_TS_PARITY.md`](DAEMON_TS_PARITY.md). Until that lands, the
-> soak below is the only parity signal in production.
+> per-item resolutions. Automated parity coverage has landed; the
+> remaining pre-soak work is converting the old Rust-vs-TS parity
+> scripts into TS-vs-frozen-baseline regressions as Rust is retired.
+> See [`DAEMON_TS_PARITY.md`](DAEMON_TS_PARITY.md) and `REWRITE.md`.
 
 ## Scope
 
@@ -38,12 +38,19 @@ cd backend/daemon-ts
 bun install --frozen-lockfile
 bun run typecheck
 bun test
+bun run parity:generation
+bun run parity:generation:openai
 bun run build
 bun run smoketest:compiled
 ```
 
 Run live/provider checks when the release changed provider behavior, cache
 placement, tool loops, or background LLM calls.
+
+For OpenRouter SDK parity changes, run
+`scripts/live-tests/openrouter-sdk-parity.sh` from the repository root with
+`OPENROUTER_API_KEY` available (the script sources `~/.config/shore/.env` by
+default).
 
 ## Publish The Preview
 

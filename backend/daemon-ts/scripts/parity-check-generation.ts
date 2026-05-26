@@ -2,21 +2,24 @@
 /**
  * Tier 3 parity check: one deterministic LLM generation.
  *
- * Runs the Rust daemon and the TS daemon against the same fixture and the
- * same in-process LLM proxy. The proxy returns a canned provider SSE stream
- * and captures each daemon's canonical provider request. The check passes only
- * when:
+ * Runs a daemon against the same fixture and the same in-process LLM proxy.
+ * The proxy returns a canned provider SSE stream and captures each daemon's
+ * canonical provider request. In frozen-baseline mode, the TS daemon is
+ * compared against a committed known-good baseline. In legacy cross-daemon
+ * mode, Rust and TS are still compared directly. The check passes only when:
  *
- *   1. both SWP streams expose the same assistant text/tokens/finish reason;
- *   2. both daemons made exactly one provider request; and
- *   3. those provider request bodies are byte-identical after JSON key sorting.
+ *   1. SWP streams expose the expected assistant text/tokens/finish reason;
+ *   2. the daemon made exactly one provider request; and
+ *   3. the provider request body matches the frozen canonical JSON shape.
  *
  * Usage:
- *   bun scripts/parity-check-generation.ts [--rust /usr/bin/shore-daemon] [--ts ./dist/shore-daemon]
+ *   bun scripts/parity-check-generation.ts --baseline parity-traces/frozen/generation-basic.json
+ *   bun scripts/parity-check-generation.ts --write-baseline parity-traces/frozen/generation-basic.json
+ *   bun scripts/parity-check-generation.ts --rust /usr/bin/shore-daemon [--ts ./dist/shore-daemon]
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { join, resolve as resolvePath } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve as resolvePath } from "node:path";
 
 import {
   buildDaemonEnv,
@@ -29,6 +32,7 @@ import {
   spawnDaemon,
 } from "./parity/_lib.ts";
 import {
+  canonicalizeJson,
   loadCannedResponse,
   startParityLlmProxy,
   type CapturedLlmRequest,
@@ -36,14 +40,15 @@ import {
 
 const DEFAULT_FIXTURE = "parity-traces/fixtures/generation-basic";
 const DEFAULT_RESPONSE = "parity-traces/llm-fixtures/generation-basic.json";
-const DEFAULT_RUST = "/usr/bin/shore-daemon";
 
 interface Args {
-  rust: string;
+  rust: string | undefined;
   ts: string | undefined;
   fixture: string;
   response: string;
   cacheTtl: string | undefined;
+  baseline: string | undefined;
+  writeBaseline: string | undefined;
 }
 
 interface GenerationSummary {
@@ -55,18 +60,64 @@ interface GenerationSummary {
   model: unknown;
 }
 
+interface FrozenGenerationBaseline {
+  version: 1;
+  mode: "generation";
+  fixture: string;
+  response: string;
+  cacheTtl: string | null;
+  summary: GenerationSummary;
+  providerRequest: {
+    method: string;
+    path: string;
+    body: unknown;
+  };
+}
+
 const args = parseArgs(process.argv.slice(2));
 const tsCmd = args.ts === undefined ? ["bun", "src/main.ts"] : [args.ts];
 const response = loadCannedResponse(resolvePath(args.response));
 const proxy = startParityLlmProxy({ response });
 
 try {
-  const rust = await runScenario("rust", [args.rust], resolvePath(args.fixture), proxy.baseUrl, args.cacheTtl);
-  const ts = await runScenario("ts", tsCmd, resolvePath(args.fixture), proxy.baseUrl, args.cacheTtl);
-
   let failures = 0;
-  failures += compareSummary("generation summary", rust.summary, ts.summary);
-  failures += compareRequests(proxy.requests);
+  if (args.baseline !== undefined || args.writeBaseline !== undefined) {
+    const ts = await runScenario("ts", tsCmd, resolvePath(args.fixture), proxy.baseUrl, args.cacheTtl);
+    const request = soleRequest(proxy.requests, "ts");
+    if (request === undefined) {
+      failures++;
+    } else if (args.writeBaseline !== undefined) {
+      writeFrozenBaseline(resolvePath(args.writeBaseline), {
+        version: 1,
+        mode: "generation",
+        fixture: args.fixture,
+        response: args.response,
+        cacheTtl: args.cacheTtl ?? null,
+        summary: ts.summary,
+        providerRequest: {
+          method: request.method,
+          path: request.path,
+          body: request.body,
+        },
+      });
+      console.log(`\nwrote generation baseline: ${args.writeBaseline}`);
+    } else {
+      const baseline = readFrozenBaseline(resolvePath(args.baseline!));
+      failures += compareSummary("generation summary", baseline.summary, ts.summary);
+      failures += compareRequestToBaseline(request, baseline.providerRequest);
+    }
+  } else if (args.rust !== undefined) {
+    const rust = await runScenario("rust", [args.rust], resolvePath(args.fixture), proxy.baseUrl, args.cacheTtl);
+    const ts = await runScenario("ts", tsCmd, resolvePath(args.fixture), proxy.baseUrl, args.cacheTtl);
+
+    failures += compareSummary("generation summary", rust.summary, ts.summary);
+    failures += compareRequests(proxy.requests);
+  } else {
+    console.error(
+      "usage: parity-check-generation.ts --baseline <path> | --write-baseline <path> | --rust <daemon>",
+    );
+    process.exit(2);
+  }
 
   if (failures > 0) {
     console.error(`\n${failures} generation parity failure(s)`);
@@ -211,6 +262,63 @@ function compareRequests(requests: CapturedLlmRequest[]): number {
   return 1;
 }
 
+function soleRequest(requests: CapturedLlmRequest[], label: string): CapturedLlmRequest | undefined {
+  if (requests.length !== 1) {
+    console.error(`  FAIL  ${label} provider request count: expected 1, got ${requests.length}`);
+    for (const req of requests) console.error(`        ${req.key} ${req.path}`);
+    return undefined;
+  }
+  const request = requests[0]!;
+  console.log(`  ok    ${label} provider request count`);
+  return request;
+}
+
+function compareRequestToBaseline(
+  actual: CapturedLlmRequest,
+  expected: FrozenGenerationBaseline["providerRequest"],
+): number {
+  let failures = 0;
+  if (actual.method === expected.method) {
+    console.log(`  ok    provider request method (${actual.method})`);
+  } else {
+    console.error(`  FAIL  provider request method: expected ${expected.method}, got ${actual.method}`);
+    failures++;
+  }
+
+  if (actual.path === expected.path) {
+    console.log(`  ok    provider request path (${actual.path})`);
+  } else {
+    console.error(`  FAIL  provider request path: expected ${expected.path}, got ${actual.path}`);
+    failures++;
+  }
+
+  const expectedBody = canonicalizeJson(expected.body);
+  const actualBody = canonicalizeJson(actual.body);
+  if (actualBody === expectedBody) {
+    console.log(`  ok    provider request body (${actual.key.slice(0, 12)})`);
+  } else {
+    console.error("  FAIL  provider request body");
+    console.error(`        expected: ${expectedBody}`);
+    console.error(`        actual:   ${actualBody}`);
+    failures++;
+  }
+
+  return failures;
+}
+
+function readFrozenBaseline(path: string): FrozenGenerationBaseline {
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as FrozenGenerationBaseline;
+  if (parsed.version !== 1 || parsed.mode !== "generation") {
+    throw new Error(`${path}: unsupported generation baseline`);
+  }
+  return parsed;
+}
+
+function writeFrozenBaseline(path: string, baseline: FrozenGenerationBaseline): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(baseline, null, 2) + "\n");
+}
+
 function patchProxyBaseUrl(configDir: string, proxyBaseUrl: string): void {
   const configPath = join(configDir, "config.toml");
   const raw = readFileSync(configPath, "utf8");
@@ -219,11 +327,13 @@ function patchProxyBaseUrl(configDir: string, proxyBaseUrl: string): void {
 
 function parseArgs(argv: string[]): Args {
   const parsed: Args = {
-    rust: DEFAULT_RUST,
+    rust: undefined,
     ts: undefined,
     fixture: DEFAULT_FIXTURE,
     response: DEFAULT_RESPONSE,
     cacheTtl: undefined,
+    baseline: undefined,
+    writeBaseline: undefined,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -233,10 +343,16 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--fixture") parsed.fixture = takeValue(argv, ++i, arg);
     else if (arg === "--response") parsed.response = takeValue(argv, ++i, arg);
     else if (arg === "--cache-ttl") parsed.cacheTtl = takeValue(argv, ++i, arg);
+    else if (arg === "--baseline") parsed.baseline = takeValue(argv, ++i, arg);
+    else if (arg === "--write-baseline") parsed.writeBaseline = takeValue(argv, ++i, arg);
     else {
       console.error(`unknown arg: ${arg}`);
       process.exit(2);
     }
+  }
+  if (parsed.baseline !== undefined && parsed.writeBaseline !== undefined) {
+    console.error("--baseline and --write-baseline are mutually exclusive");
+    process.exit(2);
   }
   return parsed;
 }

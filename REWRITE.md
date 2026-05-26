@@ -45,14 +45,22 @@ Cutover runbook: [`docs/DAEMON_TS_CUTOVER.md`](docs/DAEMON_TS_CUTOVER.md).
   `--rust` flag and the proxy-intercept comparator), and drop
   `docs/DAEMON_TS_PARITY.md` once everything is converted (the parity
   doc exists to track cross-daemon parity; TS-vs-self regression is
-  just standard testing).
-- [ ] **OpenAI-compatible adapter live-test coverage.** The
+  just standard testing). First slice landed 2026-05-26:
+  `parity:generation` and `parity:generation:openai` now diff TS
+  against frozen committed baselines under
+  `backend/daemon-ts/parity-traces/frozen/`, pinning both SWP
+  response summaries and provider request bodies without requiring
+  live API calls or the Rust daemon.
+- [x] **OpenAI-compatible adapter live-test coverage (done
+  2026-05-26).** The
   Anthropic adapter is locked down by `tests/cache_regression.test.ts`
-  on Sonnet 4.6. Add equivalent live coverage for the OpenAI-compatible
-  adapter (`gpt-5.4-mini` via OpenAI or OpenRouter) and for mid-chat
-  switching between Anthropic and OpenAI SDKs — assistant turns
-  serialized through one provider must deserialize cleanly into the
-  other's wire format.
+  on Sonnet 4.6. `scripts/live-tests/openrouter-sdk-parity.sh`
+  sources `~/.config/shore/.env`, exercises OpenRouter
+  `openai/gpt-5.4-mini` through the OpenAI-compatible SDK with the
+  same send/regen/tool/log/model-info assertions as the Anthropic SDK
+  path, and verifies mid-chat switching in both directions
+  (Anthropic→OpenAI-compatible and OpenAI-compatible→Anthropic).
+  Live receipt on 2026-05-26: 31/31 checks passed.
 - [x] **Cache regression verified dead on Sonnet 4.6 (done
   2026-05-26).** The original motivation for the rewrite — Rust's
   cache-invalidation on adaptive thinking + multi-iter tool loop +
