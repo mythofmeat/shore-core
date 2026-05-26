@@ -41,16 +41,6 @@ pub enum ContentBlock {
         thinking: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
-        /// Opaque provider-specific structured form of this reasoning
-        /// (currently OpenRouter's `reasoning_details` array carrying
-        /// signed reasoning detail objects). Persisted across turns so
-        /// the next request can replay it at the message level for cache
-        /// continuity through adaptive-thinking tool calls.
-        ///
-        /// Stays `None` for providers that don't use this surface — the
-        /// `signature` field above is sufficient for direct Anthropic.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        details: Option<serde_json::Value>,
     },
     ToolUse {
         id: String,
@@ -316,30 +306,11 @@ mod tests {
     }
 
     #[test]
-    fn thinking_details_roundtrip_when_present() {
-        // `details` carries OpenRouter's reasoning_details payload that
-        // we replay on the next request for cache continuity. Any
-        // serde drift here silently breaks cached adaptive tool loops,
-        // so lock the round-trip explicitly.
-        let block = ContentBlock::Thinking {
-            thinking: "opaque".into(),
-            signature: Some("sig".into()),
-            details: Some(serde_json::json!([
-                {"type": "reasoning.encrypted", "data": "x"}
-            ])),
-        };
-        let encoded = serde_json::to_string(&block).unwrap();
-        let decoded: ContentBlock = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, block);
-    }
-
-    #[test]
     fn derive_content_skips_thinking_and_tool_use() {
         let blocks = vec![
             ContentBlock::Thinking {
                 thinking: "Let me think...".into(),
                 signature: None,
-                details: None,
             },
             ContentBlock::ToolUse {
                 id: "t1".into(),

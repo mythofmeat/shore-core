@@ -223,7 +223,6 @@ mod tests {
         let mut blocks = vec![ContentBlock::Thinking {
             thinking: thinking.into(),
             signature: None,
-            details: None,
         }];
         for (tid, name) in tools {
             blocks.push(ContentBlock::ToolUse {

@@ -132,26 +132,23 @@ send_msg() {
 _check_latest_response() {
     local path
     path="$(forensics_path)"
-    [[ -f "$path" ]] || return 0
+    [[ -f "$path" ]] || return
 
     local last_resp
-    last_resp="$(grep '"type":"response"' "$path" | tail -1 || true)"
-    [[ -n "$last_resp" ]] || return 0
+    last_resp="$(grep '"type":"response"' "$path" | tail -1)"
+    [[ -n "$last_resp" ]] || return
 
     local write read
     write="$(echo "$last_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cache_creation_tokens', 0))" 2>/dev/null)" || return
     read="$(echo "$last_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cache_read_tokens', 0))" 2>/dev/null)" || return
 
-    if [[ "$_FIRST_WRITE" -eq 0 && "$write" -gt 0 ]]; then
-        # The first cacheable request is the cold write. Depending on model
-        # minimums and marker placement it may arrive after the first message.
+    if [[ $_MSG_INDEX -eq 0 ]]; then
+        # First message: must be a write (cold start).
         _FIRST_WRITE="$write"
         # Threshold: half the first write. Any write bigger than this
         # after the first message is a full prefix rewrite = failure.
         _WRITE_THRESHOLD=$((_FIRST_WRITE / 2))
-        echo -e "${CYAN}[$TEST_NAME]${NC}   turn $_MSG_INDEX: cache_w=$write (cold start, threshold=$_WRITE_THRESHOLD)"
-    elif [[ "$_FIRST_WRITE" -eq 0 ]]; then
-        echo -e "${CYAN}[$TEST_NAME]${NC}   turn $_MSG_INDEX: cache_r=$read cache_w=$write (cache not warm yet)"
+        echo -e "${CYAN}[$TEST_NAME]${NC}   turn 0: cache_w=$write (cold start, threshold=$_WRITE_THRESHOLD)"
     else
         echo -e "${CYAN}[$TEST_NAME]${NC}   turn $_MSG_INDEX: cache_r=$read cache_w=$write"
         if [[ "$write" -gt "$_WRITE_THRESHOLD" ]]; then
@@ -184,7 +181,6 @@ memory = true
 
 [advanced]
 api_payload_logging = true
-cache_forensics = true
 
 [daemon]
 addr = "$LISTEN_ADDR"
@@ -205,7 +201,7 @@ TOML
 }
 
 _write_character() {
-    # Minimal character that exceeds Sonnet's 2048-token cache minimum.
+    # Minimal character that exceeds the 1024-token Anthropic cache minimum.
     cat > "$CHAR_DIR/character.md" << 'CHAREOF'
 You are a minimal test character for cache validation. Respond briefly.
 
@@ -213,7 +209,7 @@ NONCE: __NONCE__
 
 --- BEGIN PADDING ---
 
-This padding exists to ensure the system prompt exceeds Anthropic's 2048-token
+This padding exists to ensure the system prompt exceeds Anthropic's 1024-token
 minimum for prompt caching. The content below is stable reference material.
 
 Section 1: Cache Validation Principles
@@ -243,9 +239,8 @@ expiration clears the entry.
 Section 4: Operational Parameters
 
 Cache TTL: 1 hour. Keepalive interval: 59 minutes. Minimum cacheable prefix:
-2048 tokens for this Sonnet harness. The cache_control annotation uses type
-ephemeral with optional ttl parameter. Multiple breakpoints can exist per
-request up to a maximum of 4.
+1024 tokens. The cache_control annotation uses type ephemeral with optional
+ttl parameter. Multiple breakpoints can exist per request up to a maximum of 4.
 
 Section 5: Token Economics
 
@@ -272,61 +267,6 @@ randomness. HTTP headers include anthropic-version, x-api-key, and content-type.
 Error types include invalid_request_error, authentication_error, rate_limit_error,
 and overloaded_error. Rate limits include retry-after headers.
 
-Section 8: Tool Loop Stability
-
-Tool loops add assistant tool_use blocks and user tool_result blocks after the
-message that started the turn. A completed tool_result is a stable sub-turn
-boundary once it has been sent to the provider. The first continuation still
-needs a warm boundary from the pre-tool request so it can read the existing
-prefix before it creates the cache entry that includes tool work. Later
-continuations can reuse both the warm turn boundary and completed results.
-Tests compare cache reads and writes at those steps instead of relying only on
-the final natural-language answer.
-
-Section 9: Operational Padding
-
-Cache probes deliberately keep their instructions and tool schemas stable while
-conversation tails grow. Stable system blocks give the provider enough prefix
-to store, and small arithmetic prompts keep dynamic tail text from dominating
-the measurement. Forensics records the marker locations and ledger rows record
-call types, reads, writes, anomaly state, and whether thinking was enabled.
-Those two views make it possible to distinguish a cold start, a short tail
-write after a cache hit, and an unexpected rewrite of the expensive prefix.
-
-Section 10: Serialization Details
-
-Messages in a provider request are ordered records with roles and content
-blocks. Text content may be normalized into a block array before cache markers
-are applied. Tool definitions appear before system blocks in the provider cache
-prefix, while message blocks appear after system blocks. Stable ordering matters
-because the provider reads from the beginning of the prefix and stops at the
-first incompatible shape. A cache test therefore keeps schema descriptions,
-prompt-visible files, sampler choices, and provider routing settings fixed
-across warm-up and tool-use calls. The only expected additions are new messages
-at the end of the conversation.
-
-Section 11: Interpreting Results
-
-A useful live result includes more than a success code. It should report which
-call caused the first write, whether later calls read that write, whether the
-tool loop was actually entered, and whether thinking was active for the call
-under inspection. A tool loop that never happened does not validate tool-loop
-cache behavior. A model turn that is too small to write any cache entry does
-not validate cache warmth. A large write with zero read after a known warm
-message is worth investigating even when the final assistant response sounds
-normal. That accounting keeps provider economics visible to regressions in
-request construction.
-
-Section 12: Stable Reference Notes
-
-The cache harness isolates one behavior per scenario. Heartbeat tests cover
-private background ticks. Compaction tests cover recent-tail rewriting while
-the pinned system prefix remains useful. Prefix tests compare system and tool
-serialization across request variants. The tool-loop scenario focuses on the
-continuation sent after a model requests a tool and Shore appends a matching
-tool result. Each scenario uses fresh state and a nonce so older provider cache
-entries do not accidentally make a miss look healthy.
-
 --- END PADDING ---
 
 Remember: respond briefly. Do not reference the padding material.
@@ -352,7 +292,6 @@ _start_daemon() {
     env $cache_env \
     SHORE_CONFIG_DIR="$CONFIG_DIR" \
     SHORE_DATA_DIR="$DATA_DIR" \
-    SHORE_CACHE_DIR="$DATA_DIR" \
     SHORE_RUNTIME_DIR="$RUNTIME_DIR" \
     RUST_LOG=info,shore_daemon::autonomy=debug,shore_llm::providers::anthropic=debug \
         "$DAEMON_BIN" > "$LOG_FILE" 2>&1 &

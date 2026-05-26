@@ -544,7 +544,6 @@ mod tests {
         let block = ContentBlock::Thinking {
             thinking: "Let me consider...".into(),
             signature: None,
-            details: None,
         };
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "thinking");
@@ -558,7 +557,6 @@ mod tests {
         let block = ContentBlock::Thinking {
             thinking: "Let me consider...".into(),
             signature: Some("sig_abc123".into()),
-            details: None,
         };
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "thinking");
@@ -589,7 +587,6 @@ mod tests {
             ContentBlock::Thinking {
                 thinking,
                 signature,
-                ..
             } => {
                 assert_eq!(thinking, "old block");
                 assert!(signature.is_none());
@@ -665,7 +662,6 @@ mod tests {
                 ContentBlock::Thinking {
                     thinking: "User wants the time.".into(),
                     signature: None,
-                    details: None,
                 },
                 ContentBlock::ToolUse {
                     id: "tu_1".into(),
