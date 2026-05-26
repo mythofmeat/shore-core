@@ -4,11 +4,9 @@
  * Every parity flow follows the same shape: spawn a daemon, find its
  * listen port, open a TCP connection, exchange newline-delimited JSON
  * frames, then either record them (capture) or diff them against a
- * baseline (check). The helpers here factor that out so per-flow scripts
- * are just the CLI + the flow-specific control flow.
- *
- * See `docs/DAEMON_TS_PARITY.md` for the tier breakdown and how to add
- * a new parity case.
+ * frozen baseline under `parity-traces/frozen/`. The helpers here
+ * factor that out so per-flow scripts are just the CLI + the
+ * flow-specific control flow.
  */
 
 import type { Subprocess } from "bun";
@@ -342,13 +340,56 @@ function walk(
         }
         continue;
       }
-      if (!(k in ao)) out.push(`${sub}: missing in baseline`);
-      else if (!(k in bo)) out.push(`${sub}: missing in actual`);
+      // JSON erases `key: undefined` (the key drops), so a deserialized
+      // baseline misses keys that a fresh capture preserves with
+      // `undefined`. Treat undefined-valued keys as absent.
+      const aHas = k in ao && ao[k] !== undefined;
+      const bHas = k in bo && bo[k] !== undefined;
+      if (!aHas && !bHas) continue;
+      if (!aHas) out.push(`${sub}: missing in baseline`);
+      else if (!bHas) out.push(`${sub}: missing in actual`);
       else walk(ao[k], bo[k], sub, out, fuzzy);
     }
     return;
   }
   if (a !== b) out.push(`${path || "<root>"}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`);
+}
+
+// Wall-clock time markers — `[Tuesday 2026-05-26 · 6:53 AM]` and
+// `[6 hours later · Tuesday ...]` in user-turn prefixes, plus
+// `[Current time: ...]` in heartbeat prompts — are minute-stamped at
+// request build time, so a baseline captured at one minute won't
+// match an actual captured at another. Walk a captured body and
+// replace each with a stable placeholder. The placeholder still
+// proves the marker fired — only its time content is redacted.
+const TIME_MARKER_PATTERNS: Array<{ rx: RegExp; placeholder: string }> = [
+  {
+    rx: /\[(?:[^[\]]+ · )?(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday) \d{4}-\d{2}-\d{2} · \d{1,2}:\d{2} (?:AM|PM)\]/g,
+    placeholder: "[<HEARTBEAT_MARKER>]",
+  },
+  {
+    rx: /\[Current time: [^\]]+\]/g,
+    placeholder: "[Current time: <dynamic>]",
+  },
+];
+
+export function redactHeartbeatMarkers(value: unknown): unknown {
+  if (typeof value === "string") {
+    let out = value;
+    for (const { rx, placeholder } of TIME_MARKER_PATTERNS) {
+      out = out.replace(rx, placeholder);
+    }
+    return out;
+  }
+  if (Array.isArray(value)) return value.map(redactHeartbeatMarkers);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = redactHeartbeatMarkers(v);
+    }
+    return out;
+  }
+  return value;
 }
 
 // ── process control ────────────────────────────────────────────────────

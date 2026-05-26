@@ -2,20 +2,24 @@
 /**
  * Tier 3 parity check: deterministic regen.
  *
- * Runs the Rust daemon and the TS daemon against the same fixture and canned
- * provider response queue. The first message gets response A, regen gets
- * response B. The check passes only when:
+ * Runs the TS daemon against a fixture and canned provider response queue.
+ * The first message gets response A, regen gets response B. The check
+ * passes only when:
  *
- *   1. both SWP streams expose the same generation and regen summaries;
- *   2. both daemons send the same canonical provider request bodies; and
- *   3. the post-restart persisted history matches, including regen alts.
+ *   1. The SWP streams expose the same generation and regen summaries as
+ *      the frozen baseline;
+ *   2. the daemon's canonical provider request bodies match the baseline;
+ *      and
+ *   3. the post-restart persisted history matches the baseline (including
+ *      regen alts).
  *
  * Usage:
- *   bun scripts/parity-check-regen.ts [--rust /usr/bin/shore-daemon] [--ts ./dist/shore-daemon]
+ *   bun scripts/parity-check-regen.ts --baseline parity-traces/frozen/regen-basic.json
+ *   bun scripts/parity-check-regen.ts --write-baseline parity-traces/frozen/regen-basic.json
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { join, resolve as resolvePath } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve as resolvePath } from "node:path";
 
 import {
   buildDaemonEnv,
@@ -28,6 +32,7 @@ import {
   spawnDaemon,
 } from "./parity/_lib.ts";
 import {
+  canonicalizeJson,
   loadCannedResponses,
   startParityLlmProxy,
   type CannedLlmResponse,
@@ -36,14 +41,14 @@ import {
 
 const DEFAULT_FIXTURE = "parity-traces/fixtures/regen-basic";
 const DEFAULT_RESPONSE = "parity-traces/llm-fixtures/regen-basic.json";
-const DEFAULT_RUST = "/usr/bin/shore-daemon";
 
 interface Args {
-  rust: string;
   ts: string | undefined;
   fixture: string;
   response: string;
   cacheTtl: string | undefined;
+  baseline: string | undefined;
+  writeBaseline: string | undefined;
 }
 
 interface StreamSummary {
@@ -53,13 +58,6 @@ interface StreamSummary {
   finishReason: unknown;
   tokens: unknown;
   model: unknown;
-}
-
-interface ScenarioResult {
-  first: StreamSummary;
-  regen: StreamSummary;
-  history: NormalizedHistory;
-  requests: CapturedLlmRequest[];
 }
 
 interface NormalizedHistory {
@@ -80,43 +78,88 @@ interface NormalizedAlternative {
   content_blocks: unknown[];
 }
 
+interface FrozenRequest {
+  method: string;
+  path: string;
+  body: unknown;
+}
+
+interface FrozenRegenBaseline {
+  version: 1;
+  mode: "regen";
+  fixture: string;
+  response: string;
+  cacheTtl: string | null;
+  summary: {
+    first: StreamSummary;
+    regen: StreamSummary;
+  };
+  providerRequests: FrozenRequest[];
+  history: NormalizedHistory;
+}
+
 const args = parseArgs(process.argv.slice(2));
+if (args.baseline === undefined && args.writeBaseline === undefined) {
+  console.error("usage: parity-check-regen.ts --baseline <path> | --write-baseline <path>");
+  process.exit(2);
+}
 const tsCmd = args.ts === undefined ? ["bun", "src/main.ts"] : [args.ts];
 const responses = loadCannedResponses(resolvePath(args.response));
 if (responses.length < 2) {
   throw new Error(`${args.response} must contain at least two canned responses for regen`);
 }
 
-const rust = await runScenario("rust", [args.rust], resolvePath(args.fixture), responses, args.cacheTtl);
-const ts = await runScenario("ts", tsCmd, resolvePath(args.fixture), responses, args.cacheTtl);
+const result = await runScenario(tsCmd, resolvePath(args.fixture), responses, args.cacheTtl);
 
-let failures = 0;
-failures += compareSummary("first generation summary", rust.first, ts.first);
-failures += compareSummary("regen summary", rust.regen, ts.regen);
-failures += compareRequests(rust.requests, ts.requests);
-failures += compareHistory(rust.history, ts.history);
+if (args.writeBaseline !== undefined) {
+  writeFrozenBaseline(resolvePath(args.writeBaseline), {
+    version: 1,
+    mode: "regen",
+    fixture: args.fixture,
+    response: args.response,
+    cacheTtl: args.cacheTtl ?? null,
+    summary: { first: result.first, regen: result.regen },
+    providerRequests: result.requests.map((r) => ({
+      method: r.method,
+      path: r.path,
+      body: r.body,
+    })),
+    history: result.history,
+  });
+  console.log(`\nwrote regen baseline: ${args.writeBaseline}`);
+} else {
+  const baseline = readFrozenBaseline(resolvePath(args.baseline!));
+  let failures = 0;
+  failures += compareSummary("first generation summary", baseline.summary.first, result.first);
+  failures += compareSummary("regen summary", baseline.summary.regen, result.regen);
+  failures += compareRequestsToBaseline(result.requests, baseline.providerRequests);
+  failures += compareHistory(baseline.history, result.history);
 
-if (failures > 0) {
-  console.error(`\n${failures} regen parity failure(s)`);
-  process.exit(1);
+  if (failures > 0) {
+    console.error(`\n${failures} regen parity failure(s)`);
+    process.exit(1);
+  }
+  console.log("\nregen parity ok");
 }
 
-console.log("\nregen parity ok");
-
 async function runScenario(
-  label: string,
   cmd: string[],
   fixtureDir: string,
   responses: CannedLlmResponse[],
   cacheTtl: string | undefined,
-): Promise<ScenarioResult> {
-  console.log(`-- regen: ${label} --`);
+): Promise<{
+  first: StreamSummary;
+  regen: StreamSummary;
+  history: NormalizedHistory;
+  requests: CapturedLlmRequest[];
+}> {
+  console.log("-- regen: ts --");
   const proxy = startParityLlmProxy({ response: responses });
   try {
-    const { configDir, dataDir } = copyFixtureToTmp(fixtureDir, `shore-regen-${label}-`);
+    const { configDir, dataDir } = copyFixtureToTmp(fixtureDir, "shore-regen-ts-");
     patchProxyBaseUrl(configDir, proxy.baseUrl);
     if (cacheTtl !== undefined) setCacheTtl(configDir, cacheTtl);
-    const env = buildDaemonEnv({ configDir, dataDir, prefix: `shore-regen-${label}-` });
+    const env = buildDaemonEnv({ configDir, dataDir, prefix: "shore-regen-ts-" });
     env["SHORE_PARITY_ANTHROPIC_KEY"] = "sk-parity";
     env["SHORE_PARITY_OPENAI_KEY"] = "sk-parity";
     env["TZ"] = "UTC";
@@ -125,7 +168,7 @@ async function runScenario(
     const proc = spawnDaemon(cmd, env);
     try {
       const addr = await readListenAddr([proc.stdout, proc.stderr]);
-      if (!addr) throw new Error(`${label}: daemon never printed listen address`);
+      if (!addr) throw new Error("ts: daemon never printed listen address");
 
       const { sock, frames } = await openConnection(addr);
 
@@ -133,7 +176,7 @@ async function runScenario(
       sock.write(JSON.stringify({
         type: "hello",
         client_type: "cli",
-        client_name: `regen-parity-${label}`,
+        client_name: "regen-parity-ts",
         capabilities: ["streaming"],
         character: "scout",
       }) + "\n");
@@ -145,17 +188,17 @@ async function runScenario(
         text: "Please reply with the regen parity fixture response.",
         stream: true,
       }) + "\n");
-      await readUntilFinal(label, frames, framesSeen, "msg-1");
+      await readUntilFinal(frames, framesSeen, "msg-1");
 
       sock.write(JSON.stringify({
         type: "regen",
         rid: "regen-1",
         stream: true,
       }) + "\n");
-      await readUntilFinal(label, frames, framesSeen, "regen-1");
+      await readUntilFinal(frames, framesSeen, "regen-1");
       sock.end();
     } catch (e) {
-      console.error(`${label} frames before failure:`);
+      console.error("ts frames before failure:");
       for (const frame of framesSeen) console.error(`  ${JSON.stringify(frame)}`);
       throw e;
     } finally {
@@ -163,7 +206,7 @@ async function runScenario(
       await proc.exited;
     }
 
-    const restartHistory = await readRestartHistory(label, cmd, env);
+    const restartHistory = await readRestartHistory(cmd, env);
     return {
       first: summarize(framesSeen, "msg-1"),
       regen: summarize(framesSeen, "regen-1"),
@@ -176,7 +219,6 @@ async function runScenario(
 }
 
 async function readUntilFinal(
-  label: string,
   frames: Parameters<typeof readFrame>[0],
   framesSeen: Record<string, unknown>[],
   rid: string,
@@ -188,41 +230,40 @@ async function readUntilFinal(
       unknown
     >;
     framesSeen.push(frame);
-    console.log(`  ${label.padEnd(4)} s2c ${String(frame["type"])}`);
+    console.log(`  ts   s2c ${String(frame["type"])}`);
     if (frame["type"] === "error") {
-      throw new Error(`${label}: daemon emitted error: ${JSON.stringify(frame)}`);
+      throw new Error(`ts: daemon emitted error: ${JSON.stringify(frame)}`);
     }
     if (frame["type"] === "stream_end" && frame["rid"] === rid && frame["is_final"] !== false) {
       return;
     }
   }
-  throw new Error(`${label}: timed out waiting for final stream_end (${rid})`);
+  throw new Error(`ts: timed out waiting for final stream_end (${rid})`);
 }
 
 async function readRestartHistory(
-  label: string,
   cmd: string[],
   env: Record<string, string | undefined>,
 ): Promise<Record<string, unknown>> {
-  console.log(`-- regen: ${label} restart --`);
+  console.log("-- regen: ts restart --");
   const proc = spawnDaemon(cmd, env);
   try {
     const addr = await readListenAddr([proc.stdout, proc.stderr]);
-    if (!addr) throw new Error(`${label}: restart daemon never printed listen address`);
+    if (!addr) throw new Error("ts: restart daemon never printed listen address");
 
     const { sock, frames } = await openConnection(addr);
     await readFrame(frames);
     sock.write(JSON.stringify({
       type: "hello",
       client_type: "cli",
-      client_name: `regen-parity-${label}-restart`,
+      client_name: "regen-parity-ts-restart",
       capabilities: ["streaming"],
       character: "scout",
     }) + "\n");
     const history = (await readFrame(frames)) as Record<string, unknown>;
     sock.end();
     if (history["type"] !== "history") {
-      throw new Error(`${label}: expected restart history, got ${JSON.stringify(history)}`);
+      throw new Error(`ts: expected restart history, got ${JSON.stringify(history)}`);
     }
     return history;
   } finally {
@@ -254,10 +295,10 @@ function summarize(frames: Record<string, unknown>[], rid: string): StreamSummar
   };
 }
 
-function compareSummary(name: string, rust: StreamSummary, ts: StreamSummary): number {
+function compareSummary(name: string, expected: StreamSummary, actual: StreamSummary): number {
   const diffs = compareFrames(
-    { type: name, ...rust },
-    { type: name, ...ts },
+    { type: name, ...expected },
+    { type: name, ...actual },
     {},
   );
   if (diffs.length === 0) {
@@ -266,41 +307,51 @@ function compareSummary(name: string, rust: StreamSummary, ts: StreamSummary): n
   }
   console.error(`  FAIL  ${name}`);
   for (const diff of diffs) console.error(`        ${diff}`);
-  console.error(`        rust: ${JSON.stringify(rust)}`);
-  console.error(`        ts:   ${JSON.stringify(ts)}`);
+  console.error(`        expected: ${JSON.stringify(expected)}`);
+  console.error(`        actual:   ${JSON.stringify(actual)}`);
   return 1;
 }
 
-function compareRequests(rust: CapturedLlmRequest[], ts: CapturedLlmRequest[]): number {
+function compareRequestsToBaseline(
+  actual: CapturedLlmRequest[],
+  expected: FrozenRequest[],
+): number {
   let failures = 0;
-  if (rust.length !== 2 || ts.length !== 2) {
-    console.error(`  FAIL  provider request count: rust=${rust.length}, ts=${ts.length}, expected=2`);
+  if (actual.length !== expected.length) {
+    console.error(`  FAIL  provider request count: expected ${expected.length}, got ${actual.length}`);
     failures++;
   }
 
-  const n = Math.min(rust.length, ts.length);
+  const n = Math.min(actual.length, expected.length);
   for (let i = 0; i < n; i++) {
-    const r = rust[i]!;
-    const t = ts[i]!;
-    if (r.canonical === t.canonical) {
-      console.log(`  ok    provider request ${i + 1} (${r.key.slice(0, 12)})`);
-      continue;
+    const a = actual[i]!;
+    const e = expected[i]!;
+    if (a.method !== e.method) {
+      console.error(`  FAIL  provider request ${i + 1} method: expected ${e.method}, got ${a.method}`);
+      failures++;
     }
-    failures++;
-    console.error(`  FAIL  provider request ${i + 1}`);
-    console.error(`        rust key: ${r.key}`);
-    console.error(`        ts key:   ${t.key}`);
-    console.error(`        rust: ${JSON.stringify(r.body)}`);
-    console.error(`        ts:   ${JSON.stringify(t.body)}`);
+    if (a.path !== e.path) {
+      console.error(`  FAIL  provider request ${i + 1} path: expected ${e.path}, got ${a.path}`);
+      failures++;
+    }
+    const expectedBody = canonicalizeJson(e.body);
+    const actualBody = canonicalizeJson(a.body);
+    if (actualBody === expectedBody) {
+      console.log(`  ok    provider request ${i + 1} (${a.key.slice(0, 12)})`);
+    } else {
+      console.error(`  FAIL  provider request ${i + 1} body`);
+      console.error(`        expected: ${expectedBody}`);
+      console.error(`        actual:   ${actualBody}`);
+      failures++;
+    }
   }
-
   return failures;
 }
 
-function compareHistory(rust: NormalizedHistory, ts: NormalizedHistory): number {
+function compareHistory(expected: NormalizedHistory, actual: NormalizedHistory): number {
   const diffs = compareFrames(
-    { type: "restart_history", ...rust },
-    { type: "restart_history", ...ts },
+    { type: "restart_history", ...expected },
+    { type: "restart_history", ...actual },
     {},
   );
   if (diffs.length === 0) {
@@ -309,8 +360,8 @@ function compareHistory(rust: NormalizedHistory, ts: NormalizedHistory): number 
   }
   console.error("  FAIL  restart history");
   for (const diff of diffs) console.error(`        ${diff}`);
-  console.error(`        rust: ${JSON.stringify(rust)}`);
-  console.error(`        ts:   ${JSON.stringify(ts)}`);
+  console.error(`        expected: ${JSON.stringify(expected)}`);
+  console.error(`        actual:   ${JSON.stringify(actual)}`);
   return 1;
 }
 
@@ -366,6 +417,19 @@ function normalizeContent(value: unknown, blocks: unknown[]): string {
     .join("");
 }
 
+function readFrozenBaseline(path: string): FrozenRegenBaseline {
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as FrozenRegenBaseline;
+  if (parsed.version !== 1 || parsed.mode !== "regen") {
+    throw new Error(`${path}: unsupported regen baseline`);
+  }
+  return parsed;
+}
+
+function writeFrozenBaseline(path: string, baseline: FrozenRegenBaseline): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(baseline, null, 2) + "\n");
+}
+
 function patchProxyBaseUrl(configDir: string, proxyBaseUrl: string): void {
   const configPath = join(configDir, "config.toml");
   const raw = readFileSync(configPath, "utf8");
@@ -374,24 +438,30 @@ function patchProxyBaseUrl(configDir: string, proxyBaseUrl: string): void {
 
 function parseArgs(argv: string[]): Args {
   const parsed: Args = {
-    rust: DEFAULT_RUST,
     ts: undefined,
     fixture: DEFAULT_FIXTURE,
     response: DEFAULT_RESPONSE,
     cacheTtl: undefined,
+    baseline: undefined,
+    writeBaseline: undefined,
   };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "--rust") parsed.rust = takeValue(argv, ++i, arg);
-    else if (arg === "--ts") parsed.ts = takeValue(argv, ++i, arg);
+    if (arg === "--ts") parsed.ts = takeValue(argv, ++i, arg);
     else if (arg === "--fixture") parsed.fixture = takeValue(argv, ++i, arg);
     else if (arg === "--response") parsed.response = takeValue(argv, ++i, arg);
     else if (arg === "--cache-ttl") parsed.cacheTtl = takeValue(argv, ++i, arg);
+    else if (arg === "--baseline") parsed.baseline = takeValue(argv, ++i, arg);
+    else if (arg === "--write-baseline") parsed.writeBaseline = takeValue(argv, ++i, arg);
     else {
       console.error(`unknown arg: ${arg}`);
       process.exit(2);
     }
+  }
+  if (parsed.baseline !== undefined && parsed.writeBaseline !== undefined) {
+    console.error("--baseline and --write-baseline are mutually exclusive");
+    process.exit(2);
   }
   return parsed;
 }

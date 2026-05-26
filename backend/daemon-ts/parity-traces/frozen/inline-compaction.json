@@ -1,0 +1,250 @@
+{
+  "version": 1,
+  "mode": "inline-compaction",
+  "fixture": "parity-traces/fixtures/inline-compaction",
+  "response": "parity-traces/llm-fixtures/inline-compaction.json",
+  "cacheTtl": null,
+  "summary": {
+    "streamStarts": [
+      {
+        "regen": false
+      }
+    ],
+    "textChunks": [
+      "Acknowledged."
+    ],
+    "streamEnds": [
+      {
+        "content": "Acknowledged.",
+        "finishReason": "end_turn",
+        "isFinal": true,
+        "tokens": {
+          "input": 42,
+          "output": 4,
+          "cache_read": 0,
+          "cache_write": 0
+        },
+        "model": "claude-parity"
+      }
+    ],
+    "phases": [
+      {
+        "phase": "compacting"
+      }
+    ]
+  },
+  "providerRequests": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": {
+        "model": "claude-parity",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "first user message"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "first assistant reply"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "second user message"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "second assistant reply"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "[<HEARTBEAT_MARKER>]\n\nthird user message"
+              }
+            ]
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "You are scout, in conversation with Parity User.\nThis is a text conversation. Communicate directly rather than narrating actions or using roleplay formatting.\nBe consistent with established details and avoid fabricating memory."
+          },
+          {
+            "type": "text",
+            "text": "# TOOLS\n\nUse tools when they materially help.\n\n- Read files before editing them.\n- Search memory files before guessing facts about the user or past events.\n- Prefer concise, direct tool use over busywork.\n"
+          },
+          {
+            "type": "text",
+            "text": "<scout>\n# Scout\n\nYou are Scout, a concise parity-test character. Reply directly.\n\n</scout>"
+          }
+        ],
+        "temperature": 1,
+        "stream": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": {
+        "model": "claude-parity",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "first user message"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "first assistant reply"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "second user message"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "second assistant reply"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "[<HEARTBEAT_MARKER>]\n\nthird user message"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Acknowledged."
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "The conversation above is now complete and will be archived. Please review it and save anything important to your memory files.\n\nExisting memory files:\n<existing_memories>\nNo existing memory files yet.\n</existing_memories>"
+              },
+              {
+                "type": "text",
+                "text": "<system_instruction>You are scout. This conversation with Parity User is about to be archived and your active context will be cleared. Before that happens, you must save anything important to your long-term memory files AND update MEMORY.md so a future-you can pick up where this conversation left off.\n\nYou have access to your memories directory. Use the <memory> section below to write or update markdown files. Be concise and organized.\n\nGuidelines:\n- Prefer updating existing files over creating new ones. Use the existing memory snapshot below to merge new information into the right files.\n- Use clear filenames and folder structure (e.g., memory/people/Parity User.md, memory/topics/gaming/doom.md).\n- Each file should have a heading and bullet points.\n- Include timestamps or session context when relevant.\n- If Parity User corrected previous information, update the file rather than appending.\n- Update MEMORY.md (workspace root) with the conversational throughline: ongoing topics, unresolved threads, anything future-you should remember to continue. MEMORY.md is the prompt-visible index — keep it concise.\n- Dreaming will reorganize MEMORY.md later; your job is to make sure the carry-forward context is captured before the conversation is archived.\n\nYour response MUST contain a <memory> block containing zero or more <write> operations.\n\nEach <write> creates or overwrites a single file. The content is pure markdown — no YAML frontmatter.\n\n<memory>\n<write path=\"memory/people/Parity User.md\">\n# Parity User\n\n- Likes tea (mentioned on 2026-04-22)\n- Works in software\n</write>\n\n<write path=\"MEMORY.md\">\n# Memory Index\n\n## Throughline\n- Currently helping Parity User debug a Rust ownership issue in the renderer.\n- Picked up where last session left off on the Doom speedrun project.\n\n## Recent files\n- memory/people/Parity User.md\n- memory/topics/gaming/doom.md\n</write>\n</memory>\n\nIf nothing new needs to be saved, output an empty <memory></memory> block.</system_instruction>"
+              }
+            ]
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "You are scout, in conversation with Parity User.\nThis is a text conversation. Communicate directly rather than narrating actions or using roleplay formatting.\nBe consistent with established details and avoid fabricating memory."
+          },
+          {
+            "type": "text",
+            "text": "# TOOLS\n\nUse tools when they materially help.\n\n- Read files before editing them.\n- Search memory files before guessing facts about the user or past events.\n- Prefer concise, direct tool use over busywork.\n"
+          },
+          {
+            "type": "text",
+            "text": "<scout>\n# Scout\n\nYou are Scout, a concise parity-test character. Reply directly.\n\n</scout>"
+          }
+        ],
+        "temperature": 1
+      }
+    }
+  ],
+  "snapshot": {
+    "activeJsonl": "{\"msg_id\":\"m_56264558-cd79-4e02-89bf-a9aaec1e4159\",\"role\":\"user\",\"timestamp\":\"2026-05-26T06:57:11.661+00:00\",\"images\":[],\"content_blocks\":[{\"type\":\"text\",\"text\":\"third user message\"}]}\n{\"msg_id\":\"m_42301785-5760-453c-a83f-7152389cd2aa\",\"role\":\"assistant\",\"timestamp\":\"2026-05-26T06:57:11.680+00:00\",\"images\":[],\"content_blocks\":[{\"type\":\"text\",\"text\":\"Acknowledged.\"}]}\n",
+    "compactionJson": {
+      "segments": [
+        {
+          "file": "0001.jsonl",
+          "message_count": 4,
+          "compacted_at": "2026-05-26T06:57:11.686Z"
+        }
+      ],
+      "total_compacted_messages": 4
+    },
+    "segment0001": "{\"msg_id\":\"m1\",\"role\":\"user\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"images\":[],\"content_blocks\":[{\"type\":\"text\",\"text\":\"first user message\"}]}\n{\"msg_id\":\"m2\",\"role\":\"assistant\",\"timestamp\":\"2026-01-01T00:00:01Z\",\"images\":[],\"content_blocks\":[{\"type\":\"text\",\"text\":\"first assistant reply\"}]}\n{\"msg_id\":\"m3\",\"role\":\"user\",\"timestamp\":\"2026-01-01T00:00:02Z\",\"images\":[],\"content_blocks\":[{\"type\":\"text\",\"text\":\"second user message\"}]}\n{\"msg_id\":\"m4\",\"role\":\"assistant\",\"timestamp\":\"2026-01-01T00:00:03Z\",\"images\":[],\"content_blocks\":[{\"type\":\"text\",\"text\":\"second assistant reply\"}]}\n",
+    "memoryPeopleParityUser": "# Parity User\n\n- Drove an inline-compaction parity scenario on 2026-01-01.\n- Sent two seeded turns followed by a third turn that crossed the max_turns gate.",
+    "memoryIndex": "# Memory Index\n\n## Throughline\n- Parity scenario archived two seeded turns and retained the most recent exchange.\n\n## Recent files\n- memory/people/parity-user.md"
+  },
+  "history": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "third user message",
+        "content_blocks": [
+          {
+            "type": "text",
+            "text": "third user message"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "Acknowledged.",
+        "content_blocks": [
+          {
+            "type": "text",
+            "text": "Acknowledged."
+          }
+        ]
+      }
+    ]
+  },
+  "notifications": [
+    {
+      "argv": [
+        "--app-name=shore",
+        "Shore — scout",
+        "Compaction complete: 2 entries from 2 turns"
+      ]
+    }
+  ]
+}

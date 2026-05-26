@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "mode": "scheduled-dreaming",
+  "fixture": "parity-traces/fixtures/scheduled-dreaming",
+  "response": "parity-traces/llm-fixtures/scheduled-dreaming.json",
+  "cacheTtl": "1h",
+  "librarianRequest": {
+    "method": "POST",
+    "path": "/v1/messages",
+    "body": {
+      "model": "claude-parity",
+      "max_tokens": 64,
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Please seed scheduled dreaming parity state."
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Setup reply for scheduled dreaming parity.",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<system_instruction>You are scout, running a private memory maintenance pass for Parity User.\n\nThis is not a chat turn. Do not send a user-facing message.\n\nYou are running a character-led memory librarian pass. Your task is to make your markdown memory easier for future-you to search and recall.\n\nUse your memory tools to inspect existing files before changing them. Organize durable long-term facts so they are easy to find. Prefer updating existing files over creating duplicates. Move durable facts out of daily or raw notes into appropriate long-term files when useful. Deduplicate repeated facts. Mark stale, superseded, or incorrect information clearly rather than preserving contradictions as equally current. Leave uncertain cases in a review or needs-review area.\n\nMaintain `MEMORY.md` (at the workspace root, alongside `SOUL.md`/`USER.md`/`AGENTS.md`/`TOOLS.md`/`HEARTBEAT.md`) as the prompt-visible memory index. It should include:\n- an overview of important memory files and what they contain\n- recently updated or worth-reading files\n- ongoing conversational throughlines that remain relevant\n- unresolved memory-maintenance questions or contradictions\n\n`MEMORY.md` is not the full memory itself. It must not duplicate `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`; those are protected prompt files with separate roles.\n`MEMORY.md` is prompt-visible through an active snapshot. Updating `MEMORY.md` changes the canonical file now, but the new index only becomes prompt-active after the next compaction boundary.\n\nFinish with a concise summary covering:\n- files inspected\n- files changed\n- important moves, dedupes, or supersessions\n- unresolved issues\n- whether `MEMORY.md` was updated\n\nThe daemon writes a timestamped audit entry to the dreams log automatically once you finish — you do not (and cannot) write `DREAMS.md` yourself.\n\nGenerated dreaming artifacts are not durable memory sources. Do not mine legacy `.dreams/**`, `dreams.md`, `MEMORY.md`, or `dreaming/**` as facts; you may read `MEMORY.md` for index continuity.\n\nYou may edit any workspace file, including the protected prompt files (`SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`). Edits to those files are staged through an active-prompt snapshot and take effect at the next compaction or reload boundary, not immediately within this pass. Be deliberate when changing them.\n\nThe memory folder is self-organizing. Do not impose a rigid folder taxonomy. Inspect the existing layout and improve it sympathetically.\n\n<character_identity>\n# Scout\n\nYou are Scout, a concise parity-test character. Reply directly.\n\n</character_identity>\n\n\nRun the memory librarian pass now. Use memory tools to inspect and improve workspace/memory, update MEMORY.md (at the workspace root), and finish with a concise summary of what you inspected and changed. The daemon writes the dreams audit log automatically; do not try to write DREAMS.md yourself. Do not emit a user-facing message.</system_instruction>",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            }
+          ]
+        }
+      ],
+      "system": [
+        {
+          "type": "text",
+          "text": "You are scout, in conversation with Parity User.\nThis is a text conversation. Communicate directly rather than narrating actions or using roleplay formatting.\nBe consistent with established details and avoid fabricating memory."
+        },
+        {
+          "type": "text",
+          "text": "# TOOLS\n\nUse tools when they materially help.\n\n- Read files before editing them.\n- Search memory files before guessing facts about the user or past events.\n- Prefer concise, direct tool use over busywork.\n"
+        },
+        {
+          "type": "text",
+          "text": "<scout>\n# Scout\n\nYou are Scout, a concise parity-test character. Reply directly.\n\n</scout>",
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "1h"
+          }
+        }
+      ],
+      "temperature": 1
+    }
+  },
+  "dreamsState": {
+    "last_run_at": "2026-05-26T07:07:37.317Z",
+    "runs": 1,
+    "last_candidates_path": null,
+    "last_signals_path": null,
+    "last_promotions_path": null,
+    "seen_candidates": {}
+  },
+  "dreamsLog": "# Dreams\n\n## <ts> - AI librarian dreaming pass\n\nAI librarian dreaming pass at `<ts>`.\n\nFiles inspected:\n- None recorded.\n\nFiles changed by tools:\n- None recorded.\n\nMEMORY.md updated:\n- Yes, by daemon fallback (the model left it missing or empty).\n\nFinal internal report:\nScheduled dreaming parity pass: no edits needed.\n",
+  "memoryIndex": "# Memory Index\n\nThis file is the character's map of long-term memory. It is not the full memory itself.\nUse it to decide which memory files to inspect before answering.\n\nCore user facts and standing behavior guidance are already loaded from USER.md and AGENTS.md; do not duplicate them here unless needed as pointers to memory files.\n\nCharacter: scout\nLast updated: <ts>\nFallback note: daemon created this minimal index because the AI librarian pass did not leave a usable MEMORY.md.\n\n## Memory areas\n\n- No ordinary memory files were found yet.\n\n## Recently updated files\n\n- Needs review during the next AI librarian pass.\n\n## Current conversational throughlines\n\n- Needs review during the next AI librarian pass.\n\n## Needs review\n\n- Previous dreaming pass did not update MEMORY.md directly.\n",
+  "ledgerRows": [
+    {
+      "id": 2,
+      "ts": "2026-05-26T07:07:37.320Z",
+      "character": "scout",
+      "provider": "anthropic",
+      "api_key_name": "default",
+      "model": "claude-parity",
+      "call_type": "dreaming",
+      "input_tokens": 57,
+      "output_tokens": 8,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cache_ttl": "1h",
+      "total_ms": 2,
+      "ttft_ms": 2,
+      "finish_reason": "end_turn",
+      "thinking_enabled": 0,
+      "cache_state": null,
+      "cache_anomaly": null,
+      "input_cost": null,
+      "output_cost": null,
+      "cache_read_cost": null,
+      "cache_write_cost": null,
+      "cost_source": "pricing_catalog",
+      "total_cost": null
+    }
+  ]
+}

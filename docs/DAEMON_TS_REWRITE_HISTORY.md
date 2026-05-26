@@ -3,9 +3,11 @@
 Archive of the rewrite plan, audit findings, and phased execution record.
 This file is **historical**: every phase below is either done or
 explicitly descoped. Active work and exit criteria live in
-[`../REWRITE.md`](../REWRITE.md); the parity coverage build-out is
-tracked in [`DAEMON_TS_PARITY.md`](DAEMON_TS_PARITY.md); the cutover
-runbook is [`DAEMON_TS_CUTOVER.md`](DAEMON_TS_CUTOVER.md).
+[`../REWRITE.md`](../REWRITE.md); the cutover runbook is
+[`DAEMON_TS_CUTOVER.md`](DAEMON_TS_CUTOVER.md). Parity coverage now
+lives as TS-vs-frozen-baseline regressions under
+`backend/daemon-ts/parity-traces/frozen/` (the prior `DAEMON_TS_PARITY.md`
+cross-daemon tracker was retired with the conversion).
 
 The rewrite started 2026-05-23. All parity gaps from the 2026-05-24
 audit were closed or descoped by 2026-05-25. The substance below is

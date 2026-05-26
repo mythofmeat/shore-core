@@ -1,0 +1,249 @@
+{
+  "version": 1,
+  "mode": "dreaming",
+  "fixture": "parity-traces/fixtures/dreaming-cmd",
+  "response": "parity-traces/llm-fixtures/dreaming-cmd.json",
+  "cacheTtl": null,
+  "commandOutput": {
+    "character": "scout",
+    "dry_run": false,
+    "ran_at": "2026-05-26T07:03:16.692Z",
+    "mode": "ai_librarian",
+    "phase_summaries": [
+      {
+        "phase": "librarian",
+        "summary": "AI librarian pass used 0 tool round(s), changed 2 file(s), and needed a DREAMS.md audit fallback",
+        "candidate_count": 0,
+        "promoted_count": 1,
+        "rejected_count": 0,
+        "paths": [
+          "/tmp/shore-dreaming-ts-otfLoT/config/characters/scout/workspace/MEMORY.md",
+          "/tmp/shore-dreaming-ts-otfLoT/data/scout/dreams/state.json"
+        ]
+      }
+    ],
+    "candidate_count": 0,
+    "indexed_count": 1,
+    "promoted_count": 0,
+    "rejected_count": 0,
+    "candidates": [],
+    "rem_themes": [],
+    "promotions": [],
+    "rejected": [],
+    "indexed": [
+      "MEMORY.md"
+    ],
+    "promoted": [],
+    "paths_written": [
+      "/tmp/shore-dreaming-ts-otfLoT/config/characters/scout/workspace/MEMORY.md",
+      "/tmp/shore-dreaming-ts-otfLoT/data/scout/dreams/state.json"
+    ],
+    "would_write_paths": [],
+    "staged_path": "/tmp/shore-dreaming-ts-otfLoT/data/scout/dreams/state.json",
+    "dreams_path": "/tmp/shore-dreaming-ts-otfLoT/data/scout/DREAMS.md",
+    "memory_path": "/tmp/shore-dreaming-ts-otfLoT/config/characters/scout/workspace/MEMORY.md",
+    "inspected": [],
+    "changed": [
+      "MEMORY.md",
+      "dreams/state.json"
+    ],
+    "tools_used": [],
+    "tool_rounds": 0,
+    "audit_appended": true,
+    "final_report": "Dreaming parity pass: no edits needed."
+  },
+  "providerRequests": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": {
+        "model": "claude-parity",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "Run the memory librarian pass now. Use memory tools to inspect and improve workspace/memory, update MEMORY.md (at the workspace root), and finish with a concise summary of what you inspected and changed. The daemon writes the dreams audit log automatically; do not try to write DREAMS.md yourself. Do not emit a user-facing message.\n\n<system_instruction>You are scout, running a private memory maintenance pass for Parity User.\n\nThis is not a chat turn. Do not send a user-facing message.\n\nYou are running a character-led memory librarian pass. Your task is to make your markdown memory easier for future-you to search and recall.\n\nUse your memory tools to inspect existing files before changing them. Organize durable long-term facts so they are easy to find. Prefer updating existing files over creating duplicates. Move durable facts out of daily or raw notes into appropriate long-term files when useful. Deduplicate repeated facts. Mark stale, superseded, or incorrect information clearly rather than preserving contradictions as equally current. Leave uncertain cases in a review or needs-review area.\n\nMaintain `MEMORY.md` (at the workspace root, alongside `SOUL.md`/`USER.md`/`AGENTS.md`/`TOOLS.md`/`HEARTBEAT.md`) as the prompt-visible memory index. It should include:\n- an overview of important memory files and what they contain\n- recently updated or worth-reading files\n- ongoing conversational throughlines that remain relevant\n- unresolved memory-maintenance questions or contradictions\n\n`MEMORY.md` is not the full memory itself. It must not duplicate `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`; those are protected prompt files with separate roles.\n`MEMORY.md` is prompt-visible through an active snapshot. Updating `MEMORY.md` changes the canonical file now, but the new index only becomes prompt-active after the next compaction boundary.\n\nFinish with a concise summary covering:\n- files inspected\n- files changed\n- important moves, dedupes, or supersessions\n- unresolved issues\n- whether `MEMORY.md` was updated\n\nThe daemon writes a timestamped audit entry to the dreams log automatically once you finish — you do not (and cannot) write `DREAMS.md` yourself.\n\nGenerated dreaming artifacts are not durable memory sources. Do not mine legacy `.dreams/**`, `dreams.md`, `MEMORY.md`, or `dreaming/**` as facts; you may read `MEMORY.md` for index continuity.\n\nYou may edit any workspace file, including the protected prompt files (`SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`). Edits to those files are staged through an active-prompt snapshot and take effect at the next compaction or reload boundary, not immediately within this pass. Be deliberate when changing them.\n\nThe memory folder is self-organizing. Do not impose a rigid folder taxonomy. Inspect the existing layout and improve it sympathetically.\n\n<character_identity>\nYou are scout, a terse parity-test character.\n\n</character_identity>\n</system_instruction>"
+          }
+        ],
+        "tools": [
+          {
+            "name": "check_time",
+            "description": "Return the current date and time in Parity User's local timezone. Use when the exact time matters — working out how long it's been since an event, whether it's late, day-of-week reasoning, or anchoring a timestamped memory. Returns a human-readable string like 'Friday, April 4th, 2026 at 4:34 PM'. Takes no parameters.",
+            "input_schema": {
+              "type": "object",
+              "properties": {},
+              "required": []
+            }
+          },
+          {
+            "name": "read",
+            "description": "Read the contents of a file. Returns the file content as text; use offset and limit for large files.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Relative path within your workspace."
+                },
+                "offset": {
+                  "type": "number",
+                  "description": "Line number to start reading from (1-based). Optional."
+                },
+                "limit": {
+                  "type": "number",
+                  "description": "Maximum number of lines to read. Optional."
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }
+          },
+          {
+            "name": "write",
+            "description": "Write or overwrite a file. Parent directories are created automatically. Overwrites without confirmation.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Relative path within your workspace."
+                },
+                "content": {
+                  "type": "string",
+                  "description": "Full content to write."
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ]
+            }
+          },
+          {
+            "name": "edit",
+            "description": "Edit an existing file by replacing specific text. Each replacement must match old_string exactly, including whitespace and newlines.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Relative path within your workspace."
+                },
+                "edits": {
+                  "type": "array",
+                  "description": "List of replacements to apply in order.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "old_string": {
+                        "type": "string",
+                        "description": "Exact text to find and replace. Must match whitespace and newlines precisely."
+                      },
+                      "new_string": {
+                        "type": "string",
+                        "description": "Text to replace old_string with."
+                      }
+                    },
+                    "required": [
+                      "old_string",
+                      "new_string"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "path",
+                "edits"
+              ]
+            }
+          },
+          {
+            "name": "list_files",
+            "description": "List files and directories under a path. Returns each entry's name, type, and size. Use this when you're looking for files by name, date, or directory structure — `search` is for fuzzy content matching, not exact-name lookups.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Relative directory path within your workspace. Omit for workspace root."
+                }
+              },
+              "required": []
+            }
+          },
+          {
+            "name": "search",
+            "description": "Find files matching a query. Uses hybrid ranking (semantic + lexical) by default so paraphrased queries still find the right file; pass `mode: \"lexical\"` for substring-only or `mode: \"vector\"` for pure semantic similarity. Best for fuzzy concept questions (\"anything about my dog?\") rather than structural lookups by date or filename — use `list_files` for those. Returns paths, line numbers, and short excerpts. Treat results as discovery and follow up with `read` on the top files for full context.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string",
+                  "description": "Keyword, phrase, or natural-language description to search for."
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "hybrid",
+                    "lexical",
+                    "vector"
+                  ],
+                  "description": "Ranking mode. `hybrid` (default) blends semantic similarity with substring matching. `lexical` is case-insensitive substring only, ordered by file recency. `vector` is pure semantic similarity."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Optional relative path to scope the search to a subtree. Works in all modes — hybrid/vector queries are filtered to this subtree after ranking against the workspace-wide embedding index."
+                },
+                "max_results": {
+                  "type": "number",
+                  "description": "Maximum matches to return. Defaults to 20, maximum 100."
+                }
+              },
+              "required": [
+                "query"
+              ]
+            }
+          },
+          {
+            "name": "search_history",
+            "description": "Search your own conversation history, including compacted older segments and the active conversation window. Use this when the user asks what you discussed before, when you need to verify a past exchange, when you need messages from a specific time range, or when the answer may be in the transcript rather than in curated memory files. Provide `query` for keyword search, `start_time` and/or `end_time` for an inclusive RFC3339 time range, or combine them to narrow keyword matches to a window. Returns matching messages with role, timestamp, source, and a short excerpt. Excerpts are clipped — when the answer is non-trivial, follow up with another `search_history` for adjacent terms/time windows or `search`/`read` against memory to get the full picture.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string",
+                  "description": "Optional keyword or phrase to search for (case-insensitive). Omit this to return messages by time range only."
+                },
+                "start_time": {
+                  "type": "string",
+                  "description": "Optional inclusive lower timestamp bound in RFC3339 format, for example 2026-05-13T09:00:00+10:00."
+                },
+                "end_time": {
+                  "type": "string",
+                  "description": "Optional inclusive upper timestamp bound in RFC3339 format, for example 2026-05-13T17:00:00+10:00."
+                },
+                "max_results": {
+                  "type": "number",
+                  "description": "Maximum matching messages to return. Defaults to 20, maximum 100."
+                }
+              },
+              "required": []
+            }
+          }
+        ],
+        "temperature": 1
+      }
+    }
+  ],
+  "dreamsState": {
+    "last_run_at": "2026-05-26T07:03:16.692Z",
+    "runs": 1,
+    "last_candidates_path": null,
+    "last_signals_path": null,
+    "last_promotions_path": null,
+    "seen_candidates": {}
+  },
+  "dreamsLog": "# Dreams\n\n## <ts> - AI librarian dreaming pass\n\nAI librarian dreaming pass at `<ts>`.\n\nFiles inspected:\n- None recorded.\n\nFiles changed by tools:\n- None recorded.\n\nMEMORY.md updated:\n- Yes, by daemon fallback (the model left it missing or empty).\n\nFinal internal report:\nDreaming parity pass: no edits needed.\n",
+  "memoryIndex": "# Memory Index\n\nThis file is the character's map of long-term memory. It is not the full memory itself.\nUse it to decide which memory files to inspect before answering.\n\nCore user facts and standing behavior guidance are already loaded from USER.md and AGENTS.md; do not duplicate them here unless needed as pointers to memory files.\n\nCharacter: scout\nLast updated: <ts>\nFallback note: daemon created this minimal index because the AI librarian pass did not leave a usable MEMORY.md.\n\n## Memory areas\n\n- No ordinary memory files were found yet.\n\n## Recently updated files\n\n- Needs review during the next AI librarian pass.\n\n## Current conversational throughlines\n\n- Needs review during the next AI librarian pass.\n\n## Needs review\n\n- Previous dreaming pass did not update MEMORY.md directly.\n"
+}

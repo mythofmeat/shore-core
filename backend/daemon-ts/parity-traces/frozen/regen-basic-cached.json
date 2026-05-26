@@ -1,0 +1,184 @@
+{
+  "version": 1,
+  "mode": "regen",
+  "fixture": "parity-traces/fixtures/regen-basic",
+  "response": "parity-traces/llm-fixtures/regen-basic.json",
+  "cacheTtl": "1h",
+  "summary": {
+    "first": {
+      "streamStarts": [
+        {
+          "regen": false
+        }
+      ],
+      "textChunks": [
+        "Initial regen parity response from the deterministic LLM."
+      ],
+      "finalContent": "Initial regen parity response from the deterministic LLM.",
+      "finishReason": "end_turn",
+      "tokens": {
+        "input": 33,
+        "output": 8,
+        "cache_read": 0,
+        "cache_write": 0
+      },
+      "model": "claude-parity"
+    },
+    "regen": {
+      "streamStarts": [
+        {
+          "regen": true
+        }
+      ],
+      "textChunks": [
+        "Regenerated parity response from the deterministic LLM."
+      ],
+      "finalContent": "Regenerated parity response from the deterministic LLM.",
+      "finishReason": "end_turn",
+      "tokens": {
+        "input": 33,
+        "output": 8,
+        "cache_read": 0,
+        "cache_write": 0
+      },
+      "model": "claude-parity"
+    }
+  },
+  "providerRequests": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": {
+        "model": "claude-parity",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Please reply with the regen parity fixture response.",
+                "cache_control": {
+                  "type": "ephemeral",
+                  "ttl": "1h"
+                }
+              }
+            ]
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "You are scout, in conversation with Parity User.\nThis is a text conversation. Communicate directly rather than narrating actions or using roleplay formatting.\nBe consistent with established details and avoid fabricating memory."
+          },
+          {
+            "type": "text",
+            "text": "# TOOLS\n\nUse tools when they materially help.\n\n- Read files before editing them.\n- Search memory files before guessing facts about the user or past events.\n- Prefer concise, direct tool use over busywork.\n"
+          },
+          {
+            "type": "text",
+            "text": "<scout>\n# Scout\n\nYou are Scout, a concise parity-test character. Reply directly.\n\n</scout>",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h"
+            }
+          }
+        ],
+        "temperature": 1,
+        "stream": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": {
+        "model": "claude-parity",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Please reply with the regen parity fixture response.",
+                "cache_control": {
+                  "type": "ephemeral",
+                  "ttl": "1h"
+                }
+              }
+            ]
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "You are scout, in conversation with Parity User.\nThis is a text conversation. Communicate directly rather than narrating actions or using roleplay formatting.\nBe consistent with established details and avoid fabricating memory."
+          },
+          {
+            "type": "text",
+            "text": "# TOOLS\n\nUse tools when they materially help.\n\n- Read files before editing them.\n- Search memory files before guessing facts about the user or past events.\n- Prefer concise, direct tool use over busywork.\n"
+          },
+          {
+            "type": "text",
+            "text": "<scout>\n# Scout\n\nYou are Scout, a concise parity-test character. Reply directly.\n\n</scout>",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h"
+            }
+          }
+        ],
+        "temperature": 1,
+        "stream": true
+      }
+    }
+  ],
+  "history": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Please reply with the regen parity fixture response.",
+        "content_blocks": [
+          {
+            "type": "text",
+            "text": "Please reply with the regen parity fixture response."
+          }
+        ],
+        "alt_index": null,
+        "alt_count": null,
+        "alternatives": []
+      },
+      {
+        "role": "assistant",
+        "content": "Regenerated parity response from the deterministic LLM.",
+        "content_blocks": [
+          {
+            "type": "text",
+            "text": "Regenerated parity response from the deterministic LLM."
+          }
+        ],
+        "alt_index": 1,
+        "alt_count": 2,
+        "alternatives": [
+          {
+            "content": "Initial regen parity response from the deterministic LLM.",
+            "content_blocks": [
+              {
+                "type": "text",
+                "text": "Initial regen parity response from the deterministic LLM."
+              }
+            ]
+          },
+          {
+            "content": "Regenerated parity response from the deterministic LLM.",
+            "content_blocks": [
+              {
+                "type": "text",
+                "text": "Regenerated parity response from the deterministic LLM."
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

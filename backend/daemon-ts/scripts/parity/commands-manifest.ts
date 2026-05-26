@@ -1,9 +1,7 @@
 /**
- * Manifest types + loader for Tier 2 command-dispatcher parity cases.
- *
- * See `docs/DAEMON_TS_PARITY.md` for the rollout plan and field
- * semantics. One entry per command case (one command can have multiple
- * cases — e.g. ok + error variants — by setting distinct `id`s).
+ * Manifest types + loader for command-dispatcher parity cases.
+ * One entry per command case (one command can have multiple cases —
+ * e.g. ok + error variants — by setting distinct `id`s).
  */
 
 import { readFileSync } from "node:fs";

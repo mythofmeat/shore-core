@@ -1,0 +1,248 @@
+{
+  "version": 1,
+  "mode": "tool-loop",
+  "fixture": "parity-traces/fixtures/tool-loop-read",
+  "response": "parity-traces/llm-fixtures/tool-loop-read.json",
+  "cacheTtl": null,
+  "summary": {
+    "streamStarts": [
+      {
+        "regen": false
+      },
+      {
+        "regen": false
+      }
+    ],
+    "textChunks": [
+      "Tool loop parity complete."
+    ],
+    "streamEnds": [
+      {
+        "content": "",
+        "finishReason": "tool_use",
+        "isFinal": false,
+        "tokens": {
+          "input": 41,
+          "output": 5,
+          "cache_read": 0,
+          "cache_write": 0
+        },
+        "model": "claude-parity"
+      },
+      {
+        "content": "Tool loop parity complete.",
+        "finishReason": "end_turn",
+        "isFinal": true,
+        "tokens": {
+          "input": 58,
+          "output": 6,
+          "cache_read": 0,
+          "cache_write": 0
+        },
+        "model": "claude-parity"
+      }
+    ],
+    "toolCalls": [
+      {
+        "toolId": "toolu_parity_read",
+        "toolName": "read",
+        "input": {
+          "path": "tool-data.txt"
+        }
+      }
+    ],
+    "toolResults": [
+      {
+        "toolId": "toolu_parity_read",
+        "toolName": "read",
+        "output": "{\"path\":\"tool-data.txt\",\"content\":\"alpha\\nbeta\\ngamma\\n\",\"total_lines\":4}",
+        "isError": false
+      }
+    ]
+  },
+  "providerRequests": [
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": {
+        "model": "claude-parity",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Please read the parity tool fixture file before answering."
+              }
+            ]
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "You are scout, in conversation with Parity User.\nThis is a text conversation. Communicate directly rather than narrating actions or using roleplay formatting.\nBe consistent with established details and avoid fabricating memory."
+          },
+          {
+            "type": "text",
+            "text": "# TOOLS\n\nUse tools when they materially help.\n\n- Read files before editing them.\n- Search memory files before guessing facts about the user or past events.\n- Prefer concise, direct tool use over busywork.\n"
+          },
+          {
+            "type": "text",
+            "text": "<scout>\n# Scout\n\nYou are Scout, a concise parity-test character. Reply directly.\n\n</scout>"
+          }
+        ],
+        "tools": [
+          {
+            "name": "read",
+            "description": "Read the contents of a file. Returns the file content as text; use offset and limit for large files.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Relative path within your workspace."
+                },
+                "offset": {
+                  "type": "number",
+                  "description": "Line number to start reading from (1-based). Optional."
+                },
+                "limit": {
+                  "type": "number",
+                  "description": "Maximum number of lines to read. Optional."
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }
+          }
+        ],
+        "temperature": 1,
+        "stream": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "body": {
+        "model": "claude-parity",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Please read the parity tool fixture file before answering."
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "toolu_parity_read",
+                "name": "read",
+                "input": {
+                  "path": "tool-data.txt"
+                }
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "toolu_parity_read",
+                "content": "{\"path\":\"tool-data.txt\",\"content\":\"alpha\\nbeta\\ngamma\\n\",\"total_lines\":4}"
+              }
+            ]
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "You are scout, in conversation with Parity User.\nThis is a text conversation. Communicate directly rather than narrating actions or using roleplay formatting.\nBe consistent with established details and avoid fabricating memory."
+          },
+          {
+            "type": "text",
+            "text": "# TOOLS\n\nUse tools when they materially help.\n\n- Read files before editing them.\n- Search memory files before guessing facts about the user or past events.\n- Prefer concise, direct tool use over busywork.\n"
+          },
+          {
+            "type": "text",
+            "text": "<scout>\n# Scout\n\nYou are Scout, a concise parity-test character. Reply directly.\n\n</scout>"
+          }
+        ],
+        "tools": [
+          {
+            "name": "read",
+            "description": "Read the contents of a file. Returns the file content as text; use offset and limit for large files.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Relative path within your workspace."
+                },
+                "offset": {
+                  "type": "number",
+                  "description": "Line number to start reading from (1-based). Optional."
+                },
+                "limit": {
+                  "type": "number",
+                  "description": "Maximum number of lines to read. Optional."
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }
+          }
+        ],
+        "temperature": 1,
+        "stream": true
+      }
+    }
+  ],
+  "history": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Please read the parity tool fixture file before answering.",
+        "content_blocks": [
+          {
+            "type": "text",
+            "text": "Please read the parity tool fixture file before answering."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "Tool loop parity complete.",
+        "content_blocks": [
+          {
+            "type": "tool_use",
+            "id": "toolu_parity_read",
+            "name": "read",
+            "input": {
+              "path": "tool-data.txt"
+            }
+          },
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_parity_read",
+            "content": "{\"path\":\"tool-data.txt\",\"content\":\"alpha\\nbeta\\ngamma\\n\",\"total_lines\":4}",
+            "is_error": false
+          },
+          {
+            "type": "text",
+            "text": "Tool loop parity complete."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -49,7 +49,7 @@ live beside the Rust `shore-daemon`. See `../../contrib/shore-daemon-ts/`.
 
 Preview package releases are published from `shore-daemon-ts-v*` tags by the
 shared Arch packaging workflow. Use an Arch-safe tag suffix such as
-`shore-daemon-ts-v0.0.0_phase8d`; `makepkg` rejects hyphens in `pkgver`.
+`shore-daemon-ts-v0.0.0_preview`; `makepkg` rejects hyphens in `pkgver`.
 
 ## Opt-in systemd service
 
@@ -73,20 +73,32 @@ and verifies the 3-step handshake (ServerHello → ClientHello → History).
 
 ## Parity check
 
-`parity-traces/` holds recorded SWP exchanges from the Rust daemon (see
-`scripts/capture-rust-trace.ts`). `parity-check.ts` re-runs the recorded
-client side against our TS daemon and diffs the emitted server frames
-against the baseline.
+`parity-traces/` holds two kinds of baselines:
+
+- `parity-traces/*.jsonl` — recorded SWP client transcripts replayed
+  against the TS daemon by `parity-check.ts` (handshake / append /
+  multi-turn / edit / delete / alt / commands).
+- `parity-traces/frozen/*.json` — TS-vs-self regression baselines for
+  generation, regen, tool-loop, inline-compaction, heartbeat-tick,
+  dreaming, and scheduled-dreaming. Each script accepts
+  `--baseline <path>` (default for the regression run) and
+  `--write-baseline <path>` (regenerate after an intentional change).
 
 ```sh
-bun run parity              # diff against `bun src/main.ts`
-bun run parity:compiled     # diff against ./dist/shore-daemon
-bun run capture-trace parity-traces/<scenario>.jsonl   # regenerate baseline
+bun run parity                          # T1/T2 SWP replays
+bun run parity:generation               # T3 generation vs frozen baseline
+bun run parity:regen[:cached]           # ... regen, etc.
+bun run parity:tool-loop[:cached]
+bun run parity:compaction[:cached]
+bun run parity:heartbeat-tick[:cached]
+bun run parity:dreaming[:cached]
+bun run parity:scheduled-dreaming[:cached]
 ```
 
-Expected differences (e.g. `server_name`) are listed in
-`EXPECTED_DIFFS` at the top of `scripts/parity-check.ts`; that list
-should shrink toward empty as phases progress.
+Each `parity:<name>` has a `:compiled` twin that runs against
+`./dist/shore-daemon` instead of `bun src/main.ts`. Wall-clock time
+markers are redacted via `redactHeartbeatMarkers` in `scripts/parity/_lib.ts`
+so baselines survive minute-crossing reruns.
 
 ## Phase 1 observations (Arch Linux, x86_64, bun 1.3.14)
 

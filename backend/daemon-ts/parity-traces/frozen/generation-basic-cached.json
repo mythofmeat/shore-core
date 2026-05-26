@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "mode": "generation",
+  "fixture": "parity-traces/fixtures/generation-basic",
+  "response": "parity-traces/llm-fixtures/generation-basic.json",
+  "cacheTtl": "1h",
+  "summary": {
+    "streamStarts": [
+      {
+        "regen": false
+      }
+    ],
+    "textChunks": [
+      "Parity fixture response from the deterministic LLM."
+    ],
+    "finalContent": "Parity fixture response from the deterministic LLM.",
+    "finishReason": "end_turn",
+    "tokens": {
+      "input": 31,
+      "output": 7,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "model": "claude-parity"
+  },
+  "providerRequest": {
+    "method": "POST",
+    "path": "/v1/messages",
+    "body": {
+      "model": "claude-parity",
+      "max_tokens": 64,
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Please reply with the parity fixture response.",
+              "cache_control": {
+                "type": "ephemeral",
+                "ttl": "1h"
+              }
+            }
+          ]
+        }
+      ],
+      "system": [
+        {
+          "type": "text",
+          "text": "You are scout, in conversation with Parity User.\nThis is a text conversation. Communicate directly rather than narrating actions or using roleplay formatting.\nBe consistent with established details and avoid fabricating memory."
+        },
+        {
+          "type": "text",
+          "text": "# TOOLS\n\nUse tools when they materially help.\n\n- Read files before editing them.\n- Search memory files before guessing facts about the user or past events.\n- Prefer concise, direct tool use over busywork.\n"
+        },
+        {
+          "type": "text",
+          "text": "<scout>\n# Scout\n\nYou are Scout, a concise parity-test character. Reply directly.\n\n</scout>",
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "1h"
+          }
+        }
+      ],
+      "temperature": 1,
+      "stream": true
+    }
+  }
+}

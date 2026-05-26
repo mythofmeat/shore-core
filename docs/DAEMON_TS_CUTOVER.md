@@ -8,10 +8,11 @@ evidence required before `shore-daemon-ts` can replace the Rust daemon.
 > identified 15 blockers / divergences. All have been ported or
 > explicitly descoped — see
 > [`DAEMON_TS_REWRITE_HISTORY.md`](DAEMON_TS_REWRITE_HISTORY.md) for the
-> per-item resolutions. Automated parity coverage has landed; the
-> remaining pre-soak work is converting the old Rust-vs-TS parity
-> scripts into TS-vs-frozen-baseline regressions as Rust is retired.
-> See [`DAEMON_TS_PARITY.md`](DAEMON_TS_PARITY.md) and `REWRITE.md`.
+> per-item resolutions. Automated parity coverage now lives as
+> TS-vs-frozen-baseline regressions under
+> `backend/daemon-ts/parity-traces/frozen/`; the suite runs via
+> `bun run parity:<name>` (each named scenario in `package.json`).
+> See `REWRITE.md`.
 
 ## Scope
 

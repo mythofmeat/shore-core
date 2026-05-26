@@ -10,13 +10,13 @@
  * librarian's outbound LLM request body, and the on-disk artifacts
  * (`dreams/state.json`, `DREAMS.md`, fallback `MEMORY.md`).
  *
- * Both `cache_ttl=""` (default) and `cache_ttl="1h"` (via `--cache-ttl 1h`)
- * variants run in CI; the cached variant exercises the cache-prefix +
- * breakpoint-placement code paths the no-cache path skips.
+ * Frozen-baseline mode compares the TS daemon's full memory_dream flow
+ * against a committed baseline.
  */
 
 import fs from "node:fs";
-import { join, resolve as resolvePath } from "node:path";
+import { mkdirSync } from "node:fs";
+import { dirname, join, resolve as resolvePath } from "node:path";
 
 import {
   buildDaemonEnv,
@@ -25,11 +25,13 @@ import {
   openConnection,
   readFrame,
   readListenAddr,
+  redactHeartbeatMarkers,
   setCacheTtl,
   spawnDaemon,
   type FrameQueue,
 } from "./parity/_lib.ts";
 import {
+  canonicalizeJson,
   loadCannedResponses,
   startParityLlmProxy,
   type CannedLlmResponse,
@@ -38,67 +40,106 @@ import {
 
 const DEFAULT_FIXTURE = "parity-traces/fixtures/dreaming-cmd";
 const DEFAULT_RESPONSE = "parity-traces/llm-fixtures/dreaming-cmd.json";
-const DEFAULT_RUST = "/usr/bin/shore-daemon";
 const COMMAND_RID = "dream-1";
 const CHARACTER = "scout";
 
 interface Args {
-  rust: string;
   ts: string | undefined;
   fixture: string;
   response: string;
   cacheTtl: string | undefined;
+  baseline: string | undefined;
+  writeBaseline: string | undefined;
 }
 
-interface ScenarioResult {
+interface FrozenRequest {
+  method: string;
+  path: string;
+  body: unknown;
+}
+
+interface FrozenDreamingBaseline {
+  version: 1;
+  mode: "dreaming";
+  fixture: string;
+  response: string;
+  cacheTtl: string | null;
   commandOutput: unknown;
-  requests: CapturedLlmRequest[];
+  providerRequests: FrozenRequest[];
   dreamsState: unknown;
   dreamsLog: string;
   memoryIndex: string;
 }
 
 const args = parseArgs(process.argv.slice(2));
+if (args.baseline === undefined && args.writeBaseline === undefined) {
+  console.error("usage: parity-check-dreaming.ts --baseline <path> | --write-baseline <path>");
+  process.exit(2);
+}
 const tsCmd = args.ts === undefined ? ["bun", "src/main.ts"] : [args.ts];
 const responses = loadCannedResponses(resolvePath(args.response));
 if (responses.length < 1) {
   throw new Error(`${args.response} must contain at least one canned response`);
 }
 
-const rust = await runScenario("rust", [args.rust], resolvePath(args.fixture), responses, args.cacheTtl);
-const ts = await runScenario("ts", tsCmd, resolvePath(args.fixture), responses, args.cacheTtl);
+const result = await runScenario(tsCmd, resolvePath(args.fixture), responses, args.cacheTtl);
 
-let failures = 0;
-failures += compareCommandOutput(rust.commandOutput, ts.commandOutput);
-failures += compareRequests(rust.requests, ts.requests);
-failures += compareDreamsState(rust.dreamsState, ts.dreamsState);
-failures += compareDreamsLog(rust.dreamsLog, ts.dreamsLog);
-failures += compareMemoryIndex(rust.memoryIndex, ts.memoryIndex);
+if (args.writeBaseline !== undefined) {
+  writeFrozenBaseline(resolvePath(args.writeBaseline), {
+    version: 1,
+    mode: "dreaming",
+    fixture: args.fixture,
+    response: args.response,
+    cacheTtl: args.cacheTtl ?? null,
+    commandOutput: result.commandOutput,
+    providerRequests: result.requests.map((r) => ({
+      method: r.method,
+      path: r.path,
+      body: redactHeartbeatMarkers(r.body),
+    })),
+    dreamsState: result.dreamsState,
+    dreamsLog: normalizeDreamsLog(result.dreamsLog),
+    memoryIndex: normalizeMemoryIndex(result.memoryIndex),
+  });
+  console.log(`\nwrote dreaming baseline: ${args.writeBaseline}`);
+} else {
+  const baseline = readFrozenBaseline(resolvePath(args.baseline!));
+  let failures = 0;
+  failures += compareCommandOutput(baseline.commandOutput, result.commandOutput);
+  failures += compareRequests(baseline.providerRequests, result.requests);
+  failures += compareDreamsState(baseline.dreamsState, result.dreamsState);
+  failures += compareDreamsLog(baseline.dreamsLog, result.dreamsLog);
+  failures += compareMemoryIndex(baseline.memoryIndex, result.memoryIndex);
 
-if (failures > 0) {
-  console.error(`\n${failures} dreaming parity failure(s)`);
-  process.exit(1);
+  if (failures > 0) {
+    console.error(`\n${failures} dreaming parity failure(s)`);
+    process.exit(1);
+  }
+  console.log("\ndreaming parity ok");
 }
 
-console.log("\ndreaming parity ok");
-
 async function runScenario(
-  label: string,
   cmd: string[],
   fixtureDir: string,
   responses: CannedLlmResponse[],
   cacheTtl: string | undefined,
-): Promise<ScenarioResult> {
-  console.log(`-- dreaming: ${label} --`);
+): Promise<{
+  commandOutput: unknown;
+  requests: CapturedLlmRequest[];
+  dreamsState: unknown;
+  dreamsLog: string;
+  memoryIndex: string;
+}> {
+  console.log("-- dreaming: ts --");
   const proxy = startParityLlmProxy({ response: responses });
   try {
-    const { configDir, dataDir } = copyFixtureToTmp(fixtureDir, `shore-dreaming-${label}-`);
+    const { configDir, dataDir } = copyFixtureToTmp(fixtureDir, "shore-dreaming-ts-");
     patchProxyBaseUrl(configDir, proxy.baseUrl);
     if (cacheTtl !== undefined) setCacheTtl(configDir, cacheTtl);
     const env = buildDaemonEnv({
       configDir,
       dataDir,
-      prefix: `shore-dreaming-${label}-`,
+      prefix: "shore-dreaming-ts-",
     });
     env["SHORE_PARITY_ANTHROPIC_KEY"] = "sk-parity";
     env["TZ"] = "UTC";
@@ -108,7 +149,7 @@ async function runScenario(
     const proc = spawnDaemon(cmd, env);
     try {
       const addr = await readListenAddr([proc.stdout, proc.stderr]);
-      if (!addr) throw new Error(`${label}: daemon never printed listen address`);
+      if (!addr) throw new Error("ts: daemon never printed listen address");
 
       const { sock, frames } = await openConnection(addr);
       framesSeen.push((await readFrame(frames)) as Record<string, unknown>);
@@ -116,7 +157,7 @@ async function runScenario(
         JSON.stringify({
           type: "hello",
           client_type: "cli",
-          client_name: `dreaming-parity-${label}`,
+          client_name: "dreaming-parity-ts",
           capabilities: ["streaming"],
           character: CHARACTER,
         }) + "\n",
@@ -131,10 +172,10 @@ async function runScenario(
           args: { force: true },
         }) + "\n",
       );
-      commandOutput = await readUntilCommandOutput(label, frames, framesSeen, COMMAND_RID);
+      commandOutput = await readUntilCommandOutput(frames, framesSeen, COMMAND_RID);
       sock.end();
     } catch (e) {
-      console.error(`${label} frames before failure:`);
+      console.error("ts frames before failure:");
       for (const frame of framesSeen) console.error(`  ${JSON.stringify(frame)}`);
       throw e;
     } finally {
@@ -155,7 +196,6 @@ async function runScenario(
 }
 
 async function readUntilCommandOutput(
-  label: string,
   frames: FrameQueue,
   framesSeen: Record<string, unknown>[],
   rid: string,
@@ -167,15 +207,15 @@ async function readUntilCommandOutput(
       unknown
     >;
     framesSeen.push(frame);
-    console.log(`  ${label.padEnd(4)} s2c ${String(frame["type"])}`);
+    console.log(`  ts   s2c ${String(frame["type"])}`);
     if (frame["type"] === "error") {
-      throw new Error(`${label}: daemon emitted error: ${JSON.stringify(frame)}`);
+      throw new Error(`ts: daemon emitted error: ${JSON.stringify(frame)}`);
     }
     if (frame["type"] === "command_output" && frame["rid"] === rid) {
       return frame["data"];
     }
   }
-  throw new Error(`${label}: timed out waiting for memory_dream command_output`);
+  throw new Error("ts: timed out waiting for memory_dream command_output");
 }
 
 function readDreamsState(dataDir: string): unknown {
@@ -196,15 +236,10 @@ function readMemoryIndex(configDir: string): string {
   return fs.readFileSync(path, "utf8");
 }
 
-function compareCommandOutput(rust: unknown, ts: unknown): number {
-  // Many fields legitimately differ between scenarios:
-  //   - `ran_at`: current time, captured at call time on each side.
-  //   - absolute paths (`paths_written`, `staged_path`, `dreams_path`,
-  //     `memory_path`, `phase_summaries[*].paths[*]`): each scenario
-  //     uses its own tmp dir.
+function compareCommandOutput(expected: unknown, actual: unknown): number {
   const diffs = compareFrames(
-    { type: "memory_dream", data: rust },
-    { type: "memory_dream", data: ts },
+    { type: "memory_dream", data: expected },
+    { type: "memory_dream", data: actual },
     {
       memory_dream: [
         "data.ran_at",
@@ -217,43 +252,52 @@ function compareCommandOutput(rust: unknown, ts: unknown): number {
     },
   );
   if (diffs.length === 0) {
-    console.log("  ok    memory_dream command_output");
+    console.log("  ok    memory_dream command_output (paths + ran_at fuzzy)");
     return 0;
   }
   console.error("  FAIL  memory_dream command_output");
   for (const diff of diffs) console.error(`        ${diff}`);
-  console.error(`        rust: ${JSON.stringify(rust)}`);
-  console.error(`        ts:   ${JSON.stringify(ts)}`);
+  console.error(`        expected: ${JSON.stringify(expected)}`);
+  console.error(`        actual:   ${JSON.stringify(actual)}`);
   return 1;
 }
 
-function compareRequests(rust: CapturedLlmRequest[], ts: CapturedLlmRequest[]): number {
-  if (rust.length < 1 || ts.length < 1) {
-    console.error(`  FAIL  librarian request missing: rust=${rust.length}, ts=${ts.length}`);
-    return 1;
+function compareRequests(expected: FrozenRequest[], actual: CapturedLlmRequest[]): number {
+  let failures = 0;
+  if (actual.length !== expected.length) {
+    console.error(`  FAIL  provider request count: expected ${expected.length}, got ${actual.length}`);
+    failures++;
   }
-  if (rust.length !== ts.length) {
-    console.error(`  FAIL  librarian request count diverged: rust=${rust.length}, ts=${ts.length}`);
-    return 1;
+  const n = Math.min(actual.length, expected.length);
+  for (let i = 0; i < n; i++) {
+    const a = actual[i]!;
+    const e = expected[i]!;
+    if (a.method !== e.method) {
+      console.error(`  FAIL  provider request ${i + 1} method: expected ${e.method}, got ${a.method}`);
+      failures++;
+    }
+    if (a.path !== e.path) {
+      console.error(`  FAIL  provider request ${i + 1} path: expected ${e.path}, got ${a.path}`);
+      failures++;
+    }
+    const expectedBody = canonicalizeJson(e.body);
+    const actualBody = canonicalizeJson(redactHeartbeatMarkers(a.body));
+    if (actualBody === expectedBody) {
+      console.log(`  ok    librarian request body (${a.key.slice(0, 12)})`);
+    } else {
+      console.error(`  FAIL  librarian request body`);
+      console.error(`        expected: ${expectedBody}`);
+      console.error(`        actual:   ${actualBody}`);
+      failures++;
+    }
   }
-  const r = rust[0]!;
-  const t = ts[0]!;
-  if (r.canonical === t.canonical) {
-    console.log(`  ok    librarian request body (${r.key.slice(0, 12)})`);
-    return 0;
-  }
-  console.error("  FAIL  librarian request body");
-  console.error(`        rust key: ${r.key}`);
-  console.error(`        ts key:   ${t.key}`);
-  console.error(`        rust: ${JSON.stringify(r.body)}`);
-  console.error(`        ts:   ${JSON.stringify(t.body)}`);
-  return 1;
+  return failures;
 }
 
-function compareDreamsState(rust: unknown, ts: unknown): number {
+function compareDreamsState(expected: unknown, actual: unknown): number {
   const diffs = compareFrames(
-    { type: "dreams_state", value: rust },
-    { type: "dreams_state", value: ts },
+    { type: "dreams_state", value: expected },
+    { type: "dreams_state", value: actual },
     { dreams_state: ["value.last_run_at"] },
   );
   if (diffs.length === 0) {
@@ -262,53 +306,48 @@ function compareDreamsState(rust: unknown, ts: unknown): number {
   }
   console.error("  FAIL  dreams/state.json");
   for (const diff of diffs) console.error(`        ${diff}`);
-  console.error(`        rust: ${JSON.stringify(rust)}`);
-  console.error(`        ts:   ${JSON.stringify(ts)}`);
+  console.error(`        expected: ${JSON.stringify(expected)}`);
+  console.error(`        actual:   ${JSON.stringify(actual)}`);
   return 1;
 }
 
-function compareDreamsLog(rust: string, ts: string): number {
-  // DREAMS.md is dream_cycle-prefixed markdown with timestamps in
-  // three places: the `## YYYY-MM-DD HH:MM` heading, the dream_cycle
-  // frontmatter, and the "AI librarian dreaming pass at `<ts>`" body
-  // line. Normalize all three to sentinels so the entry body is the
-  // actual byte-for-byte check; the heading site can otherwise flip
-  // when rust and ts runs straddle a minute boundary.
-  const normalize = (s: string): string =>
-    s
-      .replace(
-        /## \d{4}-\d{2}-\d{2} \d{2}:\d{2} - AI librarian dreaming pass/g,
-        "## <ts> - AI librarian dreaming pass",
-      )
-      .replace(/dream_cycle\s+[^\n]+/g, "dream_cycle <ts>")
-      .replace(/AI librarian dreaming pass at `[^`]+`/g, "AI librarian dreaming pass at `<ts>`");
-  const nRust = normalize(rust);
-  const nTs = normalize(ts);
-  if (nRust === nTs) {
+function normalizeDreamsLog(s: string): string {
+  return s
+    .replace(
+      /## \d{4}-\d{2}-\d{2} \d{2}:\d{2} - AI librarian dreaming pass/g,
+      "## <ts> - AI librarian dreaming pass",
+    )
+    .replace(/dream_cycle\s+[^\n]+/g, "dream_cycle <ts>")
+    .replace(/AI librarian dreaming pass at `[^`]+`/g, "AI librarian dreaming pass at `<ts>`");
+}
+
+function normalizeMemoryIndex(s: string): string {
+  return s.replace(/Last updated:\s+[^\n]+/g, "Last updated: <ts>");
+}
+
+function compareDreamsLog(expected: string, actual: string): number {
+  const nExpected = normalizeDreamsLog(expected);
+  const nActual = normalizeDreamsLog(actual);
+  if (nExpected === nActual) {
     console.log("  ok    DREAMS.md (timestamp lines fuzzy)");
     return 0;
   }
   console.error("  FAIL  DREAMS.md");
-  console.error(`        rust:\n${indent(rust)}`);
-  console.error(`        ts:\n${indent(ts)}`);
+  console.error(`        expected:\n${indent(expected)}`);
+  console.error(`        actual:\n${indent(actual)}`);
   return 1;
 }
 
-function compareMemoryIndex(rust: string, ts: string): number {
-  // The fallback MEMORY.md writer stamps "Last updated: <ran_at>" into
-  // the file. Fuzz that one line; the rest is byte-stable content
-  // produced by both daemons' fallback path.
-  const normalize = (s: string): string =>
-    s.replace(/Last updated:\s+[^\n]+/g, "Last updated: <ts>");
-  const nRust = normalize(rust);
-  const nTs = normalize(ts);
-  if (nRust === nTs) {
+function compareMemoryIndex(expected: string, actual: string): number {
+  const nExpected = normalizeMemoryIndex(expected);
+  const nActual = normalizeMemoryIndex(actual);
+  if (nExpected === nActual) {
     console.log("  ok    MEMORY.md (Last updated fuzzy)");
     return 0;
   }
   console.error("  FAIL  MEMORY.md");
-  console.error(`        rust:\n${indent(rust)}`);
-  console.error(`        ts:\n${indent(ts)}`);
+  console.error(`        expected:\n${indent(expected)}`);
+  console.error(`        actual:\n${indent(actual)}`);
   return 1;
 }
 
@@ -319,6 +358,19 @@ function indent(text: string): string {
     .join("\n");
 }
 
+function readFrozenBaseline(path: string): FrozenDreamingBaseline {
+  const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as FrozenDreamingBaseline;
+  if (parsed.version !== 1 || parsed.mode !== "dreaming") {
+    throw new Error(`${path}: unsupported dreaming baseline`);
+  }
+  return parsed;
+}
+
+function writeFrozenBaseline(path: string, baseline: FrozenDreamingBaseline): void {
+  mkdirSync(dirname(path), { recursive: true });
+  fs.writeFileSync(path, JSON.stringify(baseline, null, 2) + "\n");
+}
+
 function patchProxyBaseUrl(configDir: string, proxyBaseUrl: string): void {
   const configPath = join(configDir, "config.toml");
   const raw = fs.readFileSync(configPath, "utf8");
@@ -327,24 +379,30 @@ function patchProxyBaseUrl(configDir: string, proxyBaseUrl: string): void {
 
 function parseArgs(argv: string[]): Args {
   const parsed: Args = {
-    rust: DEFAULT_RUST,
     ts: undefined,
     fixture: DEFAULT_FIXTURE,
     response: DEFAULT_RESPONSE,
     cacheTtl: undefined,
+    baseline: undefined,
+    writeBaseline: undefined,
   };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "--rust") parsed.rust = takeValue(argv, ++i, arg);
-    else if (arg === "--ts") parsed.ts = takeValue(argv, ++i, arg);
+    if (arg === "--ts") parsed.ts = takeValue(argv, ++i, arg);
     else if (arg === "--fixture") parsed.fixture = takeValue(argv, ++i, arg);
     else if (arg === "--response") parsed.response = takeValue(argv, ++i, arg);
     else if (arg === "--cache-ttl") parsed.cacheTtl = takeValue(argv, ++i, arg);
+    else if (arg === "--baseline") parsed.baseline = takeValue(argv, ++i, arg);
+    else if (arg === "--write-baseline") parsed.writeBaseline = takeValue(argv, ++i, arg);
     else {
       console.error(`unknown arg: ${arg}`);
       process.exit(2);
     }
+  }
+  if (parsed.baseline !== undefined && parsed.writeBaseline !== undefined) {
+    console.error("--baseline and --write-baseline are mutually exclusive");
+    process.exit(2);
   }
   return parsed;
 }

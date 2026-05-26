@@ -5,8 +5,8 @@
  * NOT for CI. Costs real OpenRouter tokens. Requires
  * `OPENROUTER_API_KEY` in the environment. Drives both daemons
  * (Rust at `target/release/shore-daemon`, TS via `bun src/main.ts`)
- * against four scripted scenarios that exercise the breakpoint
- * placement gates from `docs/DAEMON_TS_PARITY.md`:
+ * against four scripted scenarios that exercise the cache
+ * breakpoint placement rules (see `ARCHITECTURE.md`):
  *
  *   S1 plain growing chat (5 turns) — measures whether stable-message
  *      markers accumulate cache_read across turn growth.

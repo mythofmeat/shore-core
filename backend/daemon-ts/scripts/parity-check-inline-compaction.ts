@@ -6,30 +6,21 @@
  * sends a third user message, the chat call returns a canned Anthropic
  * reply, and the post-generation `should_compact_now` gate fires
  * (max_turns=3, min_turns=2). The compaction LLM call returns canned
- * memory writes; both daemons should then write the same memory files,
+ * memory writes; the daemon should write the same memory files,
  * archive the compacted slice into `segments/0001.jsonl`, and truncate
  * `active.jsonl` to the retained tail.
  *
- * Scope (matches the "inline compaction trigger end-to-end" item in
- * `docs/DAEMON_TS_PARITY.md`):
- *
- * - Strict diff: chat-call SWP frames (stream_start/chunk/end +
- *   `phase{compacting}`), first provider request body, post-restart
- *   history, post-compaction on-disk state.
- * - **Not** asserted: the compaction-call provider request body. Rust's
- *   `RealCompactionLlm` rebuilds the request from the cached chat
- *   prefix; TS plumbs the cached request through but
- *   `RealCompactionLlm.summarize` ignores it (audit #12). The bodies
- *   diverge by design today. Both are written to
- *   `/tmp/parity-compaction-<rust|ts>-req2.json` so the audit #12 pin
- *   has a concrete diff to start from when it lands.
+ * Frozen-baseline mode compares the TS daemon's SWP frames, both
+ * provider request bodies (chat + compaction), post-restart history,
+ * post-compaction on-disk state, and notify-send calls against a
+ * committed baseline JSON.
  */
 
 import fs from "node:fs";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { join, resolve as resolvePath } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 
 import {
   buildDaemonEnv,
@@ -38,11 +29,13 @@ import {
   openConnection,
   readFrame,
   readListenAddr,
+  redactHeartbeatMarkers,
   setCacheTtl,
   spawnDaemon,
   type FrameQueue,
 } from "./parity/_lib.ts";
 import {
+  canonicalizeJson,
   loadCannedResponses,
   startParityLlmProxy,
   type CannedLlmResponse,
@@ -51,14 +44,14 @@ import {
 
 const DEFAULT_FIXTURE = "parity-traces/fixtures/inline-compaction";
 const DEFAULT_RESPONSE = "parity-traces/llm-fixtures/inline-compaction.json";
-const DEFAULT_RUST = "/usr/bin/shore-daemon";
 
 interface Args {
-  rust: string;
   ts: string | undefined;
   fixture: string;
   response: string;
   cacheTtl: string | undefined;
+  baseline: string | undefined;
+  writeBaseline: string | undefined;
 }
 
 interface ChatSummary {
@@ -94,67 +87,99 @@ interface NotifyCall {
   argv: string[];
 }
 
-interface ScenarioResult {
+interface FrozenRequest {
+  method: string;
+  path: string;
+  body: unknown;
+}
+
+interface FrozenInlineCompactionBaseline {
+  version: 1;
+  mode: "inline-compaction";
+  fixture: string;
+  response: string;
+  cacheTtl: string | null;
   summary: ChatSummary;
+  providerRequests: FrozenRequest[];
   snapshot: Snapshot;
   history: NormalizedHistory;
-  requests: CapturedLlmRequest[];
   notifications: NotifyCall[];
 }
 
 const args = parseArgs(process.argv.slice(2));
+if (args.baseline === undefined && args.writeBaseline === undefined) {
+  console.error("usage: parity-check-inline-compaction.ts --baseline <path> | --write-baseline <path>");
+  process.exit(2);
+}
 const tsCmd = args.ts === undefined ? ["bun", "src/main.ts"] : [args.ts];
 const responses = loadCannedResponses(resolvePath(args.response));
 if (responses.length < 2) {
   throw new Error(`${args.response} must contain at least two canned responses`);
 }
 
-const rust = await runScenario("rust", [args.rust], resolvePath(args.fixture), responses, args.cacheTtl);
-const ts = await runScenario("ts", tsCmd, resolvePath(args.fixture), responses, args.cacheTtl);
+const result = await runScenario(tsCmd, resolvePath(args.fixture), responses, args.cacheTtl);
 
-let failures = 0;
-failures += compareSummary(rust.summary, ts.summary);
-failures += compareChatRequest(rust.requests, ts.requests);
-captureCompactionRequest(rust.requests, ts.requests);
-failures += compareSnapshot(rust.snapshot, ts.snapshot);
-failures += compareHistory(rust.history, ts.history);
-failures += compareNotifications(rust.notifications, ts.notifications);
+if (args.writeBaseline !== undefined) {
+  writeFrozenBaseline(resolvePath(args.writeBaseline), {
+    version: 1,
+    mode: "inline-compaction",
+    fixture: args.fixture,
+    response: args.response,
+    cacheTtl: args.cacheTtl ?? null,
+    summary: result.summary,
+    providerRequests: result.requests.map((r) => ({
+      method: r.method,
+      path: r.path,
+      body: redactHeartbeatMarkers(r.body),
+    })),
+    snapshot: result.snapshot,
+    history: result.history,
+    notifications: result.notifications,
+  });
+  console.log(`\nwrote inline-compaction baseline: ${args.writeBaseline}`);
+} else {
+  const baseline = readFrozenBaseline(resolvePath(args.baseline!));
+  let failures = 0;
+  failures += compareSummary(baseline.summary, result.summary);
+  failures += compareRequests(baseline.providerRequests, result.requests);
+  failures += compareSnapshot(baseline.snapshot, result.snapshot);
+  failures += compareHistory(baseline.history, result.history);
+  failures += compareNotifications(baseline.notifications, result.notifications);
 
-if (failures > 0) {
-  console.error(`\n${failures} inline-compaction parity failure(s)`);
-  process.exit(1);
+  if (failures > 0) {
+    console.error(`\n${failures} inline-compaction parity failure(s)`);
+    process.exit(1);
+  }
+  console.log("\ninline-compaction parity ok");
 }
 
-console.log("\ninline-compaction parity ok");
-
 async function runScenario(
-  label: string,
   cmd: string[],
   fixtureDir: string,
   responses: CannedLlmResponse[],
   cacheTtl: string | undefined,
-): Promise<ScenarioResult> {
-  console.log(`-- inline-compaction: ${label} --`);
+): Promise<{
+  summary: ChatSummary;
+  snapshot: Snapshot;
+  history: NormalizedHistory;
+  requests: CapturedLlmRequest[];
+  notifications: NotifyCall[];
+}> {
+  console.log("-- inline-compaction: ts --");
   const proxy = startParityLlmProxy({ response: responses });
   try {
-    const { configDir, dataDir } = copyFixtureToTmp(
-      fixtureDir,
-      `shore-compaction-${label}-`,
-    );
+    const { configDir, dataDir } = copyFixtureToTmp(fixtureDir, "shore-compaction-ts-");
     patchProxyBaseUrl(configDir, proxy.baseUrl);
     if (cacheTtl !== undefined) setCacheTtl(configDir, cacheTtl);
-    // Fresh notify-log per scenario — each daemon writes via the shim
-    // PATH-installed by buildDaemonEnv. Compaction completion fires
-    // a `notify-send --app-name=shore <title> <body>` on both daemons.
     const notifyLog = join(
-      mkdtempSync(join(tmpdir(), `shore-compaction-notify-${label}-`)),
+      mkdtempSync(join(tmpdir(), "shore-compaction-notify-ts-")),
       "notify.jsonl",
     );
     fs.writeFileSync(notifyLog, "");
     const env = buildDaemonEnv({
       configDir,
       dataDir,
-      prefix: `shore-compaction-${label}-`,
+      prefix: "shore-compaction-ts-",
       notifyLog,
     });
     env["SHORE_PARITY_ANTHROPIC_KEY"] = "sk-parity";
@@ -164,14 +189,14 @@ async function runScenario(
     const proc = spawnDaemon(cmd, env);
     try {
       const addr = await readListenAddr([proc.stdout, proc.stderr]);
-      if (!addr) throw new Error(`${label}: daemon never printed listen address`);
+      if (!addr) throw new Error("ts: daemon never printed listen address");
 
       const { sock, frames } = await openConnection(addr);
       framesSeen.push((await readFrame(frames)) as Record<string, unknown>);
       sock.write(JSON.stringify({
         type: "hello",
         client_type: "cli",
-        client_name: `compaction-parity-${label}`,
+        client_name: "compaction-parity-ts",
         capabilities: ["streaming"],
         character: "scout",
       }) + "\n");
@@ -183,12 +208,12 @@ async function runScenario(
         text: "third user message",
         stream: true,
       }) + "\n");
-      await readUntilFinal(label, frames, framesSeen, "compact-1");
-      await drainPhaseFrame(label, frames, framesSeen);
-      await waitForCompactionArtifacts(label, dataDir);
+      await readUntilFinal(frames, framesSeen, "compact-1");
+      await drainPhaseFrame(frames, framesSeen);
+      await waitForCompactionArtifacts(dataDir);
       sock.end();
     } catch (e) {
-      console.error(`${label} frames before failure:`);
+      console.error("ts frames before failure:");
       for (const frame of framesSeen) console.error(`  ${JSON.stringify(frame)}`);
       throw e;
     } finally {
@@ -197,7 +222,7 @@ async function runScenario(
     }
 
     const snapshot = readSnapshot(dataDir, configDir);
-    const restartHistory = await readRestartHistory(label, cmd, env);
+    const restartHistory = await readRestartHistory(cmd, env);
     const notifications = readNotifyLog(notifyLog);
     return {
       summary: summarize(framesSeen, "compact-1"),
@@ -224,30 +249,24 @@ function readNotifyLog(path: string): NotifyCall[] {
     .map((l) => JSON.parse(l) as NotifyCall);
 }
 
-function compareNotifications(rust: NotifyCall[], ts: NotifyCall[]): number {
-  // `notify-send` is fire-and-forget on both daemons; both call out
-  // with `--app-name=shore <title> <body>`. The expected outcome of
-  // the inline-compaction scenario is exactly one "compaction
-  // complete" call on each side. Body text differences are real
-  // parity issues (different summaries to the user).
+function compareNotifications(expected: NotifyCall[], actual: NotifyCall[]): number {
   const diffs = compareFrames(
-    { type: "notify_log", calls: rust },
-    { type: "notify_log", calls: ts },
+    { type: "notify_log", calls: expected },
+    { type: "notify_log", calls: actual },
     {},
   );
   if (diffs.length === 0) {
-    console.log(`  ok    notify-send calls (${rust.length} per daemon)`);
+    console.log(`  ok    notify-send calls (${expected.length})`);
     return 0;
   }
   console.error("  FAIL  notify-send calls");
   for (const diff of diffs) console.error(`        ${diff}`);
-  console.error(`        rust: ${JSON.stringify(rust)}`);
-  console.error(`        ts:   ${JSON.stringify(ts)}`);
+  console.error(`        expected: ${JSON.stringify(expected)}`);
+  console.error(`        actual:   ${JSON.stringify(actual)}`);
   return 1;
 }
 
 async function readUntilFinal(
-  label: string,
   frames: FrameQueue,
   framesSeen: Record<string, unknown>[],
   rid: string,
@@ -259,29 +278,18 @@ async function readUntilFinal(
       unknown
     >;
     framesSeen.push(frame);
-    console.log(`  ${label.padEnd(4)} s2c ${String(frame["type"])}`);
+    console.log(`  ts   s2c ${String(frame["type"])}`);
     if (frame["type"] === "error") {
-      throw new Error(`${label}: daemon emitted error: ${JSON.stringify(frame)}`);
+      throw new Error(`ts: daemon emitted error: ${JSON.stringify(frame)}`);
     }
     if (frame["type"] === "stream_end" && frame["rid"] === rid && frame["is_final"] !== false) {
       return;
     }
   }
-  throw new Error(`${label}: timed out waiting for final stream_end`);
+  throw new Error("ts: timed out waiting for final stream_end");
 }
 
-/**
- * Read frames until we see `phase{compacting}` or a short grace window
- * elapses. Post-`stream_end`, the daemon also emits the assistant's
- * `new_message` from the broadcast bus; the order vs the inline-
- * compaction task's `phase` emission is racy, so we have to drain until
- * we find phase rather than just reading one frame.
- *
- * Missing the phase entirely is a real parity failure — `compareSummary`
- * surfaces it deterministically since both daemons consistently emit it.
- */
 async function drainPhaseFrame(
-  label: string,
   frames: FrameQueue,
   framesSeen: Record<string, unknown>[],
 ): Promise<void> {
@@ -293,7 +301,7 @@ async function drainPhaseFrame(
         unknown
       >;
       framesSeen.push(frame);
-      console.log(`  ${label.padEnd(4)} s2c ${String(frame["type"])} (post-stream)`);
+      console.log(`  ts   s2c ${String(frame["type"])} (post-stream)`);
       if (frame["type"] === "phase") return;
     } catch {
       return;
@@ -301,48 +309,42 @@ async function drainPhaseFrame(
   }
 }
 
-/**
- * Poll the daemon's data root for the post-compaction segment file.
- * Compaction runs in a background task so there's no SWP "done" frame;
- * `segments/0001.jsonl` is the deterministic on-disk signal.
- */
-async function waitForCompactionArtifacts(label: string, dataDir: string): Promise<void> {
+async function waitForCompactionArtifacts(dataDir: string): Promise<void> {
   const segmentPath = join(dataDir, "scout", "segments", "0001.jsonl");
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     if (fs.existsSync(segmentPath)) {
-      console.log(`  ${label.padEnd(4)} compaction segment present`);
+      console.log("  ts   compaction segment present");
       return;
     }
     await Bun.sleep(50);
   }
-  throw new Error(`${label}: timed out waiting for ${segmentPath}`);
+  throw new Error(`ts: timed out waiting for ${segmentPath}`);
 }
 
 async function readRestartHistory(
-  label: string,
   cmd: string[],
   env: Record<string, string | undefined>,
 ): Promise<Record<string, unknown>> {
-  console.log(`-- inline-compaction: ${label} restart --`);
+  console.log("-- inline-compaction: ts restart --");
   const proc = spawnDaemon(cmd, env);
   try {
     const addr = await readListenAddr([proc.stdout, proc.stderr]);
-    if (!addr) throw new Error(`${label}: restart daemon never printed listen address`);
+    if (!addr) throw new Error("ts: restart daemon never printed listen address");
 
     const { sock, frames } = await openConnection(addr);
     await readFrame(frames);
     sock.write(JSON.stringify({
       type: "hello",
       client_type: "cli",
-      client_name: `compaction-parity-${label}-restart`,
+      client_name: "compaction-parity-ts-restart",
       capabilities: ["streaming"],
       character: "scout",
     }) + "\n");
     const history = (await readFrame(frames)) as Record<string, unknown>;
     sock.end();
     if (history["type"] !== "history") {
-      throw new Error(`${label}: expected restart history, got ${JSON.stringify(history)}`);
+      throw new Error(`ts: expected restart history, got ${JSON.stringify(history)}`);
     }
     return history;
   } finally {
@@ -394,10 +396,10 @@ function summarize(frames: Record<string, unknown>[], rid: string): ChatSummary 
   };
 }
 
-function compareSummary(rust: ChatSummary, ts: ChatSummary): number {
+function compareSummary(expected: ChatSummary, actual: ChatSummary): number {
   const diffs = compareFrames(
-    { type: "chat_summary", ...rust },
-    { type: "chat_summary", ...ts },
+    { type: "chat_summary", ...expected },
+    { type: "chat_summary", ...actual },
     {},
   );
   if (diffs.length === 0) {
@@ -406,87 +408,63 @@ function compareSummary(rust: ChatSummary, ts: ChatSummary): number {
   }
   console.error("  FAIL  chat summary + phase frames");
   for (const diff of diffs) console.error(`        ${diff}`);
-  console.error(`        rust: ${JSON.stringify(rust)}`);
-  console.error(`        ts:   ${JSON.stringify(ts)}`);
+  console.error(`        expected: ${JSON.stringify(expected)}`);
+  console.error(`        actual:   ${JSON.stringify(actual)}`);
   return 1;
 }
 
-function compareChatRequest(rust: CapturedLlmRequest[], ts: CapturedLlmRequest[]): number {
-  if (rust.length < 1 || ts.length < 1) {
-    console.error(`  FAIL  provider request 1 missing: rust=${rust.length}, ts=${ts.length}`);
-    return 1;
-  }
-  const r = rust[0]!;
-  const t = ts[0]!;
-  if (r.canonical === t.canonical) {
-    console.log(`  ok    provider request 1 / chat call (${r.key.slice(0, 12)})`);
-    return 0;
-  }
-  console.error("  FAIL  provider request 1 / chat call");
-  console.error(`        rust key: ${r.key}`);
-  console.error(`        ts key:   ${t.key}`);
-  console.error(`        rust: ${JSON.stringify(r.body)}`);
-  console.error(`        ts:   ${JSON.stringify(t.body)}`);
-  return 1;
-}
-
-/**
- * Save compaction-call bodies to /tmp for forensic diffing without
- * asserting on them. As of 2026-05-25 the only known remaining
- * divergence is the trailing user message's content form (Rust string
- * vs TS single-element array) — see DAEMON_TS_PARITY.md "Known
- * divergences" → "Compaction trailer content form". Lifting this to
- * an assertion needs the bundled live-API breakpoint-placement
- * gate; until then, capture the bodies for forensics.
- */
-function captureCompactionRequest(
-  rust: CapturedLlmRequest[],
-  ts: CapturedLlmRequest[],
-): void {
-  const rustPath = "/tmp/parity-compaction-rust-req2.json";
-  const tsPath = "/tmp/parity-compaction-ts-req2.json";
-  if (rust.length < 2 || ts.length < 2) {
-    console.log(
-      `  note  provider request 2 missing: rust=${rust.length}, ts=${ts.length}` +
-        " (expected — only captured when compaction actually fires; skip)",
-    );
-    return;
-  }
-  fs.writeFileSync(rustPath, JSON.stringify(rust[1]!.body, null, 2) + "\n");
-  fs.writeFileSync(tsPath, JSON.stringify(ts[1]!.body, null, 2) + "\n");
-  const match = rust[1]!.canonical === ts[1]!.canonical;
-  console.log(
-    `  note  provider request 2 / compaction call ${
-      match
-        ? "matches"
-        : "diverges (known: trailing-user content form, see DAEMON_TS_PARITY.md)"
-    }: wrote ${rustPath} + ${tsPath}`,
-  );
-}
-
-function compareSnapshot(rust: Snapshot, ts: Snapshot): number {
+function compareRequests(expected: FrozenRequest[], actual: CapturedLlmRequest[]): number {
   let failures = 0;
-  // The retained tail of active.jsonl is the live chat turn that just
-  // ran — it carries fresh msg_ids and timestamps that legitimately
-  // diverge, so compare structurally with the same fuzzy paths the
-  // restart-history diff uses.
+  if (actual.length !== expected.length) {
+    console.error(`  FAIL  provider request count: expected ${expected.length}, got ${actual.length}`);
+    failures++;
+  }
+  const n = Math.min(actual.length, expected.length);
+  for (let i = 0; i < n; i++) {
+    const a = actual[i]!;
+    const e = expected[i]!;
+    if (a.method !== e.method) {
+      console.error(`  FAIL  provider request ${i + 1} method: expected ${e.method}, got ${a.method}`);
+      failures++;
+    }
+    if (a.path !== e.path) {
+      console.error(`  FAIL  provider request ${i + 1} path: expected ${e.path}, got ${a.path}`);
+      failures++;
+    }
+    const expectedBody = canonicalizeJson(e.body);
+    const actualBody = canonicalizeJson(redactHeartbeatMarkers(a.body));
+    if (actualBody === expectedBody) {
+      const label = i === 0 ? "chat call" : "compaction call";
+      console.log(`  ok    provider request ${i + 1} / ${label} (${a.key.slice(0, 12)})`);
+    } else {
+      console.error(`  FAIL  provider request ${i + 1} body`);
+      console.error(`        expected: ${expectedBody}`);
+      console.error(`        actual:   ${actualBody}`);
+      failures++;
+    }
+  }
+  return failures;
+}
+
+function compareSnapshot(expected: Snapshot, actual: Snapshot): number {
+  let failures = 0;
   failures += compareJsonl(
     "active.jsonl",
-    rust.activeJsonl,
-    ts.activeJsonl,
+    expected.activeJsonl,
+    actual.activeJsonl,
     ["messages[*].msg_id", "messages[*].timestamp"],
   );
-  failures += compareText("segments/0001.jsonl", rust.segment0001, ts.segment0001);
+  failures += compareText("segments/0001.jsonl", expected.segment0001, actual.segment0001);
   failures += compareText(
     "memory/people/parity-user.md",
-    rust.memoryPeopleParityUser,
-    ts.memoryPeopleParityUser,
+    expected.memoryPeopleParityUser,
+    actual.memoryPeopleParityUser,
   );
-  failures += compareText("MEMORY.md", rust.memoryIndex, ts.memoryIndex);
+  failures += compareText("MEMORY.md", expected.memoryIndex, actual.memoryIndex);
 
   const diffs = compareFrames(
-    { type: "compaction_json", value: rust.compactionJson },
-    { type: "compaction_json", value: ts.compactionJson },
+    { type: "compaction_json", value: expected.compactionJson },
+    { type: "compaction_json", value: actual.compactionJson },
     { compaction_json: ["value.segments[*].compacted_at"] },
   );
   if (diffs.length === 0) {
@@ -495,16 +473,16 @@ function compareSnapshot(rust: Snapshot, ts: Snapshot): number {
     failures += 1;
     console.error("  FAIL  compaction.json");
     for (const diff of diffs) console.error(`        ${diff}`);
-    console.error(`        rust: ${JSON.stringify(rust.compactionJson)}`);
-    console.error(`        ts:   ${JSON.stringify(ts.compactionJson)}`);
+    console.error(`        expected: ${JSON.stringify(expected.compactionJson)}`);
+    console.error(`        actual:   ${JSON.stringify(actual.compactionJson)}`);
   }
   return failures;
 }
 
 function compareJsonl(
   label: string,
-  rust: string,
-  ts: string,
+  expected: string,
+  actual: string,
   fuzzyPaths: string[],
 ): number {
   const parseLines = (raw: string): unknown[] =>
@@ -513,8 +491,8 @@ function compareJsonl(
       .filter((l) => l.trim().length > 0)
       .map((l) => JSON.parse(l));
   const diffs = compareFrames(
-    { type: "jsonl", messages: parseLines(rust) },
-    { type: "jsonl", messages: parseLines(ts) },
+    { type: "jsonl", messages: parseLines(expected) },
+    { type: "jsonl", messages: parseLines(actual) },
     { jsonl: fuzzyPaths },
   );
   if (diffs.length === 0) {
@@ -523,19 +501,19 @@ function compareJsonl(
   }
   console.error(`  FAIL  ${label}`);
   for (const diff of diffs) console.error(`        ${diff}`);
-  console.error(`        rust:\n${indent(rust)}`);
-  console.error(`        ts:\n${indent(ts)}`);
+  console.error(`        expected:\n${indent(expected)}`);
+  console.error(`        actual:\n${indent(actual)}`);
   return 1;
 }
 
-function compareText(label: string, rust: string, ts: string): number {
-  if (rust === ts) {
+function compareText(label: string, expected: string, actual: string): number {
+  if (expected === actual) {
     console.log(`  ok    ${label}`);
     return 0;
   }
   console.error(`  FAIL  ${label}`);
-  console.error(`        rust:\n${indent(rust)}`);
-  console.error(`        ts:\n${indent(ts)}`);
+  console.error(`        expected:\n${indent(expected)}`);
+  console.error(`        actual:\n${indent(actual)}`);
   return 1;
 }
 
@@ -546,10 +524,10 @@ function indent(text: string): string {
     .join("\n");
 }
 
-function compareHistory(rust: NormalizedHistory, ts: NormalizedHistory): number {
+function compareHistory(expected: NormalizedHistory, actual: NormalizedHistory): number {
   const diffs = compareFrames(
-    { type: "restart_history", ...rust },
-    { type: "restart_history", ...ts },
+    { type: "restart_history", ...expected },
+    { type: "restart_history", ...actual },
     {},
   );
   if (diffs.length === 0) {
@@ -558,8 +536,8 @@ function compareHistory(rust: NormalizedHistory, ts: NormalizedHistory): number 
   }
   console.error("  FAIL  restart history");
   for (const diff of diffs) console.error(`        ${diff}`);
-  console.error(`        rust: ${JSON.stringify(rust)}`);
-  console.error(`        ts:   ${JSON.stringify(ts)}`);
+  console.error(`        expected: ${JSON.stringify(expected)}`);
+  console.error(`        actual:   ${JSON.stringify(actual)}`);
   return 1;
 }
 
@@ -597,6 +575,23 @@ function normalizeContent(value: unknown, blocks: unknown[]): string {
     .join("");
 }
 
+function readFrozenBaseline(path: string): FrozenInlineCompactionBaseline {
+  const parsed = JSON.parse(readFileSyncStr(path)) as FrozenInlineCompactionBaseline;
+  if (parsed.version !== 1 || parsed.mode !== "inline-compaction") {
+    throw new Error(`${path}: unsupported inline-compaction baseline`);
+  }
+  return parsed;
+}
+
+function writeFrozenBaseline(path: string, baseline: FrozenInlineCompactionBaseline): void {
+  mkdirSync(dirname(path), { recursive: true });
+  fs.writeFileSync(path, JSON.stringify(baseline, null, 2) + "\n");
+}
+
+function readFileSyncStr(path: string): string {
+  return fs.readFileSync(path, "utf8");
+}
+
 function patchProxyBaseUrl(configDir: string, proxyBaseUrl: string): void {
   const configPath = path.join(configDir, "config.toml");
   const raw = fs.readFileSync(configPath, "utf8");
@@ -605,24 +600,30 @@ function patchProxyBaseUrl(configDir: string, proxyBaseUrl: string): void {
 
 function parseArgs(argv: string[]): Args {
   const parsed: Args = {
-    rust: DEFAULT_RUST,
     ts: undefined,
     fixture: DEFAULT_FIXTURE,
     response: DEFAULT_RESPONSE,
     cacheTtl: undefined,
+    baseline: undefined,
+    writeBaseline: undefined,
   };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "--rust") parsed.rust = takeValue(argv, ++i, arg);
-    else if (arg === "--ts") parsed.ts = takeValue(argv, ++i, arg);
+    if (arg === "--ts") parsed.ts = takeValue(argv, ++i, arg);
     else if (arg === "--fixture") parsed.fixture = takeValue(argv, ++i, arg);
     else if (arg === "--response") parsed.response = takeValue(argv, ++i, arg);
     else if (arg === "--cache-ttl") parsed.cacheTtl = takeValue(argv, ++i, arg);
+    else if (arg === "--baseline") parsed.baseline = takeValue(argv, ++i, arg);
+    else if (arg === "--write-baseline") parsed.writeBaseline = takeValue(argv, ++i, arg);
     else {
       console.error(`unknown arg: ${arg}`);
       process.exit(2);
     }
+  }
+  if (parsed.baseline !== undefined && parsed.writeBaseline !== undefined) {
+    console.error("--baseline and --write-baseline are mutually exclusive");
+    process.exit(2);
   }
   return parsed;
 }
