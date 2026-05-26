@@ -242,7 +242,9 @@ function buildOpenAICall(
 
 function systemToText(system: ChatRequest["system"]): string {
   if (typeof system === "string") return system;
-  return system.map((b) => b.text).join("");
+  // Preserve section boundaries between system blocks (Anthropic keeps them
+  // as separate structured items; OpenAI gets one string).
+  return system.map((b) => b.text).join("\n\n");
 }
 
 function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {
