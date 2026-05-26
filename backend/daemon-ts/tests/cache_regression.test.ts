@@ -388,6 +388,14 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
       toolContext: stubCtx(),
     });
     console.log("turn1 usage per call:", r1.usagePerCall);
+    console.log(
+      "turn1 assistant shapes:",
+      r1.newTurns
+        .filter((t) => t.role === "assistant")
+        .map((t) => ({
+          blocks: t.content.map((b) => b.type),
+        })),
+    );
 
     // Turn 1 must have iterated enough to exercise a real adaptive
     // thinking-block shape transition. ≥3 calls = ≥2 in-loop iterations
@@ -438,6 +446,14 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
       toolContext: stubCtx(),
     });
     console.log("turn2 usage per call:", r2.usagePerCall);
+    console.log(
+      "turn2 assistant shapes:",
+      r2.newTurns
+        .filter((t) => t.role === "assistant")
+        .map((t) => ({
+          blocks: t.content.map((b) => b.type),
+        })),
+    );
 
     // Every call on turn 2 must read cache (no invalidation crossing
     // the turn boundary) AND must not produce a large cache_write
