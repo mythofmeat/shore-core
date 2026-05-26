@@ -1,18 +1,26 @@
 # Daemon Rewrite — Rust → TypeScript (Bun)
 
-**Status (2026-05-25):** parity gaps closed. Phase 9b soak + cutover
-remaining.
+**Status (2026-05-26):** Cache regression — the original motivation
+for the rewrite — verified killed on Sonnet 4.6 with adaptive
+thinking + effort=high through a multi-iter tool loop and a
+follow-up turn. cache_read grew monotonically across all calls; the
+only large cache_write was the cold start. Receipt:
+[[project-cache-regression-killed]] memory + the
+`adaptive + effort:high through tool loop + follow-up` test in
+`tests/cache_regression.test.ts`.
 
-All Phase 9b parity gaps from the 2026-05-24 audit have been ported or
-explicitly descoped. The TS daemon is feature-complete relative to the
-Rust daemon for the user's actual usage. What's left is automated parity
-coverage, preview soak, default switch, and Rust retirement.
+The TS daemon is feature-complete relative to the Rust daemon and
+exceeds it on the cache-preservation property the rewrite was built
+to fix. The pre-soak parity gates that compared TS against Rust are
+moot now that we've decided to retire Rust outright; the upcoming
+"freeze examples" work converts the parity harness from a cross-daemon
+diff into TS-vs-frozen-baseline regression coverage. What's left is
+that conversion, the soak itself, and Rust retirement.
 
 Historical detail — phased plan, audit findings, architecture, hard
 constraints, decision rationale for descoped items, porting wisdom —
 lives in [`docs/DAEMON_TS_REWRITE_HISTORY.md`](docs/DAEMON_TS_REWRITE_HISTORY.md).
 Cutover runbook: [`docs/DAEMON_TS_CUTOVER.md`](docs/DAEMON_TS_CUTOVER.md).
-Parity coverage build-out: [`docs/DAEMON_TS_PARITY.md`](docs/DAEMON_TS_PARITY.md).
 
 ## What's left
 
@@ -21,48 +29,50 @@ Parity coverage build-out: [`docs/DAEMON_TS_PARITY.md`](docs/DAEMON_TS_PARITY.md
 - [ ] **Update stale documentation.** Various docs still frame the
   rewrite as in-progress or assume the Rust daemon is the only daemon.
   Known offenders: `backend/daemon-ts/README.md` ("Current phase: 8d
-  complete — cutover prep" is stale; phase 9b is done), top-level
-  `README.md` + `ARCHITECTURE.md` (Rust-daemon-centric framing — the TS
-  daemon is currently described as a preview gate, will need real
-  parity rewriting at cutover), `AGENTS.md` (entry-map should mention
-  daemon-ts as the live target). Pass once now to fix the obviously
-  stale lines, then a second pass at cutover to rewrite the framing.
-- [ ] **Automated parity coverage lands.** The existing harness only
-  covers handshake, one message-append, and offline prompt-assembly. The
-  cutover gate ("one full release cycle with no live failures") is a
-  user-observation parity test; this work makes it a defense-in-depth
-  observation, not the only signal. Tier breakdown + infrastructure plan
-  in [`docs/DAEMON_TS_PARITY.md`](docs/DAEMON_TS_PARITY.md) (T1
-  persistence flows, T2 command dispatcher round-trips, T3 content-level
-  parity via LLM proxy stub).
-- [ ] **Live-API validation of every T3 fixture.** All T3 parity checks
-  today run against `scripts/parity/llm-proxy.ts` serving canned
-  responses. That proves logic parity *assuming the mock matches
-  reality* — and the original cache regression that motivated this
-  rewrite was precisely a mock-vs-real divergence, so passing-on-mock
-  is not proof. Before preview soak, run each T3 check once in
-  forward-record mode (real provider URL, `recordMissing: true`) with
-  real API keys; both daemons must still agree on the canonical request
-  body, and the recorded response gets committed as the canned fixture
-  for the mock-mode CI run going forward. Covers Anthropic +
-  OpenAI-compatible + (when ported) OpenRouter. See
-  [`docs/DAEMON_TS_PARITY.md`](docs/DAEMON_TS_PARITY.md) "Infrastructure
-  work" → "Live-API validation pass" for the runbook once all T3 checks
-  are in place.
-- [ ] **Cache-breakpoint placement parity (must-fix before soak).**
-  Inline-compaction parity check with `cache_ttl = "1h"` surfaced
-  divergent breakpoint placement on the chat call: Rust marks system
-  block 1 (`tools_guidance`) and the second-to-last stable *user*
-  message; TS marks system block 2 (`character`) and the second-to-last
-  stable *assistant* message. Same conversation, different cache keys —
-  cross-daemon cache fragmentation, and the "correct" placement strategy
-  itself needs validation against real Anthropic before either daemon
-  ships. Resolution requires live API runs (cache_creation vs
-  cache_read accounting on a real conversation) to determine which
-  strategy actually wins; document the answer in
-  `docs/DAEMON_TS_PARITY.md` and bring both daemons into agreement.
-  Listed in DAEMON_TS_PARITY.md "Known divergences" as the canonical
-  reference.
+  complete — cutover prep" is stale), top-level `README.md` +
+  `ARCHITECTURE.md` (Rust-daemon-centric framing — the TS daemon is
+  currently described as a preview gate, will need real rewriting at
+  cutover), `AGENTS.md` (entry-map should mention daemon-ts as the
+  live target). Pass once now to fix the obviously stale lines, then a
+  second pass at cutover to rewrite the framing.
+- [ ] **Freeze parity examples against the TS daemon.** The current
+  parity-check scripts under `backend/daemon-ts/scripts/parity-check-*.ts`
+  spawn both Rust and TS and diff them at runtime. Once Rust is going
+  away, the comparison flips: TS becomes the reference, with frozen
+  JSONL/JSON baselines captured from the current TS daemon. Re-capture
+  every T1/T2/T3 fixture against the current TS daemon, rewrite the
+  check scripts to diff against the committed baseline (drop the
+  `--rust` flag and the proxy-intercept comparator), and drop
+  `docs/DAEMON_TS_PARITY.md` once everything is converted (the parity
+  doc exists to track cross-daemon parity; TS-vs-self regression is
+  just standard testing).
+- [ ] **OpenAI-compatible adapter live-test coverage.** The
+  Anthropic adapter is locked down by `tests/cache_regression.test.ts`
+  on Sonnet 4.6. Add equivalent live coverage for the OpenAI-compatible
+  adapter (`gpt-5.4-mini` via OpenAI or OpenRouter) and for mid-chat
+  switching between Anthropic and OpenAI SDKs — assistant turns
+  serialized through one provider must deserialize cleanly into the
+  other's wire format.
+- [x] **Cache regression verified dead on Sonnet 4.6 (done
+  2026-05-26).** The original motivation for the rewrite — Rust's
+  cache-invalidation on adaptive thinking + multi-iter tool loop +
+  follow-up turn — is verified killed. See
+  `tests/cache_regression.test.ts` and the
+  [[project-cache-regression-killed]] memory for the receipt.
+- [x] **Automated parity coverage in place (done 2026-05-26).** T1
+  persistence flows, T2 command dispatcher, and T3 content-level
+  parity are all covered by scripts under
+  `backend/daemon-ts/scripts/parity-check-*.ts`. The pre-2026-05-26
+  cross-daemon comparison is being converted to TS-vs-frozen-baseline
+  by the "Freeze parity examples" item above.
+- [x] **Cache-breakpoint placement decided (done 2026-05-26).** The
+  Rust/TS placement difference is resolved by retiring Rust and
+  shipping the TS placement: system breakpoint on the last system
+  block whose label is not `memory_index`, message breakpoints on
+  the stable assistant turn + the tail message, no tools breakpoint
+  (system breakpoint covers tools via Anthropic's
+  tools→system→messages evaluation order). Verified on Sonnet 4.6
+  with adaptive + effort=high.
 - [x] **Audit all T3 fixtures for `cache_ttl = ""` blind spot
   (done 2026-05-26).** Every pre-2026-05-25 T3 fixture
   (`generation-basic`, `regen-basic`, `tool-loop-read`, original
@@ -71,12 +81,7 @@ Parity coverage build-out: [`docs/DAEMON_TS_PARITY.md`](docs/DAEMON_TS_PARITY.md
   — which is how the `_label` wire leak and breakpoint divergence
   both shipped without detection. Each T3 parity script now accepts
   `--cache-ttl <value>`; package.json carries paired `:cached`
-  entries (`parity:<name>:cached[:compiled]`) that pass `1h`. Sweep
-  surfaced two new TS-only divergences on top of the known system /
-  stable-message breakpoint placement diffs — see "Known divergences"
-  in `docs/DAEMON_TS_PARITY.md` for the full triage and resolution
-  plan. The fixes themselves are bundled with the live-API
-  breakpoint-placement gate below.
+  entries (`parity:<name>:cached[:compiled]`) that pass `1h`.
 
 ### Soak + cutover
 

@@ -3,19 +3,21 @@
 TypeScript reimplementation of `shore-daemon`. See `../../REWRITE.md` for the
 plan.
 
-## Current phase: 8d complete — cutover prep
+## Status: cache regression killed, cutover-ready (2026-05-26)
 
-Phases 0–8d are implemented. The TS daemon can handshake with existing Rust
-clients, append and persist messages, generate through provider SDKs, run
-the full tool registry, compact memory, apply deferred prompt edits, use the
-workspace embedding index for `file_search`, run AI-librarian dreaming,
-write Rust-compatible usage ledger rows, track activity heatmaps, and drive
+The TS daemon is feature-complete and verified to fix the original
+cache-invalidation regression on Sonnet 4.6 with adaptive thinking +
+effort=high through a multi-iter tool loop and a follow-up turn (see
+`tests/cache_regression.test.ts`). The daemon can handshake with
+existing clients, persist messages, generate through provider SDKs,
+run the full tool registry, compact memory, apply deferred prompt
+edits, use the workspace embedding index, run AI-librarian dreaming,
+write the usage ledger, track activity heatmaps, and drive
 heartbeat/keepalive autonomy from the ticker.
 
-The remaining rewrite work is Phase 9 cutover: ship the TS daemon alongside
-the Rust daemon for one release cycle, gather live failure data, then decide
-when to make it the default and retire the Rust daemon.
-The cutover runbook lives at `../../docs/DAEMON_TS_CUTOVER.md`.
+Remaining work is the cutover itself: opt-in soak, default switch,
+Rust daemon retirement. The cutover runbook lives at
+`../../docs/DAEMON_TS_CUTOVER.md`.
 
 Representative checks currently green:
 - `handshake-empty` — no character selected.

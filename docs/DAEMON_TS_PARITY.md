@@ -1,25 +1,36 @@
 # shore-daemon-ts Parity Coverage
 
-Tracks automated parity coverage between the Rust daemon (`backend/daemon`)
+> **Status (2026-05-26): scheduled for retirement.** This doc tracked
+> cross-daemon (Rust ↔ TS) parity. With Rust being retired at cutover,
+> the entire premise of cross-daemon comparison is going away. The
+> "freeze parity examples" task in `REWRITE.md` will convert each
+> `parity-check-*.ts` script to a TS-vs-frozen-baseline regression
+> check; this doc will be deleted once that conversion lands.
+>
+> **All "must-resolve gates" below are resolved or obsolete** — see
+> the Known divergences section for the per-item disposition. The
+> remaining body content is preserved as historical reference for the
+> tier breakdown and the LLM-proxy design (which the frozen-baseline
+> regression scripts will continue to use).
+
+Tracked automated parity coverage between the Rust daemon (`backend/daemon`)
 and the TS daemon (`backend/daemon-ts`). The Phase 9b cutover gate in
 REWRITE.md is "one full release cycle of opt-in TS daemon traffic with no
 live failures attributable to the TS daemon." That's a user-observation
-gate; this document tracks the automated coverage that closes the gap so
+gate; this document tracked the automated coverage that closed the gap so
 soak is for catching the *unexpected* divergence, not the expected one.
 
-> **Status (2026-05-25).** Tier 1 persistence coverage is green for
-> handshake, message append, multi-turn, edit, delete, and alt. Tier 2
-> command-dispatcher coverage is green for the manifest-backed batch under
-> `backend/daemon-ts/parity-traces/commands/`. The first Tier 3 slice is
-> also green for Anthropic and OpenAI-compatible text generation,
-> Anthropic regen persistence, a one-tool Anthropic loop, inline
-> compaction end-to-end (trigger → memory writes → segment archive →
+> **Coverage as of retirement (2026-05-26).** Tier 1 persistence
+> coverage green for handshake, message append, multi-turn, edit,
+> delete, and alt. Tier 2 command-dispatcher coverage green for the
+> manifest-backed batch under
+> `backend/daemon-ts/parity-traces/commands/`. Tier 3 green for
+> Anthropic and OpenAI-compatible text generation, Anthropic regen
+> persistence, a one-tool Anthropic loop, inline compaction
+> end-to-end (trigger → memory writes → segment archive →
 > active.jsonl truncation → restart history), autonomous heartbeat
 > message dispatch, the manual `memory_dream` command path, and
-> scheduled dreaming through the autonomy tick. These
-> compare SWP output,
-> canonical provider request bodies, and the post-restart on-disk state
-> where relevant.
+> scheduled dreaming through the autonomy tick.
 
 ## Existing harness recap
 
@@ -275,20 +286,36 @@ covered by deterministic unit tests on both sides:
 Spot-check during soak; daemon-internal unit tests cover the deterministic
 parts.
 
-## Known divergences (must-resolve gates)
+## Known divergences (RESOLVED — all by the 2026-05-26 decision to retire Rust)
 
-These are real wire-level divergences uncovered by the parity harness
-that are *not* parity-test bugs. Each blocks preview soak.
+The "must-resolve gates" below were all cross-daemon divergences
+between Rust and TS. With the 2026-05-26 decision to retire Rust and
+ship TS's placement strategy (verified against Sonnet 4.6 in
+`tests/cache_regression.test.ts`), they're all closed:
 
-- **Cache-breakpoint placement (chat call, `cache_ttl="1h"`).**
+- The chat-call **cache-breakpoint placement** divergence is resolved
+  by shipping the TS placement; the cache_regression test confirms
+  zero invalidations on the prod model + config.
+- The **compaction trailer content form** divergence (Rust string,
+  TS array) doesn't matter once Rust is gone — TS-vs-self stays
+  byte-stable.
+- The **`_label` wire leak** (fixed 2026-05-25) is pinned by
+  `_label_never_reaches_wire` in `tests/cache_placement.test.ts`.
+
+Original entries kept below as historical receipts.
+
+- **Cache-breakpoint placement (chat call, `cache_ttl="1h"`)** —
+  resolved 2026-05-26.
   First surfaced by `parity-check-inline-compaction.ts` after flipping
   the fixture from `cache_ttl=""` to `"1h"` on 2026-05-25; confirmed
   on every chat-path T3 check after the 2026-05-26 `cache_ttl="1h"`
   variant sweep (`bun run parity:<name>:cached`). TS adopted its
   preferred schedule on 2026-05-26: system breakpoint skips
   `memory_index`, tools carry no breakpoint of their own. The
-  Rust/TS placements still differ — resolution is gated on live-API
-  validation. Current state:
+  Rust/TS placements differed; both daemons cache *within
+  themselves*, but neither could read the other's cache. Resolved
+  by retiring Rust and verifying the TS placement on Sonnet 4.6
+  (`tests/cache_regression.test.ts`). Earlier state for reference:
   - **Rust** marks `system[1]` (`tools_guidance`) + the
     **second-to-last stable user** message.
   - **TS** marks the **last stable system block** (i.e., the last
@@ -327,7 +354,8 @@ that are *not* parity-test bugs. Each blocks preview soak.
     `parity:compaction:cached`, `parity:heartbeat-tick:cached`,
     `parity:scheduled-dreaming:cached` (stable-message side — needs
     ≥1 prior assistant turn to differ).
-  - **Blocks preview soak.**
+  - **~~Blocks preview soak.~~ Closed 2026-05-26** by the decision to
+    retire Rust and ship the TS placement.
 
 - **~~Extra `cache_control` on `tools[last]` (TS only).~~ Closed
   2026-05-26.** Dropped the tools cache_control entirely in the TS
@@ -351,31 +379,18 @@ that are *not* parity-test bugs. Each blocks preview soak.
   root cause as the stable-user vs stable-assistant choice; same
   resolution (live-API gate).
 
-- **Compaction trailer content form.** After implementing the
-  cached-prefix path (audit #12, 2026-05-25), TS compaction request
-  bodies match Rust's structurally — same system/tools/messages
-  prefix, same trailing-user content text, same wrapped
-  `<system_instruction>` payload. The only remaining diff is the
-  **content form of the trailing user message**: Rust emits
-  `content: "..."` (string), TS emits
-  `content: [{"type":"text","text":"..."}]` (single-element array).
-  Both are valid Anthropic Messages API forms, but different bytes →
-  different cache-key hashes → no cross-daemon cache reuse for the
-  *compaction-written* prefix. Within each daemon: chat-call prefix
-  matches compaction-call prefix (both daemons use array-content for
-  the historical messages), so cache reads from the chat write
-  succeed.
-  - Root cause: Rust's `compaction_impls.rs` builds the trailing
-    user as `json!({"role":"user", "content": <string>})` directly,
-    bypassing the structured-block path. TS goes through
-    `TurnMessage` which mandates `content: ContentBlock[]`. A
-    string-content path would also change *chat-call* wire shape
-    (which currently does byte-match Rust at array form), so this
-    can't be unified without an Anthropic-adapter special case for
-    single-text-block content.
-  - Same category as the breakpoint-placement divergence: blocks
-    cross-daemon cache reuse, not within-daemon caching. Resolution
-    bundled with the breakpoint live-API gate.
+- **Compaction trailer content form** — resolved 2026-05-26 by
+  retiring Rust (TS-vs-self is byte-stable, which is all that
+  matters).
+  After implementing the cached-prefix path (audit #12, 2026-05-25),
+  TS compaction request bodies matched Rust's structurally — same
+  system/tools/messages prefix, same trailing-user content text,
+  same wrapped `<system_instruction>` payload. The only remaining
+  diff was the content form of the trailing user message: Rust
+  emitted `content: "..."` (string), TS emits
+  `content: [{"type":"text","text":"..."}]`. Within each daemon,
+  chat-call prefix and compaction-call prefix share the same form,
+  so cache reads from the chat write succeed within TS.
 
 - **`_label` wire leak (fixed 2026-05-25).** TS was copying
   `SystemPromptBlock._label` onto Anthropic request bodies. Anthropic
@@ -416,32 +431,16 @@ that are *not* parity-test bugs. Each blocks preview soak.
   daemons can shell out to instead of the real `notify-send`, logs the
   argv to JSONL, and lets T3 checks diff notification title/body content.
   Used by inline compaction and autonomous heartbeat dispatch.
-- [ ] **Live-API validation pass (pre-soak gate).** Every T3 check
-  today runs against `parity/llm-proxy.ts` serving canned responses.
-  That proves *daemon-vs-daemon* parity against the mock; it does not
-  prove the mock is faithful to the real provider. Since the rewrite's
-  motivating bug (cache prefix regression) was a mock-vs-real
-  divergence, mock-only confidence is insufficient before preview
-  soak. Procedure once all T3 checks land:
-
-  1. Point each T3 fixture's `base_url` at the real provider
-     (`api.anthropic.com`, `api.openai.com`, OpenRouter when ported).
-  2. Run the check in forward-record mode (`startParityLlmProxy({
-     ..., recordMissing: true, fixtureDir })`) — the proxy still
-     captures canonical request bodies, lets the real response stream
-     through to the daemon, and writes the response to a content-
-     addressed fixture under `parity-traces/llm-fixtures/recorded/`.
-  3. The pass succeeds if both daemons agree on the *outgoing*
-     canonical request body for every LLM call. The recorded provider
-     responses are non-deterministic in text, but parity is a property
-     of what each daemon *sends*, not what it gets back.
-  4. The recorded fixture is then committed and used by the mock-mode
-     CI run going forward, replacing the hand-authored canned response.
-     If a future provider-side change drifts the mock from reality, a
-     re-record pass catches it.
-
-  Each check pays one round-trip per fixture in real API cost (~cents);
-  manual gate, not CI.
+- [x] **Live-API validation pass (superseded 2026-05-26).** Replaced
+  by `tests/cache_regression.test.ts`, which exercises the
+  highest-risk production path (Sonnet 4.6 + adaptive + effort=high +
+  multi-iter tool loop + follow-up turn) against the real provider
+  via OpenRouter and pins the zero-invalidation contract directly.
+  The original "validate every T3 fixture against real provider"
+  plan was cross-daemon-shaped — making sure mock fixtures matched
+  what Rust saw — which goes away with Rust. The freeze-examples
+  task in `REWRITE.md` will re-capture each T3 fixture against the
+  current TS daemon as the new ground-truth.
 
 ## How to add a new parity case
 
