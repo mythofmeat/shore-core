@@ -60,6 +60,7 @@ import type {
   ContentBlockParam,
   Message,
   MessageParam,
+  OutputConfig,
   RawMessageStreamEvent,
   TextBlockParam,
   ThinkingConfigParam,
@@ -295,6 +296,8 @@ function buildAnthropicCall(
   );
   const thinking = buildThinking(req.thinking, req.maxTokens);
 
+  const outputConfig = buildOutputConfig(req.thinking);
+
   const params: Parameters<typeof client.messages.stream>[0] = {
     model: req.modelId,
     max_tokens: req.maxTokens,
@@ -302,6 +305,7 @@ function buildAnthropicCall(
     ...(system.length > 0 ? { system } : {}),
     ...(tools.length > 0 ? { tools } : {}),
     ...(thinking ? { thinking } : {}),
+    ...(outputConfig ? { output_config: outputConfig } : {}),
   };
 
   if (req.baseUrl && req.baseUrl.includes("openrouter.ai")) {
@@ -652,40 +656,62 @@ function toAnthropicBlockParam(b: ContentBlock): ContentBlockParam {
   }
 }
 
+/**
+ * Effort levels that select the *adaptive* thinking mode and surface
+ * the chosen level on the top-level `output_config.effort` field.
+ * Matches Rust `anthropic.rs:19` (`ANTHROPIC_EFFORT_VALUES`).
+ *
+ * The Anthropic API splits two related knobs:
+ *
+ *   - `thinking.type = "adaptive"` — let Claude allocate the thinking
+ *     budget per turn (required on Opus 4.7, recommended on Sonnet 4.6
+ *     and Opus 4.6 where manual `enabled` is deprecated).
+ *   - `output_config.effort = "high" | ...` — orthogonal top-level
+ *     control over overall model processing depth.
+ *
+ * Both adaptive thinking and a named effort surface from the daemon's
+ * single `reasoning_effort` config: a named effort triggers adaptive
+ * thinking AND sets `output_config.effort` to that value. The literal
+ * string `"adaptive"` triggers adaptive thinking without
+ * `output_config`.
+ *
+ * If the caller wants the older manual budget mode, they set
+ * `thinking.budgetTokens` explicitly and leave `effort` unset.
+ */
+const NAMED_EFFORT_VALUES = ["max", "xhigh", "high", "medium", "low"] as const;
+type NamedEffort = (typeof NAMED_EFFORT_VALUES)[number];
+
+function isNamedEffort(effort: string | undefined): effort is NamedEffort {
+  return effort !== undefined && (NAMED_EFFORT_VALUES as readonly string[]).includes(effort);
+}
+
 function buildThinking(
   cfg: ChatRequest["thinking"],
   maxTokens: number,
 ): ThinkingConfigParam | undefined {
   if (!cfg.enabled) return undefined;
-  if (cfg.effort === "adaptive") return { type: "adaptive" };
 
-  // Map effort → budget per the Rust impl (see anthropic.rs:18). Fall
-  // back to an explicit budget if provided. Budget must be ≥1024 and
-  // strictly less than max_tokens.
-  let budget = cfg.budgetTokens;
-  if (budget === undefined) {
-    const fraction = effortFraction(cfg.effort);
-    if (fraction === undefined) return undefined;
-    budget = Math.max(1024, Math.floor(maxTokens * fraction));
+  // Adaptive thinking: triggered by literal "adaptive" OR any named
+  // effort value. The effort itself (when set) shows up on
+  // output_config, not on the thinking object.
+  if (cfg.effort === "adaptive" || isNamedEffort(cfg.effort)) {
+    return { type: "adaptive" };
   }
-  // Anthropic requires budget < max_tokens; clamp to maxTokens - 1.
+
+  // Explicit budget escape-hatch: manual extended thinking with a
+  // user-set budget_tokens. This is the deprecated mode on Opus 4.7
+  // (which rejects it outright) and is only kept here for callers who
+  // genuinely want a fixed budget on older models. Budget must be
+  // ≥1024 and strictly less than max_tokens.
+  if (cfg.budgetTokens === undefined) return undefined;
+  let budget = cfg.budgetTokens;
+  if (budget < 1024) budget = 1024;
   if (budget >= maxTokens) budget = Math.max(1024, maxTokens - 1);
   return { type: "enabled", budget_tokens: budget };
 }
 
-function effortFraction(effort: string | undefined): number | undefined {
-  switch (effort) {
-    case "low":
-      return 0.25;
-    case "medium":
-      return 0.5;
-    case "high":
-      return 0.75;
-    case "xhigh":
-      return 0.9;
-    case "max":
-      return 0.95;
-    default:
-      return undefined;
-  }
+function buildOutputConfig(cfg: ChatRequest["thinking"]): OutputConfig | undefined {
+  if (!cfg.enabled) return undefined;
+  if (!isNamedEffort(cfg.effort)) return undefined;
+  return { effort: cfg.effort };
 }

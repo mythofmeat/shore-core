@@ -329,6 +329,92 @@ describe.if(apiKey !== "")("Anthropic cache regression", () => {
     console.log("tool-loop turn2 usage per call:", r2.usagePerCall);
     expect(r2.usagePerCall[0]!.cacheReadInputTokens).toBeGreaterThan(0);
   }, 240_000);
+
+  it("adaptive thinking + multi-iter tool loop + follow-up message holds cache", async () => {
+    // The combination this rewrite was created to fix: a multi-iteration
+    // tool loop running under ADAPTIVE thinking (variable thinking-block
+    // shape each iteration), followed by a NEW user turn that should
+    // reuse the entire tool-loop-exit prefix as cache. Rust historically
+    // dropped the cache on the follow-up turn because the thinking-block
+    // round-trip subtly changed the cached prefix bytes.
+    //
+    // Default model: claude-haiku-4.5 (cheap). Set
+    // `SHORE_TEST_MODEL=anthropic/claude-sonnet-4.6` to validate against
+    // the model class the user actually runs (where the original
+    // regression bit hardest).
+    const initial: TurnMessage[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              "Casey, here's a branching scenario. Resolve step by step.\n" +
+              "\n" +
+              "Step 1: Roll 1d20 for stealth.\n" +
+              "Step 2: If stealth was 10+, roll 1d8 for sneak attack damage. " +
+              "  If below 10, roll 1d20 for an athletics check to escape.\n" +
+              "Step 3: Based on step 2's outcome, roll 1d4 for a follow-up.\n" +
+              "\n" +
+              "Each step must happen after seeing the prior result. " +
+              "Do not batch — use roll_dice three separate times. " +
+              "After all three, narrate briefly in-character.",
+          },
+        ],
+      },
+    ];
+    const req1 = makeRequest(initial);
+    req1.thinking = { enabled: true, effort: "adaptive" };
+
+    const r1 = await runToolLoop({
+      provider: PROVIDER,
+      request: req1,
+      registry: diceRegistry(),
+      toolContext: stubCtx(),
+    });
+    console.log("adaptive tool-loop turn1 usage per call:", r1.usagePerCall);
+
+    // Turn 1 must have iterated enough to exercise a real adaptive
+    // thinking-block shape transition. ≥3 calls = ≥2 in-loop iterations
+    // plus the closing text turn. Adaptive thinking varies the budget
+    // per call and tends to emit thinking on the first iteration and
+    // skip it on later ones — that's the shape change we care about.
+    expect(r1.usagePerCall.length).toBeGreaterThanOrEqual(3);
+    for (let i = 1; i < r1.usagePerCall.length; i++) {
+      expect(r1.usagePerCall[i]!.cacheReadInputTokens).toBeGreaterThan(0);
+    }
+
+    // Turn 2: a plain follow-up user message after the tool loop is
+    // closed. This is the high-risk case — Rust's regression killed
+    // the cache here because the round-tripped thinking signatures or
+    // block ordering subtly didn't byte-match the cached prefix.
+    const turn2 = [
+      ...initial,
+      ...r1.newTurns,
+      {
+        role: "user" as const,
+        content: [
+          { type: "text" as const, text: "Good. Now narrate the closing beat without rolling." },
+        ],
+      },
+    ];
+    const req2 = makeRequest(turn2);
+    req2.thinking = { enabled: true, effort: "adaptive" };
+
+    const r2 = await runToolLoop({
+      provider: PROVIDER,
+      request: req2,
+      registry: diceRegistry(),
+      toolContext: stubCtx(),
+    });
+    console.log("adaptive tool-loop turn2 usage per call:", r2.usagePerCall);
+
+    // KEY assertion: the FIRST call of the follow-up turn must read
+    // cache. If cache_read=0 here, a thinking-block round-trip
+    // mutation broke the prefix between turns — the exact regression
+    // this rewrite exists to prevent.
+    expect(r2.usagePerCall[0]!.cacheReadInputTokens).toBeGreaterThan(0);
+  }, 360_000);
 });
 
 describe.if(apiKey === "")("Anthropic cache regression (skipped — no API key)", () => {
