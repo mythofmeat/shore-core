@@ -188,8 +188,16 @@ export interface PrepareChatRequestOptions {
 
 export function prepareChatRequest(opts: PrepareChatRequestOptions): ChatRequest {
   const resolved = resolveRequestModel(opts);
-  const snapshot = opts.engine.historySnapshot();
-  const historyMessages = opts.historyMessages ?? snapshot.messages;
+  // Use the raw store messages, NOT historySnapshot.messages — the
+  // snapshot is built for client display and runs the tool-loop merge
+  // that collapses `[asst(tool_use), user(tool_result), asst(text)]`
+  // into a single assistant message with mixed blocks. The wire
+  // request needs separate-turn shape: `tool_result` blocks can only
+  // appear in `user` messages per the Anthropic API spec. Regen and
+  // compaction already use unmerged paths (messagesThroughLastUserTurn,
+  // explicit slices); this brings the normal-generation path into
+  // line. Bug surfaced 2026-05-26 on the live cache test.
+  const historyMessages = opts.historyMessages ?? opts.engine.messages();
   const ctx = buildChatContext({
     characterName: opts.engine.name(),
     characterConfigDir: opts.characterConfigDir,
