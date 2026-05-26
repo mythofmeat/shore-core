@@ -1,0 +1,56 @@
+# Live cache-accounting fixture.
+#
+# Drives both daemons against real OpenRouter (provider-pinned to
+# Anthropic) so we can compare cache_read / cache_creation token
+# accounting between Rust's and TS's breakpoint-placement strategies.
+# Not for CI — requires OPENROUTER_API_KEY and costs real money.
+
+[defaults]
+model = "chat.anthropic.cache-test"
+display_name = "Parity User"
+
+[behavior.tool_use]
+enabled = true
+max_iterations = 6
+
+[behavior.tool_use.tools]
+roll_dice = true
+read = true
+write = true
+edit = true
+list_files = true
+search = true
+search_history = false
+activity_heatmap = false
+check_time = false
+conversation_search = false
+delete = false
+exec = false
+fetch_url = false
+file_search = false
+generate_image = false
+set_next_wake = false
+web_search = false
+
+[behavior.autonomy]
+enabled = false
+
+[notifications]
+enabled = false
+
+[memory.compaction]
+enabled = false
+max_turns = 0
+max_context_tokens = 0
+
+[memory.dreaming]
+enabled = false
+
+[chat.anthropic.cache-test]
+model_id = "anthropic/claude-haiku-4.5"
+api_key_env = "OPENROUTER_API_KEY"
+base_url = "https://openrouter.ai/api/v1"
+max_tokens = 2048
+temperature = 1
+cache_ttl = "1h"
+reasoning_effort = "high"
