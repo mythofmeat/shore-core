@@ -2,9 +2,11 @@
 #
 # Shore OpenRouter SDK parity live test.
 #
-# Exercises the Anthropic SDK path and the OpenAI-compatible SDK path through
-# OpenRouter with the same daemon/CLI checks, then verifies switching model SDKs
-# mid-chat in both directions.
+# Drives the TypeScript daemon (backend/daemon-ts) through both SDK paths —
+# Anthropic and OpenAI-compatible — over OpenRouter, with the same
+# daemon/CLI checks for each, then verifies switching model SDKs mid-chat
+# in both directions. The CLI binary stays Rust until the cutover replaces
+# it; the daemon under test is TS.
 #
 # Requires: OPENROUTER_API_KEY, usually loaded from ~/.config/shore/.env.
 #
@@ -166,14 +168,16 @@ raise SystemExit(1)
 PY
 }
 
-tool_count() {
-    local tool_name="$1"
-    local diag
-    diag=$(timeout 20 "${CLI[@]}" status --diagnostics --json 2>&1 | strip_ansi) || {
+ledger_call_count() {
+    # The Rust daemon's in-memory diagnostics ring buffer was descoped
+    # in the TS rewrite (audit #11); observability moved to the ledger.
+    # Sum `call_count` across every row in `shore usage --last all`.
+    local usage
+    usage=$(timeout 20 "${CLI[@]}" usage --last all --json 2>&1 | strip_ansi) || {
         echo 0
         return
     }
-    JSON_TEXT="$diag" TOOL_NAME="$tool_name" python3 - <<'PY'
+    JSON_TEXT="$usage" python3 - <<'PY'
 import json
 import os
 
@@ -182,30 +186,10 @@ try:
 except Exception:
     print(0)
     raise SystemExit(0)
-count = 0
-for item in data.get("tool_calls", {}).get("recent", []):
-    if item.get("tool_name") == os.environ["TOOL_NAME"]:
-        count += 1
-print(count)
-PY
-}
-
-api_call_count() {
-    local diag
-    diag=$(timeout 20 "${CLI[@]}" status --diagnostics --json 2>&1 | strip_ansi) || {
-        echo 0
-        return
-    }
-    JSON_TEXT="$diag" python3 - <<'PY'
-import json
-import os
-
-try:
-    data = json.loads(os.environ["JSON_TEXT"])
-except Exception:
-    print(0)
-    raise SystemExit(0)
-print(data.get("api_calls", {}).get("count", 0))
+total = 0
+for entry in data.get("summary", []) or []:
+    total += entry.get("call_count", 0) or 0
+print(total)
 PY
 }
 
@@ -262,19 +246,22 @@ run_tool_probe() {
     local prompt="$2"
     local regex="$3"
     local before after
-    before=$(tool_count "$tool_name")
+    before=$(ledger_call_count)
     run_cmd_regex "$tool_name response" "$regex" timeout 90 "${CLI[@]}" send "$prompt"
-    after=$(tool_count "$tool_name")
-    run_check "$tool_name recorded in diagnostics" \
+    after=$(ledger_call_count)
+    # A tool turn issues at least two provider calls (tool_use then
+    # the post-tool follow-up); accept any growth as evidence the
+    # ledger captured the loop.
+    run_check "$tool_name ledger calls increased" \
         "$([[ "$after" -gt "$before" ]] && echo true || echo false)" \
         "before=$before after=$after"
 }
 
 assert_status_after_suite() {
     local suite="$1"
-    local api_before="$2"
+    local calls_before="$2"
     local status_json
-    local api_after
+    local calls_after
     status_json=$(timeout 20 "${CLI[@]}" status --json 2>&1 | strip_ansi) || true
     if json_field_number_gt "$status_json" "turn_count" 0; then
         run_check "$suite status has turns" true
@@ -282,10 +269,10 @@ assert_status_after_suite() {
         run_check "$suite status has turns" false
         printf "${DIM}%s${RESET}\n" "$status_json" | head -5
     fi
-    api_after=$(api_call_count)
-    run_check "$suite diagnostics API calls increased" \
-        "$([[ "$api_after" -gt "$api_before" ]] && echo true || echo false)" \
-        "before=$api_before after=$api_after"
+    calls_after=$(ledger_call_count)
+    run_check "$suite ledger calls increased" \
+        "$([[ "$calls_after" -gt "$calls_before" ]] && echo true || echo false)" \
+        "before=$calls_before after=$calls_after"
 }
 
 exercise_model() {
@@ -294,10 +281,10 @@ exercise_model() {
     local sdk="$3"
     local model_id="$4"
     local token_base="$5"
-    local api_before
+    local calls_before
 
     printf "\n${BOLD}%s SDK suite${RESET}\n" "$label"
-    api_before=$(api_call_count)
+    calls_before=$(ledger_call_count)
     switch_model "$alias" "$model_id"
     assert_model_info "$alias" "$sdk" "$model_id"
     send_exact "$label streaming send" "${token_base}_PONG"
@@ -311,7 +298,7 @@ exercise_model() {
         "You must call the roll_dice tool for one d20. After the tool returns, answer in the form DICE=<number>." \
         "DICE=|roll_dice|\\b([1-9]|1[0-9]|20)\\b"
     run_cmd_contains "$label log contains send token" "${token_base}_PONG" timeout 20 "${CLI[@]}" log --content -n 12
-    assert_status_after_suite "$label" "$api_before"
+    assert_status_after_suite "$label" "$calls_before"
 }
 
 if [[ -f "$ENV_FILE" ]]; then
@@ -328,11 +315,12 @@ fi
 
 if [[ "$SKIP_BUILD" == false ]]; then
     printf "${BOLD}Building...${RESET}\n"
-    cargo build --quiet -p shore-daemon -p shore-cli 2>&1
+    cargo build --quiet -p shore-cli 2>&1
+    (cd "$REPO_ROOT/backend/daemon-ts" && bun install --frozen-lockfile >/dev/null && bun run build >/dev/null)
 fi
 
 SHORE="$REPO_ROOT/target/debug/shore"
-DAEMON="$REPO_ROOT/target/debug/shore-daemon"
+DAEMON="$REPO_ROOT/backend/daemon-ts/dist/shore-daemon"
 
 if [[ ! -x "$SHORE" ]] || [[ ! -x "$DAEMON" ]]; then
     echo "Binaries not found. Run without --skip-build first."
@@ -426,7 +414,7 @@ export SHORE_RUNTIME_DIR="$RUNTIME_DIR"
 export NO_COLOR=1
 
 printf "${BOLD}Starting daemon...${RESET}\n"
-NO_COLOR=1 SHORE_RUNTIME_DIR="$RUNTIME_DIR" RUST_LOG=info "$DAEMON" --config "$CONFIG_DIR/config.toml" > "$LOG_FILE" 2>&1 &
+NO_COLOR=1 SHORE_RUNTIME_DIR="$RUNTIME_DIR" "$DAEMON" --config "$CONFIG_DIR/config.toml" > "$LOG_FILE" 2>&1 &
 DAEMON_PID=$!
 
 for _ in $(seq 1 80); do
