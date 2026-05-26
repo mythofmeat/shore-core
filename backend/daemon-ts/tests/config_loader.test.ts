@@ -210,6 +210,31 @@ usage_warning = false
     });
   });
 
+  it("loads [daemon] addr, unsafe_allow_remote_access, and allowed_hosts", () => {
+    const dir = setupConfig(`
+[daemon]
+addr = "0.0.0.0:1112"
+unsafe_allow_remote_access = true
+allowed_hosts = ["127.0.0.1", "100.84.100.99"]
+`);
+    const config = loadConfig(dir);
+    expect(config.app.daemon).toEqual({
+      addr: "0.0.0.0:1112",
+      unsafe_allow_remote_access: true,
+      allowed_hosts: ["127.0.0.1", "100.84.100.99"],
+    });
+  });
+
+  it("[daemon] defaults match Rust when section is absent", () => {
+    const dir = setupConfig("");
+    const config = loadConfig(dir);
+    expect(config.app.daemon).toEqual({
+      addr: "127.0.0.1:7320",
+      unsafe_allow_remote_access: false,
+      allowed_hosts: [],
+    });
+  });
+
   it("loads an explicit config file and merges conf.d relative to its parent", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "shore-explicit-config-test-"));
     fs.mkdirSync(path.join(dir, "conf.d"));

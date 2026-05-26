@@ -195,6 +195,63 @@ describe("command dispatcher state", () => {
     ledger.close();
   });
 
+  it("config command surfaces the loaded [daemon] section", async () => {
+    const root = tempDir();
+    const configDir = path.join(root, "config");
+    const dataDir = path.join(root, "data");
+    const cacheDir = path.join(root, "cache");
+    fs.mkdirSync(path.join(configDir, "characters", "TestChar", "workspace"), { recursive: true });
+    fs.writeFileSync(path.join(configDir, "characters", "TestChar", "workspace", "SOUL.md"), "soul");
+    fs.writeFileSync(path.join(configDir, "config.toml"), `
+[daemon]
+addr = "0.0.0.0:1112"
+unsafe_allow_remote_access = true
+allowed_hosts = ["127.0.0.1", "100.84.100.99"]
+
+[defaults]
+model = "sonnet"
+
+[chat.anthropic.sonnet]
+model_id = "claude-sonnet-4-20250514"
+`);
+    const configSource = { configDir };
+    const runtime: RuntimeConfigState = {
+      config: loadConfig(configSource),
+      catalog: loadCatalog(configSource),
+      providers: loadProviderRegistry(configSource),
+    };
+    const engines = new EngineRegistry(dataDir);
+    const ledger = Ledger.openInMemory();
+    const ctx: CommandContext = {
+      configSource,
+      runtime,
+      dataDir,
+      cacheDir,
+      engines,
+      autonomy: new AutonomyRegistry(),
+      ledger,
+      pricing: new PricingEngine(ledger),
+      characterName: "TestChar",
+      reloadRuntimeConfig(next) {
+        runtime.config = next.config;
+        runtime.catalog = next.catalog;
+        runtime.providers = next.providers;
+      },
+    };
+    const engine = engines.get("TestChar");
+    ctx.autonomy.ensureState(engine);
+    const result = await dispatchCommand({ ctx, engine, name: "config", args: { key: "daemon" } });
+    expect(result).toMatchObject({
+      key: "daemon",
+      config: {
+        addr: "0.0.0.0:1112",
+        unsafe_allow_remote_access: true,
+        allowed_hosts: ["127.0.0.1", "100.84.100.99"],
+      },
+    });
+    ledger.close();
+  });
+
   it("config, diagnostics, and usage commands keep CLI-facing shapes", async () => {
     const { ctx, engine, ledger, configDir, runtime } = makeHarness();
     expect(await dispatchCommand({ ctx, engine, name: "config", args: { key: "defaults" } }))

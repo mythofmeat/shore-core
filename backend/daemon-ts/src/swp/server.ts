@@ -16,6 +16,12 @@ import type { ClientMessage, ServerHistory, ServerMessage } from "./types.ts";
 interface SessionState {
   buf: Buffer;
   hello: boolean;
+  /**
+   * True when the peer IP failed the `allowed_hosts` filter. Any data the
+   * peer manages to push before the half-close completes is ignored —
+   * never parsed, never dispatched.
+   */
+  rejected: boolean;
   /** Character this client is attached to (after handshake). */
   character: string | undefined;
   /**
@@ -86,6 +92,12 @@ export interface SwpServerOptions {
   port: number;
   serverName: string;
   handshake: HandshakeProvider;
+  /**
+   * Peer IP allowlist. Empty means allow all. Non-empty drops any incoming
+   * connection whose `remoteAddress` is not an exact string match. Matches
+   * the Rust swp-server filter at `backend/swp-server/src/lib.rs:316`.
+   */
+  allowedHosts?: string[];
   /** Called when a client sends a ClientMessage. Optional — without it the server replies with an error. */
   onMessage?: MessageHandler;
   /** Called when a client sends a ClientRegen frame. */
@@ -129,9 +141,23 @@ export class SwpServer {
     sock.data = {
       buf: Buffer.alloc(0),
       hello: false,
+      rejected: false,
       character: undefined,
       inflight: undefined,
     };
+    const peer = sock.remoteAddress;
+    const allowed = this.opts.allowedHosts;
+    if (allowed !== undefined && allowed.length > 0) {
+      if (peer === undefined || !allowed.includes(peer)) {
+        console.warn(
+          `[swp] connection rejected: peer ${peer ?? "<unknown>"} not in allowed_hosts`,
+        );
+        sock.data.rejected = true;
+        sock.end();
+        return;
+      }
+    }
+    console.log(`[swp] TCP accepted from ${peer ?? "<unknown>"}`);
     this.clients.add(sock);
 
     const snapshot = this.opts.handshake.helloSnapshot();
@@ -145,6 +171,7 @@ export class SwpServer {
   }
 
   private onData(sock: Socket<SessionState>, chunk: Buffer): void {
+    if (sock.data.rejected) return;
     sock.data.buf =
       sock.data.buf.length === 0 ? Buffer.from(chunk) : Buffer.concat([sock.data.buf, chunk]);
 

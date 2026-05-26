@@ -44,6 +44,7 @@ import {
 
 export interface LoadedConfig {
   app: {
+    daemon: DaemonConfig;
     defaults: {
       model: string | undefined;
       embedding: string | undefined;
@@ -66,6 +67,14 @@ export interface LoadedConfig {
     retrieval: RetrievalConfig;
   };
 }
+
+export interface DaemonConfig {
+  addr: string;
+  unsafe_allow_remote_access: boolean;
+  allowed_hosts: string[];
+}
+
+export const DEFAULT_DAEMON_ADDR = "127.0.0.1:7320";
 
 export interface DreamingConfig {
   enabled: boolean;
@@ -104,6 +113,7 @@ export function loadConfig(input: string | ConfigInput): LoadedConfig {
 
   return {
     app: {
+      daemon: parseDaemonConfig(pickTable(merged, "daemon")),
       defaults: {
         model: typeof defaultsTable["model"] === "string" ? defaultsTable["model"] : undefined,
         embedding:
@@ -417,6 +427,30 @@ function parseNotificationsConfig(
     generation_threshold_ms:
       (parseDurationSecs(table["generation_threshold"]) ?? 0) * 1000,
     events,
+  };
+}
+
+function parseDaemonConfig(
+  table: Record<string, unknown> | undefined,
+): DaemonConfig {
+  if (table === undefined) {
+    return {
+      addr: DEFAULT_DAEMON_ADDR,
+      unsafe_allow_remote_access: false,
+      allowed_hosts: [],
+    };
+  }
+  const allowedRaw = table["allowed_hosts"];
+  const allowed = Array.isArray(allowedRaw)
+    ? allowedRaw.filter((v): v is string => typeof v === "string")
+    : [];
+  return {
+    addr: typeof table["addr"] === "string" ? table["addr"] : DEFAULT_DAEMON_ADDR,
+    unsafe_allow_remote_access:
+      typeof table["unsafe_allow_remote_access"] === "boolean"
+        ? table["unsafe_allow_remote_access"]
+        : false,
+    allowed_hosts: allowed,
   };
 }
 

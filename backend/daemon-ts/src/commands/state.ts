@@ -603,11 +603,12 @@ function rustAppConfig(ctx: CommandContext): Record<string, unknown> {
   const heartbeat = cfg.app.behavior.autonomy.heartbeat;
   const compaction = cfg.memory.compaction;
   const notifications = cfg.app.notifications;
+  const daemon = cfg.app.daemon;
   return {
     daemon: {
-      addr: "127.0.0.1:7320",
-      unsafe_allow_remote_access: false,
-      allowed_hosts: [],
+      addr: daemon.addr,
+      unsafe_allow_remote_access: daemon.unsafe_allow_remote_access,
+      allowed_hosts: [...daemon.allowed_hosts],
     },
     defaults: {
       model: cfg.app.defaults.model ?? null,

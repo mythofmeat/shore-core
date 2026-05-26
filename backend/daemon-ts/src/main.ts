@@ -52,25 +52,26 @@ import { generateResponse } from "./llm/generate.ts";
 import { workspaceIndexPath } from "./memory/workspace_index.ts";
 import { defaultRegistry, togglesFromConfig, ToolRegistry } from "./tools/registry.ts";
 import { resolveShoreDirs } from "./runtime/dirs.ts";
+import { resolveListenAddr, validateRemoteAccessPolicy } from "./runtime/listen_addr.ts";
 import { Registry } from "./runtime/registry.ts";
 import { SwpServer } from "./swp/server.ts";
 import type { HandshakeProvider, MessageHandler } from "./swp/server.ts";
 
 interface ParsedArgs {
-  addr: string;
+  cliAddr: string | undefined;
   instanceId: string | undefined;
   configPath: string | undefined;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  let addr: string | undefined;
+  let cliAddr: string | undefined;
   let instanceId: string | undefined;
   let configPath: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--addr") {
-      addr = takeArgValue(argv, ++i, arg);
+      cliAddr = takeArgValue(argv, ++i, arg);
     } else if (arg === "--instance-id") {
       instanceId = takeArgValue(argv, ++i, arg);
     } else if (arg === "--config") {
@@ -83,12 +84,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     }
   }
 
-  if (!addr) {
-    addr = process.env["SHORE_ADDR"] ?? "127.0.0.1:0";
-  }
-
-  return { addr, instanceId, configPath };
+  return { cliAddr, instanceId, configPath };
 }
+
 
 function takeArgValue(argv: string[], idx: number, flag: string): string {
   const value = argv[idx];
@@ -109,7 +107,7 @@ function printHelpAndExit(code: number): never {
       "",
       "OPTIONS:",
       "  --config <PATH>       Config file to load (parent becomes config dir)",
-      "  --addr <HOST:PORT>     TCP listen address (default: 127.0.0.1:0)",
+      "  --addr <HOST:PORT>     TCP listen address (overrides SHORE_ADDR and [daemon].addr)",
       "  --instance-id <ID>     Pin the registered instance ID",
       "  -h, --help             Print this help",
       "",
@@ -158,8 +156,7 @@ function generateInstanceId(): string {
 }
 
 async function main(): Promise<void> {
-  const { addr, instanceId, configPath } = parseArgs(process.argv.slice(2));
-  const { host, port } = splitAddr(addr);
+  const { cliAddr, instanceId, configPath } = parseArgs(process.argv.slice(2));
 
   const explicitConfigFile = resolveExplicitConfigPath(configPath);
   const dirs = resolveShoreDirs(explicitConfigFile);
@@ -180,6 +177,40 @@ async function main(): Promise<void> {
   };
   let config = runtime.config;
   let catalog = runtime.catalog;
+
+  const { addr, source: addrSource } = resolveListenAddr(
+    cliAddr,
+    process.env["SHORE_ADDR"],
+    config.app.daemon.addr,
+  );
+  let remoteAccessWarnings: string[];
+  try {
+    remoteAccessWarnings = validateRemoteAccessPolicy(
+      addr,
+      config.app.daemon.unsafe_allow_remote_access,
+      config.app.daemon.allowed_hosts,
+    );
+  } catch (e) {
+    const src =
+      addrSource === "cli" ? "--addr" : addrSource === "env" ? "SHORE_ADDR" : "[daemon].addr";
+    console.error(
+      `error: Refusing startup for daemon address ${addr} (from ${src}): ${(e as Error).message}`,
+    );
+    process.exit(2);
+  }
+  for (const warning of remoteAccessWarnings) {
+    console.warn(`[shore-daemon-ts] remote-access warning: ${warning}`);
+  }
+  const allowedHostsForLog =
+    config.app.daemon.allowed_hosts.length > 0
+      ? `[${config.app.daemon.allowed_hosts.join(", ")}]`
+      : "[] (allow all)";
+  console.log(
+    `[shore-daemon-ts] daemon config: addr=${addr} (source=${addrSource}) ` +
+      `unsafe_allow_remote_access=${config.app.daemon.unsafe_allow_remote_access} ` +
+      `allowed_hosts=${allowedHostsForLog}`,
+  );
+  const { host, port } = splitAddr(addr);
   const ledger = Ledger.open(path.join(dirs.data, "ledger.db"));
   const pricing = new PricingEngine(ledger);
   const notifier = new NotificationService(config.app.notifications);
@@ -327,6 +358,7 @@ async function main(): Promise<void> {
     port,
     serverName: "shore-daemon-ts",
     handshake,
+    allowedHosts: config.app.daemon.allowed_hosts,
     onMessage,
     onRegen,
     onCommand,
