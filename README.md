@@ -134,8 +134,7 @@ from crates.io):
 - [CONFIGURATION.md](CONFIGURATION.md) — config reference and examples.
 - [docs/DAEMON_TS_CUTOVER.md](docs/DAEMON_TS_CUTOVER.md) — TypeScript daemon
   preview, soak, and default-switch runbook.
-- [AGENTS.md](AGENTS.md) — short entry map for coding agents.
-- [CLAUDE.md](CLAUDE.md) — shim for tools that look for a Claude-specific entry.
+- [CLAUDE.md](CLAUDE.md) — short entry map for coding agents.
 - [CHANGELOG.md](CHANGELOG.md) — release history.
 - [OpenRouter Anthropic cache incident](docs/incidents/2026-05-22-openrouter-anthropic-tool-loop-cache.md)
   — post-mortem and user settings guide for the tool-loop cache fix.

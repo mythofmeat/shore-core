@@ -26,41 +26,41 @@ Cutover runbook: [`docs/DAEMON_TS_CUTOVER.md`](docs/DAEMON_TS_CUTOVER.md).
 
 ### Pre-soak
 
-- [ ] **Update stale documentation.** Various docs still frame the
-  rewrite as in-progress or assume the Rust daemon is the only daemon.
-  Known offenders: `backend/daemon-ts/README.md` ("Current phase: 8d
-  complete — cutover prep" is stale), top-level `README.md` +
-  `ARCHITECTURE.md` (Rust-daemon-centric framing — the TS daemon is
-  currently described as a preview gate, will need real rewriting at
-  cutover), `AGENTS.md` (entry-map should mention daemon-ts as the
-  live target). Pass once now to fix the obviously stale lines, then a
-  second pass at cutover to rewrite the framing.
-- [ ] **Freeze parity examples against the TS daemon.** The current
-  parity-check scripts under `backend/daemon-ts/scripts/parity-check-*.ts`
-  spawn both Rust and TS and diff them at runtime. Once Rust is going
-  away, the comparison flips: TS becomes the reference, with frozen
-  JSONL/JSON baselines captured from the current TS daemon. Re-capture
-  every T1/T2/T3 fixture against the current TS daemon, rewrite the
-  check scripts to diff against the committed baseline (drop the
-  `--rust` flag and the proxy-intercept comparator), and drop
-  `docs/DAEMON_TS_PARITY.md` once everything is converted (the parity
-  doc exists to track cross-daemon parity; TS-vs-self regression is
-  just standard testing). First slice landed 2026-05-26:
-  `parity:generation` and `parity:generation:openai` now diff TS
-  against frozen committed baselines under
-  `backend/daemon-ts/parity-traces/frozen/`, pinning both SWP
-  response summaries and provider request bodies without requiring
-  live API calls or the Rust daemon.
+- [ ] **Update stale documentation.** First pass landed 2026-05-26:
+  package version bumped off `phase8d`, `backend/daemon-ts/README.md`
+  parity section rewritten to describe the frozen-baseline split,
+  `CLAUDE.md` repo shape mentions both daemons, the top-level
+  `README.md` ghost `AGENTS.md` link dropped. Top-level `README.md`
+  and `ARCHITECTURE.md` still describe the TS daemon as a "preview"
+  / "preview gate" and lead with the Rust daemon — the real reframing
+  is deferred until the default switch lands so the docs reflect the
+  shipped state.
+- [x] **Freeze parity examples against the TS daemon (done
+  2026-05-26).** Every T3 parity-check script
+  (`parity-check-generation.ts`, `-regen.ts`, `-tool-loop.ts`,
+  `-inline-compaction.ts`, `-heartbeat-tick.ts`, `-dreaming.ts`,
+  `-scheduled-dreaming.ts`) now diffs the TS daemon against frozen
+  baselines under `backend/daemon-ts/parity-traces/frozen/`. Both
+  cache-off and cache-1h variants are pinned per scenario plus the
+  OpenAI-compatible flatten; the `--rust` flag and proxy-intercept
+  cross-daemon comparator are gone, and `docs/DAEMON_TS_PARITY.md`
+  has been deleted. Wall-clock time markers are redacted via
+  `redactHeartbeatMarkers` in `parity/_lib.ts` so the captured bodies
+  survive minute-crossing reruns. Verified: all 15
+  `parity:<name>[:cached]` scripts green.
 - [x] **OpenAI-compatible adapter live-test coverage (done
-  2026-05-26).** The
-  Anthropic adapter is locked down by `tests/cache_regression.test.ts`
-  on Sonnet 4.6. `scripts/live-tests/openrouter-sdk-parity.sh`
-  sources `~/.config/shore/.env`, exercises OpenRouter
+  2026-05-26).** The Anthropic adapter is locked down by
+  `tests/cache_regression.test.ts` on Sonnet 4.6.
+  `scripts/live-tests/openrouter-sdk-parity.sh` now drives the **TS**
+  daemon (`backend/daemon-ts/dist/shore-daemon`), exercises OpenRouter
   `openai/gpt-5.4-mini` through the OpenAI-compatible SDK with the
   same send/regen/tool/log/model-info assertions as the Anthropic SDK
-  path, and verifies mid-chat switching in both directions
-  (Anthropic→OpenAI-compatible and OpenAI-compatible→Anthropic).
-  Live receipt on 2026-05-26: 31/31 checks passed.
+  path, and verifies mid-chat switching both directions
+  (Anthropic→OpenAI-compatible and back). The original 31/31 receipt
+  was against Rust; the rewritten test runs against the TS daemon
+  with the descoped in-memory `diagnostics` ring buffer
+  ([[project-ts-daemon-rewrite]] audit #11) replaced by `shore usage`
+  ledger probes. Live receipt against TS on 2026-05-26: 31/31 passed.
 - [x] **Cache regression verified dead on Sonnet 4.6 (done
   2026-05-26).** The original motivation for the rewrite — Rust's
   cache-invalidation on adaptive thinking + multi-iter tool loop +

@@ -16,7 +16,11 @@ purpose. Then update the relevant kept doc in the same change.
 ## Repo Shape
 
 - `core/`: protocol, config, and shared SWP client crates.
-- `backend/`: daemon, SWP server, LLM, ledger, and diagnostics crates.
+- `backend/daemon/`: Rust daemon (current default; being retired by the
+  TS rewrite — see [`REWRITE.md`](REWRITE.md)).
+- `backend/daemon-ts/`: TypeScript reimplementation on Bun. Feature-
+  complete relative to Rust and the soak target; the cutover runbook
+  is [`docs/DAEMON_TS_CUTOVER.md`](docs/DAEMON_TS_CUTOVER.md).
 - `clients/`: CLI. Other clients (TUI, GUI, Matrix bridge, MCP bridge) live
   in their own repos under `mythofmeat/` and consume the core libraries from
   crates.io.
