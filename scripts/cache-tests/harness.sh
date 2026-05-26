@@ -135,7 +135,9 @@ _check_latest_response() {
     [[ -f "$path" ]] || harness_fail "missing forensics log: $path"
 
     local last_resp
-    last_resp="$(grep '"type":"response"' "$path" | tail -1)"
+    # `|| true` so a no-match grep doesn't trip `set -euo pipefail` before
+    # the explicit harness_fail below can run.
+    last_resp="$(grep '"type":"response"' "$path" | tail -1 || true)"
     [[ -n "$last_resp" ]] || harness_fail "no response records found in $path"
 
     local write read
@@ -156,6 +158,12 @@ _check_latest_response() {
         echo -e "${CYAN}[$TEST_NAME]${NC}   turn $_MSG_INDEX: cache_r=$read cache_w=$write"
         if [[ "$write" -gt "$_WRITE_THRESHOLD" ]]; then
             harness_fail "turn $_MSG_INDEX: cache write $write exceeds threshold $_WRITE_THRESHOLD (first_write=$_FIRST_WRITE, read=$read)"
+        fi
+        # Mirror the Rust live_cache_regression assertion: after the cold
+        # write, every turn must read from the cache. cache_r=0 means the
+        # prefix was invalidated and reuse failed.
+        if [[ "$read" -le 0 ]]; then
+            harness_fail "turn $_MSG_INDEX: cache_read = 0 — prefix invalidated (write=$write)"
         fi
     fi
 }
