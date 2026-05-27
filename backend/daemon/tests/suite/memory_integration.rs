@@ -5,35 +5,175 @@ use shore_daemon::memory::compaction::{
 use shore_daemon::memory::compaction_impls::RealConversationManager;
 use shore_daemon::memory::markdown_query;
 use shore_daemon::memory::markdown_store::MarkdownMemoryStore;
+use shore_daemon::tools::ToolContext;
+use shore_llm::types::{GenerateResponse, LlmRequest, Timing, Usage};
+use shore_protocol::types::ContentBlock;
+use std::sync::Mutex as StdMutex;
 use tempfile::TempDir;
 
-struct MockCompactionLlm {
-    response: String,
+/// Minimal `ToolContext` for the integration test. The compaction tool
+/// loop only needs `workspace_dir` populated for `write` dispatch to
+/// resolve paths correctly; every other accessor falls back to the
+/// trait's defaults.
+struct IntegrationToolContext {
+    workspace_dir: String,
+    search_config: shore_config::app::SearchConfig,
+    retrieval_config: shore_config::app::RetrievalConfig,
 }
 
-impl MockCompactionLlm {
-    fn with_entries(entries: &[(&str, &str)]) -> Self {
-        let mut xml = String::new();
-        xml.push_str("<memory>\n");
-        for (path, body) in entries {
-            xml.push_str(&format!("<write path=\"{path}\">\n{body}\n</write>\n"));
+impl IntegrationToolContext {
+    fn new(workspace_dir: String) -> Self {
+        Self {
+            workspace_dir,
+            search_config: shore_config::app::SearchConfig::default(),
+            retrieval_config: shore_config::app::RetrievalConfig::default(),
         }
-        xml.push_str("</memory>");
-        Self { response: xml }
     }
 }
 
-impl CompactionLlm for MockCompactionLlm {
-    fn summarize(
+impl ToolContext for IntegrationToolContext {
+    fn image_dir(&self) -> &str {
+        ""
+    }
+    fn llm_client(&self) -> Option<&shore_llm::LlmClient> {
+        None
+    }
+    fn image_gen_config(&self) -> Option<&shore_daemon::memory::compaction_impls::ImageGenConfig> {
+        None
+    }
+    fn search_config(&self) -> &shore_config::app::SearchConfig {
+        &self.search_config
+    }
+    fn workspace_dir(&self) -> &str {
+        &self.workspace_dir
+    }
+    fn memory_retrieval_config(&self) -> &shore_config::app::RetrievalConfig {
+        &self.retrieval_config
+    }
+}
+
+/// Scripted [`CompactionLlm`] that returns a pre-canned sequence of
+/// generate responses. The tool loop drives the responses in order; the
+/// first that emits no `tool_use` blocks (or whose `finish_reason` is not
+/// `tool_use`) ends the loop.
+struct ScriptedCompactionLlm {
+    responses: StdMutex<Vec<GenerateResponse>>,
+}
+
+impl ScriptedCompactionLlm {
+    /// Build an LLM that replies with one tool-use round containing a
+    /// `write` call per `(path, content)` pair, then ends with an empty
+    /// text turn.
+    fn writing(entries: &[(&str, &str)]) -> Self {
+        let mut blocks: Vec<ContentBlock> = Vec::new();
+        for (i, (path, content)) in entries.iter().enumerate() {
+            blocks.push(ContentBlock::ToolUse {
+                id: format!("call_{i}"),
+                name: "write".into(),
+                input: serde_json::json!({
+                    "path": path,
+                    "content": content,
+                }),
+            });
+        }
+        let tool_round = GenerateResponse {
+            content: String::new(),
+            content_blocks: blocks,
+            finish_reason: "tool_use".into(),
+            usage: Usage::default(),
+            timing: Timing::default(),
+            model: "mock".into(),
+        };
+        let end = GenerateResponse {
+            content: "done".into(),
+            content_blocks: vec![ContentBlock::Text {
+                text: "done".into(),
+            }],
+            finish_reason: "end_turn".into(),
+            usage: Usage::default(),
+            timing: Timing::default(),
+            model: "mock".into(),
+        };
+        Self {
+            responses: StdMutex::new(vec![tool_round, end]),
+        }
+    }
+}
+
+impl CompactionLlm for ScriptedCompactionLlm {
+    fn build_initial_request(
         &self,
-        _system: &str,
-        _messages: Vec<serde_json::Value>,
-        _cached_request: Option<shore_llm::types::LlmRequest>,
+        system: &str,
+        compact_now_user: serde_json::Value,
+        chat_request: LlmRequest,
+    ) -> Result<LlmRequest, CompactionError> {
+        let mut messages = chat_request.messages.clone();
+        messages.push(compact_now_user);
+        Ok(LlmRequest {
+            sdk: chat_request.sdk,
+            model: chat_request.model,
+            api_key: chat_request.api_key,
+            api_key_name: chat_request.api_key_name,
+            base_url: chat_request.base_url,
+            messages,
+            system: chat_request.system,
+            tools: chat_request.tools,
+            max_tokens: chat_request.max_tokens,
+            temperature: chat_request.temperature,
+            top_p: chat_request.top_p,
+            provider_options: chat_request.provider_options,
+            provider_key: chat_request.provider_key,
+            rid: None,
+            forensic_character: None,
+            system_suffix: Some(system.to_string()),
+            retain_long: true,
+        })
+    }
+
+    fn generate<'a>(
+        &'a self,
+        _request: &'a mut LlmRequest,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<String, CompactionError>> + Send + '_>,
+        Box<
+            dyn std::future::Future<Output = Result<GenerateResponse, CompactionError>> + Send + 'a,
+        >,
     > {
-        let response = self.response.clone();
-        Box::pin(async move { Ok(response) })
+        let next = {
+            let mut guard = self.responses.lock().unwrap();
+            if guard.is_empty() {
+                None
+            } else {
+                Some(guard.remove(0))
+            }
+        };
+        Box::pin(async move {
+            next.ok_or_else(|| CompactionError::Llm("scripted LLM exhausted".into()))
+        })
+    }
+}
+
+/// Build a minimal chat-shape `LlmRequest` for integration tests. Mirrors
+/// what `handler::build_chat_shape_request_from_disk` would produce, but
+/// without needing the full disk-walking setup.
+fn make_chat_request_for_test() -> LlmRequest {
+    LlmRequest {
+        sdk: shore_config::models::Sdk::Anthropic,
+        model: "mock-chat-model".into(),
+        api_key: String::new(),
+        api_key_name: None,
+        base_url: None,
+        messages: Vec::new(),
+        system: Some(serde_json::json!("mock chat system")),
+        tools: Some(Vec::new()),
+        max_tokens: 1024,
+        temperature: None,
+        top_p: None,
+        provider_options: None,
+        provider_key: None,
+        rid: None,
+        forensic_character: None,
+        system_suffix: None,
+        retain_long: false,
     }
 }
 
@@ -96,11 +236,13 @@ async fn test_markdown_memory_compaction_end_to_end() {
     let active = active_jsonl(&messages);
     std::fs::write(char_dir.join("active.jsonl"), &active).unwrap();
 
+    // Workspace lives at char_dir; the markdown store hangs off
+    // <workspace>/memory so write tool path resolution lines up.
     let store = MarkdownMemoryStore::open(char_dir.join("memory"))
         .await
         .unwrap();
     let conv_mgr = RealConversationManager::new(&char_dir);
-    let llm = MockCompactionLlm::with_entries(&[
+    let llm = ScriptedCompactionLlm::writing(&[
         (
             "memory/people/user.md",
             "# User\n\n- Loves ramen\n- Prefers tea over coffee",
@@ -111,6 +253,7 @@ async fn test_markdown_memory_compaction_end_to_end() {
         ),
     ]);
     let mgr = CompactionManager::new(CompactionConfig::default());
+    let tool_ctx = IntegrationToolContext::new(char_dir.to_string_lossy().into_owned());
 
     let data_dir = tmp.path().join("data");
     let outcome = mgr
@@ -128,15 +271,16 @@ async fn test_markdown_memory_compaction_end_to_end() {
             Some(&store),
             false,
             Some(1),
-            None,
+            make_chat_request_for_test(),
             Some(&data_dir),
+            &tool_ctx,
         )
         .await
         .unwrap();
 
     let result = match outcome {
         CompactionOutcome::Compacted(result) => result,
-        CompactionOutcome::DryRun(_) => panic!("expected real compaction"),
+        other => panic!("expected Compacted, got {other:?}"),
     };
 
     assert_eq!(result.memory_files_written.len(), 2);
@@ -163,11 +307,12 @@ async fn test_compaction_rejects_private_conversation() {
         .await
         .unwrap();
     let conv_mgr = RealConversationManager::new(&char_dir);
-    let llm = MockCompactionLlm::with_entries(&[(
+    let llm = ScriptedCompactionLlm::writing(&[(
         "memory/people/user.md",
         "# User\n\n- Should not exist",
     )]);
     let mgr = CompactionManager::new(CompactionConfig::default());
+    let tool_ctx = IntegrationToolContext::new(char_dir.to_string_lossy().into_owned());
 
     let result = mgr
         .compact(
@@ -184,8 +329,9 @@ async fn test_compaction_rejects_private_conversation() {
             Some(&store),
             false,
             None,
+            make_chat_request_for_test(),
             None,
-            None,
+            &tool_ctx,
         )
         .await;
 

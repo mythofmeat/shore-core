@@ -37,6 +37,37 @@ use shore_test_harness::mock_llm::{
 /// state must hold this mutex for its entire body.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+/// RAII guard that snapshots an env var on construction and restores its
+/// prior value (set or unset) on drop, so a panic inside a test can't
+/// leak overrides into later tests in the same binary.
+struct EnvVarGuard {
+    key: &'static str,
+    prev: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let prev = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, prev }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let prev = std::env::var(key).ok();
+        std::env::remove_var(key);
+        Self { key, prev }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.prev {
+            Some(prev) => std::env::set_var(self.key, prev),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
 /// Build a baseline LlmRequest aimed at the mock. Tests mutate it further.
 fn base_request(base_url: &str) -> LlmRequest {
     LlmRequest {
@@ -103,8 +134,8 @@ async fn cache_control_pinned_zero_marks_last_system_block() {
     // With cache_ttl set, exactly one cache_control should land on the
     // sole system block.
     let _guard = ENV_LOCK.lock().unwrap();
-    std::env::set_var("SHORE_CACHE_PINNED_POSITION", "0");
-    std::env::set_var("SHORE_CACHE_DEPTH_TURNS", "");
+    let _pinned = EnvVarGuard::set("SHORE_CACHE_PINNED_POSITION", "0");
+    let _depth = EnvVarGuard::set("SHORE_CACHE_DEPTH_TURNS", "");
 
     let mock = MockLlmServer::start().await;
     mock.enqueue_stream(AnthropicStreamBuilder::new().text("ok"))
@@ -122,9 +153,6 @@ async fn cache_control_pinned_zero_marks_last_system_block() {
         vec!["system[0]".to_string()],
         "expected exactly one cache_control on system[0], got {paths:?}"
     );
-
-    std::env::remove_var("SHORE_CACHE_PINNED_POSITION");
-    std::env::remove_var("SHORE_CACHE_DEPTH_TURNS");
 }
 
 #[tokio::test]
@@ -133,8 +161,8 @@ async fn cache_control_default_with_two_system_blocks_anchors_at_minus_one() {
     // i.e. the block above memory_index). With two system blocks present,
     // pinned=[-1] should land on system[0], not system[1].
     let _guard = ENV_LOCK.lock().unwrap();
-    std::env::remove_var("SHORE_CACHE_PINNED_POSITION");
-    std::env::remove_var("SHORE_CACHE_DEPTH_TURNS");
+    let _pinned = EnvVarGuard::unset("SHORE_CACHE_PINNED_POSITION");
+    let _depth = EnvVarGuard::unset("SHORE_CACHE_DEPTH_TURNS");
 
     let mock = MockLlmServer::start().await;
     mock.enqueue_stream(AnthropicStreamBuilder::new().text("ok"))

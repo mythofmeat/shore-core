@@ -1903,6 +1903,7 @@ dependencies = [
  "shore-swp-client",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

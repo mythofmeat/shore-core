@@ -259,6 +259,15 @@ pub enum CliCommand {
         /// Output raw JSON
         #[arg(long)]
         json: bool,
+
+        /// Output as TOML (suitable for pasting into a config file).
+        /// Only valid for read-only config queries (no value, --check, or --reset).
+        #[arg(long, conflicts_with_all = ["json", "check", "reset", "value"])]
+        toml: bool,
+
+        /// Include keys whose value matches the built-in default (shown dimmed)
+        #[arg(long, short = 'a')]
+        all: bool,
     },
 
     /// Show token usage statistics and costs
@@ -2092,6 +2101,8 @@ mod tests {
             check: false,
             reset: false,
             json: false,
+            toml: false,
+            all: false,
         };
         assert!(to_swp_command(&cmd).is_none());
     }
@@ -2407,6 +2418,8 @@ mod tests {
                 check: false,
                 reset: false,
                 json: false,
+                toml: false,
+                all: false,
             },
         ];
         for cmd in &commands {

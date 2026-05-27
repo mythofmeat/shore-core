@@ -226,7 +226,7 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "compact" => print_compact_result(data),
         "memory_changelog" => print_changelog(data),
         "memory_dream" => print_memory_dream(data),
-        "config" => print_config(data),
+        "config" => print_config(data, false),
         "config_check" => print_config_check(data),
         "config_reset" => print_config_reset(data),
         "edit" => print_edit_confirmation(data),
@@ -437,6 +437,22 @@ fn print_model_list(data: &serde_json::Value) {
     write_section_header(&mut out, "Models", suffix, width);
 
     if let Some(models) = data["models"].as_array() {
+        // Size columns to the widest value so rows stay visually separated
+        // even when names like `arcee-ai/trinity-large-thinking:free` or
+        // providers like `openrouter-anthropic` blow past fixed defaults.
+        let name_w = models
+            .iter()
+            .map(|m| m["name"].as_str().unwrap_or("?").chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(24);
+        let provider_w = models
+            .iter()
+            .map(|m| m["provider"].as_str().unwrap_or("?").chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(10);
+
         for m in models {
             let name = m["name"].as_str().unwrap_or("?");
             let provider = m["provider"].as_str().unwrap_or("?");
@@ -455,11 +471,11 @@ fn print_model_list(data: &serde_json::Value) {
             if use_color() {
                 let _ = crossterm::execute!(out, ResetColor);
             }
-            let _ = write!(out, "{name:<28}");
+            let _ = write!(out, "{name:<name_w$}  ");
             if use_color() {
                 let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
             }
-            let _ = write!(out, "{provider:<14}");
+            let _ = write!(out, "{provider:<provider_w$}  ");
             // Tag like `static` / `discovered`. Hidden rows (only seen
             // with `--all`) carry an extra `hidden` so users can spot
             // why their default list filtered them.
@@ -1031,8 +1047,14 @@ fn print_compact_result(data: &serde_json::Value) {
     let _ = writeln!(out);
 }
 
+/// Build a default-config baseline locally so `--all` and the hide-defaults
+/// path work even against older daemons that don't ship a `defaults` field.
+fn local_defaults_baseline() -> Option<serde_json::Value> {
+    serde_json::to_value(shore_config::app::AppConfig::default()).ok()
+}
+
 /// Print config display.
-fn print_config(data: &serde_json::Value) {
+pub(crate) fn print_config(data: &serde_json::Value, show_all: bool) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let width = term_width();
@@ -1044,72 +1066,156 @@ fn print_config(data: &serde_json::Value) {
         return;
     }
 
-    // Section view: { "key": "name", "config": { ... } }
+    // Section view: { "key": "name", "config": { ... }, "defaults": { ... } }
     if let Some(key) = data["key"].as_str() {
+        // The daemon (new) ships `defaults` already scoped to the section. For
+        // old daemons we synthesize the baseline locally and descend into the
+        // matching subtree so the comparison stays aligned with `config`.
+        let local_baseline;
+        let section_default = match data.get("defaults") {
+            Some(d) => Some(d),
+            None => {
+                local_baseline = local_defaults_baseline();
+                local_baseline.as_ref().and_then(|d| d.get(key))
+            }
+        };
         write_section_header(&mut out, "Config", key, width);
-        print_config_section(&mut out, &data["config"], 1);
+        print_config_section(&mut out, &data["config"], section_default, 1, show_all);
         let _ = writeln!(out);
         return;
     }
 
-    // Full config: { "config": { ... } }
+    // Full config: { "config": { ... }, "defaults": { ... } }
     if let Some(config) = data.get("config") {
+        let local_baseline;
+        let defaults = match data.get("defaults") {
+            Some(d) => Some(d),
+            None => {
+                local_baseline = local_defaults_baseline();
+                local_baseline.as_ref()
+            }
+        };
         write_section_header(&mut out, "Config", "", width);
-        print_config_section(&mut out, config, 1);
+        print_config_section(&mut out, config, defaults, 1, show_all);
         let _ = writeln!(out);
     }
 }
 
-/// Recursively print config as indented key-value pairs.
-fn print_config_section(out: &mut impl Write, value: &serde_json::Value, depth: usize) {
-    let indent = "  ".repeat(depth);
+/// Render a scalar value to its display string (matches the original formatter).
+fn render_config_value(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .map(|i| {
+                i.as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| i.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => v.to_string(),
+    }
+}
+
+/// Returns true if `value` contains at least one leaf that differs from its
+/// corresponding entry in `defaults` (or has no default to compare against).
+/// Used to decide whether a subtable header is worth showing when defaults
+/// are hidden.
+fn has_non_defaults(value: &serde_json::Value, defaults: Option<&serde_json::Value>) -> bool {
     match value {
-        serde_json::Value::Object(map) => {
-            for (k, v) in map {
-                match v {
-                    serde_json::Value::Object(_) => {
-                        if use_color() {
-                            let _ = crossterm::execute!(out, SetForegroundColor(Color::White));
-                        }
-                        let _ = writeln!(out, "{indent}{k}:");
-                        if use_color() {
-                            let _ = crossterm::execute!(out, ResetColor);
-                        }
-                        print_config_section(out, v, depth + 1);
-                    }
-                    serde_json::Value::Null => {} // skip nulls
-                    _ => {
-                        if use_color() {
-                            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                        }
-                        let _ = write!(out, "{indent}{k:<24}");
-                        if use_color() {
-                            let _ = crossterm::execute!(out, ResetColor);
-                        }
-                        let display = match v {
-                            serde_json::Value::String(s) => s.clone(),
-                            serde_json::Value::Bool(b) => b.to_string(),
-                            serde_json::Value::Number(n) => n.to_string(),
-                            serde_json::Value::Array(arr) => {
-                                let items: Vec<String> = arr
-                                    .iter()
-                                    .map(|i| {
-                                        i.as_str()
-                                            .map(String::from)
-                                            .unwrap_or_else(|| i.to_string())
-                                    })
-                                    .collect();
-                                items.join(", ")
-                            }
-                            _ => v.to_string(),
-                        };
-                        let _ = writeln!(out, "{display}");
-                    }
+        serde_json::Value::Null => false,
+        serde_json::Value::Object(map) => map.iter().any(|(k, v)| {
+            let d = defaults.and_then(|dd| dd.get(k));
+            has_non_defaults(v, d)
+        }),
+        leaf => defaults.is_none_or(|d| d != leaf),
+    }
+}
+
+/// Recursively print config as indented key-value pairs.
+///
+/// Column width is computed per parent table from the visible scalar keys, so
+/// each section aligns its own values without bleeding into sibling sections.
+/// When `show_all` is false, leaves that equal the default are skipped and
+/// subtables with no non-default descendants are collapsed.
+fn print_config_section(
+    out: &mut impl Write,
+    value: &serde_json::Value,
+    defaults: Option<&serde_json::Value>,
+    depth: usize,
+    show_all: bool,
+) {
+    let indent = "  ".repeat(depth);
+    let serde_json::Value::Object(map) = value else {
+        let _ = writeln!(out, "{indent}{value}");
+        return;
+    };
+
+    // First pass: filter to entries we'll actually render and classify them.
+    let mut visible: Vec<(
+        &str,
+        &serde_json::Value,
+        Option<&serde_json::Value>,
+        bool,
+        bool,
+    )> = Vec::new();
+    for (k, v) in map {
+        let d = defaults.and_then(|dd| dd.get(k));
+        match v {
+            serde_json::Value::Null => continue,
+            serde_json::Value::Object(_) => {
+                if show_all || has_non_defaults(v, d) {
+                    visible.push((k.as_str(), v, d, true, false));
                 }
             }
+            _ => {
+                let is_default = d.is_some_and(|dd| dd == v);
+                if !show_all && is_default {
+                    continue;
+                }
+                visible.push((k.as_str(), v, d, false, is_default));
+            }
         }
-        _ => {
-            let _ = writeln!(out, "{indent}{value}");
+    }
+
+    // Per-section column: max scalar key length + 1 space. Subtable headers
+    // ("key:") don't share a column with scalar rows.
+    let scalar_width = visible
+        .iter()
+        .filter(|(_, _, _, is_sub, _)| !is_sub)
+        .map(|(k, _, _, _, _)| k.len())
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
+
+    for (k, v, d, is_subtable, is_default) in visible {
+        if is_subtable {
+            if use_color() {
+                let _ = crossterm::execute!(out, SetForegroundColor(Color::White));
+            }
+            let _ = writeln!(out, "{indent}{k}:");
+            if use_color() {
+                let _ = crossterm::execute!(out, ResetColor);
+            }
+            print_config_section(out, v, d, depth + 1, show_all);
+        } else {
+            // Default rows (only reachable with show_all): whole line dimmed.
+            // Non-default rows: key dimmed, value in the default terminal color
+            // so customizations visually pop.
+            if use_color() {
+                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+            }
+            let _ = write!(out, "{indent}{k:<scalar_width$}");
+            if use_color() && !is_default {
+                let _ = crossterm::execute!(out, ResetColor);
+            }
+            let _ = writeln!(out, "{}", render_config_value(v));
+            if use_color() && is_default {
+                let _ = crossterm::execute!(out, ResetColor);
+            }
         }
     }
 }
@@ -2258,5 +2364,131 @@ mod tests {
         assert_eq!(density_to_block(0.06), '\u{2581}'); // 0.06 * 7 = 0.42 -> round 0 -> first block
         assert_eq!(density_to_block(0.5), '\u{2585}'); // 0.5 * 7 = 3.5 -> round 4 -> fifth block
         assert_eq!(density_to_block(1.0), '\u{2588}'); // 1.0 * 7 = 7.0 -> index 7 -> full block
+    }
+
+    #[test]
+    fn print_config_section_aligns_per_table_to_longest_key() {
+        // Regression for #73: keys used to butt up against values because the
+        // column was a fixed 24. Now the column is computed per-section from
+        // the longest visible scalar key. The longest key here is
+        // `unsafe_allow_remote_access` (26 chars) -> column = 27.
+        set_color_enabled(false);
+        let data = serde_json::json!({
+            "addr": "0.0.0.0:1112",
+            "unsafe_allow_remote_access": true,
+            "max_embed_chars_per_file": 4000,
+        });
+        let mut buf: Vec<u8> = Vec::new();
+        print_config_section(&mut buf, &data, None, 0, true);
+        let rendered = String::from_utf8(buf).expect("utf8");
+        assert!(
+            !rendered.contains("accesstrue"),
+            "long key bled into value:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("file4000"),
+            "boundary key bled into value:\n{rendered}"
+        );
+        // All rows should align to column 27 (longest key + 1 space).
+        assert!(
+            rendered.contains(&format!("addr{:23}0.0.0.0:1112", "")),
+            "short key not padded to section column:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("unsafe_allow_remote_access true"),
+            "longest key should get a single trailing space:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("max_embed_chars_per_file{:3}4000", "")),
+            "mid-length key not padded to section column:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn print_config_section_hides_defaults_when_show_all_is_false() {
+        set_color_enabled(false);
+        let config = serde_json::json!({
+            "stream": true,
+            "model": "claude-haiku-4-5",
+        });
+        let defaults = serde_json::json!({
+            "stream": true,
+            "model": "claude-sonnet-4-5",
+        });
+        let mut buf: Vec<u8> = Vec::new();
+        print_config_section(&mut buf, &config, Some(&defaults), 0, false);
+        let rendered = String::from_utf8(buf).expect("utf8");
+        assert!(
+            !rendered.contains("stream"),
+            "default-valued key should be hidden:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("model"),
+            "non-default key should still be shown:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn print_config_section_realistic_shape_renders_cleanly() {
+        // Mirrors the bug report in issue #73: long keys in the daemon section
+        // used to collide with their values. Confirms the per-section column
+        // produces consistent alignment on a realistic payload.
+        set_color_enabled(false);
+        let config = serde_json::json!({
+            "daemon": {
+                "addr": "0.0.0.0:1112",
+                "unsafe_allow_remote_access": true,
+                "allowed_hosts": ["100.84.100.99", "127.0.0.1"],
+            },
+        });
+        let mut buf: Vec<u8> = Vec::new();
+        print_config_section(&mut buf, &config, None, 0, true);
+        let rendered = String::from_utf8(buf).expect("utf8");
+        let daemon_lines: Vec<&str> = rendered
+            .lines()
+            .filter(|l| l.starts_with("  ") && !l.ends_with(':'))
+            .collect();
+        assert!(
+            !daemon_lines.is_empty(),
+            "expected scalar rows under daemon"
+        );
+        // Every scalar row under `daemon` must start at the same column for
+        // the value (i.e. consistent indent + matching pad column).
+        let value_columns: Vec<usize> = daemon_lines
+            .iter()
+            .map(|l| l.find(|c: char| !c.is_whitespace()).unwrap_or(0))
+            .collect();
+        assert!(
+            value_columns.windows(2).all(|w| w[0] == w[1]),
+            "scalar rows indented inconsistently: {daemon_lines:?}"
+        );
+    }
+
+    #[test]
+    fn print_config_section_collapses_all_default_subtables() {
+        set_color_enabled(false);
+        let config = serde_json::json!({
+            "outer": {
+                "nested": { "a": 1, "b": 2 },
+                "kept": "user-value",
+            }
+        });
+        let defaults = serde_json::json!({
+            "outer": {
+                "nested": { "a": 1, "b": 2 },
+                "kept": "default-value",
+            }
+        });
+        let mut buf: Vec<u8> = Vec::new();
+        print_config_section(&mut buf, &config, Some(&defaults), 0, false);
+        let rendered = String::from_utf8(buf).expect("utf8");
+        assert!(
+            !rendered.contains("nested:"),
+            "subtable with no non-default descendants should be elided:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("outer:") && rendered.contains("kept"),
+            "outer header and non-default leaf should be shown:\n{rendered}"
+        );
     }
 }
