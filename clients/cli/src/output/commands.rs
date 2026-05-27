@@ -437,6 +437,22 @@ fn print_model_list(data: &serde_json::Value) {
     write_section_header(&mut out, "Models", suffix, width);
 
     if let Some(models) = data["models"].as_array() {
+        // Size columns to the widest value so rows stay visually separated
+        // even when names like `arcee-ai/trinity-large-thinking:free` or
+        // providers like `openrouter-anthropic` blow past fixed defaults.
+        let name_w = models
+            .iter()
+            .map(|m| m["name"].as_str().unwrap_or("?").chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(24);
+        let provider_w = models
+            .iter()
+            .map(|m| m["provider"].as_str().unwrap_or("?").chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(10);
+
         for m in models {
             let name = m["name"].as_str().unwrap_or("?");
             let provider = m["provider"].as_str().unwrap_or("?");
@@ -455,11 +471,11 @@ fn print_model_list(data: &serde_json::Value) {
             if use_color() {
                 let _ = crossterm::execute!(out, ResetColor);
             }
-            let _ = write!(out, "{name:<28}");
+            let _ = write!(out, "{name:<name_w$}  ");
             if use_color() {
                 let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
             }
-            let _ = write!(out, "{provider:<14}");
+            let _ = write!(out, "{provider:<provider_w$}  ");
             // Tag like `static` / `discovered`. Hidden rows (only seen
             // with `--all`) carry an extra `hidden` so users can spot
             // why their default list filtered them.
