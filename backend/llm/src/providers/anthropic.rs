@@ -331,9 +331,17 @@ fn compute_prefix_hash(system: &Value, messages: &[Value], msg_bp: &[usize]) -> 
     hasher.finish()
 }
 
-/// Enforce Anthropic's 4-breakpoint limit. Keeps system breakpoints; truncates
-/// message breakpoints from the end if needed.
-fn enforce_breakpoint_limit(msg_bp: &mut Vec<usize>, sys_bp: &[usize]) {
+/// Enforce Anthropic's 4-breakpoint limit. Clamps system breakpoints first,
+/// then truncates message breakpoints from the end if the combined total
+/// still exceeds 4.
+fn enforce_breakpoint_limit(msg_bp: &mut Vec<usize>, sys_bp: &mut Vec<usize>) {
+    if sys_bp.len() > 4 {
+        tracing::warn!(
+            sys = sys_bp.len(),
+            "cache breakpoints exceed 4 with system anchors alone, truncating system breakpoints"
+        );
+        sys_bp.truncate(4);
+    }
     let total = msg_bp.len() + sys_bp.len();
     if total > 4 {
         tracing::warn!(
@@ -461,7 +469,7 @@ fn apply_cache_control(
     sys_bp.sort_unstable();
     sys_bp.dedup();
 
-    enforce_breakpoint_limit(&mut msg_bp, &sys_bp);
+    enforce_breakpoint_limit(&mut msg_bp, &mut sys_bp);
     place_breakpoints(&mut result, &mut system, cache_ttl, &msg_bp, &sys_bp);
     let prefix_hash = compute_prefix_hash(&system, &result, &msg_bp);
 
@@ -509,8 +517,8 @@ fn apply_cache_control_ts_default(
         );
     }
 
-    let (mut msg_bp, sys_bp) = ts_default_placement(&result, &system);
-    enforce_breakpoint_limit(&mut msg_bp, &sys_bp);
+    let (mut msg_bp, mut sys_bp) = ts_default_placement(&result, &system);
+    enforce_breakpoint_limit(&mut msg_bp, &mut sys_bp);
     place_breakpoints(&mut result, &mut system, cache_ttl, &msg_bp, &sys_bp);
     let prefix_hash = compute_prefix_hash(&system, &result, &msg_bp);
 
