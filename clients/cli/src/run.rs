@@ -460,12 +460,18 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 | CliCommand::Usage { json, .. } => *json,
                 _ => false,
             };
+            let toml_mode = matches!(other, CliCommand::Config { toml: true, .. });
+            let show_all = matches!(other, CliCommand::Config { all: true, .. });
             let (name, args) = crate::cli::to_swp_command(other)
                 .expect("non-send/regen/local command must map to SWP command");
             conn.send_command(name, args).await?;
             let data = recv_command_data(&mut conn).await?;
-            if json_mode {
+            if toml_mode {
+                print_config_toml(&data, show_all)?;
+            } else if json_mode {
                 println!("{}", serde_json::to_string_pretty(&data)?);
+            } else if name == "config" {
+                output::commands::print_config(&data, show_all);
             } else {
                 output::format_command(name, &data);
             }
@@ -919,6 +925,126 @@ async fn print_config_path(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> 
             eprintln!("(no daemon running — showing local config dir)");
             println!("{}", config_dir().display());
             Ok(())
+        }
+    }
+}
+
+/// Print the `shore config` payload as TOML, ready to paste into a config file.
+///
+/// With `show_all = false`, drops keys whose value equals the daemon's built-in
+/// default so the output is a diff against defaults — paste-able to override
+/// only what you've customized.
+fn print_config_toml(
+    data: &serde_json::Value,
+    show_all: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let payload = data.get("config").unwrap_or(data);
+    let key = data.get("key").and_then(|v| v.as_str());
+    // Prefer the daemon-supplied baseline; synthesize one locally if absent so
+    // we behave the same against pre-defaults daemons.
+    let local_baseline;
+    let defaults: Option<&serde_json::Value> = match data.get("defaults") {
+        Some(d) => Some(d),
+        None => {
+            local_baseline =
+                serde_json::to_value(shore_config::app::AppConfig::default()).ok();
+            match key {
+                Some(k) => local_baseline.as_ref().and_then(|d| d.get(k)),
+                None => local_baseline.as_ref(),
+            }
+        }
+    };
+    let filtered: serde_json::Value;
+    let effective = if show_all {
+        payload
+    } else {
+        filtered = filter_non_defaults(payload, defaults).unwrap_or(serde_json::Value::Null);
+        &filtered
+    };
+    let toml_value =
+        json_to_toml_value(effective).ok_or("config payload has no non-default entries")?;
+    let rendered = match toml_value {
+        toml::Value::Table(t) => toml::to_string_pretty(&t)?,
+        other => toml::to_string_pretty(&other)?,
+    };
+    print!("{rendered}");
+    Ok(())
+}
+
+/// Return a copy of `value` with every leaf that equals its corresponding entry
+/// in `defaults` removed, and subtables with no surviving descendants pruned.
+/// Returns `None` when nothing survives.
+fn filter_non_defaults(
+    value: &serde_json::Value,
+    defaults: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                let d = defaults.and_then(|dd| dd.get(k));
+                if matches!(v, serde_json::Value::Object(_)) {
+                    if let Some(sub) = filter_non_defaults(v, d) {
+                        out.insert(k.clone(), sub);
+                    }
+                } else if d.is_none_or(|dd| dd != v) {
+                    out.insert(k.clone(), v.clone());
+                }
+            }
+            if out.is_empty() {
+                None
+            } else {
+                Some(serde_json::Value::Object(out))
+            }
+        }
+        leaf => {
+            if defaults.is_none_or(|d| d != leaf) {
+                Some(leaf.clone())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Convert a `serde_json::Value` to a `toml::Value`, preserving key order but
+/// emitting non-table fields before nested tables so the TOML serializer never
+/// hits a "value after table" error. Drops `null` entries (TOML has no null).
+fn json_to_toml_value(value: &serde_json::Value) -> Option<toml::Value> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::Bool(b) => Some(toml::Value::Boolean(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(toml::Value::Integer(i))
+            } else if let Some(f) = n.as_f64() {
+                Some(toml::Value::Float(f))
+            } else {
+                Some(toml::Value::String(n.to_string()))
+            }
+        }
+        serde_json::Value::String(s) => Some(toml::Value::String(s.clone())),
+        serde_json::Value::Array(arr) => Some(toml::Value::Array(
+            arr.iter().filter_map(json_to_toml_value).collect(),
+        )),
+        serde_json::Value::Object(map) => {
+            let mut table = toml::value::Table::new();
+            let converted: Vec<(&String, toml::Value)> = map
+                .iter()
+                .filter_map(|(k, v)| json_to_toml_value(v).map(|tv| (k, tv)))
+                .collect();
+            for (k, v) in &converted {
+                if !matches!(v, toml::Value::Table(_)) {
+                    table.insert((*k).clone(), v.clone());
+                }
+            }
+            for (k, v) in &converted {
+                if matches!(v, toml::Value::Table(_)) {
+                    table.insert((*k).clone(), v.clone());
+                }
+            }
+            Some(toml::Value::Table(table))
         }
     }
 }
@@ -1611,5 +1737,72 @@ mod tests {
         });
         let received = execute_with_mock(cli, responses).await;
         assert!(matches!(received, ClientMessage::Message(_)));
+    }
+
+    #[test]
+    fn json_to_toml_reorders_tables_after_scalars() {
+        // serde_json with `preserve_order` keeps insertion order, which the
+        // daemon doesn't guarantee. The converter must move tables after
+        // scalars within each table so toml serialization never errors with
+        // "value after table".
+        let json = serde_json::json!({
+            "section_a": { "nested": true },
+            "scalar": "value",
+        });
+        let tv = super::json_to_toml_value(&json).expect("table");
+        let rendered = match tv {
+            toml::Value::Table(t) => toml::to_string_pretty(&t).expect("serialize"),
+            _ => panic!("expected table"),
+        };
+        // scalar definition must precede the [section_a] header
+        let scalar_idx = rendered.find("scalar").expect("scalar present");
+        let table_idx = rendered.find("[section_a]").expect("table header present");
+        assert!(
+            scalar_idx < table_idx,
+            "scalar must serialize before nested table:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn filter_non_defaults_prunes_default_leaves_and_empty_subtables() {
+        let config = serde_json::json!({
+            "outer": {
+                "kept": "user-value",
+                "nested": { "a": 1, "b": 2 },
+            },
+            "scalar_user": "x",
+            "scalar_default": "d",
+        });
+        let defaults = serde_json::json!({
+            "outer": {
+                "kept": "default-value",
+                "nested": { "a": 1, "b": 2 },
+            },
+            "scalar_user": "other",
+            "scalar_default": "d",
+        });
+        let filtered = super::filter_non_defaults(&config, Some(&defaults)).expect("not empty");
+        let outer = filtered.get("outer").expect("outer kept");
+        assert!(outer.get("kept").is_some(), "non-default leaf preserved");
+        assert!(
+            outer.get("nested").is_none(),
+            "all-default subtable should be pruned"
+        );
+        assert!(filtered.get("scalar_user").is_some());
+        assert!(
+            filtered.get("scalar_default").is_none(),
+            "default scalar should be pruned"
+        );
+    }
+
+    #[test]
+    fn json_to_toml_drops_nulls() {
+        let json = serde_json::json!({ "set": null, "kept": 1 });
+        let tv = super::json_to_toml_value(&json).expect("table");
+        let toml::Value::Table(t) = tv else {
+            panic!("expected table")
+        };
+        assert!(t.contains_key("kept"));
+        assert!(!t.contains_key("set"), "null entries should be dropped");
     }
 }
