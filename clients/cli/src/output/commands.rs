@@ -1155,8 +1155,13 @@ fn print_config_section(
     };
 
     // First pass: filter to entries we'll actually render and classify them.
-    let mut visible: Vec<(&str, &serde_json::Value, Option<&serde_json::Value>, bool, bool)> =
-        Vec::new();
+    let mut visible: Vec<(
+        &str,
+        &serde_json::Value,
+        Option<&serde_json::Value>,
+        bool,
+        bool,
+    )> = Vec::new();
     for (k, v) in map {
         let d = defaults.and_then(|dd| dd.get(k));
         match v {
@@ -2443,7 +2448,10 @@ mod tests {
             .lines()
             .filter(|l| l.starts_with("  ") && !l.ends_with(':'))
             .collect();
-        assert!(!daemon_lines.is_empty(), "expected scalar rows under daemon");
+        assert!(
+            !daemon_lines.is_empty(),
+            "expected scalar rows under daemon"
+        );
         // Every scalar row under `daemon` must start at the same column for
         // the value (i.e. consistent indent + matching pad column).
         let value_columns: Vec<usize> = daemon_lines

@@ -99,12 +99,13 @@ pub fn config(ctx: &mut CommandContext, args: &serde_json::Value) -> CommandResu
     })?;
     // Ship the built-in defaults as a baseline so the CLI can distinguish
     // user-customized values from defaults.
-    let defaults_json = serde_json::to_value(shore_config::app::AppConfig::default()).map_err(|e| {
-        (
-            ErrorCode::InternalError,
-            format!("Failed to serialize default config: {e}"),
-        )
-    })?;
+    let defaults_json =
+        serde_json::to_value(shore_config::app::AppConfig::default()).map_err(|e| {
+            (
+                ErrorCode::InternalError,
+                format!("Failed to serialize default config: {e}"),
+            )
+        })?;
 
     match key {
         None => Ok(json!({ "config": app_json, "defaults": defaults_json })),

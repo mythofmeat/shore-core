@@ -946,8 +946,7 @@ fn print_config_toml(
     let defaults: Option<&serde_json::Value> = match data.get("defaults") {
         Some(d) => Some(d),
         None => {
-            local_baseline =
-                serde_json::to_value(shore_config::app::AppConfig::default()).ok();
+            local_baseline = serde_json::to_value(shore_config::app::AppConfig::default()).ok();
             match key {
                 Some(k) => local_baseline.as_ref().and_then(|d| d.get(k)),
                 None => local_baseline.as_ref(),
