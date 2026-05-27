@@ -24,6 +24,16 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   entry with an API key.
 
 ### Fixed
+- Compaction now drives a tool loop (calling `write`/`edit` on memory
+  files) instead of parsing an XML-shaped response. The active
+  conversation is only archived when at least one allowed memory write
+  actually occurs; a `tool_use`-only response, a `read`-only loop, or
+  hitting `max_tool_rounds` returns the new `CompactionOutcome::
+  NoMemoryWrites` and leaves `active.jsonl` intact for the next
+  trigger. The pre-fix behaviour silently archived the transcript with
+  zero memory writes when the model emitted `tool_use` blocks instead
+  of XML, which presented as data loss to the user (issue #43).
+  Adds a `[memory.compaction] max_tool_rounds` setting (default 12).
 - Fix native Anthropic provider model discovery to use the Anthropic Models
   API and preserve Anthropic model metadata.
 - `shore usage` now sizes the `Provider` and `Model` columns to the widest

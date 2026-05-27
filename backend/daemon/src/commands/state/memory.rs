@@ -372,6 +372,12 @@ pub async fn compact(
 
     let cached_request = ctx.autonomy.cached_last_request(&char_name);
 
+    // Build the canonical tool context for the compaction loop. Mirrors
+    // the background-task wiring so manual `swp memory_compact` and the
+    // idle-trigger path see an identical workspace/markdown-store/embedder
+    // view.
+    let tool_ctx = build_swp_compaction_tool_context(ctx, &char_name).await;
+
     let outcome = mgr
         .compact(
             &char_name,
@@ -389,6 +395,7 @@ pub async fn compact(
             keep_turns_override,
             cached_request,
             Some(&ctx.config.dirs.data),
+            tool_ctx.as_ref(),
         )
         .await
         .map_err(compaction_err)?;
@@ -431,6 +438,28 @@ pub async fn compact(
                 "retained_count": result.retained_count,
                 "retained_turns": result.retained_turns,
                 "new_conversation_id": result.new_conversation_id,
+                "tool_rounds": result.tool_rounds,
+                "tools_called": result.tools_called,
+            }))
+        }
+        CompactionOutcome::NoMemoryWrites(result) => {
+            tracing::warn!(
+                character = %char_name,
+                tool_rounds = result.tool_rounds,
+                rejected = result.rejected_paths.len(),
+                max_rounds_hit = result.max_rounds_hit,
+                "Compaction produced no memory writes — conversation NOT archived"
+            );
+            Ok(json!({
+                "status": "no_memory_writes",
+                "character": char_name,
+                "message_count": result.compacted_turns,
+                "turn_count": result.compacted_turns,
+                "compacted_turns": result.compacted_turns,
+                "tool_rounds": result.tool_rounds,
+                "tools_called": result.tools_called,
+                "rejected_paths": result.rejected_paths,
+                "max_rounds_hit": result.max_rounds_hit,
             }))
         }
         CompactionOutcome::DryRun(result) => {
@@ -455,9 +484,61 @@ pub async fn compact(
                 "compacted_turns": result.compacted_turns,
                 "retained_count": result.retained_count,
                 "retained_turns": result.retained_turns,
+                "tool_rounds": result.tool_rounds,
+                "tools_called": result.tools_called,
             }))
         }
     }
+}
+
+/// Build the compaction tool context for a manual `swp memory_compact`
+/// call. Mirrors the background-task wiring exactly so both code paths
+/// see the same workspace, markdown store, embedder, and image-gen
+/// config.
+async fn build_swp_compaction_tool_context(
+    ctx: &CommandContext,
+    char_name: &str,
+) -> std::sync::Arc<crate::tools::context::SharedToolContext> {
+    use shore_config::{character_data_dir, character_memory_dir, character_workspace_dir};
+
+    let character_data_dir_path = character_data_dir(&ctx.config.dirs.data, char_name);
+    let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
+        ctx.config.app.defaults.image_generation.as_deref(),
+        &ctx.config.models.image_generation,
+    )
+    .ok();
+    let embedder = crate::memory::retrieval::resolve_embedder(
+        ctx.config.app.defaults.embedding.as_deref(),
+        &ctx.config.models.embedding,
+        ctx.llm_client.inner().http_client(),
+    )
+    .ok();
+
+    std::sync::Arc::new(crate::tools::context::SharedToolContext {
+        image_dir_val: character_data_dir_path
+            .join("images")
+            .to_string_lossy()
+            .into_owned(),
+        llm_client_val: ctx.llm_client.inner().clone(),
+        image_gen_config_val: image_gen_config,
+        search_config_val: ctx.config.app.behavior.tool_use.search.clone(),
+        character_name_val: char_name.to_string(),
+        workspace_dir_val: character_workspace_dir(&ctx.config.dirs.config, char_name)
+            .to_string_lossy()
+            .into_owned(),
+        markdown_store_val: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
+            character_memory_dir(&ctx.config.dirs.config, char_name),
+        )
+        .ok(),
+        memory_retrieval_config_val: ctx.config.app.memory.retrieval.clone(),
+        embedder_val: embedder,
+        memory_index_path_val: crate::memory::workspace_index::index_path(
+            &ctx.config.dirs.cache,
+            char_name,
+        ),
+        config_dir_val: ctx.config.dirs.config.to_string_lossy().into_owned(),
+        character_data_dir_val: character_data_dir_path.to_string_lossy().into_owned(),
+    })
 }
 
 fn compaction_err(e: CompactionError) -> (ErrorCode, String) {

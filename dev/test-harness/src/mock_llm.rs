@@ -817,6 +817,70 @@ impl MockLlmServer {
             .await;
     }
 
+    /// Enqueue the two non-streaming JSON responses a compaction tool
+    /// loop needs to write one memory file end-to-end:
+    ///
+    /// 1. A `tool_use` round calling `write(path, content)`.
+    /// 2. An `end_turn` round with a short text summary, terminating the
+    ///    loop after the daemon dispatched the write and sent back the
+    ///    `tool_result`.
+    ///
+    /// Both are mounted with `up_to_n_times(1)` and no `.expect(...)`, so
+    /// callers don't fail when retrieval/index-rebuild paths happen to
+    /// consume them in a different order.
+    pub async fn enqueue_json_compaction_write_optional(&self, path: &str, content: &str) {
+        let tool_use_body = json!({
+            "id": "msg_compaction_write_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-3-5-sonnet-20241022",
+            "content": [{
+                "type": "tool_use",
+                "id": "call_compact_write",
+                "name": "write",
+                "input": {
+                    "path": path,
+                    "content": content,
+                },
+            }],
+            "stop_reason": "tool_use",
+            "stop_sequence": null,
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 8,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 4
+            }
+        });
+        let end_body = json!({
+            "id": "msg_compaction_write_2",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-3-5-sonnet-20241022",
+            "content": [{ "type": "text", "text": "memory written" }],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {
+                "input_tokens": 4,
+                "output_tokens": 4,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 12
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path_regex("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&tool_use_body))
+            .up_to_n_times(1)
+            .mount(&self.server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&end_body))
+            .up_to_n_times(1)
+            .mount(&self.server)
+            .await;
+    }
+
     /// Enqueue a non-streaming JSON response without strict expectation
     /// (won't panic if not consumed).
     pub async fn enqueue_json_text_optional(&self, text: &str) {

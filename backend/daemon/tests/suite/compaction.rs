@@ -19,19 +19,18 @@ async fn compaction_harness_3turns() -> TestHarness {
     .await
 }
 
-/// Build a compact XML response that the compaction LLM parser will accept.
-fn compaction_llm_response(topic: &str) -> String {
-    format!(
-        r#"<memory>
-<write path="memory/topics/{topic}.md">
-# {topic}
-
-- User and assistant discussed {topic}
-- The exchange was informative
-</write>
-</memory>"#,
-        topic = topic
-    )
+/// Memory write a compaction tool-loop pass should emit. The harness
+/// helper enqueues the two-round wire shape (tool_use → end_turn) the
+/// daemon's tool loop drives.
+async fn enqueue_compaction_write(harness: &mut TestHarness, topic: &str) {
+    let path = format!("memory/topics/{topic}.md");
+    let content = format!(
+        "# {topic}\n\n- User and assistant discussed {topic}\n- The exchange was informative\n",
+    );
+    harness
+        .mock_llm
+        .enqueue_json_compaction_write_optional(&path, &content)
+        .await;
 }
 
 /// Send N user messages, enqueuing a chat LLM response before each send.
@@ -55,11 +54,9 @@ async fn test_compaction_triggers_on_max_turns() {
     send_n_messages(&mut harness, 3).await;
 
     // Enqueue compaction mocks AFTER chat messages so ordering doesn't interfere.
-    // The compaction LLM call uses non-streaming JSON (generate endpoint).
-    harness
-        .mock_llm
-        .enqueue_json_text_optional(&compaction_llm_response("messages"))
-        .await;
+    // The compaction LLM call uses non-streaming JSON (generate endpoint)
+    // and now runs a two-round tool loop: tool_use(write) → end_turn.
+    enqueue_compaction_write(&mut harness, "messages").await;
     // Optional hybrid retrieval indexing may ask for one embedding. dimensions=8 per TestConfigBuilder.
     harness.mock_llm.enqueue_embedding_optional(8).await;
 
@@ -106,10 +103,7 @@ async fn test_compaction_keeps_recent_turns() {
     }
 
     // Enqueue compaction mocks after chat messages.
-    harness
-        .mock_llm
-        .enqueue_json_text_optional(&compaction_llm_response("recent-turns"))
-        .await;
+    enqueue_compaction_write(&mut harness, "recent-turns").await;
     harness.mock_llm.enqueue_embedding_optional(8).await;
 
     harness.trigger_compaction_now("TestChar").await;
@@ -150,10 +144,7 @@ async fn test_messages_still_work_after_compaction() {
     send_n_messages(&mut harness, 3).await;
 
     // Enqueue compaction mocks after chat messages.
-    harness
-        .mock_llm
-        .enqueue_json_text_optional(&compaction_llm_response("post-compaction"))
-        .await;
+    enqueue_compaction_write(&mut harness, "post-compaction").await;
     harness.mock_llm.enqueue_embedding_optional(8).await;
 
     harness.trigger_compaction_now("TestChar").await;
@@ -236,10 +227,7 @@ async fn test_compaction_cached_path_appends_exactly_one_tail() {
 
     let pre_trigger_request_count = harness.mock_llm.received_requests().await.len();
 
-    harness
-        .mock_llm
-        .enqueue_json_text_optional(&compaction_llm_response("tail-length"))
-        .await;
+    enqueue_compaction_write(&mut harness, "tail-length").await;
     harness.mock_llm.enqueue_embedding_optional(8).await;
 
     harness.trigger_compaction_now("TestChar").await;
@@ -355,10 +343,7 @@ async fn test_retain_long_routes_background_payloads_to_long_tier() {
         long_logs.display(),
     );
 
-    harness
-        .mock_llm
-        .enqueue_json_text_optional(&compaction_llm_response("retain-long"))
-        .await;
+    enqueue_compaction_write(&mut harness, "retain-long").await;
     harness.mock_llm.enqueue_embedding_optional(8).await;
 
     harness.trigger_compaction_now("TestChar").await;
@@ -451,10 +436,7 @@ async fn test_character_data_dir_paths_through_full_stack() {
 
     // Trigger compaction — exercises memory/compaction/{mod,background}
     // and memory/compaction_impls, all of which were migrated.
-    harness
-        .mock_llm
-        .enqueue_json_text_optional(&compaction_llm_response("paths-fullstack"))
-        .await;
+    enqueue_compaction_write(&mut harness, "paths-fullstack").await;
     harness.mock_llm.enqueue_embedding_optional(8).await;
     harness.trigger_compaction_now("TestChar").await;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;

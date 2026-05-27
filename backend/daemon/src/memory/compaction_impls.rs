@@ -16,6 +16,7 @@ use crate::engine::segments::{CompactionManifest, SegmentEntry};
 use shore_config::models::ResolvedModel;
 use shore_config::providers::ProviderRegistry;
 use shore_ledger::{CallType, LedgerClient};
+use shore_llm::types::{GenerateResponse, LlmRequest};
 
 use super::compaction::{CompactionError, CompactionLlm, ConversationManager, RetentionParams};
 
@@ -212,8 +213,9 @@ impl RealCompactionLlm {
         &self,
         system: &str,
         messages: Vec<serde_json::Value>,
-        cached_request: Option<shore_llm::types::LlmRequest>,
-    ) -> Result<shore_llm::types::LlmRequest, CompactionError> {
+        fresh_tools: Vec<serde_json::Value>,
+        cached_request: Option<LlmRequest>,
+    ) -> Result<LlmRequest, CompactionError> {
         let mut request = match cached_request {
             Some(cached) => {
                 // Cache-preserving path: keep the live conversation's cached
@@ -222,11 +224,13 @@ impl RealCompactionLlm {
                 // hit the chat cache we must carry chat's tools through
                 // unchanged — `tools: None` here silently invalidates every
                 // cache match against the chat prefix and forces a full cache
-                // rebuild on every compaction. The trailing user/system
-                // instruction tells the model to emit the compaction XML
-                // response directly; we never parse tool_use blocks out of a
-                // compaction response, so passing the tool defs through is
-                // safe even though the model could in principle call them.
+                // rebuild on every compaction. The compaction tool loop
+                // dispatches the chat tool defs against the compaction tool
+                // context, which is what issue #43 (`tool_use` blocks being
+                // silently discarded) required us to start handling.
+                //
+                // `fresh_tools` is ignored on this branch: chat's tools win.
+                let _ = fresh_tools;
                 let mut request = LedgerClient::build_request_with_provider_keys(
                     &self.model,
                     &self.providers,
@@ -316,27 +320,34 @@ impl RealCompactionLlm {
 }
 
 impl CompactionLlm for RealCompactionLlm {
-    fn summarize(
+    fn build_initial_request(
         &self,
         system: &str,
         messages: Vec<serde_json::Value>,
-        cached_request: Option<shore_llm::types::LlmRequest>,
-    ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
-        let system = system.to_string();
-        Box::pin(async move {
-            let msg_count = messages.len();
-            let cached_prefix_used = cached_request.is_some();
-            let mut request = self.build_compaction_request(&system, messages, cached_request)?;
+        fresh_tools: Vec<serde_json::Value>,
+        cached_request: Option<LlmRequest>,
+    ) -> Result<LlmRequest, CompactionError> {
+        let msg_count = messages.len();
+        let cached_prefix_used = cached_request.is_some();
+        let request =
+            self.build_compaction_request(system, messages, fresh_tools, cached_request)?;
+        debug!(
+            system_len = system.len(),
+            msg_count, cached_prefix_used, "compaction: initial request built"
+        );
+        Ok(request)
+    }
 
-            debug!(
-                system_len = system.len(),
-                msg_count, cached_prefix_used, "compaction: starting LLM summarize"
-            );
+    fn generate<'a>(
+        &'a self,
+        request: &'a mut LlmRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<GenerateResponse, CompactionError>> + Send + 'a>> {
+        Box::pin(async move {
             let t0 = std::time::Instant::now();
             let (resp, _fallback_events) = self
                 .client
                 .generate_with_credential_fallback(
-                    &mut request,
+                    request,
                     &self.model,
                     &self.providers,
                     CallType::Compaction,
@@ -345,9 +356,14 @@ impl CompactionLlm for RealCompactionLlm {
                 )
                 .await
                 .map_err(|e| CompactionError::Llm(e.to_string()))?;
-            debug!(elapsed = ?t0.elapsed(), content_len = resp.content.len(), "compaction: LLM summarize done");
-
-            Ok(resp.extract_text())
+            debug!(
+                elapsed = ?t0.elapsed(),
+                content_len = resp.content.len(),
+                content_blocks = resp.content_blocks.len(),
+                finish_reason = %resp.finish_reason,
+                "compaction: LLM generate round done"
+            );
+            Ok(resp)
         })
     }
 }
@@ -568,6 +584,7 @@ mod tests {
             .build_compaction_request(
                 "compaction system",
                 vec![json!({"role": "user", "content": "compact now"})],
+                Vec::new(),
                 None,
             )
             .unwrap();
@@ -635,6 +652,7 @@ mod tests {
                 json!({"role": "user", "content": "compact now"}),
                 json!({"role": "user", "content": "second user message — must panic"}),
             ],
+            Vec::new(),
             Some(cached),
         );
     }
@@ -689,6 +707,7 @@ mod tests {
             .build_compaction_request(
                 "compaction system",
                 vec![json!({"role": "user", "content": "compact now"})],
+                Vec::new(),
                 Some(cached),
             )
             .unwrap();
@@ -793,6 +812,7 @@ mod tests {
             .build_compaction_request(
                 "compaction system prompt",
                 vec![json!({"role": "user", "content": "compact now"})],
+                Vec::new(),
                 Some(cached),
             )
             .unwrap();

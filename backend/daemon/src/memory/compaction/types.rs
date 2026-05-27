@@ -1,7 +1,8 @@
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 
-use shore_llm::types::LlmRequest;
+use shore_llm::types::{GenerateResponse, LlmRequest};
 
 // ---------------------------------------------------------------------------
 // Configuration — re-exported from shore-config (single source of truth)
@@ -29,6 +30,13 @@ pub struct ConversationMessage {
 pub enum CompactionOutcome {
     Compacted(CompactionResult),
     DryRun(DryRunResult),
+    /// The compaction LLM ran but produced zero allowed memory writes. The
+    /// active conversation was NOT archived; the caller should leave the
+    /// transcript in place and retry on the next trigger.
+    ///
+    /// This exists to make it impossible to silently archive without writing
+    /// memory — the failure mode the tool-loop redesign is meant to kill.
+    NoMemoryWrites(NoMemoryWritesResult),
 }
 
 /// Result of an actual compaction.
@@ -43,6 +51,11 @@ pub struct CompactionResult {
     pub retained_turns: usize,
     /// Paths of markdown files written during compaction.
     pub markdown_paths: Vec<String>,
+    /// Number of tool-use rounds the compaction LLM ran.
+    pub tool_rounds: u32,
+    /// Names of tools the compaction LLM called, in order. Useful for
+    /// forensics when the model used read-only tools alongside writes.
+    pub tools_called: Vec<String>,
 }
 
 /// Result of a dry-run compaction.
@@ -56,6 +69,30 @@ pub struct DryRunResult {
     pub retained_turns: usize,
     /// Paths of markdown files that would be written.
     pub markdown_preview: Vec<String>,
+    /// Number of tool-use rounds the compaction LLM ran during the dry
+    /// pass. Writes are blocked but read-only tool calls still count.
+    pub tool_rounds: u32,
+    /// Names of tools the model attempted to call.
+    pub tools_called: Vec<String>,
+}
+
+/// Diagnostics for a compaction pass that produced no allowed memory writes.
+#[derive(Debug)]
+pub struct NoMemoryWritesResult {
+    pub conversation_id: String,
+    /// Number of messages that would have been archived if the pass had
+    /// produced writes.
+    pub message_count: usize,
+    pub compacted_turns: usize,
+    pub tool_rounds: u32,
+    pub tools_called: Vec<String>,
+    /// Paths the model attempted to write to but were rejected by the
+    /// compaction path filter (e.g. SOUL.md, DREAMS.md, paths outside
+    /// memory/). Empty when the model wrote nothing at all.
+    pub rejected_paths: Vec<String>,
+    /// True if the loop terminated because it hit the configured
+    /// max_tool_rounds rather than the model ending cleanly.
+    pub max_rounds_hit: bool,
 }
 
 /// Parameters for archiving with message retention.
@@ -95,22 +132,39 @@ pub enum CompactionError {
 
 /// LLM client for compaction.
 ///
-/// Takes a system prompt and structured messages (conversation history with the
-/// compaction instruction appended), returns raw LLM text. Splitting system from
-/// messages enables prompt-prefix caching of the stable system instructions.
+/// The compaction manager drives the tool loop itself (it owns the path
+/// filter, rollback list, and the "no writes → no archive" guard). The LLM
+/// trait is therefore split into two small pieces:
 ///
-/// When `cached_request` is `Some`, the implementation should reuse it as the
+/// 1. [`CompactionLlm::build_initial_request`] — produce the first
+///    `LlmRequest` for a pass, honouring the cached-prefix tail invariant
+///    and the per-provider `system_suffix` routing.
+/// 2. [`CompactionLlm::generate`] — run a single round against an
+///    already-built (possibly extended) request.
+///
+/// When `cached_request` is `Some`, the implementation MUST reuse it as the
 /// cached prefix base — clone it, push the compaction prompts as inline
 /// `role:"system"` messages (the Anthropic provider transforms these into
 /// `<system_instruction>` user wrappers), and avoid touching the top-level
 /// `system` parameter so the conversation's prompt cache prefix stays valid.
+///
+/// `fresh_tools` are only used when `cached_request` is `None`. In the
+/// cached path the cached request's `tools` field is inherited verbatim so
+/// the Anthropic cache-prefix hash matches the chat request that seeded
+/// the cache.
 pub trait CompactionLlm: Send + Sync {
-    fn summarize(
+    fn build_initial_request(
         &self,
         system: &str,
         messages: Vec<serde_json::Value>,
+        fresh_tools: Vec<serde_json::Value>,
         cached_request: Option<LlmRequest>,
-    ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>>;
+    ) -> Result<LlmRequest, CompactionError>;
+
+    fn generate<'a>(
+        &'a self,
+        request: &'a mut LlmRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<GenerateResponse, CompactionError>> + Send + 'a>>;
 }
 
 /// Conversation lifecycle management — archive old messages and retain recent ones.
@@ -120,4 +174,27 @@ pub trait ConversationManager: Send + Sync {
         conversation_id: &str,
         params: RetentionParams,
     ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>>;
+}
+
+// ---------------------------------------------------------------------------
+// Tool-loop bookkeeping
+// ---------------------------------------------------------------------------
+
+/// A single workspace memory write that was applied during the compaction
+/// tool loop. Stored on the manager's rollback list so a downstream archive
+/// failure can restore the previous content (or delete the file).
+#[derive(Debug)]
+pub struct AppliedCompactionWrite {
+    /// Path the model passed to `write`/`edit` (display form, e.g.
+    /// `memory/people/foo.md` or `MEMORY.md`).
+    pub display_path: String,
+    /// Resolved absolute path on disk.
+    pub resolved_path: PathBuf,
+    /// Previous file content captured before the write. `None` if the file
+    /// did not exist.
+    pub previous_content: Option<String>,
+    /// True when the target was the workspace-root `MEMORY.md` (or its
+    /// normalized form). Tracked for diagnostics; the dispatch layer's
+    /// `defer_edit` hook is what actually queues the prompt refresh.
+    pub memory_index_target: bool,
 }
