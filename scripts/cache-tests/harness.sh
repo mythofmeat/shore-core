@@ -144,6 +144,9 @@ _check_latest_response() {
 
     if [[ $_MSG_INDEX -eq 0 ]]; then
         # First message: must be a write (cold start).
+        if [[ "$write" -le 0 ]]; then
+            harness_fail "turn 0: expected cold cache write > 0, got cache_w=$write (cache_r=$read)"
+        fi
         _FIRST_WRITE="$write"
         # Threshold: half the first write. Any write bigger than this
         # after the first message is a full prefix rewrite = failure.
