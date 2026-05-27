@@ -225,6 +225,7 @@ impl TestConfigBuilder {
                 max_turns: self.compaction_max_turns.unwrap_or(16),
                 max_context_tokens: 0,
                 keep_recent_turns: self.compaction_keep_recent.unwrap_or(2),
+                ..CompactionConfig::default()
             };
             // Also set a default embedding profile name.
             app.defaults.embedding = Some("test-embed".into());

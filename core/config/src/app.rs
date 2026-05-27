@@ -335,6 +335,13 @@ pub struct CompactionConfig {
     /// User turns retained in active.jsonl after compaction.
     #[serde(default = "default_keep_recent_turns")]
     pub keep_recent_turns: usize,
+    /// Maximum tool-use rounds the compaction LLM can run before the loop
+    /// is force-terminated. The model writes memory files by calling the
+    /// `write`/`edit` tools; the manager treats a zero-writes outcome as
+    /// "do not archive" so the live conversation isn't lost on a stuck
+    /// loop.
+    #[serde(default = "default_compaction_max_tool_rounds")]
+    pub max_tool_rounds: u32,
 }
 
 serde_default!(default_idle_trigger -> ConfigDuration { ConfigDuration::from_secs(1800) });
@@ -342,6 +349,7 @@ serde_default!(default_min_turns -> usize { 8 });
 serde_default!(default_max_turns -> usize { 16 });
 serde_default!(default_max_context_tokens -> usize { 200_000 });
 serde_default!(default_keep_recent_turns -> usize { 2 });
+serde_default!(default_compaction_max_tool_rounds -> u32 { 12 });
 
 impl Default for CompactionConfig {
     fn default() -> Self {
@@ -352,6 +360,7 @@ impl Default for CompactionConfig {
             max_turns: default_max_turns(),
             max_context_tokens: default_max_context_tokens(),
             keep_recent_turns: default_keep_recent_turns(),
+            max_tool_rounds: default_compaction_max_tool_rounds(),
         }
     }
 }

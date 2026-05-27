@@ -251,25 +251,39 @@ TOOL_RESPONSES = {
 }
 
 
-def apply_sliding_breakpoints(messages, depths=(0, 1)):
+def apply_sliding_breakpoints(messages, depths=(1, 2)):
     """Apply Shore-style sliding cache breakpoints to messages.
 
-    depth=N means: count N user messages from the end and mark that user-side
-    boundary. Tool-result-only user messages advance the breakpoint during a
-    tool loop.
+    depth=N means: count N real user messages (not tool_result) from the end,
+    place breakpoint on the message just before that user message (i.e. the
+    preceding assistant response).
     """
     import copy
     msgs = copy.deepcopy(messages)
 
-    user_indices = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
+    # Find positions of real user messages (not tool_result)
+    real_user_indices = []
+    for i, m in enumerate(msgs):
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            # tool_result messages have content as a list of tool_result blocks
+            if isinstance(content, list) and any(
+                b.get("type") == "tool_result" for b in content
+                if isinstance(b, dict)):
+                continue
+            real_user_indices.append(i)
 
     cc = {"type": "ephemeral"}
     placed = set()
     for depth in depths:
-        target = len(user_indices) - 1 - depth
+        target = len(real_user_indices) - 1 - depth
         if target < 0:
             continue
-        bp_idx = user_indices[target]
+        user_idx = real_user_indices[target]
+        # Place on the message BEFORE this user (the assistant response)
+        bp_idx = user_idx - 1
+        if bp_idx <= 0:
+            continue  # don't place on first message
         if bp_idx in placed:
             continue
         placed.add(bp_idx)

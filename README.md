@@ -136,8 +136,6 @@ from crates.io):
 - [AGENTS.md](AGENTS.md) — short entry map for coding agents.
 - [CLAUDE.md](CLAUDE.md) — shim for tools that look for a Claude-specific entry.
 - [CHANGELOG.md](CHANGELOG.md) — release history.
-- [OpenRouter Anthropic cache incident](docs/incidents/2026-05-22-openrouter-anthropic-tool-loop-cache.md)
-  — post-mortem and user settings guide for the tool-loop cache fix.
 
 Markdown under `backend/daemon/prompts/**` is runtime prompt text, not ordinary
 documentation. Treat prompt changes like code changes.

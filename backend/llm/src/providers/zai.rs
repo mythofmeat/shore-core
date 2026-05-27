@@ -369,7 +369,6 @@ pub async fn generate(
             typed_blocks.push(ContentBlock::Thinking {
                 thinking: reasoning.to_string(),
                 signature: None,
-                details: None,
             });
         }
     }

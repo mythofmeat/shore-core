@@ -12,6 +12,13 @@ fn sse_event(event_type: &str, data: &Value) -> String {
 
 enum ContentBlock {
     Text(String),
+    Thinking {
+        thinking: String,
+        signature: Option<String>,
+    },
+    RedactedThinking {
+        data: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -25,6 +32,8 @@ pub struct AnthropicStreamBuilder {
     content_blocks: Vec<ContentBlock>,
     input_tokens: u32,
     output_tokens: u32,
+    cache_read_input_tokens: u32,
+    cache_creation_input_tokens: u32,
     model: String,
     stop_reason: String,
 }
@@ -35,6 +44,8 @@ impl AnthropicStreamBuilder {
             content_blocks: Vec::new(),
             input_tokens: 10,
             output_tokens: 20,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
             model: "claude-3-5-sonnet-20241022".to_string(),
             stop_reason: "end_turn".to_string(),
         }
@@ -42,6 +53,27 @@ impl AnthropicStreamBuilder {
 
     pub fn text(mut self, t: &str) -> Self {
         self.content_blocks.push(ContentBlock::Text(t.to_string()));
+        self
+    }
+
+    /// Emit a `thinking` block. Pass `None` for `signature` to skip the
+    /// signature_delta event (matches what providers return when the
+    /// signature is empty/absent).
+    pub fn thinking(mut self, thinking: &str, signature: Option<&str>) -> Self {
+        self.content_blocks.push(ContentBlock::Thinking {
+            thinking: thinking.to_string(),
+            signature: signature.map(String::from),
+        });
+        self
+    }
+
+    /// Emit a `redacted_thinking` block. The `data` is opaque to the
+    /// adapter; OpenRouter relays signed reasoning content through these
+    /// with a `openrouter.reasoning:` prefix.
+    pub fn redacted_thinking(mut self, data: &str) -> Self {
+        self.content_blocks.push(ContentBlock::RedactedThinking {
+            data: data.to_string(),
+        });
         self
     }
 
@@ -58,6 +90,15 @@ impl AnthropicStreamBuilder {
     pub fn usage(mut self, input: u32, output: u32) -> Self {
         self.input_tokens = input;
         self.output_tokens = output;
+        self
+    }
+
+    /// Set cache usage fields. `read` corresponds to
+    /// `cache_read_input_tokens`, `creation` to
+    /// `cache_creation_input_tokens` on Anthropic's wire shape.
+    pub fn cache_usage(mut self, read: u32, creation: u32) -> Self {
+        self.cache_read_input_tokens = read;
+        self.cache_creation_input_tokens = creation;
         self
     }
 
@@ -89,7 +130,9 @@ impl AnthropicStreamBuilder {
                     "stop_sequence": null,
                     "usage": {
                         "input_tokens": self.input_tokens,
-                        "output_tokens": 0
+                        "output_tokens": 0,
+                        "cache_read_input_tokens": self.cache_read_input_tokens,
+                        "cache_creation_input_tokens": self.cache_creation_input_tokens,
                     }
                 }
             }),
@@ -98,6 +141,55 @@ impl AnthropicStreamBuilder {
         for (idx, block) in self.content_blocks.iter().enumerate() {
             let index = idx as u64;
             match block {
+                ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                } => {
+                    out.push_str(&sse_event(
+                        "content_block_start",
+                        &json!({
+                            "type": "content_block_start",
+                            "index": index,
+                            "content_block": { "type": "thinking", "thinking": "", "signature": "" }
+                        }),
+                    ));
+                    out.push_str(&sse_event(
+                        "content_block_delta",
+                        &json!({
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": { "type": "thinking_delta", "thinking": thinking }
+                        }),
+                    ));
+                    if let Some(sig) = signature {
+                        out.push_str(&sse_event(
+                            "content_block_delta",
+                            &json!({
+                                "type": "content_block_delta",
+                                "index": index,
+                                "delta": { "type": "signature_delta", "signature": sig }
+                            }),
+                        ));
+                    }
+                    out.push_str(&sse_event(
+                        "content_block_stop",
+                        &json!({ "type": "content_block_stop", "index": index }),
+                    ));
+                }
+                ContentBlock::RedactedThinking { data } => {
+                    out.push_str(&sse_event(
+                        "content_block_start",
+                        &json!({
+                            "type": "content_block_start",
+                            "index": index,
+                            "content_block": { "type": "redacted_thinking", "data": data }
+                        }),
+                    ));
+                    out.push_str(&sse_event(
+                        "content_block_stop",
+                        &json!({ "type": "content_block_stop", "index": index }),
+                    ));
+                }
                 ContentBlock::Text(text) => {
                     // content_block_start
                     out.push_str(&sse_event(
@@ -180,7 +272,9 @@ impl AnthropicStreamBuilder {
                     "stop_sequence": null
                 },
                 "usage": {
-                    "output_tokens": self.output_tokens
+                    "output_tokens": self.output_tokens,
+                    "cache_read_input_tokens": self.cache_read_input_tokens,
+                    "cache_creation_input_tokens": self.cache_creation_input_tokens,
                 }
             }),
         ));
@@ -199,6 +293,362 @@ impl Default for AnthropicStreamBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ── AnthropicJsonBuilder ─────────────────────────────────────────────────────
+
+/// Build the non-streaming Anthropic JSON response shape (the body
+/// returned by `POST /v1/messages` without `stream: true`). Lets tests
+/// exercise `LlmClient::generate` against the mock with a structured
+/// response that includes thinking/redacted_thinking blocks.
+pub struct AnthropicJsonBuilder {
+    content_blocks: Vec<ContentBlock>,
+    input_tokens: u32,
+    output_tokens: u32,
+    cache_read_input_tokens: u32,
+    cache_creation_input_tokens: u32,
+    model: String,
+    stop_reason: String,
+}
+
+impl AnthropicJsonBuilder {
+    pub fn new() -> Self {
+        Self {
+            content_blocks: Vec::new(),
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            stop_reason: "end_turn".to_string(),
+        }
+    }
+
+    pub fn text(mut self, t: &str) -> Self {
+        self.content_blocks.push(ContentBlock::Text(t.to_string()));
+        self
+    }
+
+    pub fn thinking(mut self, thinking: &str, signature: Option<&str>) -> Self {
+        self.content_blocks.push(ContentBlock::Thinking {
+            thinking: thinking.to_string(),
+            signature: signature.map(String::from),
+        });
+        self
+    }
+
+    pub fn redacted_thinking(mut self, data: &str) -> Self {
+        self.content_blocks.push(ContentBlock::RedactedThinking {
+            data: data.to_string(),
+        });
+        self
+    }
+
+    pub fn tool_use(mut self, id: &str, name: &str, input: Value) -> Self {
+        self.stop_reason = "tool_use".to_string();
+        self.content_blocks.push(ContentBlock::ToolUse {
+            id: id.to_string(),
+            name: name.to_string(),
+            input,
+        });
+        self
+    }
+
+    pub fn usage(mut self, input: u32, output: u32) -> Self {
+        self.input_tokens = input;
+        self.output_tokens = output;
+        self
+    }
+
+    pub fn cache_usage(mut self, read: u32, creation: u32) -> Self {
+        self.cache_read_input_tokens = read;
+        self.cache_creation_input_tokens = creation;
+        self
+    }
+
+    pub fn model(mut self, m: &str) -> Self {
+        self.model = m.to_string();
+        self
+    }
+
+    pub fn stop_reason(mut self, r: &str) -> Self {
+        self.stop_reason = r.to_string();
+        self
+    }
+
+    pub fn build(self) -> Value {
+        let content: Vec<Value> = self
+            .content_blocks
+            .iter()
+            .map(|b| match b {
+                ContentBlock::Text(text) => json!({"type": "text", "text": text}),
+                ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                } => {
+                    let mut v = json!({"type": "thinking", "thinking": thinking});
+                    if let Some(sig) = signature {
+                        v["signature"] = json!(sig);
+                    }
+                    v
+                }
+                ContentBlock::RedactedThinking { data } => {
+                    json!({"type": "redacted_thinking", "data": data})
+                }
+                ContentBlock::ToolUse { id, name, input } => json!({
+                    "type": "tool_use",
+                    "id": id,
+                    "name": name,
+                    "input": input,
+                }),
+            })
+            .collect();
+        json!({
+            "id": "msg_test_json",
+            "type": "message",
+            "role": "assistant",
+            "model": self.model,
+            "content": content,
+            "stop_reason": self.stop_reason,
+            "stop_sequence": null,
+            "usage": {
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "cache_read_input_tokens": self.cache_read_input_tokens,
+                "cache_creation_input_tokens": self.cache_creation_input_tokens,
+            }
+        })
+    }
+}
+
+impl Default for AnthropicJsonBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── OpenAiResponseBuilder ────────────────────────────────────────────────────
+
+/// Build OpenAI-compatible `chat/completions` responses (streaming and
+/// non-streaming). Used for adapter wire tests against the OpenAI path
+/// (DeepSeek, xAI, OpenRouter→OpenAI models, etc.).
+pub struct OpenAiResponseBuilder {
+    text: String,
+    reasoning: Option<String>,
+    tool_calls: Vec<(String, String, Value)>,
+    finish_reason: String,
+    model: String,
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    cached_tokens: u32,
+}
+
+impl OpenAiResponseBuilder {
+    pub fn new() -> Self {
+        Self {
+            text: String::new(),
+            reasoning: None,
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            model: "gpt-test".to_string(),
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            cached_tokens: 0,
+        }
+    }
+
+    pub fn text(mut self, t: &str) -> Self {
+        self.text = t.to_string();
+        self
+    }
+
+    pub fn reasoning(mut self, r: &str) -> Self {
+        self.reasoning = Some(r.to_string());
+        self
+    }
+
+    pub fn tool_call(mut self, id: &str, name: &str, args: Value) -> Self {
+        self.tool_calls
+            .push((id.to_string(), name.to_string(), args));
+        self.finish_reason = "tool_calls".to_string();
+        self
+    }
+
+    pub fn finish_reason(mut self, r: &str) -> Self {
+        self.finish_reason = r.to_string();
+        self
+    }
+
+    pub fn model(mut self, m: &str) -> Self {
+        self.model = m.to_string();
+        self
+    }
+
+    pub fn usage(mut self, prompt: u32, completion: u32, cached: u32) -> Self {
+        self.prompt_tokens = prompt;
+        self.completion_tokens = completion;
+        self.cached_tokens = cached;
+        self
+    }
+
+    /// Build a single non-streaming ChatCompletion JSON body.
+    pub fn build_json(&self) -> Value {
+        let tool_calls: Vec<Value> = self
+            .tool_calls
+            .iter()
+            .map(|(id, name, args)| {
+                json!({
+                    "id": id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": serde_json::to_string(args).unwrap_or_else(|_| "{}".into()),
+                    }
+                })
+            })
+            .collect();
+        let mut message = json!({"role": "assistant", "content": self.text});
+        if !tool_calls.is_empty() {
+            message["tool_calls"] = Value::Array(tool_calls);
+        }
+        if let Some(r) = &self.reasoning {
+            message["reasoning"] = json!(r);
+        }
+        json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 1_778_284_800u64,
+            "model": self.model,
+            "choices": [{
+                "index": 0,
+                "message": message,
+                "finish_reason": self.finish_reason,
+            }],
+            "usage": {
+                "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": self.completion_tokens,
+                "total_tokens": self.prompt_tokens + self.completion_tokens,
+                "prompt_tokens_details": {
+                    "cached_tokens": self.cached_tokens,
+                },
+            }
+        })
+    }
+
+    /// Build the streaming SSE chunks for the same response.
+    pub fn build_sse(&self) -> String {
+        let id = "chatcmpl-test";
+        let created: u64 = 1_778_284_800;
+        let mut out = String::new();
+
+        let mut delta = json!({"role": "assistant"});
+        if !self.text.is_empty() {
+            delta["content"] = json!(self.text);
+        }
+        if let Some(r) = &self.reasoning {
+            delta["reasoning"] = json!(r);
+        }
+        if !self.tool_calls.is_empty() {
+            delta["tool_calls"] = Value::Array(
+                self.tool_calls
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (id, name, args))| {
+                        json!({
+                            "index": i,
+                            "id": id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": serde_json::to_string(args)
+                                    .unwrap_or_else(|_| "{}".into()),
+                            }
+                        })
+                    })
+                    .collect(),
+            );
+        }
+
+        out.push_str(&format!(
+            "data: {}\n\n",
+            json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": self.model,
+                "choices": [{
+                    "index": 0,
+                    "delta": delta,
+                    "finish_reason": Value::Null,
+                }],
+            })
+        ));
+        out.push_str(&format!(
+            "data: {}\n\n",
+            json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": self.model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": self.finish_reason,
+                }],
+                "usage": {
+                    "prompt_tokens": self.prompt_tokens,
+                    "completion_tokens": self.completion_tokens,
+                    "total_tokens": self.prompt_tokens + self.completion_tokens,
+                    "prompt_tokens_details": {"cached_tokens": self.cached_tokens},
+                },
+            })
+        ));
+        out.push_str("data: [DONE]\n\n");
+        out
+    }
+}
+
+impl Default for OpenAiResponseBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── assertion helpers ────────────────────────────────────────────────────────
+
+/// Collect dotted paths in a JSON value where `cache_control` is present.
+/// Lets tests assert the exact 4-breakpoint slot set without caring about
+/// every other field. Array indices are formatted as `[N]` so paths are
+/// unambiguous (e.g. `system[1]`, `messages[3].content[2]`).
+pub fn find_cache_control_paths(body: &Value) -> Vec<String> {
+    fn walk(v: &Value, base: &str, out: &mut Vec<String>) {
+        match v {
+            Value::Array(arr) => {
+                for (i, item) in arr.iter().enumerate() {
+                    let next = format!("{base}[{i}]");
+                    walk(item, &next, out);
+                }
+            }
+            Value::Object(map) => {
+                for (k, val) in map.iter() {
+                    if k == "cache_control" {
+                        out.push(base.to_string());
+                        continue;
+                    }
+                    let next = if base.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{base}.{k}")
+                    };
+                    walk(val, &next, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(body, "", &mut out);
+    out
 }
 
 // ── SseResponder ─────────────────────────────────────────────────────────────
@@ -367,6 +817,70 @@ impl MockLlmServer {
             .await;
     }
 
+    /// Enqueue the two non-streaming JSON responses a compaction tool
+    /// loop needs to write one memory file end-to-end:
+    ///
+    /// 1. A `tool_use` round calling `write(path, content)`.
+    /// 2. An `end_turn` round with a short text summary, terminating the
+    ///    loop after the daemon dispatched the write and sent back the
+    ///    `tool_result`.
+    ///
+    /// Both are mounted with `up_to_n_times(1)` and no `.expect(...)`, so
+    /// callers don't fail when retrieval/index-rebuild paths happen to
+    /// consume them in a different order.
+    pub async fn enqueue_json_compaction_write_optional(&self, path: &str, content: &str) {
+        let tool_use_body = json!({
+            "id": "msg_compaction_write_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-3-5-sonnet-20241022",
+            "content": [{
+                "type": "tool_use",
+                "id": "call_compact_write",
+                "name": "write",
+                "input": {
+                    "path": path,
+                    "content": content,
+                },
+            }],
+            "stop_reason": "tool_use",
+            "stop_sequence": null,
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 8,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 4
+            }
+        });
+        let end_body = json!({
+            "id": "msg_compaction_write_2",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-3-5-sonnet-20241022",
+            "content": [{ "type": "text", "text": "memory written" }],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {
+                "input_tokens": 4,
+                "output_tokens": 4,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 12
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path_regex("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&tool_use_body))
+            .up_to_n_times(1)
+            .mount(&self.server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&end_body))
+            .up_to_n_times(1)
+            .mount(&self.server)
+            .await;
+    }
+
     /// Enqueue a non-streaming JSON response without strict expectation
     /// (won't panic if not consumed).
     pub async fn enqueue_json_text_optional(&self, text: &str) {
@@ -467,6 +981,66 @@ impl MockLlmServer {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|r| serde_json::from_slice(&r.body).ok())
+            .collect()
+    }
+
+    /// Enqueue a streaming Anthropic response from a prebuilt
+    /// [`AnthropicStreamBuilder`]. Lets wire tests stage multi-block
+    /// responses (thinking → tool_use, etc.) without juggling raw SSE.
+    pub async fn enqueue_stream(&self, builder: AnthropicStreamBuilder) {
+        self.enqueue_raw_sse(builder.build()).await;
+    }
+
+    /// Enqueue a non-streaming Anthropic JSON response from a prebuilt
+    /// [`AnthropicJsonBuilder`].
+    pub async fn enqueue_json(&self, builder: AnthropicJsonBuilder) {
+        let body = builder.build();
+        Mock::given(method("POST"))
+            .and(path_regex("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Enqueue a non-streaming OpenAI-compatible chat/completions response.
+    pub async fn enqueue_openai_json(&self, builder: OpenAiResponseBuilder) {
+        let body = builder.build_json();
+        Mock::given(method("POST"))
+            .and(path_regex("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Enqueue a streaming OpenAI-compatible chat/completions response.
+    pub async fn enqueue_openai_stream(&self, builder: OpenAiResponseBuilder) {
+        let body = builder.build_sse();
+        Mock::given(method("POST"))
+            .and(path_regex("/chat/completions"))
+            .respond_with(SseResponder(body))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Like [`received_requests`], but returns paths too so callers can
+    /// distinguish `/v1/messages` from `/chat/completions` etc. when a
+    /// test exercises both adapters against the same mock.
+    pub async fn received_requests_with_path(&self) -> Vec<(String, Value)> {
+        self.server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|r| {
+                let body: Value = serde_json::from_slice(&r.body).ok()?;
+                Some((r.url.path().to_string(), body))
+            })
             .collect()
     }
 }

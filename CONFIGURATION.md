@@ -234,14 +234,6 @@ API. Other providers use the OpenAI-compatible `GET <base_url>/models`
 shape. Well-known provider keys with default base URLs, including
 `anthropic`, `openai`, and `openrouter`, can omit `base_url`; custom
 providers need it.
-At chat-runtime, adaptive Anthropic models reached through OpenRouter are a
-cache-continuity exception: an OpenRouter model configured with
-`sdk = "anthropic"` and `reasoning_effort` keeps that config surface, but Shore
-sends those adaptive requests through OpenRouter chat completions so tool-loop
-continuations can replay OpenRouter reasoning metadata. Direct Anthropic calls
-and non-adaptive Anthropic SDK calls keep the native Messages API path.
-The [OpenRouter Anthropic cache incident guide](docs/incidents/2026-05-22-openrouter-anthropic-tool-loop-cache.md)
-includes the user-facing post-mortem and recommended settings.
 Hidden models stay in the cache but are filtered out of `shore model` and
 `shore provider models <name>` until `--all` (CLI) or `:model all` (TUI)
 is used. Manual `[chat.<provider>.<alias>]` entries are never filtered —
@@ -394,9 +386,12 @@ min_turns = 8
 max_turns = 16
 max_context_tokens = 200000
 keep_recent_turns = 2
+max_tool_rounds = 12
 ```
 
 Compaction writes markdown memory notes, archives old turns, and activates staged prompt-visible edits. It also updates `MEMORY.md` with the conversational throughline so the next conversation can pick up where this one left off; dreaming reorganizes the index later. When the autonomy manager has a cached chat request, compaction reuses that prefix and appends only the carry-forward instruction (the trailing `role:"system"` message is wrapped to a `<system_instruction>` user turn by the Anthropic provider), preserving the live conversation's prompt cache. After compaction, cache keepalive keeps its existing deadline and rebuilds the request from disk if needed, so stable pinned system prompt sections can stay warm even though the old conversation tail was discarded.
+
+Compaction runs a tool loop: the model calls `write` / `edit` on files under `memory/` and on the workspace-root `MEMORY.md`. Writes to any other path (`SOUL.md`, `USER.md`, `DREAMS.md`, paths outside `memory/`, etc.) are rejected at the dispatch wrapper. `max_tool_rounds` caps how many tool-use rounds a single pass may run. If the pass finishes with **zero** allowed memory writes — because the model used only read-only tools, only attempted disallowed paths, or hit `max_tool_rounds` — the active conversation is **not** archived and the next trigger will retry. This is by design: silent "archive with no writes" was the failure mode of the pre-tool-loop XML path.
 
 ## `[memory.dreaming]`
 

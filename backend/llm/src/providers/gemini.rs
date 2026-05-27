@@ -580,7 +580,6 @@ pub async fn generate(
                     content_blocks.push(ContentBlock::Thinking {
                         thinking: text.to_string(),
                         signature,
-                        details: None,
                     });
                 } else {
                     text_content.push_str(text);

@@ -94,13 +94,6 @@ pub async fn stream(
     );
     let ctx = context::build_provider_context(request);
     let result = match request.sdk {
-        Sdk::Anthropic if context::route_anthropic_sdk_via_openrouter_chat(request) => {
-            debug!(
-                model = %request.model,
-                "routing adaptive Anthropic OpenRouter stream via chat completions for tool-loop cache continuity"
-            );
-            openai::stream(client, request, &ctx).await
-        }
         Sdk::Anthropic => anthropic::stream(client, request).await,
         Sdk::Openai => openai::stream(client, request, &ctx).await,
         Sdk::Zai => zai::stream(client, request).await,
@@ -126,13 +119,6 @@ pub async fn generate(
     );
     let ctx = context::build_provider_context(request);
     let result = match request.sdk {
-        Sdk::Anthropic if context::route_anthropic_sdk_via_openrouter_chat(request) => {
-            debug!(
-                model = %request.model,
-                "routing adaptive Anthropic OpenRouter generate via chat completions for tool-loop cache continuity"
-            );
-            openai::generate(client, request, &ctx).await
-        }
         Sdk::Anthropic => anthropic::generate(client, request).await,
         Sdk::Openai => openai::generate(client, request, &ctx).await,
         Sdk::Zai => zai::generate(client, request).await,
