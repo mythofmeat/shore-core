@@ -104,28 +104,29 @@ impl CompactionLlm for ScriptedCompactionLlm {
     fn build_initial_request(
         &self,
         system: &str,
-        messages: Vec<serde_json::Value>,
-        fresh_tools: Vec<serde_json::Value>,
-        _cached_request: Option<LlmRequest>,
+        compact_now_user: serde_json::Value,
+        chat_request: LlmRequest,
     ) -> Result<LlmRequest, CompactionError> {
+        let mut messages = chat_request.messages.clone();
+        messages.push(compact_now_user);
         Ok(LlmRequest {
-            sdk: shore_config::models::Sdk::Anthropic,
-            model: "mock".into(),
-            api_key: String::new(),
-            api_key_name: None,
-            base_url: None,
+            sdk: chat_request.sdk,
+            model: chat_request.model,
+            api_key: chat_request.api_key,
+            api_key_name: chat_request.api_key_name,
+            base_url: chat_request.base_url,
             messages,
-            system: Some(serde_json::json!(system)),
-            tools: Some(fresh_tools),
-            max_tokens: 1024,
-            temperature: None,
-            top_p: None,
-            provider_options: None,
-            provider_key: None,
+            system: chat_request.system,
+            tools: chat_request.tools,
+            max_tokens: chat_request.max_tokens,
+            temperature: chat_request.temperature,
+            top_p: chat_request.top_p,
+            provider_options: chat_request.provider_options,
+            provider_key: chat_request.provider_key,
             rid: None,
             forensic_character: None,
-            system_suffix: None,
-            retain_long: false,
+            system_suffix: Some(system.to_string()),
+            retain_long: true,
         })
     }
 
@@ -148,6 +149,31 @@ impl CompactionLlm for ScriptedCompactionLlm {
         Box::pin(async move {
             next.ok_or_else(|| CompactionError::Llm("scripted LLM exhausted".into()))
         })
+    }
+}
+
+/// Build a minimal chat-shape `LlmRequest` for integration tests. Mirrors
+/// what `handler::build_chat_shape_request_from_disk` would produce, but
+/// without needing the full disk-walking setup.
+fn make_chat_request_for_test() -> LlmRequest {
+    LlmRequest {
+        sdk: shore_config::models::Sdk::Anthropic,
+        model: "mock-chat-model".into(),
+        api_key: String::new(),
+        api_key_name: None,
+        base_url: None,
+        messages: Vec::new(),
+        system: Some(serde_json::json!("mock chat system")),
+        tools: Some(Vec::new()),
+        max_tokens: 1024,
+        temperature: None,
+        top_p: None,
+        provider_options: None,
+        provider_key: None,
+        rid: None,
+        forensic_character: None,
+        system_suffix: None,
+        retain_long: false,
     }
 }
 
@@ -245,7 +271,7 @@ async fn test_markdown_memory_compaction_end_to_end() {
             Some(&store),
             false,
             Some(1),
-            None,
+            make_chat_request_for_test(),
             Some(&data_dir),
             &tool_ctx,
         )
@@ -303,7 +329,7 @@ async fn test_compaction_rejects_private_conversation() {
             Some(&store),
             false,
             None,
-            None,
+            make_chat_request_for_test(),
             None,
             &tool_ctx,
         )

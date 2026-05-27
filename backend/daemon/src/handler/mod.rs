@@ -24,7 +24,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub(crate) use context::{prepare_chat_context, PrepareChatContextParams, PreparedChatContext};
+pub(crate) use context::{
+    build_chat_shape_request_from_disk, prepare_chat_context, PrepareChatContextParams,
+    PreparedChatContext,
+};
 pub(crate) use images::{
     build_content, embed_image_data, embed_messages_image_data, image_data_for_path,
 };

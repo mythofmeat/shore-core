@@ -23,20 +23,6 @@ use tracing::{debug, info, instrument, warn};
 const EXISTING_MEMORY_CONTEXT_MAX_FILES: usize = 24;
 const EXISTING_MEMORY_CONTEXT_MAX_CHARS_PER_FILE: usize = 1_800;
 
-/// Tools the fresh-prefix compaction path exposes to the LLM. The cached
-/// path inherits chat's tools verbatim to preserve Anthropic's cache-prefix
-/// hash — this list is only used when there is no cached request to clone
-/// from.
-const COMPACTION_FRESH_TOOL_NAMES: &[&str] = &[
-    "read",
-    "write",
-    "edit",
-    "list_files",
-    "search",
-    "search_history",
-    "check_time",
-];
-
 static COMPACTION_LOCKS: OnceLock<DashMap<PathBuf, Arc<Mutex<()>>>> = OnceLock::new();
 
 /// Held while a character data root has a compaction pass in flight.
@@ -186,33 +172,6 @@ impl CompactionManager {
             );
         }
         final_msg.replace("{{recap}}", "")
-    }
-
-    /// Build the structured messages array for a fresh-prefix compaction LLM
-    /// call. Returns the conversation messages as role/content JSON objects
-    /// followed by a final user message rendered from `final_message_template`.
-    ///
-    /// In cache-preserving mode, the conversation slice is already part of the
-    /// cached request prefix; only [`build_final_message`] is needed.
-    pub fn build_messages(
-        final_message_template: &str,
-        messages: &[ConversationMessage],
-        existing_memories: Option<&str>,
-        char_name: &str,
-        user_name: &str,
-    ) -> Vec<serde_json::Value> {
-        let mut result: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|msg| serde_json::json!({"role": msg.role, "content": msg.content}))
-            .collect();
-        let final_msg = Self::build_final_message(
-            final_message_template,
-            existing_memories,
-            char_name,
-            user_name,
-        );
-        result.push(serde_json::json!({"role": "user", "content": final_msg}));
-        result
     }
 
     /// Build a compaction prompt from a template and conversation messages.
@@ -393,7 +352,7 @@ impl CompactionManager {
         markdown_store: Option<&MarkdownMemoryStore>,
         dry_run: bool,
         keep_turns_override: Option<usize>,
-        cached_request: Option<shore_llm::types::LlmRequest>,
+        chat_request: shore_llm::types::LlmRequest,
         data_dir: Option<&std::path::Path>,
         tool_ctx: &dyn ToolContext,
     ) -> Result<CompactionOutcome, CompactionError> {
@@ -437,34 +396,22 @@ impl CompactionManager {
 
         let existing_memory_context = Self::build_existing_memory_context(markdown_store).await;
 
-        // Build system prompt (stable instructions, cacheable) plus the
-        // final user instruction. In cache-preserving mode the cached
-        // request prefix already contains the conversation, so only the
-        // final user instruction needs to be appended; the Anthropic
-        // provider wraps the trailing inline `system` message into a
-        // `<system_instruction>` user turn so the top-level system
-        // parameter stays untouched and the cache prefix remains valid.
+        // Build the compaction system prompt + the single "compact now"
+        // user message. `chat_request` carries chat's full prefix
+        // (`system`, `tools`, `messages`); the LLM impl rebuilds it
+        // against the compaction model and appends this one user turn.
+        // The compaction system prompt rides as `system_suffix` so it
+        // merges into that trailing user turn at provider dispatch,
+        // leaving chat's cache prefix intact.
         let system = Self::build_system(system_template, char_name, user_name);
-        let llm_messages = if cached_request.is_some() {
-            let final_msg = Self::build_final_message(
-                prompt_template,
-                Some(&existing_memory_context),
-                char_name,
-                user_name,
-            );
-            vec![json!({"role": "user", "content": final_msg})]
-        } else {
-            Self::build_messages(
-                prompt_template,
-                compacted_part,
-                Some(&existing_memory_context),
-                char_name,
-                user_name,
-            )
-        };
-        let fresh_tools = build_compaction_fresh_tool_defs(char_name, user_name);
-        let mut request =
-            llm.build_initial_request(&system, llm_messages, fresh_tools, cached_request)?;
+        let final_msg = Self::build_final_message(
+            prompt_template,
+            Some(&existing_memory_context),
+            char_name,
+            user_name,
+        );
+        let compact_now_user = json!({"role": "user", "content": final_msg});
+        let mut request = llm.build_initial_request(&system, compact_now_user, chat_request)?;
 
         // Workspace dir for path resolution + previous-content snapshots.
         // Prefer the markdown store's parent (canonical for production);
@@ -752,22 +699,6 @@ impl ToolLoopState {
     }
 }
 
-/// Build the compaction tool defs used when there is no cached chat
-/// request to inherit tools from. In the cached path the chat tools ride
-/// through verbatim to preserve Anthropic's cache-prefix hash; this fresh
-/// list is the fallback for the non-cached (and test) paths.
-pub(crate) fn build_compaction_fresh_tool_defs(char_name: &str, user_name: &str) -> Vec<Value> {
-    let toggles = shore_config::app::ToolToggles::default();
-    tool_system::render_tool_defs(false, &toggles, char_name, user_name)
-        .into_iter()
-        .filter(|tool| {
-            tool.get("name")
-                .and_then(|n| n.as_str())
-                .is_some_and(|name| COMPACTION_FRESH_TOOL_NAMES.contains(&name))
-        })
-        .collect()
-}
-
 /// Push the assistant's response onto the request so the next tool-loop
 /// round sees it. Mirrors the dreaming pattern: prefer the SDK-shaped
 /// content blocks, fall back to plain text when nothing structured is
@@ -1025,6 +956,37 @@ mod tests {
         }
     }
 
+    /// Build a synthetic chat-shape `LlmRequest` for tests. Mirrors what
+    /// `handler::build_chat_shape_request_from_disk` would have produced
+    /// for the same conversation — we don't go through the full disk path
+    /// in unit tests, we just hand the compaction code a representative
+    /// stub so it has the chat prefix to extend.
+    fn make_chat_request(messages: &[ConversationMessage]) -> LlmRequest {
+        let llm_messages: Vec<Value> = messages
+            .iter()
+            .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
+            .collect();
+        LlmRequest {
+            sdk: shore_config::models::Sdk::Anthropic,
+            model: "mock-chat-model".into(),
+            api_key: String::new(),
+            api_key_name: None,
+            base_url: None,
+            messages: llm_messages,
+            system: Some(serde_json::json!("mock chat system")),
+            tools: Some(Vec::new()),
+            max_tokens: 1024,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+            rid: None,
+            forensic_character: None,
+            system_suffix: None,
+            retain_long: false,
+        }
+    }
+
     /// Build a single tool-use round that calls `write` once per
     /// `(path, content)` pair, then ends the loop with `end_turn`.
     fn tool_use_round(entries: &[(&str, &str)]) -> GenerateResponse {
@@ -1090,8 +1052,11 @@ mod tests {
     /// invariants can be asserted.
     struct ScriptedLlm {
         responses: StdMutex<Vec<GenerateResponse>>,
-        captured_initial_message_count: StdMutex<Option<usize>>,
-        captured_cached: StdMutex<bool>,
+        /// Number of messages in the built request, including the appended
+        /// compact-now tail. Equals `chat_request.messages.len() + 1`.
+        captured_built_message_count: StdMutex<Option<usize>>,
+        /// Number of messages in the chat prefix the caller passed in.
+        captured_chat_prefix_len: StdMutex<Option<usize>>,
         captured_last_user_text: StdMutex<Option<String>>,
     }
 
@@ -1099,8 +1064,8 @@ mod tests {
         fn new(responses: Vec<GenerateResponse>) -> Self {
             Self {
                 responses: StdMutex::new(responses),
-                captured_initial_message_count: StdMutex::new(None),
-                captured_cached: StdMutex::new(false),
+                captured_built_message_count: StdMutex::new(None),
+                captured_chat_prefix_len: StdMutex::new(None),
                 captured_last_user_text: StdMutex::new(None),
             }
         }
@@ -1113,12 +1078,12 @@ mod tests {
             self.captured_last_user_text.lock().unwrap().clone()
         }
 
-        fn initial_message_count(&self) -> Option<usize> {
-            *self.captured_initial_message_count.lock().unwrap()
+        fn built_message_count(&self) -> Option<usize> {
+            *self.captured_built_message_count.lock().unwrap()
         }
 
-        fn saw_cached(&self) -> bool {
-            *self.captured_cached.lock().unwrap()
+        fn chat_prefix_len(&self) -> Option<usize> {
+            *self.captured_chat_prefix_len.lock().unwrap()
         }
     }
 
@@ -1126,63 +1091,41 @@ mod tests {
         fn build_initial_request(
             &self,
             system: &str,
-            messages: Vec<Value>,
-            fresh_tools: Vec<Value>,
-            cached_request: Option<LlmRequest>,
+            compact_now_user: Value,
+            chat_request: LlmRequest,
         ) -> Result<LlmRequest, CompactionError> {
-            *self.captured_cached.lock().unwrap() = cached_request.is_some();
-            *self.captured_initial_message_count.lock().unwrap() = Some(messages.len());
-            *self.captured_last_user_text.lock().unwrap() = messages
-                .iter()
-                .rev()
-                .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-                .and_then(|m| m.get("content"))
+            // Tests now always pass a chat-shape request — there's no
+            // fresh-vs-cached branching in the production code either.
+            // We capture the chat prefix size for assertions and extend
+            // with the single compact-now user turn.
+            *self.captured_chat_prefix_len.lock().unwrap() = Some(chat_request.messages.len());
+            *self.captured_built_message_count.lock().unwrap() =
+                Some(chat_request.messages.len() + 1);
+            *self.captured_last_user_text.lock().unwrap() = compact_now_user
+                .get("content")
                 .and_then(|c| c.as_str())
                 .map(str::to_string);
-            let request = if let Some(cached) = cached_request {
-                let mut combined = cached.messages.clone();
-                combined.extend(messages);
-                LlmRequest {
-                    sdk: cached.sdk,
-                    model: cached.model,
-                    api_key: cached.api_key,
-                    api_key_name: cached.api_key_name,
-                    base_url: cached.base_url,
-                    messages: combined,
-                    system: cached.system,
-                    tools: cached.tools,
-                    max_tokens: cached.max_tokens,
-                    temperature: cached.temperature,
-                    top_p: cached.top_p,
-                    provider_options: cached.provider_options,
-                    provider_key: cached.provider_key,
-                    rid: None,
-                    forensic_character: None,
-                    system_suffix: Some(system.to_string()),
-                    retain_long: true,
-                }
-            } else {
-                LlmRequest {
-                    sdk: shore_config::models::Sdk::Anthropic,
-                    model: "mock".into(),
-                    api_key: String::new(),
-                    api_key_name: None,
-                    base_url: None,
-                    messages,
-                    system: Some(json!(system)),
-                    tools: Some(fresh_tools),
-                    max_tokens: 1024,
-                    temperature: None,
-                    top_p: None,
-                    provider_options: None,
-                    provider_key: None,
-                    rid: None,
-                    forensic_character: None,
-                    system_suffix: None,
-                    retain_long: false,
-                }
-            };
-            Ok(request)
+            let mut combined = chat_request.messages.clone();
+            combined.push(compact_now_user);
+            Ok(LlmRequest {
+                sdk: chat_request.sdk,
+                model: chat_request.model,
+                api_key: chat_request.api_key,
+                api_key_name: chat_request.api_key_name,
+                base_url: chat_request.base_url,
+                messages: combined,
+                system: chat_request.system,
+                tools: chat_request.tools,
+                max_tokens: chat_request.max_tokens,
+                temperature: chat_request.temperature,
+                top_p: chat_request.top_p,
+                provider_options: chat_request.provider_options,
+                provider_key: chat_request.provider_key,
+                rid: None,
+                forensic_character: None,
+                system_suffix: Some(system.to_string()),
+                retain_long: true,
+            })
         }
 
         fn generate<'a>(
@@ -1606,7 +1549,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
-                None,
+                make_chat_request(&[]),
                 Some(&data_dir),
                 &ctx,
             )
@@ -1668,7 +1611,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
-                None,
+                make_chat_request(&[]),
                 Some(&data_dir),
                 &ctx,
             )
@@ -1731,7 +1674,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
-                None,
+                make_chat_request(&[]),
                 None,
                 &ctx,
             )
@@ -1798,7 +1741,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
-                None,
+                make_chat_request(&[]),
                 Some(&data_dir),
                 &ctx,
             )
@@ -1858,7 +1801,7 @@ mod tests {
                 Some(&store),
                 true,
                 None,
-                None,
+                make_chat_request(&[]),
                 None,
                 &ctx,
             )
@@ -1909,7 +1852,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
-                None,
+                make_chat_request(&[]),
                 None,
                 &ctx,
             )
@@ -1956,7 +1899,7 @@ mod tests {
                 Some(&store),
                 false,
                 Some(0),
-                None,
+                make_chat_request(&[]),
                 None,
                 &ctx,
             )
@@ -2001,7 +1944,7 @@ mod tests {
                 Some(&store),
                 false,
                 Some(3),
-                None,
+                make_chat_request(&[]),
                 None,
                 &ctx,
             )
@@ -2044,7 +1987,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
-                None,
+                make_chat_request(&[]),
                 None,
                 &ctx,
             )
@@ -2107,7 +2050,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
-                None,
+                make_chat_request(&[]),
                 None,
                 &ctx,
             )
@@ -2143,7 +2086,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
-                None,
+                make_chat_request(&[]),
                 None,
                 &ctx,
             )
@@ -2178,7 +2121,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
-                None,
+                make_chat_request(&[]),
                 None,
                 &ctx,
             )
@@ -2190,11 +2133,13 @@ mod tests {
     // -- Tests: cache-tail invariant ----------------------------------------
 
     #[tokio::test]
-    async fn test_compact_cache_preserving_passes_only_final_message() {
-        // The cache-tail invariant: when a cached request is provided,
-        // exactly one user message is appended (the compaction prompt).
-        // The cached chat prefix rides through verbatim so the Anthropic
-        // cache-prefix hash matches.
+    async fn test_compact_extends_chat_prefix_with_exactly_one_trailing_user_turn() {
+        // The cache-tail invariant: the chat prefix (system, tools,
+        // messages) passes through verbatim, and exactly one user message
+        // is appended (the compaction prompt). This is the wire-shape
+        // contract — same whether the chat request came from
+        // `last_request` or was rebuilt from disk via
+        // `handler::build_chat_shape_request_from_disk`.
         let llm = ScriptedLlm::writing(&[("memory/notes/x.md", "# x")]);
         let conv_mgr = MockConversationMgr::new("new-conv-cached");
         let mgr = CompactionManager::new(make_config_with_keep(2));
@@ -2205,7 +2150,7 @@ mod tests {
             .unwrap();
         let ctx = TestCtx::new(tmp.path().to_string_lossy().into_owned());
 
-        let cached = LlmRequest {
+        let chat_request = LlmRequest {
             sdk: shore_config::models::Sdk::Anthropic,
             model: "test-model".into(),
             api_key: "k".into(),
@@ -2242,21 +2187,22 @@ mod tests {
             Some(&store),
             false,
             None,
-            Some(cached),
+            chat_request,
             None,
             &ctx,
         )
         .await
         .unwrap();
 
-        assert!(
-            llm.saw_cached(),
-            "cached request must reach build_initial_request"
+        assert_eq!(
+            llm.chat_prefix_len(),
+            Some(2),
+            "chat prefix must pass through verbatim — 2 messages in, 2 messages observed"
         );
         assert_eq!(
-            llm.initial_message_count(),
-            Some(1),
-            "cache-preserving mode must pass exactly one trailing user message"
+            llm.built_message_count(),
+            Some(3),
+            "exactly one trailing user message must be appended to the chat prefix"
         );
         let user_text = llm.last_user_text().expect("captured final user prompt");
         assert!(user_text.contains("Existing memory files"));
@@ -2295,7 +2241,7 @@ mod tests {
             Some(&store),
             false,
             None,
-            None,
+            make_chat_request(&[]),
             None,
             &ctx,
         )
@@ -2406,7 +2352,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
-                None,
+                make_chat_request(&[]),
                 None,
                 &ctx,
             )

@@ -7,9 +7,11 @@ use std::sync::Arc;
 /// Returns the number of retained turns on success.
 ///
 /// `cached_request` is the live conversation's cached LLM request (typically
-/// from `AutonomyManager::cached_last_request`). When provided, compaction
-/// reuses the cached prefix instead of building a fresh request, preserving
-/// the Anthropic prompt cache for the compaction call itself.
+/// from `AutonomyManager::cached_last_request`). When `Some`, compaction
+/// extends it with the compact-now tail and hits the cache chat seeded for
+/// this conversation. When `None`, we rebuild the chat-shape request from
+/// disk via `handler::build_chat_shape_request_from_disk` — same wire
+/// shape chat would have sent, no separate "fresh" code path.
 ///
 /// The data directory comes from `config.dirs.data` — callers should not
 /// thread a separate `data_dir` argument; the two would have to stay
@@ -22,6 +24,7 @@ pub async fn run_compaction(
     cached_request: Option<shore_llm::types::LlmRequest>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     use crate::engine::messages::MessageStore;
+    use crate::handler::build_chat_shape_request_from_disk;
     use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
     use crate::notifications::NotificationEvent;
     use shore_config::{
@@ -108,6 +111,31 @@ pub async fn run_compaction(
     // through the configured embedder.
     let tool_ctx = build_compaction_tool_context(&effective, data_dir, llm_client, character).await;
 
+    // Resolve the chat-shape request compaction will extend. Prefer the
+    // in-memory cached `last_request` — it's already warmed against the
+    // provider's prompt cache. Fall back to rebuilding from disk via the
+    // same path chat would have used, so the wire shape matches and a
+    // subsequent chat call can still hit (or seed) the same cache prefix.
+    let chat_request = match cached_request {
+        Some(req) => req,
+        None => {
+            let chat_model =
+                crate::preferences::resolve_chat_model_for_character(&effective, character)
+                    .ok_or("No chat model configured for compaction prefix rebuild")?;
+            let has_prior_context = crate::engine::segments::SegmentReader::load(&character_dir)
+                .map(|r| r.segment_count() > 0)
+                .unwrap_or(false);
+            build_chat_shape_request_from_disk(
+                character,
+                &character_dir,
+                &effective,
+                &chat_model,
+                store.messages(),
+                has_prior_context,
+            )?
+        }
+    };
+
     let outcome = mgr
         .compact(
             character,
@@ -123,7 +151,7 @@ pub async fn run_compaction(
             markdown_store.as_ref(),
             false,
             None,
-            cached_request,
+            chat_request,
             Some(data_dir),
             tool_ctx.as_ref(),
         )

@@ -18,6 +18,9 @@ use serde_json::Value;
 use tracing::warn;
 
 use shore_config::{LoadedConfig, AGENTS_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE};
+use shore_ledger::LedgerClient;
+use shore_llm::types::LlmRequest;
+use shore_llm::LlmError;
 use shore_protocol::types::Message;
 
 use crate::engine::prompt::{self, AssembledPrompt, PromptParams};
@@ -150,4 +153,53 @@ pub fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> PreparedCha
         character_definition,
         user_definition,
     }
+}
+
+/// Build a chat-shape `LlmRequest` from disk — the request chat's handler
+/// would build for its next turn, packaged as an `LlmRequest`.
+///
+/// Used as the fallback when an in-memory `AutonomyState::last_request` is
+/// unavailable (daemon restart, post-compaction invalidation, manual
+/// `swp memory_compact` before any chat has run). Both the heartbeat cold
+/// rebuild and the compaction tail builder rely on this: whatever chat
+/// would have sent is what they send, so the cache prefix lines up across
+/// chat / heartbeat / compaction.
+///
+/// `resolved` is the model the resulting request is anchored on (system,
+/// tools, and provider key flow from it). Compaction reuses the chat model
+/// here because the compaction tool loop rebuilds the request against its
+/// own model in `RealCompactionLlm::build_compaction_request`; the chat
+/// model just establishes the wire shape.
+pub fn build_chat_shape_request_from_disk(
+    character: &str,
+    character_data_dir: &Path,
+    config: &LoadedConfig,
+    resolved: &shore_config::models::ResolvedModel,
+    messages: &[Message],
+    has_prior_context: bool,
+) -> Result<LlmRequest, LlmError> {
+    let PreparedChatContext {
+        llm_messages,
+        system,
+        tool_defs,
+        ..
+    } = prepare_chat_context(PrepareChatContextParams {
+        character,
+        character_data_dir,
+        config,
+        resolved,
+        messages,
+        has_prior_context,
+        is_private: false,
+        include_unsigned_thinking: resolved.sdk.echoes_unsigned_thinking(),
+    });
+
+    LedgerClient::build_request_with_provider_keys(
+        resolved,
+        &config.providers,
+        llm_messages,
+        system,
+        tool_defs,
+        None,
+    )
 }

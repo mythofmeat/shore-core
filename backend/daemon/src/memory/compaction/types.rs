@@ -137,28 +137,25 @@ pub enum CompactionError {
 /// trait is therefore split into two small pieces:
 ///
 /// 1. [`CompactionLlm::build_initial_request`] — produce the first
-///    `LlmRequest` for a pass, honouring the cached-prefix tail invariant
-///    and the per-provider `system_suffix` routing.
+///    `LlmRequest` for a pass by extending a chat-shape request with the
+///    compaction tail.
 /// 2. [`CompactionLlm::generate`] — run a single round against an
 ///    already-built (possibly extended) request.
 ///
-/// When `cached_request` is `Some`, the implementation MUST reuse it as the
-/// cached prefix base — clone it, push the compaction prompts as inline
-/// `role:"system"` messages (the Anthropic provider transforms these into
-/// `<system_instruction>` user wrappers), and avoid touching the top-level
-/// `system` parameter so the conversation's prompt cache prefix stays valid.
-///
-/// `fresh_tools` are only used when `cached_request` is `None`. In the
-/// cached path the cached request's `tools` field is inherited verbatim so
-/// the Anthropic cache-prefix hash matches the chat request that seeded
-/// the cache.
+/// `chat_request` carries chat's `(system, tools, messages)` — either pulled
+/// from `AutonomyState::last_request` (the warm-cache path) or rebuilt from
+/// disk via `handler::build_chat_shape_request_from_disk` (the cold path).
+/// Either way the wire shape is identical to what chat's next turn would
+/// send. The implementation rebuilds against the compaction model and
+/// appends exactly one user message (the "compact now" instruction) with
+/// the compaction system prompt riding as `system_suffix` so it merges into
+/// that trailing user turn instead of altering the cache prefix.
 pub trait CompactionLlm: Send + Sync {
     fn build_initial_request(
         &self,
         system: &str,
-        messages: Vec<serde_json::Value>,
-        fresh_tools: Vec<serde_json::Value>,
-        cached_request: Option<LlmRequest>,
+        compact_now_user: serde_json::Value,
+        chat_request: LlmRequest,
     ) -> Result<LlmRequest, CompactionError>;
 
     fn generate<'a>(

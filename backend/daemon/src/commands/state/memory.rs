@@ -370,7 +370,36 @@ pub async fn compact(
     .await
     .ok();
 
-    let cached_request = ctx.autonomy.cached_last_request(&char_name);
+    // Resolve the chat-shape request compaction will extend. Prefer the
+    // in-memory cached `last_request`; fall back to rebuilding from disk
+    // via the same path chat would have used. The wire shape — system,
+    // tools, messages — is identical either way; only the source differs.
+    let chat_request = match ctx.autonomy.cached_last_request(&char_name) {
+        Some(req) => req,
+        None => {
+            let chat_model =
+                crate::preferences::resolve_chat_model_for_character(&ctx.config, &char_name)
+                    .ok_or_else(|| {
+                        (
+                            ErrorCode::InternalError,
+                            "No chat model configured for compaction prefix rebuild".to_string(),
+                        )
+                    })?;
+            let character_dir = engine.character_dir().to_path_buf();
+            let has_prior_context = crate::engine::segments::SegmentReader::load(&character_dir)
+                .map(|r| r.segment_count() > 0)
+                .unwrap_or(false);
+            crate::handler::build_chat_shape_request_from_disk(
+                &char_name,
+                &character_dir,
+                &ctx.config,
+                &chat_model,
+                engine.messages(),
+                has_prior_context,
+            )
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
+        }
+    };
 
     // Build the canonical tool context for the compaction loop. Mirrors
     // the background-task wiring so manual `swp memory_compact` and the
@@ -393,7 +422,7 @@ pub async fn compact(
             markdown_store.as_ref(),
             dry_run,
             keep_turns_override,
-            cached_request,
+            chat_request,
             Some(&ctx.config.dirs.data),
             tool_ctx.as_ref(),
         )
