@@ -157,9 +157,10 @@ async fn cache_control_pinned_zero_marks_last_system_block() {
 
 #[tokio::test]
 async fn cache_control_default_with_two_system_blocks_anchors_at_minus_one() {
-    // The hardcoded default is pinned=[-1] (second-to-last system block,
-    // i.e. the block above memory_index). With two system blocks present,
-    // pinned=[-1] should land on system[0], not system[1].
+    // TS-default anchors on the last system block whose `_label` is NOT
+    // `"memory_index"` — memory_index churns every dreaming/compaction
+    // pass, so anchoring there busts the prefix. With two blocks where
+    // system[1] is the memory_index slot, the anchor lands on system[0].
     let _guard = ENV_LOCK.lock().unwrap();
     let _pinned = EnvVarGuard::unset("SHORE_CACHE_PINNED_POSITION");
     let _depth = EnvVarGuard::unset("SHORE_CACHE_DEPTH_TURNS");
@@ -172,7 +173,7 @@ async fn cache_control_default_with_two_system_blocks_anchors_at_minus_one() {
     let mut req = base_request(&mock.base_url());
     req.system = Some(json!([
         {"type": "text", "text": "stable base"},
-        {"type": "text", "text": "memory_index simulated"}
+        {"type": "text", "text": "memory_index simulated", "_label": "memory_index"}
     ]));
     req.provider_options = Some(json!({"cache_ttl": "5m"}));
     drain_stream(&client, &req).await;
