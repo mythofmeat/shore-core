@@ -260,8 +260,9 @@ pub enum CliCommand {
         #[arg(long)]
         json: bool,
 
-        /// Output as TOML (suitable for pasting into a config file)
-        #[arg(long, conflicts_with = "json")]
+        /// Output as TOML (suitable for pasting into a config file).
+        /// Only valid for read-only config queries (no value, --check, or --reset).
+        #[arg(long, conflicts_with_all = ["json", "check", "reset", "value"])]
         toml: bool,
 
         /// Include keys whose value matches the built-in default (shown dimmed)

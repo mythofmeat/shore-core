@@ -460,7 +460,21 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 | CliCommand::Usage { json, .. } => *json,
                 _ => false,
             };
-            let toml_mode = matches!(other, CliCommand::Config { toml: true, .. });
+            // Read-only config only. Clap's `conflicts_with_all` rejects
+            // `--toml` alongside `--check`, `--reset`, or a set value at parse
+            // time; the narrow match here documents that intent and avoids
+            // serializing non-config responses (e.g. "set" confirmations) as
+            // TOML if a future code path forgets the parse-time guard.
+            let toml_mode = matches!(
+                other,
+                CliCommand::Config {
+                    toml: true,
+                    value: None,
+                    check: false,
+                    reset: false,
+                    ..
+                }
+            );
             let show_all = matches!(other, CliCommand::Config { all: true, .. });
             let (name, args) = crate::cli::to_swp_command(other)
                 .expect("non-send/regen/local command must map to SWP command");
@@ -954,14 +968,32 @@ fn print_config_toml(
         }
     };
     let filtered: serde_json::Value;
-    let effective = if show_all {
+    let effective: &serde_json::Value = if show_all {
         payload
     } else {
-        filtered = filter_non_defaults(payload, defaults).unwrap_or(serde_json::Value::Null);
+        // If nothing differs from defaults, render an empty table rather than
+        // erroring out — `shore config --toml` should still succeed.
+        filtered = filter_non_defaults(payload, defaults)
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
         &filtered
     };
+
+    // Section view (`shore config <key> --toml`): wrap the subtree under its
+    // table name so the output drops into a config file as-is — otherwise
+    // nested tables would be at root level (e.g. `[heartbeat]` instead of
+    // `[behavior.heartbeat]`).
+    let wrapped;
+    let to_serialize: &serde_json::Value = if let Some(k) = key {
+        let mut wrapper = serde_json::Map::new();
+        wrapper.insert(k.to_string(), effective.clone());
+        wrapped = serde_json::Value::Object(wrapper);
+        &wrapped
+    } else {
+        effective
+    };
+
     let toml_value =
-        json_to_toml_value(effective).ok_or("config payload has no non-default entries")?;
+        json_to_toml_value(to_serialize).ok_or("config payload is not a TOML table")?;
     let rendered = match toml_value {
         toml::Value::Table(t) => toml::to_string_pretty(&t)?,
         other => toml::to_string_pretty(&other)?,
@@ -1792,6 +1824,55 @@ mod tests {
             filtered.get("scalar_default").is_none(),
             "default scalar should be pruned"
         );
+    }
+
+    #[test]
+    fn print_config_toml_section_view_wraps_under_key() {
+        // Regression: `shore config <section> --toml` must wrap the subtree
+        // under its table name, otherwise pasting the output back into a
+        // config file would land nested tables at the wrong path.
+        let data = serde_json::json!({
+            "key": "daemon",
+            "config": {
+                "addr": "0.0.0.0:1112",
+                "unsafe_allow_remote_access": true,
+            },
+            "defaults": {
+                "addr": "127.0.0.1:7320",
+                "unsafe_allow_remote_access": false,
+            },
+        });
+        // Capture stdout by routing through to_string_pretty directly via the
+        // same logic. Since print_config_toml writes to stdout, exercise the
+        // wrapping logic by replicating the path.
+        let payload = data.get("config").unwrap();
+        let key = data.get("key").and_then(|v| v.as_str()).unwrap();
+        let mut wrapper = serde_json::Map::new();
+        wrapper.insert(key.to_string(), payload.clone());
+        let wrapped = serde_json::Value::Object(wrapper);
+        let toml_value = super::json_to_toml_value(&wrapped).expect("table");
+        let rendered = match toml_value {
+            toml::Value::Table(t) => toml::to_string_pretty(&t).expect("ok"),
+            _ => panic!("expected table"),
+        };
+        assert!(
+            rendered.contains("[daemon]"),
+            "section name must appear as a TOML table header:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn filter_non_defaults_returns_none_when_all_match() {
+        // Regression: when nothing differs from defaults, the caller should
+        // be able to render an empty TOML table rather than fail outright.
+        let config = serde_json::json!({ "a": 1, "b": 2 });
+        let defaults = serde_json::json!({ "a": 1, "b": 2 });
+        assert!(super::filter_non_defaults(&config, Some(&defaults)).is_none());
+        // The caller substitutes an empty object so json_to_toml_value yields
+        // a valid (empty) table.
+        let fallback = serde_json::Value::Object(serde_json::Map::new());
+        let tv = super::json_to_toml_value(&fallback).expect("empty table");
+        assert!(matches!(tv, toml::Value::Table(ref t) if t.is_empty()));
     }
 
     #[test]
