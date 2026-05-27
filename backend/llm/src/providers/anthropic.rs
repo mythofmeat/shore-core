@@ -257,6 +257,157 @@ fn resolve_pinned_positions(
     (sys_indices, msg_indices)
 }
 
+/// Normalize messages and system for cache_control placement.
+///
+/// - Strips any pre-existing cache_control markers (so callers can't smuggle
+///   in stale markers from a prior turn's persisted state).
+/// - Converts plain-string message content to array form so the serialised
+///   payload structure is identical regardless of where the breakpoint lands.
+/// - Converts string system to a single text block.
+///
+/// Returns `(messages, system_as_array, sys_blocks_len)`.
+fn normalize_for_caching(messages: &[Value], system: &Value) -> (Vec<Value>, Value, usize) {
+    let system = if let Some(s) = system.as_str() {
+        json!([{ "type": "text", "text": s }])
+    } else {
+        system.clone()
+    };
+    let sys_blocks = system.as_array().map(|a| a.len()).unwrap_or(0);
+
+    let mut result: Vec<Value> = messages.to_vec();
+    strip_cache_control(&mut result);
+    for msg in result.iter_mut() {
+        if let Some(Value::String(text)) = msg.get("content").cloned() {
+            msg["content"] = json!([{ "type": "text", "text": text }]);
+        }
+    }
+    (result, system, sys_blocks)
+}
+
+/// Apply cache_control markers at the given indices, then strip `_label`
+/// from system blocks. Mutates `messages` and `system` in place.
+fn place_breakpoints(
+    messages: &mut [Value],
+    system: &mut Value,
+    cache_ttl: &str,
+    msg_bp: &[usize],
+    sys_bp: &[usize],
+) {
+    let cc = make_cache_control(cache_ttl);
+    if let Some(arr) = system.as_array_mut() {
+        for &idx in sys_bp {
+            if let Some(obj) = arr.get_mut(idx).and_then(Value::as_object_mut) {
+                obj.insert("cache_control".into(), cc.clone());
+                tracing::debug!(idx, "place_breakpoints: system breakpoint placed");
+            }
+        }
+        // _label is internal metadata; must not reach the wire (pollutes the
+        // cache-key hash for any consumer that doesn't strip identically).
+        for block in arr.iter_mut() {
+            if let Some(obj) = block.as_object_mut() {
+                obj.remove("_label");
+            }
+        }
+    }
+    for &pos in msg_bp {
+        if pos < messages.len() {
+            apply_breakpoint_to_message(&mut messages[pos], &cc);
+            tracing::debug!(pos, "place_breakpoints: message breakpoint placed");
+        }
+    }
+}
+
+/// Compute the prefix hash for forensics. Mirrors the TS daemon's
+/// `hashForensicsPrefix` semantics (system + messages up to and including
+/// the first breakpoint).
+fn compute_prefix_hash(system: &Value, messages: &[Value], msg_bp: &[usize]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    system.to_string().hash(&mut hasher);
+    let end = msg_bp.first().map(|&p| p + 1).unwrap_or(0);
+    for msg in &messages[..end.min(messages.len())] {
+        msg.to_string().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Enforce Anthropic's 4-breakpoint limit. Keeps system breakpoints; truncates
+/// message breakpoints from the end if needed.
+fn enforce_breakpoint_limit(msg_bp: &mut Vec<usize>, sys_bp: &[usize]) {
+    let total = msg_bp.len() + sys_bp.len();
+    if total > 4 {
+        tracing::warn!(
+            total,
+            msg = msg_bp.len(),
+            sys = sys_bp.len(),
+            "cache breakpoints exceed 4, truncating message breakpoints"
+        );
+        let allowed_msg = 4usize.saturating_sub(sys_bp.len());
+        msg_bp.truncate(allowed_msg);
+    }
+}
+
+/// Last system block whose `_label` is NOT `"memory_index"`.
+///
+/// Mirrors the TS daemon's `lastStableSystemIndex`. `memory_index` (the
+/// rendering of `MEMORY.md`) is rewritten by dreaming + compaction, so
+/// anchoring on it busts the system prefix every memory refresh. Anything
+/// before it (system base, tools_guidance, character, user) is stable
+/// across turns. Returns `None` if every block is `memory_index` (or the
+/// array is empty).
+fn last_stable_system_idx(system: &Value) -> Option<usize> {
+    let arr = system.as_array()?;
+    for (i, block) in arr.iter().enumerate().rev() {
+        let label = block.get("_label").and_then(Value::as_str);
+        if label != Some("memory_index") {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// TS-daemon-parity message breakpoints: `[last_stable_assistant, last_msg]`.
+///
+/// `last_msg` is the absolute last message; `last_stable_assistant` is the
+/// last assistant message strictly before it. Deduped + filtered to valid
+/// indices. Returns `[]` for empty messages.
+fn ts_message_breakpoints(messages: &[Value]) -> Vec<usize> {
+    if messages.is_empty() {
+        return vec![];
+    }
+    let last_idx = messages.len() - 1;
+    let mut stable_idx: Option<usize> = None;
+    if last_idx > 0 {
+        for i in (0..last_idx).rev() {
+            if messages[i].get("role").and_then(Value::as_str) == Some("assistant") {
+                stable_idx = Some(i);
+                break;
+            }
+        }
+    }
+    let mut out: Vec<usize> = match stable_idx {
+        Some(idx) if idx != last_idx => vec![idx, last_idx],
+        _ => vec![last_idx],
+    };
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// TS-daemon-parity default placement. Returns `(msg_bp, sys_bp)`.
+///
+/// System: last block whose `_label != "memory_index"` (or block 0 if the
+/// system is a single un-labelled text block — typical for string system).
+/// Messages: `[last_stable_assistant, last_msg]`.
+fn ts_default_placement(messages: &[Value], system: &Value) -> (Vec<usize>, Vec<usize>) {
+    let sys_bp: Vec<usize> = match last_stable_system_idx(system) {
+        Some(idx) => vec![idx],
+        None => vec![],
+    };
+    let msg_bp = ts_message_breakpoints(messages);
+    (msg_bp, sys_bp)
+}
+
 /// Apply cache_control breakpoints to messages and system.
 ///
 /// Breakpoints are configured via two arrays in provider_options:
@@ -274,19 +425,11 @@ fn apply_cache_control(
     depth_turns: &[u32],
     pinned_positions: &[i32],
 ) -> (Vec<Value>, Value, CachePlacement) {
-    // Normalize string system prompt to array-of-blocks so cache_control
-    // markers can be attached.
-    let system = if let Some(s) = system.as_str() {
-        json!([{ "type": "text", "text": s }])
-    } else {
-        system.clone()
-    };
+    let (mut result, mut system, sys_blocks) = normalize_for_caching(messages, system);
 
-    let sys_blocks = system.as_array().map(|a| a.len()).unwrap_or(0);
-
-    if messages.is_empty() {
+    if result.is_empty() {
         return (
-            messages.to_vec(),
+            result,
             system,
             CachePlacement {
                 msg_breakpoints: vec![],
@@ -297,32 +440,16 @@ fn apply_cache_control(
         );
     }
 
-    let mut result: Vec<Value> = messages.to_vec();
-
-    // Step 1: Strip all existing cache_control from all content blocks.
-    strip_cache_control(&mut result);
-
-    // Step 2: Normalize all plain-string content to array format so the
-    // serialised payload structure is identical regardless of where the
-    // cache breakpoint lands.
-    for msg in result.iter_mut() {
-        if let Some(Value::String(text)) = msg.get("content").cloned() {
-            msg["content"] = json!([{ "type": "text", "text": text }]);
-        }
-    }
-
-    // Step 3: Env var overrides.
+    // Env var overrides for ad-hoc debugging.
     let depth_turns =
         parse_env_vec::<u32>("SHORE_CACHE_DEPTH_TURNS").unwrap_or_else(|| depth_turns.to_vec());
     let pinned_positions = parse_env_vec::<i32>("SHORE_CACHE_PINNED_POSITION")
         .unwrap_or_else(|| pinned_positions.to_vec());
 
-    // Step 4: Resolve breakpoint positions.
     let depth_msg_indices = resolve_depth_turns(&result, &depth_turns);
     let (pinned_sys_indices, pinned_msg_indices) =
         resolve_pinned_positions(&result, sys_blocks, &pinned_positions);
 
-    // Deduplicate and sort message breakpoints.
     let mut msg_bp: Vec<usize> = depth_msg_indices
         .into_iter()
         .chain(pinned_msg_indices)
@@ -330,65 +457,13 @@ fn apply_cache_control(
     msg_bp.sort_unstable();
     msg_bp.dedup();
 
-    // Deduplicate system breakpoints.
     let mut sys_bp: Vec<usize> = pinned_sys_indices;
     sys_bp.sort_unstable();
     sys_bp.dedup();
 
-    // Enforce Anthropic's 4-breakpoint limit.
-    let total = msg_bp.len() + sys_bp.len();
-    if total > 4 {
-        tracing::warn!(
-            total,
-            msg = msg_bp.len(),
-            sys = sys_bp.len(),
-            "apply_cache_control: too many breakpoints ({total}), truncating to 4"
-        );
-        // Keep system breakpoints, truncate message breakpoints.
-        let allowed_msg = 4usize.saturating_sub(sys_bp.len());
-        msg_bp.truncate(allowed_msg);
-    }
-
-    // Step 5: Apply breakpoints.
-    let cc = make_cache_control(cache_ttl);
-
-    // System breakpoints.
-    let mut sys = system;
-    if let Some(arr) = sys.as_array_mut() {
-        for &idx in &sys_bp {
-            if let Some(obj) = arr.get_mut(idx).and_then(Value::as_object_mut) {
-                obj.insert("cache_control".into(), cc.clone());
-                tracing::debug!(idx, "apply_cache_control: system breakpoint placed");
-            }
-        }
-        // Strip _label fields — internal metadata, not part of the API.
-        for block in arr.iter_mut() {
-            if let Some(obj) = block.as_object_mut() {
-                obj.remove("_label");
-            }
-        }
-    }
-
-    // Message breakpoints.
-    for &pos in &msg_bp {
-        if pos < result.len() {
-            apply_breakpoint_to_message(&mut result[pos], &cc);
-            tracing::debug!(pos, "apply_cache_control: message breakpoint placed");
-        }
-    }
-
-    // Step 6: Compute prefix hash for forensics.
-    let prefix_hash = {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        sys.to_string().hash(&mut hasher);
-        // Hash messages up to and including the earliest message breakpoint.
-        let end = msg_bp.first().map(|&p| p + 1).unwrap_or(0);
-        for msg in &result[..end] {
-            msg.to_string().hash(&mut hasher);
-        }
-        hasher.finish()
-    };
+    enforce_breakpoint_limit(&mut msg_bp, &sys_bp);
+    place_breakpoints(&mut result, &mut system, cache_ttl, &msg_bp, &sys_bp);
+    let prefix_hash = compute_prefix_hash(&system, &result, &msg_bp);
 
     tracing::debug!(
         total_messages = result.len(),
@@ -400,7 +475,56 @@ fn apply_cache_control(
 
     (
         result,
-        sys,
+        system,
+        CachePlacement {
+            msg_breakpoints: msg_bp,
+            sys_breakpoints: sys_bp,
+            sys_blocks,
+            prefix_hash,
+        },
+    )
+}
+
+/// TS-daemon-parity entry point: place cache_control at the default
+/// positions used by the TypeScript daemon (last stable system block, last
+/// stable assistant turn, absolute last message). Mirrors
+/// `backend/daemon-ts/src/llm/providers/anthropic.ts`.
+fn apply_cache_control_ts_default(
+    messages: &[Value],
+    system: &Value,
+    cache_ttl: &str,
+) -> (Vec<Value>, Value, CachePlacement) {
+    let (mut result, mut system, sys_blocks) = normalize_for_caching(messages, system);
+
+    if result.is_empty() {
+        return (
+            result,
+            system,
+            CachePlacement {
+                msg_breakpoints: vec![],
+                sys_breakpoints: vec![],
+                sys_blocks,
+                prefix_hash: 0,
+            },
+        );
+    }
+
+    let (mut msg_bp, sys_bp) = ts_default_placement(&result, &system);
+    enforce_breakpoint_limit(&mut msg_bp, &sys_bp);
+    place_breakpoints(&mut result, &mut system, cache_ttl, &msg_bp, &sys_bp);
+    let prefix_hash = compute_prefix_hash(&system, &result, &msg_bp);
+
+    tracing::debug!(
+        total_messages = result.len(),
+        msg_breakpoints = ?msg_bp,
+        sys_breakpoints = ?sys_bp,
+        prefix_hash = format!("{prefix_hash:016x}"),
+        "apply_cache_control_ts_default: breakpoint placement"
+    );
+
+    (
+        result,
+        system,
         CachePlacement {
             msg_breakpoints: msg_bp,
             sys_breakpoints: sys_bp,
@@ -523,28 +647,35 @@ fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
 
     let msg_count = converted_messages.len();
 
-    // Cache breakpoint defaults: depth=[0,1] (two sliding message breakpoints)
-    // and pinned=[-1] (system anchor on second-to-last block). The last
-    // system block is the `<memory_index>` rendering of MEMORY.md, which can
-    // change at every compaction; placing the anchor one block above it keeps
-    // the cached prefix stable when the index is rewritten.
+    // Default placement mirrors the TS daemon
+    // (`backend/daemon-ts/src/llm/providers/anthropic.ts`):
+    //   - 1 system anchor on the last `_label != "memory_index"` block
+    //     (memory_index churns every dreaming/compaction pass).
+    //   - 2 message breakpoints: the last assistant message before the tail
+    //     (caches the frozen history) and the absolute last message (caches
+    //     the current iteration so tool-loop steps extend the prefix).
     //
-    // Sliding breakpoints WITHOUT a system anchor are unreliable (intermittent
-    // full prefix rewrites despite identical content). See ARCHITECTURE.md.
-    //
-    // Overridable via SHORE_CACHE_DEPTH_TURNS and SHORE_CACHE_PINNED_POSITION
-    // env vars (comma-separated) for debugging.
-    let depth_turns: Vec<u32> = vec![0, 1];
-    let pinned_positions: Vec<i32> = vec![-1];
+    // `SHORE_CACHE_DEPTH_TURNS` / `SHORE_CACHE_PINNED_POSITION` env vars
+    // switch back to the legacy depth/pinned machinery for ad-hoc debugging.
+    let has_env_override = std::env::var_os("SHORE_CACHE_DEPTH_TURNS").is_some()
+        || std::env::var_os("SHORE_CACHE_PINNED_POSITION").is_some();
 
     let (messages, system, placement) = if cache_enabled && !has_existing_markers {
-        apply_cache_control(
-            &converted_messages,
-            request.system.as_ref().unwrap_or(&json!(null)),
-            cache_ttl,
-            &depth_turns,
-            &pinned_positions,
-        )
+        if has_env_override {
+            apply_cache_control(
+                &converted_messages,
+                request.system.as_ref().unwrap_or(&json!(null)),
+                cache_ttl,
+                &[],
+                &[],
+            )
+        } else {
+            apply_cache_control_ts_default(
+                &converted_messages,
+                request.system.as_ref().unwrap_or(&json!(null)),
+                cache_ttl,
+            )
+        }
     } else {
         (
             converted_messages,
@@ -2588,5 +2719,207 @@ mod tests {
             }
             other => panic!("unexpected tail content shape: {other:?}"),
         }
+    }
+
+    // ── TS-default placement parity ─────────────────────────────────────
+
+    #[test]
+    fn last_stable_system_idx_skips_memory_index() {
+        // Mirrors the production system shape: [system, tools_guidance,
+        // character, user, memory_index]. The anchor must land on `user`,
+        // not on `memory_index` (which rewrites per dreaming/compaction).
+        let system = json!([
+            {"type": "text", "text": "s", "_label": "system"},
+            {"type": "text", "text": "t", "_label": "tools_guidance"},
+            {"type": "text", "text": "c", "_label": "character"},
+            {"type": "text", "text": "u", "_label": "user"},
+            {"type": "text", "text": "m", "_label": "memory_index"},
+        ]);
+        assert_eq!(last_stable_system_idx(&system), Some(3));
+    }
+
+    #[test]
+    fn last_stable_system_idx_single_unlabelled_block() {
+        // String system normalises to one block with no `_label` — must
+        // still be cacheable.
+        let system = json!([{"type": "text", "text": "all of it"}]);
+        assert_eq!(last_stable_system_idx(&system), Some(0));
+    }
+
+    #[test]
+    fn last_stable_system_idx_all_memory_index_returns_none() {
+        let system = json!([
+            {"type": "text", "text": "m1", "_label": "memory_index"},
+            {"type": "text", "text": "m2", "_label": "memory_index"},
+        ]);
+        assert_eq!(last_stable_system_idx(&system), None);
+    }
+
+    #[test]
+    fn ts_message_breakpoints_user_assistant_user() {
+        // Typical pending-turn shape: ends on a user message.
+        let msgs = vec![
+            json!({"role": "user", "content": "u0"}),
+            json!({"role": "assistant", "content": "a0"}),
+            json!({"role": "user", "content": "u1"}),
+        ];
+        // last_idx = 2, last assistant before it = 1.
+        assert_eq!(ts_message_breakpoints(&msgs), vec![1, 2]);
+    }
+
+    #[test]
+    fn ts_message_breakpoints_tool_loop_tail() {
+        // Tool loop tail: ends on a tool_result (still role=user).
+        let msgs = vec![
+            json!({"role": "user", "content": "u0"}),
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "x", "input": {}}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "ok"}]}),
+        ];
+        // last_idx = 2, last assistant = 1.
+        assert_eq!(ts_message_breakpoints(&msgs), vec![1, 2]);
+    }
+
+    #[test]
+    fn ts_message_breakpoints_single_message() {
+        let msgs = vec![json!({"role": "user", "content": "hi"})];
+        // Only one position, no stable assistant exists.
+        assert_eq!(ts_message_breakpoints(&msgs), vec![0]);
+    }
+
+    #[test]
+    fn ts_message_breakpoints_empty() {
+        assert_eq!(ts_message_breakpoints(&[]), Vec::<usize>::new());
+    }
+
+    /// Regression: pins the placement that the TS daemon ships and Anthropic
+    /// caches against. Drives `apply_cache_control_ts_default` end-to-end
+    /// for the user's exact prod shape and asserts breakpoints land on the
+    /// `user` system block, the last assistant turn, and the last message.
+    #[test]
+    fn ts_default_placement_matches_prod_shape() {
+        let system = json!([
+            {"type": "text", "text": "s", "_label": "system"},
+            {"type": "text", "text": "t", "_label": "tools_guidance"},
+            {"type": "text", "text": "c", "_label": "character"},
+            {"type": "text", "text": "u", "_label": "user"},
+            {"type": "text", "text": "m", "_label": "memory_index"},
+        ]);
+        let msgs = vec![
+            json!({"role": "user", "content": "u0"}),
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "x", "input": {}}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "ok"}]}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "th", "signature": "s"},
+                {"type": "text", "text": "a2"},
+            ]}),
+            json!({"role": "user", "content": "u3"}),
+        ];
+
+        let (out_msgs, out_sys, placement) =
+            apply_cache_control_ts_default(&msgs, &system, "1h");
+
+        // System anchor on `user` (sys[3]), not on `memory_index` (sys[4]).
+        assert_eq!(placement.sys_breakpoints, vec![3]);
+        // Message breakpoints: last assistant (msg[5]) + last message (msg[6]).
+        assert_eq!(placement.msg_breakpoints, vec![5, 6]);
+
+        // _label stripped on the wire.
+        for block in out_sys.as_array().unwrap() {
+            assert!(block.get("_label").is_none(), "_label must not reach wire");
+        }
+        // cache_control landed on sys[3] only.
+        let arr = out_sys.as_array().unwrap();
+        assert!(arr[3].get("cache_control").is_some());
+        for (i, b) in arr.iter().enumerate() {
+            if i != 3 {
+                assert!(b.get("cache_control").is_none(), "stray sys[{i}] marker");
+            }
+        }
+        // cache_control landed on msg[5] (assistant text block, NOT thinking)
+        // and msg[6].
+        let asst_content = out_msgs[5]["content"].as_array().unwrap();
+        // Find the text block — must have cache_control; thinking must not.
+        let text_block = asst_content
+            .iter()
+            .find(|b| b["type"] == "text")
+            .expect("text block exists");
+        assert!(text_block.get("cache_control").is_some());
+        let thinking_block = asst_content
+            .iter()
+            .find(|b| b["type"] == "thinking")
+            .expect("thinking block exists");
+        assert!(thinking_block.get("cache_control").is_none(),
+            "Anthropic rejects cache_control on thinking blocks");
+        // msg[6] (last user) has a marker.
+        let last_content = out_msgs[6]["content"].as_array().unwrap();
+        assert!(last_content[0].get("cache_control").is_some());
+    }
+
+    /// The user's failure mode: messages grow by 2 each turn (user→asst).
+    /// Pins that the last_msg breakpoint advances and the stable-assistant
+    /// breakpoint follows it, both at TS-compatible positions, so an
+    /// Anthropic cache write at turn N is hit by turn N+1's lookup.
+    #[test]
+    fn ts_default_placement_breakpoints_advance_per_turn() {
+        let system = json!([
+            {"type": "text", "text": "sys", "_label": "system"},
+            {"type": "text", "text": "m", "_label": "memory_index"},
+        ]);
+        // Simulate consecutive requests with msgs counts 5, 7, 9, 11, 13 —
+        // matching the prod sequence in cache_forensics logs.
+        let mk_msg = |i: usize| {
+            if i % 2 == 0 {
+                json!({"role": "user", "content": format!("u{i}")})
+            } else {
+                json!({"role": "assistant", "content": format!("a{i}")})
+            }
+        };
+        let expected: Vec<(usize, Vec<usize>)> = vec![
+            (5, vec![3, 4]),
+            (7, vec![5, 6]),
+            (9, vec![7, 8]),
+            (11, vec![9, 10]),
+            (13, vec![11, 12]),
+        ];
+        for (n, expected_bp) in expected {
+            let msgs: Vec<_> = (0..n).map(mk_msg).collect();
+            let (_, _, p) = apply_cache_control_ts_default(&msgs, &system, "1h");
+            assert_eq!(
+                p.msg_breakpoints, expected_bp,
+                "msg_count={n}: expected {expected_bp:?}, got {:?}",
+                p.msg_breakpoints
+            );
+            assert_eq!(p.sys_breakpoints, vec![0], "sys anchor must be sys[0] (skip memory_index at sys[1])");
+        }
+    }
+
+    #[test]
+    fn ts_default_placement_honoured_through_build_body() {
+        let mut request = make_request(
+            vec![
+                json!({"role": "user", "content": "u0"}),
+                json!({"role": "assistant", "content": "a0"}),
+                json!({"role": "user", "content": "u1"}),
+            ],
+            Some(json!([
+                {"type": "text", "text": "s", "_label": "system"},
+                {"type": "text", "text": "m", "_label": "memory_index"},
+            ])),
+        );
+        request.provider_options = Some(json!({"cache_ttl": "1h"}));
+        let (body, _) = build_body(&request, false);
+
+        // sys[0] anchored.
+        let sys = body["system"].as_array().expect("system array");
+        assert!(sys[0].get("cache_control").is_some());
+        assert!(sys[1].get("cache_control").is_none());
+        // Last assistant + last user have markers.
+        let msgs = body["messages"].as_array().expect("messages array");
+        let a0 = msgs[1]["content"].as_array().expect("a0 array");
+        assert!(a0.iter().any(|b| b.get("cache_control").is_some()));
+        let u1 = msgs[2]["content"].as_array().expect("u1 array");
+        assert!(u1.iter().any(|b| b.get("cache_control").is_some()));
     }
 }
