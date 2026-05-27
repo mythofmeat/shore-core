@@ -283,7 +283,16 @@ impl ResolvedModel {
         sdk_fallback: Sdk,
         fields: ModelConfigFields,
     ) -> Self {
-        let sdk = fields.sdk.clone().unwrap_or(sdk_fallback);
+        // Anthropic-slug auto-promotion: OpenRouter (and similar gateways)
+        // accept Anthropic-shape `/v1/messages` for `anthropic/*` models, and
+        // the Anthropic SDK is the only path that emits `cache_control`. If
+        // the user didn't pin an SDK explicitly, route any `anthropic/*`
+        // model_id through Sdk::Anthropic so caching works by default.
+        let sdk = match fields.sdk.clone() {
+            Some(s) => s,
+            None if model_id.starts_with("anthropic/") => Sdk::Anthropic,
+            None => sdk_fallback,
+        };
 
         // Anthropic prompt caching is opt-in on the wire — `cache_control`
         // blocks are only added when `cache_ttl` is `Some` and non-empty.
@@ -1459,6 +1468,57 @@ sdk = "anthropic"
         );
         // Should inherit OpenRouter's API key env
         assert_eq!(opus.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
+    }
+
+    #[test]
+    fn anthropic_slug_auto_promotes_to_anthropic_sdk() {
+        // Custom provider key with no hardcoded default and no explicit
+        // `sdk = `. Any model_id matching `anthropic/*` should still resolve
+        // to Sdk::Anthropic so cache_control markers reach the wire.
+        let table = parse_table(
+            r#"
+[openrouter-anthropic]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[openrouter-anthropic.opus]
+model_id = "anthropic/claude-opus-4.6"
+
+[openrouter-anthropic.non-anthropic]
+model_id = "openai/gpt-5"
+"#,
+        );
+        let models = parse_category("chat", &table, None).unwrap();
+
+        let opus = &models["chat.openrouter-anthropic.opus"];
+        assert_eq!(opus.sdk, Sdk::Anthropic);
+        // cache_ttl defaults to "1h" once promoted.
+        assert_eq!(opus.cache_ttl.as_deref(), Some("1h"));
+
+        // Non-anthropic slug under the same provider stays on the fallback
+        // (Sdk::Openai for unknown provider keys).
+        let other = &models["chat.openrouter-anthropic.non-anthropic"];
+        assert_eq!(other.sdk, Sdk::Openai);
+    }
+
+    #[test]
+    fn explicit_sdk_wins_over_anthropic_slug_auto_promotion() {
+        // Explicit `sdk = "openai"` on an `anthropic/*` model_id must be
+        // respected (e.g. for testing the chat-completions path).
+        let table = parse_table(
+            r#"
+[openrouter-anthropic]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[openrouter-anthropic.opus-via-openai]
+model_id = "anthropic/claude-opus-4.6"
+sdk = "openai"
+"#,
+        );
+        let models = parse_category("chat", &table, None).unwrap();
+        let opus = &models["chat.openrouter-anthropic.opus-via-openai"];
+        assert_eq!(opus.sdk, Sdk::Openai);
     }
 
     #[test]

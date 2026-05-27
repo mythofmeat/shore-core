@@ -261,15 +261,16 @@ def apply_sliding_breakpoints(messages, depths=(1, 2)):
     import copy
     msgs = copy.deepcopy(messages)
 
-    # Find positions of real user messages (not tool_result)
+    # Find positions of real user messages (excluding tool_result-only turns).
+    # A mixed turn like [tool_result, text] still counts as a real user message.
     real_user_indices = []
     for i, m in enumerate(msgs):
         if m.get("role") == "user":
             content = m.get("content", "")
-            # tool_result messages have content as a list of tool_result blocks
-            if isinstance(content, list) and any(
-                b.get("type") == "tool_result" for b in content
-                if isinstance(b, dict)):
+            if isinstance(content, list) and content and all(
+                isinstance(b, dict) and b.get("type") == "tool_result"
+                for b in content
+            ):
                 continue
             real_user_indices.append(i)
 

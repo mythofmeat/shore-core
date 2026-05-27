@@ -43,15 +43,22 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 fn load_env_file() {
     let path = env::var("SHORE_ENV_FILE")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/home/eshen/.config/shore/.env"));
+        .unwrap_or_else(|_| {
+            env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("shore/.env")
+        });
     let Ok(contents) = fs::read_to_string(path) else {
         return;
     };
     for line in contents.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with("export ") {
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
+        let line = line.strip_prefix("export ").unwrap_or(line);
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
