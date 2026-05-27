@@ -2817,8 +2817,7 @@ mod tests {
             json!({"role": "user", "content": "u3"}),
         ];
 
-        let (out_msgs, out_sys, placement) =
-            apply_cache_control_ts_default(&msgs, &system, "1h");
+        let (out_msgs, out_sys, placement) = apply_cache_control_ts_default(&msgs, &system, "1h");
 
         // System anchor on `user` (sys[3]), not on `memory_index` (sys[4]).
         assert_eq!(placement.sys_breakpoints, vec![3]);
@@ -2850,8 +2849,10 @@ mod tests {
             .iter()
             .find(|b| b["type"] == "thinking")
             .expect("thinking block exists");
-        assert!(thinking_block.get("cache_control").is_none(),
-            "Anthropic rejects cache_control on thinking blocks");
+        assert!(
+            thinking_block.get("cache_control").is_none(),
+            "Anthropic rejects cache_control on thinking blocks"
+        );
         // msg[6] (last user) has a marker.
         let last_content = out_msgs[6]["content"].as_array().unwrap();
         assert!(last_content[0].get("cache_control").is_some());
@@ -2891,7 +2892,11 @@ mod tests {
                 "msg_count={n}: expected {expected_bp:?}, got {:?}",
                 p.msg_breakpoints
             );
-            assert_eq!(p.sys_breakpoints, vec![0], "sys anchor must be sys[0] (skip memory_index at sys[1])");
+            assert_eq!(
+                p.sys_breakpoints,
+                vec![0],
+                "sys anchor must be sys[0] (skip memory_index at sys[1])"
+            );
         }
     }
 
