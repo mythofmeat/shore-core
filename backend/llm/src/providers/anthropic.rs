@@ -2879,7 +2879,7 @@ mod tests {
         // Simulate consecutive requests with msgs counts 5, 7, 9, 11, 13 —
         // matching the prod sequence in cache_forensics logs.
         let mk_msg = |i: usize| {
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 json!({"role": "user", "content": format!("u{i}")})
             } else {
                 json!({"role": "assistant", "content": format!("a{i}")})
