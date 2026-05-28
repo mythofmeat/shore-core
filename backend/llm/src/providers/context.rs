@@ -32,10 +32,18 @@ pub(crate) struct ProviderContext {
 
     /// Whether mid-history `role: "system"` messages should be wrapped
     /// in `<system_instruction>...</system_instruction>` and emitted as
-    /// user turns. True for most OpenAI-compatible providers (some
-    /// OpenRouter-routed backends reject raw `role: "system"`
-    /// mid-conversation); false for providers like Z.ai that accept
-    /// inline system messages natively.
+    /// user turns.
+    ///
+    /// The wrap is a workaround for Anthropic and Gemini upstreams that
+    /// reject inline `role: "system"`. The OpenAI SDK code path only
+    /// sees those when a multi-backend gateway (OpenRouter, NanoGPT)
+    /// translates an OpenAI-shape request downstream to one of those
+    /// backends — surfaced here by an `anthropic/*` or `google/*`
+    /// `model_id` slug. Direct OpenAI-compatible providers (`openai`,
+    /// `xai`, `deepseek`, `moonshot`, `zhipuai`, `zai`) accept raw
+    /// `role: "system"` natively per the chat-completions spec, and
+    /// their model_ids never carry one of those slugs, so the wrap is
+    /// off for them.
     ///
     /// The top-level `request.system` field is always emitted as a
     /// dedicated system message regardless of this flag — only inline
@@ -93,11 +101,16 @@ pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
 
     let images_via_chat_completions = pk == "openrouter";
 
-    // Z.ai accepts raw `role: "system"` mid-conversation; everything else
-    // OpenAI-compatible needs the `<system_instruction>` wrapper. (Providers
-    // that go through the Anthropic / Gemini / Claude Code SDKs don't read
-    // this field — they do their own translation.)
-    let wrap_inline_system = pk != "zai";
+    // Only Anthropic and Gemini upstreams reject mid-history `role: "system"`.
+    // The OpenAI SDK code path only sees them when a multi-backend gateway
+    // (OpenRouter, NanoGPT, similar) routes an OpenAI-shape request through
+    // to one of those backends — surfaced by an `anthropic/*` or `google/*`
+    // model_id slug. Direct OpenAI-compatible providers (openai, xai, deepseek,
+    // moonshot, zhipuai, zai) accept raw `role: "system"` natively and never
+    // carry one of those slugs. Providers that go through the Anthropic /
+    // Gemini SDKs don't read this field — they do their own translation.
+    let model = request.model.as_str();
+    let wrap_inline_system = model.starts_with("anthropic/") || model.starts_with("google/");
 
     // Z.ai's `zai_clear_thinking` flag — when set, prior `thinking` blocks
     // are dropped during translation instead of being replayed as
@@ -159,9 +172,13 @@ mod tests {
     use shore_config::models::Sdk;
 
     fn make_request(sdk: Sdk, provider_key: Option<&str>) -> LlmRequest {
+        make_request_with_model(sdk, provider_key, "test")
+    }
+
+    fn make_request_with_model(sdk: Sdk, provider_key: Option<&str>, model: &str) -> LlmRequest {
         LlmRequest {
             sdk,
-            model: "test".into(),
+            model: model.into(),
             api_key: "sk-test".into(),
             api_key_name: None,
             base_url: None,
@@ -284,6 +301,110 @@ mod tests {
         // "openai" supports reasoning_effort
         assert!(ctx.supports_reasoning_effort);
         assert_eq!(ctx.reasoning_field, "reasoning");
+    }
+
+    // ── wrap_inline_system ─────────────────────────────────────────────
+    //
+    // The flag must be true exactly when the OpenAI-shape request will
+    // land on an Anthropic or Gemini upstream — surfaced by an
+    // `anthropic/*` or `google/*` model_id slug regardless of which
+    // gateway is in front. Direct OpenAI-compatible providers never
+    // carry one of those slugs, so the flag must stay off for them.
+
+    #[test]
+    fn wrap_inline_system_true_for_openrouter_anthropic_slug() {
+        let req = make_request_with_model(
+            Sdk::Openai,
+            Some("openrouter"),
+            "anthropic/claude-sonnet-4.5",
+        );
+        let ctx = build_provider_context(&req);
+        assert!(ctx.wrap_inline_system);
+    }
+
+    #[test]
+    fn wrap_inline_system_true_for_openrouter_google_slug() {
+        let req = make_request_with_model(Sdk::Openai, Some("openrouter"), "google/gemini-2.5-pro");
+        let ctx = build_provider_context(&req);
+        assert!(ctx.wrap_inline_system);
+    }
+
+    #[test]
+    fn wrap_inline_system_false_for_openrouter_openai_slug() {
+        let req = make_request_with_model(Sdk::Openai, Some("openrouter"), "openai/gpt-5");
+        let ctx = build_provider_context(&req);
+        assert!(!ctx.wrap_inline_system);
+    }
+
+    #[test]
+    fn wrap_inline_system_false_for_openrouter_other_slugs() {
+        // xAI, Meta, DeepSeek upstreams all accept role:"system" natively.
+        for slug in &[
+            "x-ai/grok-3",
+            "meta-llama/llama-3-70b",
+            "deepseek/deepseek-chat",
+        ] {
+            let req = make_request_with_model(Sdk::Openai, Some("openrouter"), slug);
+            let ctx = build_provider_context(&req);
+            assert!(!ctx.wrap_inline_system, "{slug} should not wrap");
+        }
+    }
+
+    #[test]
+    fn wrap_inline_system_tracks_slug_on_nanogpt() {
+        // NanoGPT is a multi-backend gateway that uses the same
+        // provider/model slug format as OpenRouter (per examples/config.toml).
+        let anthr =
+            make_request_with_model(Sdk::Openai, Some("nanogpt"), "anthropic/claude-opus-4.6");
+        assert!(build_provider_context(&anthr).wrap_inline_system);
+
+        let openai_slug = make_request_with_model(Sdk::Openai, Some("nanogpt"), "openai/gpt-5");
+        assert!(!build_provider_context(&openai_slug).wrap_inline_system);
+    }
+
+    #[test]
+    fn wrap_inline_system_false_for_direct_openai_compatible_providers() {
+        // Direct providers carry bare model_ids and accept role:"system"
+        // natively. Pre-fix: every one of these wrapped unconditionally
+        // (pk != "zai"). This pins the new behavior.
+        let cases = &[
+            ("openai", "gpt-5"),
+            ("xai", "grok-3"),
+            ("deepseek", "deepseek-chat"),
+            ("moonshot", "kimi-k2"),
+            ("zhipuai", "glm-5"),
+        ];
+        for (pk, model) in cases {
+            let req = make_request_with_model(Sdk::Openai, Some(pk), model);
+            let ctx = build_provider_context(&req);
+            assert!(
+                !ctx.wrap_inline_system,
+                "{pk}/{model} should not wrap inline system"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_inline_system_false_for_zai() {
+        // Z.AI still accepts role:"system" natively. Regression pin for
+        // the original wrap_inline_system carve-out.
+        let req = make_request_with_model(Sdk::Zai, Some("zai"), "glm-5");
+        let ctx = build_provider_context(&req);
+        assert!(!ctx.wrap_inline_system);
+    }
+
+    #[test]
+    fn wrap_inline_system_true_for_custom_proxy_with_anthropic_slug() {
+        // Custom provider key with `sdk = "openai"` pointed at an
+        // Anthropic upstream (e.g. user pinned sdk explicitly to test
+        // chat-completions transport). The slug carries the signal.
+        let req = make_request_with_model(
+            Sdk::Openai,
+            Some("my_custom_gateway"),
+            "anthropic/claude-opus-4.6",
+        );
+        let ctx = build_provider_context(&req);
+        assert!(ctx.wrap_inline_system);
     }
 
     #[test]
