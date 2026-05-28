@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v3.0.0...shore-llm-v4.0.0) - 2026-05-27
+
+### Fixed
+
+- *(cache)* mirror TS daemon-ts cache behavior + wire-shape tests ([#71](https://github.com/mythofmeat/shore-core/pull/71))
+- *(compaction)* drive a tool loop; guard archive on memory writes ([#43](https://github.com/mythofmeat/shore-core/pull/43)) ([#72](https://github.com/mythofmeat/shore-core/pull/72))
+
 ## [3.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v2.0.1...shore-llm-v3.0.0) - 2026-05-22
 
 ### Breaking
