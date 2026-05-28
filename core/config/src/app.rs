@@ -508,10 +508,34 @@ pub struct DreamingConfig {
     /// Maximum private tool rounds an LLM-backed dreaming pass may use.
     #[serde(default = "default_dreaming_max_tool_rounds")]
     pub max_tool_rounds: u32,
+
+    /// Minimum time since the last user message before a scheduled dreaming
+    /// sweep is allowed to fire. Heartbeat / autonomy turns do not reset this.
+    #[serde(default = "default_dreaming_minimum_inactive_time")]
+    pub minimum_inactive_time: ConfigDuration,
+
+    /// How long a scheduled cron occurrence stays eligible to fire after its
+    /// scheduled time. If the daemon misses the occurrence by more than this,
+    /// it is skipped and the next cron tick takes over (no late catch-up).
+    #[serde(default = "default_dreaming_max_lateness")]
+    pub max_lateness: ConfigDuration,
+
+    /// When true, run idle-style compaction (if eligible) before the
+    /// dreaming sweep. Aborts the sweep on compaction failure.
+    #[serde(default = "default_true")]
+    pub compact_before: bool,
+
+    /// When true (and `compact_before` is true), the pre-dream compaction
+    /// archives every chat turn instead of retaining the configured
+    /// `keep_recent_turns` tail.
+    #[serde(default)]
+    pub compact_to_zero: bool,
 }
 
 serde_default!(default_dreaming_frequency -> String { "0 3 * * *".to_string() });
 serde_default!(default_dreaming_max_tool_rounds -> u32 { 12 });
+serde_default!(default_dreaming_minimum_inactive_time -> ConfigDuration { ConfigDuration::from_secs(45 * 60) });
+serde_default!(default_dreaming_max_lateness -> ConfigDuration { ConfigDuration::from_secs(2 * 60 * 60) });
 
 impl Default for DreamingConfig {
     fn default() -> Self {
@@ -519,6 +543,10 @@ impl Default for DreamingConfig {
             enabled: false,
             frequency: default_dreaming_frequency(),
             max_tool_rounds: default_dreaming_max_tool_rounds(),
+            minimum_inactive_time: default_dreaming_minimum_inactive_time(),
+            max_lateness: default_dreaming_max_lateness(),
+            compact_before: true,
+            compact_to_zero: false,
         }
     }
 }

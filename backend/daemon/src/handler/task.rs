@@ -428,6 +428,7 @@ async fn run_inline_compaction(
         &ctx.llm_client,
         &ctx.notifier,
         cached_request,
+        None,
     )
     .await
     {

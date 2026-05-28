@@ -583,7 +583,7 @@ impl AutonomyManager {
             invalidate_cached_request(
                 s,
                 character,
-                CachedRequestInvalidationReason::CompactionComplete,
+                CachedRequestInvalidationReason::Compaction,
             );
             // Compaction cycle complete — allow future triggers.
             s.compaction_triggered = false;
@@ -836,8 +836,9 @@ fn cache_last_request(state: &mut AutonomyState, character: &str, request: LlmRe
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CachedRequestInvalidationReason {
-    CompactionComplete,
-    IdleCompactionComplete,
+    Compaction,
+    IdleCompaction,
+    PreDreamCompaction,
 }
 
 /// Single point of invalidation for `AutonomyState::last_request`.
@@ -989,12 +990,21 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         let dream_backoff_elapsed = s
             .next_dream_attempt_at
             .is_none_or(|next_attempt| now >= next_attempt);
+        let dreaming_cfg = ctx
+            .loaded_config
+            .as_ref()
+            .map(|lc| &lc.app.memory.dreaming);
+        let dream_inactivity_satisfied = dreaming_cfg.is_some_and(|cfg| {
+            // No prior user message: no inactivity timer to enforce, allow.
+            let Some(last_user) = s.heartbeat.last_user_at() else {
+                return true;
+            };
+            now.duration_since(last_user) >= cfg.minimum_inactive_time.as_duration()
+        });
         let dream_needed = dream_backoff_elapsed
             && ctx.config.enabled
-            && ctx
-                .loaded_config
-                .as_ref()
-                .is_some_and(|lc| lc.app.memory.dreaming.enabled);
+            && dreaming_cfg.is_some_and(|cfg| cfg.enabled)
+            && dream_inactivity_satisfied;
 
         // -- compaction triggers ---------------------------------------------
         let mut compaction_needed = false;
@@ -1200,6 +1210,7 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
         llm_client,
         notifier,
         cached_request,
+        None,
     )
     .await
     {
@@ -1249,7 +1260,7 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
             invalidate_cached_request(
                 &mut s,
                 character,
-                CachedRequestInvalidationReason::IdleCompactionComplete,
+                CachedRequestInvalidationReason::IdleCompaction,
             );
             s.active_turn_count = retained_count;
             s.compaction_triggered = false;
@@ -1283,6 +1294,36 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
     let Some(llm_client) = ctx.llm_client.as_ref() else {
         return;
     };
+    let dreaming_cfg = &loaded_config.app.memory.dreaming;
+    let compaction_cfg = &loaded_config.app.memory.compaction;
+
+    // Pre-dream compaction. Failure aborts the sweep this cycle so the
+    // librarian doesn't run against an oversized / stale prompt cache.
+    if dreaming_cfg.compact_before
+        && compaction_cfg.enabled
+        && lock_state(&ctx.state).active_turn_count >= compaction_cfg.min_turns
+    {
+        let keep_override = if dreaming_cfg.compact_to_zero {
+            Some(0)
+        } else {
+            None
+        };
+        if let Err(e) = run_pre_dream_compaction(character, ctx, keep_override).await {
+            warn!(
+                character,
+                error = %e,
+                "Dreaming: pre-dream compaction failed; skipping sweep this cycle"
+            );
+            let now = Instant::now();
+            let mut s = lock_state(&ctx.state);
+            s.dream_failure_count = s.dream_failure_count.saturating_add(1);
+            let delay = background_retry_delay(s.dream_failure_count);
+            s.next_dream_attempt_at = Some(now + delay);
+            s.mark_dirty();
+            return;
+        }
+    }
+
     let cached_request = {
         let s = lock_state(&ctx.state);
         s.last_request.clone()
@@ -1336,6 +1377,103 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
             );
         }
     }
+}
+
+/// Run a background compaction immediately before a scheduled dreaming pass.
+/// Mirrors the post-success bookkeeping of `execute_idle_compaction` (engine
+/// reload, deferred-edit apply, cached-request invalidation, turn-count and
+/// activity updates) but does NOT touch the idle-compaction trigger flags —
+/// pre-dream compaction is not an idle trigger.
+async fn run_pre_dream_compaction(
+    character: &str,
+    ctx: &TickContext,
+    keep_turns_override: Option<usize>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let llm_client = ctx
+        .llm_client
+        .as_ref()
+        .ok_or("no llm_client for pre-dream compaction")?;
+    let loaded_config = ctx
+        .loaded_config
+        .as_deref()
+        .ok_or("no loaded_config for pre-dream compaction")?;
+    let notifier = ctx
+        .notifier
+        .as_ref()
+        .ok_or("no notifier for pre-dream compaction")?;
+    let registry = ctx
+        .registry
+        .as_ref()
+        .ok_or("no engine registry for pre-dream compaction")?;
+
+    info!(
+        character,
+        keep_turns_override = ?keep_turns_override,
+        "Dreaming: running pre-dream compaction"
+    );
+
+    let cached_request = lock_state(&ctx.state).last_request.clone();
+    let retained_count = crate::memory::compaction::run_compaction(
+        character,
+        loaded_config,
+        llm_client,
+        notifier,
+        cached_request,
+        keep_turns_override,
+    )
+    .await?;
+
+    let engine_arc = {
+        let mut r = registry.lock().await;
+        r.get_or_create(character)
+    };
+    match engine_arc {
+        Ok(engine_arc) => {
+            let mut engine = engine_arc.lock().await;
+            if let Err(e) = engine.reload() {
+                warn!(
+                    character,
+                    error = %e,
+                    "Pre-dream compaction: engine reload failed"
+                );
+            }
+        }
+        Err(e) => {
+            warn!(
+                character,
+                error = %e,
+                "Pre-dream compaction: failed to fetch engine for reload"
+            );
+        }
+    }
+
+    let character_data_dir = character_data_dir(&ctx.data_dir, character);
+    if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
+        &character_data_dir,
+        &loaded_config.dirs.config,
+        character,
+    ) {
+        warn!(
+            character,
+            error = %e,
+            "Pre-dream compaction: failed to apply deferred edits"
+        );
+    }
+
+    let mut s = lock_state(&ctx.state);
+    invalidate_cached_request(
+        &mut s,
+        character,
+        CachedRequestInvalidationReason::PreDreamCompaction,
+    );
+    s.active_turn_count = retained_count;
+    s.last_compaction_activity = Instant::now();
+    s.mark_dirty();
+    info!(
+        character,
+        retained_count, "Pre-dream compaction complete"
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
