@@ -47,15 +47,14 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
                 // Inline system messages mid-history (from injection,
                 // heartbeat recaps): wrap in <system_instruction> + emit
                 // as user, OR pass through as raw `role:"system"`,
-                // depending on whether this provider accepts mid-history
-                // system messages. Some OpenRouter-routed backends reject
-                // raw `role:"system"` mid-conversation, so most OpenAI
-                // SDK clients keep `wrap_inline_system = true` and
-                // mirror `convert_inline_system_messages` from
-                // `providers/anthropic.rs`. Z.ai accepts inline system
-                // messages natively and turns the flag off. The
-                // top-level system prompt is unaffected — it's emitted
-                // from `request.system` above.
+                // depending on whether this request will land on an
+                // Anthropic/Gemini backend (those reject inline system
+                // messages and need the wrapper) vs. a native OpenAI-
+                // compatible backend (which accepts `role:"system"`
+                // natively). The flag is computed off the model_id slug
+                // in `build_provider_context`. The top-level system
+                // prompt is unaffected — it's emitted from
+                // `request.system` above.
                 "system" => {
                     if ctx.wrap_inline_system {
                         out.push(json!({
@@ -964,9 +963,17 @@ mod tests {
     use shore_config::models::Sdk;
 
     fn make_request(messages: Vec<Value>, system: Option<Value>) -> LlmRequest {
+        make_request_with_model(messages, system, "gpt-4")
+    }
+
+    fn make_request_with_model(
+        messages: Vec<Value>,
+        system: Option<Value>,
+        model: &str,
+    ) -> LlmRequest {
         LlmRequest {
             sdk: Sdk::Openai,
-            model: "gpt-4".into(),
+            model: model.into(),
             api_key: "sk-test".into(),
             api_key_name: None,
             base_url: None,
@@ -1119,15 +1126,18 @@ mod tests {
     //
     // Inline system messages (from /inject-system-message, heartbeat
     // recaps) are wrapped in <system_instruction>...</system_instruction>
-    // and emitted as user turns — defensive for OR-routed backends that
-    // reject raw role:"system" mid-conversation. Mirrors
-    // convert_inline_system_messages in providers/anthropic.rs.
+    // and emitted as user turns when the request will land on an
+    // Anthropic/Gemini upstream — surfaced by an `anthropic/*` or
+    // `google/*` model_id slug. The wrap-eligibility check itself is
+    // covered in `providers::context::tests::wrap_inline_system_*`;
+    // these tests pin the wrapping shape for an Anthropic-slug request.
 
     #[test]
     fn test_translate_messages_inline_system_string_wrapped_as_user() {
-        let request = make_request(
+        let request = make_request_with_model(
             vec![json!({"role": "system", "content": "Be concise."})],
             None,
+            "anthropic/claude-sonnet-4.5",
         );
         let msgs = translate_test_messages(&request);
         assert_eq!(msgs.len(), 1);
@@ -1142,8 +1152,9 @@ mod tests {
     #[test]
     fn test_translate_messages_inline_system_array_wrapped_as_user() {
         // System message arrives as a message in the messages array (not
-        // request.system) with content_blocks / array format.
-        let request = make_request(
+        // request.system) with content_blocks / array format. Uses an
+        // anthropic/* slug to exercise the wrap path.
+        let request = make_request_with_model(
             vec![json!({
                 "role": "system",
                 "content": [
@@ -1152,6 +1163,7 @@ mod tests {
                 ]
             })],
             None,
+            "anthropic/claude-sonnet-4.5",
         );
         let msgs = translate_test_messages(&request);
         assert_eq!(

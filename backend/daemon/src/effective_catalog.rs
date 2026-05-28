@@ -254,9 +254,21 @@ fn build_resolved_from_discovered(
 ) -> ResolvedModel {
     let provider_defaults = hardcoded_provider_defaults(provider_key).fields;
 
+    // Mirror the `anthropic/*` auto-promotion that fires on static
+    // `[chat.<provider>.<model>]` entries in `ResolvedModel::from_parts`.
+    // OpenRouter's discovery feed reports `sdk = "openai"` for every model,
+    // so without this an `anthropic/*` slug under a registry that omits
+    // `sdk = "anthropic"` would land on `Sdk::Openai` and miss prompt
+    // caching. Only fires when the user hasn't pinned an SDK on the
+    // provider entry — explicit config still wins.
     let sdk = entry
         .sdk
         .clone()
+        .or_else(|| {
+            disc.model_id
+                .starts_with("anthropic/")
+                .then_some(Sdk::Anthropic)
+        })
         .or_else(|| Sdk::parse_wire(&disc.sdk))
         .or_else(|| provider_defaults.sdk.clone())
         .unwrap_or_else(|| default_sdk(provider_key));
@@ -870,6 +882,77 @@ ignore = ["meta-llama/*"]
     }
 
     // ── Default sdk for discovered models ───────────────────────────────
+
+    #[test]
+    fn discovered_anthropic_slug_auto_promotes_to_anthropic_sdk() {
+        // OpenRouter-style provider with no explicit `sdk = ` on the
+        // registry entry. The discovery cache reports `sdk = "openai"`
+        // (the default in `write_cache_for`) for every model, so without
+        // the slug heuristic an `anthropic/*` discovered model would land
+        // on `Sdk::Openai` and miss prompt caching. Pin that the
+        // heuristic fires and `cache_ttl` defaults to "1h" as a result.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+        );
+        write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
+
+        let m = find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false)
+            .unwrap();
+        assert_eq!(m.sdk, Sdk::Anthropic);
+        assert_eq!(m.cache_ttl.as_deref(), Some("1h"));
+    }
+
+    #[test]
+    fn discovered_non_anthropic_slug_does_not_auto_promote() {
+        // The slug heuristic must not fire on non-`anthropic/*` ids; the
+        // discovered model's reported sdk ("openai") should win.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+        );
+        write_cache_for(&tmp, "openrouter", &["openai/gpt-4o"]);
+
+        let m = find_effective_model(&loaded, tmp.path(), "openai/gpt-4o", false).unwrap();
+        assert_eq!(m.sdk, Sdk::Openai);
+        assert_eq!(m.cache_ttl, None);
+    }
+
+    #[test]
+    fn explicit_registry_sdk_wins_over_anthropic_slug_on_discovered() {
+        // `entry.sdk = "openai"` on the registry must beat the
+        // `anthropic/*` heuristic — same precedence as the static-path
+        // `explicit_sdk_wins_over_anthropic_slug_auto_promotion` test.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+sdk = "openai"
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+        );
+        write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
+
+        let m = find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false)
+            .unwrap();
+        assert_eq!(m.sdk, Sdk::Openai);
+        assert_eq!(m.cache_ttl, None);
+    }
 
     #[test]
     fn discovered_model_picks_up_provider_registry_sdk() {
