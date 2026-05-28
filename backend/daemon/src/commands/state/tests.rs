@@ -842,11 +842,8 @@ fn set_model_setting_sdk_rejects_unknown_value() {
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
     ctx.active_model = Some("gpt-4o".into());
 
-    let err = set_model_setting(
-        &mut ctx,
-        &json!({"key": "sdk", "value": "deepseek-fakery"}),
-    )
-    .unwrap_err();
+    let err = set_model_setting(&mut ctx, &json!({"key": "sdk", "value": "deepseek-fakery"}))
+        .unwrap_err();
     assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
     assert!(
         err.1.contains("anthropic") && err.1.contains("openai"),
