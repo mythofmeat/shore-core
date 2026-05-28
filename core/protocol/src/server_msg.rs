@@ -252,6 +252,11 @@ pub struct UsageWarning {
     pub period_start: String,
     /// RFC3339 reset/end time.
     pub reset_at: String,
+    /// `reset_at` rendered in the daemon's local time as `YYYY-MM-DD HH:MM AM|PM`.
+    /// Clients that surface this string verbatim should prefer it over `reset_at`
+    /// (which is UTC); the structured `reset_at` stays for machine consumers.
+    #[serde(default)]
+    pub reset_at_display: String,
 }
 
 /// All server → client message types, tagged by "type".

@@ -68,6 +68,10 @@ pub struct UsageBudgetWarningEvent {
     pub period: UsageBudgetPeriod,
     pub period_start: String,
     pub reset_at: String,
+    /// `reset_at` rendered in the daemon's local time as `YYYY-MM-DD HH:MM AM|PM`
+    /// for clients that surface this string verbatim. The structured `reset_at`
+    /// field stays RFC 3339 UTC for machine consumers.
+    pub reset_at_display: String,
 }
 
 #[derive(Debug, Clone)]
@@ -275,6 +279,7 @@ pub fn newly_crossed_budget_warnings(
             .iter()
             .copied()
             .fold(0.0_f64, |acc, v| acc.max(v));
+        let reset_display = format_local_ampm(&status.reset_at);
         events.push(UsageBudgetWarningEvent {
             budget: status.name.clone(),
             message: format!(
@@ -283,7 +288,7 @@ pub fn newly_crossed_budget_warnings(
                 highest * 100.0,
                 status.current_cost,
                 status.cost_limit,
-                status.reset_at
+                reset_display,
             ),
             current_cost: status.current_cost,
             cost_limit: status.cost_limit,
@@ -292,10 +297,24 @@ pub fn newly_crossed_budget_warnings(
             period: status.period,
             period_start: status.period_start,
             reset_at: status.reset_at,
+            reset_at_display: reset_display,
         });
     }
 
     Ok(events)
+}
+
+/// Render an RFC 3339 timestamp as `YYYY-MM-DD HH:MM AM|PM` in the daemon's
+/// local time. Falls back to the raw input if it doesn't parse — better to
+/// show something than nothing in a warning message.
+fn format_local_ampm(rfc3339: &str) -> String {
+    DateTime::parse_from_rfc3339(rfc3339)
+        .map(|dt| {
+            dt.with_timezone(&Local)
+                .format("%Y-%m-%d %I:%M %p")
+                .to_string()
+        })
+        .unwrap_or_else(|_| rfc3339.to_string())
 }
 
 fn record_budget_warning_threshold(
