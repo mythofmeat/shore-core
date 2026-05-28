@@ -127,6 +127,16 @@ impl HeartbeatClock {
         self.last_user_at
     }
 
+    /// Seed `last_user_at` from backfilled history, but only when it has not
+    /// already been set by a real user message or restored state. Used so a
+    /// character bootstrapped from existing chat history still honors the
+    /// dreaming inactivity window instead of treating `None` as "safe to dream".
+    pub fn seed_last_user_at_if_unset(&mut self, at: Instant) {
+        if self.last_user_at.is_none() {
+            self.last_user_at = Some(at);
+        }
+    }
+
     pub fn default_interval(&self) -> Duration {
         self.default_interval
     }
@@ -643,5 +653,20 @@ mod tests {
         let mut c = clock(3600, 3);
         c.force_dormant();
         assert_eq!(c.state_at(Instant::now()), "Dormant");
+    }
+
+    #[test]
+    fn seed_last_user_at_only_fills_when_unset() {
+        let mut c = clock(3600, 3);
+        let now = Instant::now();
+        assert!(c.last_user_at().is_none());
+
+        let backfilled = now - secs(120);
+        c.seed_last_user_at_if_unset(backfilled);
+        assert_eq!(c.last_user_at(), Some(backfilled));
+
+        // A second seed must not clobber the existing value.
+        c.seed_last_user_at_if_unset(now);
+        assert_eq!(c.last_user_at(), Some(backfilled));
     }
 }

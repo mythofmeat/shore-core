@@ -31,7 +31,7 @@ use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
 use crate::tools::context::SharedToolContext;
 use crate::tools::{ToolContext, ToolError};
-use shore_config::app::{AutonomyConfig, CompactionConfig};
+use shore_config::app::{AutonomyConfig, CompactionConfig, DreamingConfig};
 use shore_config::LoadedConfig;
 use shore_config::{
     character_data_dir, character_memory_dir, character_workspace_dir, HEARTBEAT_FILE,
@@ -202,6 +202,21 @@ fn rfc3339_to_instant(s: &str) -> Option<Instant> {
     }
 }
 
+/// Convert a Local `NaiveDateTime` (as stored in the activity tracker) to a
+/// monotonic `Instant` via the delta from current wall time.
+fn naive_local_to_instant(naive: chrono::NaiveDateTime) -> Option<Instant> {
+    use chrono::TimeZone;
+    let dt = chrono::Local.from_local_datetime(&naive).single()?;
+    let now_local = chrono::Local::now();
+    let now_instant = Instant::now();
+    let delta = dt.signed_duration_since(now_local);
+    if delta >= chrono::Duration::zero() {
+        Some(now_instant + delta.to_std().ok()?)
+    } else {
+        now_instant.checked_sub((-delta).to_std().ok()?)
+    }
+}
+
 fn save_state(data_dir: &Path, character: &str, state: &mut AutonomyState) {
     if !state.dirty {
         return;
@@ -265,6 +280,20 @@ fn restore_from_persisted(persisted: &PersistedState, heartbeat: &mut HeartbeatC
         .as_deref()
         .and_then(rfc3339_to_instant);
     heartbeat.restore(persisted.ticks_without_user, next_wake, last_user);
+}
+
+/// Whether the dreaming inactivity window is satisfied: enough time has elapsed
+/// since the last user message that a scheduled sweep won't disturb an active
+/// conversation. `None` last-user means there's no inactivity timer to enforce.
+fn dream_inactivity_satisfied(
+    dreaming_cfg: Option<&DreamingConfig>,
+    last_user_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    dreaming_cfg.is_some_and(|cfg| match last_user_at {
+        Some(last_user) => now.duration_since(last_user) >= cfg.minimum_inactive_time.as_duration(),
+        None => true,
+    })
 }
 
 fn sanitize_compaction_config(mut compaction: CompactionConfig) -> CompactionConfig {
@@ -547,8 +576,19 @@ impl AutonomyManager {
     /// to seed the tracker from existing chat history.
     pub fn backfill_activity(&self, character: &str, timestamps: Vec<chrono::NaiveDateTime>) {
         let count = timestamps.len();
+        // Seed the heartbeat's last_user_at from the most recent backfilled user
+        // turn so dreaming's inactivity gate isn't bypassed for characters
+        // bootstrapped from existing history (where last_user_at would otherwise
+        // be None until the next live user message).
+        let latest_user = timestamps
+            .iter()
+            .max()
+            .and_then(|n| naive_local_to_instant(*n));
         self.with_state(character, |s| {
             s.activity.backfill(timestamps);
+            if let Some(at) = latest_user {
+                s.heartbeat.seed_last_user_at_if_unset(at);
+            }
         });
         debug!(character, count, "Activity backfilled from history");
     }
@@ -580,11 +620,7 @@ impl AutonomyManager {
             // disk while preserving the existing keepalive deadline. Compaction
             // changes the conversation tail, but the pinned system prompt
             // prefix is often still the expensive cache entry worth keeping.
-            invalidate_cached_request(
-                s,
-                character,
-                CachedRequestInvalidationReason::CompactionComplete,
-            );
+            invalidate_cached_request(s, character, CachedRequestInvalidationReason::Compaction);
             // Compaction cycle complete — allow future triggers.
             s.compaction_triggered = false;
             s.compaction_pending = false;
@@ -836,8 +872,9 @@ fn cache_last_request(state: &mut AutonomyState, character: &str, request: LlmRe
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CachedRequestInvalidationReason {
-    CompactionComplete,
-    IdleCompactionComplete,
+    Compaction,
+    IdleCompaction,
+    PreDreamCompaction,
 }
 
 /// Single point of invalidation for `AutonomyState::last_request`.
@@ -989,12 +1026,11 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         let dream_backoff_elapsed = s
             .next_dream_attempt_at
             .is_none_or(|next_attempt| now >= next_attempt);
+        let dreaming_cfg = ctx.loaded_config.as_ref().map(|lc| &lc.app.memory.dreaming);
         let dream_needed = dream_backoff_elapsed
             && ctx.config.enabled
-            && ctx
-                .loaded_config
-                .as_ref()
-                .is_some_and(|lc| lc.app.memory.dreaming.enabled);
+            && dreaming_cfg.is_some_and(|cfg| cfg.enabled)
+            && dream_inactivity_satisfied(dreaming_cfg, s.heartbeat.last_user_at(), now);
 
         // -- compaction triggers ---------------------------------------------
         let mut compaction_needed = false;
@@ -1154,7 +1190,23 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     }
 
     if dream_needed {
-        execute_scheduled_dream(character, ctx).await;
+        // Revalidate the inactivity gate: the keepalive/compaction awaits above
+        // may have yielded long enough for a user message to land (updating
+        // last_user_at). The `dream_needed` boolean was snapshotted before those
+        // awaits, so recheck now to avoid disturbing a freshly-active conversation.
+        let still_inactive = {
+            let s = lock_state(&ctx.state);
+            let dreaming_cfg = ctx.loaded_config.as_ref().map(|lc| &lc.app.memory.dreaming);
+            dream_inactivity_satisfied(dreaming_cfg, s.heartbeat.last_user_at(), Instant::now())
+        };
+        if still_inactive {
+            execute_scheduled_dream(character, ctx).await;
+        } else {
+            debug!(
+                character,
+                "Dreaming: skipping scheduled sweep — user became active during tick"
+            );
+        }
     }
 
     // -- final persist (in case async actions dirtied state) ---------------
@@ -1200,6 +1252,7 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
         llm_client,
         notifier,
         cached_request,
+        None,
     )
     .await
     {
@@ -1249,7 +1302,7 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
             invalidate_cached_request(
                 &mut s,
                 character,
-                CachedRequestInvalidationReason::IdleCompactionComplete,
+                CachedRequestInvalidationReason::IdleCompaction,
             );
             s.active_turn_count = retained_count;
             s.compaction_triggered = false;
@@ -1283,6 +1336,40 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
     let Some(llm_client) = ctx.llm_client.as_ref() else {
         return;
     };
+    let dreaming_cfg = &loaded_config.app.memory.dreaming;
+    // Gate on the sanitized compaction snapshot (ctx.compaction), not the raw
+    // loaded config — AutonomyManager::new / reload_runtime_config disable
+    // invalid compaction settings, and pre-dream compaction must honor that
+    // just like the idle-compaction path does.
+    let compaction_cfg = &ctx.compaction;
+
+    // Pre-dream compaction. Failure aborts the sweep this cycle so the
+    // librarian doesn't run against an oversized / stale prompt cache.
+    if dreaming_cfg.compact_before
+        && compaction_cfg.enabled
+        && lock_state(&ctx.state).active_turn_count >= compaction_cfg.min_turns
+    {
+        let keep_override = if dreaming_cfg.compact_to_zero {
+            Some(0)
+        } else {
+            None
+        };
+        if let Err(e) = run_pre_dream_compaction(character, ctx, keep_override).await {
+            warn!(
+                character,
+                error = %e,
+                "Dreaming: pre-dream compaction failed; skipping sweep this cycle"
+            );
+            let now = Instant::now();
+            let mut s = lock_state(&ctx.state);
+            s.dream_failure_count = s.dream_failure_count.saturating_add(1);
+            let delay = background_retry_delay(s.dream_failure_count);
+            s.next_dream_attempt_at = Some(now + delay);
+            s.mark_dirty();
+            return;
+        }
+    }
+
     let cached_request = {
         let s = lock_state(&ctx.state);
         s.last_request.clone()
@@ -1336,6 +1423,100 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
             );
         }
     }
+}
+
+/// Run a background compaction immediately before a scheduled dreaming pass.
+/// Mirrors the post-success bookkeeping of `execute_idle_compaction` (engine
+/// reload, deferred-edit apply, cached-request invalidation, turn-count and
+/// activity updates) but does NOT touch the idle-compaction trigger flags —
+/// pre-dream compaction is not an idle trigger.
+async fn run_pre_dream_compaction(
+    character: &str,
+    ctx: &TickContext,
+    keep_turns_override: Option<usize>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let llm_client = ctx
+        .llm_client
+        .as_ref()
+        .ok_or("no llm_client for pre-dream compaction")?;
+    let loaded_config = ctx
+        .loaded_config
+        .as_deref()
+        .ok_or("no loaded_config for pre-dream compaction")?;
+    let notifier = ctx
+        .notifier
+        .as_ref()
+        .ok_or("no notifier for pre-dream compaction")?;
+    let registry = ctx
+        .registry
+        .as_ref()
+        .ok_or("no engine registry for pre-dream compaction")?;
+
+    info!(
+        character,
+        keep_turns_override = ?keep_turns_override,
+        "Dreaming: running pre-dream compaction"
+    );
+
+    let cached_request = lock_state(&ctx.state).last_request.clone();
+    let retained_count = crate::memory::compaction::run_compaction(
+        character,
+        loaded_config,
+        llm_client,
+        notifier,
+        cached_request,
+        keep_turns_override,
+    )
+    .await?;
+
+    let engine_arc = {
+        let mut r = registry.lock().await;
+        r.get_or_create(character)
+    };
+    match engine_arc {
+        Ok(engine_arc) => {
+            let mut engine = engine_arc.lock().await;
+            if let Err(e) = engine.reload() {
+                warn!(
+                    character,
+                    error = %e,
+                    "Pre-dream compaction: engine reload failed"
+                );
+            }
+        }
+        Err(e) => {
+            warn!(
+                character,
+                error = %e,
+                "Pre-dream compaction: failed to fetch engine for reload"
+            );
+        }
+    }
+
+    let character_data_dir = character_data_dir(&ctx.data_dir, character);
+    if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
+        &character_data_dir,
+        &loaded_config.dirs.config,
+        character,
+    ) {
+        warn!(
+            character,
+            error = %e,
+            "Pre-dream compaction: failed to apply deferred edits"
+        );
+    }
+
+    let mut s = lock_state(&ctx.state);
+    invalidate_cached_request(
+        &mut s,
+        character,
+        CachedRequestInvalidationReason::PreDreamCompaction,
+    );
+    s.active_turn_count = retained_count;
+    s.last_compaction_activity = Instant::now();
+    s.mark_dirty();
+    info!(character, retained_count, "Pre-dream compaction complete");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2547,6 +2728,39 @@ mod tests {
         });
     }
 
+    #[test]
+    fn backfill_seeds_last_user_at_from_recent_history() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = rt.block_on(async { test_manager(tmp.path()) });
+
+        rt.block_on(async {
+            mgr.ensure_state("alice", None);
+            // Heartbeat starts with no user activity.
+            mgr.with_state("alice", |s| assert!(s.heartbeat.last_user_at().is_none()));
+
+            // Most recent backfilled user turn is ~2 minutes ago.
+            let now_local = chrono::Local::now().naive_local();
+            let timestamps = vec![
+                now_local - chrono::Duration::minutes(30),
+                now_local - chrono::Duration::minutes(2),
+            ];
+            mgr.backfill_activity("alice", timestamps);
+
+            // last_user_at is now seeded and reflects the recent (~2min) turn,
+            // so a short inactivity window would NOT be satisfied.
+            mgr.with_state("alice", |s| {
+                let last = s.heartbeat.last_user_at().expect("seeded");
+                let elapsed = Instant::now().duration_since(last);
+                assert!(elapsed < Duration::from_secs(5 * 60));
+                assert!(elapsed >= Duration::from_secs(60));
+            });
+        });
+    }
+
     // -- persistence ----------------------------------------------------------
 
     #[test]
@@ -3259,6 +3473,37 @@ api_key_env = "{heartbeat_env}"
             "Compaction should be disabled when max_turns ({}) < min_turns ({})",
             8, 12,
         );
+    }
+
+    #[test]
+    fn dream_inactivity_gate_respects_minimum_inactive_time() {
+        let cfg = DreamingConfig {
+            minimum_inactive_time: shore_config::ConfigDuration::from_secs(300),
+            ..Default::default()
+        };
+        let now = Instant::now();
+
+        // No config: never satisfied.
+        assert!(!dream_inactivity_satisfied(None, Some(now), now));
+
+        // No prior user message: no timer to enforce, allow.
+        assert!(dream_inactivity_satisfied(Some(&cfg), None, now));
+
+        // User active 2min ago, 5min window: not satisfied.
+        let two_min_ago = now - Duration::from_secs(120);
+        assert!(!dream_inactivity_satisfied(
+            Some(&cfg),
+            Some(two_min_ago),
+            now
+        ));
+
+        // User active 6min ago: satisfied.
+        let six_min_ago = now - Duration::from_secs(360);
+        assert!(dream_inactivity_satisfied(
+            Some(&cfg),
+            Some(six_min_ago),
+            now
+        ));
     }
 
     // -- inline compaction tests -----------------------------------------------

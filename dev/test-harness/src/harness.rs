@@ -248,6 +248,7 @@ impl TestHarness {
             &self.llm_client,
             &self.notifier,
             cached_request,
+            None,
         )
         .await
         {

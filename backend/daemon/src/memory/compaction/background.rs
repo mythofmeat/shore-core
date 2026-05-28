@@ -22,6 +22,7 @@ pub async fn run_compaction(
     llm_client: &shore_ledger::LedgerClient,
     notifier: &crate::notifications::NotificationService,
     cached_request: Option<shore_llm::types::LlmRequest>,
+    keep_turns_override: Option<usize>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     use crate::engine::messages::MessageStore;
     use crate::handler::build_chat_shape_request_from_disk;
@@ -150,7 +151,7 @@ pub async fn run_compaction(
             &conv_mgr,
             markdown_store.as_ref(),
             false,
-            None,
+            keep_turns_override,
             chat_request,
             Some(data_dir),
             tool_ctx.as_ref(),
