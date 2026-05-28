@@ -2595,9 +2595,10 @@ mod tests {
     //
     // These tests pin the on-the-wire invariants that the daemon's
     // cached-compaction path relies on. The "compaction tail" shape
-    // (1 user prompt appended + `system_suffix`) is defined in
-    // shore-daemon's `compaction_impls::COMPACTION_TAIL_USER_PROMPT_COUNT`;
-    // changing either should require updating the other in lockstep.
+    // (1 user prompt + 1 inline `role:"system"` appended, at fixed slots)
+    // is defined in shore-daemon's
+    // `compaction_impls::COMPACTION_TAIL_ENTRY_COUNT`; changing either
+    // should require updating the other in lockstep.
 
     /// After `convert_inline_system_messages`, a request shaped like a
     /// compaction tail (`[...chat prefix..., user "compact now", system

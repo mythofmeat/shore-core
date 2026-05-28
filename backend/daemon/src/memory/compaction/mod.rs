@@ -399,10 +399,13 @@ impl CompactionManager {
         // Build the compaction system prompt + the single "compact now"
         // user message. `chat_request` carries chat's full prefix
         // (`system`, `tools`, `messages`); the LLM impl rebuilds it
-        // against the compaction model and appends this one user turn.
-        // The compaction system prompt rides as `system_suffix` so it
-        // merges into that trailing user turn at provider dispatch,
-        // leaving chat's cache prefix intact.
+        // against the compaction model and appends this one user turn
+        // plus the compaction system instruction as an inline
+        // `role:"system"` entry at a fixed slot — see
+        // `compaction_impls::COMPACTION_TAIL_ENTRY_COUNT`. The inline
+        // shape (instead of `system_suffix`) is what keeps the
+        // compact-now slot byte-stable across the compaction tool loop,
+        // so chat's cache prefix continues to extend cleanly.
         let system = Self::build_system(system_template, char_name, user_name);
         let final_msg = Self::build_final_message(
             prompt_template,

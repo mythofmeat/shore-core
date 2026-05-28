@@ -147,9 +147,10 @@ pub enum CompactionError {
 /// disk via `handler::build_chat_shape_request_from_disk` (the cold path).
 /// Either way the wire shape is identical to what chat's next turn would
 /// send. The implementation rebuilds against the compaction model and
-/// appends exactly one user message (the "compact now" instruction) with
-/// the compaction system prompt riding as `system_suffix` so it merges into
-/// that trailing user turn instead of altering the cache prefix.
+/// appends the "compact now" user message plus an inline `role:"system"`
+/// entry carrying the compaction instruction at a fixed slot — see
+/// `compaction_impls::COMPACTION_TAIL_ENTRY_COUNT` for why this is the only
+/// shape safe across the tool loop.
 pub trait CompactionLlm: Send + Sync {
     fn build_initial_request(
         &self,
