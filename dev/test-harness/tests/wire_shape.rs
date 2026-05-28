@@ -478,10 +478,11 @@ async fn openai_text_only_generate_round_trip() {
 async fn system_suffix_migrates_across_tool_loop_rounds() {
     let mock = MockLlmServer::start().await;
     // iter-0: tool_use response.
-    mock.enqueue_stream(
-        AnthropicStreamBuilder::new()
-            .tool_use("toolu_1", "write", json!({"path": "memory/x.md", "content": "ok"})),
-    )
+    mock.enqueue_stream(AnthropicStreamBuilder::new().tool_use(
+        "toolu_1",
+        "write",
+        json!({"path": "memory/x.md", "content": "ok"}),
+    ))
     .await;
     // iter-1: text response.
     mock.enqueue_stream(AnthropicStreamBuilder::new().text("done"))
@@ -580,7 +581,9 @@ async fn system_suffix_migrates_across_tool_loop_rounds() {
     let iter1_last = &iter1_msgs[4];
     assert_eq!(iter1_last["role"], "user");
     assert!(
-        iter1_last.to_string().contains("compaction system instruction"),
+        iter1_last
+            .to_string()
+            .contains("compaction system instruction"),
         "system_suffix should have re-merged into the new last user message; \
          got {iter1_last}"
     );
@@ -598,10 +601,11 @@ async fn system_suffix_migrates_across_tool_loop_rounds() {
 #[tokio::test]
 async fn inline_system_message_at_build_time_is_stable_across_tool_rounds() {
     let mock = MockLlmServer::start().await;
-    mock.enqueue_stream(
-        AnthropicStreamBuilder::new()
-            .tool_use("toolu_1", "write", json!({"path": "memory/x.md", "content": "ok"})),
-    )
+    mock.enqueue_stream(AnthropicStreamBuilder::new().tool_use(
+        "toolu_1",
+        "write",
+        json!({"path": "memory/x.md", "content": "ok"}),
+    ))
     .await;
     mock.enqueue_stream(AnthropicStreamBuilder::new().text("done"))
         .await;
@@ -666,11 +670,15 @@ async fn inline_system_message_at_build_time_is_stable_across_tool_rounds() {
     // And the merge did happen on both — the suffix text is inside the
     // user message, not floating off in some new tail slot.
     assert!(
-        iter0_compact_now.to_string().contains("compaction system instruction"),
+        iter0_compact_now
+            .to_string()
+            .contains("compaction system instruction"),
         "iter-0 compact_now must contain the merged system instruction"
     );
     assert!(
-        iter1_compact_now.to_string().contains("compaction system instruction"),
+        iter1_compact_now
+            .to_string()
+            .contains("compaction system instruction"),
         "iter-1 compact_now must contain the merged system instruction"
     );
 }

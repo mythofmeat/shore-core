@@ -810,7 +810,11 @@ mod tests {
         // iter-0: model emits tool_use → caller pushes assistant + tool_result.
         mock.enqueue_json(
             AnthropicJsonBuilder::new()
-                .tool_use("toolu_1", "write", json!({"path": "memory/x.md", "content": "ok"}))
+                .tool_use(
+                    "toolu_1",
+                    "write",
+                    json!({"path": "memory/x.md", "content": "ok"}),
+                )
                 .stop_reason("tool_use"),
         )
         .await;

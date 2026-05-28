@@ -144,8 +144,8 @@ fn write_tool() -> Value {
     json!({
         "name": "write",
         "description": "Write a memory file. Use this to capture what you've learned about \
-the player so it persists across sessions. Paths must be under memory/ (e.g. memory/people/alice.md) \
-or be MEMORY.md.",
+    the player so it persists across sessions. Paths must be under memory/ (e.g. memory/people/alice.md) \
+    or be MEMORY.md.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -372,10 +372,16 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
     let _guard = ENV_LOCK.lock().unwrap();
     load_env_file();
 
-    // Single-block system → pin breakpoint on system[0].
-    if env::var_os("SHORE_CACHE_PINNED_POSITION").is_none() {
-        env::set_var("SHORE_CACHE_PINNED_POSITION", "0");
-    }
+    // shore-llm reads SHORE_CACHE_PINNED_POSITION / SHORE_CACHE_DEPTH_TURNS
+    // from the process env on every request and uses them to override the
+    // TS-default placement. The probe's cache_read / cache_creation
+    // assertions only hold for a specific breakpoint layout, so pin both
+    // explicitly while we hold ENV_LOCK rather than inheriting whatever
+    // the shell or `~/.config/shore/.env` happens to have set. Single-block
+    // system in this test ⇒ anchor on system[0]; no depth-based
+    // breakpoints ⇒ rely solely on the pinned anchor.
+    env::set_var("SHORE_CACHE_PINNED_POSITION", "0");
+    env::remove_var("SHORE_CACHE_DEPTH_TURNS");
 
     let model =
         env::var("SHORE_TEST_MODEL").unwrap_or_else(|_| "anthropic/claude-sonnet-4.6".into());
@@ -408,7 +414,13 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
         }]
     })];
     println!("\n── chat turn 1 (cold) ──");
-    let req = build_chat_request(&api_key, &model, &chat_system, &chat_messages, "live-compaction-chat-1");
+    let req = build_chat_request(
+        &api_key,
+        &model,
+        &chat_system,
+        &chat_messages,
+        "live-compaction-chat-1",
+    );
     let resp: GenerateResponse = client.generate(&req).await.expect("chat 1 generate");
     record(&mut stats, "chat#1 (cold)", &resp.usage);
     print_stat(stats.last().unwrap());
@@ -467,7 +479,13 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
         "content": [{"type": "text", "text": "Now describe the alley you're sneaking through, briefly."}],
     }));
     println!("── chat turn 2 (warm) ──");
-    let req = build_chat_request(&api_key, &model, &chat_system, &chat_messages, "live-compaction-chat-2");
+    let req = build_chat_request(
+        &api_key,
+        &model,
+        &chat_system,
+        &chat_messages,
+        "live-compaction-chat-2",
+    );
     let resp: GenerateResponse = client.generate(&req).await.expect("chat 2 generate");
     record(&mut stats, "chat#2 (warm)", &resp.usage);
     print_stat(stats.last().unwrap());
@@ -508,7 +526,10 @@ Be concise — one file per pass. Path must start with memory/.";
         compaction_system,
         "live-compaction-iter-0",
     );
-    let resp: GenerateResponse = client.generate(&compaction_req).await.expect("compaction iter-0");
+    let resp: GenerateResponse = client
+        .generate(&compaction_req)
+        .await
+        .expect("compaction iter-0");
     record(&mut stats, "compaction#0", &resp.usage);
     print_stat(stats.last().unwrap());
     let compaction0_read = resp.usage.cache_read_tokens;
@@ -584,7 +605,10 @@ Be concise — one file per pass. Path must start with memory/.";
     compaction_req.rid = Some("live-compaction-iter-1".into());
 
     println!("── compaction iter-1 (after tool_result) ──");
-    let resp: GenerateResponse = client.generate(&compaction_req).await.expect("compaction iter-1");
+    let resp: GenerateResponse = client
+        .generate(&compaction_req)
+        .await
+        .expect("compaction iter-1");
     record(&mut stats, "compaction#1", &resp.usage);
     print_stat(stats.last().unwrap());
     let compaction1_read = resp.usage.cache_read_tokens;
