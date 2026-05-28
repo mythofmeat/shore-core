@@ -2646,10 +2646,18 @@ mod tests {
              iter-0: {iter0_slot}\n\niter-1: {iter1_slot}"
         );
         // The merged system instruction must actually be present (so we're
-        // pinning the right slot, not an empty one).
+        // pinning the right slot, not an empty one). "This is not a chat
+        // turn." is unique to the librarian system template and absent from
+        // the user prompt, so this trips if `push_inline_system` ever no-ops
+        // (which the byte-stability check above would not catch on its own).
+        let iter0_text = iter0_slot.to_string();
         assert!(
-            iter0_slot.to_string().contains("memory librarian pass"),
-            "iter-0 user slot must carry the librarian prompt + merged system"
+            iter0_text.contains("memory librarian pass"),
+            "iter-0 user slot must carry the librarian prompt"
+        );
+        assert!(
+            iter0_text.contains("This is not a chat turn."),
+            "iter-0 user slot must include the merged inline system instruction"
         );
     }
 
