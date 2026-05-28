@@ -447,15 +447,19 @@ pub enum LogCommand {
 pub enum ModelCommand {
     /// Show, set, or reset saved sampler settings (temperature, top_p,
     /// reasoning_effort, thinking_enabled, budget_tokens, max_tokens,
-    /// cache_ttl) for the active model.
+    /// cache_ttl, sdk) for the active model.
     ///
     /// `shore model setting`                          show effective sampler
     /// `shore model setting <key>`                    show one key
     /// `shore model setting <key> <value>`            set saved value
     /// `shore model setting --reset <key>`            clear saved value
     /// `shore model setting --reset` (no key)         (unsupported — pass a key)
+    ///
+    /// `sdk` accepts `anthropic`, `openai`, `gemini`, or `zai` — useful
+    /// for forcing a wire shape on a discovered model whose provider
+    /// catalog labelled it incorrectly.
     Setting {
-        /// Setting key (temperature, top_p, reasoning_effort, ...)
+        /// Setting key (temperature, top_p, reasoning_effort, sdk, ...)
         key: Option<String>,
 
         /// Value to assign. For booleans pass true/false.

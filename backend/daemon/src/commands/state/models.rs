@@ -17,6 +17,7 @@ const SAMPLER_KEYS: &[&str] = &[
     "budget_tokens",
     "max_tokens",
     "cache_ttl",
+    "sdk",
 ];
 
 /// Resolve the character whose preferences should be loaded/saved.
@@ -29,19 +30,20 @@ fn require_character(ctx: &CommandContext) -> Result<&str, (ErrorCode, String)> 
 
 /// Resolve the active model for the current session.
 ///
-/// Trusts `ctx.active_model` (populated by the dispatcher from
-/// preferences) before falling back to `app.defaults.model`. Commands
-/// that need provider+model_id for preference keys go through here.
-///
-/// Phase 7+: consults the effective catalog (static + discovered) so an
-/// active selection saved as an upstream `model_id` (or
-/// `provider:model_id`) keeps resolving across daemon restarts. Once an
-/// active model is set, the user has already chosen it explicitly, so
-/// `include_hidden = true` here — `discovery.ignore` is enforced at *selection*
-/// time (`switch_model`), not on every subsequent request.
+/// Prefers `ctx.active_resolved_model` (the dispatcher's pre-resolved
+/// selection from preferences) so we never round-trip a discovered
+/// model's synthetic `qualified_name` back through
+/// `find_effective_model` — that round-trip fails NotFound and is
+/// pinned by [`effective_catalog::tests::synthetic_discovered_qualified_name_is_not_a_resolver_input`].
+/// Falls back to resolving `ctx.active_model` (or `app.defaults.model`)
+/// by name when no pre-resolved model is set. `include_hidden = true`
+/// because the user has already explicitly chosen the active selection.
 fn resolve_active_model(
     ctx: &CommandContext,
 ) -> Result<shore_config::models::ResolvedModel, (ErrorCode, String)> {
+    if let Some(resolved) = ctx.active_resolved_model.as_ref() {
+        return Ok(resolved.clone());
+    }
     let name = ctx
         .active_model
         .as_deref()
@@ -263,6 +265,7 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
             "budget_tokens": scopes.budget_tokens.map(scope_str),
             "max_tokens": scopes.max_tokens.map(scope_str),
             "cache_ttl": scopes.cache_ttl.map(scope_str),
+            "sdk": scopes.sdk.map(scope_str),
         });
     }
 
@@ -304,6 +307,10 @@ pub fn switch_model(ctx: &mut CommandContext, args: &Value) -> CommandResult {
             // session/CLI flows that expect the raw name keep working.
             // Persistence uses (provider, model_id) so aliases survive.
             ctx.active_model = Some(name.to_string());
+            // Also park the resolved model so any subsequent command in
+            // this same connection (e.g. `set_model_setting`) doesn't
+            // need to re-resolve — and for discovered models, can't.
+            ctx.active_resolved_model = Some(resolved.clone());
             info!(
                 character = %char_name,
                 model = %resolved.qualified_name,
@@ -333,6 +340,7 @@ pub fn reset_model(ctx: &mut CommandContext) -> CommandResult {
     save_char_prefs(ctx, &char_name, &prefs)?;
 
     let previous_active = ctx.active_model.take();
+    ctx.active_resolved_model = None;
     info!(
         character = %char_name,
         previous = ?previous_active,
@@ -523,6 +531,24 @@ fn apply_sampler_value(
                 )
             };
         }
+        "sdk" => {
+            sampler.sdk = if is_null {
+                None
+            } else {
+                let s = value
+                    .as_str()
+                    .ok_or_else(|| invalid(format!("sdk must be a string, got {value}")))?;
+                // Reject unknown SDK strings up-front so the preferences
+                // file never carries a value `apply_sampler_overlay` would
+                // have to discard at request time.
+                if shore_config::models::Sdk::parse_wire(s).is_none() {
+                    return Err(invalid(format!(
+                        "sdk must be one of \"anthropic\", \"openai\", \"gemini\", \"zai\"; got {s:?}"
+                    )));
+                }
+                Some(s.to_string())
+            };
+        }
         _ => unreachable!("guarded by SAMPLER_KEYS"),
     }
     Ok(())
@@ -601,6 +627,7 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
             "budget_tokens": scopes.budget_tokens.map(scope_str),
             "max_tokens": scopes.max_tokens.map(scope_str),
             "cache_ttl": scopes.cache_ttl.map(scope_str),
+            "sdk": scopes.sdk.map(scope_str),
         },
     }))
 }

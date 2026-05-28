@@ -582,6 +582,7 @@ mod tests {
             data_dir: data_dir.clone(),
             character_name: Some("TestChar".into()),
             active_model: None,
+            active_resolved_model: None,
             session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy,
             llm_client: shore_ledger::LedgerClient::new(

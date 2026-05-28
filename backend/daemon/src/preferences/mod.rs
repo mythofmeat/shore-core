@@ -90,6 +90,11 @@ pub struct SamplerSettings {
     pub budget_tokens: Option<u32>,
     pub max_tokens: Option<u32>,
     pub cache_ttl: Option<String>,
+    /// Wire SDK override (`"anthropic" | "openai" | "gemini" | "zai"`).
+    /// `None` means inherit from the static catalog or provider registry.
+    /// Lets users force, e.g., the Anthropic wire shape for a model that
+    /// the discovery cache labelled as `openai`. Validated on write.
+    pub sdk: Option<String>,
 }
 
 impl SamplerSettings {
@@ -111,6 +116,7 @@ impl SamplerSettings {
         merge!(budget_tokens);
         merge!(max_tokens);
         merge!(cache_ttl);
+        merge!(sdk);
     }
 
     /// Returns true if every field is unset.
@@ -122,6 +128,7 @@ impl SamplerSettings {
             && self.budget_tokens.is_none()
             && self.max_tokens.is_none()
             && self.cache_ttl.is_none()
+            && self.sdk.is_none()
     }
 
     /// Extract the sampler-shaped fields from a resolved static-catalog
@@ -136,6 +143,7 @@ impl SamplerSettings {
             budget_tokens: model.budget_tokens,
             max_tokens: model.max_tokens,
             cache_ttl: model.cache_ttl.clone(),
+            sdk: Some(model.sdk.as_str().to_string()),
         }
     }
 }
@@ -392,6 +400,7 @@ pub struct SamplerScopes {
     pub budget_tokens: Option<PreferenceScope>,
     pub max_tokens: Option<PreferenceScope>,
     pub cache_ttl: Option<PreferenceScope>,
+    pub sdk: Option<PreferenceScope>,
 }
 
 pub fn resolve_sampler_scopes(
@@ -417,6 +426,7 @@ pub fn resolve_sampler_scopes(
         note!(budget_tokens);
         note!(max_tokens);
         note!(cache_ttl);
+        note!(sdk);
     };
     if let Some(rm) = static_default {
         update(
@@ -631,6 +641,19 @@ pub fn apply_sampler_overlay(
     }
     if let Some(ref c) = overlay.cache_ttl {
         patched.cache_ttl = Some(c.clone());
+    }
+    if let Some(ref s) = overlay.sdk {
+        // `set_model_setting` validates the string before it reaches the
+        // file; anything unparseable here would be a corrupted preferences
+        // edit, so log and leave the catalog SDK in place.
+        match shore_config::models::Sdk::parse_wire(s) {
+            Some(sdk) => patched.sdk = sdk,
+            None => tracing::warn!(
+                model = %patched.qualified_name,
+                sdk = %s,
+                "preferences overlay carries unknown sdk; keeping catalog value"
+            ),
+        }
     }
     patched
 }
@@ -956,6 +979,7 @@ typo_setting = "x"
                     budget_tokens: Some(8192),
                     max_tokens: Some(4096),
                     cache_ttl: Some("5m".into()),
+                    sdk: Some("anthropic".into()),
                 },
             },
         );
@@ -1568,6 +1592,48 @@ reasoning_effort = "high"
         };
         let patched = apply_sampler_overlay(base, &overlay);
         assert!(patched.reasoning_effort.is_none(), "off → None");
+    }
+
+    #[test]
+    fn apply_sampler_overlay_patches_sdk() {
+        // A user-set sdk override flips the resolved model's wire SDK
+        // even though the static catalog had a different one.
+        let catalog = make_catalog(
+            r#"
+[chat.openrouter.gpt-4o]
+model_id = "gpt-4o"
+sdk = "openai"
+"#,
+        );
+        let base = catalog.find_model("gpt-4o").unwrap();
+        assert_eq!(base.sdk, shore_config::models::Sdk::Openai);
+        let overlay = SamplerSettings {
+            sdk: Some("anthropic".into()),
+            ..Default::default()
+        };
+        let patched = apply_sampler_overlay(base, &overlay);
+        assert_eq!(patched.sdk, shore_config::models::Sdk::Anthropic);
+    }
+
+    #[test]
+    fn apply_sampler_overlay_ignores_unparseable_sdk() {
+        // Defensive: a corrupted preferences edit that smuggled an
+        // unknown sdk string in shouldn't crash — it should leave the
+        // catalog's SDK in place.
+        let catalog = make_catalog(
+            r#"
+[chat.openrouter.gpt-4o]
+model_id = "gpt-4o"
+sdk = "openai"
+"#,
+        );
+        let base = catalog.find_model("gpt-4o").unwrap();
+        let overlay = SamplerSettings {
+            sdk: Some("not-a-real-sdk".into()),
+            ..Default::default()
+        };
+        let patched = apply_sampler_overlay(base, &overlay);
+        assert_eq!(patched.sdk, shore_config::models::Sdk::Openai);
     }
 
     #[test]

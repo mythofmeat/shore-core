@@ -46,6 +46,12 @@ pub struct CommandContext {
     /// Phase 3+ this is sourced from preferences, not from
     /// `runtime_state.json`; the field is kept as a session-level cache.
     pub active_model: Option<String>,
+    /// Pre-resolved active model paired with `active_model`. The dispatcher
+    /// populates this from preferences so command handlers don't have to
+    /// round-trip through `find_effective_model` — discovered models have
+    /// a synthetic `qualified_name` that the resolver does not accept as
+    /// input. `None` falls back to resolving by `active_model` string.
+    pub active_resolved_model: Option<shore_config::models::ResolvedModel>,
     /// Cumulative token usage for the session (shared with generation tasks).
     pub session_tokens: Arc<Mutex<SessionTokens>>,
     /// Shared autonomy manager for scheduler state.
@@ -204,6 +210,7 @@ mod tests {
             data_dir: data_dir.clone(),
             character_name: Some("TestChar".into()),
             active_model: None,
+            active_resolved_model: None,
             session_tokens: Arc::new(Mutex::new(SessionTokens::default())),
             autonomy,
             llm_client: LedgerClient::new(shore_llm::LlmClient::new(), &data_dir.join("ledger.db"))

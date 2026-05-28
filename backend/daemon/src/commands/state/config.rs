@@ -137,6 +137,10 @@ fn config_set(ctx: &mut CommandContext, key: &str, value: &str) -> CommandResult
                 .find_model(value)
                 .map_err(|e| (ErrorCode::NotFound, format!("{e}")))?;
             ctx.active_model = Some(value.to_string());
+            // Override no longer matches whatever was pre-resolved from
+            // preferences — drop the cached ResolvedModel so the next
+            // command re-resolves against the new name.
+            ctx.active_resolved_model = None;
             Ok(json!({ "set": key, "value": value }))
         }
         "defaults.stream" | "stream" => {
@@ -168,6 +172,7 @@ pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
     match shore_config::load_config(Some(&config_path)) {
         Ok(fresh) => {
             ctx.active_model = None;
+            ctx.active_resolved_model = None;
             ctx.autonomy.reload_runtime_config(fresh.clone());
             ctx.llm_client.set_usage_config(fresh.app.usage.clone());
             ctx.config = fresh;

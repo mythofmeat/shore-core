@@ -111,6 +111,7 @@ impl MessageHandler {
                 data_dir: self.cmd_ctx.data_dir.clone(),
                 character_name: None,
                 active_model: None,
+                active_resolved_model: None,
                 session_tokens: self.session_state_mut(session_id).session_tokens.clone(),
                 autonomy: self.cmd_ctx.autonomy.clone(),
                 llm_client: self.cmd_ctx.llm_client.clone(),
@@ -150,6 +151,7 @@ impl MessageHandler {
                 data_dir: self.cmd_ctx.data_dir.clone(),
                 character_name: None,
                 active_model,
+                active_resolved_model: None,
                 session_tokens,
                 autonomy: self.cmd_ctx.autonomy.clone(),
                 llm_client: self.cmd_ctx.llm_client.clone(),
@@ -214,7 +216,7 @@ impl MessageHandler {
         // active model. Legacy `runtime_state.json` is read as a one-
         // release migration fallback so users who haven't written
         // preferences yet keep their selection across this upgrade.
-        let persisted_active_model = {
+        let persisted_active_resolved = {
             let data_dir = &self.cmd_ctx.data_dir;
             let (global_prefs, char_prefs) = preferences::load_for_character(data_dir, &char_name)
                 .unwrap_or_else(|e| {
@@ -233,8 +235,10 @@ impl MessageHandler {
                 legacy.as_deref(),
                 effective_config.app.defaults.model.as_deref(),
             )
-            .map(|m| m.qualified_name.clone())
         };
+        let persisted_active_model = persisted_active_resolved
+            .as_ref()
+            .map(|m| m.qualified_name.clone());
 
         let session_tokens = self.session_state_mut(session_id).session_tokens.clone();
 
@@ -245,6 +249,7 @@ impl MessageHandler {
             data_dir: self.cmd_ctx.data_dir.clone(),
             character_name: Some(char_name.clone()),
             active_model: persisted_active_model,
+            active_resolved_model: persisted_active_resolved,
             session_tokens,
             autonomy: self.cmd_ctx.autonomy.clone(),
             llm_client: self.cmd_ctx.llm_client.clone(),
