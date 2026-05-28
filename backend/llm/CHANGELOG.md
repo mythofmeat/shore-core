@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.1](https://github.com/mythofmeat/shore-core/compare/shore-llm-v4.0.0...shore-llm-v4.0.1) - 2026-05-28
+
+### Fixed
+
+- *(llm)* auto-route anthropic/* through Anthropic SDK + scope wrap_inline_system to slug ([#82](https://github.com/mythofmeat/shore-core/pull/82))
+- *(compaction)* pin system instruction at a fixed messages slot ([#80](https://github.com/mythofmeat/shore-core/pull/80))
+
 ## [4.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v3.0.0...shore-llm-v4.0.0) - 2026-05-27
 
 ### Fixed
