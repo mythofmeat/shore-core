@@ -1889,7 +1889,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shore-cli"
-version = "1.8.9"
+version = "1.8.10"
 dependencies = [
  "base64",
  "chrono",
@@ -1925,7 +1925,7 @@ dependencies = [
 
 [[package]]
 name = "shore-daemon"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1974,7 +1974,7 @@ dependencies = [
 
 [[package]]
 name = "shore-ledger"
-version = "1.8.9"
+version = "1.8.10"
 dependencies = [
  "chrono",
  "reqwest",
@@ -1989,7 +1989,7 @@ dependencies = [
 
 [[package]]
 name = "shore-llm"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "async-trait",
  "chrono",

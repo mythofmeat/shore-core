@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.10](https://github.com/mythofmeat/shore-core/compare/shore-cli-v1.8.9...shore-cli-v1.8.10) - 2026-05-28
+
+### Fixed
+
+- *(cli)* make model setting work for discovered models + add sdk override ([#81](https://github.com/mythofmeat/shore-core/pull/81))
+
 ## [1.8.9](https://github.com/mythofmeat/shore-core/compare/shore-cli-v1.8.8...shore-cli-v1.8.9) - 2026-05-27
 
 ### Fixed
