@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [5.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v4.0.0...shore-daemon-v5.0.0) - 2026-05-28
 
+### Breaking
+
+- `COMPACTION_TAIL_ENTRY_COUNT` is now defined as `pub const COMPACTION_TAIL_ENTRY_COUNT: usize = 2` in `backend/daemon/src/memory/compaction_impls.rs`. `COMPACTION_TAIL_USER_PROMPT_COUNT` has been removed and is no longer exported. Downstream users importing these symbols must update their code accordingly.
+
 ### Fixed
 
 - *(llm)* auto-route anthropic/* through Anthropic SDK + scope wrap_inline_system to slug ([#82](https://github.com/mythofmeat/shore-core/pull/82))
