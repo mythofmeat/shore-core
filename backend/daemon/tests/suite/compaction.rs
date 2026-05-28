@@ -179,17 +179,21 @@ async fn test_messages_still_work_after_compaction() {
     harness.shutdown().await;
 }
 
-/// End-to-end pin for the compaction-tail shape introduced in the
-/// 2026-05-14 refactor (`COMPACTION_TAIL_USER_PROMPT_COUNT`,
-/// `append_compaction_tail`).
+/// End-to-end pin for the compaction-tail wire shape
+/// (`COMPACTION_TAIL_ENTRY_COUNT`, `append_compaction_tail`).
 ///
-/// The cached compaction path must append **exactly one** user message
-/// after the chat prefix, with the compaction system prompt riding as
-/// `system_suffix` (expanded into a trailing system block before
-/// Anthropic's `convert_inline_system_messages` merges it into the
-/// compact-now user). If a future refactor passes the wrong count, the
-/// `debug_assert_eq!` in `build_compaction_request` panics — the test
-/// then fails because compaction never completes.
+/// The cached compaction path appends exactly two entries after the chat
+/// prefix: one `role:"user"` ("compact now") plus one inline
+/// `role:"system"` (the compaction instruction). Anthropic's
+/// `convert_inline_system_messages` merges the trailing system into the
+/// preceding user before the request leaves the adapter, so the
+/// wire-format `messages.len()` is `cached_prefix_len + 1` — the system
+/// entry collapses into the compact-now user. The inline-system shape
+/// (instead of `system_suffix`) is what keeps the compact-now slot
+/// byte-stable across compaction tool-loop rounds; the contract is pinned
+/// at the unit level by
+/// `compaction_tool_loop_keeps_compact_now_user_byte_stable_across_rounds`
+/// in `memory::compaction_impls::tests`.
 ///
 /// This complements the unit-level shore-llm regression tests by driving
 /// the actual daemon flow end-to-end: a regression at the `summarize`
@@ -253,28 +257,25 @@ async fn test_compaction_cached_path_appends_exactly_one_tail() {
         .expect("compaction request must carry a messages array");
 
     // The cached request carried `cached_prefix_len` messages at the
-    // moment `trigger_compaction_now` snapshotted it. The compaction
-    // tail rides along as:
-    //   1× user prompt appended to `messages`
-    // + `system_suffix` expanded into a trailing `role: "system"` block
-    //   which Anthropic's `convert_inline_system_messages` then merges
-    //   into the *immediately preceding* user turn (the compact-now one).
-    // → wire-format `messages.len()` = cached_prefix_len + 1.
+    // moment `trigger_compaction_now` snapshotted it. `append_compaction_tail`
+    // adds COMPACTION_TAIL_ENTRY_COUNT = 2 entries (one user, one inline
+    // `role:"system"`); Anthropic's `convert_inline_system_messages`
+    // merges the trailing system into the preceding compact-now user, so
+    // the wire-format `messages.len()` = cached_prefix_len + 1.
     assert_eq!(
         compaction_msgs.len(),
         cached_prefix_len + 1,
-        "cached compaction must append exactly \
-         COMPACTION_TAIL_USER_PROMPT_COUNT (=1) user message after the \
-         cached chat prefix; got {} vs expected {} = {} + 1.\n\
-         If this fails, check `RealCompactionLlm::build_compaction_request`'s \
-         debug_assert and `append_compaction_tail` call site.",
+        "cached compaction wire shape must be `cached_prefix_len + 1` after \
+         the trailing inline-system merges into compact-now; got {} vs \
+         expected {} = {} + 1.\n\
+         If this fails, check `append_compaction_tail` and `build_compaction_request`.",
         compaction_msgs.len(),
         cached_prefix_len + 1,
         cached_prefix_len,
     );
 
-    // And the appended turn must be a user turn — the trailing system
-    // block merged into the compact-now user via
+    // And the appended turn must be a user turn — the inline system
+    // entry merged into the compact-now user via
     // `convert_inline_system_messages`.
     let tail = compaction_msgs
         .last()

@@ -135,31 +135,42 @@ pub fn resolve_image_gen_config(
 // Compaction tail shape
 // ---------------------------------------------------------------------------
 
-/// Number of user messages appended to the chat prefix when building a
-/// compaction request. Enforced structurally by the
-/// `CompactionLlm::build_initial_request` signature (a single `Value`, not
-/// an array), so a future caller cannot pass more without changing the
-/// trait.
+/// Number of new entries appended to the chat prefix when building a
+/// compaction request: one `role:"user"` ("compact now") plus one
+/// `role:"system"` (the compaction instruction). The system entry sits at
+/// a fixed index immediately after the user entry; the compaction tool
+/// loop pushes assistant + user(tool_result) AFTER that, so the system
+/// entry's position never shifts across iterations.
 ///
-/// The compaction system prompt rides as `system_suffix`, not as another
-/// trailing entry in `messages` — shore-llm's `preprocess_request` expands
-/// the suffix into a `role: "system"` block at provider dispatch, and
-/// Anthropic's `convert_inline_system_messages` then merges that block
-/// into the **immediately preceding** user message (the "compact now"
-/// turn). Because exactly ONE new user message is appended, the merge
-/// target is always the compaction tail itself — never one of the chat
-/// prefix turns. Cache-breakpoint markers placed by chat on its prefix
-/// therefore survive verbatim into the compaction request.
+/// Why this shape, and why not `system_suffix`:
 ///
-/// `apply_cache_control` (Anthropic) is skipped when existing markers are
-/// present, so the breakpoint positions chat warmed are preserved exactly
-/// instead of being re-derived from the shifted message count.
+/// `shore-llm::preprocess_request` re-expands `system_suffix` into a
+/// trailing `role:"system"` message on every `generate()` call, and
+/// Anthropic's `convert_inline_system_messages` merges that trailing
+/// block into the **immediately preceding** user message. That works on
+/// iter-0 (preceding user = "compact now"), but on iter-1 the
+/// compaction tool loop has pushed `user(tool_result)` onto the tail —
+/// so the suffix re-merges into the tool_result turn instead. The
+/// original "compact now" user message is left bare on iter-1, and its
+/// content no longer matches the bytes Anthropic cached on iter-0.
+/// Result: full cache invalidation from the "compact now" slot onward,
+/// every compaction round, on every tool-using compaction.
 ///
-/// Changing this constant requires re-deriving the breakpoint math, and
-/// the regression test
-/// `compaction_tail_preserves_cache_breakpoint_positions` in
-/// shore-llm's `providers::anthropic::tests` must be updated in lockstep.
-pub const COMPACTION_TAIL_USER_PROMPT_COUNT: usize = 1;
+/// The fix: push the compaction instruction inline as
+/// `{"role":"system", ...}` at build time. Each adapter then handles it
+/// the way it already handles inline system messages
+/// (Anthropic merges into the preceding user via
+/// `convert_inline_system_messages`; OpenAI-compatible providers either
+/// emit it as a real `role:"system"` or wrap it as a user with
+/// `<system_instruction>` XML, per `ProviderContext.wrap_inline_system`).
+/// Crucially the message's *index* in `messages` is fixed, so the merge
+/// target is fixed, and the bytes at every position ≤ the system index
+/// are byte-stable across tool-loop rounds.
+///
+/// The regression contract is pinned by
+/// `compaction_tool_loop_keeps_compact_now_user_byte_stable_across_rounds`
+/// in this module.
+pub const COMPACTION_TAIL_ENTRY_COUNT: usize = 2;
 
 /// Apply the canonical compaction tail to a chat-shape request.
 ///
@@ -168,13 +179,25 @@ pub const COMPACTION_TAIL_USER_PROMPT_COUNT: usize = 1;
 /// with chat's `system`/`tools`/`messages`). This helper makes the "what to
 /// append" step a single named operation rather than two open-coded field
 /// mutations, so the wire-shape invariant is visible at every call site.
+///
+/// The compaction instruction is pushed inline as `{"role":"system",...}`
+/// — see [`COMPACTION_TAIL_ENTRY_COUNT`] for why this is the only safe
+/// shape across the compaction tool loop.
 fn append_compaction_tail(
     request: &mut shore_llm::types::LlmRequest,
     user_prompt: serde_json::Value,
     system_prompt: &str,
 ) {
     request.messages.push(user_prompt);
-    request.system_suffix = Some(system_prompt.to_string());
+    request.messages.push(serde_json::json!({
+        "role": "system",
+        "content": system_prompt,
+    }));
+    // `system_suffix` would re-append a trailing system message on every
+    // generate() call, busting the cache across tool-loop rounds (see
+    // doc-comment on COMPACTION_TAIL_ENTRY_COUNT). Explicitly clear it so
+    // a future caller pre-setting the suffix can't reintroduce the bug.
+    request.system_suffix = None;
 }
 
 // ---------------------------------------------------------------------------
@@ -576,17 +599,24 @@ mod tests {
         assert_eq!(request.rid, None);
         assert_eq!(request.forensic_character.as_deref(), Some("alice"));
         assert_eq!(request.system, Some(json!("cached system")));
-        // The compaction prompt rides as `system_suffix`, not as a
-        // trailing entry in `messages`. The chat prefix (cached user +
-        // cached assistant) plus the compaction-specific user turn is
-        // all that should appear in `messages`. shore-llm expands the
-        // suffix into the wire-format trailing system message just
-        // before provider dispatch.
-        assert_eq!(request.messages.len(), 3);
+        // The compaction prompt rides inline as a `role:"system"` entry at
+        // a fixed slot right after compact_now_user. Adapters that natively
+        // accept inline system messages emit it as `role:"system"`; the
+        // others wrap it via `<system_instruction>` XML. Either way the
+        // entry's POSITION in `messages` is fixed across tool-loop rounds,
+        // which is what keeps the compact_now_user byte-stable and the
+        // Anthropic cache prefix valid (see COMPACTION_TAIL_ENTRY_COUNT).
+        assert_eq!(request.messages.len(), 4);
         assert_eq!(request.messages[0]["content"], "cached user");
         assert_eq!(request.messages[1]["content"], "cached assistant");
         assert_eq!(request.messages[2]["content"], "compact now");
-        assert_eq!(request.system_suffix.as_deref(), Some("compaction system"));
+        assert_eq!(request.messages[3]["role"], "system");
+        assert_eq!(request.messages[3]["content"], "compaction system");
+        assert!(
+            request.system_suffix.is_none(),
+            "system_suffix must not be used by compaction — it migrates \
+             across tool-loop rounds and busts the cache"
+        );
 
         let provider_options = request.provider_options.expect("provider options");
         assert_eq!(provider_options["reasoning_effort"], "medium");
@@ -665,27 +695,36 @@ mod tests {
                 "message {i} diverged from chat prefix — cache invalidation"
             );
         }
-        // The compaction-specific tail rides after the prefix, plus its
-        // prompt rides as `system_suffix` so it doesn't enter the prefix at all.
-        assert_eq!(request.messages.len(), chat_messages.len() + 1);
-        assert_eq!(request.messages.last().unwrap()["content"], "compact now");
-        assert_eq!(
-            request.system_suffix.as_deref(),
-            Some("compaction system prompt")
+        // The compaction-specific tail rides after the prefix: one
+        // compact_now user message, then one inline `role:"system"` entry
+        // (the compaction instruction). The system entry sits at a fixed
+        // slot so subsequent tool-loop messages can't shift it, which is
+        // what keeps the cache prefix byte-stable across compaction rounds.
+        assert_eq!(request.messages.len(), chat_messages.len() + 2);
+        let tail_user = &request.messages[chat_messages.len()];
+        assert_eq!(tail_user["role"], "user");
+        assert_eq!(tail_user["content"], "compact now");
+        let tail_system = &request.messages[chat_messages.len() + 1];
+        assert_eq!(tail_system["role"], "system");
+        assert_eq!(tail_system["content"], "compaction system prompt");
+        assert!(
+            request.system_suffix.is_none(),
+            "system_suffix must not be used by compaction — it migrates \
+             across tool-loop rounds and busts the cache prefix"
         );
     }
 
     /// The unified compaction path must work for non-Anthropic SDKs too:
-    /// the compaction prompt rides as `system_suffix` regardless of
-    /// provider, and shore-llm's per-provider dispatch logic decides how
-    /// to emit it on the wire (Anthropic merges into the trailing user
-    /// turn; OpenAI/Gemini emit an inline `<system_instruction>` wrap;
-    /// Z.AI emits a raw trailing `role:"system"`). The previous fresh
-    /// path used to special-case the top-level `system` block here; the
-    /// unification dropped that branch because chat's prefix is the same
-    /// no matter the provider.
+    /// the compaction prompt is pushed inline as `{"role":"system", ...}`
+    /// at a fixed slot regardless of provider. Each adapter then decides
+    /// how to emit it on the wire — Anthropic merges into the preceding
+    /// user via `convert_inline_system_messages`; OpenAI-compatible
+    /// providers either emit a real `role:"system"` mid-history (Z.ai)
+    /// or wrap as a user with `<system_instruction>` XML (OpenRouter,
+    /// most chat-completions backends) per
+    /// `ProviderContext.wrap_inline_system`.
     #[test]
-    fn compaction_request_routes_system_through_suffix_on_openai_sdk() {
+    fn compaction_request_carries_inline_system_for_openai_sdk() {
         let api_key_env = format!(
             "SHORE_TEST_OPENAI_COMPACTION_{}",
             uuid::Uuid::new_v4().simple()
@@ -724,13 +763,218 @@ mod tests {
         assert_eq!(request.sdk, Sdk::Openai);
         // Chat's system block passes through verbatim, regardless of SDK.
         assert_eq!(request.system, Some(json!("chat system prompt")));
-        // The compaction instruction rides as system_suffix — shore-llm
-        // expands it to the wire-format trailing system message at
-        // dispatch time.
-        assert_eq!(request.system_suffix.as_deref(), Some("compaction system"));
-        assert_eq!(request.messages.len(), 2);
+        // The compaction instruction rides inline as a `role:"system"`
+        // entry at a fixed slot; the OpenAI adapter handles it at
+        // dispatch time per `ProviderContext.wrap_inline_system`.
+        assert!(
+            request.system_suffix.is_none(),
+            "compaction must not use system_suffix"
+        );
+        assert_eq!(request.messages.len(), 3);
         assert_eq!(request.messages[0]["content"], "hi");
         assert_eq!(request.messages[1]["content"], "compact now");
+        assert_eq!(request.messages[2]["role"], "system");
+        assert_eq!(request.messages[2]["content"], "compaction system");
+    }
+
+    /// Regression contract: through a compaction tool-loop iteration, the
+    /// bytes at the `compact_now_user` message slot MUST be byte-identical
+    /// between iter-0 (initial request) and iter-1 (after the loop pushes
+    /// `assistant(tool_use)` and `user(tool_result)`).
+    ///
+    /// Anthropic's prompt cache is content-addressed left-to-right; any
+    /// byte change at the same position invalidates every cached token from
+    /// that point on. A single compaction round that diverges at
+    /// `compact_now_user` can cost the equivalent of ~50 normal chat turns
+    /// (observed in prod, 2026-05-28) because the existing-memory context
+    /// inside `compact_now_user` is large and lands at the most expensive
+    /// position in the prefix.
+    ///
+    /// The bug this test pins: when the compaction instruction rides as
+    /// `system_suffix`, `shore-llm::preprocess_request` re-appends it as a
+    /// trailing `role:"system"` message on every `generate()` call, and
+    /// `convert_inline_system_messages` then merges it into the
+    /// *immediately preceding* user message. After the tool loop pushes
+    /// `user(tool_result)`, the merge target shifts — leaving the original
+    /// `compact_now_user` bare and busting the cache prefix from that
+    /// position onward.
+    ///
+    /// Uses MockLlmServer (no real credentials) so this runs in CI.
+    #[tokio::test]
+    async fn compaction_tool_loop_keeps_compact_now_user_byte_stable_across_rounds() {
+        use shore_test_harness::mock_llm::{AnthropicJsonBuilder, MockLlmServer};
+
+        let mock = MockLlmServer::start().await;
+        // RealCompactionLlm uses non-streaming generate(), so enqueue JSON
+        // responses (matching `POST /v1/messages` non-streaming shape).
+        // iter-0: model emits tool_use → caller pushes assistant + tool_result.
+        mock.enqueue_json(
+            AnthropicJsonBuilder::new()
+                .tool_use("toolu_1", "write", json!({"path": "memory/x.md", "content": "ok"}))
+                .stop_reason("tool_use"),
+        )
+        .await;
+        // iter-1: model finishes.
+        mock.enqueue_json(AnthropicJsonBuilder::new().text("done"))
+            .await;
+
+        // Build a ResolvedModel pointed at the mock so generate() lands there.
+        let api_key_env = format!(
+            "SHORE_TEST_COMPACTION_LOOP_{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        std::env::set_var(&api_key_env, "compaction-secret");
+        let model = ResolvedModel::from_parts(
+            "compact".into(),
+            "chat.anthropic.compact".into(),
+            "chat".into(),
+            "anthropic".into(),
+            "compaction-model".into(),
+            Sdk::Anthropic,
+            ModelConfigFields {
+                sdk: Some(Sdk::Anthropic),
+                api_key_env: Some(api_key_env.clone()),
+                base_url: Some(mock.base_url()),
+                max_tokens: Some(1024),
+                cache_ttl: Some("1h".into()),
+                ..Default::default()
+            },
+        );
+        let ledger_tmp = TempDir::new().unwrap();
+        let llm = RealCompactionLlm::new(
+            LedgerClient::new(
+                shore_llm::LlmClient::new(),
+                &ledger_tmp.path().join("ledger.db"),
+            )
+            .unwrap(),
+            model,
+            ProviderRegistry::default(),
+            "alice".into(),
+        );
+
+        // Chat prefix → exactly what last_request or build_chat_shape_request_from_disk
+        // would produce: short system, two real chat turns.
+        let chat_request = chat_shape_request(
+            Sdk::Anthropic,
+            Some(json!("chat system prompt")),
+            Some(vec![json!({
+                "name": "write",
+                "description": "write a memory file",
+                "input_schema": {"type": "object"}
+            })]),
+            vec![
+                json!({"role": "user", "content": [{"type": "text", "text": "earlier user turn"}]}),
+                json!({"role": "assistant", "content": [{"type": "text", "text": "earlier assistant turn"}]}),
+            ],
+        );
+
+        let mut request = llm
+            .build_compaction_request(
+                "compaction system instruction",
+                json!({"role": "user", "content": [{"type": "text", "text": "compact now"}]}),
+                chat_request,
+            )
+            .unwrap();
+
+        // Record where compact_now_user lands in the messages array so we
+        // can compare the same WIRE slot in both iterations. Note: the
+        // post-fix shape has TWO new entries (compact_now user + inline
+        // system); after `convert_inline_system_messages` runs on the
+        // Anthropic adapter, the system entry merges into the preceding
+        // user and the wire-shape index of compact_now is `chat_prefix_len`.
+        // We locate it by content so the test doesn't break if the
+        // pre-merge layout changes.
+        let compact_now_idx = request
+            .messages
+            .iter()
+            .position(|m| {
+                m.get("role").and_then(|r| r.as_str()) == Some("user")
+                    && m.to_string().contains("compact now")
+            })
+            .expect("test setup: compact_now_user must be in the request");
+
+        // ── iter-0 ── send through the real generate path so preprocess_request
+        // + the Anthropic adapter run end-to-end; the mock observes the wire.
+        let _resp_0 = llm.generate(&mut request).await.expect("iter-0 generate");
+
+        // Mimic compaction/mod.rs tool-loop: push assistant(tool_use) then
+        // user(tool_result). Slot ordering must match production exactly.
+        request.messages.push(json!({
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "write",
+                 "input": {"path": "memory/x.md", "content": "ok"}}
+            ]
+        }));
+        request.messages.push(json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}
+            ]
+        }));
+
+        // ── iter-1 ──
+        let _resp_1 = llm.generate(&mut request).await.expect("iter-1 generate");
+
+        std::env::remove_var(&api_key_env);
+
+        // Inspect the two wire bodies the mock observed.
+        let bodies = mock.received_requests().await;
+        assert_eq!(bodies.len(), 2, "expected exactly 2 requests to the mock");
+        let iter0 = &bodies[0]["messages"]
+            .as_array()
+            .expect("iter-0 messages")
+            .clone();
+        let iter1 = &bodies[1]["messages"]
+            .as_array()
+            .expect("iter-1 messages")
+            .clone();
+
+        // Walk every position up to and including compact_now_user. The
+        // bytes at each slot must match exactly — any divergence at or
+        // before `compact_now_idx` invalidates Anthropic's cached prefix.
+        for i in 0..=compact_now_idx {
+            // Strip cache_control markers before comparison: their placement
+            // is allowed to shift across iterations (e.g. the iter-0
+            // last_msg breakpoint becomes the iter-1 last_stable_assistant
+            // breakpoint). The cache *content* is what must stay stable.
+            let mut a = iter0[i].clone();
+            let mut b = iter1[i].clone();
+            strip_cache_control_for_test(&mut a);
+            strip_cache_control_for_test(&mut b);
+            assert_eq!(
+                a, b,
+                "CACHE INVALIDATION: messages[{i}] bytes differ between iter-0 \
+                 and iter-1 of a single compaction tool loop. Anthropic's \
+                 content-addressed cache prefix will not extend past this \
+                 position.\n\niter-0[{i}]: {a}\n\niter-1[{i}]: {b}\n\n\
+                 This is the system_suffix-migration bug — the compaction \
+                 instruction must NOT be re-merged into a different message \
+                 across tool-loop rounds. Push it inline at build time \
+                 (role:\"system\") instead of using request.system_suffix."
+            );
+        }
+    }
+
+    /// Test helper: walk a message value and remove every `cache_control`
+    /// marker. Used to compare prefix *content* (which must stay stable)
+    /// independent of *breakpoint placement* (which may shift across
+    /// iterations as the tool loop extends the message list).
+    fn strip_cache_control_for_test(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(map) => {
+                map.remove("cache_control");
+                for (_, child) in map.iter_mut() {
+                    strip_cache_control_for_test(child);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for child in arr.iter_mut() {
+                    strip_cache_control_for_test(child);
+                }
+            }
+            _ => {}
+        }
     }
 
     // -- RealConversationManager: archive_and_retain --------------------------
