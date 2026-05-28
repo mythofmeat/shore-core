@@ -15,6 +15,14 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   `shore-swp-client` from crates.io.
 
 ### Removed (BREAKING)
+- The `LlmRequest::system_suffix` field on outbound LLM requests. It expanded
+  into a trailing `role:"system"` message at the *moving* tail of `messages`
+  on every dispatch, so any caller running a tool loop (compaction, the
+  dreaming/librarian sweep, heartbeat ticks) saw the system slot drift across
+  iterations and lost Anthropic's prompt-cache prefix from that point onward.
+  Attach task-specific system instructions with the new
+  `LlmRequest::push_inline_system`, which pins them at a fixed `messages[]`
+  slot. Downstream crates that set `system_suffix` must migrate.
 - The `claude_code` SDK provider, the `[chat.claude_code.*]` model namespace,
   the `sdk = "claude_code"` setting, the `[daemon.http]` MCP callback listener,
   the per-turn MCP session registry, and the `shore_attached_image` MCP bridge.
@@ -24,6 +32,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   entry with an API key.
 
 ### Fixed
+- The dreaming/librarian sweep and heartbeat ticks no longer invalidate
+  Anthropic's prompt cache on every iteration. Both rode their task
+  instruction as `system_suffix`, which `preprocess_request` re-appended at
+  the growing tail each `generate()` call; on Anthropic the trailing system
+  then merged into whatever user turn happened to be last, so after the tool
+  loop pushed `user(tool_result)` the cached prefix diverged. In the librarian
+  loop this re-paid full cache-write cost for roughly the first four
+  iterations of every scheduled sweep. Both now pin the instruction at a fixed
+  inline `role:"system"` slot, matching the compaction fix in #80 (issue #84).
 - Compaction now drives a tool loop (calling `write`/`edit` on memory
   files) instead of parsing an XML-shaped response. The active
   conversation is only archived when at least one allowed memory write

@@ -684,11 +684,24 @@ async fn build_librarian_request(
     if let Some(cached) = cached_request {
         let mut request = cached.clone();
         request.rid = None;
-        // The dreaming prompt rides as a `system_suffix` instead of being
-        // pushed into `messages`. shore-llm expands it into the trailing
-        // `role: "system"` shape providers already handle, but downstream
-        // calls reusing this request's cached prefix never see the prompt.
-        request.system_suffix = Some(format!("{system}\n\n{user_prompt}"));
+        // Append the librarian's user turn and pin the librarian system
+        // instruction at a fixed slot via `push_inline_system`. The
+        // private tool loop in `run_private_librarian_loop` pushes
+        // `assistant` + `user(tool_result)` after this, so the system
+        // entry's index must not depend on tail length. (The removed
+        // `system_suffix` affordance re-expanded the suffix at the
+        // current tail on every `generate()` call, drifting the system
+        // slot and busting Anthropic's content-addressed prefix cache
+        // across iterations — see [`LlmRequest::push_inline_system`].)
+        //
+        // The cached chat prefix is left untouched — neither the user
+        // turn nor the system entry mutates earlier messages, so
+        // subsequent chat calls reusing this request's prefix still hit
+        // their cache as before.
+        request
+            .messages
+            .push(json!({"role": "user", "content": user_prompt}));
+        request.push_inline_system(system);
         // Dreaming runs at most a few times per day; route the payload
         // log to the long-retention tier so weeks-old memory-evolution
         // forensics aren't pruned with chat-volume traffic.
@@ -706,23 +719,25 @@ async fn build_librarian_request(
     // Fresh path: no chat cache to inherit. Branch on whether this SDK
     // routes through Anthropic's prompt cache:
     //
-    // - Anthropic: ride the dreaming prompt as `system_suffix` so the
-    //   wire shape matches the cached path —
-    //   `convert_inline_system_messages` merges the trailing `role:"system"`
-    //   into the preceding user turn, giving the model an embedded
-    //   `<system_instruction>` block either way.
+    // - Anthropic: push the dreaming prompt as an inline `role:"system"`
+    //   entry right after the user turn. `convert_inline_system_messages`
+    //   merges it into the preceding user, giving the model an embedded
+    //   `<system_instruction>` block. The slot is fixed before the tool
+    //   loop, so the merge target stays byte-stable across iterations
+    //   (same invariant as the cached path).
     //
-    // - OpenAI / Gemini / Z.AI: keep the dreaming prompt at the top-level
-    //   `request.system`. These providers don't merge inline system
-    //   messages into the preceding user; they translate trailing
-    //   `role:"system"` into an inline user-wrap (or a raw `role:"system"`
-    //   on Z.AI). Routing through `system_suffix` here would materially
-    //   shift the model-facing wire shape for SDKs that don't have the
-    //   cache-prefix concern motivating the change.
-    let (system_arg, suffix) = if resolved.sdk.uses_anthropic_prompt_cache() {
-        (None, Some(system))
+    // - OpenAI / Gemini / Z.AI: keep the dreaming prompt at the
+    //   top-level `request.system`. These providers don't merge inline
+    //   system messages into the preceding user, so emitting it
+    //   top-level matches their idiomatic system-prompt shape and
+    //   avoids materially shifting the model-facing wire layout for
+    //   SDKs that don't have the cache-prefix concern motivating this
+    //   change.
+    let uses_anthropic_cache = resolved.sdk.uses_anthropic_prompt_cache();
+    let system_arg = if uses_anthropic_cache {
+        None
     } else {
-        (Some(json!(system)), None)
+        Some(json!(&system))
     };
     let mut request = LedgerClient::build_request_with_provider_keys(
         &resolved,
@@ -733,7 +748,9 @@ async fn build_librarian_request(
         None,
     )
     .map_err(|e| DreamingError::Llm(e.to_string()))?;
-    request.system_suffix = suffix;
+    if uses_anthropic_cache {
+        request.push_inline_system(system);
+    }
     request.retain_long = true;
     Ok(request)
 }
@@ -2567,6 +2584,120 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("sentinel cached"));
+    }
+
+    /// Regression contract for issue #84 (the librarian counterpart of the
+    /// compaction fix in #80): across a private librarian tool-loop round,
+    /// the bytes at the librarian's leading user slot MUST be byte-identical
+    /// between iter-0 and iter-1.
+    ///
+    /// The librarian system instruction is pinned inline at a fixed slot via
+    /// `push_inline_system`. Under the Anthropic SDK (this test's config),
+    /// `convert_inline_system_messages` merges that inline system into the
+    /// immediately preceding user — the librarian user prompt at index 0.
+    /// Because the slot is fixed before the loop pushes
+    /// `assistant` + `user(tool_result)`, the merge target stays index 0 on
+    /// every round and its bytes never drift. If a future change reverts to
+    /// appending the instruction at the moving tail (the removed
+    /// `system_suffix` shape), the merge target slides to the new last user
+    /// and this assertion trips — exactly the cache-invalidation bug #84
+    /// reported (first ~4 librarian iterations re-paying full cache writes).
+    #[tokio::test]
+    async fn librarian_tool_loop_keeps_user_prompt_byte_stable_across_rounds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = MockLlmServer::start().await;
+        let config = librarian_config(&tmp, &mock, "alice", 10);
+        let mem = character_memory_dir(&config.dirs.config, "alice");
+        fs::create_dir_all(&mem).await.unwrap();
+        fs::write(mem.join("notes.md"), "# Notes\n\n- Durable note.\n")
+            .await
+            .unwrap();
+
+        // iter-0: tool_use (loop continues) → caller pushes assistant +
+        // user(tool_result). iter-1: text (loop ends). Two LLM calls, so
+        // two captured request bodies to diff.
+        mock.enqueue_json_tool_use("t_list", "list_files", json!({"path": "memory"}))
+            .await;
+        mock.enqueue_json_text("Librarian pass complete.").await;
+
+        run_librarian_sweep(
+            &config,
+            &config.dirs.data,
+            &test_ledger(&tmp),
+            "alice",
+            None,
+            false,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let requests = mock.received_requests().await;
+        assert_eq!(requests.len(), 2, "expected iter-0 and iter-1 requests");
+
+        let iter0 = requests[0]["messages"].as_array().expect("iter0 messages");
+        let iter1 = requests[1]["messages"].as_array().expect("iter1 messages");
+
+        // iter-0 is the bare librarian turn (system merged into it); iter-1
+        // has grown by assistant + user(tool_result) AFTER index 0.
+        assert_eq!(iter0.len(), 1, "iter-0 should be a single merged user turn");
+        assert_eq!(
+            iter1.len(),
+            3,
+            "iter-1 should append assistant + user(tool_result) after the fixed slot"
+        );
+
+        // Strip `cache_control` markers before comparing: their placement is
+        // allowed to shift across iterations (the iter-0 last-msg breakpoint
+        // becomes a mid-prefix breakpoint on iter-1), and Anthropic excludes
+        // cache_control from the content-addressed prefix hash. The cache
+        // *content* — the prompt bytes at the pinned slot — is what must
+        // stay stable.
+        let mut iter0_slot = iter0[0].clone();
+        let mut iter1_slot = iter1[0].clone();
+        strip_cache_control(&mut iter0_slot);
+        strip_cache_control(&mut iter1_slot);
+        assert_eq!(
+            iter0_slot, iter1_slot,
+            "CACHE INVALIDATION: librarian user-prompt slot bytes differ \
+             between iter-0 and iter-1. The inline system instruction's merge \
+             target must stay pinned at index 0.\n\
+             iter-0: {iter0_slot}\n\niter-1: {iter1_slot}"
+        );
+        // The merged system instruction must actually be present (so we're
+        // pinning the right slot, not an empty one). "This is not a chat
+        // turn." is unique to the librarian system template and absent from
+        // the user prompt, so this trips if `push_inline_system` ever no-ops
+        // (which the byte-stability check above would not catch on its own).
+        let iter0_text = iter0_slot.to_string();
+        assert!(
+            iter0_text.contains("memory librarian pass"),
+            "iter-0 user slot must carry the librarian prompt"
+        );
+        assert!(
+            iter0_text.contains("This is not a chat turn."),
+            "iter-0 user slot must include the merged inline system instruction"
+        );
+    }
+
+    /// Recursively remove every `cache_control` marker from a JSON value so
+    /// prefix *content* can be compared independent of breakpoint placement.
+    fn strip_cache_control(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(map) => {
+                map.remove("cache_control");
+                for (_, child) in map.iter_mut() {
+                    strip_cache_control(child);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for child in arr.iter_mut() {
+                    strip_cache_control(child);
+                }
+            }
+            _ => {}
+        }
     }
 
     #[tokio::test]

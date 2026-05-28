@@ -233,7 +233,6 @@ fn build_request(
         provider_key: Some("openrouter".into()),
         rid: Some(rid.into()),
         forensic_character: None,
-        system_suffix: None,
         retain_long: false,
     }
 }

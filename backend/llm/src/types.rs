@@ -66,23 +66,6 @@ pub struct LlmRequest {
     #[serde(skip)]
     pub forensic_character: Option<String>,
 
-    /// Optional trailing system instruction.
-    ///
-    /// Background tasks (compaction, dreaming, heartbeat) need to append
-    /// a `role: "system"` message after the conversation history to drive
-    /// model behavior for this single call without polluting the
-    /// persisted history. Previously each caller hand-pushed a
-    /// `role: "system"` entry into `messages`; this field is the
-    /// first-class declarative form. shore-llm expands it into the
-    /// expected trailing-system shape just before provider dispatch, so
-    /// per-provider `<system_instruction>` wrapping continues to apply
-    /// uniformly.
-    ///
-    /// `None` and `Some("")` are both treated as "no suffix" and skip
-    /// the expansion entirely.
-    #[serde(skip)]
-    pub system_suffix: Option<String>,
-
     /// Transient flag: this request belongs to a low-frequency, high-value
     /// background task (compaction, dreaming, heartbeat) whose payload
     /// logs should be kept on a longer retention tier than per-turn chat
@@ -95,6 +78,43 @@ pub struct LlmRequest {
     /// wire-format meaning and is skipped from serialization.
     #[serde(skip)]
     pub retain_long: bool,
+}
+
+impl LlmRequest {
+    /// Append a task-specific instruction as an inline `role:"system"`
+    /// message at the current tail of `messages`.
+    ///
+    /// This is the only sanctioned way to attach a task-specific system
+    /// instruction to a request that will subsequently drive a tool loop
+    /// (compaction, dreaming/librarian, heartbeat). The entry's INDEX in
+    /// `messages` is captured at push time and stays fixed even after
+    /// the tool loop pushes `assistant` + `user(tool_result)` onto the
+    /// tail — which is what keeps Anthropic's content-addressed prefix
+    /// cache valid across iterations.
+    ///
+    /// Per-adapter handling of the resulting inline `role:"system"`:
+    /// - Anthropic (`convert_inline_system_messages`): merges the block
+    ///   into the immediately preceding user message. Because the slot
+    ///   is fixed, the merge target is fixed too.
+    /// - OpenAI-shape with `wrap_inline_system=true` (OpenRouter slugs
+    ///   `anthropic/*` and `google/*`): wraps as a user message with
+    ///   `<system_instruction>` XML.
+    /// - OpenAI-shape with `wrap_inline_system=false` (raw OpenAI,
+    ///   Gemini direct, Z.AI): emits a real `role:"system"` mid-history.
+    ///
+    /// This replaces the deleted `system_suffix` field. That field was a
+    /// footgun: `preprocess_request` re-expanded it into a trailing
+    /// `role:"system"` at the CURRENT tail on every `generate()` call,
+    /// so any caller that ran a tool loop saw the system slot drift
+    /// across iterations and lost the Anthropic prefix cache. PRs #80
+    /// (compaction) and #84 (dreaming + heartbeat) each fixed one
+    /// caller; removing the field eliminates the bug class.
+    pub fn push_inline_system(&mut self, content: impl Into<String>) {
+        self.messages.push(serde_json::json!({
+            "role": "system",
+            "content": content.into(),
+        }));
+    }
 }
 
 /// Token usage counts from shore-llm's normalized response.
@@ -280,7 +300,6 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
-            system_suffix: None,
             retain_long: false,
         };
         let json = serde_json::to_value(&req).unwrap();
@@ -291,6 +310,41 @@ mod tests {
         assert!(!json.as_object().unwrap().contains_key("provider_options"));
         assert_eq!(json["temperature"], 0.7);
         assert_eq!(json["max_tokens"], 4096);
+    }
+
+    #[test]
+    fn push_inline_system_appends_role_system_at_tail() {
+        let mut req = LlmRequest {
+            sdk: Sdk::Anthropic,
+            model: "m".into(),
+            api_key: "k".into(),
+            api_key_name: None,
+            base_url: None,
+            messages: vec![
+                serde_json::json!({"role": "user", "content": "cached user"}),
+                serde_json::json!({"role": "assistant", "content": "cached assistant"}),
+            ],
+            system: None,
+            tools: None,
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+            rid: None,
+            forensic_character: None,
+            retain_long: false,
+        };
+        let prefix = req.messages.clone();
+        req.push_inline_system("be brief");
+
+        // The prefix is byte-preserved; the system entry lands at a fixed
+        // index after it. This is the invariant that keeps Anthropic's
+        // content-addressed prefix cache valid across tool-loop rounds.
+        assert_eq!(&req.messages[..prefix.len()], prefix.as_slice());
+        assert_eq!(req.messages.len(), prefix.len() + 1);
+        assert_eq!(req.messages.last().unwrap()["role"], "system");
+        assert_eq!(req.messages.last().unwrap()["content"], "be brief");
     }
 
     #[test]

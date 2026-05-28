@@ -89,7 +89,6 @@ fn base_request(base_url: &str) -> LlmRequest {
         provider_key: Some("anthropic".into()),
         rid: None,
         forensic_character: None,
-        system_suffix: None,
         retain_long: false,
     }
 }
@@ -434,7 +433,6 @@ async fn openai_text_only_generate_round_trip() {
         provider_key: Some("openai".into()),
         rid: None,
         forensic_character: None,
-        system_suffix: None,
         retain_long: false,
     };
     let resp = client.generate(&req).await.expect("generate");
@@ -460,142 +458,26 @@ async fn openai_text_only_generate_round_trip() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Repro: system_suffix migrates across tool-loop rounds (cache invalidation
-// during compaction).
+// Shared cache-shape contract for EVERY background tool loop that injects a
+// task-specific system instruction — compaction, the dreaming/librarian sweep,
+// and heartbeat ticks. All three attach the instruction via
+// `LlmRequest::push_inline_system`, which pins it at a fixed build-time slot;
+// this test pins the provider-level invariant they all rely on.
 //
-// The compaction path sets `request.system_suffix` and pushes one user
-// "compact now" message, expecting the system to merge into that user turn
-// at provider dispatch. That holds for iter-0. On iter-1 (after the tool
-// loop pushes the assistant response + a user(tool_result)), the suffix
-// re-merges into the new LAST user message — leaving the original
-// compact_now_user bare. The byte sequence at the iter-0 last-msg
-// breakpoint position no longer matches what the cache was warmed against,
-// so Anthropic's content-addressed prompt cache invalidates from that
-// position onward.
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn system_suffix_migrates_across_tool_loop_rounds() {
-    let mock = MockLlmServer::start().await;
-    // iter-0: tool_use response.
-    mock.enqueue_stream(AnthropicStreamBuilder::new().tool_use(
-        "toolu_1",
-        "write",
-        json!({"path": "memory/x.md", "content": "ok"}),
-    ))
-    .await;
-    // iter-1: text response.
-    mock.enqueue_stream(AnthropicStreamBuilder::new().text("done"))
-        .await;
-
-    let client = LlmClient::new();
-    let mut req = base_request(&mock.base_url());
-    // Mimic compaction's wiring: long chat history then ONE user "compact now"
-    // message, with the compaction system prompt riding as system_suffix.
-    req.messages = vec![
-        json!({"role": "user", "content": [{"type": "text", "text": "earlier user turn"}]}),
-        json!({"role": "assistant", "content": [{"type": "text", "text": "earlier assistant turn"}]}),
-        json!({"role": "user", "content": [{"type": "text", "text": "compact now"}]}),
-    ];
-    req.system_suffix = Some("compaction system instruction".to_string());
-    req.tools = Some(vec![json!({
-        "name": "write",
-        "description": "write a file",
-        "input_schema": {"type": "object"}
-    })]);
-
-    // ── iter-0 ──
-    drain_stream(&client, &req).await;
-
-    // Caller-side tool-loop continuation, mirroring compaction's mod.rs loop.
-    req.messages.push(json!({
-        "role": "assistant",
-        "content": [
-            {"type": "tool_use", "id": "toolu_1", "name": "write",
-             "input": {"path": "memory/x.md", "content": "ok"}},
-        ]
-    }));
-    req.messages.push(json!({
-        "role": "user",
-        "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}]
-    }));
-
-    // ── iter-1 ──
-    drain_stream(&client, &req).await;
-
-    let bodies = mock.received_requests().await;
-    assert_eq!(bodies.len(), 2, "should have observed two requests");
-
-    let iter0_msgs = bodies[0]["messages"].as_array().expect("iter0 messages");
-    let iter1_msgs = bodies[1]["messages"].as_array().expect("iter1 messages");
-
-    // In iter-0, the compact_now_user is the LAST message and absorbs the
-    // system_suffix via convert_inline_system_messages.
-    assert_eq!(iter0_msgs.len(), 3, "iter-0 should have 3 messages");
-    let iter0_compact_now = &iter0_msgs[2];
-    assert_eq!(iter0_compact_now["role"], "user");
-    let iter0_compact_now_str = iter0_compact_now.to_string();
-    assert!(
-        iter0_compact_now_str.contains("compact now"),
-        "iter-0 last user must contain the compact_now text"
-    );
-    assert!(
-        iter0_compact_now_str.contains("compaction system instruction"),
-        "iter-0 last user must absorb the system_suffix; got {iter0_compact_now}"
-    );
-
-    // In iter-1, the compact_now_user has slid back one slot (now at index
-    // 2 of 5) and the system_suffix has migrated to the new last user
-    // (the tool_result turn). The compact_now_user is now bare.
-    assert_eq!(
-        iter1_msgs.len(),
-        5,
-        "iter-1 should have 5 messages (added assistant + user(tool_result))"
-    );
-    let iter1_compact_now = &iter1_msgs[2];
-    assert_eq!(iter1_compact_now["role"], "user");
-    let iter1_compact_now_str = iter1_compact_now.to_string();
-    assert!(
-        iter1_compact_now_str.contains("compact now"),
-        "iter-1 still has compact_now at the same slot"
-    );
-
-    // ── The smoking gun ──
-    // Same message slot, different bytes. The Anthropic prompt cache hash
-    // walks the messages array left-to-right; once the iter-1 prefix
-    // diverges at compact_now_user, every byte from that position onward
-    // becomes uncached, which is the "full invalidation" symptom.
-    assert_ne!(
-        iter0_compact_now, iter1_compact_now,
-        "BUG: compact_now_user bytes differ between iter-0 and iter-1 — \
-         system_suffix migrated away. This invalidates the iter-0 cache \
-         prefix from compact_now_user onward."
-    );
-    assert!(
-        !iter1_compact_now_str.contains("compaction system instruction"),
-        "iter-1 compact_now_user must no longer contain the system_suffix \
-         (it migrated to the new last user message)"
-    );
-
-    // Confirm the suffix migrated to the tool_result turn.
-    let iter1_last = &iter1_msgs[4];
-    assert_eq!(iter1_last["role"], "user");
-    assert!(
-        iter1_last
-            .to_string()
-            .contains("compaction system instruction"),
-        "system_suffix should have re-merged into the new last user message; \
-         got {iter1_last}"
-    );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Counter-test: pushing the system message inline at build time (instead of
-// via system_suffix) keeps the compact_now_user bytes byte-identical across
-// tool-loop rounds. This is the candidate fix shape — provider-agnostic
-// because each adapter's existing inline-system handling does the right
-// thing (Anthropic merges into preceding user; OpenAI emits role:"system"
-// or wraps as user via `<system_instruction>` per `ctx.wrap_inline_system`).
+// Pushing the system message inline at a fixed slot keeps the preceding user
+// turn's bytes byte-identical across tool-loop rounds. The shape is
+// provider-agnostic because each adapter's existing inline-system handling does
+// the right thing (Anthropic merges into preceding user; OpenAI emits
+// role:"system" or wraps as user via `<system_instruction>` per
+// `ctx.wrap_inline_system`).
+//
+// The removed `system_suffix` affordance produced the opposite shape: it
+// re-appended the system block at the *moving* tail on every dispatch, so
+// after the tool loop pushed assistant + user(tool_result) the block merged
+// into the new last user and the preceding-user bytes diverged — full cache
+// invalidation from that slot onward (the #80 / #84 bug). Builder-level
+// counterparts: `compaction_tool_loop_keeps_compact_now_user_byte_stable_across_rounds`
+// and `librarian_tool_loop_keeps_user_prompt_byte_stable_across_rounds`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -618,10 +500,10 @@ async fn inline_system_message_at_build_time_is_stable_across_tool_rounds() {
         json!({"role": "assistant", "content": [{"type": "text", "text": "earlier assistant turn"}]}),
         json!({"role": "user", "content": [{"type": "text", "text": "compact now"}]}),
         // …but the system instruction lives inline as its own message,
-        // pushed once at build time. No system_suffix.
+        // pushed once at a fixed build-time slot (the shape
+        // `push_inline_system` produces).
         json!({"role": "system", "content": "compaction system instruction"}),
     ];
-    req.system_suffix = None;
     req.tools = Some(vec![json!({
         "name": "write",
         "description": "write a file",

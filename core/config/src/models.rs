@@ -97,15 +97,16 @@ impl Sdk {
 
     /// Whether requests for this SDK ultimately hit Anthropic's prompt-cache
     /// machinery (so a background task that wants to reuse the chat-warmed
-    /// prefix has to preserve `request.system` verbatim and ride trailing
-    /// instructions through `system_suffix` instead).
+    /// prefix has to preserve `request.system` verbatim and attach trailing
+    /// instructions as an inline `role:"system"` entry instead).
     ///
     /// True for `Anthropic`. False for OpenAI / Gemini / Z.AI — those
-    /// translate `system_suffix` into a mid-history `<system_instruction>`
-    /// user-role (or raw `role:"system"` on Z.AI), which is a materially
-    /// different wire shape than a top-level system block. Background tasks
-    /// should only swap their fresh-path system prompt over to
-    /// `system_suffix` on SDKs where this is true.
+    /// translate an inline `role:"system"` into a mid-history
+    /// `<system_instruction>` user-role (or raw `role:"system"` on Z.AI),
+    /// which is a materially different wire shape than a top-level system
+    /// block. Background tasks should only move their fresh-path system
+    /// prompt into an inline `role:"system"` (via
+    /// `LlmRequest::push_inline_system`) on SDKs where this is true.
     pub fn uses_anthropic_prompt_cache(&self) -> bool {
         matches!(self, Sdk::Anthropic)
     }

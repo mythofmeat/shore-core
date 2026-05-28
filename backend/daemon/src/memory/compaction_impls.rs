@@ -142,30 +142,24 @@ pub fn resolve_image_gen_config(
 /// loop pushes assistant + user(tool_result) AFTER that, so the system
 /// entry's position never shifts across iterations.
 ///
-/// Why this shape, and why not `system_suffix`:
+/// Why the inline `role:"system"` shape:
 ///
-/// `shore-llm::preprocess_request` re-expands `system_suffix` into a
-/// trailing `role:"system"` message on every `generate()` call, and
-/// Anthropic's `convert_inline_system_messages` merges that trailing
-/// block into the **immediately preceding** user message. That works on
-/// iter-0 (preceding user = "compact now"), but on iter-1 the
-/// compaction tool loop has pushed `user(tool_result)` onto the tail —
-/// so the suffix re-merges into the tool_result turn instead. The
-/// original "compact now" user message is left bare on iter-1, and its
-/// content no longer matches the bytes Anthropic cached on iter-0.
-/// Result: full cache invalidation from the "compact now" slot onward,
-/// every compaction round, on every tool-using compaction.
-///
-/// The fix: push the compaction instruction inline as
-/// `{"role":"system", ...}` at build time. Each adapter then handles it
-/// the way it already handles inline system messages
-/// (Anthropic merges into the preceding user via
+/// The compaction instruction is pushed inline via
+/// [`shore_llm::types::LlmRequest::push_inline_system`] at build time, so
+/// its *index* in `messages` is fixed before the tool loop starts. Each
+/// adapter then handles it the way it already handles inline system
+/// messages (Anthropic merges into the preceding user via
 /// `convert_inline_system_messages`; OpenAI-compatible providers either
 /// emit it as a real `role:"system"` or wrap it as a user with
 /// `<system_instruction>` XML, per `ProviderContext.wrap_inline_system`).
-/// Crucially the message's *index* in `messages` is fixed, so the merge
-/// target is fixed, and the bytes at every position ≤ the system index
-/// are byte-stable across tool-loop rounds.
+/// Because the merge target is fixed, the bytes at every position ≤ the
+/// system index are byte-stable across tool-loop rounds, so Anthropic's
+/// content-addressed prefix cache stays valid.
+///
+/// The earlier `system_suffix` affordance was removed precisely because it
+/// re-expanded the instruction at the *moving* tail on every `generate()`
+/// call, busting the cache; see `push_inline_system`'s doc-comment for the
+/// full history (PRs #80, #84).
 ///
 /// The regression contract is pinned by
 /// `compaction_tool_loop_keeps_compact_now_user_byte_stable_across_rounds`
@@ -189,15 +183,7 @@ fn append_compaction_tail(
     system_prompt: &str,
 ) {
     request.messages.push(user_prompt);
-    request.messages.push(serde_json::json!({
-        "role": "system",
-        "content": system_prompt,
-    }));
-    // `system_suffix` would re-append a trailing system message on every
-    // generate() call, busting the cache across tool-loop rounds (see
-    // doc-comment on COMPACTION_TAIL_ENTRY_COUNT). Explicitly clear it so
-    // a future caller pre-setting the suffix can't reintroduce the bug.
-    request.system_suffix = None;
+    request.push_inline_system(system_prompt);
 }
 
 // ---------------------------------------------------------------------------
@@ -246,8 +232,8 @@ impl RealCompactionLlm {
         // verbatim from chat. Anthropic's prompt-cache hash covers all
         // three, so this is the lever that keeps compaction's call hitting
         // the cache chat seeded for this conversation. The compaction
-        // instruction rides as `system_suffix` (a trailing inline
-        // `role:"system"` at provider dispatch); Anthropic's
+        // instruction is pinned at a fixed inline `role:"system"` slot via
+        // `push_inline_system` (see `append_compaction_tail`); Anthropic's
         // `convert_inline_system_messages` merges it into the appended user
         // turn, so it never appears in the cache prefix itself.
         //
@@ -536,7 +522,6 @@ mod tests {
             provider_key: Some("anthropic".to_string()),
             rid: Some("rid-chat".to_string()),
             forensic_character: Some("chat-forensics".to_string()),
-            system_suffix: None,
             retain_long: false,
         }
     }
@@ -612,11 +597,6 @@ mod tests {
         assert_eq!(request.messages[2]["content"], "compact now");
         assert_eq!(request.messages[3]["role"], "system");
         assert_eq!(request.messages[3]["content"], "compaction system");
-        assert!(
-            request.system_suffix.is_none(),
-            "system_suffix must not be used by compaction — it migrates \
-             across tool-loop rounds and busts the cache"
-        );
 
         let provider_options = request.provider_options.expect("provider options");
         assert_eq!(provider_options["reasoning_effort"], "medium");
@@ -707,11 +687,6 @@ mod tests {
         let tail_system = &request.messages[chat_messages.len() + 1];
         assert_eq!(tail_system["role"], "system");
         assert_eq!(tail_system["content"], "compaction system prompt");
-        assert!(
-            request.system_suffix.is_none(),
-            "system_suffix must not be used by compaction — it migrates \
-             across tool-loop rounds and busts the cache prefix"
-        );
     }
 
     /// The unified compaction path must work for non-Anthropic SDKs too:
@@ -766,10 +741,6 @@ mod tests {
         // The compaction instruction rides inline as a `role:"system"`
         // entry at a fixed slot; the OpenAI adapter handles it at
         // dispatch time per `ProviderContext.wrap_inline_system`.
-        assert!(
-            request.system_suffix.is_none(),
-            "compaction must not use system_suffix"
-        );
         assert_eq!(request.messages.len(), 3);
         assert_eq!(request.messages[0]["content"], "hi");
         assert_eq!(request.messages[1]["content"], "compact now");
@@ -790,14 +761,15 @@ mod tests {
     /// inside `compact_now_user` is large and lands at the most expensive
     /// position in the prefix.
     ///
-    /// The bug this test pins: when the compaction instruction rides as
-    /// `system_suffix`, `shore-llm::preprocess_request` re-appends it as a
-    /// trailing `role:"system"` message on every `generate()` call, and
-    /// `convert_inline_system_messages` then merges it into the
-    /// *immediately preceding* user message. After the tool loop pushes
-    /// `user(tool_result)`, the merge target shifts — leaving the original
-    /// `compact_now_user` bare and busting the cache prefix from that
-    /// position onward.
+    /// The bug class this test pins: if the compaction instruction were
+    /// appended at the *moving* tail of `messages` (the removed
+    /// `system_suffix` affordance re-expanded it on every `generate()`
+    /// call), then after the tool loop pushes `user(tool_result)` the
+    /// instruction's slot — and on Anthropic, the user turn it merges
+    /// into — would shift, leaving the original `compact_now_user` bare
+    /// and busting the cache prefix from that position onward. Pinning the
+    /// instruction at a fixed slot via `push_inline_system` keeps every
+    /// byte ≤ that slot stable across rounds.
     ///
     /// Uses MockLlmServer (no real credentials) so this runs in CI.
     #[tokio::test]
@@ -952,10 +924,10 @@ mod tests {
                  and iter-1 of a single compaction tool loop. Anthropic's \
                  content-addressed cache prefix will not extend past this \
                  position.\n\niter-0[{i}]: {a}\n\niter-1[{i}]: {b}\n\n\
-                 This is the system_suffix-migration bug — the compaction \
-                 instruction must NOT be re-merged into a different message \
-                 across tool-loop rounds. Push it inline at build time \
-                 (role:\"system\") instead of using request.system_suffix."
+                 This is the moving-tail cache-invalidation bug — the \
+                 compaction instruction must NOT be re-merged into a \
+                 different message across tool-loop rounds. Keep it pinned \
+                 at a fixed slot via push_inline_system at build time."
             );
         }
     }

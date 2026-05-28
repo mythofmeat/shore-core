@@ -277,7 +277,6 @@ impl LlmClient {
             provider_key: Some(model.provider_key.clone()),
             rid: None,
             forensic_character: None,
-            system_suffix: None,
             retain_long: false,
         }
     }
@@ -343,53 +342,34 @@ impl Default for LlmClient {
 
 /// Preprocess an outbound request before serialization:
 ///
-/// 1. Expand `system_suffix` (if any) into a trailing
-///    `role: "system"` message. This is the first-class form of the
-///    trailing-system-message convention background tasks (compaction,
-///    dreaming, heartbeat) rely on. Per-provider
-///    `<system_instruction>` wrapping then runs as it always has.
-/// 2. Strip orphan `tool_use`/`tool_result` blocks. Orphans cause hard
-///    400s from Anthropic and OpenAI-family APIs (and from translation
-///    proxies like OpenRouter).
+/// Strip orphan `tool_use`/`tool_result` blocks. Orphans cause hard
+/// 400s from Anthropic and OpenAI-family APIs (and from translation
+/// proxies like OpenRouter).
 ///
-/// The healthy path (no suffix, no orphans) allocates nothing.
+/// Task-specific system instructions are attached at build time by the
+/// caller via [`LlmRequest::push_inline_system`], which pins them at a
+/// fixed `messages[]` slot — there is no trailing-suffix expansion step
+/// here (see that method's doc-comment for why the removed `system_suffix`
+/// affordance was cache-unsafe).
+///
+/// The healthy path (no orphans) allocates nothing.
 fn preprocess_request(request: &LlmRequest) -> Cow<'_, LlmRequest> {
-    let needs_suffix = request
-        .system_suffix
-        .as_deref()
-        .is_some_and(|s| !s.is_empty());
+    let sanitized = sanitize::sanitize_tool_pairs(&request.messages);
 
-    let with_suffix: Cow<'_, [serde_json::Value]> = if needs_suffix {
-        let mut msgs = request.messages.clone();
-        msgs.push(serde_json::json!({
-            "role": "system",
-            "content": request.system_suffix.as_deref().unwrap_or(""),
-        }));
-        Cow::Owned(msgs)
-    } else {
-        Cow::Borrowed(&request.messages)
+    let Some(cleaned) = sanitized else {
+        return Cow::Borrowed(request);
     };
 
-    let sanitized = sanitize::sanitize_tool_pairs(&with_suffix);
-    let messages_changed = sanitized.is_some() || needs_suffix;
-
-    if let Some(cleaned) = sanitized.as_ref() {
-        warn!(
-            rid = request.rid.as_deref().unwrap_or("-"),
-            character = request.forensic_character.as_deref().unwrap_or("-"),
-            original_msgs = with_suffix.len(),
-            cleaned_msgs = cleaned.len(),
-            "stripped orphan tool_use/tool_result blocks from outbound LLM request"
-        );
-    }
-
-    if !messages_changed {
-        return Cow::Borrowed(request);
-    }
+    warn!(
+        rid = request.rid.as_deref().unwrap_or("-"),
+        character = request.forensic_character.as_deref().unwrap_or("-"),
+        original_msgs = request.messages.len(),
+        cleaned_msgs = cleaned.len(),
+        "stripped orphan tool_use/tool_result blocks from outbound LLM request"
+    );
 
     let mut owned = request.clone();
-    owned.messages = sanitized.unwrap_or_else(|| with_suffix.into_owned());
-    owned.system_suffix = None;
+    owned.messages = cleaned;
     Cow::Owned(owned)
 }
 
@@ -722,14 +702,14 @@ sdk = "openai"
         assert_clone_send::<LlmClient>();
     }
 
-    fn req_with_suffix(suffix: Option<&str>) -> LlmRequest {
+    fn req_with_messages(messages: Vec<serde_json::Value>) -> LlmRequest {
         LlmRequest {
             sdk: Sdk::Anthropic,
             model: "m".into(),
             api_key: "k".into(),
             api_key_name: None,
             base_url: None,
-            messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
+            messages,
             system: None,
             tools: None,
             max_tokens: 4096,
@@ -739,79 +719,40 @@ sdk = "openai"
             provider_key: Some("anthropic".into()),
             rid: None,
             forensic_character: None,
-            system_suffix: suffix.map(str::to_string),
             retain_long: false,
         }
     }
 
-    fn req_with_prefix_and_suffix(suffix: Option<&str>) -> LlmRequest {
-        LlmRequest {
-            system: Some(serde_json::json!([
-                {"type": "text", "text": "stable system"}
-            ])),
-            tools: Some(vec![serde_json::json!({
-                "name": "read",
-                "description": "stable tool",
-                "input_schema": {"type": "object"}
-            })]),
-            messages: vec![
-                serde_json::json!({"role": "user", "content": "cached user"}),
-                serde_json::json!({"role": "assistant", "content": "cached assistant"}),
-            ],
-            ..req_with_suffix(suffix)
-        }
-    }
-
     #[test]
-    fn preprocess_no_suffix_is_borrowed() {
-        let req = req_with_suffix(None);
+    fn preprocess_clean_messages_is_borrowed() {
+        // No orphan tool_use/tool_result pairs → nothing to rewrite, so
+        // preprocess_request returns the input by reference (zero alloc).
+        let req = req_with_messages(vec![serde_json::json!({
+            "role": "user",
+            "content": "hi"
+        })]);
         let out = preprocess_request(&req);
         assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
         assert_eq!(out.messages.len(), 1);
     }
 
     #[test]
-    fn preprocess_empty_suffix_is_borrowed() {
-        let req = req_with_suffix(Some(""));
+    fn preprocess_strips_orphan_tool_result() {
+        // A tool_result with no matching tool_use is an orphan; sanitize
+        // drops it and preprocess_request returns an owned, cleaned copy.
+        let req = req_with_messages(vec![
+            serde_json::json!({"role": "user", "content": "hi"}),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "orphan", "content": "stale"}
+                ]
+            }),
+        ]);
         let out = preprocess_request(&req);
-        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn preprocess_expands_suffix_into_trailing_system_message() {
-        let req = req_with_suffix(Some("be brief"));
-        let out = preprocess_request(&req);
-        // The on-the-wire payload gains a trailing `role:"system"` —
-        // exactly the shape per-provider inline conversion expects.
-        assert_eq!(out.messages.len(), 2);
-        assert_eq!(out.messages[1]["role"], "system");
-        assert_eq!(out.messages[1]["content"], "be brief");
-        // And the suffix has been consumed so it can't be double-applied
-        // if something else preprocesses the same request.
-        assert!(out.system_suffix.is_none());
-    }
-
-    #[test]
-    fn preprocess_suffix_preserves_cached_prefix_shape() {
-        let req = req_with_prefix_and_suffix(Some("background instruction"));
-        let original_messages = req.messages.clone();
-        let original_system = req.system.clone();
-        let original_tools = req.tools.clone();
-
-        let out = preprocess_request(&req);
-
-        assert_eq!(out.system, original_system, "system prefix must not drift");
-        assert_eq!(out.tools, original_tools, "tools prefix must not drift");
-        assert_eq!(
-            &out.messages[..original_messages.len()],
-            original_messages.as_slice(),
-            "existing messages must be byte-preserved before suffix tail"
-        );
-        assert_eq!(out.messages.len(), original_messages.len() + 1);
-        assert_eq!(out.messages.last().unwrap()["role"], "system");
-        assert_eq!(
-            out.messages.last().unwrap()["content"],
-            "background instruction"
-        );
+        assert!(matches!(out, std::borrow::Cow::Owned(_)));
+        // The orphan-only message is dropped entirely.
+        assert_eq!(out.messages.len(), 1);
+        assert_eq!(out.messages[0]["content"], "hi");
     }
 }
