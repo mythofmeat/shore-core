@@ -353,19 +353,36 @@ pub fn resolve_sampler_settings(
     let mut effective = static_default
         .map(SamplerSettings::from_resolved_model)
         .unwrap_or_default();
-    effective.apply_overlay(&global.defaults.sampler);
+    effective.apply_overlay(&sanitize_persisted_overlay(&global.defaults.sampler));
     if let Some(c) = character {
-        effective.apply_overlay(&c.defaults.sampler);
+        effective.apply_overlay(&sanitize_persisted_overlay(&c.defaults.sampler));
     }
     if let Some(p) = global.model(provider, model_id) {
-        effective.apply_overlay(&p.sampler);
+        effective.apply_overlay(&sanitize_persisted_overlay(&p.sampler));
     }
     if let Some(c) = character {
         if let Some(p) = c.model(provider, model_id) {
-            effective.apply_overlay(&p.sampler);
+            effective.apply_overlay(&sanitize_persisted_overlay(&p.sampler));
         }
     }
     effective
+}
+
+/// Strip overlay fields that the patch path would silently discard, so
+/// `model_settings` (inspection) shows the same values a real request
+/// would use. Today this just drops an `sdk` string that `Sdk::parse_wire`
+/// can't parse — a corrupted hand-edit of `models.toml` shouldn't make
+/// `effective_sampler.sdk` diverge from `apply_sampler_overlay`'s result.
+/// Returns a `Cow` so the no-op case (overwhelmingly common) avoids a clone.
+fn sanitize_persisted_overlay(layer: &SamplerSettings) -> std::borrow::Cow<'_, SamplerSettings> {
+    if let Some(ref s) = layer.sdk {
+        if shore_config::models::Sdk::parse_wire(s).is_none() {
+            let mut cleaned = layer.clone();
+            cleaned.sdk = None;
+            return std::borrow::Cow::Owned(cleaned);
+        }
+    }
+    std::borrow::Cow::Borrowed(layer)
 }
 
 // ── Scope (where a sampler field came from) ─────────────────────────────
@@ -434,16 +451,28 @@ pub fn resolve_sampler_scopes(
             PreferenceScope::StaticDefault,
         );
     }
-    update(&global.defaults.sampler, PreferenceScope::GlobalDefault);
+    update(
+        &sanitize_persisted_overlay(&global.defaults.sampler),
+        PreferenceScope::GlobalDefault,
+    );
     if let Some(c) = character {
-        update(&c.defaults.sampler, PreferenceScope::CharacterDefault);
+        update(
+            &sanitize_persisted_overlay(&c.defaults.sampler),
+            PreferenceScope::CharacterDefault,
+        );
     }
     if let Some(p) = global.model(provider, model_id) {
-        update(&p.sampler, PreferenceScope::GlobalModel);
+        update(
+            &sanitize_persisted_overlay(&p.sampler),
+            PreferenceScope::GlobalModel,
+        );
     }
     if let Some(c) = character {
         if let Some(p) = c.model(provider, model_id) {
-            update(&p.sampler, PreferenceScope::CharacterModel);
+            update(
+                &sanitize_persisted_overlay(&p.sampler),
+                PreferenceScope::CharacterModel,
+            );
         }
     }
     scopes
@@ -1613,6 +1642,49 @@ sdk = "openai"
         };
         let patched = apply_sampler_overlay(base, &overlay);
         assert_eq!(patched.sdk, shore_config::models::Sdk::Anthropic);
+    }
+
+    #[test]
+    fn resolve_sampler_settings_drops_invalid_persisted_sdk() {
+        // A hand-edited models.toml with an unknown sdk string must not
+        // surface through `model_settings` — `apply_sampler_overlay`
+        // would silently discard it at request time, and the inspection
+        // view should match. The catalog SDK wins instead.
+        let catalog = make_catalog(
+            r#"
+[chat.openrouter.gpt-4o]
+model_id = "gpt-4o"
+sdk = "openai"
+"#,
+        );
+        let base = catalog.find_model("gpt-4o").unwrap();
+
+        let mut prefs = ModelPreferences::default();
+        prefs.set_model(
+            "openrouter",
+            "gpt-4o",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    sdk: Some("not-a-real-sdk".into()),
+                    ..Default::default()
+                },
+            },
+        );
+
+        let effective = resolve_sampler_settings(&prefs, None, "openrouter", "gpt-4o", Some(base));
+        assert_eq!(
+            effective.sdk.as_deref(),
+            Some("openai"),
+            "invalid persisted sdk must fall through to the catalog value"
+        );
+
+        let scopes = resolve_sampler_scopes(&prefs, None, "openrouter", "gpt-4o", Some(base));
+        assert_eq!(
+            scopes.sdk,
+            Some(PreferenceScope::StaticDefault),
+            "scope must not credit the corrupted layer that the request \
+             path would silently discard"
+        );
     }
 
     #[test]
