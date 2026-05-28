@@ -1889,7 +1889,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shore-cli"
-version = "1.8.10"
+version = "1.8.11"
 dependencies = [
  "base64",
  "chrono",
@@ -1925,7 +1925,7 @@ dependencies = [
 
 [[package]]
 name = "shore-daemon"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1974,7 +1974,7 @@ dependencies = [
 
 [[package]]
 name = "shore-ledger"
-version = "1.8.10"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "reqwest",
@@ -1989,7 +1989,7 @@ dependencies = [
 
 [[package]]
 name = "shore-llm"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "shore-protocol"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2019,7 +2019,7 @@ dependencies = [
 
 [[package]]
 name = "shore-swp-client"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "base64",
  "libc",
@@ -2036,7 +2036,7 @@ dependencies = [
 
 [[package]]
 name = "shore-swp-server"
-version = "1.8.8"
+version = "1.8.9"
 dependencies = [
  "fs2",
  "libc",
