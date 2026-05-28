@@ -385,6 +385,7 @@ mod tests {
             period: "day".into(),
             period_start: "2026-05-18T00:00:00Z".into(),
             reset_at: "2026-05-19T00:00:00Z".into(),
+            reset_at_display: "2026-05-19 10:00 AM".into(),
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "usage_warning");

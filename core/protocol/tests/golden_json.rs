@@ -505,14 +505,15 @@ const USAGE_WARNING_FIXTURE: &str = r#"{
     "type": "usage_warning",
     "rid": "msg_01",
     "budget": "daily total",
-    "message": "Usage budget \"daily total\" reached 80% ($8.00/$10.00); resets at 2026-05-19T00:00:00Z.",
+    "message": "Usage budget \"daily total\" reached 80% ($8.00/$10.00); resets at 2026-05-19 10:00 AM.",
     "current_cost": 8.0,
     "cost_limit": 10.0,
     "percent_used": 0.8,
     "crossed_warn_at": [0.8],
     "period": "day",
     "period_start": "2026-05-18T00:00:00Z",
-    "reset_at": "2026-05-19T00:00:00Z"
+    "reset_at": "2026-05-19T00:00:00Z",
+    "reset_at_display": "2026-05-19 10:00 AM"
 }"#;
 
 #[test]

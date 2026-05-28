@@ -1418,13 +1418,13 @@ fn ellipsize(s: &str, max_width: usize) -> String {
     out
 }
 
-/// Render an RFC 3339 reset timestamp as the user's local clock time with an
-/// explicit offset (e.g. `2026-05-23 10:00 +10:00`). The raw daemon payload
-/// is always UTC, which reads as midnight even when `reset_hour` is set —
-/// surfacing the local offset makes the value match the configured anchor.
-fn format_reset_at(rfc3339: &str) -> String {
+/// Render an RFC 3339 timestamp as the user's local clock time in
+/// `YYYY-MM-DD HH:MM AM|PM` form (e.g. `2026-05-23 10:00 AM`). The raw daemon
+/// payload is always UTC; converting to local with AM/PM makes the value
+/// match the configured anchor at a glance.
+fn format_local_ampm(rfc3339: &str) -> String {
     parse_timestamp(rfc3339)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M %:z").to_string())
+        .map(|dt| dt.format("%Y-%m-%d %I:%M %p").to_string())
         .unwrap_or_else(|| rfc3339.to_string())
 }
 
@@ -1435,15 +1435,17 @@ fn print_budget_table(data: &serde_json::Value) {
         return;
     }
 
-    // `Reset` column matches the width of `format_reset_at`'s output
-    // (`YYYY-MM-DD HH:MM ±HH:MM` = 23 chars); raw-string fallbacks are
-    // ellipsized to the same width so the divider always spans the table.
-    const RESET_W: usize = 23;
-    let table_w = 24 + 1 + 6 + 1 + 11 + 1 + 7 + 2 + 15 + 1 + 16 + 1 + RESET_W;
+    // Time columns match the width of `format_local_ampm`'s output
+    // (`YYYY-MM-DD HH:MM AM` = 19 chars); raw-string fallbacks are ellipsized
+    // to the same width so the divider always spans the table. `Started`
+    // shows when the current window opened (so a user with `reset_hour=10`
+    // can see why the budget total isn't the same as today's summary).
+    const TIME_W: usize = 19;
+    let table_w = 24 + 1 + 6 + 1 + 11 + 1 + 7 + 2 + 15 + 1 + 16 + 1 + TIME_W + 1 + TIME_W;
 
     println!(
-        "{:<24} {:<6} {:>11} {:>7}  {:<15} {:<16} {:<RESET_W$}",
-        "Budget", "Period", "Spend", "Used", "Status", "Action", "Reset"
+        "{:<24} {:<6} {:>11} {:>7}  {:<15} {:<16} {:<TIME_W$} {:<TIME_W$}",
+        "Budget", "Period", "Spend", "Used", "Status", "Action", "Started", "Resets"
     );
     println!("{}", "-".repeat(table_w));
     if let Some(rows) = budgets {
@@ -1451,13 +1453,18 @@ fn print_budget_table(data: &serde_json::Value) {
             let current = budget["current_cost"].as_f64().unwrap_or(0.0);
             let limit = budget["cost_limit"].as_f64().unwrap_or(0.0);
             let percent = budget["percent_used"].as_f64().unwrap_or(0.0) * 100.0;
+            let started = budget["period_start"]
+                .as_str()
+                .map(format_local_ampm)
+                .map(|s| ellipsize(&s, TIME_W))
+                .unwrap_or_else(|| "?".into());
             let reset = budget["reset_at"]
                 .as_str()
-                .map(format_reset_at)
-                .map(|s| ellipsize(&s, RESET_W))
+                .map(format_local_ampm)
+                .map(|s| ellipsize(&s, TIME_W))
                 .unwrap_or_else(|| "?".into());
             println!(
-                "{:<24} {:<6} {:>5.2}/{:<5.2} {:>6.0}%  {:<15} {:<16} {reset:<RESET_W$}",
+                "{:<24} {:<6} {:>5.2}/{:<5.2} {:>6.0}%  {:<15} {:<16} {started:<TIME_W$} {reset:<TIME_W$}",
                 budget["name"].as_str().unwrap_or("budget"),
                 budget["period"].as_str().unwrap_or("day"),
                 current,
@@ -2208,25 +2215,23 @@ mod tests {
     }
 
     #[test]
-    fn format_reset_at_shows_local_time_with_offset() {
-        // UTC midnight should render as the local equivalent with an explicit
-        // offset suffix so users can tell at a glance whether the displayed
-        // hour matches their configured `reset_hour`.
-        let rendered = format_reset_at("2026-05-23T00:00:00+00:00");
-        // "YYYY-MM-DD HH:MM " (17) + "±HH:MM" (6) = 23 chars, regardless of
-        // which local timezone the test runner is in.
-        assert_eq!(rendered.len(), 23, "unexpected length: {rendered:?}");
-        // Offset has a colon; raw RFC 3339 form contained 'T' which we drop.
+    fn format_local_ampm_renders_user_facing_format() {
+        // UTC midnight should render as the local equivalent in
+        // `YYYY-MM-DD HH:MM AM|PM` form (19 chars), regardless of the test
+        // runner's timezone.
+        let rendered = format_local_ampm("2026-05-23T00:00:00+00:00");
+        assert_eq!(rendered.len(), 19, "unexpected length: {rendered:?}");
+        // Raw RFC 3339 form contained 'T' which we drop.
         assert!(
             !rendered.contains('T'),
             "should not contain 'T': {rendered:?}"
         );
         assert!(
-            rendered.contains('+') || rendered.contains('-'),
-            "should contain offset sign: {rendered:?}"
+            rendered.ends_with(" AM") || rendered.ends_with(" PM"),
+            "should end with AM/PM marker: {rendered:?}"
         );
         // Malformed input falls back to the raw string.
-        assert_eq!(format_reset_at("not-a-timestamp"), "not-a-timestamp");
+        assert_eq!(format_local_ampm("not-a-timestamp"), "not-a-timestamp");
     }
 
     #[test]

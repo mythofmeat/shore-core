@@ -202,6 +202,7 @@ fn emit_usage_budget_warnings(ctx: &GenContext, rid: Option<String>) {
             period: usage_period_name(warning.period).to_string(),
             period_start: warning.period_start,
             reset_at: warning.reset_at,
+            reset_at_display: warning.reset_at_display,
         };
         if let Err(e) = ctx.direct_tx.try_send(ServerMessage::UsageWarning(frame)) {
             warn!(error = %e, "UsageWarning drop: direct channel unavailable");
