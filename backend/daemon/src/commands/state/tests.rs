@@ -58,6 +58,7 @@ fn make_ctx_with_models(
         data_dir: data_dir.clone(),
         character_name: Some("TestChar".into()),
         active_model: None,
+        active_resolved_model: None,
         session_tokens: std::sync::Arc::new(std::sync::Mutex::new(
             crate::commands::SessionTokens::default(),
         )),
@@ -810,6 +811,82 @@ fn model_settings_returns_effective_sampler_with_scopes() {
 }
 
 #[test]
+fn set_model_setting_sdk_persists_to_preferences() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    set_model_setting(&mut ctx, &json!({"key": "sdk", "value": "anthropic"})).unwrap();
+
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert_eq!(
+        prefs
+            .model("openrouter", "gpt-4o")
+            .unwrap()
+            .sampler
+            .sdk
+            .as_deref(),
+        Some("anthropic")
+    );
+
+    // model_settings should surface the override at character_model scope.
+    let out = model_settings(&ctx, &json!({})).unwrap();
+    assert_eq!(out["effective_sampler"]["sdk"], "anthropic");
+    assert_eq!(out["scopes"]["sdk"], "character_model");
+}
+
+#[test]
+fn set_model_setting_sdk_rejects_unknown_value() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    let err = set_model_setting(&mut ctx, &json!({"key": "sdk", "value": "deepseek-fakery"}))
+        .unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+    assert!(
+        err.1.contains("anthropic") && err.1.contains("openai"),
+        "error should list valid SDK values, got: {}",
+        err.1
+    );
+
+    // The bad value must not have been persisted.
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    assert!(
+        crate::preferences::load_preferences(&path)
+            .unwrap()
+            .model("openrouter", "gpt-4o")
+            .is_none(),
+        "rejected sdk write should not create a preference entry"
+    );
+}
+
+#[test]
+fn set_model_setting_sdk_null_clears_override() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    set_model_setting(&mut ctx, &json!({"key": "sdk", "value": "anthropic"})).unwrap();
+    set_model_setting(
+        &mut ctx,
+        &json!({"key": "sdk", "value": serde_json::Value::Null}),
+    )
+    .unwrap();
+
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    // Clearing the only set field drops the per-model entry entirely.
+    assert!(prefs.model("openrouter", "gpt-4o").is_none());
+
+    // Effective sampler falls back to the catalog SDK.
+    let out = model_settings(&ctx, &json!({})).unwrap();
+    assert_eq!(out["effective_sampler"]["sdk"], "openai");
+    assert_eq!(out["scopes"]["sdk"], "static_default");
+}
+
+#[test]
 fn set_model_setting_reasoning_effort_persists_to_preferences() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
@@ -1126,6 +1203,65 @@ base_url = "https://openrouter.ai/api/v1"
             "character_model should win over global_model"
         );
         assert_eq!(out["scopes"]["temperature"], "character_model");
+    }
+
+    // ── Regression: cross-session reload for a discovered selection ─────
+
+    /// Simulate the dispatcher's per-command setup: load preferences,
+    /// resolve the active model, and populate BOTH `ctx.active_model`
+    /// (as the synthetic `qualified_name`) and `ctx.active_resolved_model`
+    /// (as the pre-resolved `ResolvedModel`). Before the fix, the
+    /// `model_settings` handler re-resolved the synthetic name via
+    /// `find_effective_model` and failed NotFound — pinned by
+    /// `effective_catalog::tests::synthetic_discovered_qualified_name_is_not_a_resolver_input`.
+    #[test]
+    fn model_settings_works_after_dispatcher_reload_for_discovered_model() {
+        let tmp = TempDir::new().unwrap();
+        let (_e, mut ctx, _rx) = make_ctx_with_discovery(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+            "openrouter",
+            &["anthropic/claude-opus-4.6"],
+            None,
+        );
+        // First connection: user picks the discovered model.
+        switch_model(&mut ctx, &json!({"name": "anthropic/claude-opus-4.6"})).unwrap();
+
+        // Simulate a fresh connection: dispatcher rebuilds ctx from
+        // preferences. `active_model` becomes the synthetic
+        // qualified_name (not a valid resolver input), but
+        // `active_resolved_model` carries the real `ResolvedModel`.
+        let (global, char_prefs) =
+            crate::preferences::load_for_character(&ctx.data_dir, "TestChar").unwrap();
+        let resolved = crate::preferences::resolve_active_for_character(
+            &ctx.config,
+            &ctx.data_dir,
+            &global,
+            &char_prefs,
+            None,
+            ctx.config.app.defaults.model.as_deref(),
+        )
+        .expect("preferences resolve to a discovered model");
+        ctx.active_model = Some(resolved.qualified_name.clone());
+        ctx.active_resolved_model = Some(resolved.clone());
+
+        // `model_settings` must succeed even though the string in
+        // `active_model` is the synthetic discovered qualified_name.
+        let out = model_settings(&ctx, &json!({})).unwrap();
+        assert_eq!(out["model"], "chat.openrouter.anthropic/claude-opus-4.6");
+        assert_eq!(out["provider"], "openrouter");
+        assert_eq!(out["model_id"], "anthropic/claude-opus-4.6");
+
+        // `set_model_setting` exercises the same resolver path; it
+        // also failed before the fix.
+        set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.5})).unwrap();
+        let out = model_settings(&ctx, &json!({})).unwrap();
+        assert_eq!(out["effective_sampler"]["temperature"], 0.5);
     }
 
     // ── Validation: hidden discovered models gated ──────────────────────

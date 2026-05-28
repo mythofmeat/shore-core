@@ -586,6 +586,7 @@ fn print_model_settings(data: &serde_json::Value) {
         "budget_tokens",
         "max_tokens",
         "cache_ttl",
+        "sdk",
     ];
     for key in keys {
         let value = match sampler.get(key) {

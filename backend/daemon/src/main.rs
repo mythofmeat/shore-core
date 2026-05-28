@@ -338,6 +338,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         data_dir: loaded.dirs.data.clone(),
         character_name: None,
         active_model: None,
+        active_resolved_model: None,
         session_tokens: session_tokens.clone(),
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
