@@ -1163,14 +1163,22 @@ fn is_due_at(
 ) -> Result<bool, DreamingError> {
     let schedule = CronSchedule::parse(&cfg.frequency)
         .map_err(|e| DreamingError::Schedule(format!("{}: {e}", cfg.frequency)))?;
+    let max_lateness = Duration::from_std(cfg.max_lateness.as_duration())
+        .map_err(|e| DreamingError::Schedule(format!("max_lateness out of range: {e}")))?;
     let mut after = match last_run_at {
         Some(last) => DateTime::parse_from_rfc3339(last)
             .map_err(|e| DreamingError::Schedule(format!("invalid last_run_at {last:?}: {e}")))?
             .with_timezone(&Local),
         None => schedule.initial_due_window_start(now) - Duration::minutes(1),
     };
-    let max_lateness = Duration::from_std(cfg.max_lateness.as_duration())
-        .map_err(|e| DreamingError::Schedule(format!("max_lateness out of range: {e}")))?;
+    // Clamp the search start to the lateness window so a far-in-the-past
+    // last_run_at (with a frequent cron) doesn't trigger a long occurrence
+    // walk. Anything older than `now - max_lateness` is out-of-window anyway;
+    // the one-tick margin keeps the boundary occurrence reachable.
+    let min_search_after = now - max_lateness - Duration::minutes(1);
+    if after < min_search_after {
+        after = min_search_after;
+    }
     loop {
         let Some(next_due) = schedule.next_after(after) else {
             return Err(DreamingError::Schedule(format!(
@@ -3015,6 +3023,23 @@ mod tests {
         let past = local_dt(2026, 5, 11, 6, 11, 0);
         assert!(is_due_at(&cfg, None, within).unwrap());
         assert!(!is_due_at(&cfg, None, past).unwrap());
+    }
+
+    #[test]
+    fn far_past_last_run_with_minutely_cron_is_bounded() {
+        // Minutely cron with a last_run a full year in the past would, without
+        // the lateness-window clamp, walk ~525k occurrences. The clamp starts
+        // the search at `now - max_lateness - 1min`, so this returns promptly
+        // with the same answer as a recent in-window occurrence.
+        let cfg = DreamingConfig {
+            frequency: "* * * * *".to_string(),
+            max_lateness: shore_config::ConfigDuration::from_secs(5 * 60),
+            ..DreamingConfig::default()
+        };
+        let last_run = local_dt(2025, 5, 11, 12, 0, 0).to_rfc3339();
+        let now = local_dt(2026, 5, 11, 12, 0, 30);
+        // The 12:00 occurrence is 30s stale — within the 5min window, so due.
+        assert!(is_due_at(&cfg, Some(&last_run), now).unwrap());
     }
 
     #[tokio::test]
