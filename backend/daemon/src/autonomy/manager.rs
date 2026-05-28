@@ -580,11 +580,7 @@ impl AutonomyManager {
             // disk while preserving the existing keepalive deadline. Compaction
             // changes the conversation tail, but the pinned system prompt
             // prefix is often still the expensive cache entry worth keeping.
-            invalidate_cached_request(
-                s,
-                character,
-                CachedRequestInvalidationReason::Compaction,
-            );
+            invalidate_cached_request(s, character, CachedRequestInvalidationReason::Compaction);
             // Compaction cycle complete — allow future triggers.
             s.compaction_triggered = false;
             s.compaction_pending = false;
@@ -990,10 +986,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         let dream_backoff_elapsed = s
             .next_dream_attempt_at
             .is_none_or(|next_attempt| now >= next_attempt);
-        let dreaming_cfg = ctx
-            .loaded_config
-            .as_ref()
-            .map(|lc| &lc.app.memory.dreaming);
+        let dreaming_cfg = ctx.loaded_config.as_ref().map(|lc| &lc.app.memory.dreaming);
         let dream_inactivity_satisfied = dreaming_cfg.is_some_and(|cfg| {
             // No prior user message: no inactivity timer to enforce, allow.
             let Some(last_user) = s.heartbeat.last_user_at() else {
@@ -1469,10 +1462,7 @@ async fn run_pre_dream_compaction(
     s.active_turn_count = retained_count;
     s.last_compaction_activity = Instant::now();
     s.mark_dirty();
-    info!(
-        character,
-        retained_count, "Pre-dream compaction complete"
-    );
+    info!(character, retained_count, "Pre-dream compaction complete");
     Ok(())
 }
 

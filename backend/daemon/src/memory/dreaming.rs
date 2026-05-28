@@ -1169,9 +1169,8 @@ fn is_due_at(
             .with_timezone(&Local),
         None => schedule.initial_due_window_start(now) - Duration::minutes(1),
     };
-    let max_lateness = Duration::from_std(cfg.max_lateness.as_duration()).map_err(|e| {
-        DreamingError::Schedule(format!("max_lateness out of range: {e}"))
-    })?;
+    let max_lateness = Duration::from_std(cfg.max_lateness.as_duration())
+        .map_err(|e| DreamingError::Schedule(format!("max_lateness out of range: {e}")))?;
     loop {
         let Some(next_due) = schedule.next_after(after) else {
             return Err(DreamingError::Schedule(format!(
