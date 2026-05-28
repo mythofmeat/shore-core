@@ -253,7 +253,6 @@ fn build_chat_request(
         provider_key: Some("openrouter".into()),
         rid: Some(rid.into()),
         forensic_character: None,
-        system_suffix: None,
         retain_long: false,
     }
 }
@@ -313,7 +312,6 @@ fn build_compaction_request(
         provider_key: Some("openrouter".into()),
         rid: Some(rid.into()),
         forensic_character: None,
-        system_suffix: None,
         retain_long: false,
     }
 }
@@ -627,9 +625,9 @@ Be concise — one file per pass. Path must start with memory/.";
     assert!(
         compaction1_read > 0,
         "FAIL: compaction#1 cache_read = 0 — cache prefix invalidated mid \
-         tool loop. This is the system_suffix-migration bug; check that \
-         `append_compaction_tail` is pushing the inline role:\"system\" \
-         entry into messages instead of setting request.system_suffix."
+         tool loop. This is the moving-tail cache-invalidation bug; check \
+         that `append_compaction_tail` pins the inline role:\"system\" \
+         entry at a fixed slot via push_inline_system."
     );
 
     // Stronger contract: cache_read on iter-1 should be at least as

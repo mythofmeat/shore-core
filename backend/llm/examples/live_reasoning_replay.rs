@@ -203,7 +203,6 @@ async fn main() {
         provider_key: Some(target.provider_key.to_string()),
         rid: Some(format!("live-reasoning-replay-{name}")),
         forensic_character: None,
-        system_suffix: None,
         retain_long: false,
     };
 

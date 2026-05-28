@@ -109,7 +109,7 @@ impl CompactionLlm for ScriptedCompactionLlm {
     ) -> Result<LlmRequest, CompactionError> {
         let mut messages = chat_request.messages.clone();
         messages.push(compact_now_user);
-        Ok(LlmRequest {
+        let mut request = LlmRequest {
             sdk: chat_request.sdk,
             model: chat_request.model,
             api_key: chat_request.api_key,
@@ -125,9 +125,12 @@ impl CompactionLlm for ScriptedCompactionLlm {
             provider_key: chat_request.provider_key,
             rid: None,
             forensic_character: None,
-            system_suffix: Some(system.to_string()),
             retain_long: true,
-        })
+        };
+        // Mirror production: the compaction instruction is pinned at a
+        // fixed inline `role:"system"` slot, never the moving tail.
+        request.push_inline_system(system);
+        Ok(request)
     }
 
     fn generate<'a>(
@@ -172,7 +175,6 @@ fn make_chat_request_for_test() -> LlmRequest {
         provider_key: None,
         rid: None,
         forensic_character: None,
-        system_suffix: None,
         retain_long: false,
     }
 }

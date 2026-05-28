@@ -1646,14 +1646,19 @@ async fn execute_heartbeat_tick(
         load_heartbeat_instructions(&character_data_dir).replace("{user}", &user_name);
     let heartbeat_prompt = build_heartbeat_prompt(&user_name, &default_interval_str);
 
-    // Hand the heartbeat instructions + prompt to shore-llm as the
-    // trailing `system_suffix`. shore-llm expands this into a trailing
-    // `role: "system"` message just before provider dispatch, where each
-    // provider auto-wraps it in `<system_instruction>` and merges into
-    // the prior user turn. Keeping it out of `request.messages` means
-    // the cached chat prefix downstream calls reuse never sees this
-    // text — important when heartbeat re-uses chat's `last_request`.
-    request.system_suffix = Some(format!("{heartbeat_instructions}\n\n{heartbeat_prompt}"));
+    // Pin the heartbeat instructions + prompt at a fixed slot in
+    // `request.messages` via `push_inline_system`. The heartbeat tool
+    // loop below pushes `assistant` + `user(tool_result)` after this,
+    // so the system entry's index must not depend on tail length. (The
+    // removed `system_suffix` affordance re-expanded at the current tail
+    // every `generate()` call and busted Anthropic's content-addressed
+    // prefix cache across iterations — see
+    // [`LlmRequest::push_inline_system`].)
+    //
+    // The cached chat prefix is left untouched — the inline system
+    // entry sits AFTER chat's messages, so subsequent chat calls
+    // reusing `last_request`'s prefix never see this text either.
+    request.push_inline_system(format!("{heartbeat_instructions}\n\n{heartbeat_prompt}"));
     // Heartbeat ticks fire on a slow cadence; route the payload log to
     // the long-retention tier so reflection traces survive past chat's
     // 3-day prune.
@@ -2278,7 +2283,6 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
-            system_suffix: None,
             retain_long: false,
         }
     }
@@ -2989,7 +2993,6 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
-            system_suffix: None,
             retain_long: false,
         };
 
@@ -3117,7 +3120,6 @@ api_key_env = "{api_key_env}"
             provider_key: None,
             rid: None,
             forensic_character: None,
-            system_suffix: None,
             retain_long: false,
         }
     }

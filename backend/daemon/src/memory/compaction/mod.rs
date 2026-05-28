@@ -985,7 +985,6 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
-            system_suffix: None,
             retain_long: false,
         }
     }
@@ -1110,7 +1109,7 @@ mod tests {
                 .map(str::to_string);
             let mut combined = chat_request.messages.clone();
             combined.push(compact_now_user);
-            Ok(LlmRequest {
+            let mut request = LlmRequest {
                 sdk: chat_request.sdk,
                 model: chat_request.model,
                 api_key: chat_request.api_key,
@@ -1126,9 +1125,12 @@ mod tests {
                 provider_key: chat_request.provider_key,
                 rid: None,
                 forensic_character: None,
-                system_suffix: Some(system.to_string()),
                 retain_long: true,
-            })
+            };
+            // Mirror production: the compaction instruction is pinned at a
+            // fixed inline `role:"system"` slot, never the moving tail.
+            request.push_inline_system(system);
+            Ok(request)
         }
 
         fn generate<'a>(
@@ -2172,7 +2174,6 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
-            system_suffix: None,
             retain_long: false,
         };
 

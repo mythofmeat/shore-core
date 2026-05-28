@@ -1299,7 +1299,6 @@ mod tests {
             provider_key: None,
             rid: None,
             forensic_character: None,
-            system_suffix: None,
             retain_long: false,
         }
     }
@@ -2672,8 +2671,9 @@ mod tests {
                 json!({"role": "user", "content": [
                     {"type": "text", "text": "prefix u1", "cache_control": cc},
                 ]}),
-                // Compaction tail (after `preprocess_request` expanded the
-                // `system_suffix` into a trailing system block).
+                // Compaction tail: the compact-now user turn followed by the
+                // inline `role:"system"` instruction pinned at a fixed slot
+                // (the shape `LlmRequest::push_inline_system` produces).
                 json!({"role": "user", "content": "compact now"}),
                 json!({"role": "system", "content": "compaction system"}),
             ],
