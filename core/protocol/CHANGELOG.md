@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/mythofmeat/shore-core/compare/shore-protocol-v0.4.0...shore-protocol-v0.5.0) - 2026-05-28
+
+### Fixed
+
+- *(usage)* render budget reset times in local AM/PM + show window in CLI ([#86](https://github.com/mythofmeat/shore-core/pull/86))
+
 ## [0.4.0](https://github.com/mythofmeat/shore-core/compare/shore-protocol-v0.3.0...shore-protocol-v0.4.0) - 2026-05-27
 
 ### Fixed
