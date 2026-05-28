@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [5.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v4.0.1...shore-llm-v5.0.0) - 2026-05-28
 
+### Breaking
+
+- **`LlmRequest::system_suffix` field removed**: The `system_suffix: Option<String>` field has been removed from `LlmRequest` and replaced with the `push_inline_system(&mut self, content: impl Into<String>)` method. The old field was a footgun that caused cache-prefix drift during tool loops because `preprocess_request` re-expanded it at the current tail on every `generate()` call.
+
+  **Migration**: Replace all uses of `system_suffix` with `push_inline_system`:
+
+  ```rust
+  // Old (5.0.0 removed this):
+  // let mut request = LlmRequest {
+  //     system_suffix: Some("Be concise.".into()),
+  //     ..
+  // };
+
+  // New (5.0.0):
+  let mut request = LlmRequest { /* fields */ };
+  request.push_inline_system("Be concise.");
+  ```
+
+  The new method appends a `role:"system"` message at a fixed index in the `messages` array, preserving Anthropic's content-addressed prefix cache across tool-loop iterations. See PRs [#80](https://github.com/mythofmeat/shore-core/pull/80), [#84](https://github.com/mythofmeat/shore-core/pull/84), and [#89](https://github.com/mythofmeat/shore-core/pull/89) for implementation details.
+
 ### Fixed
 
 - *(cache)* pin librarian/heartbeat system instruction at fixed slot ([#89](https://github.com/mythofmeat/shore-core/pull/89))
