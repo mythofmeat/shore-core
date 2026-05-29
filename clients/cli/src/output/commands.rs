@@ -562,7 +562,7 @@ fn print_model_info(data: &serde_json::Value) {
         write_row(&mut out, "Reasoning", re);
     }
     if let Some(mt) = data["max_output_tokens"].as_u64() {
-        write_row(&mut out, "Max tokens", &mt.to_string());
+        write_row(&mut out, "Max output tokens", &mt.to_string());
     }
     let _ = writeln!(out);
 }
