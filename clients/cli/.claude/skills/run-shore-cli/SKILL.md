@@ -61,7 +61,7 @@ confirm.
 
 Expected shape (log path; headers are colored, the gutter + bodies dim):
 
-```
+```text
 │ ◌ Thinking
 │   Let me reason about this first. The user asked about a long-standing
 │   issue, and this paragraph is long so it wraps under the gutter.
