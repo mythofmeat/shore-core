@@ -129,24 +129,37 @@ pub(crate) fn write_sigil_header(out: &mut impl Write, sigil: char, text: &str, 
     }
 }
 
-/// Write a tool body inset into the process channel: dim, gutter-barred, text
-/// at column 4. Not word-wrapped — tool I/O is often structured or code, so it
-/// is left to soft-wrap.
+/// Smallest content column a wrapped tool-body line keeps after its own indent,
+/// so a deeply-indented line still has room to wrap rather than overflowing.
+const MIN_BODY_WRAP: usize = 16;
+
+/// Write a tool body inset into the process channel: dim and gutter-barred,
+/// text at column 5. Each line is word-wrapped to the terminal width with its
+/// leading indentation preserved on continuation rows, so long lines stay in
+/// the gutter instead of soft-wrapping back to column 0.
 pub(crate) fn write_process_body(out: &mut impl Write, body: &str) {
     if body.is_empty() {
         return;
     }
+    let base = process_wrap_width();
     for line in body.lines() {
-        if line.is_empty() {
+        if line.trim().is_empty() {
             write_channel_rule(out);
-        } else {
-            if use_color() {
-                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-            }
-            let _ = writeln!(out, " {CHANNEL_BAR}   {line}");
-            if use_color() {
-                let _ = crossterm::execute!(out, ResetColor);
-            }
+            continue;
+        }
+        // Preserve the line's own indentation; wrap only the content after it.
+        let indent_len = line.chars().take_while(|c| *c == ' ').count();
+        let content = &line[indent_len..];
+        let avail = base.saturating_sub(indent_len).max(MIN_BODY_WRAP);
+        let indent = " ".repeat(indent_len);
+        if use_color() {
+            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        }
+        for wrapped in wrap_line(content, avail) {
+            let _ = writeln!(out, " {CHANNEL_BAR}   {indent}{wrapped}");
+        }
+        if use_color() {
+            let _ = crossterm::execute!(out, ResetColor);
         }
     }
 }
@@ -405,6 +418,22 @@ mod tests {
         let mut buf = Vec::new();
         write_channel_rule(&mut buf);
         assert_eq!(String::from_utf8(buf).unwrap(), " \u{2502}\n");
+    }
+
+    #[test]
+    fn process_body_wraps_long_lines_keeping_the_gutter() {
+        set_color_enabled(false);
+        // A line far longer than any sane terminal width, with a 2-space indent.
+        let long = "word ".repeat(80);
+        let mut buf = Vec::new();
+        write_process_body(&mut buf, &format!("  {}", long.trim_end()));
+        let out = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines.len() > 1, "a very long line must wrap to many rows");
+        for l in &lines {
+            // Every row — including wrapped continuations — keeps the gutter.
+            assert!(l.starts_with(" \u{2502}   "), "row lost the gutter: {l:?}");
+        }
     }
 
     #[test]

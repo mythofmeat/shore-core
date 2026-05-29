@@ -572,7 +572,7 @@ mod tests {
         let blocks = vec![
             serde_json::json!({"type": "thinking", "thinking": "Let me reason about this first. The user asked about a long-standing issue, and this paragraph is deliberately long so it wraps and shows the gutter bar continuing down every wrapped row.\nA second paragraph confirms blank-line handling between thoughts."}),
             serde_json::json!({"type": "text", "text": "Here's the first part of my answer."}),
-            serde_json::json!({"type": "tool_use", "name": "read_file", "input": {"path": "src/main.rs"}}),
+            serde_json::json!({"type": "tool_use", "name": "edit", "input": {"path": "src/main.rs", "new_string": "a deliberately long replacement line so the tool body has to word-wrap and we can see the gutter bar continue down every wrapped row of the body too"}}),
             serde_json::json!({"type": "tool_result", "content": "fn main() { ... }", "is_error": false}),
             // redacted_thinking is hidden — should produce no output and not
             // disturb the breathing room around the real thinking block.
