@@ -484,19 +484,16 @@ impl ModelCatalog {
             }
         }
 
+        // Both miss arms return a descriptive `CatalogError`; the caller owns
+        // the severity decision. Don't `warn!` here — this lookup is also used
+        // as a speculative probe (e.g. `effective_catalog::find_effective_model`
+        // tries the static catalog first, then falls back to discovery), where
+        // a miss is expected and not worth a warning. Terminal callers that
+        // treat a miss as a real misconfiguration log it themselves with
+        // context (see `resolve_background_model`, `apply_heartbeat_model_override`).
         match matches.len() {
             0 => {
-                let available: Vec<&str> = self
-                    .chat
-                    .values()
-                    .chain(self.tools.values())
-                    .map(|m| m.qualified_name.as_str())
-                    .collect();
-                warn!(
-                    name,
-                    available = available.join(", "),
-                    "Model not found in catalog"
-                );
+                debug!(name, "Model not found in static catalog");
                 Err(CatalogError::NotFound {
                     name: name.to_string(),
                 })
@@ -512,7 +509,7 @@ impl ModelCatalog {
             _ => {
                 let locations: Vec<&str> =
                     matches.iter().map(|m| m.qualified_name.as_str()).collect();
-                warn!(
+                debug!(
                     name,
                     locations = locations.join(", "),
                     "Ambiguous model name — found in multiple providers"
