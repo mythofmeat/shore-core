@@ -108,7 +108,12 @@ pub fn find_effective_model(
                                 provider: provider.into(),
                             });
                         }
-                        return Ok(build_resolved_from_discovered(provider, entry, &disc));
+                        return Ok(build_resolved_from_discovered(
+                            provider,
+                            entry,
+                            &disc,
+                            config.models.chat_provider_defaults.get(provider),
+                        ));
                     }
                 }
             }
@@ -131,7 +136,12 @@ pub fn find_effective_model(
             continue;
         };
         let hidden = !entry.discovery.is_visible(&disc.model_id);
-        let resolved = build_resolved_from_discovered(provider_key, entry, &disc);
+        let resolved = build_resolved_from_discovered(
+            provider_key,
+            entry,
+            &disc,
+            config.models.chat_provider_defaults.get(provider_key),
+        );
         hits.push((provider_key.into(), resolved, hidden));
     }
 
@@ -218,7 +228,12 @@ pub fn list_effective_models(
             if hidden && !include_hidden {
                 continue;
             }
-            let resolved = build_resolved_from_discovered(provider_key, entry, disc);
+            let resolved = build_resolved_from_discovered(
+                provider_key,
+                entry,
+                disc,
+                config.models.chat_provider_defaults.get(provider_key),
+            );
             out.push(EffectiveModel {
                 source: EffectiveSource::Discovered,
                 resolved,
@@ -257,6 +272,7 @@ fn build_resolved_from_discovered(
     provider_key: &str,
     entry: &ProviderEntry,
     disc: &DiscoveredModel,
+    chat_provider_defaults: Option<&ModelConfigFields>,
 ) -> ResolvedModel {
     let provider_defaults = hardcoded_provider_defaults(provider_key).fields;
 
@@ -297,7 +313,7 @@ fn build_resolved_from_discovered(
 
     let qualified_name = format!("chat.{provider_key}.{}", disc.model_id);
 
-    let fields = ModelConfigFields {
+    let mut fields = ModelConfigFields {
         sdk: Some(sdk.clone()),
         api_key_env: None,
         base_url,
@@ -320,13 +336,27 @@ fn build_resolved_from_discovered(
         zai_subscription: None,
     };
 
+    // Apply explicit `[chat.<provider>]` provider-level config last, so it
+    // wins over discovered upstream metadata — the same "user config wins"
+    // precedence static `[chat.<provider>.<model>]` entries get. This carries
+    // routing (`openrouter_provider`), `cache_ttl`, sampler knobs, etc. that
+    // the discovery feed never reports. Unset fields fall through to the
+    // discovered/hardcoded values built above.
+    if let Some(defaults) = chat_provider_defaults {
+        fields.merge_from(defaults);
+    }
+
+    // The overlay may have changed `sdk`; `from_parts` reads it from `fields`
+    // when present, so pass the (possibly overridden) value as the fallback too.
+    let sdk_fallback = fields.sdk.clone().unwrap_or(sdk);
+
     ResolvedModel::from_parts(
         disc.model_id.clone(),
         qualified_name,
         "chat".into(),
         provider_key.into(),
         disc.model_id.clone(),
-        sdk,
+        sdk_fallback,
         fields,
     )
 }
@@ -515,6 +545,72 @@ base_url = "https://example.test/v1"
         assert_eq!(m.provider_key, "my_anthropic_proxy");
         assert_eq!(m.sdk, shore_config::models::Sdk::Anthropic);
         assert_eq!(m.cache_ttl.as_deref(), Some("1h"));
+    }
+
+    #[test]
+    fn discovered_model_inherits_provider_level_chat_defaults() {
+        // `[chat.<provider>]` provider-level fields must cascade onto
+        // discovered models the same way they fold into static
+        // `[chat.<provider>.<model>]` entries. Regression: discovered models
+        // previously hard-coded `openrouter_provider: None`, silently dropping
+        // routing pins for discovery-only setups (the entire reason a user
+        // pins `order = ["Anthropic"]` for anthropic/* models on OpenRouter).
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+sdk = "anthropic"
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            r#"
+[chat.openrouter]
+cache_ttl = "1h"
+openrouter_provider = { order = ["Anthropic"] }
+"#,
+        );
+        write_cache_for(&tmp, "openrouter", &["anthropic/claude-opus-4.8"]);
+
+        let m =
+            find_effective_model(&loaded, tmp.path(), "anthropic/claude-opus-4.8", false).unwrap();
+        assert_eq!(m.provider_key, "openrouter");
+        assert_eq!(m.cache_ttl.as_deref(), Some("1h"));
+        let or = m
+            .openrouter_provider
+            .expect("routing pin should be inherited from [chat.openrouter]");
+        let order = or
+            .get("order")
+            .and_then(|v| v.as_array())
+            .expect("openrouter_provider.order array");
+        assert_eq!(order.len(), 1);
+        assert_eq!(order[0].as_str(), Some("Anthropic"));
+    }
+
+    #[test]
+    fn discovered_model_explicit_chat_default_overrides_discovered_metadata() {
+        // User config wins over discovered upstream metadata: a provider-level
+        // `max_output_tokens` must beat the discovery feed's reported value.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+sdk = "anthropic"
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            r#"
+[chat.openrouter]
+max_output_tokens = 32768
+"#,
+        );
+        // write_cache_for reports max_output_tokens = 8192.
+        write_cache_for(&tmp, "openrouter", &["anthropic/claude-opus-4.8"]);
+
+        let m =
+            find_effective_model(&loaded, tmp.path(), "anthropic/claude-opus-4.8", false).unwrap();
+        assert_eq!(m.max_output_tokens, Some(32768));
     }
 
     #[test]

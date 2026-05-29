@@ -151,6 +151,16 @@ pub fn list_models_with_args(ctx: &CommandContext, args: &Value) -> CommandResul
 }
 
 fn list_models_active_name(ctx: &CommandContext, entries: &[EffectiveModel]) -> Option<String> {
+    // Prefer the already-resolved active model: it carries the canonical
+    // `qualified_name` directly, so there's no need to re-resolve the
+    // `active_model` string. Crucially, a discovered model's `qualified_name`
+    // (`chat.<provider>.<model_id>`) is a *display-only* synthetic name that is
+    // not a valid resolver input — feeding it back through the resolver always
+    // misses (and used to log a spurious catalog warning). Reading the resolved
+    // model sidesteps that round-trip entirely.
+    if let Some(resolved) = ctx.active_resolved_model.as_ref() {
+        return Some(resolved.qualified_name.clone());
+    }
     if let Some(active) = ctx.active_model.as_deref().filter(|s| !s.is_empty()) {
         return effective_catalog::find_effective_model(
             &ctx.config,
