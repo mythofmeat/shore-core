@@ -4,6 +4,8 @@ use shore_config::{
 };
 use shore_test_harness::{TestConfigBuilder, TestHarness};
 
+use crate::helpers::wait_for_persisted_messages;
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// Build a standard compaction-enabled harness:
@@ -53,6 +55,15 @@ async fn test_compaction_triggers_on_max_turns() {
     // Send 3 messages — active.jsonl will have 6 entries afterwards.
     send_n_messages(&mut harness, 3).await;
 
+    // Ensure all 3 turns (6 messages) are persisted before compaction snapshots
+    // the transcript; if a turn is still in flight it sees < max_turns and skips.
+    wait_for_persisted_messages(
+        &harness,
+        |m| m.len() >= 6,
+        "3 turns to persist before compaction",
+    )
+    .await;
+
     // Enqueue compaction mocks AFTER chat messages so ordering doesn't interfere.
     // The compaction LLM call uses non-streaming JSON (generate endpoint)
     // and now runs a two-round tool loop: tool_use(write) → end_turn.
@@ -63,18 +74,20 @@ async fn test_compaction_triggers_on_max_turns() {
     // Directly trigger compaction — bypasses the 30s autonomy tick.
     harness.trigger_compaction_now("TestChar").await;
 
-    // Give the daemon a moment to flush persistence.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    let messages = harness.read_persisted_messages();
-
+    // Poll for the trimmed transcript instead of a fixed sleep — the rewrite of
+    // active.jsonl can lag the compaction call's return on a loaded runner.
     // Without compaction: 3 user + 3 assistant = 6 messages.
     // With compaction (keep_recent=1): only 1 user + 1 assistant = 2 messages.
+    let messages = wait_for_persisted_messages(
+        &harness,
+        |m| m.len() < 6,
+        "compaction to trim active.jsonl below 6 messages (does the mock write \
+         response include valid <memory><write> blocks?)",
+    )
+    .await;
     assert!(
         messages.len() < 6,
-        "Expected compaction to trim active.jsonl below 6 messages, got {}. \
-         Compaction may have failed — check that the LLM mock response includes \
-         valid <memory><write> XML blocks.",
+        "Expected compaction to trim active.jsonl below 6 messages, got {}.",
         messages.len()
     );
 
@@ -102,18 +115,28 @@ async fn test_compaction_keeps_recent_turns() {
             .await;
     }
 
+    // Ensure all 4 turns (8 messages) are persisted before compaction snapshots.
+    wait_for_persisted_messages(
+        &harness,
+        |m| m.len() >= 8,
+        "4 turns to persist before compaction",
+    )
+    .await;
+
     // Enqueue compaction mocks after chat messages.
     enqueue_compaction_write(&mut harness, "recent-turns").await;
     harness.mock_llm.enqueue_embedding_optional(8).await;
 
     harness.trigger_compaction_now("TestChar").await;
 
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    let messages = harness.read_persisted_messages();
-
     // Without compaction: 4 user + 4 assistant = 8.
     // With compaction (keep_recent=2): 2 user + 2 assistant = 4.
+    let messages = wait_for_persisted_messages(
+        &harness,
+        |m| m.len() < 8,
+        "compaction to trim active.jsonl below 8 messages",
+    )
+    .await;
     assert!(
         messages.len() < 8,
         "Expected compaction to trim active.jsonl below 8 messages, got {}",
@@ -143,13 +166,19 @@ async fn test_messages_still_work_after_compaction() {
     // Trigger compaction via 3 messages.
     send_n_messages(&mut harness, 3).await;
 
+    // Ensure all 3 turns are persisted before compaction snapshots the transcript.
+    wait_for_persisted_messages(
+        &harness,
+        |m| m.len() >= 6,
+        "3 turns to persist before compaction",
+    )
+    .await;
+
     // Enqueue compaction mocks after chat messages.
     enqueue_compaction_write(&mut harness, "post-compaction").await;
     harness.mock_llm.enqueue_embedding_optional(8).await;
 
     harness.trigger_compaction_now("TestChar").await;
-
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Send one more message post-compaction.
     harness.mock_llm.enqueue_text("Post-compaction reply").await;
@@ -161,10 +190,17 @@ async fn test_messages_still_work_after_compaction() {
         "Expected post-compaction response to complete successfully"
     );
 
-    // Give daemon a moment to persist the new message.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    let messages = harness.read_persisted_messages();
+    // Wait for the new message to land on disk rather than sleeping a fixed
+    // interval — persistence lags the stream end on a loaded runner.
+    let messages = wait_for_persisted_messages(
+        &harness,
+        |m| {
+            m.iter()
+                .any(|v| v.to_string().contains("Post-compaction message"))
+        },
+        "post-compaction user message to persist",
+    )
+    .await;
     let raw = messages
         .iter()
         .map(|m| m.to_string())

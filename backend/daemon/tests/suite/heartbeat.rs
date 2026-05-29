@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use crate::helpers::{wait_for_file_contents, wait_for_heartbeat_detail};
+use crate::helpers::{wait_for_file_contents, wait_for_heartbeat_detail, wait_for_mock_requests};
 use serde_json::json;
 use shore_test_harness::{TestConfigBuilder, TestHarness};
 
@@ -56,6 +56,9 @@ async fn heartbeat_ok_is_one_call_and_writes_no_memory_file() {
     harness.mock_llm.enqueue_json_text("HEARTBEAT_OK").await;
     fire_tick(&harness).await;
 
+    // The tick's LLM call is recorded by the mock asynchronously; wait for it
+    // to register before asserting the exact count.
+    wait_for_mock_requests(&harness, before + 1).await;
     let requests = harness.mock_llm.received_requests().await;
     assert_eq!(
         requests.len() - before,
@@ -89,9 +92,11 @@ async fn send_message_is_delivered_without_recap() {
         .await;
     fire_tick(&harness).await;
 
-    let active = std::fs::read_to_string(harness.data_dir.join(CHARACTER).join("active.jsonl"))
-        .unwrap_or_default();
-    assert!(active.contains(body), "sendMessage content should persist");
+    // Wait for the sendMessage body to land in active.jsonl rather than reading
+    // immediately — the tick spawns the persistence write, which lags the tick
+    // return on a loaded runner.
+    let active_path = harness.data_dir.join(CHARACTER).join("active.jsonl");
+    wait_for_file_contents(&active_path, body).await;
     let memory_dir = shore_config::character_memory_dir(&harness.config.dirs.config, CHARACTER);
     assert!(
         !memory_dir.join("daily").exists(),

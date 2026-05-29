@@ -84,6 +84,35 @@ pub async fn wait_for_file_contents(path: &std::path::Path, needle: &str) -> Str
     }
 }
 
+/// Poll the persisted `active.jsonl` message set until `pred` holds, or fail
+/// after a wall-clock deadline.
+///
+/// `send_and_collect` returns once the stream ends, but the daemon persists
+/// the turn to `active.jsonl` slightly later. Reading the file immediately
+/// (or after a fixed sleep) races that write on a loaded CI runner; callers
+/// that depend on a turn being on disk — e.g. compaction snapshotting the
+/// transcript — must wait for the observable state instead. `what` names the
+/// condition for the timeout message.
+pub async fn wait_for_persisted_messages(
+    harness: &TestHarness,
+    pred: impl Fn(&[serde_json::Value]) -> bool,
+    what: &str,
+) -> Vec<serde_json::Value> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let messages = harness.read_persisted_messages();
+        if pred(&messages) {
+            return messages;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Timed out waiting for {what}; persisted message count is {}",
+            messages.len()
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
 pub fn is_request_scoped_message(msg: &ServerMessage) -> bool {
     matches!(
         msg,
