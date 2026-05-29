@@ -133,6 +133,7 @@ mod tests {
                 alt_index: None,
                 alt_count: None,
                 alternatives: vec![],
+                provider_key: None,
                 timestamp: "2026-01-01T00:00:00Z".into(),
             }],
             active_start: 0,
@@ -305,6 +306,7 @@ mod tests {
                 alt_index: None,
                 alt_count: None,
                 alternatives: vec![],
+                provider_key: None,
                 timestamp: "2026-01-01T00:00:01Z".into(),
             },
         });
@@ -418,6 +420,7 @@ mod tests {
                 timestamp: "2026-01-01T00:00:00Z".into(),
             }],
             timestamp: "2026-01-01T00:00:00Z".into(),
+            provider_key: None,
         };
         let (json, back) = round_trip(&msg);
         assert_eq!(json["alt_index"], 0);
@@ -440,6 +443,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let json = serde_json::to_value(&msg).unwrap();
@@ -676,6 +680,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let json = serde_json::to_value(&msg).unwrap();
@@ -702,6 +707,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let json = serde_json::to_value(&msg).unwrap();

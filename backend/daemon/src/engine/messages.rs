@@ -441,6 +441,7 @@ fn message_from_alternative(template: &Message, index: u32) -> Message {
         alt_index: Some(index),
         alt_count: Some(template.alternatives.len() as u32),
         alternatives: template.alternatives.clone(),
+        provider_key: None,
         timestamp: if alt.timestamp.is_empty() {
             template.timestamp.clone()
         } else {
@@ -474,6 +475,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
         }
     }
@@ -768,6 +770,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
         };
         tool_msg.content = "5 results found".to_string();

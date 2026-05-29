@@ -417,6 +417,7 @@ mod tests {
                 timestamp: "t".into(),
             }],
             timestamp: "t".into(),
+            provider_key: None,
         };
 
         embed_message_image_data(&mut message);

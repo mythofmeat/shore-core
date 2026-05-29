@@ -127,6 +127,7 @@ pub fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> PreparedCha
         include_unsigned_thinking,
         config.app.advanced.max_image_size,
         cache_dir,
+        &resolved.provider_key,
     );
     crate::content_util::maybe_strip_prior_thinking(
         &mut llm_messages,

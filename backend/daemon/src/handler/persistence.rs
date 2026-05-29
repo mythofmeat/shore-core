@@ -114,9 +114,15 @@ pub(super) async fn persist_and_notify(
         }
         let notify_content = notify_content_from_response_messages(&response_messages);
         let mut generated_messages = tool_intermediate_messages;
+        // The provider that actually minted this turn (matching the diagnostics
+        // entry above) so opaque thinking data carries its provenance to disk.
+        let minting_provider = request
+            .provider_key
+            .clone()
+            .unwrap_or_else(|| resolved.provider_key.clone());
         let response_messages: Vec<Message> = response_messages
             .into_iter()
-            .map(message_from_response)
+            .map(|m| message_from_response(m, &minting_provider))
             .collect();
         let response_event_ids: Vec<String> = response_messages
             .iter()
@@ -241,7 +247,7 @@ fn emit_new_message_event(
     }));
 }
 
-fn message_from_response(response_msg: CompletedResponseMessage) -> Message {
+fn message_from_response(response_msg: CompletedResponseMessage, provider_key: &str) -> Message {
     let content = derive_content_from_blocks(&response_msg.content_blocks);
     Message {
         msg_id: format!("m_{}", uuid::Uuid::new_v4()),
@@ -253,6 +259,7 @@ fn message_from_response(response_msg: CompletedResponseMessage) -> Message {
         alt_count: None,
         alternatives: vec![],
         timestamp: chrono::Local::now().to_rfc3339(),
+        provider_key: Some(provider_key.to_string()),
     }
 }
 

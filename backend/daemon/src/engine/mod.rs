@@ -383,6 +383,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
         }
     }

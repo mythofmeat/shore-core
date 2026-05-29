@@ -80,6 +80,15 @@ pub struct Message {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternatives: Vec<MessageAlternative>,
     pub timestamp: String,
+    /// Provider key that minted this message's content (e.g. `"anthropic"`,
+    /// `"openrouter-anthropic"`). Opaque thinking data — `thinking`
+    /// signatures and `redacted_thinking` blobs — is bound to its minting
+    /// provider and is not portable across a provider switch; the replay path
+    /// uses this to drop blocks the active provider cannot interpret. `None`
+    /// for messages persisted before provenance tracking, or for messages
+    /// (user turns, system recaps) that carry no provider-bound data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_key: Option<String>,
 }
 
 /// Stored alternate body for a regenerated assistant message.
@@ -352,6 +361,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         }
     }

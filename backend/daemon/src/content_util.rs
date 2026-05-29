@@ -131,6 +131,54 @@ pub fn dispatch_result_to_output(result: Result<Value, crate::tools::ToolError>)
     }
 }
 
+/// Whether `block` can be safely replayed to `active_provider`.
+///
+/// Providers mint opaque, provider-bound data inside `thinking` blocks
+/// (signatures) and `redacted_thinking` blocks (encrypted blobs, or
+/// OpenRouter's `openrouter.reasoning:` envelopes). Replaying such a block to
+/// a provider that did not mint it triggers an HTTP 400 — e.g. Anthropic
+/// rejects an OpenRouter-relayed block with `Invalid `data` in
+/// `redacted_thinking` block`. Text, tool_use, tool_result, and unsigned
+/// thinking carry no provider-bound data and are always portable.
+///
+/// `minting_provider` is the provider that produced the message this block
+/// belongs to ([`shore_protocol::types::Message::provider_key`]), or `None`
+/// for messages persisted before provenance tracking existed.
+pub fn thinking_block_portable_to(
+    block: &ContentBlock,
+    minting_provider: Option<&str>,
+    active_provider: &str,
+) -> bool {
+    let carries_opaque_data = match block {
+        ContentBlock::Thinking { signature, .. } => signature.is_some(),
+        ContentBlock::RedactedThinking { .. } => true,
+        _ => false,
+    };
+    if !carries_opaque_data {
+        return true;
+    }
+    match minting_provider {
+        // Known provenance: opaque data is only valid against its minter.
+        // Exact match is the safe rule — stripping on a mismatch only loses
+        // cache/reasoning continuity (already lost on a provider switch),
+        // whereas keeping a foreign block hard-fails the request.
+        Some(p) => p == active_provider,
+        // Unknown provenance (legacy messages): fall back to the one signal
+        // readable off the wire. OpenRouter tags relayed reasoning with an
+        // `openrouter.reasoning:` prefix; that envelope is OpenRouter-only.
+        // Other legacy opaque blocks are kept, to avoid busting working
+        // same-provider histories that predate provenance tracking.
+        None => match block {
+            ContentBlock::RedactedThinking { data }
+                if data.starts_with("openrouter.reasoning:") =>
+            {
+                active_provider.contains("openrouter")
+            }
+            _ => true,
+        },
+    }
+}
+
 /// Apply [`strip_thinking_from_assistant_history`] when the user has opted
 /// out of preserving prior-turn thinking AND the provider does not require
 /// `reasoning_content` to be replayed (DeepSeek V3.1+, Moonshot
@@ -528,5 +576,97 @@ mod tests {
             },
         ];
         assert!(extract_tool_uses(&blocks).is_empty());
+    }
+
+    // ── thinking_block_portable_to ────────────────────────────────────
+
+    #[test]
+    fn portable_non_thinking_blocks_always_portable() {
+        // Text / tool blocks carry no provider-bound data.
+        let text = ContentBlock::Text { text: "hi".into() };
+        assert!(thinking_block_portable_to(
+            &text,
+            Some("openrouter-anthropic"),
+            "anthropic"
+        ));
+    }
+
+    #[test]
+    fn portable_unsigned_thinking_is_portable() {
+        // No signature → no opaque data to reject.
+        let block = ContentBlock::Thinking {
+            thinking: "t".into(),
+            signature: None,
+        };
+        assert!(thinking_block_portable_to(
+            &block,
+            Some("openrouter-anthropic"),
+            "anthropic"
+        ));
+    }
+
+    #[test]
+    fn portable_known_provenance_same_provider_kept() {
+        let signed = ContentBlock::Thinking {
+            thinking: "t".into(),
+            signature: Some("sig".into()),
+        };
+        let redacted = ContentBlock::RedactedThinking { data: "enc".into() };
+        assert!(thinking_block_portable_to(
+            &signed,
+            Some("anthropic"),
+            "anthropic"
+        ));
+        assert!(thinking_block_portable_to(
+            &redacted,
+            Some("anthropic"),
+            "anthropic"
+        ));
+    }
+
+    #[test]
+    fn portable_known_provenance_cross_provider_stripped() {
+        // Signed thinking and redacted blobs minted elsewhere must drop.
+        let signed = ContentBlock::Thinking {
+            thinking: "t".into(),
+            signature: Some("sig".into()),
+        };
+        let redacted = ContentBlock::RedactedThinking { data: "enc".into() };
+        assert!(!thinking_block_portable_to(
+            &signed,
+            Some("openrouter-anthropic"),
+            "anthropic"
+        ));
+        assert!(!thinking_block_portable_to(
+            &redacted,
+            Some("openrouter-anthropic"),
+            "anthropic"
+        ));
+    }
+
+    #[test]
+    fn portable_unknown_provenance_openrouter_prefix_stripped_for_anthropic() {
+        // The exact failure mode: an `openrouter.reasoning:`-prefixed blob from
+        // a pre-provenance OpenRouter turn, replayed to Anthropic direct.
+        let block = ContentBlock::RedactedThinking {
+            data: "openrouter.reasoning: signed payload".into(),
+        };
+        assert!(!thinking_block_portable_to(&block, None, "anthropic"));
+        // …but kept when the active provider is still OpenRouter.
+        assert!(thinking_block_portable_to(
+            &block,
+            None,
+            "openrouter-anthropic"
+        ));
+    }
+
+    #[test]
+    fn portable_unknown_provenance_plain_blob_kept() {
+        // Legacy same-provider blob without the OpenRouter envelope: keep, so
+        // we don't bust working histories that predate provenance tracking.
+        let block = ContentBlock::RedactedThinking {
+            data: "opaque-anthropic-blob".into(),
+        };
+        assert!(thinking_block_portable_to(&block, None, "anthropic"));
     }
 }
