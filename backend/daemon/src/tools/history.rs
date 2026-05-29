@@ -475,9 +475,13 @@ pub async fn handle_search_history(
     );
 
     // Keyword queries rank by relevance blended with recency; time-range-only
-    // queries keep their chronological (oldest-first) reading order.
+    // queries are returned oldest-first. The stable sort keeps storage order on
+    // ties and corrects cases where an alternative's timestamp diverges from its
+    // parent message's position in the transcript.
     if matcher.is_some() {
         rank_candidates(&mut candidates);
+    } else {
+        candidates.sort_by_key(|candidate| candidate.parsed_ts);
     }
     candidates.truncate(max_results);
 
@@ -796,6 +800,75 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["source"], "active:alt:1");
         assert_eq!(hits[0]["timestamp"], "2026-05-13T09:30:00+10:00");
+    }
+
+    #[tokio::test]
+    async fn search_history_time_range_only_sorts_by_timestamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let character_dir = tmp.path();
+
+        // Message "first" (09:00) carries a regenerated alternative timestamped
+        // LATER (11:00) than the following message "second" (10:00). In storage
+        // order the alternative is emitted right after its parent, so without an
+        // explicit sort the results would be 09:00, 11:00, 10:00.
+        let mut first = msg_at(
+            "first",
+            Role::Assistant,
+            "First message.",
+            "2026-05-13T09:00:00+10:00",
+        );
+        first.alt_index = Some(0);
+        first.alt_count = Some(2);
+        first.alternatives = vec![
+            MessageAlternative {
+                content: first.content.clone(),
+                images: vec![],
+                content_blocks: first.content_blocks.clone(),
+                timestamp: first.timestamp.clone(),
+            },
+            MessageAlternative {
+                content: "Regenerated reply.".to_string(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "Regenerated reply.".to_string(),
+                }],
+                timestamp: "2026-05-13T11:00:00+10:00".to_string(),
+            },
+        ];
+        let second = msg_at(
+            "second",
+            Role::User,
+            "Second message.",
+            "2026-05-13T10:00:00+10:00",
+        );
+        write_active(character_dir, &[first, second]);
+
+        let ctx = TestToolContext::new().with_character_data_dir(character_dir.to_str().unwrap());
+        let result = handle_search_history(
+            json!({
+                "start_time": "2026-05-13T09:00:00+10:00",
+                "end_time": "2026-05-13T11:00:00+10:00"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let order: Vec<&str> = result["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["timestamp"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                "2026-05-13T09:00:00+10:00",
+                "2026-05-13T10:00:00+10:00",
+                "2026-05-13T11:00:00+10:00",
+            ],
+            "time-range-only results must be oldest-first across divergent alternative timestamps"
+        );
     }
 
     #[tokio::test]
