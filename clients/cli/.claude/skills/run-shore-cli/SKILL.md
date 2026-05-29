@@ -45,26 +45,27 @@ cargo build -p shore-cli            # produces target/debug/shore
 ```
 
 Each preview renders a representative assistant turn with **interleaved
-thinking** (thinking → text → tool call → thinking → text) through the real
-`render_message_content` (log) and `print_chunk_to` (stream) functions, with
-color ON, and prints the raw bytes so your terminal colorizes them. Thinking is
-dim grey, tool labels are yellow, and a `---` separator straddles every
-thinking/non-thinking boundary.
+thinking** (thinking → text → tool call → redacted_thinking → thinking → text)
+through the real `render_message_content` (log) and `print_chunk_to` (stream)
+functions, with color ON, and prints the raw bytes so your terminal colorizes
+them. Thinking is dim grey with a `│` left-gutter bar, tool labels are yellow,
+a blank line of breathing room straddles each thinking section, and
+`redacted_thinking` blocks are hidden.
 
 Expected shape (log path):
 
 ```
-<dim>Let me reason about this first.
-The user asked about X, so I should check Y.</dim>
-<dim>---</dim>
+<dim>  │ Let me reason about this first.
+  │ The user asked about X, so I should check Y.</dim>
+
 Here's the first part of my answer.
 <yellow>[tool: read_file]</yellow>
   path: src/main.rs
 <dim>[result]</dim>
   fn main() { ... }
-<dim>---</dim>
-<dim>Now that I've read the file, I can refine my answer.</dim>
-<dim>---</dim>
+
+<dim>  │ Now that I've read the file, I can refine my answer.</dim>
+
 And here's the refined conclusion.
 ```
 
@@ -95,11 +96,11 @@ The recipe for any in-crate visual preview:
 ## Test (assertions)
 
 The behavior is pinned by ordinary (non-ignored) tests in the same modules
-(`interleaved_thinking_separators_both_directions`,
-`streaming_interleaved_thinking_separated_both_directions`, …):
+(`interleaved_thinking_gutter_both_directions`,
+`streaming_interleaved_thinking_gutter_both_directions`, `redacted_thinking_is_hidden`, …):
 
 ```bash
-cargo test -p shore-cli output::      # 54 pass, 2 ignored (the previews)
+cargo test -p shore-cli output::      # 57 pass, 2 ignored (the previews)
 ```
 
 ## Run (human path) — the real CLI
@@ -118,7 +119,7 @@ Use the preview path above instead when you only need to see how output looks.
 
 - **`--test-threads=1` is mandatory for previews.** `COLOR_ENABLED` and the
   streaming `CHUNK_STATE` are process globals; parallel tests race on them and
-  you'll get bleed-through (a separator or color from another test) or a
+  you'll get bleed-through (a stray gutter or color from another test) or a
   garbled buffer. The driver already sets this.
 - **Color must be toggled back off after rendering.** The global stays set for
   the rest of the process; the preview tests flip it back to `false` so they
@@ -127,10 +128,10 @@ Use the preview path above instead when you only need to see how output looks.
   but are skipped by default — that's why a normal `output::` run reports
   `2 ignored`. Don't "clean them up."
 - **Two render paths, different rules.** The colored transcript
-  (`render_message_content`) inserts `---` on every thinking↔non-thinking
-  boundary; the `--plain` path (`print_log_plain`) instead prefixes each
-  thinking block with `[thinking]` and uses no separators. Preview the one your
-  change touches.
+  (`render_message_content`) gutter-bars thinking with a dim `│` and blank-line
+  breathing room; the `--plain` path (`print_log_plain`) instead prefixes each
+  thinking line with `[thinking]` and uses no box-drawing. Both hide
+  `redacted_thinking`. Preview the one your change touches.
 - **No `lib` target.** You cannot add an `examples/preview.rs` that imports
   `output::…` — the symbols aren't exported. The in-crate test is the only
   handle on these private renderers.

@@ -12,30 +12,50 @@ use shore_protocol::types::ImageRef;
 use super::{abbreviate_model, use_color, MAX_TOOL_OUTPUT};
 use crate::images;
 
+/// Left-gutter prefix for streamed thinking lines (matches the transcript
+/// renderer's `write_thinking_gutter`). Printed regardless of color so thinking
+/// stays distinguishable in no-color terminals.
+const THINKING_GUTTER: &str = "  \u{2502} ";
+
 /// Running state for the chunk stream, tracking transitions between thinking
-/// and non-thinking content so separators land on every boundary.
-#[derive(Default)]
+/// and non-thinking content so breathing room and the thinking gutter land
+/// correctly across chunk boundaries.
 struct ChunkState {
     /// Whether the previous chunk was thinking content.
     was_thinking: bool,
-    /// Whether any chunk has been printed yet (the first chunk never gets a
-    /// leading separator).
+    /// Whether any chunk has been printed yet (the first chunk never gets
+    /// leading breathing room).
     has_emitted: bool,
+    /// Whether the cursor is at the start of a line, so the next thinking
+    /// character knows to emit the gutter prefix first.
+    at_line_start: bool,
 }
 
-static CHUNK_STATE: Mutex<ChunkState> = Mutex::new(ChunkState {
-    was_thinking: false,
-    has_emitted: false,
-});
+impl ChunkState {
+    /// Initial state: nothing emitted, and the cursor sits at column 0 (the
+    /// assistant header line ends with a newline before streaming begins).
+    const INITIAL: Self = Self {
+        was_thinking: false,
+        has_emitted: false,
+        at_line_start: true,
+    };
+}
+
+impl Default for ChunkState {
+    fn default() -> Self {
+        Self::INITIAL
+    }
+}
+
+static CHUNK_STATE: Mutex<ChunkState> = Mutex::new(ChunkState::INITIAL);
 
 /// Reset stream chunk state (call at the start of each new stream).
 pub fn reset_chunk_state() {
-    *CHUNK_STATE.lock().unwrap() = ChunkState::default();
+    *CHUNK_STATE.lock().unwrap() = ChunkState::INITIAL;
 }
 
-/// Print a stream chunk to stdout. Thinking chunks are shown dimmed.
-/// A separator is printed when transitioning between thinking and text so
-/// interleaved thinking reads as distinct sections.
+/// Print a stream chunk to stdout. Thinking is shown dimmed and gutter-barred,
+/// with a blank line of breathing room straddling each thinking/text boundary.
 pub fn print_chunk(chunk: &StreamChunk) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -44,8 +64,9 @@ pub fn print_chunk(chunk: &StreamChunk) {
     let _ = out.flush();
 }
 
-/// Render a single chunk to `out`, inserting a separator on any transition
-/// between thinking and non-thinking content (in both directions).
+/// Render a single chunk to `out`. Thinking chunks are dimmed and each thinking
+/// line is prefixed with the gutter bar; transitions between thinking and
+/// non-thinking get a blank line of breathing room.
 fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamChunk) {
     let is_thinking = chunk.content_type == "thinking";
     let had_output = state.has_emitted;
@@ -53,28 +74,46 @@ fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamCh
     state.has_emitted = true;
     state.was_thinking = is_thinking;
 
-    // Separate thinking from non-thinking in BOTH directions. Chunks are
-    // written without trailing newlines, so without this a thinking block that
-    // follows text would be glued onto the end of the previous line.
+    // Breathing room on any transition between thinking and non-thinking.
     if had_output && prev_thinking != is_thinking {
-        let _ = writeln!(out);
-        if use_color() {
-            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-            let _ = write!(out, "---");
-            let _ = crossterm::execute!(out, ResetColor);
-        } else {
-            let _ = write!(out, "---");
+        if !state.at_line_start {
+            let _ = writeln!(out); // close the open content line first
         }
-        let _ = writeln!(out);
-        let _ = writeln!(out); // breathing room around the transition
+        let _ = writeln!(out); // one blank line between sections
+        state.at_line_start = true;
     }
 
-    if is_thinking && use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-        let _ = write!(out, "{}", chunk.text);
-        let _ = crossterm::execute!(out, ResetColor);
+    if chunk.text.is_empty() {
+        return;
+    }
+
+    if is_thinking {
+        write_thinking_chunk(out, state, &chunk.text);
     } else {
         let _ = write!(out, "{}", chunk.text);
+        state.at_line_start = chunk.text.ends_with('\n');
+    }
+}
+
+/// Write a thinking chunk dimmed, emitting the gutter prefix at the start of
+/// each line. Tracks `at_line_start` across chunks so a thinking block split
+/// over several chunks is gutter-barred correctly.
+fn write_thinking_chunk(out: &mut impl Write, state: &mut ChunkState, text: &str) {
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+    }
+    for ch in text.chars() {
+        if state.at_line_start {
+            let _ = write!(out, "{THINKING_GUTTER}");
+            state.at_line_start = false;
+        }
+        let _ = write!(out, "{ch}");
+        if ch == '\n' {
+            state.at_line_start = true;
+        }
+    }
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -367,11 +406,13 @@ mod tests {
             let mut s = CHUNK_STATE.lock().unwrap();
             s.was_thinking = true;
             s.has_emitted = true;
+            s.at_line_start = false;
         }
         reset_chunk_state();
         let s = CHUNK_STATE.lock().unwrap();
         assert!(!s.was_thinking);
         assert!(!s.has_emitted);
+        assert!(s.at_line_start);
     }
 
     fn chunk(content_type: &str, text: &str) -> StreamChunk {
@@ -416,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_interleaved_thinking_separated_both_directions() {
+    fn streaming_interleaved_thinking_gutter_both_directions() {
         set_color_enabled(false);
         let mut state = ChunkState::default();
         let mut buf = Vec::new();
@@ -427,9 +468,23 @@ mod tests {
         print_chunk_to(&mut buf, &mut state, &chunk("text", "A2"));
         let output = String::from_utf8(buf).unwrap();
 
-        // No leading separator; a separator straddles every transition so the
-        // second thinking block is not glued onto the end of the first answer.
-        assert_eq!(output, "T1\n---\n\nA1\n---\n\nT2\n---\n\nA2");
+        // Thinking is gutter-barred; a blank line of breathing room straddles
+        // every transition so the second thinking block is not glued onto the
+        // end of the first answer.
+        assert_eq!(output, "  \u{2502} T1\n\nA1\n\n  \u{2502} T2\n\nA2");
+    }
+
+    #[test]
+    fn streaming_thinking_gutter_spans_chunk_boundaries() {
+        set_color_enabled(false);
+        let mut state = ChunkState::default();
+        let mut buf = Vec::new();
+        // A newline lands mid-chunk; the next line must still get a gutter, and
+        // a chunk that resumes the same line must NOT add a second gutter.
+        print_chunk_to(&mut buf, &mut state, &chunk("thinking", "line one\nli"));
+        print_chunk_to(&mut buf, &mut state, &chunk("thinking", "ne two"));
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "  \u{2502} line one\n  \u{2502} line two");
     }
 
     #[test]

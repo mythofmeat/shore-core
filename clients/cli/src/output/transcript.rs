@@ -111,6 +111,27 @@ fn count_user_turn_values(messages: &[serde_json::Value]) -> usize {
         .count()
 }
 
+/// Render a thinking block as a dim, left-gutter-barred section.
+///
+/// The `│` gutter is printed regardless of color so thinking stays
+/// distinguishable from the response in no-color terminals; the dim styling is
+/// applied only when color is enabled.
+fn write_thinking_gutter(out: &mut impl Write, thinking: &str) {
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+    }
+    for line in thinking.lines() {
+        if line.is_empty() {
+            let _ = writeln!(out, "  \u{2502}");
+        } else {
+            let _ = writeln!(out, "  \u{2502} {line}");
+        }
+    }
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+}
+
 /// Render the content of a single message: content blocks if present, plain text fallback otherwise.
 fn render_message_content(
     out: &mut impl Write,
@@ -120,34 +141,30 @@ fn render_message_content(
 ) {
     if let Some(blocks) = content_blocks {
         if !blocks.is_empty() {
-            // Track the thinking-ness of the previously rendered block so we can
-            // insert a separator on any transition between thinking and
-            // non-thinking content (in both directions). Only blocks that
-            // actually render update this, so empty blocks never leave a
-            // dangling separator.
+            // Track the thinking-ness of the previously rendered block so a
+            // blank line of breathing room straddles each transition between a
+            // thinking section and the surrounding content. Only blocks that
+            // actually render update this, so empty/hidden blocks never leave a
+            // dangling gap. `redacted_thinking` is intentionally not shown.
             let mut prev_thinkish: Option<bool> = None;
             for block in blocks {
                 let block_type = block["type"].as_str().unwrap_or("text");
-                let thinkish = matches!(block_type, "thinking" | "redacted_thinking");
+                let thinkish = block_type == "thinking";
                 // Whether this block will actually emit any visible output.
                 let renders = match block_type {
                     "text" => !block["text"].as_str().unwrap_or("").is_empty(),
                     "thinking" => !block["thinking"].as_str().unwrap_or("").is_empty(),
-                    "redacted_thinking" | "tool_use" | "tool_result" => true,
+                    "tool_use" | "tool_result" => true,
+                    // redacted_thinking is a content-free placeholder — hide it.
                     _ => false,
                 };
                 if !renders {
                     continue;
                 }
-                // Insert separator when crossing the thinking / non-thinking boundary.
+                // Blank line of breathing room when crossing into or out of a
+                // thinking section.
                 if prev_thinkish.is_some_and(|prev| prev != thinkish) {
-                    if use_color() {
-                        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                    }
-                    let _ = writeln!(out, "---");
-                    if use_color() {
-                        let _ = crossterm::execute!(out, ResetColor);
-                    }
+                    let _ = writeln!(out);
                 }
                 prev_thinkish = Some(thinkish);
                 match block_type {
@@ -160,23 +177,7 @@ fn render_message_content(
                     "thinking" => {
                         let thinking = block["thinking"].as_str().unwrap_or("");
                         if !thinking.is_empty() {
-                            if use_color() {
-                                let _ =
-                                    crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                            }
-                            let _ = writeln!(out, "{thinking}");
-                            if use_color() {
-                                let _ = crossterm::execute!(out, ResetColor);
-                            }
-                        }
-                    }
-                    "redacted_thinking" => {
-                        if use_color() {
-                            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                        }
-                        let _ = writeln!(out, "[redacted thinking]");
-                        if use_color() {
-                            let _ = crossterm::execute!(out, ResetColor);
+                            write_thinking_gutter(out, thinking);
                         }
                     }
                     "tool_use" => {
@@ -420,9 +421,7 @@ pub fn print_log_plain_with_boundary(
                                 let _ = writeln!(out, "[thinking] {t}");
                             }
                         }
-                        "redacted_thinking" => {
-                            let _ = writeln!(out, "[redacted thinking]");
-                        }
+                        // redacted_thinking is a content-free placeholder — hide it.
                         "tool_use" => {
                             let name = block["name"].as_str().unwrap_or("?");
                             let _ = writeln!(out, "[tool: {name}]");
@@ -589,6 +588,9 @@ mod tests {
             serde_json::json!({"type": "text", "text": "Here's the first part of my answer."}),
             serde_json::json!({"type": "tool_use", "name": "read_file", "input": {"path": "src/main.rs"}}),
             serde_json::json!({"type": "tool_result", "content": "fn main() { ... }", "is_error": false}),
+            // redacted_thinking is hidden — should produce no output and not
+            // disturb the breathing room around the real thinking block.
+            serde_json::json!({"type": "redacted_thinking", "data": "AAAA"}),
             serde_json::json!({"type": "thinking", "thinking": "Now that I've read the file, I can refine my answer."}),
             serde_json::json!({"type": "text", "text": "And here's the refined conclusion."}),
         ];
@@ -603,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn interleaved_thinking_separators_both_directions() {
+    fn interleaved_thinking_gutter_both_directions() {
         set_color_enabled(false);
         let blocks = vec![
             serde_json::json!({"type": "thinking", "thinking": "T1"}),
@@ -615,13 +617,24 @@ mod tests {
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
 
-        // Order preserved AND a separator straddles every thinking/text boundary
-        // (text -> thinking included), so thinking reads as distinct sections.
-        assert_eq!(output, "T1\n---\nA1\n---\nT2\n---\nA2\n");
+        // Order preserved; thinking is gutter-barred, with a blank line of
+        // breathing room straddling each thinking/text boundary.
+        assert_eq!(output, "  \u{2502} T1\n\nA1\n\n  \u{2502} T2\n\nA2\n");
     }
 
     #[test]
-    fn no_separator_before_first_thinking_block() {
+    fn thinking_gutter_prefixes_every_line() {
+        set_color_enabled(false);
+        let blocks =
+            vec![serde_json::json!({"type": "thinking", "thinking": "line one\nline two"})];
+        let mut buf = Vec::new();
+        render_message_content(&mut buf, Some(&blocks), "", false);
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "  \u{2502} line one\n  \u{2502} line two\n");
+    }
+
+    #[test]
+    fn no_breathing_room_before_first_thinking_block() {
         set_color_enabled(false);
         let blocks = vec![
             serde_json::json!({"type": "thinking", "thinking": "T1"}),
@@ -630,22 +643,38 @@ mod tests {
         let mut buf = Vec::new();
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "T1\n---\nA1\n");
+        assert_eq!(output, "  \u{2502} T1\n\nA1\n");
     }
 
     #[test]
-    fn empty_blocks_do_not_emit_dangling_separator() {
+    fn empty_blocks_do_not_emit_dangling_breathing_room() {
         set_color_enabled(false);
         let blocks = vec![
             serde_json::json!({"type": "thinking", "thinking": "T1"}),
-            // Empty text block must not trigger a separator on its own.
+            // Empty text block must not trigger breathing room on its own.
             serde_json::json!({"type": "text", "text": ""}),
             serde_json::json!({"type": "thinking", "thinking": "T2"}),
         ];
         let mut buf = Vec::new();
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "T1\nT2\n");
+        // Two consecutive thinking blocks form one section: no blank between.
+        assert_eq!(output, "  \u{2502} T1\n  \u{2502} T2\n");
+    }
+
+    #[test]
+    fn redacted_thinking_is_hidden() {
+        set_color_enabled(false);
+        let blocks = vec![
+            serde_json::json!({"type": "text", "text": "A1"}),
+            serde_json::json!({"type": "redacted_thinking", "data": "AAAA"}),
+            serde_json::json!({"type": "text", "text": "A2"}),
+        ];
+        let mut buf = Vec::new();
+        render_message_content(&mut buf, Some(&blocks), "", false);
+        let output = String::from_utf8(buf).unwrap();
+        // Redacted block produces nothing and leaves no breathing room.
+        assert_eq!(output, "A1\nA2\n");
     }
 
     #[test]
