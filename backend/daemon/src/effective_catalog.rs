@@ -290,10 +290,10 @@ fn build_resolved_from_discovered(
         .and_then(|v| u32::try_from(v).ok())
         .or(provider_defaults.max_context_tokens);
 
-    let max_tokens = disc
+    let max_output_tokens = disc
         .max_output_tokens
         .and_then(|v| u32::try_from(v).ok())
-        .or(provider_defaults.max_tokens);
+        .or(provider_defaults.max_output_tokens);
 
     let qualified_name = format!("chat.{provider_key}.{}", disc.model_id);
 
@@ -302,7 +302,7 @@ fn build_resolved_from_discovered(
         api_key_env: None,
         base_url,
         max_context_tokens,
-        max_tokens,
+        max_output_tokens,
         temperature: provider_defaults.temperature,
         top_p: None,
         reasoning_effort: None,
@@ -556,7 +556,7 @@ base_url = "https://openrouter.ai/api/v1"
 [chat.openrouter.sonnet]
 model_id = "anthropic/claude-sonnet-4.5"
 cache_ttl = "1h"
-max_tokens = 16384
+max_output_tokens = 16384
 "#,
         );
         write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
@@ -565,7 +565,7 @@ max_tokens = 16384
         let m = find_effective_model(&loaded, tmp.path(), "sonnet", false).unwrap();
         assert_eq!(m.qualified_name, "chat.openrouter.sonnet");
         assert_eq!(m.cache_ttl.as_deref(), Some("1h"));
-        assert_eq!(m.max_tokens, Some(16384));
+        assert_eq!(m.max_output_tokens, Some(16384));
     }
 
     #[test]
@@ -585,7 +585,7 @@ base_url = "https://openrouter.ai/api/v1"
 [chat.openrouter.sonnet]
 model_id = "anthropic/claude-sonnet-4.5"
 cache_ttl = "1h"
-max_tokens = 16384
+max_output_tokens = 16384
 "#,
         );
         write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
@@ -596,7 +596,7 @@ max_tokens = 16384
         assert_eq!(m.name, "sonnet");
         assert_eq!(m.qualified_name, "chat.openrouter.sonnet");
         assert_eq!(m.cache_ttl.as_deref(), Some("1h"));
-        assert_eq!(m.max_tokens, Some(16384));
+        assert_eq!(m.max_output_tokens, Some(16384));
     }
 
     #[test]

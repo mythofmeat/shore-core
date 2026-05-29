@@ -467,7 +467,7 @@ mod tests {
                 sdk: Some(Sdk::Anthropic),
                 api_key_env: Some(api_key_env.to_string()),
                 base_url: Some("http://compaction.example".to_string()),
-                max_tokens: Some(777),
+                max_output_tokens: Some(777),
                 temperature: Some(0.25),
                 reasoning_effort: Some("medium".to_string()),
                 ..Default::default()
@@ -487,7 +487,7 @@ mod tests {
                 sdk: Some(Sdk::Openai),
                 api_key_env: Some(api_key_env.to_string()),
                 base_url: Some("http://compaction-openai.example".to_string()),
-                max_tokens: Some(777),
+                max_output_tokens: Some(777),
                 ..Default::default()
             },
         )
@@ -604,7 +604,7 @@ mod tests {
     }
 
     /// Regression pin: every byte that contributes to Anthropic's cache-prefix
-    /// hash (system, tools, first N messages, max_tokens-style sampler config
+    /// hash (system, tools, first N messages, max_output_tokens-style sampler config
     /// when emitted in the body) must match between the chat request that
     /// seeded the cache and the compaction request the daemon issues moments
     /// later. If a future refactor changes any of these, this test fails
@@ -811,7 +811,7 @@ mod tests {
                 sdk: Some(Sdk::Anthropic),
                 api_key_env: Some(api_key_env.clone()),
                 base_url: Some(mock.base_url()),
-                max_tokens: Some(1024),
+                max_output_tokens: Some(1024),
                 cache_ttl: Some("1h".into()),
                 ..Default::default()
             },

@@ -7,6 +7,17 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+- Renamed the model-config key `max_tokens` to `max_output_tokens` to disambiguate
+  it from `max_context_tokens` (the context-window size) and to match the
+  discovery field of the same name. This is the output-token budget per response.
+  The change applies everywhere the key is user-facing: provider/model TOML
+  sections, the `set_model_setting` key, and the `shore state models` /
+  provider-catalog JSON output (the `static` entry's field is now
+  `max_output_tokens`). No backward-compatible alias is kept — configs and any
+  persisted per-character settings using `max_tokens` must be updated. The
+  Anthropic wire field (`max_tokens` on the request body) is unchanged.
+
 ### Removed
 - `clients/gui-godot/` moved to its own repository at
   [mythofmeat/shore-gui-godot](https://github.com/mythofmeat/shore-gui-godot).

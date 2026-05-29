@@ -270,7 +270,7 @@ impl LlmClient {
             messages,
             system,
             tools,
-            max_tokens: model.max_tokens.unwrap_or(4096),
+            max_tokens: model.max_output_tokens.unwrap_or(4096),
             temperature: model.temperature,
             top_p: model.top_p,
             provider_options,
@@ -441,7 +441,7 @@ mod tests {
             api_key_env: None,
             base_url: None,
             max_context_tokens: None,
-            max_tokens: None,
+            max_output_tokens: None,
             temperature: None,
             top_p: None,
             reasoning_effort: None,
@@ -465,7 +465,7 @@ mod tests {
         std::env::set_var("TEST_API_KEY_015", "sk-test-key");
 
         let mut model = test_model("test-model", "anthropic", Sdk::Anthropic);
-        model.max_tokens = Some(2048);
+        model.max_output_tokens = Some(2048);
         model.temperature = Some(0.5);
         model.api_key_env = Some("TEST_API_KEY_015".into());
 

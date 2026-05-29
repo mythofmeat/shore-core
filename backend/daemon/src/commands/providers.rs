@@ -358,7 +358,7 @@ pub fn list_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult
                 "qualified_name": m.qualified_name,
                 "model_id": m.model_id,
                 "sdk": m.sdk.as_str(),
-                "max_tokens": m.max_tokens,
+                "max_output_tokens": m.max_output_tokens,
             })
         })
         .collect();
@@ -610,6 +610,16 @@ model_id = "kimi-k2"
         assert_eq!(out["discovered"].as_array().unwrap().len(), 1);
         assert_eq!(out["static"].as_array().unwrap().len(), 1);
         assert_eq!(out["static"][0]["model_id"], "kimi-k2");
+        // Contract: static entries expose the renamed output-budget key and
+        // never the old `max_tokens` (renamed; no backward-compatible alias).
+        assert!(
+            out["static"][0].get("max_output_tokens").is_some(),
+            "static model JSON must expose `max_output_tokens`"
+        );
+        assert!(
+            out["static"][0].get("max_tokens").is_none(),
+            "static model JSON must not expose the old `max_tokens` key"
+        );
         assert_eq!(
             out["discovered"][0]["model_id"],
             "anthropic/claude-3.5-sonnet"

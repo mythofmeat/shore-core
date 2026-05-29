@@ -857,7 +857,7 @@ fn mock_model_catalog(base_url: &str) -> shore_config::models::ModelCatalog {
         api_key_env: None,
         base_url: Some(base_url.to_string()),
         max_context_tokens: None,
-        max_tokens: Some(4096),
+        max_output_tokens: Some(4096),
         temperature: Some(0.7),
         top_p: None,
         reasoning_effort: None,

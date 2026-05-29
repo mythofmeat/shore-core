@@ -561,8 +561,8 @@ fn print_model_info(data: &serde_json::Value) {
     if let Some(re) = data["reasoning_effort"].as_str() {
         write_row(&mut out, "Reasoning", re);
     }
-    if let Some(mt) = data["max_tokens"].as_u64() {
-        write_row(&mut out, "Max tokens", &mt.to_string());
+    if let Some(mt) = data["max_output_tokens"].as_u64() {
+        write_row(&mut out, "Max output tokens", &mt.to_string());
     }
     let _ = writeln!(out);
 }
@@ -584,7 +584,7 @@ fn print_model_settings(data: &serde_json::Value) {
         "reasoning_effort",
         "thinking_enabled",
         "budget_tokens",
-        "max_tokens",
+        "max_output_tokens",
         "cache_ttl",
         "sdk",
     ];

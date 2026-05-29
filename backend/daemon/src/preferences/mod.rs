@@ -88,7 +88,7 @@ pub struct SamplerSettings {
     /// Token budget for extended thinking / reasoning. Mirrors
     /// `ResolvedModel.budget_tokens` in the static catalog.
     pub budget_tokens: Option<u32>,
-    pub max_tokens: Option<u32>,
+    pub max_output_tokens: Option<u32>,
     pub cache_ttl: Option<String>,
     /// Wire SDK override (`"anthropic" | "openai" | "gemini" | "zai"`).
     /// `None` means inherit from the static catalog or provider registry.
@@ -114,7 +114,7 @@ impl SamplerSettings {
         merge!(reasoning_effort);
         merge!(thinking_enabled);
         merge!(budget_tokens);
-        merge!(max_tokens);
+        merge!(max_output_tokens);
         merge!(cache_ttl);
         merge!(sdk);
     }
@@ -126,7 +126,7 @@ impl SamplerSettings {
             && self.reasoning_effort.is_none()
             && self.thinking_enabled.is_none()
             && self.budget_tokens.is_none()
-            && self.max_tokens.is_none()
+            && self.max_output_tokens.is_none()
             && self.cache_ttl.is_none()
             && self.sdk.is_none()
     }
@@ -141,7 +141,7 @@ impl SamplerSettings {
             reasoning_effort: model.reasoning_effort.clone(),
             thinking_enabled: None,
             budget_tokens: model.budget_tokens,
-            max_tokens: model.max_tokens,
+            max_output_tokens: model.max_output_tokens,
             cache_ttl: model.cache_ttl.clone(),
             sdk: Some(model.sdk.as_str().to_string()),
         }
@@ -415,7 +415,7 @@ pub struct SamplerScopes {
     pub reasoning_effort: Option<PreferenceScope>,
     pub thinking_enabled: Option<PreferenceScope>,
     pub budget_tokens: Option<PreferenceScope>,
-    pub max_tokens: Option<PreferenceScope>,
+    pub max_output_tokens: Option<PreferenceScope>,
     pub cache_ttl: Option<PreferenceScope>,
     pub sdk: Option<PreferenceScope>,
 }
@@ -441,7 +441,7 @@ pub fn resolve_sampler_scopes(
         note!(reasoning_effort);
         note!(thinking_enabled);
         note!(budget_tokens);
-        note!(max_tokens);
+        note!(max_output_tokens);
         note!(cache_ttl);
         note!(sdk);
     };
@@ -665,8 +665,8 @@ pub fn apply_sampler_overlay(
     if let Some(b) = overlay.budget_tokens {
         patched.budget_tokens = Some(b);
     }
-    if let Some(m) = overlay.max_tokens {
-        patched.max_tokens = Some(m);
+    if let Some(m) = overlay.max_output_tokens {
+        patched.max_output_tokens = Some(m);
     }
     if let Some(ref c) = overlay.cache_ttl {
         patched.cache_ttl = Some(c.clone());
@@ -723,7 +723,7 @@ pub fn overlay_for_character(
 }
 
 /// Resolve the model to use for a background task, with per-character
-/// preference overlay (max_tokens, reasoning_effort, etc.) already
+/// preference overlay (max_output_tokens, reasoning_effort, etc.) already
 /// applied.
 ///
 /// Resolution chain:
@@ -747,7 +747,7 @@ pub fn overlay_for_character(
 /// `/compact`, background compaction, dreaming, heartbeat override)
 /// re-implemented the chain and either forgot the overlay or copy-pasted
 /// it inconsistently. The missing overlay silently dropped
-/// per-character `max_tokens`, capping responses at 4096 tokens and
+/// per-character `max_output_tokens`, capping responses at 4096 tokens and
 /// truncating compaction XML mid-`<write>`. See commit `1b4fc03`.
 pub fn resolve_background_model(
     config: &shore_config::LoadedConfig,
@@ -1006,7 +1006,7 @@ typo_setting = "x"
                     reasoning_effort: Some("high".into()),
                     thinking_enabled: Some(true),
                     budget_tokens: Some(8192),
-                    max_tokens: Some(4096),
+                    max_output_tokens: Some(4096),
                     cache_ttl: Some("5m".into()),
                     sdk: Some("anthropic".into()),
                 },
@@ -1140,7 +1140,7 @@ typo_setting = "x"
         let mut g = ModelPreferences::default();
         g.defaults.sampler.temperature = Some(0.1);
         g.defaults.sampler.top_p = Some(0.10);
-        g.defaults.sampler.max_tokens = Some(100);
+        g.defaults.sampler.max_output_tokens = Some(100);
         g.defaults.sampler.budget_tokens = Some(1000);
         g.set_model(
             "anthropic",
@@ -1156,7 +1156,7 @@ typo_setting = "x"
 
         let mut c = ModelPreferences::default();
         c.defaults.sampler.top_p = Some(0.30);
-        c.defaults.sampler.max_tokens = Some(200);
+        c.defaults.sampler.max_output_tokens = Some(200);
         c.set_model(
             "anthropic",
             "opus",
@@ -1172,7 +1172,7 @@ typo_setting = "x"
         assert_eq!(s.temperature, Some(0.4), "char per-model wins");
         assert_eq!(s.top_p, Some(0.20), "global per-model beats char defaults");
         assert_eq!(
-            s.max_tokens,
+            s.max_output_tokens,
             Some(200),
             "char defaults beat global defaults"
         );
@@ -1181,21 +1181,21 @@ typo_setting = "x"
 
     #[test]
     fn resolve_sampler_static_default_is_bottom_layer() {
-        // Catalog has cache_ttl + max_tokens; preferences have neither.
+        // Catalog has cache_ttl + max_output_tokens; preferences have neither.
         // Display path should surface the catalog values.
         let catalog = make_catalog(
             r#"
 [chat.anthropic.opus]
 model_id = "claude-opus-4-6"
 cache_ttl = "1h"
-max_tokens = 8192
+max_output_tokens = 8192
 "#,
         );
         let model = catalog.find_model("opus").unwrap();
         let g = ModelPreferences::default();
         let s = resolve_sampler_settings(&g, None, "anthropic", "claude-opus-4-6", Some(model));
         assert_eq!(s.cache_ttl.as_deref(), Some("1h"));
-        assert_eq!(s.max_tokens, Some(8192));
+        assert_eq!(s.max_output_tokens, Some(8192));
     }
 
     #[test]
@@ -1207,7 +1207,7 @@ max_tokens = 8192
 [chat.anthropic.opus]
 model_id = "claude-opus-4-6"
 cache_ttl = "1h"
-max_tokens = 8192
+max_output_tokens = 8192
 "#,
         );
         let model = catalog.find_model("opus").unwrap();
@@ -1219,14 +1219,14 @@ max_tokens = 8192
             ModelPreference {
                 sampler: SamplerSettings {
                     cache_ttl: Some("5m".into()),
-                    max_tokens: Some(32768),
+                    max_output_tokens: Some(32768),
                     ..Default::default()
                 },
             },
         );
         let s = resolve_sampler_settings(&g, Some(&c), "anthropic", "claude-opus-4-6", Some(model));
         assert_eq!(s.cache_ttl.as_deref(), Some("5m"));
-        assert_eq!(s.max_tokens, Some(32768));
+        assert_eq!(s.max_output_tokens, Some(32768));
     }
 
     #[test]
@@ -1238,7 +1238,7 @@ max_tokens = 8192
 [chat.anthropic.opus]
 model_id = "claude-opus-4-6"
 cache_ttl = "1h"
-max_tokens = 8192
+max_output_tokens = 8192
 "#,
         );
         let model = catalog.find_model("opus").unwrap();
@@ -1249,7 +1249,7 @@ max_tokens = 8192
             "claude-opus-4-6",
             ModelPreference {
                 sampler: SamplerSettings {
-                    max_tokens: Some(32768),
+                    max_output_tokens: Some(32768),
                     ..Default::default()
                 },
             },
@@ -1257,7 +1257,10 @@ max_tokens = 8192
         let scopes =
             resolve_sampler_scopes(&g, Some(&c), "anthropic", "claude-opus-4-6", Some(model));
         assert_eq!(scopes.cache_ttl, Some(PreferenceScope::StaticDefault));
-        assert_eq!(scopes.max_tokens, Some(PreferenceScope::CharacterModel));
+        assert_eq!(
+            scopes.max_output_tokens,
+            Some(PreferenceScope::CharacterModel)
+        );
         // temperature lands on StaticDefault from the anthropic provider's
         // hardcoded baseline (temperature = 1.0). top_p has no default at
         // any layer, so it stays None.
@@ -1351,7 +1354,7 @@ max_tokens = 8192
         let mut base = SamplerSettings {
             temperature: Some(1.0),
             top_p: Some(0.9),
-            max_tokens: Some(4096),
+            max_output_tokens: Some(4096),
             ..Default::default()
         };
         let overlay = SamplerSettings {
@@ -1362,7 +1365,7 @@ max_tokens = 8192
         base.apply_overlay(&overlay);
         assert_eq!(base.temperature, Some(0.7));
         assert_eq!(base.top_p, Some(0.9), "preserved");
-        assert_eq!(base.max_tokens, Some(4096), "preserved");
+        assert_eq!(base.max_output_tokens, Some(4096), "preserved");
         assert_eq!(base.reasoning_effort.as_deref(), Some("medium"));
     }
 
@@ -1584,7 +1587,7 @@ enabled = true
 model_id = "claude-opus-4-6"
 temperature = 1.0
 top_p = 0.9
-max_tokens = 4096
+max_output_tokens = 4096
 "#,
         );
         let base = catalog.find_model("opus").unwrap();
@@ -1597,7 +1600,11 @@ max_tokens = 4096
         let patched = apply_sampler_overlay(base, &overlay);
         assert_eq!(patched.temperature, Some(0.7), "overlaid");
         assert_eq!(patched.top_p, Some(0.9), "preserved from static");
-        assert_eq!(patched.max_tokens, Some(4096), "preserved from static");
+        assert_eq!(
+            patched.max_output_tokens,
+            Some(4096),
+            "preserved from static"
+        );
         assert_eq!(patched.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(patched.budget_tokens, Some(2048));
     }
@@ -1757,7 +1764,7 @@ temperature = 1.0
         let scopes = resolve_sampler_scopes(&g, Some(&c), "anthropic", "opus", None);
         assert_eq!(scopes.temperature, Some(PreferenceScope::CharacterModel));
         assert_eq!(scopes.top_p, Some(PreferenceScope::GlobalModel));
-        assert_eq!(scopes.max_tokens, None, "unset → None");
+        assert_eq!(scopes.max_output_tokens, None, "unset → None");
     }
 
     // ── Character flow helpers ───────────────────────────────────────
