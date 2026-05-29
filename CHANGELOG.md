@@ -34,16 +34,18 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ### Changed
 - Reworked the CLI transcript and live stream around one cohesive layout:
   response text (speech) is the primary, flush-left voice, while thinking, tool
-  calls, and tool results form a single dim, inset "process" channel. Each
-  process block opens with a sigil — `◌` thinking, `⚙` tool call (with its
-  primary argument, e.g. the path/command), `✓`/`✗` result — and a four-column
-  hanging indent; a blank line separates every process block from its
-  neighbours (so tool calls and results no longer glue to the surrounding
-  text). Thinking is dim and word-wrapped to the terminal width. This replaces
-  the previous mix of yellow `[tool: …]` / `[result]` brackets, two-space tool
-  indents, and the `│` thinking gutter. `redacted_thinking` blocks (content-free
-  placeholders) are no longer shown. The layout is identical in `shore log` /
-  `shore get` and while streaming, and degrades cleanly with color disabled.
+  calls, and tool results form a single inset "process" channel. Each block
+  opens with a colored sigil + label header — magenta `◌ Thinking`, yellow
+  `→ <tool> · <arg>` (with the call's primary argument, e.g. the path/command),
+  green `✓ result` / red `✗ error` — followed by a dim, four-column-inset body;
+  a blank line separates every process block from its neighbours (so tool calls
+  and results no longer glue to the surrounding text). Thinking content is
+  word-wrapped to the terminal width. This replaces the previous mix of yellow
+  `[tool: …]` / `[result]` brackets, two-space tool indents, and the `│`
+  thinking gutter. Tool *results* are no longer truncated. `redacted_thinking`
+  blocks (content-free placeholders) are not shown. The layout is identical in
+  `shore log` / `shore get` and while streaming, and degrades cleanly with color
+  disabled.
 - The dreaming/librarian sweep and heartbeat ticks no longer invalidate
   Anthropic's prompt cache on every iteration. Both rode their task
   instruction as `system_suffix`, which `preprocess_request` re-appended at

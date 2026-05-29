@@ -9,8 +9,8 @@ use super::styling::{
 };
 use super::{
     parse_timestamp, primary_tool_arg, print_dim_line, process_wrap_width, term_width, use_color,
-    write_process_body, write_section_header, write_sigil_header, write_thinking_logical_line,
-    SIGIL_ERROR, SIGIL_OK, SIGIL_TOOL,
+    write_process_body, write_section_header, write_sigil_header, write_thinking_content_line,
+    COLOR_RESULT, COLOR_THINKING, COLOR_TOOL, SIGIL_ERROR, SIGIL_OK, SIGIL_THINKING, SIGIL_TOOL,
 };
 
 // ---------------------------------------------------------------------------
@@ -115,13 +115,13 @@ fn count_user_turn_values(messages: &[serde_json::Value]) -> usize {
         .count()
 }
 
-/// Render a thinking block into the process channel: a ◌ sigil on the first
-/// row, dim, word-wrapped, with later rows hanging-indented under it.
+/// Render a thinking block into the process channel: a colored `◌ Thinking`
+/// header, then the thought as dim, word-wrapped, inset content.
 fn write_thinking(out: &mut impl Write, thinking: &str) {
+    write_sigil_header(out, SIGIL_THINKING, "Thinking", COLOR_THINKING);
     let width = process_wrap_width();
-    let mut first_row = true;
     for line in thinking.lines() {
-        write_thinking_logical_line(out, line, width, &mut first_row);
+        write_thinking_content_line(out, line, width);
     }
 }
 
@@ -177,7 +177,7 @@ fn render_message_content(
                             Some(arg) => format!("{name} \u{00b7} {arg}"),
                             None => name.to_string(),
                         };
-                        write_sigil_header(out, SIGIL_TOOL, &header, Color::DarkGrey);
+                        write_sigil_header(out, SIGIL_TOOL, &header, COLOR_TOOL);
                         if let Some(input_str) = format_tool_input(&block["input"]) {
                             write_process_body(out, &input_str, Color::DarkGrey);
                         }
@@ -188,11 +188,12 @@ fn render_message_content(
                         let (sigil, label, color) = if is_error {
                             (SIGIL_ERROR, "error", Color::Red)
                         } else {
-                            (SIGIL_OK, "result", Color::DarkGrey)
+                            (SIGIL_OK, "result", COLOR_RESULT)
                         };
                         write_sigil_header(out, sigil, label, color);
+                        // Bodies stay dim; the colored header carries the status.
                         let output = format_tool_output(output);
-                        write_process_body(out, &output, color);
+                        write_process_body(out, &output, Color::DarkGrey);
                     }
                     _ => {}
                 }
@@ -585,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn interleaved_thinking_sigil_both_directions() {
+    fn interleaved_thinking_header_both_directions() {
         set_color_enabled(false);
         let blocks = vec![
             serde_json::json!({"type": "thinking", "thinking": "T1"}),
@@ -597,21 +598,24 @@ mod tests {
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
 
-        // Order preserved; thinking is a ◌ sigil block, with a blank line of
-        // breathing room straddling each thinking/speech boundary.
-        assert_eq!(output, "  \u{25cc} T1\n\nA1\n\n  \u{25cc} T2\n\nA2\n");
+        // Each thinking block is a `◌ Thinking` header + inset content, with a
+        // blank line straddling each thinking/speech boundary.
+        assert_eq!(
+            output,
+            "  \u{25cc} Thinking\n    T1\n\nA1\n\n  \u{25cc} Thinking\n    T2\n\nA2\n"
+        );
     }
 
     #[test]
-    fn thinking_sigil_then_hanging_indent() {
+    fn thinking_header_then_indented_content() {
         set_color_enabled(false);
         let blocks =
             vec![serde_json::json!({"type": "thinking", "thinking": "line one\nline two"})];
         let mut buf = Vec::new();
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
-        // Sigil on the first row; later lines hang-indent under it.
-        assert_eq!(output, "  \u{25cc} line one\n    line two\n");
+        // Header line, then each content line inset under it.
+        assert_eq!(output, "  \u{25cc} Thinking\n    line one\n    line two\n");
     }
 
     #[test]
@@ -624,7 +628,7 @@ mod tests {
         let mut buf = Vec::new();
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "  \u{25cc} T1\n\nA1\n");
+        assert_eq!(output, "  \u{25cc} Thinking\n    T1\n\nA1\n");
     }
 
     #[test]
@@ -640,7 +644,10 @@ mod tests {
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
         // Two adjacent thinking blocks are separate process blocks → one blank.
-        assert_eq!(output, "  \u{25cc} T1\n\n  \u{25cc} T2\n");
+        assert_eq!(
+            output,
+            "  \u{25cc} Thinking\n    T1\n\n  \u{25cc} Thinking\n    T2\n"
+        );
     }
 
     #[test]
@@ -659,7 +666,7 @@ mod tests {
         // separated by a blank line (including from the prior text and result).
         assert_eq!(
             output,
-            "let me check\n\n  \u{2699} edit \u{00b7} a.md\n    path: a.md\n\n  \u{2713} result\n    done\n\nfixed\n"
+            "let me check\n\n  \u{2192} edit \u{00b7} a.md\n    path: a.md\n\n  \u{2713} result\n    done\n\nfixed\n"
         );
     }
 

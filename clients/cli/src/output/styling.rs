@@ -11,8 +11,8 @@ use shore_protocol::types::ImageRef;
 
 use super::{
     abbreviate_model, primary_tool_arg, process_wrap_width, use_color, write_process_body,
-    write_sigil_header, write_thinking_logical_line, MAX_TOOL_OUTPUT, SIGIL_ERROR, SIGIL_OK,
-    SIGIL_TOOL,
+    write_sigil_header, write_thinking_content_line, COLOR_RESULT, COLOR_THINKING, COLOR_TOOL,
+    MAX_TOOL_OUTPUT, SIGIL_ERROR, SIGIL_OK, SIGIL_THINKING, SIGIL_TOOL,
 };
 use crate::images;
 
@@ -33,8 +33,6 @@ struct ChunkState {
     /// Buffer for the in-progress thinking logical line, accumulated across
     /// chunks until a `\n` completes it.
     thinking_line: String,
-    /// Whether the next thinking row is the first of its block (gets the sigil).
-    thinking_first_row: bool,
 }
 
 impl ChunkState {
@@ -46,7 +44,6 @@ impl ChunkState {
         at_line_start: true,
         last_was_process: false,
         thinking_line: String::new(),
-        thinking_first_row: true,
     };
 }
 
@@ -101,12 +98,7 @@ fn flush_thinking(out: &mut impl Write, state: &mut ChunkState) {
         return;
     }
     let line = std::mem::take(&mut state.thinking_line);
-    write_thinking_logical_line(
-        out,
-        &line,
-        process_wrap_width(),
-        &mut state.thinking_first_row,
-    );
+    write_thinking_content_line(out, &line, process_wrap_width());
     state.at_line_start = true;
 }
 
@@ -124,7 +116,9 @@ fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamCh
     if first || transition {
         begin_block(out, state, is_thinking);
         if is_thinking {
-            state.thinking_first_row = true;
+            // Open the thinking block with its colored header; content follows.
+            write_sigil_header(out, SIGIL_THINKING, "Thinking", COLOR_THINKING);
+            state.at_line_start = true;
         }
     }
     state.was_thinking = is_thinking;
@@ -139,7 +133,7 @@ fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamCh
             if ch == '\n' {
                 // A complete logical line (possibly empty) — emit it now.
                 let line = std::mem::take(&mut state.thinking_line);
-                write_thinking_logical_line(out, &line, width, &mut state.thinking_first_row);
+                write_thinking_content_line(out, &line, width);
                 state.at_line_start = true;
             } else {
                 state.thinking_line.push(ch);
@@ -267,9 +261,9 @@ pub(crate) fn format_tool_input(input: &serde_json::Value) -> Option<String> {
     format_tool_input_with_limit(input, Some(MAX_TOOL_OUTPUT))
 }
 
-/// Format a tool result for display.
+/// Format a tool result for display. Not truncated — results are shown in full.
 pub(crate) fn format_tool_output(output: &str) -> String {
-    format_tool_output_with_limit(output, Some(MAX_TOOL_OUTPUT))
+    format_tool_output_with_limit(output, None)
 }
 
 pub(crate) fn write_tool_body_plain(out: &mut impl Write, body: &str) {
@@ -292,7 +286,7 @@ pub fn print_tool_call(call: &ToolCall) {
         Some(arg) => format!("{} \u{00b7} {arg}", call.tool_name),
         None => call.tool_name.clone(),
     };
-    write_sigil_header(&mut out, SIGIL_TOOL, &header, Color::DarkGrey);
+    write_sigil_header(&mut out, SIGIL_TOOL, &header, COLOR_TOOL);
     if let Some(input) = format_tool_input(&call.input) {
         write_process_body(&mut out, &input, Color::DarkGrey);
     }
@@ -313,11 +307,12 @@ pub fn print_tool_result(result: &ToolResult) {
     let (sigil, label, color) = if result.is_error {
         (SIGIL_ERROR, "error", Color::Red)
     } else {
-        (SIGIL_OK, "result", Color::DarkGrey)
+        (SIGIL_OK, "result", COLOR_RESULT)
     };
     write_sigil_header(&mut out, sigil, label, color);
+    // Body stays dim; the colored header carries the status.
     let body = format_tool_output(&result.output);
-    write_process_body(&mut out, &body, color);
+    write_process_body(&mut out, &body, Color::DarkGrey);
     state.at_line_start = true;
 }
 
@@ -489,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_interleaved_thinking_sigil_both_directions() {
+    fn streaming_interleaved_thinking_header_both_directions() {
         set_color_enabled(false);
         let mut state = ChunkState::default();
         let mut buf = Vec::new();
@@ -500,10 +495,12 @@ mod tests {
         print_chunk_to(&mut buf, &mut state, &chunk("text", "A2"));
         let output = String::from_utf8(buf).unwrap();
 
-        // Thinking is a ◌ sigil block; a blank line of breathing room straddles
-        // every transition so the second thinking block is not glued onto the
-        // end of the first answer.
-        assert_eq!(output, "  \u{25cc} T1\n\nA1\n\n  \u{25cc} T2\n\nA2");
+        // Each thinking block opens with a `◌ Thinking` header; a blank line
+        // straddles every transition so blocks never glue together.
+        assert_eq!(
+            output,
+            "  \u{25cc} Thinking\n    T1\n\nA1\n\n  \u{25cc} Thinking\n    T2\n\nA2"
+        );
     }
 
     #[test]
@@ -512,13 +509,14 @@ mod tests {
         let mut state = ChunkState::default();
         let mut buf = Vec::new();
         // A logical line is split across chunks (the newline lands mid-chunk,
-        // and a word straddles the boundary). The sigil lands on the first row;
-        // later lines hang-indent. The trailing partial line waits for a flush.
+        // and a word straddles the boundary). The header is emitted at block
+        // start; each completed content line is inset. The trailing partial
+        // line waits for a flush.
         print_chunk_to(&mut buf, &mut state, &chunk("thinking", "line one\nli"));
         print_chunk_to(&mut buf, &mut state, &chunk("thinking", "ne two"));
         flush_thinking(&mut buf, &mut state); // simulate stream end
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "  \u{25cc} line one\n    line two\n");
+        assert_eq!(output, "  \u{25cc} Thinking\n    line one\n    line two\n");
     }
 
     #[test]
@@ -526,17 +524,21 @@ mod tests {
         set_color_enabled(false);
         let mut state = ChunkState::default();
         let mut buf = Vec::new();
-        // Thinking with no trailing newline, then a flush (as happens before a
-        // ToolCall or StreamEnd) must commit the buffered line.
+        // The header is emitted as soon as the block opens; the content line
+        // (no trailing newline) waits for the flush before a ToolCall/StreamEnd.
         print_chunk_to(
             &mut buf,
             &mut state,
             &chunk("thinking", "deciding to call a tool"),
         );
-        assert!(buf.is_empty(), "nothing emitted until the line is flushed");
+        assert_eq!(
+            String::from_utf8(buf.clone()).unwrap(),
+            "  \u{25cc} Thinking\n",
+            "header is emitted, content is still buffered"
+        );
         flush_thinking(&mut buf, &mut state);
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "  \u{25cc} deciding to call a tool\n");
+        assert_eq!(output, "  \u{25cc} Thinking\n    deciding to call a tool\n");
     }
 
     #[test]

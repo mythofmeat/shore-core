@@ -49,28 +49,31 @@ thinking** (thinking → text → tool call → redacted_thinking → thinking �
 through the real `render_message_content` (log) and `print_chunk_to` (stream)
 functions, with color ON, and prints the raw bytes so your terminal colorizes
 them. The layout is a two-channel design: response **speech** is flush-left and
-plain, while thinking, tool calls, and results form one dim, inset **process
-channel** — each block opened by a sigil (`◌` thinking, `⚙` tool call + primary
-arg, `✓`/`✗` result) with a four-column hanging indent and a blank line between
-blocks. Thinking is word-wrapped to the terminal width; `redacted_thinking` is
-hidden. The preview thinking blocks are long on purpose so you can see the
-wrapping; resize your terminal and re-run to confirm the wrap follows the width.
+plain, while thinking, tool calls, and results form one inset **process
+channel** — each block opened by a colored sigil + label header (magenta
+`◌ Thinking`, yellow `→ <tool> · <arg>`, green `✓ result` / red `✗ error`) with
+a dim, four-column-inset body and a blank line between blocks. Thinking content
+is word-wrapped to the terminal width; tool results are not truncated;
+`redacted_thinking` is hidden. The preview thinking blocks are long on purpose
+so you can see the wrapping; resize your terminal and re-run to confirm.
 
-Expected shape (log path):
+Expected shape (log path; headers are colored, bodies dim):
 
 ```
-<dim>  ◌ Let me reason about this first. The user asked about a long-standing
-    issue, and this paragraph is long so it wraps under the sigil.</dim>
+  ◌ Thinking
+    Let me reason about this first. The user asked about a long-standing
+    issue, and this paragraph is long so it wraps under the header.
 
 Here's the first part of my answer.
 
-<dim>  ⚙ read_file · src/main.rs
-    path: src/main.rs</dim>
+  → read_file · src/main.rs
+    path: src/main.rs
 
-<dim>  ✓ result
-    fn main() { ... }</dim>
+  ✓ result
+    fn main() { ... }
 
-<dim>  ◌ Now that I've read the file, I can refine my answer.</dim>
+  ◌ Thinking
+    Now that I've read the file, I can refine my answer.
 
 And here's the refined conclusion.
 ```
@@ -102,7 +105,7 @@ The recipe for any in-crate visual preview:
 ## Test (assertions)
 
 The behavior is pinned by ordinary (non-ignored) tests in the same modules
-(`interleaved_thinking_sigil_both_directions`,
+(`interleaved_thinking_header_both_directions`,
 `tool_call_and_result_render_with_sigils_and_separators`,
 `redacted_thinking_is_hidden`, …):
 
@@ -136,8 +139,9 @@ Use the preview path above instead when you only need to see how output looks.
   `2 ignored`. Don't "clean them up."
 - **Shared process-channel primitives.** The sigils, indent, wrap width, and
   the per-line writers live in `output/mod.rs` (`write_sigil_header`,
-  `write_process_body`, `write_thinking_logical_line`, `primary_tool_arg`,
-  `process_wrap_width`) and are shared by both the transcript renderer and the
+  `write_process_body`, `write_thinking_content_line`, `primary_tool_arg`,
+  `process_wrap_width`, the `SIGIL_*`/`COLOR_*` consts) and are shared by both
+  the transcript renderer and the
   streaming path so they stay identical. Change them there, not in one path.
 - **Two render paths, different rules.** The colored transcript
   (`render_message_content`) and stream use the sigil channel; the `--plain`

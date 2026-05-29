@@ -52,19 +52,28 @@ pub(crate) fn term_width() -> usize {
 
 // ---------------------------------------------------------------------------
 // Process channel: thinking, tool calls, and tool results render as one
-// cohesive secondary channel — dim, inset, each block opened by a single sigil
-// with a four-column hanging indent. Response text (speech) stays flush-left
-// and plain; the two channels are separated by blank lines.
+// cohesive secondary channel — inset, each block opened by a colored sigil +
+// label header with a four-column hanging indent and a dim body. Response text
+// (speech) stays flush-left and plain; the channels are separated by blank
+// lines.
 // ---------------------------------------------------------------------------
 
 /// Sigil marking a thinking block.
 pub(crate) const SIGIL_THINKING: char = '\u{25cc}'; // ◌
-/// Sigil marking a tool call.
-pub(crate) const SIGIL_TOOL: char = '\u{2699}'; // ⚙
+/// Sigil marking a tool call. Single-width (a wide glyph like ⚙ misaligns the
+/// text after it in many terminals).
+pub(crate) const SIGIL_TOOL: char = '\u{2192}'; // →
 /// Sigil marking a successful tool result.
 pub(crate) const SIGIL_OK: char = '\u{2713}'; // ✓
 /// Sigil marking a failed tool result.
 pub(crate) const SIGIL_ERROR: char = '\u{2717}'; // ✗
+
+/// Header color for a thinking block.
+pub(crate) const COLOR_THINKING: Color = Color::Magenta;
+/// Header color for a tool call.
+pub(crate) const COLOR_TOOL: Color = Color::Yellow;
+/// Header color for a successful tool result.
+pub(crate) const COLOR_RESULT: Color = Color::Green;
 
 /// Indent for wrapped/continuation lines and tool bodies — four columns, the
 /// width of a `"  X "` sigil prefix, so the whole channel aligns.
@@ -111,16 +120,10 @@ pub(crate) fn write_process_body(out: &mut impl Write, body: &str, color: Color)
     }
 }
 
-/// Write one logical line of a thinking block: dim, word-wrapped to `width`.
-/// The first rendered row of the block carries the ◌ sigil; later rows (and
-/// later logical lines) hang-indent to align under it. `first_row` is the
-/// caller's running "have we emitted the sigil yet" flag.
-pub(crate) fn write_thinking_logical_line(
-    out: &mut impl Write,
-    line: &str,
-    width: usize,
-    first_row: &mut bool,
-) {
+/// Write one logical line of thinking *content* (everything below the
+/// `◌ Thinking` header): dim, word-wrapped to `width`, indented into the
+/// channel. Blank lines are preserved.
+pub(crate) fn write_thinking_content_line(out: &mut impl Write, line: &str, width: usize) {
     if use_color() {
         let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
@@ -128,12 +131,7 @@ pub(crate) fn write_thinking_logical_line(
         let _ = writeln!(out); // preserve blank lines within a thought
     } else {
         for wrapped in wrap_line(line, width) {
-            if *first_row {
-                let _ = writeln!(out, "  {SIGIL_THINKING} {wrapped}");
-                *first_row = false;
-            } else {
-                let _ = writeln!(out, "{PROCESS_INDENT}{wrapped}");
-            }
+            let _ = writeln!(out, "{PROCESS_INDENT}{wrapped}");
         }
     }
     if use_color() {
@@ -340,36 +338,31 @@ mod tests {
     }
 
     #[test]
-    fn write_thinking_logical_line_sigil_first_then_hanging_indent() {
+    fn write_thinking_content_line_wraps_and_insets() {
         set_color_enabled(false);
         let mut buf = Vec::new();
-        let mut first = true;
-        write_thinking_logical_line(&mut buf, "the quick brown fox jumps", 10, &mut first);
+        write_thinking_content_line(&mut buf, "the quick brown fox jumps", 10);
         let out = String::from_utf8(buf).unwrap();
-        // First wrapped row carries the ◌ sigil; later rows hang-indent.
-        assert_eq!(out, "  \u{25cc} the quick\n    brown fox\n    jumps\n");
-        assert!(!first, "sigil should have been consumed");
+        // Every row is inset under the header (no per-row sigil).
+        assert_eq!(out, "    the quick\n    brown fox\n    jumps\n");
     }
 
     #[test]
-    fn write_thinking_logical_line_continuation_has_no_sigil() {
+    fn write_thinking_content_line_blank_is_empty_line() {
         set_color_enabled(false);
         let mut buf = Vec::new();
-        let mut first = false; // a later logical line in the same block
-        write_thinking_logical_line(&mut buf, "second thought", 80, &mut first);
-        let out = String::from_utf8(buf).unwrap();
-        assert_eq!(out, "    second thought\n");
-    }
-
-    #[test]
-    fn write_thinking_logical_line_blank_is_empty_line() {
-        set_color_enabled(false);
-        let mut buf = Vec::new();
-        let mut first = true;
-        write_thinking_logical_line(&mut buf, "   ", 80, &mut first);
+        write_thinking_content_line(&mut buf, "   ", 80);
         let out = String::from_utf8(buf).unwrap();
         assert_eq!(out, "\n");
-        assert!(first, "a blank line must not consume the sigil");
+    }
+
+    #[test]
+    fn write_sigil_header_renders_sigil_and_label() {
+        set_color_enabled(false);
+        let mut buf = Vec::new();
+        write_sigil_header(&mut buf, SIGIL_THINKING, "Thinking", COLOR_THINKING);
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(out, "  \u{25cc} Thinking\n");
     }
 
     #[test]
