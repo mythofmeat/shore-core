@@ -590,7 +590,7 @@ openrouter_provider = { order = ["Anthropic"] }
     #[test]
     fn discovered_model_explicit_chat_default_overrides_discovered_metadata() {
         // User config wins over discovered upstream metadata: a provider-level
-        // `max_tokens` must beat the discovery feed's reported max_output_tokens.
+        // `max_output_tokens` must beat the discovery feed's reported value.
         let tmp = tempfile::tempdir().unwrap();
         let loaded = make_loaded(
             &tmp,
@@ -602,7 +602,7 @@ base_url = "https://openrouter.ai/api/v1"
 "#,
             r#"
 [chat.openrouter]
-max_tokens = 32768
+max_output_tokens = 32768
 "#,
         );
         // write_cache_for reports max_output_tokens = 8192.
@@ -610,7 +610,7 @@ max_tokens = 32768
 
         let m =
             find_effective_model(&loaded, tmp.path(), "anthropic/claude-opus-4.8", false).unwrap();
-        assert_eq!(m.max_tokens, Some(32768));
+        assert_eq!(m.max_output_tokens, Some(32768));
     }
 
     #[test]
