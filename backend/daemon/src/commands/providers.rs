@@ -358,7 +358,7 @@ pub fn list_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult
                 "qualified_name": m.qualified_name,
                 "model_id": m.model_id,
                 "sdk": m.sdk.as_str(),
-                "max_tokens": m.max_tokens,
+                "max_output_tokens": m.max_output_tokens,
             })
         })
         .collect();

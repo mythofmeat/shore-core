@@ -438,7 +438,7 @@ mod tests {
             api_key_env: None,
             base_url: None,
             max_context_tokens: None,
-            max_tokens: None,
+            max_output_tokens: None,
             temperature: None,
             top_p: None,
             reasoning_effort: None,

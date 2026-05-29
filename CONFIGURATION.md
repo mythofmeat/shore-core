@@ -129,7 +129,7 @@ Chat/tool models:
 model_id = "claude-sonnet-4-6"
 api_key_env = "ANTHROPIC_API_KEY"
 cache_ttl = "1h"
-max_tokens = 4096
+max_output_tokens = 4096
 max_context_tokens = 200000
 
 [chat.openrouter.haiku]

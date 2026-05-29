@@ -1125,7 +1125,7 @@ base_url = "https://openrouter.ai/api/v1"
 [chat.openrouter.sonnet]
 model_id = "anthropic/claude-sonnet-4.5"
 cache_ttl = "1h"
-max_tokens = 16384
+max_output_tokens = 16384
 "#,
             "openrouter",
             &["anthropic/claude-sonnet-4.5"],

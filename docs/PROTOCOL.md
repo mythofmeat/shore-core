@@ -688,7 +688,7 @@ with that role.
 #### `set_model_setting`
 - **args:** `{ "key": "<key>", "value": <number|string|bool|null>, "scope"?: "character" | "global" }`
 - **valid keys:** `temperature`, `top_p`, `reasoning_effort`,
-  `thinking_enabled`, `budget_tokens`, `max_tokens`, `cache_ttl`.
+  `thinking_enabled`, `budget_tokens`, `max_output_tokens`, `cache_ttl`.
 - **data:** `{ "changed": true, "scope": "character", "model": "…", "provider": "…", "model_id": "…", "key": "…", "value": … }`
 - `value: null` clears the setting.
 
@@ -870,7 +870,7 @@ unspecified mode runs the default `summary`.
     "provider": "openrouter",
     "discovered": [ { "source": "discovered", "model_id": "…", "display_name": "…", "sdk": "…", "owned_by": "…", "context_length": …, "max_output_tokens": …, "supports_tools": …, "supports_images": …, "supports_reasoning": …, "supports_prompt_cache": …, "discovered_at": "…" } ],
     "hidden":     [ … same shape, filtered by `discovery.ignore` … ],
-    "static":     [ { "source": "static", "name": "…", "qualified_name": "…", "model_id": "…", "sdk": "…", "max_tokens": … } ],
+    "static":     [ { "source": "static", "name": "…", "qualified_name": "…", "model_id": "…", "sdk": "…", "max_output_tokens": … } ],
     "include_hidden": false,
     "cache": { "fetched_at": "…", "model_count": 312 }
   }

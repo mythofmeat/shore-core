@@ -124,7 +124,7 @@ pub struct ModelConfigFields {
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
     pub max_context_tokens: Option<u32>,
-    pub max_tokens: Option<u32>,
+    pub max_output_tokens: Option<u32>,
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
     pub reasoning_effort: Option<String>,
@@ -156,7 +156,7 @@ impl ModelConfigFields {
         merge_opt!(api_key_env);
         merge_opt!(base_url);
         merge_opt!(max_context_tokens);
-        merge_opt!(max_tokens);
+        merge_opt!(max_output_tokens);
         merge_opt!(temperature);
         merge_opt!(top_p);
         merge_opt!(reasoning_effort);
@@ -187,7 +187,7 @@ impl ModelConfigFields {
             api_key_env: or_opt!(api_key_env),
             base_url: or_opt!(base_url),
             max_context_tokens: or_opt!(max_context_tokens),
-            max_tokens: or_opt!(max_tokens),
+            max_output_tokens: or_opt!(max_output_tokens),
             temperature: or_opt!(temperature),
             top_p: or_opt!(top_p),
             reasoning_effort: or_opt!(reasoning_effort),
@@ -253,7 +253,7 @@ pub struct ResolvedModel {
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
     pub max_context_tokens: Option<u32>,
-    pub max_tokens: Option<u32>,
+    pub max_output_tokens: Option<u32>,
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
     pub reasoning_effort: Option<String>,
@@ -315,7 +315,7 @@ impl ResolvedModel {
             api_key_env: fields.api_key_env,
             base_url: fields.base_url,
             max_context_tokens: fields.max_context_tokens,
-            max_tokens: fields.max_tokens,
+            max_output_tokens: fields.max_output_tokens,
             temperature: fields.temperature,
             top_p: fields.top_p,
             reasoning_effort: fields.reasoning_effort,
@@ -668,7 +668,7 @@ fn parse_category(
 fn base_provider_defaults() -> ModelConfigFields {
     ModelConfigFields {
         temperature: Some(1.0),
-        max_tokens: Some(8192),
+        max_output_tokens: Some(8192),
         max_context_tokens: Some(200_000),
         ..Default::default()
     }
@@ -832,7 +832,7 @@ model_id = "claude-opus-4-6"
         assert_eq!(opus.sdk, Sdk::Anthropic);
         assert_eq!(opus.api_key_env.as_deref(), Some("ANTHROPIC_API_KEY"));
         assert_eq!(opus.temperature, Some(1.0));
-        assert_eq!(opus.max_tokens, Some(8192));
+        assert_eq!(opus.max_output_tokens, Some(8192));
         assert_eq!(opus.max_context_tokens, Some(200_000));
         // Anthropic SDK auto-enables prompt caching at 1h.
         assert_eq!(opus.cache_ttl.as_deref(), Some("1h"));
@@ -1040,8 +1040,8 @@ model_id = "claude-opus-4-6"
 
         assert_eq!(opus.api_key_env.as_deref(), Some("CUSTOM_KEY"));
         assert_eq!(opus.temperature, Some(0.5));
-        // max_tokens still from hardcoded defaults.
-        assert_eq!(opus.max_tokens, Some(8192));
+        // max_output_tokens still from hardcoded defaults.
+        assert_eq!(opus.max_output_tokens, Some(8192));
     }
 
     #[test]
@@ -1291,19 +1291,19 @@ model_id = "claude-opus-4-6"
         let mut base = ModelConfigFields {
             sdk: Some(Sdk::Anthropic),
             api_key_env: Some("BASE_KEY".into()),
-            max_tokens: Some(1024),
+            max_output_tokens: Some(1024),
             temperature: Some(0.5),
             ..Default::default()
         };
         let overlay = ModelConfigFields {
-            max_tokens: Some(4096),
+            max_output_tokens: Some(4096),
             top_p: Some(0.9),
             ..Default::default()
         };
         base.merge_from(&overlay);
 
         // Overwritten by overlay.
-        assert_eq!(base.max_tokens, Some(4096));
+        assert_eq!(base.max_output_tokens, Some(4096));
         assert_eq!(base.top_p, Some(0.9));
         // Preserved from base (overlay had None).
         assert_eq!(base.sdk, Some(Sdk::Anthropic));
@@ -1315,32 +1315,32 @@ model_id = "claude-opus-4-6"
     fn merge_from_none_overlay_is_noop() {
         let mut base = ModelConfigFields {
             sdk: Some(Sdk::Openai),
-            max_tokens: Some(2048),
+            max_output_tokens: Some(2048),
             ..Default::default()
         };
         let empty = ModelConfigFields::default();
         base.merge_from(&empty);
 
         assert_eq!(base.sdk, Some(Sdk::Openai));
-        assert_eq!(base.max_tokens, Some(2048));
+        assert_eq!(base.max_output_tokens, Some(2048));
     }
 
     #[test]
     fn or_fallback_prefers_self() {
         let primary = ModelConfigFields {
-            max_tokens: Some(1024),
+            max_output_tokens: Some(1024),
             temperature: Some(0.3),
             ..Default::default()
         };
         let fallback = ModelConfigFields {
-            max_tokens: Some(4096),
+            max_output_tokens: Some(4096),
             temperature: Some(0.9),
             api_key_env: Some("FALLBACK_KEY".into()),
             ..Default::default()
         };
         let result = primary.or_fallback(&fallback);
 
-        assert_eq!(result.max_tokens, Some(1024), "self value wins");
+        assert_eq!(result.max_output_tokens, Some(1024), "self value wins");
         assert_eq!(result.temperature, Some(0.3), "self value wins");
         assert_eq!(
             result.api_key_env.as_deref(),
@@ -1354,7 +1354,7 @@ model_id = "claude-opus-4-6"
         let a = ModelConfigFields::default();
         let b = ModelConfigFields::default();
         let result = a.or_fallback(&b);
-        assert!(result.max_tokens.is_none());
+        assert!(result.max_output_tokens.is_none());
         assert!(result.sdk.is_none());
     }
 

@@ -467,7 +467,7 @@ mod tests {
             api_key_env: api_key_env.map(String::from),
             base_url: None,
             max_context_tokens: None,
-            max_tokens: None,
+            max_output_tokens: None,
             temperature: None,
             top_p: None,
             reasoning_effort: None,
