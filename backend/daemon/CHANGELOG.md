@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v5.0.0...shore-daemon-v6.0.0) - 2026-05-28
+
+### Breaking
+
+- **Compaction API changes**: The `CompactionLlm::build_initial_request` method signature now requires a `compact_now_user: serde_json::Value` parameter to support the fixed-slot system instruction pattern. Previously this was handled internally; now callers must construct and pass the compact-now user message explicitly.
+
+  **Migration**: Update callsites to construct the `compact_now_user` message before calling `build_initial_request`:
+
+  ```rust
+  // Old (6.0.0 removed internal handling):
+  // llm.build_initial_request(system, chat_request)?
+
+  // New (6.0.0):
+  let compact_now_user = json!({"role": "user", "content": compaction_prompt_text});
+  llm.build_initial_request(system, compact_now_user, chat_request)?
+  ```
+
+- **Optional pre-compaction**: `run_pre_dream_compaction` now accepts `keep_turns_override: Option<usize>` to support the new `compact_to_zero` dreaming option. This allows callers to override the configured retention policy when compacting before background tasks.
+
+### Fixed
+
+- *(cache)* pin librarian/heartbeat system instruction at fixed slot ([#89](https://github.com/mythofmeat/shore-core/pull/89))
+- *(dreaming)* gate scheduled sweeps on inactivity, max_lateness, optional pre-compaction ([#85](https://github.com/mythofmeat/shore-core/pull/85))
+- *(usage)* render budget reset times in local AM/PM + show window in CLI ([#86](https://github.com/mythofmeat/shore-core/pull/86))
+
 ## [5.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v4.0.0...shore-daemon-v5.0.0) - 2026-05-28
 
 ### Breaking
