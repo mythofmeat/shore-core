@@ -120,12 +120,27 @@ fn render_message_content(
 ) {
     if let Some(blocks) = content_blocks {
         if !blocks.is_empty() {
-            let mut was_thinking = false;
+            // Track the thinking-ness of the previously rendered block so we can
+            // insert a separator on any transition between thinking and
+            // non-thinking content (in both directions). Only blocks that
+            // actually render update this, so empty blocks never leave a
+            // dangling separator.
+            let mut prev_thinkish: Option<bool> = None;
             for block in blocks {
                 let block_type = block["type"].as_str().unwrap_or("text");
-                // Insert separator when transitioning from thinking -> non-thinking.
-                if was_thinking && block_type != "thinking" && block_type != "redacted_thinking" {
-                    was_thinking = false;
+                let thinkish = matches!(block_type, "thinking" | "redacted_thinking");
+                // Whether this block will actually emit any visible output.
+                let renders = match block_type {
+                    "text" => !block["text"].as_str().unwrap_or("").is_empty(),
+                    "thinking" => !block["thinking"].as_str().unwrap_or("").is_empty(),
+                    "redacted_thinking" | "tool_use" | "tool_result" => true,
+                    _ => false,
+                };
+                if !renders {
+                    continue;
+                }
+                // Insert separator when crossing the thinking / non-thinking boundary.
+                if prev_thinkish.is_some_and(|prev| prev != thinkish) {
                     if use_color() {
                         let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
                     }
@@ -134,6 +149,7 @@ fn render_message_content(
                         let _ = crossterm::execute!(out, ResetColor);
                     }
                 }
+                prev_thinkish = Some(thinkish);
                 match block_type {
                     "text" => {
                         let text = block["text"].as_str().unwrap_or("");
@@ -142,7 +158,6 @@ fn render_message_content(
                         }
                     }
                     "thinking" => {
-                        was_thinking = true;
                         let thinking = block["thinking"].as_str().unwrap_or("");
                         if !thinking.is_empty() {
                             if use_color() {
@@ -156,7 +171,6 @@ fn render_message_content(
                         }
                     }
                     "redacted_thinking" => {
-                        was_thinking = true;
                         if use_color() {
                             let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
                         }
@@ -557,6 +571,82 @@ pub fn print_heartbeat_log(data: &serde_json::Value) {
 mod tests {
     use super::*;
     use crate::output::set_color_enabled;
+
+    /// Visual preview harness (not an assertion). Renders a representative
+    /// assistant turn with interleaved thinking via the real renderer, color
+    /// ON, and dumps the raw bytes (ANSI escapes included) so a terminal shows
+    /// it exactly as `shore log` / `shore get` would.
+    ///
+    /// Run it: `cargo test -p shore-cli render_preview_log
+    ///          -- --ignored --nocapture --test-threads=1`
+    /// (or via `.claude/skills/run-shore-cli/preview.sh`).
+    #[test]
+    #[ignore = "visual preview; run explicitly with --ignored --nocapture"]
+    fn render_preview_log() {
+        set_color_enabled(true);
+        let blocks = vec![
+            serde_json::json!({"type": "thinking", "thinking": "Let me reason about this first.\nThe user asked about X, so I should check Y."}),
+            serde_json::json!({"type": "text", "text": "Here's the first part of my answer."}),
+            serde_json::json!({"type": "tool_use", "name": "read_file", "input": {"path": "src/main.rs"}}),
+            serde_json::json!({"type": "tool_result", "content": "fn main() { ... }", "is_error": false}),
+            serde_json::json!({"type": "thinking", "thinking": "Now that I've read the file, I can refine my answer."}),
+            serde_json::json!({"type": "text", "text": "And here's the refined conclusion."}),
+        ];
+        let mut buf = Vec::new();
+        render_message_content(&mut buf, Some(&blocks), "", false);
+        set_color_enabled(false);
+        let mut stdout = io::stdout();
+        let _ = stdout.write_all(b"\n----- LOG RENDER (shore log / shore get) -----\n");
+        let _ = stdout.write_all(&buf);
+        let _ = stdout.write_all(b"----- end -----\n");
+        let _ = stdout.flush();
+    }
+
+    #[test]
+    fn interleaved_thinking_separators_both_directions() {
+        set_color_enabled(false);
+        let blocks = vec![
+            serde_json::json!({"type": "thinking", "thinking": "T1"}),
+            serde_json::json!({"type": "text", "text": "A1"}),
+            serde_json::json!({"type": "thinking", "thinking": "T2"}),
+            serde_json::json!({"type": "text", "text": "A2"}),
+        ];
+        let mut buf = Vec::new();
+        render_message_content(&mut buf, Some(&blocks), "", false);
+        let output = String::from_utf8(buf).unwrap();
+
+        // Order preserved AND a separator straddles every thinking/text boundary
+        // (text -> thinking included), so thinking reads as distinct sections.
+        assert_eq!(output, "T1\n---\nA1\n---\nT2\n---\nA2\n");
+    }
+
+    #[test]
+    fn no_separator_before_first_thinking_block() {
+        set_color_enabled(false);
+        let blocks = vec![
+            serde_json::json!({"type": "thinking", "thinking": "T1"}),
+            serde_json::json!({"type": "text", "text": "A1"}),
+        ];
+        let mut buf = Vec::new();
+        render_message_content(&mut buf, Some(&blocks), "", false);
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "T1\n---\nA1\n");
+    }
+
+    #[test]
+    fn empty_blocks_do_not_emit_dangling_separator() {
+        set_color_enabled(false);
+        let blocks = vec![
+            serde_json::json!({"type": "thinking", "thinking": "T1"}),
+            // Empty text block must not trigger a separator on its own.
+            serde_json::json!({"type": "text", "text": ""}),
+            serde_json::json!({"type": "thinking", "thinking": "T2"}),
+        ];
+        let mut buf = Vec::new();
+        render_message_content(&mut buf, Some(&blocks), "", false);
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "T1\nT2\n");
+    }
 
     #[test]
     fn character_color_is_deterministic() {

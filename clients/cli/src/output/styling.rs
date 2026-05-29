@@ -1,5 +1,5 @@
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use shore_protocol::server_msg::{
@@ -12,25 +12,51 @@ use shore_protocol::types::ImageRef;
 use super::{abbreviate_model, use_color, MAX_TOOL_OUTPUT};
 use crate::images;
 
-// Track whether the previous chunk was thinking, so we can insert a separator
-// when transitioning from thinking -> text.
-static WAS_THINKING: AtomicBool = AtomicBool::new(false);
+/// Running state for the chunk stream, tracking transitions between thinking
+/// and non-thinking content so separators land on every boundary.
+#[derive(Default)]
+struct ChunkState {
+    /// Whether the previous chunk was thinking content.
+    was_thinking: bool,
+    /// Whether any chunk has been printed yet (the first chunk never gets a
+    /// leading separator).
+    has_emitted: bool,
+}
+
+static CHUNK_STATE: Mutex<ChunkState> = Mutex::new(ChunkState {
+    was_thinking: false,
+    has_emitted: false,
+});
 
 /// Reset stream chunk state (call at the start of each new stream).
 pub fn reset_chunk_state() {
-    WAS_THINKING.store(false, Ordering::Relaxed);
+    *CHUNK_STATE.lock().unwrap() = ChunkState::default();
 }
 
 /// Print a stream chunk to stdout. Thinking chunks are shown dimmed.
-/// A separator is printed when transitioning from thinking to text.
+/// A separator is printed when transitioning between thinking and text so
+/// interleaved thinking reads as distinct sections.
 pub fn print_chunk(chunk: &StreamChunk) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
+    let mut state = CHUNK_STATE.lock().unwrap();
+    print_chunk_to(&mut out, &mut state, chunk);
+    let _ = out.flush();
+}
 
+/// Render a single chunk to `out`, inserting a separator on any transition
+/// between thinking and non-thinking content (in both directions).
+fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamChunk) {
     let is_thinking = chunk.content_type == "thinking";
+    let had_output = state.has_emitted;
+    let prev_thinking = state.was_thinking;
+    state.has_emitted = true;
+    state.was_thinking = is_thinking;
 
-    // Insert a separator when transitioning from thinking -> text.
-    if !is_thinking && WAS_THINKING.swap(false, Ordering::Relaxed) {
+    // Separate thinking from non-thinking in BOTH directions. Chunks are
+    // written without trailing newlines, so without this a thinking block that
+    // follows text would be glued onto the end of the previous line.
+    if had_output && prev_thinking != is_thinking {
         let _ = writeln!(out);
         if use_color() {
             let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
@@ -40,22 +66,16 @@ pub fn print_chunk(chunk: &StreamChunk) {
             let _ = write!(out, "---");
         }
         let _ = writeln!(out);
-        let _ = writeln!(out); // breathing room before response
+        let _ = writeln!(out); // breathing room around the transition
     }
 
-    if is_thinking {
-        WAS_THINKING.store(true, Ordering::Relaxed);
-        if use_color() {
-            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-            let _ = write!(out, "{}", chunk.text);
-            let _ = crossterm::execute!(out, ResetColor);
-        } else {
-            let _ = write!(out, "{}", chunk.text);
-        }
+    if is_thinking && use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        let _ = write!(out, "{}", chunk.text);
+        let _ = crossterm::execute!(out, ResetColor);
     } else {
         let _ = write!(out, "{}", chunk.text);
     }
-    let _ = out.flush();
 }
 
 /// Print stream metadata after stream_end.
@@ -343,8 +363,83 @@ mod tests {
     #[test]
     fn reset_chunk_state_clears_thinking() {
         set_color_enabled(false);
-        WAS_THINKING.store(true, Ordering::Relaxed);
+        {
+            let mut s = CHUNK_STATE.lock().unwrap();
+            s.was_thinking = true;
+            s.has_emitted = true;
+        }
         reset_chunk_state();
-        assert!(!WAS_THINKING.load(Ordering::Relaxed));
+        let s = CHUNK_STATE.lock().unwrap();
+        assert!(!s.was_thinking);
+        assert!(!s.has_emitted);
+    }
+
+    fn chunk(content_type: &str, text: &str) -> StreamChunk {
+        StreamChunk {
+            rid: None,
+            text: text.into(),
+            content_type: content_type.into(),
+        }
+    }
+
+    /// Visual preview harness (not an assertion). Streams interleaved thinking
+    /// token-by-token through the real chunk renderer, color ON, and dumps the
+    /// raw bytes so a terminal shows it exactly as live streaming would.
+    ///
+    /// Run it: `cargo test -p shore-cli render_preview_stream
+    ///          -- --ignored --nocapture --test-threads=1`
+    /// (or via `.claude/skills/run-shore-cli/preview.sh`).
+    #[test]
+    #[ignore = "visual preview; run explicitly with --ignored --nocapture"]
+    fn render_preview_stream() {
+        set_color_enabled(true);
+        let mut state = ChunkState::default();
+        let mut buf = Vec::new();
+        for c in ["Let me ", "reason ", "about this."] {
+            print_chunk_to(&mut buf, &mut state, &chunk("thinking", c));
+        }
+        for c in ["Here's ", "the first ", "answer."] {
+            print_chunk_to(&mut buf, &mut state, &chunk("text", c));
+        }
+        for c in ["Now ", "reconsidering..."] {
+            print_chunk_to(&mut buf, &mut state, &chunk("thinking", c));
+        }
+        for c in ["And ", "the refined ", "conclusion."] {
+            print_chunk_to(&mut buf, &mut state, &chunk("text", c));
+        }
+        set_color_enabled(false);
+        let mut stdout = io::stdout();
+        let _ = stdout.write_all(b"\n----- STREAMING RENDER (live tokens) -----\n");
+        let _ = stdout.write_all(&buf);
+        let _ = stdout.write_all(b"\n----- end -----\n");
+        let _ = stdout.flush();
+    }
+
+    #[test]
+    fn streaming_interleaved_thinking_separated_both_directions() {
+        set_color_enabled(false);
+        let mut state = ChunkState::default();
+        let mut buf = Vec::new();
+        // thinking -> text -> thinking -> text, each as a single chunk.
+        print_chunk_to(&mut buf, &mut state, &chunk("thinking", "T1"));
+        print_chunk_to(&mut buf, &mut state, &chunk("text", "A1"));
+        print_chunk_to(&mut buf, &mut state, &chunk("thinking", "T2"));
+        print_chunk_to(&mut buf, &mut state, &chunk("text", "A2"));
+        let output = String::from_utf8(buf).unwrap();
+
+        // No leading separator; a separator straddles every transition so the
+        // second thinking block is not glued onto the end of the first answer.
+        assert_eq!(output, "T1\n---\n\nA1\n---\n\nT2\n---\n\nA2");
+    }
+
+    #[test]
+    fn streaming_consecutive_same_type_chunks_not_separated() {
+        set_color_enabled(false);
+        let mut state = ChunkState::default();
+        let mut buf = Vec::new();
+        print_chunk_to(&mut buf, &mut state, &chunk("text", "Hello "));
+        print_chunk_to(&mut buf, &mut state, &chunk("text", "world"));
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "Hello world");
     }
 }

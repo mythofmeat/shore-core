@@ -32,6 +32,14 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   entry with an API key.
 
 ### Fixed
+- Interleaved thinking now renders as visually distinct sections in the CLI.
+  The `---` separator that marks a thinking/response boundary was only emitted
+  on the thinking → text transition, never text → thinking. While streaming,
+  chunks carry no trailing newline, so a thinking block that followed text was
+  glued onto the end of the previous response line; in `shore log`/`shore get`
+  the second and later thinking blocks ran on without a separator. Separators
+  now straddle the boundary in both directions in the streaming output and the
+  colored transcript renderer.
 - The dreaming/librarian sweep and heartbeat ticks no longer invalidate
   Anthropic's prompt cache on every iteration. Both rode their task
   instruction as `system_suffix`, which `preprocess_request` re-appended at
