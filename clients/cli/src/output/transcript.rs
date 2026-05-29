@@ -607,7 +607,7 @@ mod tests {
         // with a blank line straddling each thinking/speech boundary.
         assert_eq!(
             output,
-            "\u{2502} \u{25cc} Thinking\n\u{2502}   T1\n\nA1\n\n\u{2502} \u{25cc} Thinking\n\u{2502}   T2\n\nA2\n"
+            " \u{2502} \u{25cc} Thinking\n \u{2502}   T1\n\nA1\n\n \u{2502} \u{25cc} Thinking\n \u{2502}   T2\n\nA2\n"
         );
     }
 
@@ -622,7 +622,7 @@ mod tests {
         // Header line, then each content line gutter-barred under it.
         assert_eq!(
             output,
-            "\u{2502} \u{25cc} Thinking\n\u{2502}   line one\n\u{2502}   line two\n"
+            " \u{2502} \u{25cc} Thinking\n \u{2502}   line one\n \u{2502}   line two\n"
         );
     }
 
@@ -636,7 +636,10 @@ mod tests {
         let mut buf = Vec::new();
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "\u{2502} \u{25cc} Thinking\n\u{2502}   T1\n\nA1\n");
+        assert_eq!(
+            output,
+            " \u{2502} \u{25cc} Thinking\n \u{2502}   T1\n\nA1\n"
+        );
     }
 
     #[test]
@@ -654,7 +657,7 @@ mod tests {
         // Two adjacent process blocks are joined by a bar-only rule, not a blank.
         assert_eq!(
             output,
-            "\u{2502} \u{25cc} Thinking\n\u{2502}   T1\n\u{2502}\n\u{2502} \u{25cc} Thinking\n\u{2502}   T2\n"
+            " \u{2502} \u{25cc} Thinking\n \u{2502}   T1\n \u{2502}\n \u{2502} \u{25cc} Thinking\n \u{2502}   T2\n"
         );
     }
 
@@ -674,7 +677,7 @@ mod tests {
         // (joined by a bar rule), with a blank line to the speech on each side.
         assert_eq!(
             output,
-            "let me check\n\n\u{2502} \u{2192} edit \u{00b7} a.md\n\u{2502}   path: a.md\n\u{2502}\n\u{2502} \u{2713} result\n\u{2502}   done\n\nfixed\n"
+            "let me check\n\n \u{2502} \u{2192} edit \u{00b7} a.md\n \u{2502}   path: a.md\n \u{2502}\n \u{2502} \u{2713} result\n \u{2502}   done\n\nfixed\n"
         );
     }
 

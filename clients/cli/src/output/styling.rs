@@ -501,7 +501,7 @@ mod tests {
         // straddles every thinking/speech transition.
         assert_eq!(
             output,
-            "\u{2502} \u{25cc} Thinking\n\u{2502}   T1\n\nA1\n\n\u{2502} \u{25cc} Thinking\n\u{2502}   T2\n\nA2"
+            " \u{2502} \u{25cc} Thinking\n \u{2502}   T1\n\nA1\n\n \u{2502} \u{25cc} Thinking\n \u{2502}   T2\n\nA2"
         );
     }
 
@@ -520,7 +520,7 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
         assert_eq!(
             output,
-            "\u{2502} \u{25cc} Thinking\n\u{2502}   line one\n\u{2502}   line two\n"
+            " \u{2502} \u{25cc} Thinking\n \u{2502}   line one\n \u{2502}   line two\n"
         );
     }
 
@@ -538,14 +538,14 @@ mod tests {
         );
         assert_eq!(
             String::from_utf8(buf.clone()).unwrap(),
-            "\u{2502} \u{25cc} Thinking\n",
+            " \u{2502} \u{25cc} Thinking\n",
             "header is emitted, content is still buffered"
         );
         flush_thinking(&mut buf, &mut state);
         let output = String::from_utf8(buf).unwrap();
         assert_eq!(
             output,
-            "\u{2502} \u{25cc} Thinking\n\u{2502}   deciding to call a tool\n"
+            " \u{2502} \u{25cc} Thinking\n \u{2502}   deciding to call a tool\n"
         );
     }
 

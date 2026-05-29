@@ -77,9 +77,10 @@ pub(crate) const COLOR_RESULT: Color = Color::Green;
 
 /// The left-gutter bar that runs down the process channel.
 pub(crate) const CHANNEL_BAR: char = '\u{2502}'; // │
-/// Total visible width of a process line's prefix (`"│ "` gutter + two-space
-/// inset), so header labels and body text both land at column 4.
-pub(crate) const PROCESS_INDENT_WIDTH: usize = 4;
+/// Total visible width of a process line's prefix (one leading space + `"│ "`
+/// gutter + two-space inset), so header labels and body text both land at
+/// column 5.
+pub(crate) const PROCESS_INDENT_WIDTH: usize = 5;
 /// Floor for the process text column so a very narrow terminal still wraps.
 pub(crate) const MIN_PROCESS_WIDTH: usize = 24;
 
@@ -96,7 +97,7 @@ fn write_gutter(out: &mut impl Write) {
     if use_color() {
         let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ = write!(out, "{CHANNEL_BAR} ");
+    let _ = write!(out, " {CHANNEL_BAR} ");
     if use_color() {
         let _ = crossterm::execute!(out, ResetColor);
     }
@@ -109,7 +110,7 @@ pub(crate) fn write_channel_rule(out: &mut impl Write) {
     if use_color() {
         let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ = writeln!(out, "{CHANNEL_BAR}");
+    let _ = writeln!(out, " {CHANNEL_BAR}");
     if use_color() {
         let _ = crossterm::execute!(out, ResetColor);
     }
@@ -142,7 +143,7 @@ pub(crate) fn write_process_body(out: &mut impl Write, body: &str) {
             if use_color() {
                 let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
             }
-            let _ = writeln!(out, "{CHANNEL_BAR}   {line}");
+            let _ = writeln!(out, " {CHANNEL_BAR}   {line}");
             if use_color() {
                 let _ = crossterm::execute!(out, ResetColor);
             }
@@ -162,7 +163,7 @@ pub(crate) fn write_thinking_content_line(out: &mut impl Write, line: &str, widt
         let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
     for wrapped in wrap_line(line, width) {
-        let _ = writeln!(out, "{CHANNEL_BAR}   {wrapped}");
+        let _ = writeln!(out, " {CHANNEL_BAR}   {wrapped}");
     }
     if use_color() {
         let _ = crossterm::execute!(out, ResetColor);
@@ -376,7 +377,7 @@ mod tests {
         // Every wrapped row is gutter-barred, text at column 4.
         assert_eq!(
             out,
-            "\u{2502}   the quick\n\u{2502}   brown fox\n\u{2502}   jumps\n"
+            " \u{2502}   the quick\n \u{2502}   brown fox\n \u{2502}   jumps\n"
         );
     }
 
@@ -386,7 +387,7 @@ mod tests {
         let mut buf = Vec::new();
         write_thinking_content_line(&mut buf, "   ", 80);
         let out = String::from_utf8(buf).unwrap();
-        assert_eq!(out, "\u{2502}\n");
+        assert_eq!(out, " \u{2502}\n");
     }
 
     #[test]
@@ -395,7 +396,7 @@ mod tests {
         let mut buf = Vec::new();
         write_sigil_header(&mut buf, SIGIL_THINKING, "Thinking", COLOR_THINKING);
         let out = String::from_utf8(buf).unwrap();
-        assert_eq!(out, "\u{2502} \u{25cc} Thinking\n");
+        assert_eq!(out, " \u{2502} \u{25cc} Thinking\n");
     }
 
     #[test]
@@ -403,7 +404,7 @@ mod tests {
         set_color_enabled(false);
         let mut buf = Vec::new();
         write_channel_rule(&mut buf);
-        assert_eq!(String::from_utf8(buf).unwrap(), "\u{2502}\n");
+        assert_eq!(String::from_utf8(buf).unwrap(), " \u{2502}\n");
     }
 
     #[test]
