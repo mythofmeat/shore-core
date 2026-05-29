@@ -10,9 +10,9 @@ use shore_protocol::tool_display::{format_tool_input_with_limit, format_tool_out
 use shore_protocol::types::ImageRef;
 
 use super::{
-    abbreviate_model, primary_tool_arg, process_wrap_width, use_color, write_process_body,
-    write_sigil_header, write_thinking_content_line, COLOR_RESULT, COLOR_THINKING, COLOR_TOOL,
-    MAX_TOOL_OUTPUT, SIGIL_ERROR, SIGIL_OK, SIGIL_THINKING, SIGIL_TOOL,
+    abbreviate_model, primary_tool_arg, process_wrap_width, use_color, write_channel_rule,
+    write_process_body, write_sigil_header, write_thinking_content_line, COLOR_RESULT,
+    COLOR_THINKING, COLOR_TOOL, MAX_TOOL_OUTPUT, SIGIL_ERROR, SIGIL_OK, SIGIL_THINKING, SIGIL_TOOL,
 };
 use crate::images;
 
@@ -76,8 +76,10 @@ fn begin_block(out: &mut impl Write, state: &mut ChunkState, is_process: bool) {
         let _ = writeln!(out); // close the open content line
         state.at_line_start = true;
     }
-    if is_process || prev_process {
-        let _ = writeln!(out); // blank line between blocks touching the channel
+    if prev_process && is_process {
+        write_channel_rule(out); // keep the gutter unbroken between blocks
+    } else if is_process || prev_process {
+        let _ = writeln!(out); // channel ↔ speech boundary
     }
 }
 
@@ -288,7 +290,7 @@ pub fn print_tool_call(call: &ToolCall) {
     };
     write_sigil_header(&mut out, SIGIL_TOOL, &header, COLOR_TOOL);
     if let Some(input) = format_tool_input(&call.input) {
-        write_process_body(&mut out, &input, Color::DarkGrey);
+        write_process_body(&mut out, &input);
     }
     state.at_line_start = true;
 }
@@ -312,7 +314,7 @@ pub fn print_tool_result(result: &ToolResult) {
     write_sigil_header(&mut out, sigil, label, color);
     // Body stays dim; the colored header carries the status.
     let body = format_tool_output(&result.output);
-    write_process_body(&mut out, &body, Color::DarkGrey);
+    write_process_body(&mut out, &body);
     state.at_line_start = true;
 }
 
@@ -496,10 +498,10 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
 
         // Each thinking block opens with a `◌ Thinking` header; a blank line
-        // straddles every transition so blocks never glue together.
+        // straddles every thinking/speech transition.
         assert_eq!(
             output,
-            "  \u{25cc} Thinking\n    T1\n\nA1\n\n  \u{25cc} Thinking\n    T2\n\nA2"
+            "\u{2502} \u{25cc} Thinking\n\u{2502}   T1\n\nA1\n\n\u{2502} \u{25cc} Thinking\n\u{2502}   T2\n\nA2"
         );
     }
 
@@ -516,7 +518,10 @@ mod tests {
         print_chunk_to(&mut buf, &mut state, &chunk("thinking", "ne two"));
         flush_thinking(&mut buf, &mut state); // simulate stream end
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "  \u{25cc} Thinking\n    line one\n    line two\n");
+        assert_eq!(
+            output,
+            "\u{2502} \u{25cc} Thinking\n\u{2502}   line one\n\u{2502}   line two\n"
+        );
     }
 
     #[test]
@@ -533,12 +538,15 @@ mod tests {
         );
         assert_eq!(
             String::from_utf8(buf.clone()).unwrap(),
-            "  \u{25cc} Thinking\n",
+            "\u{2502} \u{25cc} Thinking\n",
             "header is emitted, content is still buffered"
         );
         flush_thinking(&mut buf, &mut state);
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "  \u{25cc} Thinking\n    deciding to call a tool\n");
+        assert_eq!(
+            output,
+            "\u{2502} \u{25cc} Thinking\n\u{2502}   deciding to call a tool\n"
+        );
     }
 
     #[test]

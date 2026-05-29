@@ -41,11 +41,13 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   a blank line separates every process block from its neighbours (so tool calls
   and results no longer glue to the surrounding text). Thinking content is
   word-wrapped to the terminal width. This replaces the previous mix of yellow
-  `[tool: …]` / `[result]` brackets, two-space tool indents, and the `│`
-  thinking gutter. Tool *results* are no longer truncated. `redacted_thinking`
-  blocks (content-free placeholders) are not shown. The layout is identical in
-  `shore log` / `shore get` and while streaming, and degrades cleanly with color
-  disabled.
+  `[tool: …]` / `[result]` brackets and two-space tool indents. A dim `│` left
+  gutter runs down the whole channel — continuous across consecutive process
+  blocks (joined by a bar-only line) and breaking only where speech begins or
+  ends — to set the channel apart from speech. Tool *results* are no longer
+  truncated. `redacted_thinking` blocks (content-free placeholders) are not
+  shown. The layout is identical in `shore log` / `shore get` and while
+  streaming, and degrades cleanly with color disabled.
 - The dreaming/librarian sweep and heartbeat ticks no longer invalidate
   Anthropic's prompt cache on every iteration. Both rode their task
   instruction as `system_suffix`, which `preprocess_request` re-appended at

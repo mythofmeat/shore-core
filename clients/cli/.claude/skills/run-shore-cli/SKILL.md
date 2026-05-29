@@ -49,31 +49,30 @@ thinking** (thinking → text → tool call → redacted_thinking → thinking �
 through the real `render_message_content` (log) and `print_chunk_to` (stream)
 functions, with color ON, and prints the raw bytes so your terminal colorizes
 them. The layout is a two-channel design: response **speech** is flush-left and
-plain, while thinking, tool calls, and results form one inset **process
-channel** — each block opened by a colored sigil + label header (magenta
-`◌ Thinking`, yellow `→ <tool> · <arg>`, green `✓ result` / red `✗ error`) with
-a dim, four-column-inset body and a blank line between blocks. Thinking content
-is word-wrapped to the terminal width; tool results are not truncated;
-`redacted_thinking` is hidden. The preview thinking blocks are long on purpose
-so you can see the wrapping; resize your terminal and re-run to confirm.
+plain, while thinking, tool calls, and results form one **process channel** down
+a dim `│` left gutter — each block opened by a colored sigil + label header
+(magenta `◌ Thinking`, yellow `→ <tool> · <arg>`, green `✓ result` / red
+`✗ error`) with a dim, gutter-barred body. The gutter is continuous across
+consecutive process blocks (joined by a bar-only line) and breaks only at
+speech. Thinking content is word-wrapped to the terminal width; tool results are
+not truncated; `redacted_thinking` is hidden. The preview thinking blocks are
+long on purpose so you can see the wrapping; resize your terminal and re-run to
+confirm.
 
-Expected shape (log path; headers are colored, bodies dim):
+Expected shape (log path; headers are colored, the gutter + bodies dim):
 
 ```
-  ◌ Thinking
-    Let me reason about this first. The user asked about a long-standing
-    issue, and this paragraph is long so it wraps under the header.
+│ ◌ Thinking
+│   Let me reason about this first. The user asked about a long-standing
+│   issue, and this paragraph is long so it wraps under the gutter.
 
 Here's the first part of my answer.
 
-  → read_file · src/main.rs
-    path: src/main.rs
-
-  ✓ result
-    fn main() { ... }
-
-  ◌ Thinking
-    Now that I've read the file, I can refine my answer.
+│ → read_file · src/main.rs
+│   path: src/main.rs
+│
+│ ✓ result
+│   fn main() { ... }
 
 And here's the refined conclusion.
 ```
@@ -137,12 +136,12 @@ Use the preview path above instead when you only need to see how output looks.
 - **`#[ignore]`, not deletion.** Previews live permanently in the test modules
   but are skipped by default — that's why a normal `output::` run reports
   `2 ignored`. Don't "clean them up."
-- **Shared process-channel primitives.** The sigils, indent, wrap width, and
+- **Shared process-channel primitives.** The sigils, gutter, wrap width, and
   the per-line writers live in `output/mod.rs` (`write_sigil_header`,
-  `write_process_body`, `write_thinking_content_line`, `primary_tool_arg`,
-  `process_wrap_width`, the `SIGIL_*`/`COLOR_*` consts) and are shared by both
-  the transcript renderer and the
-  streaming path so they stay identical. Change them there, not in one path.
+  `write_process_body`, `write_thinking_content_line`, `write_channel_rule`,
+  `primary_tool_arg`, `process_wrap_width`, the `SIGIL_*`/`COLOR_*`/`CHANNEL_BAR`
+  consts) and are shared by both the transcript renderer and the streaming path
+  so they stay identical. Change them there, not in one path.
 - **Two render paths, different rules.** The colored transcript
   (`render_message_content`) and stream use the sigil channel; the `--plain`
   path (`print_log_plain`) instead prefixes each thinking line with `[thinking]`

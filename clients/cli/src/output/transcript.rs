@@ -9,8 +9,9 @@ use super::styling::{
 };
 use super::{
     parse_timestamp, primary_tool_arg, print_dim_line, process_wrap_width, term_width, use_color,
-    write_process_body, write_section_header, write_sigil_header, write_thinking_content_line,
-    COLOR_RESULT, COLOR_THINKING, COLOR_TOOL, SIGIL_ERROR, SIGIL_OK, SIGIL_THINKING, SIGIL_TOOL,
+    write_channel_rule, write_process_body, write_section_header, write_sigil_header,
+    write_thinking_content_line, COLOR_RESULT, COLOR_THINKING, COLOR_TOOL, SIGIL_ERROR, SIGIL_OK,
+    SIGIL_THINKING, SIGIL_TOOL,
 };
 
 // ---------------------------------------------------------------------------
@@ -135,10 +136,10 @@ fn render_message_content(
     if let Some(blocks) = content_blocks {
         if !blocks.is_empty() {
             // Speech (text) is the primary, flush-left voice; thinking, tool
-            // calls, and results form one dim, inset "process" channel. A blank
-            // line separates any two blocks where either side is a process
-            // block, so the channel always stands apart from speech and its own
-            // sub-blocks never glue together. `redacted_thinking` is hidden.
+            // calls, and results form one inset, gutter-barred "process"
+            // channel. Consecutive process blocks are joined by a bar-only rule
+            // so the gutter runs unbroken; a blank line separates the channel
+            // from speech on either side. `redacted_thinking` is hidden.
             let mut prev_process: Option<bool> = None;
             for block in blocks {
                 let block_type = block["type"].as_str().unwrap_or("text");
@@ -154,8 +155,12 @@ fn render_message_content(
                 if !renders {
                     continue;
                 }
-                if prev_process.is_some_and(|prev| prev || is_process) {
-                    let _ = writeln!(out);
+                if let Some(prev) = prev_process {
+                    if prev && is_process {
+                        write_channel_rule(out); // keep the gutter unbroken
+                    } else if prev || is_process {
+                        let _ = writeln!(out); // channel ↔ speech boundary
+                    }
                 }
                 prev_process = Some(is_process);
                 match block_type {
@@ -179,7 +184,7 @@ fn render_message_content(
                         };
                         write_sigil_header(out, SIGIL_TOOL, &header, COLOR_TOOL);
                         if let Some(input_str) = format_tool_input(&block["input"]) {
-                            write_process_body(out, &input_str, Color::DarkGrey);
+                            write_process_body(out, &input_str);
                         }
                     }
                     "tool_result" => {
@@ -193,7 +198,7 @@ fn render_message_content(
                         write_sigil_header(out, sigil, label, color);
                         // Bodies stay dim; the colored header carries the status.
                         let output = format_tool_output(output);
-                        write_process_body(out, &output, Color::DarkGrey);
+                        write_process_body(out, &output);
                     }
                     _ => {}
                 }
@@ -598,11 +603,11 @@ mod tests {
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
 
-        // Each thinking block is a `◌ Thinking` header + inset content, with a
-        // blank line straddling each thinking/speech boundary.
+        // Each thinking block is a `◌ Thinking` header + gutter-barred content,
+        // with a blank line straddling each thinking/speech boundary.
         assert_eq!(
             output,
-            "  \u{25cc} Thinking\n    T1\n\nA1\n\n  \u{25cc} Thinking\n    T2\n\nA2\n"
+            "\u{2502} \u{25cc} Thinking\n\u{2502}   T1\n\nA1\n\n\u{2502} \u{25cc} Thinking\n\u{2502}   T2\n\nA2\n"
         );
     }
 
@@ -614,8 +619,11 @@ mod tests {
         let mut buf = Vec::new();
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
-        // Header line, then each content line inset under it.
-        assert_eq!(output, "  \u{25cc} Thinking\n    line one\n    line two\n");
+        // Header line, then each content line gutter-barred under it.
+        assert_eq!(
+            output,
+            "\u{2502} \u{25cc} Thinking\n\u{2502}   line one\n\u{2502}   line two\n"
+        );
     }
 
     #[test]
@@ -628,25 +636,25 @@ mod tests {
         let mut buf = Vec::new();
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "  \u{25cc} Thinking\n    T1\n\nA1\n");
+        assert_eq!(output, "\u{2502} \u{25cc} Thinking\n\u{2502}   T1\n\nA1\n");
     }
 
     #[test]
-    fn empty_blocks_do_not_emit_dangling_breathing_room() {
+    fn adjacent_process_blocks_joined_by_bar_rule() {
         set_color_enabled(false);
         let blocks = vec![
             serde_json::json!({"type": "thinking", "thinking": "T1"}),
-            // Empty text block must not trigger breathing room on its own.
+            // Empty text block must not break the channel on its own.
             serde_json::json!({"type": "text", "text": ""}),
             serde_json::json!({"type": "thinking", "thinking": "T2"}),
         ];
         let mut buf = Vec::new();
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
-        // Two adjacent thinking blocks are separate process blocks → one blank.
+        // Two adjacent process blocks are joined by a bar-only rule, not a blank.
         assert_eq!(
             output,
-            "  \u{25cc} Thinking\n    T1\n\n  \u{25cc} Thinking\n    T2\n"
+            "\u{2502} \u{25cc} Thinking\n\u{2502}   T1\n\u{2502}\n\u{2502} \u{25cc} Thinking\n\u{2502}   T2\n"
         );
     }
 
@@ -662,11 +670,11 @@ mod tests {
         let mut buf = Vec::new();
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
-        // Speech flush-left; tool call + result are inset sigil blocks, each
-        // separated by a blank line (including from the prior text and result).
+        // Speech flush-left; the tool call + result share one unbroken gutter
+        // (joined by a bar rule), with a blank line to the speech on each side.
         assert_eq!(
             output,
-            "let me check\n\n  \u{2192} edit \u{00b7} a.md\n    path: a.md\n\n  \u{2713} result\n    done\n\nfixed\n"
+            "let me check\n\n\u{2502} \u{2192} edit \u{00b7} a.md\n\u{2502}   path: a.md\n\u{2502}\n\u{2502} \u{2713} result\n\u{2502}   done\n\nfixed\n"
         );
     }
 
