@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/mythofmeat/shore-core/compare/shore-cli-v1.8.11...shore-cli-v2.0.0) - 2026-05-29
+
+### Other
+
+- *(config)* [**breaking**] rename max_tokens to max_output_tokens ([#94](https://github.com/mythofmeat/shore-core/pull/94))
+
 ## [1.8.11](https://github.com/mythofmeat/shore-core/compare/shore-cli-v1.8.10...shore-cli-v1.8.11) - 2026-05-28
 
 ### Fixed

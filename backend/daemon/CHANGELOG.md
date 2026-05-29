@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v6.0.0...shore-daemon-v7.0.0) - 2026-05-29
+
+### Added
+
+- *(catalog)* sort discovered models alphabetically within each provider ([#91](https://github.com/mythofmeat/shore-core/pull/91))
+
+### Fixed
+
+- *(catalog)* apply [chat.<provider>] defaults to discovered models + kill spurious catalog warning ([#96](https://github.com/mythofmeat/shore-core/pull/96))
+- *(history)* tokenized, recency-ranked search_history over chat text only ([#93](https://github.com/mythofmeat/shore-core/pull/93))
+
+### Other
+
+- *(config)* [**breaking**] rename max_tokens to max_output_tokens ([#94](https://github.com/mythofmeat/shore-core/pull/94))
+- *(suite)* wait for observable state in heartbeat/compaction tests ([#95](https://github.com/mythofmeat/shore-core/pull/95))
+
 ## [6.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v5.0.0...shore-daemon-v6.0.0) - 2026-05-28
 
 ### Breaking

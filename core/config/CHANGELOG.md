@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.6.0...shore-config-v0.7.0) - 2026-05-29
+
+### Fixed
+
+- *(catalog)* apply [chat.<provider>] defaults to discovered models + kill spurious catalog warning ([#96](https://github.com/mythofmeat/shore-core/pull/96))
+
+### Other
+
+- *(config)* [**breaking**] rename max_tokens to max_output_tokens ([#94](https://github.com/mythofmeat/shore-core/pull/94))
+
 ## [0.6.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.5.0...shore-config-v0.6.0) - 2026-05-28
 
 ### Fixed
