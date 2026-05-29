@@ -32,19 +32,18 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   entry with an API key.
 
 ### Changed
-- Interleaved thinking now renders as a dim, left-gutter-barred section (`│`
-  prefix) with a blank line of breathing room on each side, in both the live
-  stream and the `shore log`/`shore get` transcript. Thinking text is
-  word-wrapped to the terminal width and every wrapped row carries the gutter,
-  so the bar runs continuously down the left edge instead of only marking the
-  first row of a soft-wrapped paragraph. Previously the only marker was a `---`
-  separator emitted on thinking → text transitions but not text → thinking — so
-  while streaming (chunks carry no trailing newline) a thinking block following
-  text was glued onto the end of the previous line, and in the transcript later
-  thinking blocks ran on without a separator. The gutter prints regardless of
-  color, so thinking stays distinguishable from the response in no-color
-  terminals. `redacted_thinking` blocks (content-free placeholders) are no
-  longer shown.
+- Reworked the CLI transcript and live stream around one cohesive layout:
+  response text (speech) is the primary, flush-left voice, while thinking, tool
+  calls, and tool results form a single dim, inset "process" channel. Each
+  process block opens with a sigil — `◌` thinking, `⚙` tool call (with its
+  primary argument, e.g. the path/command), `✓`/`✗` result — and a four-column
+  hanging indent; a blank line separates every process block from its
+  neighbours (so tool calls and results no longer glue to the surrounding
+  text). Thinking is dim and word-wrapped to the terminal width. This replaces
+  the previous mix of yellow `[tool: …]` / `[result]` brackets, two-space tool
+  indents, and the `│` thinking gutter. `redacted_thinking` blocks (content-free
+  placeholders) are no longer shown. The layout is identical in `shore log` /
+  `shore get` and while streaming, and degrades cleanly with color disabled.
 - The dreaming/librarian sweep and heartbeat ticks no longer invalidate
   Anthropic's prompt cache on every iteration. Both rode their task
   instruction as `system_suffix`, which `preprocess_request` re-appended at

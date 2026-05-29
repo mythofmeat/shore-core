@@ -10,36 +10,43 @@ use shore_protocol::tool_display::{format_tool_input_with_limit, format_tool_out
 use shore_protocol::types::ImageRef;
 
 use super::{
-    abbreviate_model, thinking_wrap_width, use_color, write_thinking_logical_line, MAX_TOOL_OUTPUT,
+    abbreviate_model, primary_tool_arg, process_wrap_width, use_color, write_process_body,
+    write_sigil_header, write_thinking_logical_line, MAX_TOOL_OUTPUT, SIGIL_ERROR, SIGIL_OK,
+    SIGIL_TOOL,
 };
 use crate::images;
 
-/// Running state for the chunk stream. Thinking is word-wrapped to fit under
-/// the gutter, but the wrap width is only known per complete logical line, so
-/// thinking text is buffered until a newline (or a transition out of thinking)
-/// and then emitted wrapped + gutter-barred — matching the transcript renderer.
+/// Running state for the stream, tracking enough to render the same cohesive
+/// channel layout as the transcript: speech flush-left, and thinking/tool/result
+/// as a dim inset "process" channel with blank lines between blocks.
 struct ChunkState {
     /// Whether the previous chunk was thinking content.
     was_thinking: bool,
-    /// Whether any chunk has been printed yet (the first chunk never gets
-    /// leading breathing room).
+    /// Whether anything has been printed this turn (the first block gets no
+    /// leading blank line).
     has_emitted: bool,
-    /// Whether the cursor is at the start of a line (so a transition knows
-    /// whether it must close an open line before the breathing-room blank).
+    /// Whether the cursor is at the start of a line.
     at_line_start: bool,
+    /// Whether the last block was a process block (thinking/tool/result) — used
+    /// to decide when a blank-line separator is needed.
+    last_was_process: bool,
     /// Buffer for the in-progress thinking logical line, accumulated across
     /// chunks until a `\n` completes it.
     thinking_line: String,
+    /// Whether the next thinking row is the first of its block (gets the sigil).
+    thinking_first_row: bool,
 }
 
 impl ChunkState {
-    /// Initial state: nothing emitted, and the cursor sits at column 0 (the
-    /// assistant header line ends with a newline before streaming begins).
+    /// Initial state: nothing emitted, cursor at column 0 (the assistant header
+    /// line ends with a newline before streaming begins).
     const INITIAL: Self = Self {
         was_thinking: false,
         has_emitted: false,
         at_line_start: true,
+        last_was_process: false,
         thinking_line: String::new(),
+        thinking_first_row: true,
     };
 }
 
@@ -51,13 +58,34 @@ impl Default for ChunkState {
 
 static CHUNK_STATE: Mutex<ChunkState> = Mutex::new(ChunkState::INITIAL);
 
-/// Reset stream chunk state (call at the start of each new stream).
+/// Reset stream chunk state. Call once at the start of each turn (not per
+/// tool-loop round) so blank-line separation survives across rounds.
 pub fn reset_chunk_state() {
     *CHUNK_STATE.lock().unwrap() = ChunkState::INITIAL;
 }
 
-/// Print a stream chunk to stdout. Thinking is shown dimmed and gutter-barred,
-/// with a blank line of breathing room straddling each thinking/text boundary.
+/// Begin a new block, inserting a blank-line separator when either this block
+/// or the previous one is a process block. The first block of the turn gets no
+/// leading blank.
+fn begin_block(out: &mut impl Write, state: &mut ChunkState, is_process: bool) {
+    let had = state.has_emitted;
+    state.has_emitted = true;
+    let prev_process = state.last_was_process;
+    state.last_was_process = is_process;
+    if !had {
+        return;
+    }
+    if !state.at_line_start {
+        let _ = writeln!(out); // close the open content line
+        state.at_line_start = true;
+    }
+    if is_process || prev_process {
+        let _ = writeln!(out); // blank line between blocks touching the channel
+    }
+}
+
+/// Print a stream chunk to stdout. Thinking renders as a dim, inset, sigil-led
+/// process block; response text is written verbatim (flush-left, soft-wrapped).
 pub fn print_chunk(chunk: &StreamChunk) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -66,61 +94,52 @@ pub fn print_chunk(chunk: &StreamChunk) {
     let _ = out.flush();
 }
 
-/// Flush any buffered thinking that did not end in a newline (called on a
-/// transition out of thinking and at stream end). Emits the partial line
-/// wrapped + gutter-barred, leaving the cursor at the start of a fresh line.
+/// Flush any buffered thinking that did not end in a newline. Emits the partial
+/// line into the process channel, leaving the cursor at a fresh line start.
 fn flush_thinking(out: &mut impl Write, state: &mut ChunkState) {
     if state.thinking_line.is_empty() {
         return;
     }
     let line = std::mem::take(&mut state.thinking_line);
-    write_thinking_logical_line(out, &line, thinking_wrap_width());
+    write_thinking_logical_line(
+        out,
+        &line,
+        process_wrap_width(),
+        &mut state.thinking_first_row,
+    );
     state.at_line_start = true;
 }
 
-/// Flush any buffered thinking line to stdout (used at stream end).
-pub fn flush_pending_thinking() {
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    let mut state = CHUNK_STATE.lock().unwrap();
-    flush_thinking(&mut out, &mut state);
-    let _ = out.flush();
-}
-
 /// Render a single chunk to `out`. Thinking is buffered per logical line and
-/// emitted dim + word-wrapped + gutter-barred; transitions between thinking and
-/// non-thinking get a blank line of breathing room. Response text is written
-/// verbatim (the terminal soft-wraps it; it has no gutter to preserve).
+/// emitted dim + word-wrapped + sigil-led; transitions between thinking and
+/// speech get a blank-line separator. Response text is written verbatim.
 fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamChunk) {
     let is_thinking = chunk.content_type == "thinking";
-    let had_output = state.has_emitted;
-    let prev_thinking = state.was_thinking;
-    state.has_emitted = true;
-    state.was_thinking = is_thinking;
+    let first = !state.has_emitted;
+    let transition = !first && state.was_thinking != is_thinking;
 
-    // Breathing room on any transition between thinking and non-thinking.
-    if had_output && prev_thinking != is_thinking {
-        if prev_thinking {
-            flush_thinking(out, state); // commit any partial thinking line first
-        }
-        if !state.at_line_start {
-            let _ = writeln!(out); // close the open content line
-            state.at_line_start = true;
-        }
-        let _ = writeln!(out); // one blank line between sections
+    if transition && state.was_thinking {
+        flush_thinking(out, state); // commit the tail of the thinking block first
     }
+    if first || transition {
+        begin_block(out, state, is_thinking);
+        if is_thinking {
+            state.thinking_first_row = true;
+        }
+    }
+    state.was_thinking = is_thinking;
 
     if chunk.text.is_empty() {
         return;
     }
 
     if is_thinking {
-        let width = thinking_wrap_width();
+        let width = process_wrap_width();
         for ch in chunk.text.chars() {
             if ch == '\n' {
                 // A complete logical line (possibly empty) — emit it now.
                 let line = std::mem::take(&mut state.thinking_line);
-                write_thinking_logical_line(out, &line, width);
+                write_thinking_logical_line(out, &line, width, &mut state.thinking_first_row);
                 state.at_line_start = true;
             } else {
                 state.thinking_line.push(ch);
@@ -136,6 +155,12 @@ fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamCh
 pub fn print_stream_end(end: &StreamEnd) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
+
+    // Commit any buffered thinking that ended without a newline.
+    {
+        let mut state = CHUNK_STATE.lock().unwrap();
+        flush_thinking(&mut out, &mut state);
+    }
 
     // Newline after streamed content
     let _ = writeln!(out);
@@ -247,70 +272,53 @@ pub(crate) fn format_tool_output(output: &str) -> String {
     format_tool_output_with_limit(output, Some(MAX_TOOL_OUTPUT))
 }
 
-pub(crate) fn write_tool_body(out: &mut impl Write, body: &str, color: Color) {
-    if body.is_empty() {
-        return;
-    }
-
-    if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(color));
-    }
-    for line in body.lines() {
-        let _ = writeln!(out, "  {line}");
-    }
-    if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
-    }
-}
-
 pub(crate) fn write_tool_body_plain(out: &mut impl Write, body: &str) {
     for line in body.lines() {
         let _ = writeln!(out, "  {line}");
     }
 }
 
-/// Print a tool call notification with its input arguments.
+/// Print a tool call into the process channel: `⚙ name · arg` then its input.
 pub fn print_tool_call(call: &ToolCall) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
+    let mut state = CHUNK_STATE.lock().unwrap();
 
-    let _ = writeln!(out);
-    if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkYellow));
-    }
-    let _ = write!(out, "[tool: {}]", call.tool_name);
-    if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
-    }
-    let _ = writeln!(out);
+    flush_thinking(&mut out, &mut state); // commit any buffered thinking first
+    begin_block(&mut out, &mut state, true);
+    state.was_thinking = false;
+
+    let header = match primary_tool_arg(&call.input) {
+        Some(arg) => format!("{} \u{00b7} {arg}", call.tool_name),
+        None => call.tool_name.clone(),
+    };
+    write_sigil_header(&mut out, SIGIL_TOOL, &header, Color::DarkGrey);
     if let Some(input) = format_tool_input(&call.input) {
-        write_tool_body(&mut out, &input, Color::DarkGrey);
+        write_process_body(&mut out, &input, Color::DarkGrey);
     }
+    state.at_line_start = true;
 }
 
-/// Print a tool result. Long outputs are truncated.
+/// Print a tool result into the process channel: `✓ result` / `✗ error` then
+/// the (truncated) output.
 pub fn print_tool_result(result: &ToolResult) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
+    let mut state = CHUNK_STATE.lock().unwrap();
 
-    let color = if result.is_error {
-        Color::Red
+    flush_thinking(&mut out, &mut state);
+    begin_block(&mut out, &mut state, true);
+    state.was_thinking = false;
+
+    let (sigil, label, color) = if result.is_error {
+        (SIGIL_ERROR, "error", Color::Red)
     } else {
-        Color::DarkGrey
+        (SIGIL_OK, "result", Color::DarkGrey)
     };
-    if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(color));
-    }
-
-    let label = if result.is_error { "error" } else { "result" };
-    let _ = write!(out, "[{label}: {}]", result.tool_name);
-
-    if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
-    }
-    let _ = writeln!(out);
+    write_sigil_header(&mut out, sigil, label, color);
     let body = format_tool_output(&result.output);
-    write_tool_body(&mut out, &body, color);
+    write_process_body(&mut out, &body, color);
+    state.at_line_start = true;
 }
 
 /// Print the "thinking..." indicator when streaming starts.
@@ -481,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_interleaved_thinking_gutter_both_directions() {
+    fn streaming_interleaved_thinking_sigil_both_directions() {
         set_color_enabled(false);
         let mut state = ChunkState::default();
         let mut buf = Vec::new();
@@ -492,10 +500,10 @@ mod tests {
         print_chunk_to(&mut buf, &mut state, &chunk("text", "A2"));
         let output = String::from_utf8(buf).unwrap();
 
-        // Thinking is gutter-barred; a blank line of breathing room straddles
+        // Thinking is a ◌ sigil block; a blank line of breathing room straddles
         // every transition so the second thinking block is not glued onto the
         // end of the first answer.
-        assert_eq!(output, "  \u{2502} T1\n\nA1\n\n  \u{2502} T2\n\nA2");
+        assert_eq!(output, "  \u{25cc} T1\n\nA1\n\n  \u{25cc} T2\n\nA2");
     }
 
     #[test]
@@ -504,14 +512,13 @@ mod tests {
         let mut state = ChunkState::default();
         let mut buf = Vec::new();
         // A logical line is split across chunks (the newline lands mid-chunk,
-        // and a word straddles the boundary). Each completed line is emitted
-        // gutter-barred; the trailing partial line waits for an explicit flush
-        // (stream end / transition).
+        // and a word straddles the boundary). The sigil lands on the first row;
+        // later lines hang-indent. The trailing partial line waits for a flush.
         print_chunk_to(&mut buf, &mut state, &chunk("thinking", "line one\nli"));
         print_chunk_to(&mut buf, &mut state, &chunk("thinking", "ne two"));
         flush_thinking(&mut buf, &mut state); // simulate stream end
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "  \u{2502} line one\n  \u{2502} line two\n");
+        assert_eq!(output, "  \u{25cc} line one\n    line two\n");
     }
 
     #[test]
@@ -529,7 +536,7 @@ mod tests {
         assert!(buf.is_empty(), "nothing emitted until the line is flushed");
         flush_thinking(&mut buf, &mut state);
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "  \u{2502} deciding to call a tool\n");
+        assert_eq!(output, "  \u{25cc} deciding to call a tool\n");
     }
 
     #[test]

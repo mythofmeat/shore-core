@@ -50,39 +50,130 @@ pub(crate) fn term_width() -> usize {
         .unwrap_or(80)
 }
 
-/// Left-gutter prefix for thinking lines: two spaces, a box-drawing bar, and a
-/// space — four visible columns.
-pub(crate) const THINKING_GUTTER: &str = "  \u{2502} ";
-/// Visible width of [`THINKING_GUTTER`].
-pub(crate) const THINKING_GUTTER_WIDTH: usize = 4;
-/// Floor for the thinking text column so a very narrow terminal still wraps.
-pub(crate) const MIN_THINKING_WIDTH: usize = 24;
+// ---------------------------------------------------------------------------
+// Process channel: thinking, tool calls, and tool results render as one
+// cohesive secondary channel — dim, inset, each block opened by a single sigil
+// with a four-column hanging indent. Response text (speech) stays flush-left
+// and plain; the two channels are separated by blank lines.
+// ---------------------------------------------------------------------------
 
-/// Width available for wrapped thinking text after the gutter prefix.
-pub(crate) fn thinking_wrap_width() -> usize {
+/// Sigil marking a thinking block.
+pub(crate) const SIGIL_THINKING: char = '\u{25cc}'; // ◌
+/// Sigil marking a tool call.
+pub(crate) const SIGIL_TOOL: char = '\u{2699}'; // ⚙
+/// Sigil marking a successful tool result.
+pub(crate) const SIGIL_OK: char = '\u{2713}'; // ✓
+/// Sigil marking a failed tool result.
+pub(crate) const SIGIL_ERROR: char = '\u{2717}'; // ✗
+
+/// Indent for wrapped/continuation lines and tool bodies — four columns, the
+/// width of a `"  X "` sigil prefix, so the whole channel aligns.
+pub(crate) const PROCESS_INDENT: &str = "    ";
+/// Visible width of [`PROCESS_INDENT`].
+pub(crate) const PROCESS_INDENT_WIDTH: usize = 4;
+/// Floor for the process text column so a very narrow terminal still wraps.
+pub(crate) const MIN_PROCESS_WIDTH: usize = 24;
+
+/// Width available for wrapped process text after the indent.
+pub(crate) fn process_wrap_width() -> usize {
     term_width()
-        .saturating_sub(THINKING_GUTTER_WIDTH)
-        .max(MIN_THINKING_WIDTH)
+        .saturating_sub(PROCESS_INDENT_WIDTH)
+        .max(MIN_PROCESS_WIDTH)
 }
 
-/// Write one logical thinking line to `out`: dim, word-wrapped to `width`, with
-/// every wrapped row prefixed by the gutter so the bar runs continuously down
-/// the left edge. A blank line yields a bare gutter to keep the bar unbroken.
-/// The `│` prints regardless of color so thinking stays distinguishable from
-/// the response in no-color terminals; dim styling applies only with color.
-pub(crate) fn write_thinking_logical_line(out: &mut impl Write, line: &str, width: usize) {
+/// Write a process-block header line: `"  ⟨sigil⟩ ⟨text⟩"`, in `color` when
+/// color is enabled.
+pub(crate) fn write_sigil_header(out: &mut impl Write, sigil: char, text: &str, color: Color) {
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(color));
+    }
+    let _ = writeln!(out, "  {sigil} {text}");
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+}
+
+/// Write a tool body inset into the process channel. Not word-wrapped — tool
+/// I/O is often structured or code, so it is only indented under the sigil and
+/// left to soft-wrap.
+pub(crate) fn write_process_body(out: &mut impl Write, body: &str, color: Color) {
+    if body.is_empty() {
+        return;
+    }
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(color));
+    }
+    for line in body.lines() {
+        let _ = writeln!(out, "{PROCESS_INDENT}{line}");
+    }
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+}
+
+/// Write one logical line of a thinking block: dim, word-wrapped to `width`.
+/// The first rendered row of the block carries the ◌ sigil; later rows (and
+/// later logical lines) hang-indent to align under it. `first_row` is the
+/// caller's running "have we emitted the sigil yet" flag.
+pub(crate) fn write_thinking_logical_line(
+    out: &mut impl Write,
+    line: &str,
+    width: usize,
+    first_row: &mut bool,
+) {
     if use_color() {
         let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
     if line.trim().is_empty() {
-        let _ = writeln!(out, "  \u{2502}");
+        let _ = writeln!(out); // preserve blank lines within a thought
     } else {
         for wrapped in wrap_line(line, width) {
-            let _ = writeln!(out, "{THINKING_GUTTER}{wrapped}");
+            if *first_row {
+                let _ = writeln!(out, "  {SIGIL_THINKING} {wrapped}");
+                *first_row = false;
+            } else {
+                let _ = writeln!(out, "{PROCESS_INDENT}{wrapped}");
+            }
         }
     }
     if use_color() {
         let _ = crossterm::execute!(out, ResetColor);
+    }
+}
+
+/// Extract a short, human-meaningful "primary argument" from a tool input
+/// object (the path/command/query/… most worth showing on the sigil line).
+pub(crate) fn primary_tool_arg(input: &serde_json::Value) -> Option<String> {
+    const KEYS: &[&str] = &[
+        "path",
+        "file_path",
+        "command",
+        "cmd",
+        "query",
+        "pattern",
+        "url",
+        "name",
+        "key",
+    ];
+    let obj = input.as_object()?;
+    for key in KEYS {
+        if let Some(s) = obj.get(*key).and_then(|v| v.as_str()) {
+            let s = s.trim();
+            if !s.is_empty() {
+                return Some(truncate_chars(s, 60));
+            }
+        }
+    }
+    None
+}
+
+/// Truncate `s` to at most `max` chars, appending `…` when shortened.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{kept}\u{2026}")
     }
 }
 
@@ -249,23 +340,52 @@ mod tests {
     }
 
     #[test]
-    fn write_thinking_logical_line_gutters_and_wraps() {
+    fn write_thinking_logical_line_sigil_first_then_hanging_indent() {
         set_color_enabled(false);
         let mut buf = Vec::new();
-        write_thinking_logical_line(&mut buf, "the quick brown fox jumps", 10);
+        let mut first = true;
+        write_thinking_logical_line(&mut buf, "the quick brown fox jumps", 10, &mut first);
         let out = String::from_utf8(buf).unwrap();
-        assert_eq!(
-            out,
-            "  \u{2502} the quick\n  \u{2502} brown fox\n  \u{2502} jumps\n"
-        );
+        // First wrapped row carries the ◌ sigil; later rows hang-indent.
+        assert_eq!(out, "  \u{25cc} the quick\n    brown fox\n    jumps\n");
+        assert!(!first, "sigil should have been consumed");
     }
 
     #[test]
-    fn write_thinking_logical_line_blank_is_bare_gutter() {
+    fn write_thinking_logical_line_continuation_has_no_sigil() {
         set_color_enabled(false);
         let mut buf = Vec::new();
-        write_thinking_logical_line(&mut buf, "   ", 80);
+        let mut first = false; // a later logical line in the same block
+        write_thinking_logical_line(&mut buf, "second thought", 80, &mut first);
         let out = String::from_utf8(buf).unwrap();
-        assert_eq!(out, "  \u{2502}\n");
+        assert_eq!(out, "    second thought\n");
+    }
+
+    #[test]
+    fn write_thinking_logical_line_blank_is_empty_line() {
+        set_color_enabled(false);
+        let mut buf = Vec::new();
+        let mut first = true;
+        write_thinking_logical_line(&mut buf, "   ", 80, &mut first);
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(out, "\n");
+        assert!(first, "a blank line must not consume the sigil");
+    }
+
+    #[test]
+    fn primary_tool_arg_picks_known_key() {
+        let input = serde_json::json!({"path": "src/main.rs", "edits": []});
+        assert_eq!(primary_tool_arg(&input).as_deref(), Some("src/main.rs"));
+        let input = serde_json::json!({"foo": "bar"});
+        assert_eq!(primary_tool_arg(&input), None);
+    }
+
+    #[test]
+    fn primary_tool_arg_truncates_long_values() {
+        let long = "a".repeat(100);
+        let input = serde_json::json!({ "command": long });
+        let arg = primary_tool_arg(&input).unwrap();
+        assert_eq!(arg.chars().count(), 60);
+        assert!(arg.ends_with('\u{2026}'));
     }
 }

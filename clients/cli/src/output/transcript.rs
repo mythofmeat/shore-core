@@ -5,11 +5,12 @@ use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use shore_protocol::server_msg::NewMessage;
 
 use super::styling::{
-    format_tool_input, format_tool_output, print_image_refs, write_tool_body, write_tool_body_plain,
+    format_tool_input, format_tool_output, print_image_refs, write_tool_body_plain,
 };
 use super::{
-    parse_timestamp, print_dim_line, term_width, thinking_wrap_width, use_color,
-    write_section_header, write_thinking_logical_line,
+    parse_timestamp, primary_tool_arg, print_dim_line, process_wrap_width, term_width, use_color,
+    write_process_body, write_section_header, write_sigil_header, write_thinking_logical_line,
+    SIGIL_ERROR, SIGIL_OK, SIGIL_TOOL,
 };
 
 // ---------------------------------------------------------------------------
@@ -114,15 +115,13 @@ fn count_user_turn_values(messages: &[serde_json::Value]) -> usize {
         .count()
 }
 
-/// Render a thinking block as a dim, left-gutter-barred section.
-///
-/// Each logical line is word-wrapped to the terminal width and every wrapped
-/// row is prefixed with the gutter, so the bar runs continuously down the left
-/// edge instead of only marking the first row of a soft-wrapped paragraph.
-fn write_thinking_gutter(out: &mut impl Write, thinking: &str) {
-    let width = thinking_wrap_width();
+/// Render a thinking block into the process channel: a ◌ sigil on the first
+/// row, dim, word-wrapped, with later rows hanging-indented under it.
+fn write_thinking(out: &mut impl Write, thinking: &str) {
+    let width = process_wrap_width();
+    let mut first_row = true;
     for line in thinking.lines() {
-        write_thinking_logical_line(out, line, width);
+        write_thinking_logical_line(out, line, width, &mut first_row);
     }
 }
 
@@ -135,15 +134,15 @@ fn render_message_content(
 ) {
     if let Some(blocks) = content_blocks {
         if !blocks.is_empty() {
-            // Track the thinking-ness of the previously rendered block so a
-            // blank line of breathing room straddles each transition between a
-            // thinking section and the surrounding content. Only blocks that
-            // actually render update this, so empty/hidden blocks never leave a
-            // dangling gap. `redacted_thinking` is intentionally not shown.
-            let mut prev_thinkish: Option<bool> = None;
+            // Speech (text) is the primary, flush-left voice; thinking, tool
+            // calls, and results form one dim, inset "process" channel. A blank
+            // line separates any two blocks where either side is a process
+            // block, so the channel always stands apart from speech and its own
+            // sub-blocks never glue together. `redacted_thinking` is hidden.
+            let mut prev_process: Option<bool> = None;
             for block in blocks {
                 let block_type = block["type"].as_str().unwrap_or("text");
-                let thinkish = block_type == "thinking";
+                let is_process = block_type != "text";
                 // Whether this block will actually emit any visible output.
                 let renders = match block_type {
                     "text" => !block["text"].as_str().unwrap_or("").is_empty(),
@@ -155,12 +154,10 @@ fn render_message_content(
                 if !renders {
                     continue;
                 }
-                // Blank line of breathing room when crossing into or out of a
-                // thinking section.
-                if prev_thinkish.is_some_and(|prev| prev != thinkish) {
+                if prev_process.is_some_and(|prev| prev || is_process) {
                     let _ = writeln!(out);
                 }
-                prev_thinkish = Some(thinkish);
+                prev_process = Some(is_process);
                 match block_type {
                     "text" => {
                         let text = block["text"].as_str().unwrap_or("");
@@ -171,42 +168,31 @@ fn render_message_content(
                     "thinking" => {
                         let thinking = block["thinking"].as_str().unwrap_or("");
                         if !thinking.is_empty() {
-                            write_thinking_gutter(out, thinking);
+                            write_thinking(out, thinking);
                         }
                     }
                     "tool_use" => {
                         let name = block["name"].as_str().unwrap_or("?");
-                        if use_color() {
-                            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkYellow));
-                        }
-                        let _ = write!(out, "[tool: {name}]");
-                        if use_color() {
-                            let _ = crossterm::execute!(out, ResetColor);
-                        }
-                        let _ = writeln!(out);
+                        let header = match primary_tool_arg(&block["input"]) {
+                            Some(arg) => format!("{name} \u{00b7} {arg}"),
+                            None => name.to_string(),
+                        };
+                        write_sigil_header(out, SIGIL_TOOL, &header, Color::DarkGrey);
                         if let Some(input_str) = format_tool_input(&block["input"]) {
-                            write_tool_body(out, &input_str, Color::DarkGrey);
+                            write_process_body(out, &input_str, Color::DarkGrey);
                         }
                     }
                     "tool_result" => {
                         let output = block["content"].as_str().unwrap_or("");
                         let is_error = block["is_error"].as_bool().unwrap_or(false);
-                        let color = if is_error {
-                            Color::Red
+                        let (sigil, label, color) = if is_error {
+                            (SIGIL_ERROR, "error", Color::Red)
                         } else {
-                            Color::DarkGrey
+                            (SIGIL_OK, "result", Color::DarkGrey)
                         };
-                        let label = if is_error { "error" } else { "result" };
-                        if use_color() {
-                            let _ = crossterm::execute!(out, SetForegroundColor(color));
-                        }
-                        let _ = write!(out, "[{label}]");
-                        if use_color() {
-                            let _ = crossterm::execute!(out, ResetColor);
-                        }
-                        let _ = writeln!(out);
+                        write_sigil_header(out, sigil, label, color);
                         let output = format_tool_output(output);
-                        write_tool_body(out, &output, color);
+                        write_process_body(out, &output, color);
                     }
                     _ => {}
                 }
@@ -599,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn interleaved_thinking_gutter_both_directions() {
+    fn interleaved_thinking_sigil_both_directions() {
         set_color_enabled(false);
         let blocks = vec![
             serde_json::json!({"type": "thinking", "thinking": "T1"}),
@@ -611,20 +597,21 @@ mod tests {
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
 
-        // Order preserved; thinking is gutter-barred, with a blank line of
-        // breathing room straddling each thinking/text boundary.
-        assert_eq!(output, "  \u{2502} T1\n\nA1\n\n  \u{2502} T2\n\nA2\n");
+        // Order preserved; thinking is a ◌ sigil block, with a blank line of
+        // breathing room straddling each thinking/speech boundary.
+        assert_eq!(output, "  \u{25cc} T1\n\nA1\n\n  \u{25cc} T2\n\nA2\n");
     }
 
     #[test]
-    fn thinking_gutter_prefixes_every_line() {
+    fn thinking_sigil_then_hanging_indent() {
         set_color_enabled(false);
         let blocks =
             vec![serde_json::json!({"type": "thinking", "thinking": "line one\nline two"})];
         let mut buf = Vec::new();
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "  \u{2502} line one\n  \u{2502} line two\n");
+        // Sigil on the first row; later lines hang-indent under it.
+        assert_eq!(output, "  \u{25cc} line one\n    line two\n");
     }
 
     #[test]
@@ -637,7 +624,7 @@ mod tests {
         let mut buf = Vec::new();
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "  \u{2502} T1\n\nA1\n");
+        assert_eq!(output, "  \u{25cc} T1\n\nA1\n");
     }
 
     #[test]
@@ -652,8 +639,28 @@ mod tests {
         let mut buf = Vec::new();
         render_message_content(&mut buf, Some(&blocks), "", false);
         let output = String::from_utf8(buf).unwrap();
-        // Two consecutive thinking blocks form one section: no blank between.
-        assert_eq!(output, "  \u{2502} T1\n  \u{2502} T2\n");
+        // Two adjacent thinking blocks are separate process blocks → one blank.
+        assert_eq!(output, "  \u{25cc} T1\n\n  \u{25cc} T2\n");
+    }
+
+    #[test]
+    fn tool_call_and_result_render_with_sigils_and_separators() {
+        set_color_enabled(false);
+        let blocks = vec![
+            serde_json::json!({"type": "text", "text": "let me check"}),
+            serde_json::json!({"type": "tool_use", "name": "edit", "input": {"path": "a.md"}}),
+            serde_json::json!({"type": "tool_result", "content": "done", "is_error": false}),
+            serde_json::json!({"type": "text", "text": "fixed"}),
+        ];
+        let mut buf = Vec::new();
+        render_message_content(&mut buf, Some(&blocks), "", false);
+        let output = String::from_utf8(buf).unwrap();
+        // Speech flush-left; tool call + result are inset sigil blocks, each
+        // separated by a blank line (including from the prior text and result).
+        assert_eq!(
+            output,
+            "let me check\n\n  \u{2699} edit \u{00b7} a.md\n    path: a.md\n\n  \u{2713} result\n    done\n\nfixed\n"
+        );
     }
 
     #[test]
