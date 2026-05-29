@@ -1143,6 +1143,9 @@ async fn recv_streaming_response(
             }
             ServerMessage::StreamEnd(end) => {
                 spinner.stop().await;
+                // Commit any buffered thinking before the round boundary so it
+                // isn't dropped by the next round's reset_chunk_state().
+                output::flush_pending_thinking();
                 debug!(finish_reason = end.finish_reason, "Stream complete");
                 if end.finish_reason == "tool_use" {
                     // Tool loop: more messages will follow.
@@ -1155,6 +1158,9 @@ async fn recv_streaming_response(
             }
             ServerMessage::ToolCall(call) => {
                 spinner.clear().await;
+                // A model may stream thinking and then call a tool without a
+                // trailing newline; flush it so it isn't glued to the tool line.
+                output::flush_pending_thinking();
                 output::print_tool_call(call);
             }
             ServerMessage::ToolResult(result) => {

@@ -50,6 +50,70 @@ pub(crate) fn term_width() -> usize {
         .unwrap_or(80)
 }
 
+/// Left-gutter prefix for thinking lines: two spaces, a box-drawing bar, and a
+/// space — four visible columns.
+pub(crate) const THINKING_GUTTER: &str = "  \u{2502} ";
+/// Visible width of [`THINKING_GUTTER`].
+pub(crate) const THINKING_GUTTER_WIDTH: usize = 4;
+/// Floor for the thinking text column so a very narrow terminal still wraps.
+pub(crate) const MIN_THINKING_WIDTH: usize = 24;
+
+/// Width available for wrapped thinking text after the gutter prefix.
+pub(crate) fn thinking_wrap_width() -> usize {
+    term_width()
+        .saturating_sub(THINKING_GUTTER_WIDTH)
+        .max(MIN_THINKING_WIDTH)
+}
+
+/// Write one logical thinking line to `out`: dim, word-wrapped to `width`, with
+/// every wrapped row prefixed by the gutter so the bar runs continuously down
+/// the left edge. A blank line yields a bare gutter to keep the bar unbroken.
+/// The `│` prints regardless of color so thinking stays distinguishable from
+/// the response in no-color terminals; dim styling applies only with color.
+pub(crate) fn write_thinking_logical_line(out: &mut impl Write, line: &str, width: usize) {
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+    }
+    if line.trim().is_empty() {
+        let _ = writeln!(out, "  \u{2502}");
+    } else {
+        for wrapped in wrap_line(line, width) {
+            let _ = writeln!(out, "{THINKING_GUTTER}{wrapped}");
+        }
+    }
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+}
+
+/// Greedy word-wrap of a single logical line to `width` columns (counted in
+/// chars). Whitespace runs collapse to single spaces. A word longer than
+/// `width` is emitted on its own line rather than hard-split. An empty/blank
+/// input yields a single empty line so callers can still emit a gutter for it.
+pub(crate) fn wrap_line(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    let mut cur_len = 0usize;
+    for word in text.split_whitespace() {
+        let wlen = word.chars().count();
+        if cur_len == 0 {
+            cur.push_str(word);
+            cur_len = wlen;
+        } else if cur_len + 1 + wlen <= width {
+            cur.push(' ');
+            cur.push_str(word);
+            cur_len += 1 + wlen;
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur.push_str(word);
+            cur_len = wlen;
+        }
+    }
+    lines.push(cur);
+    lines
+}
+
 /// Parse an RFC 3339 timestamp to local time.
 pub(crate) fn parse_timestamp(ts: &str) -> Option<DateTime<Local>> {
     DateTime::<FixedOffset>::parse_from_rfc3339(ts)
@@ -153,5 +217,55 @@ mod tests {
     fn abbreviate_preserves_non_date_suffix() {
         assert_eq!(abbreviate_model("model-latest"), "model-latest");
         assert_eq!(abbreviate_model("model-v2"), "model-v2");
+    }
+
+    #[test]
+    fn wrap_line_breaks_at_word_boundaries() {
+        // width 10: greedy packing, break before a word that would overflow.
+        assert_eq!(
+            wrap_line("the quick brown fox jumps", 10),
+            vec!["the quick", "brown fox", "jumps"]
+        );
+    }
+
+    #[test]
+    fn wrap_line_short_input_is_single_line() {
+        assert_eq!(wrap_line("hello world", 80), vec!["hello world"]);
+    }
+
+    #[test]
+    fn wrap_line_long_word_is_not_split() {
+        // A word longer than width gets its own line rather than a hard split.
+        assert_eq!(
+            wrap_line("a supercalifragilistic b", 8),
+            vec!["a", "supercalifragilistic", "b"]
+        );
+    }
+
+    #[test]
+    fn wrap_line_collapses_whitespace() {
+        assert_eq!(wrap_line("  spaced   out  ", 80), vec!["spaced out"]);
+        assert_eq!(wrap_line("", 80), vec![""]);
+    }
+
+    #[test]
+    fn write_thinking_logical_line_gutters_and_wraps() {
+        set_color_enabled(false);
+        let mut buf = Vec::new();
+        write_thinking_logical_line(&mut buf, "the quick brown fox jumps", 10);
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            out,
+            "  \u{2502} the quick\n  \u{2502} brown fox\n  \u{2502} jumps\n"
+        );
+    }
+
+    #[test]
+    fn write_thinking_logical_line_blank_is_bare_gutter() {
+        set_color_enabled(false);
+        let mut buf = Vec::new();
+        write_thinking_logical_line(&mut buf, "   ", 80);
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(out, "  \u{2502}\n");
     }
 }

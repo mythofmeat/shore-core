@@ -9,26 +9,27 @@ use shore_protocol::server_msg::{
 use shore_protocol::tool_display::{format_tool_input_with_limit, format_tool_output_with_limit};
 use shore_protocol::types::ImageRef;
 
-use super::{abbreviate_model, use_color, MAX_TOOL_OUTPUT};
+use super::{
+    abbreviate_model, thinking_wrap_width, use_color, write_thinking_logical_line, MAX_TOOL_OUTPUT,
+};
 use crate::images;
 
-/// Left-gutter prefix for streamed thinking lines (matches the transcript
-/// renderer's `write_thinking_gutter`). Printed regardless of color so thinking
-/// stays distinguishable in no-color terminals.
-const THINKING_GUTTER: &str = "  \u{2502} ";
-
-/// Running state for the chunk stream, tracking transitions between thinking
-/// and non-thinking content so breathing room and the thinking gutter land
-/// correctly across chunk boundaries.
+/// Running state for the chunk stream. Thinking is word-wrapped to fit under
+/// the gutter, but the wrap width is only known per complete logical line, so
+/// thinking text is buffered until a newline (or a transition out of thinking)
+/// and then emitted wrapped + gutter-barred — matching the transcript renderer.
 struct ChunkState {
     /// Whether the previous chunk was thinking content.
     was_thinking: bool,
     /// Whether any chunk has been printed yet (the first chunk never gets
     /// leading breathing room).
     has_emitted: bool,
-    /// Whether the cursor is at the start of a line, so the next thinking
-    /// character knows to emit the gutter prefix first.
+    /// Whether the cursor is at the start of a line (so a transition knows
+    /// whether it must close an open line before the breathing-room blank).
     at_line_start: bool,
+    /// Buffer for the in-progress thinking logical line, accumulated across
+    /// chunks until a `\n` completes it.
+    thinking_line: String,
 }
 
 impl ChunkState {
@@ -38,6 +39,7 @@ impl ChunkState {
         was_thinking: false,
         has_emitted: false,
         at_line_start: true,
+        thinking_line: String::new(),
     };
 }
 
@@ -64,9 +66,31 @@ pub fn print_chunk(chunk: &StreamChunk) {
     let _ = out.flush();
 }
 
-/// Render a single chunk to `out`. Thinking chunks are dimmed and each thinking
-/// line is prefixed with the gutter bar; transitions between thinking and
-/// non-thinking get a blank line of breathing room.
+/// Flush any buffered thinking that did not end in a newline (called on a
+/// transition out of thinking and at stream end). Emits the partial line
+/// wrapped + gutter-barred, leaving the cursor at the start of a fresh line.
+fn flush_thinking(out: &mut impl Write, state: &mut ChunkState) {
+    if state.thinking_line.is_empty() {
+        return;
+    }
+    let line = std::mem::take(&mut state.thinking_line);
+    write_thinking_logical_line(out, &line, thinking_wrap_width());
+    state.at_line_start = true;
+}
+
+/// Flush any buffered thinking line to stdout (used at stream end).
+pub fn flush_pending_thinking() {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let mut state = CHUNK_STATE.lock().unwrap();
+    flush_thinking(&mut out, &mut state);
+    let _ = out.flush();
+}
+
+/// Render a single chunk to `out`. Thinking is buffered per logical line and
+/// emitted dim + word-wrapped + gutter-barred; transitions between thinking and
+/// non-thinking get a blank line of breathing room. Response text is written
+/// verbatim (the terminal soft-wraps it; it has no gutter to preserve).
 fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamChunk) {
     let is_thinking = chunk.content_type == "thinking";
     let had_output = state.has_emitted;
@@ -76,11 +100,14 @@ fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamCh
 
     // Breathing room on any transition between thinking and non-thinking.
     if had_output && prev_thinking != is_thinking {
+        if prev_thinking {
+            flush_thinking(out, state); // commit any partial thinking line first
+        }
         if !state.at_line_start {
-            let _ = writeln!(out); // close the open content line first
+            let _ = writeln!(out); // close the open content line
+            state.at_line_start = true;
         }
         let _ = writeln!(out); // one blank line between sections
-        state.at_line_start = true;
     }
 
     if chunk.text.is_empty() {
@@ -88,32 +115,20 @@ fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamCh
     }
 
     if is_thinking {
-        write_thinking_chunk(out, state, &chunk.text);
+        let width = thinking_wrap_width();
+        for ch in chunk.text.chars() {
+            if ch == '\n' {
+                // A complete logical line (possibly empty) — emit it now.
+                let line = std::mem::take(&mut state.thinking_line);
+                write_thinking_logical_line(out, &line, width);
+                state.at_line_start = true;
+            } else {
+                state.thinking_line.push(ch);
+            }
+        }
     } else {
         let _ = write!(out, "{}", chunk.text);
         state.at_line_start = chunk.text.ends_with('\n');
-    }
-}
-
-/// Write a thinking chunk dimmed, emitting the gutter prefix at the start of
-/// each line. Tracks `at_line_start` across chunks so a thinking block split
-/// over several chunks is gutter-barred correctly.
-fn write_thinking_chunk(out: &mut impl Write, state: &mut ChunkState, text: &str) {
-    if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-    }
-    for ch in text.chars() {
-        if state.at_line_start {
-            let _ = write!(out, "{THINKING_GUTTER}");
-            state.at_line_start = false;
-        }
-        let _ = write!(out, "{ch}");
-        if ch == '\n' {
-            state.at_line_start = true;
-        }
-    }
-    if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -436,13 +451,22 @@ mod tests {
         set_color_enabled(true);
         let mut state = ChunkState::default();
         let mut buf = Vec::new();
-        for c in ["Let me ", "reason ", "about this."] {
+        // A long thinking paragraph (streamed in fragments) to show wrapping.
+        for c in [
+            "Let me reason about this carefully — the user's query ",
+            "spans more than the wrap width, so the gutter bar has to ",
+            "continue down every wrapped row instead of only marking the ",
+            "first line of the paragraph.",
+        ] {
             print_chunk_to(&mut buf, &mut state, &chunk("thinking", c));
         }
         for c in ["Here's ", "the first ", "answer."] {
             print_chunk_to(&mut buf, &mut state, &chunk("text", c));
         }
-        for c in ["Now ", "reconsidering..."] {
+        for c in [
+            "Now reconsidering, ",
+            "having seen the result, I can refine it.",
+        ] {
             print_chunk_to(&mut buf, &mut state, &chunk("thinking", c));
         }
         for c in ["And ", "the refined ", "conclusion."] {
@@ -475,16 +499,37 @@ mod tests {
     }
 
     #[test]
-    fn streaming_thinking_gutter_spans_chunk_boundaries() {
+    fn streaming_thinking_buffers_logical_lines_across_chunks() {
         set_color_enabled(false);
         let mut state = ChunkState::default();
         let mut buf = Vec::new();
-        // A newline lands mid-chunk; the next line must still get a gutter, and
-        // a chunk that resumes the same line must NOT add a second gutter.
+        // A logical line is split across chunks (the newline lands mid-chunk,
+        // and a word straddles the boundary). Each completed line is emitted
+        // gutter-barred; the trailing partial line waits for an explicit flush
+        // (stream end / transition).
         print_chunk_to(&mut buf, &mut state, &chunk("thinking", "line one\nli"));
         print_chunk_to(&mut buf, &mut state, &chunk("thinking", "ne two"));
+        flush_thinking(&mut buf, &mut state); // simulate stream end
         let output = String::from_utf8(buf).unwrap();
-        assert_eq!(output, "  \u{2502} line one\n  \u{2502} line two");
+        assert_eq!(output, "  \u{2502} line one\n  \u{2502} line two\n");
+    }
+
+    #[test]
+    fn streaming_thinking_flushed_before_tool_call() {
+        set_color_enabled(false);
+        let mut state = ChunkState::default();
+        let mut buf = Vec::new();
+        // Thinking with no trailing newline, then a flush (as happens before a
+        // ToolCall or StreamEnd) must commit the buffered line.
+        print_chunk_to(
+            &mut buf,
+            &mut state,
+            &chunk("thinking", "deciding to call a tool"),
+        );
+        assert!(buf.is_empty(), "nothing emitted until the line is flushed");
+        flush_thinking(&mut buf, &mut state);
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "  \u{2502} deciding to call a tool\n");
     }
 
     #[test]

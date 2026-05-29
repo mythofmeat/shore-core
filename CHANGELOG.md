@@ -34,14 +34,17 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ### Changed
 - Interleaved thinking now renders as a dim, left-gutter-barred section (`│`
   prefix) with a blank line of breathing room on each side, in both the live
-  stream and the `shore log`/`shore get` transcript. Previously the only marker
-  was a `---` separator that was emitted on thinking → text transitions but not
-  text → thinking — so while streaming (chunks carry no trailing newline) a
-  thinking block following text was glued onto the end of the previous line,
-  and in the transcript later thinking blocks ran on without a separator. The
-  gutter is printed regardless of color, so thinking stays distinguishable from
-  the response in no-color terminals. `redacted_thinking` blocks (content-free
-  placeholders) are no longer shown.
+  stream and the `shore log`/`shore get` transcript. Thinking text is
+  word-wrapped to the terminal width and every wrapped row carries the gutter,
+  so the bar runs continuously down the left edge instead of only marking the
+  first row of a soft-wrapped paragraph. Previously the only marker was a `---`
+  separator emitted on thinking → text transitions but not text → thinking — so
+  while streaming (chunks carry no trailing newline) a thinking block following
+  text was glued onto the end of the previous line, and in the transcript later
+  thinking blocks ran on without a separator. The gutter prints regardless of
+  color, so thinking stays distinguishable from the response in no-color
+  terminals. `redacted_thinking` blocks (content-free placeholders) are no
+  longer shown.
 - The dreaming/librarian sweep and heartbeat ticks no longer invalidate
   Anthropic's prompt cache on every iteration. Both rode their task
   instruction as `system_suffix`, which `preprocess_request` re-appended at

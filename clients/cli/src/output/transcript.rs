@@ -7,7 +7,10 @@ use shore_protocol::server_msg::NewMessage;
 use super::styling::{
     format_tool_input, format_tool_output, print_image_refs, write_tool_body, write_tool_body_plain,
 };
-use super::{parse_timestamp, print_dim_line, term_width, use_color, write_section_header};
+use super::{
+    parse_timestamp, print_dim_line, term_width, thinking_wrap_width, use_color,
+    write_section_header, write_thinking_logical_line,
+};
 
 // ---------------------------------------------------------------------------
 // Log formatter -- human-readable chat transcript (Option B)
@@ -113,22 +116,13 @@ fn count_user_turn_values(messages: &[serde_json::Value]) -> usize {
 
 /// Render a thinking block as a dim, left-gutter-barred section.
 ///
-/// The `│` gutter is printed regardless of color so thinking stays
-/// distinguishable from the response in no-color terminals; the dim styling is
-/// applied only when color is enabled.
+/// Each logical line is word-wrapped to the terminal width and every wrapped
+/// row is prefixed with the gutter, so the bar runs continuously down the left
+/// edge instead of only marking the first row of a soft-wrapped paragraph.
 fn write_thinking_gutter(out: &mut impl Write, thinking: &str) {
-    if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-    }
+    let width = thinking_wrap_width();
     for line in thinking.lines() {
-        if line.is_empty() {
-            let _ = writeln!(out, "  \u{2502}");
-        } else {
-            let _ = writeln!(out, "  \u{2502} {line}");
-        }
-    }
-    if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        write_thinking_logical_line(out, line, width);
     }
 }
 
@@ -584,14 +578,14 @@ mod tests {
     fn render_preview_log() {
         set_color_enabled(true);
         let blocks = vec![
-            serde_json::json!({"type": "thinking", "thinking": "Let me reason about this first.\nThe user asked about X, so I should check Y."}),
+            serde_json::json!({"type": "thinking", "thinking": "Let me reason about this first. The user asked about a long-standing issue, and this paragraph is deliberately long so it wraps and shows the gutter bar continuing down every wrapped row.\nA second paragraph confirms blank-line handling between thoughts."}),
             serde_json::json!({"type": "text", "text": "Here's the first part of my answer."}),
             serde_json::json!({"type": "tool_use", "name": "read_file", "input": {"path": "src/main.rs"}}),
             serde_json::json!({"type": "tool_result", "content": "fn main() { ... }", "is_error": false}),
             // redacted_thinking is hidden — should produce no output and not
             // disturb the breathing room around the real thinking block.
             serde_json::json!({"type": "redacted_thinking", "data": "AAAA"}),
-            serde_json::json!({"type": "thinking", "thinking": "Now that I've read the file, I can refine my answer."}),
+            serde_json::json!({"type": "thinking", "thinking": "Now that I've read the file, I can refine my answer with the concrete details I just learned."}),
             serde_json::json!({"type": "text", "text": "And here's the refined conclusion."}),
         ];
         let mut buf = Vec::new();

@@ -48,9 +48,12 @@ Each preview renders a representative assistant turn with **interleaved
 thinking** (thinking → text → tool call → redacted_thinking → thinking → text)
 through the real `render_message_content` (log) and `print_chunk_to` (stream)
 functions, with color ON, and prints the raw bytes so your terminal colorizes
-them. Thinking is dim grey with a `│` left-gutter bar, tool labels are yellow,
+them. Thinking is dim grey with a `│` left-gutter bar (word-wrapped to the
+terminal width so the bar runs down every wrapped row), tool labels are yellow,
 a blank line of breathing room straddles each thinking section, and
-`redacted_thinking` blocks are hidden.
+`redacted_thinking` blocks are hidden. The preview thinking blocks are long on
+purpose so you can see the wrapping; resize your terminal and re-run to confirm
+the wrap follows the width.
 
 Expected shape (log path):
 
