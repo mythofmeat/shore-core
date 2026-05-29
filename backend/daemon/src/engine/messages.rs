@@ -441,7 +441,7 @@ fn message_from_alternative(template: &Message, index: u32) -> Message {
         alt_index: Some(index),
         alt_count: Some(template.alternatives.len() as u32),
         alternatives: template.alternatives.clone(),
-        provider_key: None,
+        provider_key: template.provider_key.clone(),
         timestamp: if alt.timestamp.is_empty() {
             template.timestamp.clone()
         } else {
