@@ -204,7 +204,13 @@ pub fn list_effective_models(
         let Some(cache) = read_cache(&cache_p).ok().flatten() else {
             continue;
         };
-        for disc in &cache.models {
+        // Discovery caches preserve the provider's raw `/v1/models` order,
+        // which is effectively arbitrary. Sort by upstream id so each
+        // provider's block lists alphabetically (static entries above are
+        // already ordered by the BTreeMap key).
+        let mut discovered: Vec<&DiscoveredModel> = cache.models.iter().collect();
+        discovered.sort_by(|a, b| a.model_id.cmp(&b.model_id));
+        for disc in discovered {
             if find_static_by_upstream(&config.models, provider_key, &disc.model_id).is_some() {
                 continue;
             }
@@ -807,6 +813,34 @@ model_id = "claude-opus-4-7"
                 assert_eq!(entry.source, EffectiveSource::Discovered);
             }
         }
+    }
+
+    #[test]
+    fn list_sorts_discovered_alphabetically_within_provider() {
+        // The discovery cache preserves the provider's raw /v1/models order;
+        // list_effective_models must re-sort each provider's block by id.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+        );
+        write_cache_for(
+            &tmp,
+            "openrouter",
+            &["x-ai/grok-4", "anthropic/claude-opus", "openai/gpt-5"],
+        );
+
+        let list = list_effective_models(&loaded, tmp.path(), false);
+        let names: Vec<&str> = list.iter().map(|e| e.resolved.model_id.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["anthropic/claude-opus", "openai/gpt-5", "x-ai/grok-4"],
+        );
     }
 
     #[test]
