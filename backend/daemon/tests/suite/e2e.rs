@@ -114,7 +114,7 @@ base_url = "https://openrouter.ai/api/v1"
 
 [openrouter.haiku]
 model_id = "anthropic/claude-haiku-4.5"
-max_tokens = 1024
+max_output_tokens = 1024
 temperature = 0.0
 "#;
     let table: toml::Table = models_toml.parse().unwrap();

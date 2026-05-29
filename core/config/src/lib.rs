@@ -1688,7 +1688,7 @@ model = "opus"
 
 [chat.anthropic.opus]
 model_id = "claude-opus-4-6"
-max_tokens = 16384
+max_output_tokens = 16384
 "#,
             ),
         ]);
@@ -1701,7 +1701,7 @@ max_tokens = 16384
         assert!(alice.models.find_model("sonnet").is_ok());
         assert!(alice.models.find_model("opus").is_ok());
         assert_eq!(
-            alice.models.find_model("opus").unwrap().max_tokens,
+            alice.models.find_model("opus").unwrap().max_output_tokens,
             Some(16384)
         );
     }
@@ -2068,7 +2068,7 @@ ignore = [
 [chat.openrouter.sonnet]
 model_id = "anthropic/claude-sonnet-4.5"
 cache_ttl = "1h"
-max_tokens = 16384
+max_output_tokens = 16384
 
 [defaults]
 model = "sonnet"

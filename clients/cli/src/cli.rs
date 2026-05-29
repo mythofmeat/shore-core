@@ -446,7 +446,7 @@ pub enum LogCommand {
 #[derive(Subcommand, Debug)]
 pub enum ModelCommand {
     /// Show, set, or reset saved sampler settings (temperature, top_p,
-    /// reasoning_effort, thinking_enabled, budget_tokens, max_tokens,
+    /// reasoning_effort, thinking_enabled, budget_tokens, max_output_tokens,
     /// cache_ttl, sdk) for the active model.
     ///
     /// `shore model setting`                          show effective sampler
@@ -601,7 +601,7 @@ complete -c shore -n \"__fish_shore_using_subcommand provider; and __fish_seen_s
 ///   for *clearing* a saved preference (handled by `unset` flows).
 /// - `thinking_enabled`: parse "true"/"false"/"yes"/"no"/"on"/"off".
 /// - `temperature`, `top_p`: parse as f64.
-/// - `budget_tokens`, `max_tokens`: parse as integer.
+/// - `budget_tokens`, `max_output_tokens`: parse as integer.
 /// - `cache_ttl`: pass through as a string.
 fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
     use serde_json::Value;
@@ -618,7 +618,7 @@ fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
             .and_then(serde_json::Number::from_f64)
             .map(Value::Number)
             .unwrap_or_else(|| Value::String(trimmed.to_string())),
-        "budget_tokens" | "max_tokens" => trimmed
+        "budget_tokens" | "max_output_tokens" => trimmed
             .parse::<u64>()
             .map(|n| Value::Number(n.into()))
             .unwrap_or_else(|_| Value::String(trimmed.to_string())),

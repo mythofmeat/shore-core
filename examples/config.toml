@@ -236,14 +236,14 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 # Model-level values take precedence over provider-level values.
 #
 # Known providers with hardcoded defaults:
-#   anthropic  — sdk: anthropic, api_key_env: ANTHROPIC_API_KEY,  temp: 1.0, max_tokens: 8192, max_context: 200000
-#   openrouter — sdk: openai,     api_key_env: OPENROUTER_API_KEY, temp: 1.0, max_tokens: 8192, max_context: 200000
-#   deepseek   — sdk: openai,     api_key_env: DEEPSEEK_API_KEY,   temp: 1.0, max_tokens: 8192, max_context: 200000
-#   gemini     — sdk: gemini,     api_key_env: GEMINI_API_KEY,     temp: 1.0, max_tokens: 8192, max_context: 200000
-#   xai        — sdk: openai,     api_key_env: XAI_API_KEY,        temp: 1.0, max_tokens: 8192, max_context: 200000
-#   zhipuai    — sdk: openai,     api_key_env: ZAI_API_KEY,        temp: 1.0, max_tokens: 8192, max_context: 200000
-#   zai        — sdk: zai,       api_key_env: ZAI_API_KEY,        temp: 1.0, max_tokens: 8192, max_context: 200000
-#   nanogpt    — sdk: openai,    api_key_env: NANOGPT_API_KEY,    temp: 1.0, max_tokens: 8192, max_context: 200000
+#   anthropic  — sdk: anthropic, api_key_env: ANTHROPIC_API_KEY,  temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   openrouter — sdk: openai,     api_key_env: OPENROUTER_API_KEY, temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   deepseek   — sdk: openai,     api_key_env: DEEPSEEK_API_KEY,   temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   gemini     — sdk: gemini,     api_key_env: GEMINI_API_KEY,     temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   xai        — sdk: openai,     api_key_env: XAI_API_KEY,        temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   zhipuai    — sdk: openai,     api_key_env: ZAI_API_KEY,        temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   zai        — sdk: zai,       api_key_env: ZAI_API_KEY,        temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   nanogpt    — sdk: openai,    api_key_env: NANOGPT_API_KEY,    temp: 1.0, max_output_tokens: 8192, max_context: 200000
 #
 # Available fields (provider- or model-level):
 #
@@ -255,7 +255,7 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 #
 #   — Sampling —
 #   max_context_tokens = 200000              # Context window size
-#   max_tokens = 8192                        # Maximum output tokens
+#   max_output_tokens = 8192                        # Maximum output tokens
 #   temperature = 1.0
 #   top_p = 1.0
 #
@@ -283,7 +283,7 @@ model_id = "claude-sonnet-4-6"
 
 # [chat.anthropic.claude-opus]
 # model_id = "claude-opus-4-6"
-# max_tokens = 16384
+# max_output_tokens = 16384
 
 # [chat.openai.gpt-4o]
 # model_id = "gpt-4o"
@@ -351,7 +351,7 @@ model_id = "claude-sonnet-4-6"
 # [chat.openrouter.sonnet]
 # model_id = "anthropic/claude-sonnet-4.5"
 # cache_ttl = "1h"
-# max_tokens = 16384
+# max_output_tokens = 16384
 
 # ── Thinking / reasoning ─────────────────────────────────────────────────
 #
@@ -379,12 +379,12 @@ model_id = "claude-sonnet-4-6"
 #
 # [chat.anthropic.claude-opus-thinking]
 # model_id = "claude-opus-4-6"
-# max_tokens = 16384
+# max_output_tokens = 16384
 # reasoning_effort = "high"
 #
 # [chat.anthropic.claude-sonnet-adaptive]
 # model_id = "claude-sonnet-4-6"
-# max_tokens = 16384
+# max_output_tokens = 16384
 # reasoning_effort = "adaptive"
 #
 # [chat.openai.o3]

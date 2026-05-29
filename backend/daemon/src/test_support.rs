@@ -82,7 +82,7 @@ pub fn test_model() -> ResolvedModel {
         api_key_env: Some("TEST_KEY".into()),
         base_url: None,
         max_context_tokens: None,
-        max_tokens: Some(4096),
+        max_output_tokens: Some(4096),
         temperature: Some(0.7),
         top_p: None,
         reasoning_effort: None,

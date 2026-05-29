@@ -25,7 +25,7 @@ fn make_model(effort: &str) -> ResolvedModel {
         api_key_env: Some("ANTHROPIC_API_KEY".into()),
         base_url: None,
         max_context_tokens: Some(65536),
-        max_tokens: Some(8192),
+        max_output_tokens: Some(8192),
         temperature: Some(1.0),
         top_p: None,
         reasoning_effort: Some(effort.into()),

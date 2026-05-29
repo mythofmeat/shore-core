@@ -118,7 +118,7 @@ pub fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> PreparedCha
         has_prior_context,
         messages,
         max_context_tokens: resolved.max_context_tokens,
-        max_output_tokens: resolved.max_tokens,
+        max_output_tokens: resolved.max_output_tokens,
     });
 
     let cache_dir = &config.dirs.cache;

@@ -15,7 +15,7 @@ const SAMPLER_KEYS: &[&str] = &[
     "reasoning_effort",
     "thinking_enabled",
     "budget_tokens",
-    "max_tokens",
+    "max_output_tokens",
     "cache_ttl",
     "sdk",
 ];
@@ -273,7 +273,7 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
             "reasoning_effort": scopes.reasoning_effort.map(scope_str),
             "thinking_enabled": scopes.thinking_enabled.map(scope_str),
             "budget_tokens": scopes.budget_tokens.map(scope_str),
-            "max_tokens": scopes.max_tokens.map(scope_str),
+            "max_output_tokens": scopes.max_output_tokens.map(scope_str),
             "cache_ttl": scopes.cache_ttl.map(scope_str),
             "sdk": scopes.sdk.map(scope_str),
         });
@@ -369,7 +369,7 @@ pub fn reset_model(ctx: &mut CommandContext) -> CommandResult {
 ///
 /// Args:
 /// - `key`: one of `temperature`, `top_p`, `reasoning_effort`,
-///   `thinking_enabled`, `budget_tokens`, `max_tokens`, `cache_ttl`.
+///   `thinking_enabled`, `budget_tokens`, `max_output_tokens`, `cache_ttl`.
 /// - `value`: a number/string/bool/null. `null` removes the setting.
 /// - `scope`: `"character"` (default) or `"global"`.
 pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResult {
@@ -522,11 +522,11 @@ fn apply_sampler_value(
                 Some(parse_u32_value(value, "budget_tokens")?)
             };
         }
-        "max_tokens" => {
-            sampler.max_tokens = if is_null {
+        "max_output_tokens" => {
+            sampler.max_output_tokens = if is_null {
                 None
             } else {
-                Some(parse_u32_value(value, "max_tokens")?)
+                Some(parse_u32_value(value, "max_output_tokens")?)
             };
         }
         "cache_ttl" => {
@@ -635,7 +635,7 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
             "reasoning_effort": scopes.reasoning_effort.map(scope_str),
             "thinking_enabled": scopes.thinking_enabled.map(scope_str),
             "budget_tokens": scopes.budget_tokens.map(scope_str),
-            "max_tokens": scopes.max_tokens.map(scope_str),
+            "max_output_tokens": scopes.max_output_tokens.map(scope_str),
             "cache_ttl": scopes.cache_ttl.map(scope_str),
             "sdk": scopes.sdk.map(scope_str),
         },

@@ -14,7 +14,7 @@ pub struct TestConfigBuilder {
     pub character_definition: String,
     pub model_alias: String,
     pub model_id: String,
-    pub max_tokens: u32,
+    pub max_output_tokens: u32,
     pub cache_ttl: Option<String>,
     pub tool_use_enabled: bool,
     pub tool_use_max_iterations: u32,
@@ -58,7 +58,7 @@ impl TestConfigBuilder {
                     .into(),
             model_alias: "haiku".into(),
             model_id: "anthropic/claude-haiku-4.5".into(),
-            max_tokens: 1024,
+            max_output_tokens: 1024,
             cache_ttl: None,
             tool_use_enabled: true,
             tool_use_max_iterations: 5,
@@ -240,23 +240,23 @@ api_key_env = "SHORE_TEST_API_KEY"
 
 [openrouter.{alias}]
 model_id = "{model_id}"
-max_tokens = {max_tokens}
+max_output_tokens = {max_output_tokens}
 temperature = 0.0
 "#,
             base_url = mock_base_url,
             alias = self.model_alias,
             model_id = self.model_id,
-            max_tokens = self.max_tokens,
+            max_output_tokens = self.max_output_tokens,
         );
         if let Some(cache_ttl) = &self.cache_ttl {
             models_toml.push_str(&format!("cache_ttl = \"{cache_ttl}\"\n"));
         }
         for (extra_alias, extra_model_id) in &self.extra_chat_aliases {
             models_toml.push_str(&format!(
-                "\n[openrouter.{alias}]\nmodel_id = \"{model_id}\"\nmax_tokens = {max_tokens}\ntemperature = 0.0\n",
+                "\n[openrouter.{alias}]\nmodel_id = \"{model_id}\"\nmax_output_tokens = {max_output_tokens}\ntemperature = 0.0\n",
                 alias = extra_alias,
                 model_id = extra_model_id,
-                max_tokens = self.max_tokens,
+                max_output_tokens = self.max_output_tokens,
             ));
             if let Some(cache_ttl) = &self.cache_ttl {
                 models_toml.push_str(&format!("cache_ttl = \"{cache_ttl}\"\n"));
