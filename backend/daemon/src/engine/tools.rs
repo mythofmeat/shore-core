@@ -126,7 +126,8 @@ pub async fn run_tool_loop(
             "content": assistant_content,
         }));
 
-        // Persist assistant message with content_blocks.
+        // Persist assistant message with content_blocks. Stamp the minting
+        // provider so its opaque thinking data carries provenance for replay.
         intermediate_messages.push(Message {
             msg_id: format!("m_{}", uuid::Uuid::new_v4()),
             role: Role::Assistant,
@@ -137,6 +138,7 @@ pub async fn run_tool_loop(
             alt_count: None,
             alternatives: vec![],
             timestamp: chrono::Local::now().to_rfc3339(),
+            provider_key: request.provider_key.clone(),
         });
 
         // Execute each tool and collect results.
@@ -268,7 +270,8 @@ pub async fn run_tool_loop(
             "content": tool_results,
         }));
 
-        // Persist user message with tool_result content_blocks.
+        // Persist user message with tool_result content_blocks. Tool results
+        // carry no provider-bound data, so provenance is left unset.
         intermediate_messages.push(Message {
             msg_id: format!("m_{}", uuid::Uuid::new_v4()),
             role: Role::User,
@@ -279,6 +282,7 @@ pub async fn run_tool_loop(
             alt_count: None,
             alternatives: vec![],
             timestamp: chrono::Local::now().to_rfc3339(),
+            provider_key: None,
         });
 
         // Call LLM again with the extended conversation. The Anthropic

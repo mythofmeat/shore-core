@@ -49,6 +49,10 @@ pub struct PromptMessage {
     pub content: String,
     pub images: Vec<ImageRef>,
     pub content_blocks: Vec<ContentBlock>,
+    /// Provider that minted this message (carried from
+    /// [`shore_protocol::types::Message::provider_key`]) so the replay path
+    /// can drop opaque thinking data the active provider cannot interpret.
+    pub provider_key: Option<String>,
 }
 
 /// The fully assembled prompt ready for LLM submission.
@@ -422,6 +426,7 @@ fn trim_messages(
                 content: msg.content.clone(),
                 images: msg.images.clone(),
                 content_blocks: msg.content_blocks.clone(),
+                provider_key: msg.provider_key.clone(),
             },
             &msg.timestamp,
         ));
@@ -531,6 +536,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
         }
     }
@@ -706,6 +712,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         assert_eq!(estimate_message_tokens(&msg), 0);
@@ -738,6 +745,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let tokens = estimate_message_tokens(&msg);
@@ -766,6 +774,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let tokens = estimate_message_tokens(&msg);
@@ -794,6 +803,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         assert!(estimate_message_tokens(&msg) > 0);
@@ -814,6 +824,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         assert_eq!(estimate_message_tokens(&msg), 5);
@@ -835,6 +846,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let recent_msg = make_msg(Role::User, "Recent");
@@ -908,6 +920,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: timestamp.to_string(),
         }
     }
@@ -1372,6 +1385,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         }
     }
@@ -1390,6 +1404,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         }
     }

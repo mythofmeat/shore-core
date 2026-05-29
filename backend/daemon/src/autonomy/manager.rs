@@ -2081,6 +2081,7 @@ async fn execute_heartbeat_tick(
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: request.provider_key.clone(),
             timestamp: chrono::Local::now().to_rfc3339(),
         };
 
@@ -2423,6 +2424,7 @@ mod tests {
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
+            provider_key: None,
             timestamp: chrono::Local::now().to_rfc3339(),
         }
     }
@@ -3256,6 +3258,7 @@ mod tests {
                 alt_index: None,
                 alt_count: None,
                 alternatives: vec![],
+                provider_key: None,
                 timestamp: chrono::Local::now().to_rfc3339(),
             })
             .unwrap();

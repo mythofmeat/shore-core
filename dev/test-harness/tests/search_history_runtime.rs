@@ -24,6 +24,7 @@ fn msg(id: &str, role: Role, text: &str, ts: &str) -> Message {
         alt_index: None,
         alt_count: None,
         alternatives: vec![],
+        provider_key: None,
         timestamp: ts.to_string(),
     }
 }

@@ -83,6 +83,7 @@ pub(super) async fn handle_generation(
                 alt_index: None,
                 alt_count: None,
                 alternatives: vec![],
+                provider_key: None,
                 timestamp: chrono::Local::now().to_rfc3339(),
             };
             engine.append_message(user_msg.clone())?;
@@ -486,6 +487,7 @@ pub(crate) fn build_llm_messages(
     include_unsigned_thinking: bool,
     max_image_size: u64,
     cache_dir: &Path,
+    active_provider_key: &str,
 ) -> (Vec<Value>, Option<Value>) {
     let llm_messages: Vec<Value> = prompt_result
         .messages
@@ -507,17 +509,18 @@ pub(crate) fn build_llm_messages(
                     }
                 }
 
+                // Drop opaque thinking data (signatures, redacted blobs) that
+                // a different provider minted — replaying it to the active
+                // provider hard-fails the request.
+                let minting = m.provider_key.as_deref();
+                let portable = m.content_blocks.iter().filter(|b| {
+                    crate::content_util::thinking_block_portable_to(b, minting, active_provider_key)
+                });
                 if include_unsigned_thinking {
-                    blocks.extend(
-                        m.content_blocks
-                            .iter()
-                            .map(crate::content_util::content_block_to_json),
-                    );
+                    blocks.extend(portable.map(crate::content_util::content_block_to_json));
                 } else {
                     blocks.extend(
-                        m.content_blocks
-                            .iter()
-                            .filter_map(crate::content_util::content_block_to_api_json),
+                        portable.filter_map(crate::content_util::content_block_to_api_json),
                     );
                 }
                 json!(blocks)
