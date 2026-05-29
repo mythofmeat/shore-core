@@ -1130,11 +1130,14 @@ async fn recv_streaming_response(
     let mut spinner = output::StreamSpinner::new();
     spinner.start();
 
+    // Reset once per turn (not per tool-loop round) so blank-line separation
+    // between blocks survives across rounds.
+    output::reset_chunk_state();
+
     loop {
         let msg = conn.recv().await?;
         match &msg {
             ServerMessage::StreamStart(start) => {
-                output::reset_chunk_state();
                 output::print_stream_start(start.regen);
             }
             ServerMessage::StreamChunk(chunk) => {

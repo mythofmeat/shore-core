@@ -7,7 +7,9 @@
 # IDE / AI tooling
 .idea/
 .vscode/
-.claude/
+# Track committed agent skills/config under .claude/, but never the local
+# worktree checkouts the harness creates there.
+.claude/worktrees/
 .codex
 .skill-staging/
 *.swp
