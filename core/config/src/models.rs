@@ -348,6 +348,13 @@ pub struct ModelCatalog {
     pub embedding: BTreeMap<String, toml::Value>,
     /// Image generation profiles as raw TOML (consumers not yet implemented).
     pub image_generation: BTreeMap<String, toml::Value>,
+    /// Explicit `[chat.<provider>]` provider-level config fields, keyed by
+    /// provider. Static `[chat.<provider>.<model>]` entries already fold these
+    /// in at parse time; this map is retained so the *discovered* model path
+    /// (`effective_catalog::build_resolved_from_discovered`) can apply the same
+    /// provider-level defaults (routing, cache_ttl, sampler knobs) that static
+    /// models inherit. Only providers with at least one explicit field appear.
+    pub chat_provider_defaults: BTreeMap<String, ModelConfigFields>,
 }
 
 /// Errors from model catalog parsing.
@@ -413,13 +420,15 @@ impl ModelCatalog {
         image_generation: Option<&toml::Table>,
         providers: Option<&crate::providers::ProviderRegistry>,
     ) -> Result<Self, CatalogError> {
-        let chat_models = match chat {
+        let (chat_models, chat_provider_defaults) = match chat {
             Some(t) => parse_category("chat", t, providers)?,
-            None => BTreeMap::new(),
+            None => (BTreeMap::new(), BTreeMap::new()),
         };
-        let tool_models = match tools {
+        // Discovered models are chat-only, so tool-level provider defaults are
+        // never consulted; discard them.
+        let (tool_models, _) = match tools {
             Some(t) => parse_category("tools", t, providers)?,
-            None => BTreeMap::new(),
+            None => (BTreeMap::new(), BTreeMap::new()),
         };
 
         // Embedding and image_generation are stored as raw TOML for now.
@@ -437,6 +446,7 @@ impl ModelCatalog {
             tools: tool_models,
             embedding: embedding_profiles,
             image_generation: image_gen_profiles,
+            chat_provider_defaults,
         };
         info!(
             chat_models = catalog.chat.len(),
@@ -533,12 +543,25 @@ impl ModelCatalog {
 /// For each provider table, separates scalar keys (provider defaults) from
 /// sub-table keys (model entries).  `openrouter_provider` is a reserved
 /// dict key treated as a provider scalar.
+///
+/// Returns `(models, provider_defaults)` where `provider_defaults` carries the
+/// explicit `[<category>.<provider>]` scalar fields per provider (only entries
+/// with at least one set field). Static models already fold these in, but the
+/// discovered-model path reuses them so discovery inherits the same defaults.
+/// `(models, provider_defaults)` — the resolved models for a category plus the
+/// explicit `[<category>.<provider>]` scalar fields, keyed by provider.
+type ParsedCategory = (
+    BTreeMap<String, ResolvedModel>,
+    BTreeMap<String, ModelConfigFields>,
+);
+
 fn parse_category(
     category: &str,
     section: &toml::Table,
     providers: Option<&crate::providers::ProviderRegistry>,
-) -> Result<BTreeMap<String, ResolvedModel>, CatalogError> {
+) -> Result<ParsedCategory, CatalogError> {
     let mut models = BTreeMap::new();
+    let mut provider_defaults: BTreeMap<String, ModelConfigFields> = BTreeMap::new();
     debug!(
         category,
         providers = section.len(),
@@ -606,9 +629,16 @@ fn parse_category(
             }
         }
 
-        // Overlay explicit TOML scalars.
+        // Overlay explicit TOML scalars. Also retain them per-provider so the
+        // discovered-model path can apply the same `[<category>.<provider>]`
+        // defaults; only the user's explicit fields are kept (not the merged
+        // hardcoded/registry baseline), so discovery's own lower-precedence
+        // cascade stays intact.
         if let Ok(explicit) = toml::Value::Table(provider_scalars).try_into::<ProviderConfig>() {
             provider_config.fields.merge_from(&explicit.fields);
+            if explicit.fields != ModelConfigFields::default() {
+                provider_defaults.insert(provider_key.clone(), explicit.fields);
+            }
         }
 
         // ── Extract model sub-tables ────────────────────────────────
@@ -659,7 +689,7 @@ fn parse_category(
     }
 
     debug!(category, models = models.len(), "Category parsing complete");
-    Ok(models)
+    Ok((models, provider_defaults))
 }
 
 // ── Provider defaults ───────────────────────────────────────────────────
@@ -773,7 +803,7 @@ api_key_env = "MY_KEY"
 model_id = "claude-opus-4-6"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
         assert_eq!(models.len(), 1);
 
         let opus = &models["chat.anthropic.opus"];
@@ -803,7 +833,7 @@ model_id = "claude-sonnet-4-6"
 cache_ttl = "5m"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
 
         // opus inherits provider defaults
         let opus = &models["chat.anthropic.opus"];
@@ -825,7 +855,7 @@ cache_ttl = "5m"
 model_id = "claude-opus-4-6"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus"];
 
         // Should get hardcoded anthropic defaults.
@@ -853,7 +883,7 @@ api_key_env = "MY_KEY"
 model_id = "claude-opus-4-6"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.my_anthropic_proxy.opus"];
         assert_eq!(opus.sdk, Sdk::Anthropic);
         assert_eq!(opus.cache_ttl.as_deref(), Some("1h"));
@@ -867,7 +897,7 @@ model_id = "claude-opus-4-6"
 model_id = "anthropic/claude-opus-4.6"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
         let foo = &models["chat.openrouter.foo"];
         // openrouter -> Sdk::Openai via hardcoded_defaults; no auto cache_ttl.
         assert_eq!(foo.sdk, Sdk::Openai);
@@ -883,7 +913,7 @@ model_id = "claude-opus-4-6"
 cache_ttl = ""
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus"];
         // Explicit empty string survives — the runtime treats it as disabled.
         assert_eq!(opus.cache_ttl.as_deref(), Some(""));
@@ -898,7 +928,7 @@ model_id = "claude-opus-4-6"
 cache_ttl = "5m"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus"];
         assert_eq!(opus.cache_ttl.as_deref(), Some("5m"));
     }
@@ -932,7 +962,7 @@ base_url = "https://acme.example.com/v1"
 model_id = "acme/fast"
 "#,
         );
-        let models = parse_category("chat", &table, Some(&registry)).unwrap();
+        let (models, _) = parse_category("chat", &table, Some(&registry)).unwrap();
 
         let fast = &models["chat.acme.fast"];
         assert_eq!(fast.sdk, Sdk::Openai);
@@ -969,7 +999,7 @@ api_key_env = "ACME_KEY"
 model_id = "acme/fast"
 "#,
         );
-        let models = parse_category("chat", &table, Some(&registry)).unwrap();
+        let (models, _) = parse_category("chat", &table, Some(&registry)).unwrap();
 
         let fast = &models["chat.acme.fast"];
         // sdk and base_url cascade.
@@ -1011,7 +1041,7 @@ base_url = "https://override.example.com/v2"
 model_id = "acme/fast"
 "#,
         );
-        let models = parse_category("chat", &table, Some(&registry)).unwrap();
+        let (models, _) = parse_category("chat", &table, Some(&registry)).unwrap();
 
         let fast = &models["chat.acme.fast"];
         // sdk still inherited from the registry (chat section did not set it)
@@ -1035,7 +1065,7 @@ temperature = 0.5
 model_id = "claude-opus-4-6"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus"];
 
         assert_eq!(opus.api_key_env.as_deref(), Some("CUSTOM_KEY"));
@@ -1055,7 +1085,7 @@ openrouter_provider = {order = ["Vertex AI"]}
 model_id = "claude-opus-4-6"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
 
         // Should only have "opus", not "openrouter_provider".
         assert_eq!(models.len(), 1);
@@ -1104,7 +1134,7 @@ model_id = "claude-opus-4-6"
 model_id = "google/gemini-3.1-pro-preview"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
         assert_eq!(models.len(), 2);
         assert_eq!(models["chat.anthropic.opus"].sdk, Sdk::Anthropic);
         assert_eq!(models["chat.openrouter.gemini-pro"].sdk, Sdk::Openai); // openrouter default
@@ -1455,7 +1485,7 @@ model_id = "anthropic/claude-opus-4.6"
 sdk = "anthropic"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.openrouter.claude-opus"];
 
         // SDK should be overridden to Anthropic
@@ -1489,7 +1519,7 @@ model_id = "anthropic/claude-opus-4.6"
 model_id = "openai/gpt-5"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
 
         let opus = &models["chat.openrouter-anthropic.opus"];
         assert_eq!(opus.sdk, Sdk::Anthropic);
@@ -1517,7 +1547,7 @@ model_id = "anthropic/claude-opus-4.6"
 sdk = "openai"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.openrouter-anthropic.opus-via-openai"];
         assert_eq!(opus.sdk, Sdk::Openai);
     }
@@ -1533,7 +1563,7 @@ base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 "#,
         );
-        let models = parse_category("chat", &table, None).unwrap();
+        let (models, _) = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus-via-or"];
 
         assert_eq!(opus.sdk, Sdk::Anthropic);
