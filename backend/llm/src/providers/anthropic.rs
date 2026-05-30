@@ -639,20 +639,31 @@ fn thinking_caps(model: &str) -> ThinkingCaps {
     }
 }
 
-/// Map a named effort level to a `budget_tokens` value for models that only
-/// accept manual (`enabled`) thinking. Clamped into Anthropic's valid range
-/// (`1024 ..< max_tokens`) so the downgrade can't produce a 400.
-fn effort_to_budget(effort: &str, max_tokens: u32) -> u32 {
-    let nominal = match effort {
+/// Map a named effort level to a nominal `budget_tokens` for models that only
+/// accept manual (`enabled`) thinking. The caller clamps this into Anthropic's
+/// valid range via [`clamp_enabled_budget`].
+fn effort_to_budget(effort: &str) -> u32 {
+    match effort {
         "low" => 4096,
         "medium" => 8192,
         "high" => 12288,
         "xhigh" => 16384,
         "max" => 24576,
         _ => 8192, // literal "adaptive" or anything else → medium-ish
-    };
-    let ceiling = max_tokens.saturating_sub(1).max(1024);
-    nominal.clamp(1024, ceiling)
+    }
+}
+
+/// Clamp a requested `budget_tokens` into Anthropic's valid range:
+/// `1024 <= budget_tokens < max_tokens`. Returns `None` when `max_tokens`
+/// leaves no room for the 1024-token minimum — manual thinking can't be
+/// expressed validly there, so the caller must disable it (or fall back to
+/// adaptive) rather than emit a request the API rejects with a 400.
+fn clamp_enabled_budget(requested: u32, max_tokens: u32) -> Option<u32> {
+    let ceiling = max_tokens.checked_sub(1)?;
+    if ceiling < 1024 {
+        return None;
+    }
+    Some(requested.clamp(1024, ceiling))
 }
 
 /// Build the `(thinking, output_config)` request params from
@@ -687,6 +698,10 @@ fn build_thinking_params(
 
     let caps = thinking_caps(model);
 
+    // A requested budget, normalized to u32 (oversized values saturate and
+    // get clamped below max_tokens anyway).
+    let requested_budget = budget.map(|b| u32::try_from(b).unwrap_or(u32::MAX));
+
     // Effort-based request: prefer adaptive; downgrade to a budget for
     // models that don't accept adaptive.
     if wants_adaptive {
@@ -698,29 +713,31 @@ fn build_thinking_params(
             return (Some(thinking), output_config);
         }
         // Adaptive-incapable model (e.g. Sonnet 4.5): map effort → budget.
-        let derived = budget
-            .map(|b| b as u32)
-            .unwrap_or_else(|| effort_to_budget(effort.unwrap_or("medium"), max_tokens));
-        let budget = u64::from(derived.clamp(1024, max_tokens.saturating_sub(1).max(1024)));
-        return (
-            Some(json!({ "type": "enabled", "budget_tokens": budget })),
-            None,
-        );
+        // If max_tokens leaves no room for a valid budget, there's no usable
+        // thinking mode on this model, so disable it rather than 400.
+        let derived =
+            requested_budget.unwrap_or_else(|| effort_to_budget(effort.unwrap_or("medium")));
+        return match clamp_enabled_budget(derived, max_tokens) {
+            Some(b) => (Some(json!({ "type": "enabled", "budget_tokens": b })), None),
+            None => (None, None),
+        };
     }
 
-    // Budget/flag-based request: prefer enabled; upgrade to adaptive for
-    // models that no longer accept enabled (Opus 4.7/4.8).
+    // Budget/flag-based request: prefer enabled; fall back to adaptive for
+    // models that reject enabled (Opus 4.7/4.8) or can't fit a valid budget,
+    // and disable thinking only when neither mode is expressible.
     if caps.enabled {
-        let budget = budget.unwrap_or(1024);
-        (
-            Some(json!({ "type": "enabled", "budget_tokens": budget })),
-            None,
-        )
-    } else {
+        if let Some(b) = clamp_enabled_budget(requested_budget.unwrap_or(1024), max_tokens) {
+            return (Some(json!({ "type": "enabled", "budget_tokens": b })), None);
+        }
+    }
+    if caps.adaptive {
         (
             Some(json!({ "type": "adaptive", "display": "summarized" })),
             None,
         )
+    } else {
+        (None, None)
     }
 }
 
@@ -2270,10 +2287,41 @@ mod tests {
 
     #[test]
     fn test_thinking_params_effort_budget_clamped_to_max_tokens() {
-        // max effort nominal (24576) exceeds a small max_tokens → clamped.
+        // max effort nominal (24576) exceeds a small max_tokens → clamped to
+        // max_tokens - 1, never >= max_tokens (which Anthropic rejects).
         let opts = json!({ "reasoning_effort": "max" });
         let (thinking, _) = build_thinking_params(&opts, "claude-haiku-4-5", 8192);
         assert_eq!(thinking.unwrap()["budget_tokens"], 8191);
+    }
+
+    #[test]
+    fn test_thinking_params_explicit_budget_clamped_below_max_tokens() {
+        // An explicit budget that meets/exceeds max_tokens is clamped, not
+        // passed through to a 400. (claude-sonnet-4-6 accepts enabled.)
+        let opts = json!({ "budget_tokens": 8192 });
+        let (thinking, _) = build_thinking_params(&opts, "claude-sonnet-4-6", 8192);
+        assert_eq!(thinking.unwrap()["budget_tokens"], 8191);
+    }
+
+    #[test]
+    fn test_thinking_params_disabled_when_max_tokens_too_small_for_budget() {
+        // max_tokens below the 1024 budget floor: an enabled-only model has no
+        // valid thinking mode, so thinking is disabled rather than 400.
+        let opts = json!({ "reasoning_effort": "high" });
+        let (thinking, output) = build_thinking_params(&opts, "claude-haiku-4-5", 1024);
+        assert!(thinking.is_none(), "no valid budget → thinking disabled");
+        assert!(output.is_none());
+    }
+
+    #[test]
+    fn test_thinking_params_budget_falls_back_to_adaptive_when_no_room() {
+        // A both-modes model (4.6) with no room for a valid budget falls back
+        // to adaptive (which has no budget floor) rather than disabling.
+        let opts = json!({ "budget_tokens": 4096 });
+        let (thinking, _) = build_thinking_params(&opts, "claude-sonnet-4-6", 1024);
+        let thinking = thinking.unwrap();
+        assert_eq!(thinking["type"], "adaptive");
+        assert_eq!(thinking["display"], "summarized");
     }
 
     #[test]

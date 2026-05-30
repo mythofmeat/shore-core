@@ -368,6 +368,9 @@ async fn capture_anthropic_body_for_model(opts: Value, model: &str) -> Value {
     let client = LlmClient::new();
     let mut req = base_request(&mock.base_url());
     req.model = model.into();
+    // Realistic ceiling so manual `budget_tokens` clamping (which requires
+    // 1024 <= budget < max_tokens) has room — base_request's 1024 is too low.
+    req.max_tokens = 16_000;
     req.provider_options = Some(opts);
     drain_stream(&client, &req).await;
     single_request(&mock).await

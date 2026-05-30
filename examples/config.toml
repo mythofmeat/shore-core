@@ -262,8 +262,9 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 #   — Reasoning / thinking —
 #   reasoning_effort = "high"               # Anthropic: "low"|"medium"|"high"|"xhigh"|"max" (adaptive) or "adaptive"; OpenAI/DeepSeek: "low"|"medium"|"high"
 #                                           #   Anthropic adaptive maps to thinking={type:adaptive, display:summarized}.
-#                                           #   Adaptive is supported on Opus 4.6/4.7/4.8 + Sonnet 4.6; older models (Sonnet/Opus 4.5, Haiku) need budget_tokens instead.
-#   budget_tokens = 8192                    # Thinking token budget — Anthropic (legacy; rejected on Opus 4.7/4.8), Gemini
+#                                           #   Adaptive is supported on Opus 4.6/4.7/4.8 + Sonnet 4.6; older models (Sonnet/Opus 4.5, Haiku) auto-downgrade to a budget.
+#   budget_tokens = 8192                    # Thinking token budget — Anthropic (legacy) + Gemini. On Opus 4.7/4.8 (which only accept
+#                                           #   adaptive) Shore auto-upgrades this to adaptive; budgets are clamped below max_output_tokens.
 #
 #   — Prompt caching (Anthropic) —
 #   cache_ttl = "5m"                        # e.g. "5m", "1h"
