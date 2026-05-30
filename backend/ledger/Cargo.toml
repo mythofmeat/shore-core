@@ -1,6 +1,6 @@
 [package]
 name = "shore-ledger"
-version = "2.0.2"
+version = "2.0.3"
 edition = "2021"
 license.workspace = true
 repository.workspace = true
