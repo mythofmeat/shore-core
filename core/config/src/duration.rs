@@ -42,6 +42,13 @@ impl ConfigDuration {
             return Err("duration cannot be negative".into());
         }
 
+        // `value` is a validated, non-negative, human-scale duration; flooring
+        // the fractional-millisecond remainder to u64 is the intended behavior.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "value is non-negative and bounded; flooring sub-ms is intended"
+        )]
         let millis = match suffix {
             "ms" => value as u64,
             "s" => (value * 1000.0) as u64,
@@ -124,13 +131,19 @@ impl<'de> Deserialize<'de> for ConfigDuration {
                 if v < 0 {
                     return Err(de::Error::custom("duration cannot be negative"));
                 }
-                Ok(ConfigDuration::from_secs(v as u64))
+                // Non-negativity is guaranteed by the guard above.
+                Ok(ConfigDuration::from_secs(v.cast_unsigned()))
             }
 
             fn visit_f64<E: de::Error>(self, v: f64) -> Result<ConfigDuration, E> {
                 if v < 0.0 {
                     return Err(de::Error::custom("duration cannot be negative"));
                 }
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "v is non-negative; flooring sub-ms is intended"
+                )]
                 let millis = (v * 1000.0) as u64;
                 Ok(ConfigDuration::from_millis(millis))
             }

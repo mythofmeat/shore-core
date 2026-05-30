@@ -290,7 +290,7 @@ pub fn load_raw_config_table(config_path: Option<&Path>) -> Result<RawConfigTabl
             let dir = p.parent().unwrap_or(Path::new(".")).to_path_buf();
             // When a custom config path is provided, use its parent as the
             // config directory so that character lookups etc. are relative to it.
-            dirs.config = dir.clone();
+            dirs.config.clone_from(&dir);
             dir
         }
         None => dirs.config.clone(),
@@ -472,9 +472,9 @@ pub fn deep_merge(base: &mut toml::Table, overlay: &toml::Table) {
 
 /// Load and merge all `*.toml` files from a `conf.d/` directory, sorted alphabetically.
 fn load_conf_d(dir: &Path, table: &mut toml::Table) -> Result<(), ConfigError> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return Ok(()), // Directory doesn't exist — that's fine.
+    // Directory doesn't exist — that's fine.
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
     };
 
     let mut paths: Vec<PathBuf> = entries
@@ -875,9 +875,8 @@ pub fn resolve_user_definition(config_dir: &Path, character_name: &str) -> Optio
 /// that contain either `workspace/SOUL.md` or the legacy `character.md`.
 pub fn discover_characters(config_dir: &Path) -> Vec<String> {
     let chars_dir = config_dir.join("characters");
-    let entries = match std::fs::read_dir(&chars_dir) {
-        Ok(entries) => entries,
-        Err(_) => return vec![],
+    let Ok(entries) = std::fs::read_dir(&chars_dir) else {
+        return vec![];
     };
 
     let mut names = Vec::new();

@@ -176,6 +176,7 @@ impl ModelConfigFields {
 
     /// Produce a new `ModelConfigFields` where each field is taken from `self`
     /// if present, otherwise from `fallback`.
+    #[must_use]
     pub fn or_fallback(&self, fallback: &Self) -> Self {
         macro_rules! or_opt {
             ($field:ident) => {
@@ -576,7 +577,7 @@ fn parse_category(
             });
         }
 
-        let provider_table = if let Some(t) = provider_value.as_table() { t } else {
+        let Some(provider_table) = provider_value.as_table() else {
             warn!(
                 category,
                 key = provider_key,
