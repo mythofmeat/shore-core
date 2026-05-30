@@ -59,6 +59,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   entry with an API key.
 
 ### Changed
+- Compaction no longer inlines a snapshot of every markdown memory file into
+  the "compact now" user turn. That dump sat past the cached chat prefix, so
+  Anthropic wrote it fresh (~11–20k tokens, growing with the character's memory
+  corpus) on the first round of every compaction. The model already carries the
+  `MEMORY.md` index in its system prompt and can pull full files on demand via
+  its `read`/`list_files`/`search` tools, so the inline copy was redundant; the
+  prompt now nudges it to consult the index and read before writing to keep
+  editing-in-place behavior. Drops the per-compaction cache-write cost to the
+  size of the static instruction.
 - Reworked the CLI transcript and live stream around one cohesive layout:
   response text (speech) is the primary, flush-left voice, while thinking, tool
   calls, and tool results form a single inset "process" channel. Each block
