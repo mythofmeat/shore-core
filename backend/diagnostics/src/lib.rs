@@ -1,5 +1,16 @@
 //! In-memory ring buffers for observability (API calls, tool executions, errors).
 
+// Panic-hygiene lock (see [workspace.lints] in root Cargo.toml): this crate is
+// cleaned, so these can never regress. Tests are exempt via clippy.toml.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::unimplemented
+)]
+
 use std::collections::VecDeque;
 
 use serde::Serialize;

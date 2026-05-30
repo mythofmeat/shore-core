@@ -864,19 +864,17 @@ async fn openrouter_image_generate(
     aspect_ratio: Option<&str>,
     image_size: Option<&str>,
 ) -> Result<(String, String), LlmError> {
-    // Try text+image first.
-    match try_openrouter_image(
-        client,
+    let params = OpenRouterImageParams {
         base_url,
         api_key,
         model,
         prompt,
-        &["image", "text"],
         aspect_ratio,
         image_size,
-    )
-    .await
-    {
+    };
+
+    // Try text+image first.
+    match try_openrouter_image(client, &params, &["image", "text"]).await {
         Ok(result) => return Ok(result),
         Err(LlmError::HttpStatus {
             status: 404,
@@ -888,44 +886,39 @@ async fn openrouter_image_generate(
     }
 
     // Retry with image-only modality.
-    try_openrouter_image(
-        client,
-        base_url,
-        api_key,
-        model,
-        prompt,
-        &["image"],
-        aspect_ratio,
-        image_size,
-    )
-    .await
+    try_openrouter_image(client, &params, &["image"]).await
 }
 
-#[allow(clippy::too_many_arguments)] // modalities is inherent to the retry logic
+/// Shared parameters for an OpenRouter chat-completions image request,
+/// reused across the text+image and image-only retry attempts.
+struct OpenRouterImageParams<'a> {
+    base_url: &'a str,
+    api_key: &'a str,
+    model: &'a str,
+    prompt: &'a str,
+    aspect_ratio: Option<&'a str>,
+    image_size: Option<&'a str>,
+}
+
 async fn try_openrouter_image(
     client: &reqwest::Client,
-    base_url: &str,
-    api_key: &str,
-    model: &str,
-    prompt: &str,
+    params: &OpenRouterImageParams<'_>,
     modalities: &[&str],
-    aspect_ratio: Option<&str>,
-    image_size: Option<&str>,
 ) -> Result<(String, String), LlmError> {
-    let url = format!("{base_url}/chat/completions");
+    let url = format!("{}/chat/completions", params.base_url);
 
     let mut body = json!({
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "model": params.model,
+        "messages": [{"role": "user", "content": params.prompt}],
         "modalities": modalities,
     });
 
     // Only include image_config when at least one field is set.
     let mut image_config = serde_json::Map::new();
-    if let Some(ar) = aspect_ratio {
+    if let Some(ar) = params.aspect_ratio {
         image_config.insert("aspect_ratio".into(), json!(ar));
     }
-    if let Some(is) = image_size {
+    if let Some(is) = params.image_size {
         image_config.insert("image_size".into(), json!(is));
     }
     if !image_config.is_empty() {
@@ -934,7 +927,10 @@ async fn try_openrouter_image(
 
     let response = client
         .post(&url)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", params.api_key),
+        )
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&body)
         .send()

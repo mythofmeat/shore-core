@@ -1,3 +1,14 @@
+// Panic-hygiene lock (see [workspace.lints] in root Cargo.toml): this crate is
+// cleaned, so these can never regress. Tests are exempt via clippy.toml.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::unimplemented
+)]
+
 pub mod cache_forensics;
 pub mod credentials;
 pub mod debug_log;

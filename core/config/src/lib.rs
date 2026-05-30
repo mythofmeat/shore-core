@@ -1,3 +1,14 @@
+// Panic-hygiene lock (see [workspace.lints] in root Cargo.toml): this crate is
+// cleaned, so these can never regress. Tests are exempt via clippy.toml.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::unimplemented
+)]
+
 pub mod app;
 pub mod cron;
 pub mod duration;
@@ -83,8 +94,8 @@ fn resolve_xdg_dir(
     platform_fn: fn() -> Option<PathBuf>,
     fallback: &str,
 ) -> PathBuf {
-    std::env::var(override_var)
-        .ok().map_or_else(|| {
+    std::env::var(override_var).ok().map_or_else(
+        || {
             std::env::var(xdg_var)
                 .ok()
                 .map(PathBuf::from)
@@ -97,7 +108,9 @@ fn resolve_xdg_dir(
                     }
                 })
                 .join("shore")
-        }, PathBuf::from)
+        },
+        PathBuf::from,
+    )
 }
 
 impl ShoreDirs {

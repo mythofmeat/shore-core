@@ -1,3 +1,14 @@
+// Panic-hygiene lock (see [workspace.lints] in root Cargo.toml): this crate is
+// cleaned, so these can never regress. Tests are exempt via clippy.toml.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::unimplemented
+)]
+
 pub mod registry;
 
 use std::collections::HashMap;
@@ -685,8 +696,9 @@ where
             let (rid, kind) = match &msg {
                 ClientMessage::Message(body) => (body.rid.clone(), RequestKind::Message),
                 ClientMessage::Regen(regen) => (regen.rid.clone(), RequestKind::Regen),
-                ClientMessage::Cancel(_) => (None, RequestKind::Cancel),
-                ClientMessage::Hello(_) | ClientMessage::Command(_) => unreachable!(),
+                // This outer arm only routes Message/Regen/Cancel; Cancel is
+                // the sole remaining case.
+                _ => (None, RequestKind::Cancel),
             };
             let meta = RequestMeta {
                 session: session.with_selected_character(character),
@@ -951,7 +963,10 @@ mod tests {
         assert_eq!(meta.session_id, SessionId(client_id));
         assert_eq!(meta.client_type, client_type);
         assert_eq!(meta.client_name, client_name);
-        let expected_caps: Vec<String> = capabilities.iter().map(std::string::ToString::to_string).collect();
+        let expected_caps: Vec<String> = capabilities
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         assert_eq!(meta.capabilities, expected_caps);
         assert_eq!(meta.selected_character.as_deref(), selected_character);
     }

@@ -1076,9 +1076,7 @@ fn all_error_codes_golden() {
         ("internal_error", ErrorCode::InternalError),
     ];
     for (json_str, expected_code) in cases {
-        let fixture = format!(
-            r#"{{"type": "error", "code": "{json_str}", "message": "test"}}"#
-        );
+        let fixture = format!(r#"{{"type": "error", "code": "{json_str}", "message": "test"}}"#);
         let msg: ServerMessage = serde_json::from_str(&fixture).expect("error code deserializes");
         match msg {
             ServerMessage::Error(e) => {

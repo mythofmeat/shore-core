@@ -93,12 +93,18 @@ cast_possible_truncation = "allow"
 cast_sign_loss = "allow"
 cast_possible_wrap = "allow"
 
-# Panic-hygiene ratchet. Set to `warn` workspace-wide for visibility; promoted
-# to `deny` per-crate (in each crate's own [lints]) as that crate is cleaned,
-# so cleaned crates can never regress. Allowed in tests/bin glue where a panic
-# is acceptable.
+# Panic-hygiene ratchet. Set to `warn` workspace-wide for visibility; each
+# cleaned crate then escalates these to `deny` via a `#![deny(...)]` at its
+# crate root (Cargo `[lints] workspace = true` can't add per-crate overrides),
+# so cleaned crates can never regress. Tests are exempt via clippy.toml
+# (`allow-{unwrap,expect,panic}-in-tests`); not-yet-cleaned crates stay at warn
+# until they are cleaned and locked.
 unwrap_used = "warn"
 expect_used = "warn"
+panic = "warn"
+unreachable = "warn"
+todo = "warn"
+unimplemented = "warn"
 
 [profile.dev]
 debug = "line-tables-only"
