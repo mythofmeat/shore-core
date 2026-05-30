@@ -44,7 +44,7 @@ impl ConfigDuration {
 
         // `value` is a validated, non-negative, human-scale duration; flooring
         // the fractional-millisecond remainder to u64 is the intended behavior.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             reason = "value is non-negative and bounded; flooring sub-ms is intended"
@@ -139,7 +139,7 @@ impl<'de> Deserialize<'de> for ConfigDuration {
                 if v < 0.0 {
                     return Err(de::Error::custom("duration cannot be negative"));
                 }
-                #[allow(
+                #[expect(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
                     reason = "v is non-negative; flooring sub-ms is intended"

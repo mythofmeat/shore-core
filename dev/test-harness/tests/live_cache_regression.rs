@@ -239,10 +239,10 @@ fn build_request(
 
 struct CallStat {
     label: String,
-    input: u32,
-    output: u32,
-    cache_r: u32,
-    cache_w: u32,
+    input: u64,
+    output: u64,
+    cache_r: u64,
+    cache_w: u64,
 }
 
 fn record(stats: &mut Vec<CallStat>, label: &str, usage: &Usage) {
@@ -280,7 +280,7 @@ async fn run_tool_loop(
     rid_prefix: &str,
     stats: &mut Vec<CallStat>,
     label_prefix: &str,
-    cold_write_out: &mut Option<u32>,
+    cold_write_out: &mut Option<u64>,
 ) -> Result<(), String> {
     let mut iter = 0usize;
     loop {
@@ -405,7 +405,7 @@ async fn cache_holds_through_adaptive_tool_loop_and_followup() {
 
     let client = LlmClient::new();
     let mut stats: Vec<CallStat> = Vec::new();
-    let mut cold_write: Option<u32> = None;
+    let mut cold_write: Option<u64> = None;
 
     // ── Turn 1: branching dice scenario, force ≥3 tool iterations ──
     let mut messages: Vec<Value> = vec![json!({

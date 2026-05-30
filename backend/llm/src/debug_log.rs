@@ -160,7 +160,7 @@ pub fn log_request(
     reason = "CallHandle bundles per-call logging state and is consumed when the call completes"
 )]
 pub fn log_response(handle: CallHandle, resp: &GenerateResponse) {
-    let duration_ms = handle.started.elapsed().as_millis() as u64;
+    let duration_ms = crate::convert::elapsed_ms_u64(handle.started.elapsed());
     let doc = serde_json::json!({
         "ts": Local::now().to_rfc3339(),
         "direction": "response",
@@ -179,7 +179,7 @@ pub fn log_response(handle: CallHandle, resp: &GenerateResponse) {
 
 /// Write the paired response file for a failed call.
 pub fn log_error(handle: &CallHandle, err: &LlmError) {
-    let duration_ms = handle.started.elapsed().as_millis() as u64;
+    let duration_ms = crate::convert::elapsed_ms_u64(handle.started.elapsed());
     let doc = serde_json::json!({
         "ts": Local::now().to_rfc3339(),
         "direction": "error",

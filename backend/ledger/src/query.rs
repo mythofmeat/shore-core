@@ -501,10 +501,10 @@ pub struct CostRow {
     pub id: i64,
     pub provider: String,
     pub model: String,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-    pub cache_read_tokens: u32,
-    pub cache_write_tokens: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
     pub cache_ttl: Option<String>,
 }
 

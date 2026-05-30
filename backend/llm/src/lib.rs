@@ -6,10 +6,14 @@
     clippy::panic,
     clippy::unreachable,
     clippy::todo,
-    clippy::unimplemented
+    clippy::unimplemented,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
 )]
 
 pub mod cache_forensics;
+mod convert;
 pub mod credentials;
 pub mod debug_log;
 pub mod discovery;

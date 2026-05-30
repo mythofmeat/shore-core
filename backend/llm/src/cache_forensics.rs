@@ -35,10 +35,10 @@ pub struct ResponseLog<'a> {
     pub model: &'a str,
     pub character: &'a str,
     pub call_type: &'a str,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-    pub cache_read_tokens: u32,
-    pub cache_creation_tokens: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
 }
 
 /// Enable cache forensics.  Call once at startup with the cache directory.
@@ -141,8 +141,8 @@ pub fn notify_anomaly(
     character: &str,
     anomaly: &str,
     call_type: &str,
-    cache_read: u32,
-    cache_write: u32,
+    cache_read: u64,
+    cache_write: u64,
 ) {
     if !is_enabled() {
         return;

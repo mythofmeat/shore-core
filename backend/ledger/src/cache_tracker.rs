@@ -22,8 +22,8 @@ pub struct Observation {
     pub ts: String,
     pub model: String,
     pub thinking_enabled: bool,
-    pub cache_read_tokens: u32,
-    pub cache_write_tokens: u32,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
     pub call_type: String,
 }
 
@@ -39,9 +39,9 @@ pub struct CacheTracker {
     last_model: Option<String>,
     last_thinking: Option<bool>,
     last_call_type: Option<String>,
-    last_cache_read: u32,
+    last_cache_read: u64,
     last_tool_loop_kind: Option<String>,
-    last_tool_loop_cache_read: u32,
+    last_tool_loop_cache_read: u64,
     ttl_secs: u64,
     /// True when the cache was Warm and just transitioned to Cold via TTL
     /// expiry. The next non-keepalive call in this state triggers a
@@ -83,7 +83,7 @@ impl CacheTracker {
         self.state
     }
 
-    pub fn last_cache_read(&self) -> u32 {
+    pub fn last_cache_read(&self) -> u64 {
         self.last_cache_read
     }
 
@@ -91,7 +91,7 @@ impl CacheTracker {
         last_ts_str: &str,
         last_model: &str,
         last_thinking: bool,
-        last_cache_read: u32,
+        last_cache_read: u64,
         ttl_secs: u64,
     ) -> Self {
         let parsed = DateTime::parse_from_rfc3339(last_ts_str).map(|dt| dt.with_timezone(&Utc));

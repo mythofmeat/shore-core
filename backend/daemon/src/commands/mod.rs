@@ -22,10 +22,10 @@ use shore_ledger::LedgerClient;
 /// Cumulative token usage tracked across the daemon session.
 #[derive(Debug, Default)]
 pub struct SessionTokens {
-    pub input: u32,
-    pub output: u32,
-    pub cache_read: u32,
-    pub cache_write: u32,
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
 }
 
 /// Shared state for command handlers (does not own the engine).

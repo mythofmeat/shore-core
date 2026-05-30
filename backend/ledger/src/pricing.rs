@@ -36,10 +36,10 @@ pub struct CostBreakdown {
 pub struct CostRequest<'a> {
     pub provider: &'a str,
     pub model: &'a str,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-    pub cache_read_tokens: u32,
-    pub cache_write_tokens: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
     pub cache_ttl: Option<&'a str>,
 }
 

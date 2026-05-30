@@ -84,15 +84,6 @@ must_use_candidate = "allow"
 module_name_repetitions = "allow"
 doc_markdown = "allow"
 
-# Numeric-cast lints are high-noise/low-signal across this codebase: token
-# counts (u64->u32), elapsed-duration metrics (u128->u32/u64), and small
-# guarded breakpoint indices are all provably within range at every call site.
-# `try_from`-everywhere would add pervasive plumbing for failures that cannot
-# occur. Allowed workspace-wide rather than annotating dozens of call sites.
-cast_possible_truncation = "allow"
-cast_sign_loss = "allow"
-cast_possible_wrap = "allow"
-
 # Panic-hygiene ratchet. Set to `warn` workspace-wide for visibility; each
 # cleaned crate then escalates these to `deny` via a `#![deny(...)]` at its
 # crate root (Cargo `[lints] workspace = true` can't add per-crate overrides),

@@ -8,7 +8,10 @@
     clippy::panic,
     clippy::unreachable,
     clippy::todo,
-    clippy::unimplemented
+    clippy::unimplemented,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
 )]
 
 use std::collections::VecDeque;
@@ -71,10 +74,10 @@ pub struct ApiCallEntry {
     pub timestamp: String,
     pub model: String,
     pub provider: String,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-    pub cache_read_tokens: u32,
-    pub cache_write_tokens: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
     pub ttft_ms: u32,
     pub total_ms: u32,
     pub finish_reason: String,

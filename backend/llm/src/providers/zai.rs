@@ -355,7 +355,7 @@ pub async fn generate(
 
     let response = super::check_response(response).await?;
 
-    let total_ms = start.elapsed().as_millis() as u32;
+    let total_ms = crate::convert::elapsed_ms_u32(start.elapsed());
 
     let resp_body: Value = response.json().await.map_err(|e| LlmError::Provider {
         message: format!(

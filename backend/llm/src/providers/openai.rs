@@ -582,7 +582,7 @@ pub async fn generate(
 
     let response = super::check_response(response).await?;
 
-    let total_ms = start.elapsed().as_millis() as u32;
+    let total_ms = crate::convert::elapsed_ms_u32(start.elapsed());
 
     let resp_body: Value = response.json().await.map_err(|e| LlmError::Provider {
         message: format!(
@@ -754,7 +754,12 @@ fn parse_embedding_response(
             nums.iter()
                 .enumerate()
                 .map(|(num_idx, n)| {
-                    n.as_f64().map(|f| f as f32).ok_or_else(|| LlmError::Provider {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "embeddings are downcast to f32 for storage; precision loss is acceptable"
+                    )]
+                    let value = n.as_f64().map(|f| f as f32);
+                    value.ok_or_else(|| LlmError::Provider {
                         message: format!(
                             "embedding response item {item_idx} has non-numeric value at position {num_idx}"
                         ),
@@ -790,7 +795,7 @@ pub async fn image_generate(
             params.image_size,
         )
         .await?;
-        let total_ms = start.elapsed().as_millis() as u32;
+        let total_ms = crate::convert::elapsed_ms_u32(start.elapsed());
         return Ok(ImageGenerateResponse {
             url: result.0,
             revised_prompt: result.1,
@@ -826,7 +831,7 @@ pub async fn image_generate(
 
     let response = super::check_response(response).await?;
 
-    let total_ms = start.elapsed().as_millis() as u32;
+    let total_ms = crate::convert::elapsed_ms_u32(start.elapsed());
     let resp: Value = response.json().await.map_err(LlmError::Request)?;
 
     let image = resp.get("data").and_then(|d| d.get(0));

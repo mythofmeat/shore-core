@@ -2271,8 +2271,8 @@ fn append_wrap_up_nudge(request: &mut LlmRequest) {
 // ---------------------------------------------------------------------------
 
 struct DormantPingUsage {
-    input_tokens: u32,
-    cache_read_tokens: u32,
+    input_tokens: u64,
+    cache_read_tokens: u64,
 }
 
 enum DormantPingOutcome {

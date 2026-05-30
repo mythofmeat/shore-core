@@ -192,10 +192,10 @@ impl Message {
 /// Token usage counts from a generation.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TokenCounts {
-    pub input: u32,
-    pub output: u32,
-    pub cache_read: u32,
-    pub cache_write: u32,
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
 }
 
 /// Timing information for a generation.

@@ -286,7 +286,8 @@ fn build_request_body(request: &LlmRequest) -> Value {
         let manual_gen = opts
             .get("gemini_generation")
             .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as u32;
+            .and_then(|g| u32::try_from(g).ok())
+            .unwrap_or(0);
         let generation = if manual_gen > 0 {
             manual_gen
         } else {
@@ -574,7 +575,7 @@ pub async fn generate(
     })?;
     let resp: Value = serde_json::from_str(&resp_text).map_err(LlmError::Deserialize)?;
 
-    let total_ms = start.elapsed().as_millis() as u32;
+    let total_ms = crate::convert::elapsed_ms_u32(start.elapsed());
 
     let candidate = resp.get("candidates").and_then(|c| c.get(0));
 

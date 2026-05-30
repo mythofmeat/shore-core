@@ -227,22 +227,26 @@ fn resolve_pinned_positions(
     let mut msg_indices = Vec::new();
     for &pos in positions {
         if pos <= 0 {
-            // System block breakpoint.
-            // 0 = last block, -1 = second-to-last, etc.
-            let idx = system_len as i32 - 1 + pos; // 0→last, -1→second-to-last
-            if idx >= 0 && (idx as usize) < system_len {
-                sys_indices.push(idx as usize);
+            // System block breakpoint: 0 = last block, -1 = second-to-last, …
+            // `back` is the distance from the last block; skip if it runs off
+            // the front (mirrors the old `idx >= 0` guard).
+            let back = usize::try_from(pos.unsigned_abs()).unwrap_or(usize::MAX);
+            if let Some(idx) = system_len
+                .checked_sub(1)
+                .and_then(|last| last.checked_sub(back))
+            {
+                sys_indices.push(idx);
             }
         } else {
-            // Positive: pin at Nth user turn.
-            // Find the message index of the Nth real user turn.
+            // Positive: pin at the Nth user turn. `pos > 0`, so it fits u32.
+            let target = u32::try_from(pos).unwrap_or(u32::MAX);
             let mut user_count = 0u32;
             for (i, msg) in messages.iter().enumerate() {
                 if msg.get("role").and_then(Value::as_str) == Some("user")
                     && !is_tool_result_message(msg)
                 {
                     user_count += 1;
-                    if user_count == pos as u32 {
+                    if user_count == target {
                         // Breakpoint on the message after this user turn's
                         // assistant response (or the user message itself if
                         // there's no assistant response yet).
@@ -1127,9 +1131,9 @@ fn handle_message_delta(data: &str, state: &mut StreamState) {
 }
 
 fn handle_message_stop(state: &mut StreamState) -> String {
-    let total_ms = state.start_time.elapsed().as_millis() as u32;
+    let total_ms = crate::convert::elapsed_ms_u32(state.start_time.elapsed());
     let ttft_ms = state.first_token_time.map_or(total_ms, |t| {
-        t.duration_since(state.start_time).as_millis() as u32
+        crate::convert::elapsed_ms_u32(t.duration_since(state.start_time))
     });
     build_done_event(
         &state.text_content,
@@ -1229,7 +1233,7 @@ pub async fn generate(
         ),
     })?;
 
-    let total_ms = start.elapsed().as_millis() as u32;
+    let total_ms = crate::convert::elapsed_ms_u32(start.elapsed());
 
     // Extract model.
     let model = body
@@ -1789,7 +1793,7 @@ mod tests {
                         prv + 2,
                         "breakpoint {} shifted by {} (expected 2) between turn {} and {}",
                         i,
-                        cur as i64 - prv as i64,
+                        i64::try_from(cur).unwrap() - i64::try_from(prv).unwrap(),
                         turn_count - 1,
                         turn_count
                     );

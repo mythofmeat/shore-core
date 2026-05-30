@@ -87,12 +87,12 @@ enum ProcessState {
 
 #[cfg(unix)]
 fn pid_state(pid: u32) -> ProcessState {
-    // Real PIDs fit well within i32; the kernel's pid_t is i32 on Unix.
-    #[allow(
-        clippy::cast_possible_wrap,
-        reason = "PID values are bounded well below i32::MAX"
-    )]
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    // The kernel's pid_t is i32; real PIDs fit far below i32::MAX. A value that
+    // doesn't fit can't name a live process, so treat it as dead.
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return ProcessState::Dead;
+    };
+    let rc = unsafe { libc::kill(pid, 0) };
     if rc == 0 {
         return ProcessState::Alive;
     }

@@ -120,12 +120,12 @@ impl LlmRequest {
 /// Token usage counts from shore-llm's normalized response.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
-    pub input_tokens: u32,
-    pub output_tokens: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
     #[serde(default)]
-    pub cache_read_tokens: u32,
+    pub cache_read_tokens: u64,
     #[serde(default)]
-    pub cache_creation_tokens: u32,
+    pub cache_creation_tokens: u64,
     /// Provider-reported total cost when available (e.g. OpenRouter
     /// returns this on a `cost` field).
     #[serde(default, skip_serializing_if = "Option::is_none")]

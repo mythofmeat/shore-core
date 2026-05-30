@@ -318,10 +318,10 @@ fn build_compaction_request(
 
 struct CallStat {
     label: String,
-    input: u32,
-    output: u32,
-    cache_r: u32,
-    cache_w: u32,
+    input: u64,
+    output: u64,
+    cache_r: u64,
+    cache_w: u64,
 }
 
 fn record(stats: &mut Vec<CallStat>, label: &str, usage: &Usage) {
