@@ -1630,6 +1630,8 @@ mod tests {
     /// client sending a multi-GB line.
     #[tokio::test]
     async fn read_message_rejects_oversized() {
+        use tokio::io::AsyncWriteExt;
+
         let oversized = format!(
             "{{\"type\":\"message\",\"body\":{{\"content\":\"{}\"}}}}\n",
             "x".repeat(MAX_WIRE_MESSAGE_SIZE + 1)
@@ -1638,7 +1640,6 @@ mod tests {
         let (mut writer, reader) = duplex(MAX_WIRE_MESSAGE_SIZE + 4096);
         let mut buf_reader = BufReader::new(reader);
 
-        use tokio::io::AsyncWriteExt;
         writer.write_all(oversized.as_bytes()).await.unwrap();
         drop(writer);
 

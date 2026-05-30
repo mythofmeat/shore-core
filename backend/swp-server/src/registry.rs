@@ -306,6 +306,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::case_sensitive_file_extension_comparisons,
+        reason = "matching backup filenames this test created itself, always lowercase .json"
+    )]
     fn register_rejects_corrupt_registry_and_preserves_backup() {
         let (_tmp, reg) = test_registry();
         let corrupt = "{ definitely not valid json";
