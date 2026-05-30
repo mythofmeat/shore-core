@@ -397,7 +397,7 @@ mod tests {
             rid: None,
             msg_id: None,
             revision: None,
-            content: "".into(),
+            content: String::new(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
                     input: 0,
@@ -409,7 +409,7 @@ mod tests {
                     total_ms: 0,
                     ttft_ms: 0,
                 },
-                model: "".into(),
+                model: String::new(),
             },
             finish_reason: "end_turn".into(),
             is_final: true,
@@ -728,6 +728,11 @@ mod tests {
     /// the intermediate "Let me search memory—" text, miss the ToolCall
     /// and ToolResult frames entirely, and surface the wrong finish_reason.
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::items_after_statements,
+        reason = "long end-to-end stream test with a local helper fn for readability"
+    )]
     async fn collect_stream_spans_tool_loop_to_final_end() {
         use crate::stream::{collect_stream, StreamedResponse};
         use shore_protocol::server_msg::*;

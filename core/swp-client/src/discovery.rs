@@ -87,6 +87,11 @@ enum ProcessState {
 
 #[cfg(unix)]
 fn pid_state(pid: u32) -> ProcessState {
+    // Real PIDs fit well within i32; the kernel's pid_t is i32 on Unix.
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "PID values are bounded well below i32::MAX"
+    )]
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     if rc == 0 {
         return ProcessState::Alive;
@@ -180,11 +185,11 @@ pub const DEFAULT_ADDR: &str = "127.0.0.1:7320";
 pub fn discover_or_default(config_path: Option<&str>) -> Result<ServerAddr> {
     let client_default =
         crate::client_config::load_client_config().and_then(|cfg| cfg.default_address);
-    discover_or_default_from_path(instances_path(), config_path, client_default)
+    discover_or_default_from_path(&instances_path(), config_path, client_default)
 }
 
 fn discover_or_default_from_path(
-    path: PathBuf,
+    path: &Path,
     config_path: Option<&str>,
     client_default_address: Option<String>,
 ) -> Result<ServerAddr> {
@@ -193,7 +198,7 @@ fn discover_or_default_from_path(
         return Ok(ServerAddr(addr));
     }
 
-    match discover_from_path(&path, config_path) {
+    match discover_from_path(path, config_path) {
         Ok(addr) => {
             debug!(addr = ?addr, "resolved daemon via instance discovery");
             Ok(addr)
@@ -302,7 +307,7 @@ mod tests {
     #[test]
     fn discover_or_default_falls_back_when_registry_is_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let addr = discover_or_default_from_path(tmp.path().join("missing.json"), None, None)
+        let addr = discover_or_default_from_path(&tmp.path().join("missing.json"), None, None)
             .expect("missing registry should fall back to the default address");
         assert_eq!(addr.0, DEFAULT_ADDR);
     }
@@ -313,7 +318,7 @@ mod tests {
         let path = tmp.path().join("instances.json");
         std::fs::write(&path, "{ invalid json").unwrap();
 
-        let err = discover_or_default_from_path(path, None, None)
+        let err = discover_or_default_from_path(&path, None, None)
             .expect_err("corrupt registry should not silently fall back");
         assert!(
             format!("{err}").contains("corrupt instances registry"),

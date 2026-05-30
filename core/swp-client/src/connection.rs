@@ -206,9 +206,7 @@ impl SWPConnection {
             .filter_map(|path| {
                 let bytes = std::fs::read(path).ok()?;
                 let filename = std::path::Path::new(path)
-                    .file_name()
-                    .map(|f| f.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "image".to_string());
+                    .file_name().map_or_else(|| "image".to_string(), |f| f.to_string_lossy().to_string());
                 let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 Some(ImageUpload { filename, data })
             })
@@ -349,7 +347,7 @@ fn uuid_v4() -> String {
         .unwrap_or_default()
         .as_nanos();
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("rid_{:016x}_{:04x}", nanos, seq)
+    format!("rid_{nanos:016x}_{seq:04x}")
 }
 
 #[cfg(test)]
