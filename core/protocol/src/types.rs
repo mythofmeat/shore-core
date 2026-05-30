@@ -144,7 +144,7 @@ impl Message {
             alt.normalize();
         }
         if !self.alternatives.is_empty() {
-            let count = self.alternatives.len() as u32;
+            let count = u32::try_from(self.alternatives.len()).unwrap_or(u32::MAX);
             self.alt_count = Some(count);
             let index = self.alt_index.unwrap_or(count.saturating_sub(1));
             self.alt_index = Some(index.min(count.saturating_sub(1)));
