@@ -76,3 +76,8 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+
+[profile.release]
+strip = true        # drop symbol tables (~20% smaller, no behavior change)
+lto = "thin"        # most of the LTO size/perf win, far cheaper to link than "fat"
+codegen-units = 1   # smaller and slightly faster runtime
