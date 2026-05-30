@@ -38,7 +38,7 @@ fn detect_generation(model: &str) -> u32 {
     };
     let after = &model[idx + "gemini-".len()..];
     // Extract digits from the start.
-    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
     digits.parse::<u32>().unwrap_or(0)
 }
 
@@ -119,8 +119,7 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
                             .unwrap_or("");
                         let name = tool_id_to_name
                             .get(tool_use_id)
-                            .map(|s| s.as_str())
-                            .unwrap_or(tool_use_id);
+                            .map_or(tool_use_id, std::string::String::as_str);
                         let content = &block["content"];
                         let response = if let Some(s) = content.as_str() {
                             json!({"result": s})
@@ -158,6 +157,10 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
 }
 
 /// Translate Anthropic-format tool definitions into Gemini `tools` array.
+#[allow(
+    clippy::ref_option,
+    reason = "mirrors LlmRequest.tools (&Option) and forwards by reference to translate_tool_declarations"
+)]
 fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Value> {
     translate_tool_declarations(tools).map(|decls| json!([{"functionDeclarations": decls}]))
 }
@@ -210,35 +213,40 @@ fn merge_consecutive_roles(contents: &mut Vec<Value>) {
             .cloned()
             .unwrap_or_default();
 
-        let should_merge = if let Some(prev) = merged.last() {
-            prev.get("role").and_then(|r| r.as_str()) == Some(role)
+        // Merge into the previous message only when it shares the same role
+        // and exposes a `parts` array; otherwise fall through and push.
+        let same_role = merged
+            .last()
+            .and_then(|p| p.get("role"))
+            .and_then(|r| r.as_str())
+            == Some(role);
+        let prev_parts = if same_role {
+            merged
+                .last_mut()
+                .and_then(|p| p.get_mut("parts"))
+                .and_then(|p| p.as_array_mut())
         } else {
-            false
+            None
         };
 
-        if should_merge {
-            let prev = merged.last_mut().unwrap();
-            let prev_parts = prev
-                .get_mut("parts")
-                .and_then(|p| p.as_array_mut())
-                .unwrap();
+        if let Some(prev_parts) = prev_parts {
             for part in parts {
                 // Check if this is a plain text part (not thought)
                 let is_text = part.get("text").is_some()
-                    && part.get("thought").and_then(|t| t.as_bool()) != Some(true);
+                    && part.get("thought").and_then(serde_json::Value::as_bool) != Some(true);
                 if is_text {
                     let new_text = part.get("text").and_then(|t| t.as_str()).unwrap_or("");
                     // Find the last plain text part in prev_parts to merge into
                     let existing_text_idx = prev_parts.iter().rposition(|p| {
                         p.get("text").is_some()
-                            && p.get("thought").and_then(|t| t.as_bool()) != Some(true)
+                            && p.get("thought").and_then(serde_json::Value::as_bool) != Some(true)
                     });
                     if let Some(idx) = existing_text_idx {
                         let old = prev_parts[idx]
                             .get("text")
                             .and_then(|t| t.as_str())
                             .unwrap_or("");
-                        let combined = format!("{}\n\n{}", old, new_text);
+                        let combined = format!("{old}\n\n{new_text}");
                         prev_parts[idx]["text"] = json!(combined);
                     } else {
                         prev_parts.push(part);
@@ -277,7 +285,7 @@ fn build_request_body(request: &LlmRequest) -> Value {
         // Determine the Gemini generation.
         let manual_gen = opts
             .get("gemini_generation")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0) as u32;
         let generation = if manual_gen > 0 {
             manual_gen
@@ -285,7 +293,7 @@ fn build_request_body(request: &LlmRequest) -> Value {
             detect_generation(&request.model)
         };
 
-        let budget = opts.get("budget_tokens").and_then(|v| v.as_u64());
+        let budget = opts.get("budget_tokens").and_then(serde_json::Value::as_u64);
         let effort_str = opts
             .get("reasoning_effort")
             .and_then(|v| v.as_str())
@@ -316,7 +324,7 @@ fn build_request_body(request: &LlmRequest) -> Value {
             }
         } else {
             // Check if reasoning_effort was provided as a numeric value.
-            let effort_num = opts.get("reasoning_effort").and_then(|v| v.as_u64());
+            let effort_num = opts.get("reasoning_effort").and_then(serde_json::Value::as_u64);
             if let Some(budget) = effort_num {
                 generation_config["thinkingConfig"] = json!({"thinkingBudget": budget});
             }
@@ -358,6 +366,10 @@ fn base_url(request: &LlmRequest) -> &str {
 // ── Streaming ────────────────────────────────────────────────────────
 
 /// Send a streaming request to the Gemini REST API.
+#[allow(
+    clippy::too_many_lines,
+    reason = "end-to-end streaming setup; clearer as one function than artificially split"
+)]
 ///
 /// Returns a `DuplexStream` that yields NDJSON `StreamEvent` lines.
 /// A background task reads SSE events from the HTTP response and writes
@@ -426,7 +438,7 @@ pub async fn stream(
                     for part in parts {
                         if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                             timing.record_first_token();
-                            if part.get("thought").and_then(|t| t.as_bool()) == Some(true) {
+                            if part.get("thought").and_then(serde_json::Value::as_bool) == Some(true) {
                                 if let Ok(line) = serde_json::to_string(
                                     &json!({"type": "thinking", "text": text}),
                                 ) {
@@ -571,12 +583,12 @@ pub async fn generate(
     if let Some(parts) = parts {
         for part in parts {
             if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                if part.get("thought").and_then(|t| t.as_bool()) == Some(true) {
+                if part.get("thought").and_then(serde_json::Value::as_bool) == Some(true) {
                     // Fix 3: preserve thoughtSignature from Gemini response.
                     let signature = part
                         .get("thoughtSignature")
                         .and_then(|s| s.as_str())
-                        .map(|s| s.to_string());
+                        .map(std::string::ToString::to_string);
                     content_blocks.push(ContentBlock::Thinking {
                         thinking: text.to_string(),
                         signature,

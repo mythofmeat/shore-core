@@ -93,6 +93,10 @@ impl CredentialFailureKind {
 /// `provider_key` is informational — most decisions come from status code
 /// and body wording. It is wired in so future provider-specific tweaks
 /// have a place to land without changing the call sites.
+#[allow(
+    clippy::match_same_arms,
+    reason = "credential-failure categories kept as separate arms, each documented at its decision point"
+)]
 pub fn classify_credential_failure(_provider_key: &str, error: &LlmError) -> CredentialFailureKind {
     match error {
         LlmError::MissingApiKey { .. } => CredentialFailureKind::MissingKey,

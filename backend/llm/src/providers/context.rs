@@ -120,7 +120,7 @@ pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
             .provider_options
             .as_ref()
             .and_then(|opts| opts.get("zai_clear_thinking"))
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
     ProviderContext {

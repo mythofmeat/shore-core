@@ -196,7 +196,7 @@ impl LlmClient {
                 req.api_key_name = Some(cand.name.clone());
                 return Ok(req);
             }
-            last_env = cand.env.clone();
+            last_env.clone_from(&cand.env);
         }
 
         Err(LlmError::MissingApiKey { var: last_env })
@@ -638,7 +638,7 @@ sdk = "openai"
             LlmError::MissingApiKey { var } => {
                 assert_eq!(var, "NONEXISTENT_KEY_015");
             }
-            other => panic!("Expected MissingApiKey, got {:?}", other),
+            other => panic!("Expected MissingApiKey, got {other:?}"),
         }
     }
 

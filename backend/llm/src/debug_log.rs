@@ -155,6 +155,10 @@ pub fn log_request(
 }
 
 /// Write the paired response file for a successful non-streaming call.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "CallHandle bundles per-call logging state and is consumed when the call completes"
+)]
 pub fn log_response(handle: CallHandle, resp: &GenerateResponse) {
     let duration_ms = handle.started.elapsed().as_millis() as u64;
     let doc = serde_json::json!({
@@ -234,6 +238,10 @@ pub struct TeeReader<R> {
 }
 
 impl<R> TeeReader<R> {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the TeeReader takes ownership of the per-call handle for the stream's lifetime"
+    )]
     pub fn new(inner: R, handle: CallHandle) -> Self {
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -261,7 +269,7 @@ impl<R> TeeReader<R> {
                 "character": handle.envelope.character,
                 "rid": handle.envelope.rid,
             });
-            let _ = writeln!(f, "{}", header);
+            let _ = writeln!(f, "{header}");
         }
         // call_id field kept for future use (e.g. logging); silence unused.
         let _ = handle.call_id;

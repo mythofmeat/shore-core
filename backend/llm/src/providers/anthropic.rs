@@ -272,11 +272,11 @@ fn normalize_for_caching(messages: &[Value], system: &Value) -> (Vec<Value>, Val
     } else {
         system.clone()
     };
-    let sys_blocks = system.as_array().map(|a| a.len()).unwrap_or(0);
+    let sys_blocks = system.as_array().map_or(0, std::vec::Vec::len);
 
     let mut result: Vec<Value> = messages.to_vec();
     strip_cache_control(&mut result);
-    for msg in result.iter_mut() {
+    for msg in &mut result {
         if let Some(Value::String(text)) = msg.get("content").cloned() {
             msg["content"] = json!([{ "type": "text", "text": text }]);
         }
@@ -324,7 +324,7 @@ fn compute_prefix_hash(system: &Value, messages: &[Value], msg_bp: &[usize]) -> 
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     system.to_string().hash(&mut hasher);
-    let end = msg_bp.first().map(|&p| p + 1).unwrap_or(0);
+    let end = msg_bp.first().map_or(0, |&p| p + 1);
     for msg in &messages[..end.min(messages.len())] {
         msg.to_string().hash(&mut hasher);
     }
@@ -611,14 +611,11 @@ fn convert_inline_system_messages(messages: &[Value]) -> Vec<Value> {
             // break tool_use/tool_result pairing.
             if let Some(prev) = out.last_mut() {
                 if prev.get("role").and_then(Value::as_str) == Some("user") {
-                    match prev.get_mut("content") {
-                        Some(Value::Array(blocks)) => {
-                            blocks.push(json!({"type": "text", "text": wrapped}));
-                        }
-                        _ => {
-                            let prev_text = extract_text_content(prev);
-                            prev["content"] = json!(format!("{prev_text}\n\n{wrapped}"));
-                        }
+                    if let Some(Value::Array(blocks)) = prev.get_mut("content") {
+                        blocks.push(json!({"type": "text", "text": wrapped}));
+                    } else {
+                        let prev_text = extract_text_content(prev);
+                        prev["content"] = json!(format!("{prev_text}\n\n{wrapped}"));
                     }
                     continue;
                 }
@@ -803,20 +800,15 @@ fn build_http_request(
         let model = body["model"].as_str().unwrap_or("?");
         let max_tokens = body["max_tokens"].as_u64().unwrap_or(0);
         let thinking = body
-            .get("thinking")
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "none".into());
+            .get("thinking").map_or_else(|| "none".into(), std::string::ToString::to_string);
         let output_cfg = body
-            .get("output_config")
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "none".into());
-        let sys_blocks = body["system"].as_array().map(|a| a.len()).unwrap_or(0);
-        let msg_count = body["messages"].as_array().map(|a| a.len()).unwrap_or(0);
+            .get("output_config").map_or_else(|| "none".into(), std::string::ToString::to_string);
+        let sys_blocks = body["system"].as_array().map_or(0, std::vec::Vec::len);
+        let msg_count = body["messages"].as_array().map_or(0, std::vec::Vec::len);
         let tool_count = body
             .get("tools")
             .and_then(|v| v.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
+            .map_or(0, std::vec::Vec::len);
         tracing::debug!(
             model, max_tokens, %thinking, output_config = %output_cfg,
             sys_blocks, msg_count, tool_count,
@@ -927,6 +919,10 @@ pub async fn stream(
 }
 
 /// Translate an SSE event into an optional NDJSON line to write to the stream.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "SseEvent is consumed per-event by the streaming dispatch; ownership keeps the call site clean"
+)]
 fn handle_sse_event(event: SseEvent, state: &mut StreamState) -> Option<String> {
     // Prefer the SSE `event:` field; fall back to the `type` field inside the
     // JSON `data:` payload.  Some proxies (e.g. OpenRouter) may strip the
@@ -1132,8 +1128,7 @@ fn handle_message_stop(state: &mut StreamState) -> String {
     let total_ms = state.start_time.elapsed().as_millis() as u32;
     let ttft_ms = state
         .first_token_time
-        .map(|t| t.duration_since(state.start_time).as_millis() as u32)
-        .unwrap_or(total_ms);
+        .map_or(total_ms, |t| t.duration_since(state.start_time).as_millis() as u32);
     build_done_event(
         &state.text_content,
         &state.finish_reason,
@@ -1601,8 +1596,7 @@ mod tests {
                 .expect("should have text block");
             assert!(
                 last_text.get("cache_control").is_some(),
-                "message breakpoint at index {} missing cache_control",
-                bp_idx
+                "message breakpoint at index {bp_idx} missing cache_control"
             );
         }
 
@@ -1739,12 +1733,10 @@ mod tests {
                     if !p.msg_breakpoints.contains(&i) {
                         let has_cc = msg["content"]
                             .as_array()
-                            .map(|arr| arr.iter().any(|b| b.get("cache_control").is_some()))
-                            .unwrap_or(false);
+                            .is_some_and(|arr| arr.iter().any(|b| b.get("cache_control").is_some()));
                         assert!(
                             !has_cc,
-                            "turn {}: non-breakpoint message {} in prefix has cache_control",
-                            turn_count, i
+                            "turn {turn_count}: non-breakpoint message {i} in prefix has cache_control"
                         );
                     }
                 }
@@ -1752,9 +1744,7 @@ mod tests {
                 if turn_count > 5 {
                     assert!(
                         earliest_bp >= 2,
-                        "turn {}: earliest breakpoint {} is too close to start",
-                        turn_count,
-                        earliest_bp
+                        "turn {turn_count}: earliest breakpoint {earliest_bp} is too close to start"
                     );
                 }
             }
@@ -1812,8 +1802,7 @@ mod tests {
             for &bp in &p.msg_breakpoints {
                 assert_ne!(
                     bp, last_idx,
-                    "turn {}: breakpoint at index {} is the final message",
-                    turn_count, bp
+                    "turn {turn_count}: breakpoint at index {bp} is the final message"
                 );
             }
         }
@@ -1884,8 +1873,7 @@ mod tests {
         let total = p.sys_breakpoints.len() + p.msg_breakpoints.len();
         assert!(
             total <= 4,
-            "total breakpoints {} exceeds Anthropic limit of 4",
-            total
+            "total breakpoints {total} exceeds Anthropic limit of 4"
         );
         // System breakpoints should be preserved (priority).
         assert_eq!(

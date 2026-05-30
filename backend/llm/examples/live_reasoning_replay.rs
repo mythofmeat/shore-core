@@ -32,9 +32,7 @@ struct Target {
 }
 
 fn load_env_file() {
-    let path = env::var("SHORE_ENV_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/home/eshen/.config/shore/.env"));
+    let path = env::var("SHORE_ENV_FILE").map_or_else(|_| PathBuf::from("/home/eshen/.config/shore/.env"), PathBuf::from);
     let Ok(contents) = fs::read_to_string(path) else {
         return;
     };

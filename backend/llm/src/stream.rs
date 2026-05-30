@@ -330,7 +330,7 @@ mod tests {
                 assert_eq!(chunk.text, "Hello ");
                 assert_eq!(chunk.content_type, "text");
             }
-            other => panic!("Expected StreamChunk, got {:?}", other),
+            other => panic!("Expected StreamChunk, got {other:?}"),
         }
 
         let msg3 = direct_rx.recv().await.unwrap();
@@ -339,7 +339,7 @@ mod tests {
                 assert_eq!(chunk.text, "world");
                 assert_eq!(chunk.content_type, "text");
             }
-            other => panic!("Expected StreamChunk, got {:?}", other),
+            other => panic!("Expected StreamChunk, got {other:?}"),
         }
 
         // consume() must NOT have emitted a StreamEnd yet.
@@ -362,7 +362,7 @@ mod tests {
                 assert_eq!(end.metadata.tokens.cache_read, 8);
                 assert_eq!(end.metadata.timing.ttft_ms, 50);
             }
-            other => panic!("Expected StreamEnd, got {:?}", other),
+            other => panic!("Expected StreamEnd, got {other:?}"),
         }
 
         server_handle.await.unwrap();
@@ -421,7 +421,7 @@ mod tests {
                 assert_eq!(chunk.text, "Let me think...");
                 assert_eq!(chunk.content_type, "thinking");
             }
-            other => panic!("Expected StreamChunk(thinking), got {:?}", other),
+            other => panic!("Expected StreamChunk(thinking), got {other:?}"),
         }
 
         server_handle.await.unwrap();
@@ -460,7 +460,7 @@ mod tests {
                 assert_eq!(thinking, "Let me reason...");
                 assert_eq!(signature.as_deref(), Some("sig_test_abc"));
             }
-            other => panic!("Expected Thinking with signature, got {:?}", other),
+            other => panic!("Expected Thinking with signature, got {other:?}"),
         }
         assert!(
             matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "The answer")
@@ -502,13 +502,13 @@ mod tests {
                 assert_eq!(thinking, "Visible thinking");
                 assert_eq!(signature.as_deref(), Some("sig_1"));
             }
-            other => panic!("Expected Thinking, got {:?}", other),
+            other => panic!("Expected Thinking, got {other:?}"),
         }
         match &result.content_blocks[1] {
             ContentBlock::RedactedThinking { data } => {
                 assert_eq!(data, "opaque_encrypted_bytes");
             }
-            other => panic!("Expected RedactedThinking, got {:?}", other),
+            other => panic!("Expected RedactedThinking, got {other:?}"),
         }
         assert!(
             matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "Answer")
@@ -539,7 +539,7 @@ mod tests {
         let msg = push_rx.try_recv().unwrap();
         match msg {
             ServerMessage::StreamStart(start) => assert!(start.regen),
-            other => panic!("Expected StreamStart with regen=true, got {:?}", other),
+            other => panic!("Expected StreamStart with regen=true, got {other:?}"),
         }
 
         server_handle.await.unwrap();
@@ -846,15 +846,15 @@ mod tests {
 
         match direct_rx.recv().await.unwrap() {
             ServerMessage::StreamStart(msg) => {
-                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"))
+                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"));
             }
-            other => panic!("Expected StreamStart, got {:?}", other),
+            other => panic!("Expected StreamStart, got {other:?}"),
         }
         match direct_rx.recv().await.unwrap() {
             ServerMessage::StreamChunk(msg) => {
-                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"))
+                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"));
             }
-            other => panic!("Expected StreamChunk, got {:?}", other),
+            other => panic!("Expected StreamChunk, got {other:?}"),
         }
 
         // The caller emits StreamEnd, propagating the same rid.
@@ -873,7 +873,7 @@ mod tests {
                 assert_eq!(msg.msg_id.as_deref(), Some("m_stream_01"));
                 assert_eq!(msg.revision, Some(42));
             }
-            other => panic!("Expected StreamEnd, got {:?}", other),
+            other => panic!("Expected StreamEnd, got {other:?}"),
         }
 
         server_handle.await.unwrap();

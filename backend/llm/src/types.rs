@@ -353,7 +353,7 @@ mod tests {
         let event: StreamEvent = serde_json::from_str(json).unwrap();
         match event {
             StreamEvent::Start { model } => assert_eq!(model, "claude-sonnet-4-6"),
-            other => panic!("Expected Start, got {:?}", other),
+            other => panic!("Expected Start, got {other:?}"),
         }
     }
 
@@ -363,7 +363,7 @@ mod tests {
         let event: StreamEvent = serde_json::from_str(json).unwrap();
         match event {
             StreamEvent::Text { text } => assert_eq!(text, "Hello world"),
-            other => panic!("Expected Text, got {:?}", other),
+            other => panic!("Expected Text, got {other:?}"),
         }
     }
 
@@ -373,7 +373,7 @@ mod tests {
         let event: StreamEvent = serde_json::from_str(json).unwrap();
         match event {
             StreamEvent::Thinking { text } => assert_eq!(text, "Let me consider..."),
-            other => panic!("Expected Thinking, got {:?}", other),
+            other => panic!("Expected Thinking, got {other:?}"),
         }
     }
 
@@ -387,7 +387,7 @@ mod tests {
                 assert_eq!(name, "memory");
                 assert_eq!(input["q"], "test");
             }
-            other => panic!("Expected ToolUse, got {:?}", other),
+            other => panic!("Expected ToolUse, got {other:?}"),
         }
     }
 
@@ -425,7 +425,7 @@ mod tests {
                 assert_eq!(timing.total_ms, 1500);
                 assert_eq!(timing.time_to_first_token_ms, 200);
             }
-            other => panic!("Expected Done, got {:?}", other),
+            other => panic!("Expected Done, got {other:?}"),
         }
     }
 
@@ -445,7 +445,7 @@ mod tests {
                 assert_eq!(usage.cache_creation_tokens, 0);
                 assert_eq!(timing.time_to_first_token_ms, 0);
             }
-            other => panic!("Expected Done, got {:?}", other),
+            other => panic!("Expected Done, got {other:?}"),
         }
     }
 
@@ -484,7 +484,7 @@ mod tests {
         assert_eq!(resp.content_blocks.len(), 2);
         match &resp.content_blocks[0] {
             ContentBlock::Text { text } => assert_eq!(text, "I'll check the weather."),
-            other => panic!("Expected Text, got {:?}", other),
+            other => panic!("Expected Text, got {other:?}"),
         }
         match &resp.content_blocks[1] {
             ContentBlock::ToolUse { id, name, input } => {
@@ -492,7 +492,7 @@ mod tests {
                 assert_eq!(name, "get_weather");
                 assert_eq!(input["city"], "NYC");
             }
-            other => panic!("Expected ToolUse, got {:?}", other),
+            other => panic!("Expected ToolUse, got {other:?}"),
         }
     }
 
@@ -519,7 +519,7 @@ mod tests {
                 assert_eq!(thinking, "Let me think...");
                 assert!(signature.is_none());
             }
-            other => panic!("Expected Thinking, got {:?}", other),
+            other => panic!("Expected Thinking, got {other:?}"),
         }
     }
 
@@ -531,7 +531,7 @@ mod tests {
             StreamEvent::ThinkingSignature { signature } => {
                 assert_eq!(signature, "sig_abc123");
             }
-            other => panic!("Expected ThinkingSignature, got {:?}", other),
+            other => panic!("Expected ThinkingSignature, got {other:?}"),
         }
     }
 
@@ -543,7 +543,7 @@ mod tests {
             StreamEvent::RedactedThinking { data } => {
                 assert_eq!(data, "opaque_encrypted_data");
             }
-            other => panic!("Expected RedactedThinking, got {:?}", other),
+            other => panic!("Expected RedactedThinking, got {other:?}"),
         }
     }
 }

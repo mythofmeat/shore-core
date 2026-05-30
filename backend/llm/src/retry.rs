@@ -48,6 +48,10 @@ pub enum RetryDecision {
 /// surfacing immediately so it can rotate to the next configured key.
 /// Plain transient errors (5xx, generic 429, network blips) still go
 /// through the normal exponential-backoff retry path.
+#[allow(
+    clippy::match_same_arms,
+    reason = "non-retryable error categories kept as separate arms, each documented at its decision point"
+)]
 pub fn should_retry_error(error: &LlmError, attempt: u32, policy: &RetryPolicy) -> RetryDecision {
     let cred_kind = classify_credential_failure("", error);
     if cred_kind.should_rotate() {
@@ -271,7 +275,7 @@ mod tests {
 
         let err_500 = LlmError::HttpStatus {
             status: 500,
-            body: "".into(),
+            body: String::new(),
         };
         assert_eq!(
             should_retry_error(&err_500, 0, &policy),
@@ -280,7 +284,7 @@ mod tests {
 
         let err_429 = LlmError::HttpStatus {
             status: 429,
-            body: "".into(),
+            body: String::new(),
         };
         assert_eq!(
             should_retry_error(&err_429, 0, &policy),

@@ -122,15 +122,15 @@ pub(crate) fn extract_gemini_usage(meta: Option<&Value>) -> Usage {
     Usage {
         input_tokens: m
             .get("promptTokenCount")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0) as u32,
         output_tokens: m
             .get("candidatesTokenCount")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0) as u32,
         cache_read_tokens: m
             .get("cachedContentTokenCount")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0) as u32,
         cache_creation_tokens: 0,
         ..Default::default()
@@ -165,8 +165,7 @@ pub(crate) fn extract_system_text(value: &Value) -> String {
                     None
                 }
             })
-            .collect::<Vec<_>>()
-            .join(""),
+            .collect::<String>(),
         _ => String::new(),
     }
 }
@@ -179,18 +178,18 @@ pub(crate) fn extract_openai_usage(u: &Value) -> Usage {
     let prompt_details = u.get("prompt_tokens_details");
     let cached = prompt_details
         .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0) as u32;
     let cache_write = prompt_details
         .and_then(|d| d.get("cache_write_tokens"))
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0) as u32;
 
     Usage {
-        input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+        input_tokens: u.get("prompt_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32,
         output_tokens: u
             .get("completion_tokens")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0) as u32,
         cache_read_tokens: cached,
         cache_creation_tokens: cache_write,
@@ -214,6 +213,10 @@ pub(crate) fn wrap_inline_system_instruction(text: &str) -> String {
 ///
 /// Covers OpenAI (lowercase), Gemini (UPPERCASE), and Anthropic (already
 /// canonical) values in a single collision-free match table.
+#[allow(
+    clippy::match_same_arms,
+    reason = "per-provider finish-reason groups kept distinct as a documentation table"
+)]
 pub(crate) fn normalize_finish_reason(reason: Option<&str>) -> &'static str {
     match reason {
         // OpenAI
@@ -259,6 +262,10 @@ pub(crate) fn apply_common_params(body: &mut Value, request: &LlmRequest) {
 /// Each provider wraps the result in its own envelope:
 /// - OpenAI: `{type: "function", function: <decl>}`
 /// - Gemini: `[{functionDeclarations: <decls>}]`
+#[allow(
+    clippy::ref_option,
+    reason = "mirrors LlmRequest.tools (&Option); avoids cloning the tool list at every call site"
+)]
 pub(crate) fn translate_tool_declarations(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
     let tools = tools.as_ref()?;
     if tools.is_empty() {

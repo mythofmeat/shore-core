@@ -532,7 +532,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "  messages: {} | tools: {}",
                 request.messages.len(),
-                request.tools.as_ref().map(|t| t.len()).unwrap_or(0)
+                request.tools.as_ref().map_or(0, std::vec::Vec::len)
             );
         }
 
@@ -544,13 +544,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .any(|t| !scratchpad_names.contains(t.as_str()));
             if has_non_scratchpad {
-                println!("\n>>> NON-SCRATCHPAD TOOL USED: {:?}", tools_used);
+                println!("\n>>> NON-SCRATCHPAD TOOL USED: {tools_used:?}");
                 println!(">>> Stopping after {run} runs.");
                 break;
             } else if tools_used.is_empty() {
                 println!("\n  (no tool use — text-only response)");
             } else {
-                println!("\n  scratchpad only: {:?} — continuing...", tools_used);
+                println!("\n  scratchpad only: {tools_used:?} — continuing...");
             }
         }
     }

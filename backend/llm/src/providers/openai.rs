@@ -26,6 +26,10 @@ const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 // ── Message & tool translation ──────────────────────────────────────
 
 /// Translate Anthropic-format messages into OpenAI chat completion messages.
+#[allow(
+    clippy::too_many_lines,
+    reason = "message-translation covers many block types inline; clearer as one pass"
+)]
 pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) -> Vec<Value> {
     let mut out = Vec::new();
 
@@ -240,6 +244,10 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
 }
 
 /// Translate Anthropic-format tool definitions to OpenAI function-calling format.
+#[allow(
+    clippy::ref_option,
+    reason = "mirrors LlmRequest.tools (&Option) and forwards by reference to translate_tool_declarations"
+)]
 pub(super) fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
     translate_tool_declarations(tools).map(|decls| {
         decls
@@ -268,17 +276,19 @@ fn provider_opt_str<'a>(request: &'a LlmRequest, key: &str) -> Option<&'a str> {
 }
 
 /// Build common request headers.
-fn build_headers(request: &LlmRequest, ctx: &ProviderContext) -> reqwest::header::HeaderMap {
+fn build_headers(
+    request: &LlmRequest,
+    ctx: &ProviderContext,
+) -> Result<reqwest::header::HeaderMap, LlmError> {
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::AUTHORIZATION,
-        format!("Bearer {}", request.api_key)
-            .parse()
-            .expect("valid header value"),
-    );
+    let auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", request.api_key))
+        .map_err(|e| LlmError::Provider {
+            message: format!("API key is not a valid HTTP header value: {e}"),
+        })?;
+    headers.insert(reqwest::header::AUTHORIZATION, auth);
     headers.insert(
         reqwest::header::CONTENT_TYPE,
-        "application/json".parse().unwrap(),
+        reqwest::header::HeaderValue::from_static("application/json"),
     );
 
     for (name, value) in &ctx.extra_headers {
@@ -339,6 +349,10 @@ fn build_chat_body(request: &LlmRequest, ctx: &ProviderContext, streaming: bool)
 ///
 /// Returns a `DuplexStream` that yields NDJSON `StreamEvent` lines. A background
 /// tokio task reads SSE from the upstream API and writes translated events.
+#[allow(
+    clippy::too_many_lines,
+    reason = "end-to-end streaming setup; clearer as one function than artificially split"
+)]
 pub async fn stream(
     client: &reqwest::Client,
     request: &LlmRequest,
@@ -346,7 +360,7 @@ pub async fn stream(
 ) -> Result<DuplexStream, LlmError> {
     let base_url = resolve_base_url(request);
     let url = format!("{base_url}/chat/completions");
-    let headers = build_headers(request, ctx);
+    let headers = build_headers(request, ctx)?;
     let body = build_chat_body(request, ctx, true);
 
     let response = client
@@ -442,7 +456,7 @@ pub async fn stream(
                         .and_then(|t| t.as_array())
                     {
                         for tc in tcs {
-                            let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
+                            let index = tc.get("index").and_then(serde_json::Value::as_u64).unwrap_or(0);
                             let entry = tool_calls
                                 .entry(index)
                                 .or_insert_with(|| (String::new(), String::new(), Vec::new()));
@@ -504,7 +518,7 @@ pub async fn stream(
 
         // Emit accumulated tool calls.
         let mut indices: Vec<u64> = tool_calls.keys().copied().collect();
-        indices.sort();
+        indices.sort_unstable();
         for idx in indices {
             if let Some((id, name, arg_chunks)) = tool_calls.remove(&idx) {
                 let raw = arg_chunks.join("");
@@ -547,7 +561,7 @@ pub async fn generate(
 ) -> Result<GenerateResponse, LlmError> {
     let base_url = resolve_base_url(request);
     let url = format!("{base_url}/chat/completions");
-    let headers = build_headers(request, ctx);
+    let headers = build_headers(request, ctx)?;
     let body = build_chat_body(request, ctx, false);
 
     let start = Instant::now();
@@ -1352,7 +1366,7 @@ mod tests {
         }));
 
         let ctx = build_provider_context(&request);
-        let headers = build_headers(&request, &ctx);
+        let headers = build_headers(&request, &ctx).unwrap();
         assert_eq!(headers.get("HTTP-Referer").unwrap(), "https://shore.ai");
         assert_eq!(headers.get("X-Title").unwrap(), "Shore");
     }
