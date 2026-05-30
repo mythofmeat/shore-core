@@ -411,12 +411,15 @@ fn map_entry(
         .or_else(|| raw.get("display_name"))
         .and_then(|v| v.as_str())
         .map(std::string::ToString::to_string);
-    let created_at = raw.get("created").and_then(serde_json::Value::as_i64).or_else(|| {
-        raw.get("created_at")
-            .and_then(|v| v.as_str())
-            .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
-            .map(|v| v.timestamp())
-    });
+    let created_at = raw
+        .get("created")
+        .and_then(serde_json::Value::as_i64)
+        .or_else(|| {
+            raw.get("created_at")
+                .and_then(|v| v.as_str())
+                .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+                .map(|v| v.timestamp())
+        });
     let owned_by = raw
         .get("owned_by")
         .and_then(|v| v.as_str())
@@ -426,14 +429,19 @@ fn map_entry(
         .and_then(|v| v.as_str())
         .map(std::string::ToString::to_string);
 
-    let context_length = raw.get("context_length").and_then(serde_json::Value::as_u64);
+    let context_length = raw
+        .get("context_length")
+        .and_then(serde_json::Value::as_u64);
 
     // OpenRouter shape: top_provider.max_completion_tokens
     let max_output_tokens = raw
         .get("top_provider")
         .and_then(|v| v.get("max_completion_tokens"))
         .and_then(serde_json::Value::as_u64)
-        .or_else(|| raw.get("max_completion_tokens").and_then(serde_json::Value::as_u64));
+        .or_else(|| {
+            raw.get("max_completion_tokens")
+                .and_then(serde_json::Value::as_u64)
+        });
 
     // Capabilities — best-effort, otherwise unknown.
     let supports_tools = supported_param(raw, &["tools", "tool_use", "function_calling"]);
@@ -598,7 +606,7 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].model_id, "gpt-4o");
         assert_eq!(models[0].owned_by.as_deref(), Some("openai"));
-        assert_eq!(models[0].created_at, Some(1234567890));
+        assert_eq!(models[0].created_at, Some(1_234_567_890));
         assert!(models[0].supports_tools.is_none(), "unknown stays unknown");
         assert!(models[0].supports_images.is_none());
         assert_eq!(models[0].sdk, "openai");

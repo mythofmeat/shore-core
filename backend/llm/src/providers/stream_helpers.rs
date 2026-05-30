@@ -186,7 +186,10 @@ pub(crate) fn extract_openai_usage(u: &Value) -> Usage {
         .unwrap_or(0) as u32;
 
     Usage {
-        input_tokens: u.get("prompt_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32,
+        input_tokens: u
+            .get("prompt_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32,
         output_tokens: u
             .get("completion_tokens")
             .and_then(serde_json::Value::as_u64)

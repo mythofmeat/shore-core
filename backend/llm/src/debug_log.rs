@@ -178,7 +178,7 @@ pub fn log_response(handle: CallHandle, resp: &GenerateResponse) {
 }
 
 /// Write the paired response file for a failed call.
-pub fn log_error(handle: CallHandle, err: &LlmError) {
+pub fn log_error(handle: &CallHandle, err: &LlmError) {
     let duration_ms = handle.started.elapsed().as_millis() as u64;
     let doc = serde_json::json!({
         "ts": Local::now().to_rfc3339(),

@@ -47,6 +47,13 @@ fn make_model(effort: &str) -> ResolvedModel {
 // ── Tool definitions (production-style copies) ──────────────────────────
 
 fn all_tool_defs() -> Vec<serde_json::Value> {
+    let mut defs = memory_image_tool_defs();
+    defs.extend(web_misc_tool_defs());
+    defs.extend(scratchpad_tool_defs());
+    defs
+}
+
+fn memory_image_tool_defs() -> Vec<serde_json::Value> {
     vec![
         json!({
             "name": "memory_search",
@@ -104,6 +111,11 @@ fn all_tool_defs() -> Vec<serde_json::Value> {
                 "required": ["prompt"]
             }
         }),
+    ]
+}
+
+fn web_misc_tool_defs() -> Vec<serde_json::Value> {
+    vec![
         json!({
             "name": "web_search",
             "description": "Search the web for information. Returns a list of results with titles, URLs, and content snippets. Use fetch_url to read full pages from the results.",
@@ -160,6 +172,11 @@ fn all_tool_defs() -> Vec<serde_json::Value> {
                 "required": ["notation"]
             }
         }),
+    ]
+}
+
+fn scratchpad_tool_defs() -> Vec<serde_json::Value> {
+    vec![
         json!({
             "name": "scratchpad_list",
             "description": "List files and directories in your scratchpad. Returns names and sizes. Optionally pass a subdirectory path.",

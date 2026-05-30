@@ -456,7 +456,10 @@ pub async fn stream(
                         .and_then(|t| t.as_array())
                     {
                         for tc in tcs {
-                            let index = tc.get("index").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                            let index = tc
+                                .get("index")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0);
                             let entry = tool_calls
                                 .entry(index)
                                 .or_insert_with(|| (String::new(), String::new(), Vec::new()));

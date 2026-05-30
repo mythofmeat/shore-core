@@ -293,7 +293,9 @@ fn build_request_body(request: &LlmRequest) -> Value {
             detect_generation(&request.model)
         };
 
-        let budget = opts.get("budget_tokens").and_then(serde_json::Value::as_u64);
+        let budget = opts
+            .get("budget_tokens")
+            .and_then(serde_json::Value::as_u64);
         let effort_str = opts
             .get("reasoning_effort")
             .and_then(|v| v.as_str())
@@ -324,7 +326,9 @@ fn build_request_body(request: &LlmRequest) -> Value {
             }
         } else {
             // Check if reasoning_effort was provided as a numeric value.
-            let effort_num = opts.get("reasoning_effort").and_then(serde_json::Value::as_u64);
+            let effort_num = opts
+                .get("reasoning_effort")
+                .and_then(serde_json::Value::as_u64);
             if let Some(budget) = effort_num {
                 generation_config["thinkingConfig"] = json!({"thinkingBudget": budget});
             }
@@ -438,7 +442,9 @@ pub async fn stream(
                     for part in parts {
                         if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                             timing.record_first_token();
-                            if part.get("thought").and_then(serde_json::Value::as_bool) == Some(true) {
+                            if part.get("thought").and_then(serde_json::Value::as_bool)
+                                == Some(true)
+                            {
                                 if let Ok(line) = serde_json::to_string(
                                     &json!({"type": "thinking", "text": text}),
                                 ) {

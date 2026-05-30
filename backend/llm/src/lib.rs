@@ -73,11 +73,17 @@ impl LlmClient {
     /// A global request timeout here would fire mid-body-read for any
     /// long generation and surface as the misleading "error decoding
     /// response body".
+    #[must_use]
     pub fn new() -> Self {
+        // The customized builder only fails if the TLS backend can't
+        // initialize — a process-level invariant. Rather than make `new`
+        // (and the `Default` impl + ~30 call sites) fallible for that, fall
+        // back to reqwest's default client, which drops only the
+        // connect_timeout customization.
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
             .build()
-            .expect("failed to create HTTP client");
+            .unwrap_or_else(|_| reqwest::Client::new());
 
         Self {
             http_client,
@@ -86,6 +92,7 @@ impl LlmClient {
     }
 
     /// Enable API payload logging under the given cache directory.
+    #[must_use]
     pub fn with_payload_logging(mut self, dir: PathBuf) -> Self {
         self.payload_log_dir = Some(dir);
         self
@@ -319,7 +326,7 @@ impl LlmClient {
         if let Some(h) = handle {
             match &result {
                 Ok(resp) => debug_log::log_response(h, resp),
-                Err(e) => debug_log::log_error(h, e),
+                Err(e) => debug_log::log_error(&h, e),
             }
         }
         result

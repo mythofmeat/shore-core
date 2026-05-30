@@ -773,7 +773,7 @@ fn build_http_request(
     client: &reqwest::Client,
     request: &LlmRequest,
     streaming: bool,
-) -> Result<(reqwest::RequestBuilder, u64), LlmError> {
+) -> (reqwest::RequestBuilder, u64) {
     let base = request.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL);
     // If the base_url already includes a version path (e.g. OpenRouter's
     // default "https://openrouter.ai/api/v1"), just append /messages.
@@ -800,9 +800,11 @@ fn build_http_request(
         let model = body["model"].as_str().unwrap_or("?");
         let max_tokens = body["max_tokens"].as_u64().unwrap_or(0);
         let thinking = body
-            .get("thinking").map_or_else(|| "none".into(), std::string::ToString::to_string);
+            .get("thinking")
+            .map_or_else(|| "none".into(), std::string::ToString::to_string);
         let output_cfg = body
-            .get("output_config").map_or_else(|| "none".into(), std::string::ToString::to_string);
+            .get("output_config")
+            .map_or_else(|| "none".into(), std::string::ToString::to_string);
         let sys_blocks = body["system"].as_array().map_or(0, std::vec::Vec::len);
         let msg_count = body["messages"].as_array().map_or(0, std::vec::Vec::len);
         let tool_count = body
@@ -826,7 +828,7 @@ fn build_http_request(
         builder = builder.header("X-Request-ID", rid);
     }
 
-    Ok((builder.json(&body), call_id))
+    (builder.json(&body), call_id)
 }
 
 use super::check_response;
@@ -890,7 +892,7 @@ pub async fn stream(
     client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<DuplexStream, LlmError> {
-    let (http_req, _call_id) = build_http_request(client, request, true)?;
+    let (http_req, _call_id) = build_http_request(client, request, true);
     let response = http_req.send().await.map_err(|e| LlmError::Provider {
         message: format!("HTTP request failed: {e}"),
     })?;
@@ -1126,9 +1128,9 @@ fn handle_message_delta(data: &str, state: &mut StreamState) {
 
 fn handle_message_stop(state: &mut StreamState) -> String {
     let total_ms = state.start_time.elapsed().as_millis() as u32;
-    let ttft_ms = state
-        .first_token_time
-        .map_or(total_ms, |t| t.duration_since(state.start_time).as_millis() as u32);
+    let ttft_ms = state.first_token_time.map_or(total_ms, |t| {
+        t.duration_since(state.start_time).as_millis() as u32
+    });
     build_done_event(
         &state.text_content,
         &state.finish_reason,
@@ -1140,13 +1142,77 @@ fn handle_message_stop(state: &mut StreamState) -> String {
 
 // ── Non-streaming ────────────────────────────────────────────────────────
 
+/// Parse Anthropic response `content` blocks into accumulated plain text and
+/// structured [`ContentBlock`]s. Unknown block types are ignored.
+fn parse_content_blocks(raw_blocks: Option<&Vec<Value>>) -> (String, Vec<ContentBlock>) {
+    let mut text_content = String::new();
+    let mut content_blocks = Vec::new();
+
+    let Some(blocks) = raw_blocks else {
+        return (text_content, content_blocks);
+    };
+
+    for block in blocks {
+        let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
+        match block_type {
+            "text" => {
+                let text = block.get("text").and_then(Value::as_str).unwrap_or("");
+                text_content.push_str(text);
+                content_blocks.push(ContentBlock::Text {
+                    text: text.to_string(),
+                });
+            }
+            "thinking" => {
+                let thinking = block
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let signature = block
+                    .get("signature")
+                    .and_then(Value::as_str)
+                    .map(String::from);
+                content_blocks.push(ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                });
+            }
+            "redacted_thinking" => {
+                let data = block
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                content_blocks.push(ContentBlock::RedactedThinking { data });
+            }
+            "tool_use" => {
+                let id = block
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let name = block
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let input = block.get("input").cloned().unwrap_or(json!({}));
+                content_blocks.push(ContentBlock::ToolUse { id, name, input });
+            }
+            _ => {}
+        }
+    }
+
+    (text_content, content_blocks)
+}
+
 /// Send a non-streaming generate request to the Anthropic Messages API.
 pub async fn generate(
     client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<GenerateResponse, LlmError> {
     let start = Instant::now();
-    let (http_req, call_id) = build_http_request(client, request, false)?;
+    let (http_req, call_id) = build_http_request(client, request, false);
     let response = http_req
         .timeout(super::NON_STREAMING_TIMEOUT)
         .send()
@@ -1183,63 +1249,8 @@ pub async fn generate(
     let usage = extract_anthropic_usage(body.get("usage"));
 
     // Extract content blocks.
-    let raw_blocks = body.get("content").and_then(Value::as_array);
-
-    let mut text_content = String::new();
-    let mut content_blocks = Vec::new();
-
-    if let Some(blocks) = raw_blocks {
-        for block in blocks {
-            let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
-            match block_type {
-                "text" => {
-                    let text = block.get("text").and_then(Value::as_str).unwrap_or("");
-                    text_content.push_str(text);
-                    content_blocks.push(ContentBlock::Text {
-                        text: text.to_string(),
-                    });
-                }
-                "thinking" => {
-                    let thinking = block
-                        .get("thinking")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    let signature = block
-                        .get("signature")
-                        .and_then(Value::as_str)
-                        .map(String::from);
-                    content_blocks.push(ContentBlock::Thinking {
-                        thinking,
-                        signature,
-                    });
-                }
-                "redacted_thinking" => {
-                    let data = block
-                        .get("data")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    content_blocks.push(ContentBlock::RedactedThinking { data });
-                }
-                "tool_use" => {
-                    let id = block
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    let name = block
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    let input = block.get("input").cloned().unwrap_or(json!({}));
-                    content_blocks.push(ContentBlock::ToolUse { id, name, input });
-                }
-                _ => {}
-            }
-        }
-    }
+    let (text_content, content_blocks) =
+        parse_content_blocks(body.get("content").and_then(Value::as_array));
 
     let timing = Timing {
         total_ms,
@@ -1731,9 +1742,9 @@ mod tests {
                 // in the prefix (would change the serialized form).
                 for (i, msg) in result[..earliest_bp].iter().enumerate() {
                     if !p.msg_breakpoints.contains(&i) {
-                        let has_cc = msg["content"]
-                            .as_array()
-                            .is_some_and(|arr| arr.iter().any(|b| b.get("cache_control").is_some()));
+                        let has_cc = msg["content"].as_array().is_some_and(|arr| {
+                            arr.iter().any(|b| b.get("cache_control").is_some())
+                        });
                         assert!(
                             !has_cc,
                             "turn {turn_count}: non-breakpoint message {i} in prefix has cache_control"
@@ -2518,11 +2529,8 @@ mod tests {
         let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         request.base_url = Some("https://openrouter.ai/api".into());
 
-        // Should NOT return an error — custom base_url is now accepted.
-        let result = build_http_request(&client, &request, false);
-        assert!(result.is_ok(), "custom base_url should be accepted");
-
-        let (builder, _) = result.unwrap();
+        // Custom base_url is accepted (no error path).
+        let (builder, _) = build_http_request(&client, &request, false);
         let built = builder.build().unwrap();
         assert_eq!(
             built.url().as_str(),
@@ -2535,10 +2543,7 @@ mod tests {
         let client = reqwest::Client::new();
         let request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
 
-        let result = build_http_request(&client, &request, false);
-        assert!(result.is_ok());
-
-        let (builder, _) = result.unwrap();
+        let (builder, _) = build_http_request(&client, &request, false);
         let built = builder.build().unwrap();
         assert_eq!(
             built.url().as_str(),
@@ -2553,10 +2558,7 @@ mod tests {
         // OpenRouter's default base_url ends with /v1 — should not double it.
         request.base_url = Some("https://openrouter.ai/api/v1".into());
 
-        let result = build_http_request(&client, &request, false);
-        assert!(result.is_ok());
-
-        let (builder, _) = result.unwrap();
+        let (builder, _) = build_http_request(&client, &request, false);
         let built = builder.build().unwrap();
         assert_eq!(
             built.url().as_str(),
@@ -2570,10 +2572,7 @@ mod tests {
         let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         request.base_url = Some("http://127.0.0.1:8080".into());
 
-        let result = build_http_request(&client, &request, false);
-        assert!(result.is_ok());
-
-        let (builder, _) = result.unwrap();
+        let (builder, _) = build_http_request(&client, &request, false);
         let built = builder.build().unwrap();
         assert_eq!(built.url().as_str(), "http://127.0.0.1:8080/v1/messages");
     }

@@ -22,14 +22,6 @@ pub(crate) struct ProviderContext {
     /// (OpenRouter's `provider` field with order/allow_fallbacks).
     pub routing_config: Option<Value>,
 
-    /// Whether image generation should use chat completions with
-    /// `modalities` (OpenRouter) instead of `/images/generations`.
-    /// Note: currently used by `ImageGenerateParams.provider_key` check
-    /// in `openai::image_generate` — will be wired through once image gen
-    /// is refactored to use LlmRequest dispatch.
-    #[allow(dead_code)]
-    pub images_via_chat_completions: bool,
-
     /// Whether mid-history `role: "system"` messages should be wrapped
     /// in `<system_instruction>...</system_instruction>` and emitted as
     /// user turns.
@@ -99,8 +91,6 @@ pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
         None
     };
 
-    let images_via_chat_completions = pk == "openrouter";
-
     // Only Anthropic and Gemini upstreams reject mid-history `role: "system"`.
     // The OpenAI SDK code path only sees them when a multi-backend gateway
     // (OpenRouter, NanoGPT, similar) routes an OpenAI-shape request through
@@ -128,7 +118,6 @@ pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
         extra_headers,
         supports_reasoning_effort,
         routing_config,
-        images_via_chat_completions,
         wrap_inline_system,
         drop_prior_thinking,
     }
@@ -282,17 +271,6 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_images_via_chat_completions() {
-        let req = make_request(Sdk::Openai, Some("openrouter"));
-        let ctx = build_provider_context(&req);
-        assert!(ctx.images_via_chat_completions);
-
-        let req2 = make_request(Sdk::Openai, Some("openai"));
-        let ctx2 = build_provider_context(&req2);
-        assert!(!ctx2.images_via_chat_completions);
-    }
-
-    #[test]
     fn falls_back_to_sdk_name_when_no_provider_key() {
         // When provider_key is None, should use sdk.as_str() as fallback
         let req = make_request(Sdk::Openai, None);
@@ -416,6 +394,5 @@ mod tests {
         let ctx = build_provider_context(&req);
         // Should get OpenRouter headers even though SDK is Anthropic
         assert_eq!(ctx.extra_headers.len(), 1);
-        assert!(ctx.images_via_chat_completions);
     }
 }
