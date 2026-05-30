@@ -1254,11 +1254,11 @@ min_cost_usd = 2.5
 
     #[test]
     fn tool_toggles_disable_individual_tools() {
-        let toml_str = r#"
+        let toml_str = r"
 [behavior.tool_use.tools]
 roll_dice = false
 web_search = false
-"#;
+";
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(!config.behavior.tool_use.tools.roll_dice());
         assert!(!config.behavior.tool_use.tools.web_search());
@@ -1413,11 +1413,11 @@ bogus_key = "value"
 
     #[test]
     fn rejects_unknown_nested_key() {
-        let toml_str = r#"
+        let toml_str = r"
 [behavior.autonomy]
 enabled = true
 bogus_key = 42
-"#;
+";
         let result: Result<AppConfig, _> = toml::from_str(toml_str);
         assert!(result.is_err());
     }
@@ -1606,18 +1606,18 @@ homeserver = "https://matrix.example.com"
         assert_eq!(config.advanced.max_image_size, 2_000_000);
 
         // Override via TOML.
-        let toml_str = r#"
+        let toml_str = r"
 [advanced]
 max_image_size = 5000000
-"#;
+";
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.advanced.max_image_size, 5_000_000);
 
         // Disable via 0.
-        let toml_str = r#"
+        let toml_str = r"
 [advanced]
 max_image_size = 0
-"#;
+";
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.advanced.max_image_size, 0);
     }
@@ -1627,10 +1627,10 @@ max_image_size = 0
         let config = AppConfig::default();
         assert!(!config.advanced.cache_forensics);
 
-        let toml_str = r#"
+        let toml_str = r"
 [advanced]
 cache_forensics = true
-"#;
+";
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(config.advanced.cache_forensics);
     }

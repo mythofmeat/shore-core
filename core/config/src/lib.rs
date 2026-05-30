@@ -84,9 +84,7 @@ fn resolve_xdg_dir(
     fallback: &str,
 ) -> PathBuf {
     std::env::var(override_var)
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+        .ok().map_or_else(|| {
             std::env::var(xdg_var)
                 .ok()
                 .map(PathBuf::from)
@@ -99,7 +97,7 @@ fn resolve_xdg_dir(
                     }
                 })
                 .join("shore")
-        })
+        }, PathBuf::from)
 }
 
 impl ShoreDirs {
@@ -449,7 +447,7 @@ pub fn load_character_config(
     );
 
     // Clone the global raw table and deep-merge the character overlay.
-    let base = global.raw_table.as_ref().cloned().unwrap_or_default();
+    let base = global.raw_table.clone().unwrap_or_default();
     let mut merged = base;
     deep_merge(&mut merged, &char_table);
 
@@ -834,19 +832,16 @@ pub fn load_character_definition(config_dir: &Path, character_name: &str) -> Opt
     }
 
     let legacy_path = character_config_dir(config_dir, character_name).join("character.md");
-    match std::fs::read_to_string(&legacy_path) {
-        Ok(content) => {
-            info!(character = character_name, path = %legacy_path.display(), "Loaded legacy character definition");
-            Some(content)
-        }
-        Err(_) => {
-            warn!(
-                character = character_name,
-                path = %new_path.display(),
-                "No character definition found"
-            );
-            None
-        }
+    if let Ok(content) = std::fs::read_to_string(&legacy_path) {
+        info!(character = character_name, path = %legacy_path.display(), "Loaded legacy character definition");
+        Some(content)
+    } else {
+        warn!(
+            character = character_name,
+            path = %new_path.display(),
+            "No character definition found"
+        );
+        None
     }
 }
 
@@ -1439,17 +1434,17 @@ model_id = "claude-opus-4-6"
             ),
             (
                 "include.toml",
-                r#"
+                r"
 [chat.anthropic]
 temperature = 0.5
-"#,
+",
             ),
             (
                 "conf.d/final.toml",
-                r#"
+                r"
 [chat.anthropic]
 temperature = 0.9
-"#,
+",
             ),
         ]);
 
@@ -1472,19 +1467,19 @@ temperature = 0.9
 
     #[test]
     fn deep_merge_tables_recursive() {
-        let mut base = r#"
+        let mut base = r"
 [section]
 a = 1
 b = 2
-"#
+"
         .parse::<toml::Table>()
         .unwrap();
 
-        let overlay = r#"
+        let overlay = r"
 [section]
 b = 3
 c = 4
-"#
+"
         .parse::<toml::Table>()
         .unwrap();
 

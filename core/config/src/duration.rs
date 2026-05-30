@@ -90,7 +90,7 @@ impl fmt::Display for ConfigDuration {
         } else if ms.is_multiple_of(1000) {
             write!(f, "{}s", ms / 1000)
         } else {
-            write!(f, "{}ms", ms)
+            write!(f, "{ms}ms")
         }
     }
 }
@@ -105,7 +105,7 @@ impl<'de> Deserialize<'de> for ConfigDuration {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct ConfigDurationVisitor;
 
-        impl<'de> de::Visitor<'de> for ConfigDurationVisitor {
+        impl de::Visitor<'_> for ConfigDurationVisitor {
             type Value = ConfigDuration;
 
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {

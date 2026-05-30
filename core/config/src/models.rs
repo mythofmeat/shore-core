@@ -529,7 +529,7 @@ impl ModelCatalog {
 
     /// Iterate all chat model qualified names (e.g. `"chat.anthropic.opus"`).
     pub fn chat_model_names(&self) -> impl Iterator<Item = &str> {
-        self.chat.keys().map(|s| s.as_str())
+        self.chat.keys().map(std::string::String::as_str)
     }
 }
 
@@ -576,16 +576,13 @@ fn parse_category(
             });
         }
 
-        let provider_table = match provider_value.as_table() {
-            Some(t) => t,
-            None => {
-                warn!(
-                    category,
-                    key = provider_key,
-                    "Skipping non-table key in [{category}]"
-                );
-                continue;
-            }
+        let provider_table = if let Some(t) = provider_value.as_table() { t } else {
+            warn!(
+                category,
+                key = provider_key,
+                "Skipping non-table key in [{category}]"
+            );
+            continue;
         };
 
         // ── Extract provider-level scalars ───────────────────────────
@@ -651,15 +648,15 @@ fn parse_category(
                     .try_into()
                     .map_err(|e| CatalogError::ParseEntry {
                         category: category.to_string(),
-                        provider: provider_key.to_string(),
-                        name: model_name.to_string(),
+                        provider: provider_key.clone(),
+                        name: model_name.clone(),
                         source: Box::new(e),
                     })?;
 
             let model_id = entry.model_id.ok_or_else(|| CatalogError::MissingModelId {
                 category: category.to_string(),
-                provider: provider_key.to_string(),
-                name: model_name.to_string(),
+                provider: provider_key.clone(),
+                name: model_name.clone(),
             })?;
 
             let merged = entry.fields.or_fallback(&provider_config.fields);
@@ -1111,10 +1108,10 @@ model_id = "claude-opus-4-6"
     #[test]
     fn missing_model_id_is_error() {
         let table = parse_table(
-            r#"
+            r"
 [anthropic.opus]
 temperature = 0.5
-"#,
+",
         );
         let err = parse_category("chat", &table, None).unwrap_err();
         assert!(matches!(err, CatalogError::MissingModelId { .. }));
@@ -1404,7 +1401,7 @@ model_id = "kimi-k2"
         let catalog = ModelCatalog::from_sections(Some(&table), None, None, None).unwrap();
 
         let mut names: Vec<&str> = catalog.chat_model_names().collect();
-        names.sort();
+        names.sort_unstable();
         assert_eq!(
             names,
             vec![
