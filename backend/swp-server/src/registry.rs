@@ -192,6 +192,11 @@ enum ProcessState {
 
 #[cfg(unix)]
 fn pid_state(pid: u32) -> ProcessState {
+    // Real PIDs fit well within i32; the kernel's pid_t is i32 on Unix.
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "PID values are bounded well below i32::MAX"
+    )]
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     if rc == 0 {
         return ProcessState::Alive;
@@ -318,7 +323,7 @@ mod tests {
 
         let backups: Vec<_> = std::fs::read_dir(reg.path().parent().unwrap())
             .unwrap()
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .map(|entry| entry.path())
             .filter(|path| {
                 path.file_name()
