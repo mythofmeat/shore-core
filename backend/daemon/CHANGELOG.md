@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v8.0.1...shore-daemon-v9.0.0) - 2026-05-30
+
+### Other
+
+- *(compaction)* stop inlining full memory snapshot into compact prompt ([#107](https://github.com/mythofmeat/shore-core/pull/107))
+
 ## [8.0.1](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v8.0.0...shore-daemon-v8.0.1) - 2026-05-30
 
 ### Other
