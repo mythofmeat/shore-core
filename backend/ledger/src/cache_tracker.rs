@@ -1,5 +1,6 @@
 //! Per-character Anthropic cache warm/cold state machine.
 
+use crate::convert::u64_to_i64;
 use chrono::{DateTime, Utc};
 use tracing::debug;
 
@@ -99,7 +100,7 @@ impl CacheTracker {
         let state = match &parsed {
             Ok(ts) => {
                 let elapsed = Utc::now().signed_duration_since(*ts);
-                if elapsed.num_seconds() < ttl_secs as i64 && last_cache_read > 0 {
+                if elapsed.num_seconds() < u64_to_i64(ttl_secs) && last_cache_read > 0 {
                     CacheState::Warm
                 } else {
                     CacheState::Cold
@@ -154,7 +155,7 @@ impl CacheTracker {
         if self.state == CacheState::Warm {
             if let (Some(last), Some(now)) = (self.last_ts, obs_ts) {
                 let elapsed = now.signed_duration_since(last);
-                if elapsed.num_seconds() > self.ttl_secs as i64 {
+                if elapsed.num_seconds() > u64_to_i64(self.ttl_secs) {
                     self.state = CacheState::Cold;
                     self.last_cache_read = 0;
                     self.clear_tool_loop_baseline();

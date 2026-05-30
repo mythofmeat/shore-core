@@ -1,5 +1,6 @@
 //! Model pricing via OpenRouter API with local DB cache.
 
+use crate::convert::u64_to_f64;
 use crate::ledger::Ledger;
 use crate::sync::lock_or_recover;
 use chrono::Utc;
@@ -33,6 +34,7 @@ pub struct CostBreakdown {
     pub total: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct CostRequest<'a> {
     pub provider: &'a str,
     pub model: &'a str,
@@ -67,10 +69,10 @@ impl PricingEngine {
         let started = std::time::Instant::now();
         self.ledger.with_conn(|conn| {
             conn.execute(
-                r#"INSERT OR REPLACE INTO pricing
+                r"INSERT OR REPLACE INTO pricing
                     (model_id, input_per_token, output_per_token,
                      cache_read_per_token, cache_write_per_token, fetched_at)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                   VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     model_id,
                     pricing.input_per_token,
@@ -113,9 +115,9 @@ impl PricingEngine {
         let db_lookup_started = std::time::Instant::now();
         let result = self.ledger.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                r#"SELECT input_per_token, output_per_token,
+                r"SELECT input_per_token, output_per_token,
                           cache_read_per_token, cache_write_per_token
-                   FROM pricing WHERE model_id = ?1"#,
+                   FROM pricing WHERE model_id = ?1",
             )?;
             stmt.query_row(params![model_id], |row| {
                 Ok(ModelPricing {
@@ -175,25 +177,20 @@ impl PricingEngine {
         }
 
         let body: Value = resp.json().await?;
-        let models = match body.get("data").and_then(|d| d.as_array()) {
-            Some(arr) => arr,
-            None => {
-                warn!("OpenRouter catalog response missing data array");
-                return Ok(None);
-            }
+        let Some(models) = body.get("data").and_then(|d| d.as_array()) else {
+            warn!("OpenRouter catalog response missing data array");
+            return Ok(None);
         };
 
         let mut result: Option<ModelPricing> = None;
 
         for m in models {
-            let id = match m.get("id").and_then(|v| v.as_str()) {
-                Some(id) => id,
-                None => continue,
+            let Some(id) = m.get("id").and_then(|v| v.as_str()) else {
+                continue;
             };
 
-            let pricing_obj = match m.get("pricing") {
-                Some(p) => p,
-                None => continue,
+            let Some(pricing_obj) = m.get("pricing") else {
+                continue;
             };
 
             let input = parse_price(pricing_obj.get("prompt"));
@@ -268,16 +265,16 @@ impl PricingEngine {
         request: CostRequest<'_>,
     ) -> Result<Option<CostBreakdown>, rusqlite::Error> {
         let model_id = to_openrouter_id(request.provider, request.model);
-        let pricing = match self.get_cached_pricing(&model_id)? {
-            Some(p) => p,
-            None => return Ok(None),
+        let Some(pricing) = self.get_cached_pricing(&model_id)? else {
+            return Ok(None);
         };
 
-        let input = pricing.input_per_token * request.input_tokens as f64;
-        let output = pricing.output_per_token * request.output_tokens as f64;
-        let cache_read = pricing.cache_read_per_token * request.cache_read_tokens as f64;
+        let input = pricing.input_per_token * u64_to_f64(request.input_tokens);
+        let output = pricing.output_per_token * u64_to_f64(request.output_tokens);
+        let cache_read = pricing.cache_read_per_token * u64_to_f64(request.cache_read_tokens);
 
-        let mut cache_write = pricing.cache_write_per_token * request.cache_write_tokens as f64;
+        let mut cache_write =
+            pricing.cache_write_per_token * u64_to_f64(request.cache_write_tokens);
         // Native Anthropic 1h cache writes cost 1.6× the 5-minute price.
         // OpenRouter-routed Anthropic rows use OpenRouter's catalog price as
         // billed, so do not apply Anthropic's native TTL multiplier there.
@@ -300,7 +297,7 @@ impl PricingEngine {
             conn.execute("DELETE FROM pricing", [])?;
             Ok(())
         })?;
-        self.with_memory_cache_mut(|cache| cache.clear());
+        self.with_memory_cache_mut(std::collections::HashMap::clear);
         Ok(())
     }
 
@@ -389,10 +386,10 @@ mod tests {
 
     fn anthropic_pricing() -> ModelPricing {
         ModelPricing {
-            input_per_token: 0.000015,
-            output_per_token: 0.000075,
-            cache_read_per_token: 0.0000015,
-            cache_write_per_token: 0.00001875,
+            input_per_token: 0.000_015,
+            output_per_token: 0.000_075,
+            cache_read_per_token: 0.000_001_5,
+            cache_write_per_token: 0.000_018_75,
         }
     }
 
@@ -418,7 +415,7 @@ mod tests {
         assert!((c.input - 0.0015).abs() < 1e-10);
         assert!((c.output - 0.00375).abs() < 1e-10);
         assert!((c.cache_read - 0.00012).abs() < 1e-10);
-        assert!((c.cache_write - 0.000375).abs() < 1e-10);
+        assert!((c.cache_write - 0.000_375).abs() < 1e-10);
     }
 
     #[test]
@@ -443,7 +440,7 @@ mod tests {
         assert!((c.input - 0.0015).abs() < 1e-10);
         assert!((c.output - 0.00375).abs() < 1e-10);
         assert!((c.cache_read - 0.00012).abs() < 1e-10);
-        // 20 tokens * 0.00001875 * 1.6 = 0.0006
+        // 20 tokens * 0.000_018_75 * 1.6 = 0.0006
         assert!((c.cache_write - 0.0006).abs() < 1e-10);
         assert!((c.total - (0.0015 + 0.00375 + 0.00012 + 0.0006)).abs() < 1e-10);
     }
@@ -469,7 +466,7 @@ mod tests {
             })
             .unwrap()
             .unwrap();
-        assert!((cost.cache_write - 0.000375).abs() < 1e-10);
+        assert!((cost.cache_write - 0.000_375).abs() < 1e-10);
     }
 
     #[test]
@@ -571,8 +568,8 @@ mod tests {
             .unwrap();
         assert!(pricing.is_some());
         let p = pricing.unwrap();
-        assert!((p.input_per_token - 0.000015).abs() < 1e-10);
-        assert!((p.cache_write_per_token - 0.00001875).abs() < 1e-10);
+        assert!((p.input_per_token - 0.000_015).abs() < 1e-10);
+        assert!((p.cache_write_per_token - 0.000_018_75).abs() < 1e-10);
     }
 
     #[test]
@@ -597,10 +594,10 @@ mod tests {
     #[test]
     fn parse_price_handles_string_and_number() {
         let s = Value::String("0.000015".into());
-        assert!((parse_price(Some(&s)) - 0.000015).abs() < 1e-10);
+        assert!((parse_price(Some(&s)) - 0.000_015).abs() < 1e-10);
 
-        let n = serde_json::json!(0.000075);
-        assert!((parse_price(Some(&n)) - 0.000075).abs() < 1e-10);
+        let n = serde_json::json!(0.000_075);
+        assert!((parse_price(Some(&n)) - 0.000_075).abs() < 1e-10);
 
         assert!((parse_price(None)).abs() < 1e-10);
 
@@ -612,10 +609,10 @@ mod tests {
     fn db_fallback_populates_memory_cache() {
         let engine = test_engine();
         let pricing = ModelPricing {
-            input_per_token: 0.000015,
-            output_per_token: 0.000075,
-            cache_read_per_token: 0.0000015,
-            cache_write_per_token: 0.00001875,
+            input_per_token: 0.000_015,
+            output_per_token: 0.000_075,
+            cache_read_per_token: 0.000_001_5,
+            cache_write_per_token: 0.000_018_75,
         };
         engine.store_pricing("test/model", &pricing).unwrap();
 
@@ -625,7 +622,7 @@ mod tests {
         // Should read from DB and re-populate memory
         let result = engine.get_cached_pricing("test/model").unwrap();
         assert!(result.is_some());
-        assert!((result.unwrap().input_per_token - 0.000015).abs() < 1e-10);
+        assert!((result.unwrap().input_per_token - 0.000_015).abs() < 1e-10);
 
         // Verify memory cache was repopulated
         let cache = engine.memory_cache.lock().unwrap();
