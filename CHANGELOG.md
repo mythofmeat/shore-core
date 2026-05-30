@@ -18,6 +18,22 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   persisted per-character settings using `max_tokens` must be updated. The
   Anthropic wire field (`max_tokens` on the request body) is unchanged.
 
+### Fixed
+- Anthropic extended thinking is now model-aware and renders again on Opus
+  4.8/4.7. The thinking request param is matched to what each model accepts
+  instead of a single fixed shape:
+  - Adaptive thinking now carries `display: "summarized"`. Opus 4.8/4.7 default
+    `thinking.display` to `"omitted"`, which returns thinking blocks with an
+    empty text field — the model still reasoned (and was billed for it) but the
+    text never reached the client, looking like thinking was off.
+  - `reasoning_effort` on models that don't support adaptive thinking
+    (Sonnet 4.5 / Opus 4.5 / Haiku) no longer sends `type: "adaptive"` (a hard
+    400); it maps to `type: "enabled"` with a `budget_tokens` derived from the
+    effort level and clamped below `max_output_tokens`.
+  - A legacy `budget_tokens`/`thinking` request against Opus 4.7/4.8 (which
+    reject `type: "enabled"`) now upgrades to adaptive thinking instead of 400ing.
+  Unknown/future model ids stay permissive and honor the requested mode.
+
 ### Removed
 - `clients/gui-godot/` moved to its own repository at
   [mythofmeat/shore-gui-godot](https://github.com/mythofmeat/shore-gui-godot).

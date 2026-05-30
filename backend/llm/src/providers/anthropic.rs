@@ -542,39 +542,202 @@ fn apply_cache_control_ts_default(
     )
 }
 
-/// Build the `thinking` config param from provider_options.
-fn build_thinking_config(opts: &Value) -> Option<Value> {
-    let effort = opts.get("reasoning_effort").and_then(Value::as_str);
+/// Which `thinking.type` values a given Anthropic model accepts.
+///
+/// The two thinking modes are not interchangeable across the model lineup,
+/// and sending the wrong one is a hard 400, not a silent downgrade:
+///   - `adaptive`: Claude decides when/how much to think; guided by
+///     `output_config.effort`. Required on Opus 4.7/4.8 (manual `enabled`
+///     is rejected). Supported on Opus 4.6 / Sonnet 4.6.
+///   - `enabled` + `budget_tokens`: fixed thinking budget. The only mode on
+///     Sonnet 4.5 / Opus 4.5 / Haiku and earlier (`adaptive` is rejected);
+///     deprecated-but-functional on 4.6.
+struct ThinkingCaps {
+    adaptive: bool,
+    enabled: bool,
+}
 
-    // "adaptive" or named effort values → adaptive thinking mode.
-    if effort == Some("adaptive") || effort.is_some_and(is_effort_value) {
-        return Some(json!({ "type": "adaptive" }));
+/// Best-effort `(family, major, minor)` parse of an Anthropic model id.
+///
+/// Tolerates vendor prefixes (`anthropic/claude-opus-4.8`), `.`/`-` minor
+/// separators, and trailing date stamps (`claude-opus-4-8-20251231`). The
+/// legacy `claude-3-5-sonnet` shape parses as `(sonnet, 3, 5)`.
+fn parse_anthropic_model(model: &str) -> (Option<&'static str>, Option<u32>, Option<u32>) {
+    let m = model.to_ascii_lowercase();
+    let m = m.rsplit('/').next().unwrap_or(&m).replace('.', "-");
+
+    let family = if m.contains("opus") {
+        Some("opus")
+    } else if m.contains("sonnet") {
+        Some("sonnet")
+    } else if m.contains("haiku") {
+        Some("haiku")
+    } else {
+        None
+    };
+
+    // First numeric token is the major; the immediately following numeric
+    // token (if any) is the minor.
+    let nums: Vec<u32> = m
+        .split('-')
+        .filter_map(|seg| seg.parse::<u32>().ok())
+        .collect();
+    let major = nums.first().copied();
+    let minor = nums.get(1).copied();
+
+    (family, major, minor)
+}
+
+/// Classify a model's accepted thinking modes.
+///
+/// Unknown / unrecognized models stay permissive (both modes allowed) so we
+/// honor the caller's requested intent rather than guessing a downgrade —
+/// this preserves behavior for gateways and not-yet-known model ids.
+fn thinking_caps(model: &str) -> ThinkingCaps {
+    let m = model.to_ascii_lowercase();
+    if m.contains("mythos") {
+        return ThinkingCaps {
+            adaptive: true,
+            enabled: false,
+        };
     }
 
-    // Explicit budget: enable thinking with the given token budget.
+    match parse_anthropic_model(model) {
+        // Opus 4.7/4.8 (and any later 4.x): adaptive-only.
+        (Some("opus"), Some(4), Some(minor)) if minor >= 7 => ThinkingCaps {
+            adaptive: true,
+            enabled: false,
+        },
+        // Opus 4.6: both modes.
+        (Some("opus"), Some(4), Some(6)) => ThinkingCaps {
+            adaptive: true,
+            enabled: true,
+        },
+        // Sonnet 4.6+: both modes.
+        (Some("sonnet"), Some(4), Some(minor)) if minor >= 6 => ThinkingCaps {
+            adaptive: true,
+            enabled: true,
+        },
+        // Sonnet 4.5 / Opus 4.5 / Haiku (any) / 3.x: enabled-only.
+        (Some("sonnet") | Some("opus"), Some(4), Some(5)) => ThinkingCaps {
+            adaptive: false,
+            enabled: true,
+        },
+        (Some("haiku"), _, _) => ThinkingCaps {
+            adaptive: false,
+            enabled: true,
+        },
+        (_, Some(major), _) if major <= 3 => ThinkingCaps {
+            adaptive: false,
+            enabled: true,
+        },
+        // Newer/unknown majors (Opus/Sonnet 5+, unrecognized ids): permissive.
+        _ => ThinkingCaps {
+            adaptive: true,
+            enabled: true,
+        },
+    }
+}
+
+/// Map a named effort level to a nominal `budget_tokens` for models that only
+/// accept manual (`enabled`) thinking. The caller clamps this into Anthropic's
+/// valid range via [`clamp_enabled_budget`].
+fn effort_to_budget(effort: &str) -> u32 {
+    match effort {
+        "low" => 4096,
+        "medium" => 8192,
+        "high" => 12288,
+        "xhigh" => 16384,
+        "max" => 24576,
+        _ => 8192, // literal "adaptive" or anything else → medium-ish
+    }
+}
+
+/// Clamp a requested `budget_tokens` into Anthropic's valid range:
+/// `1024 <= budget_tokens < max_tokens`. Returns `None` when `max_tokens`
+/// leaves no room for the 1024-token minimum — manual thinking can't be
+/// expressed validly there, so the caller must disable it (or fall back to
+/// adaptive) rather than emit a request the API rejects with a 400.
+fn clamp_enabled_budget(requested: u32, max_tokens: u32) -> Option<u32> {
+    let ceiling = max_tokens.checked_sub(1)?;
+    if ceiling < 1024 {
+        return None;
+    }
+    Some(requested.clamp(1024, ceiling))
+}
+
+/// Build the `(thinking, output_config)` request params from
+/// provider_options, honoring what the target `model` actually accepts.
+///
+/// `display: "summarized"` on adaptive is required, not cosmetic: on Opus
+/// 4.8/4.7 `thinking.display` defaults to `"omitted"`, which returns thinking
+/// blocks with an empty `thinking` field (only the encrypted signature
+/// survives). The model still thinks and we're still billed for it, but the
+/// reasoning text never reaches the client — indistinguishable from "thinking
+/// is off". `"summarized"` restores the visible text and is the default on
+/// the older adaptive models (Sonnet/Opus 4.6), so it's a harmless no-op there.
+fn build_thinking_params(
+    opts: &Value,
+    model: &str,
+    max_tokens: u32,
+) -> (Option<Value>, Option<Value>) {
+    let effort = opts.get("reasoning_effort").and_then(Value::as_str);
+    let named_effort = effort.filter(|e| is_effort_value(e));
+    let wants_adaptive = effort == Some("adaptive") || named_effort.is_some();
+
     let thinking_flag = opts
         .get("thinking")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let budget = opts.get("budget_tokens").and_then(Value::as_u64);
+    let wants_enabled = thinking_flag || budget.is_some();
 
-    if thinking_flag || budget.is_some() {
-        return Some(json!({
-            "type": "enabled",
-            "budget_tokens": budget.unwrap_or(1024)
-        }));
+    if !wants_adaptive && !wants_enabled {
+        return (None, None);
     }
 
-    None
-}
+    let caps = thinking_caps(model);
 
-/// Build `output_config` for named effort levels.
-fn build_output_config(opts: &Value) -> Option<Value> {
-    let effort = opts.get("reasoning_effort").and_then(Value::as_str)?;
-    if is_effort_value(effort) {
-        Some(json!({ "effort": effort }))
+    // A requested budget, normalized to u32 (oversized values saturate and
+    // get clamped below max_tokens anyway).
+    let requested_budget = budget.map(|b| u32::try_from(b).unwrap_or(u32::MAX));
+
+    // Effort-based request: prefer adaptive; downgrade to a budget for
+    // models that don't accept adaptive.
+    if wants_adaptive {
+        if caps.adaptive {
+            let thinking = json!({ "type": "adaptive", "display": "summarized" });
+            // `output_config.effort` only applies to adaptive, and only for
+            // named levels — literal "adaptive" carries no effort hint.
+            let output_config = named_effort.map(|e| json!({ "effort": e }));
+            return (Some(thinking), output_config);
+        }
+        // Adaptive-incapable model (e.g. Sonnet 4.5): map effort → budget.
+        // If max_tokens leaves no room for a valid budget, there's no usable
+        // thinking mode on this model, so disable it rather than 400.
+        let derived =
+            requested_budget.unwrap_or_else(|| effort_to_budget(effort.unwrap_or("medium")));
+        return match clamp_enabled_budget(derived, max_tokens) {
+            Some(b) => (Some(json!({ "type": "enabled", "budget_tokens": b })), None),
+            None => (None, None),
+        };
+    }
+
+    // Budget/flag-based request: prefer enabled; fall back to adaptive for
+    // models that reject enabled (Opus 4.7/4.8) or can't fit a valid budget,
+    // and disable thinking only when neither mode is expressible.
+    if caps.enabled {
+        if let Some(b) = clamp_enabled_budget(requested_budget.unwrap_or(1024), max_tokens) {
+            return (Some(json!({ "type": "enabled", "budget_tokens": b })), None);
+        }
+    }
+    if caps.adaptive {
+        (
+            Some(json!({ "type": "adaptive", "display": "summarized" })),
+            None,
+        )
     } else {
-        None
+        (None, None)
     }
 }
 
@@ -718,8 +881,8 @@ fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
         0
     };
 
-    let thinking = build_thinking_config(opts_ref);
-    let output_config = build_output_config(opts_ref);
+    let (thinking, output_config) =
+        build_thinking_params(opts_ref, &request.model, request.max_tokens);
 
     let mut body = json!({
         "model": request.model,
@@ -2020,27 +2183,174 @@ mod tests {
         }
     }
 
-    // ── build_thinking_config ─────────────────────────────────────────
+    // ── thinking_caps / parse_anthropic_model ─────────────────────────
 
     #[test]
-    fn test_build_thinking_config_adaptive() {
+    fn test_parse_anthropic_model_variants() {
+        assert_eq!(
+            parse_anthropic_model("claude-opus-4-8"),
+            (Some("opus"), Some(4), Some(8))
+        );
+        // Dotted minor + vendor prefix.
+        assert_eq!(
+            parse_anthropic_model("anthropic/claude-opus-4.8"),
+            (Some("opus"), Some(4), Some(8))
+        );
+        // Trailing date stamp.
+        assert_eq!(
+            parse_anthropic_model("claude-sonnet-4-5-20250101"),
+            (Some("sonnet"), Some(4), Some(5))
+        );
+        // Legacy 3.x shape.
+        assert_eq!(
+            parse_anthropic_model("claude-3-5-haiku-20241022"),
+            (Some("haiku"), Some(3), Some(5))
+        );
+    }
+
+    #[test]
+    fn test_thinking_caps_by_model() {
+        // Opus 4.7/4.8: adaptive-only.
+        for m in [
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "anthropic/claude-opus-4.8",
+        ] {
+            let c = thinking_caps(m);
+            assert!(c.adaptive && !c.enabled, "{m} should be adaptive-only");
+        }
+        // Opus 4.6 / Sonnet 4.6: both.
+        for m in ["claude-opus-4-6", "claude-sonnet-4-6"] {
+            let c = thinking_caps(m);
+            assert!(c.adaptive && c.enabled, "{m} should allow both");
+        }
+        // Sonnet 4.5 / Opus 4.5 / Haiku / 3.x: enabled-only.
+        for m in [
+            "claude-sonnet-4-5",
+            "claude-opus-4-5",
+            "claude-haiku-4-5",
+            "claude-3-5-sonnet-20241022",
+        ] {
+            let c = thinking_caps(m);
+            assert!(!c.adaptive && c.enabled, "{m} should be enabled-only");
+        }
+        // Mythos preview: adaptive-only.
+        let c = thinking_caps("claude-mythos-preview");
+        assert!(c.adaptive && !c.enabled);
+        // Unknown / future: permissive (honor caller intent).
+        let c = thinking_caps("claude-opus-5-0");
+        assert!(c.adaptive && c.enabled);
+    }
+
+    // ── build_thinking_params ──────────────────────────────────────────
+
+    const TEST_MAX_TOKENS: u32 = 32_000;
+
+    #[test]
+    fn test_thinking_params_adaptive_literal_no_output_config() {
         let opts = json!({"reasoning_effort": "adaptive"});
-        let config = build_thinking_config(&opts).unwrap();
-        assert_eq!(config["type"], "adaptive");
+        let (thinking, output) = build_thinking_params(&opts, "claude-opus-4-8", TEST_MAX_TOKENS);
+        let thinking = thinking.unwrap();
+        assert_eq!(thinking["type"], "adaptive");
+        // Opus 4.8/4.7 omit thinking text unless display is summarized.
+        assert_eq!(thinking["display"], "summarized");
+        assert!(output.is_none(), "literal adaptive carries no effort hint");
     }
 
     #[test]
-    fn test_build_thinking_config_budget() {
+    fn test_thinking_params_named_effort_adaptive_model() {
+        for effort in ["max", "xhigh", "high", "medium", "low"] {
+            let opts = json!({ "reasoning_effort": effort });
+            let (thinking, output) =
+                build_thinking_params(&opts, "claude-sonnet-4-6", TEST_MAX_TOKENS);
+            let thinking = thinking.unwrap();
+            assert_eq!(thinking["type"], "adaptive", "{effort} → adaptive");
+            assert_eq!(thinking["display"], "summarized", "{effort} → display");
+            assert_eq!(
+                output.unwrap()["effort"],
+                effort,
+                "{effort} → output_config"
+            );
+        }
+    }
+
+    #[test]
+    fn test_thinking_params_named_effort_downgrades_on_legacy_model() {
+        // Sonnet 4.5 can't do adaptive — effort maps to a clamped budget.
+        let opts = json!({ "reasoning_effort": "high" });
+        let (thinking, output) = build_thinking_params(&opts, "claude-sonnet-4-5", TEST_MAX_TOKENS);
+        let thinking = thinking.unwrap();
+        assert_eq!(thinking["type"], "enabled");
+        assert_eq!(thinking["budget_tokens"], 12288);
+        assert!(output.is_none(), "enabled mode takes no output_config");
+    }
+
+    #[test]
+    fn test_thinking_params_effort_budget_clamped_to_max_tokens() {
+        // max effort nominal (24576) exceeds a small max_tokens → clamped to
+        // max_tokens - 1, never >= max_tokens (which Anthropic rejects).
+        let opts = json!({ "reasoning_effort": "max" });
+        let (thinking, _) = build_thinking_params(&opts, "claude-haiku-4-5", 8192);
+        assert_eq!(thinking.unwrap()["budget_tokens"], 8191);
+    }
+
+    #[test]
+    fn test_thinking_params_explicit_budget_clamped_below_max_tokens() {
+        // An explicit budget that meets/exceeds max_tokens is clamped, not
+        // passed through to a 400. (claude-sonnet-4-6 accepts enabled.)
+        let opts = json!({ "budget_tokens": 8192 });
+        let (thinking, _) = build_thinking_params(&opts, "claude-sonnet-4-6", 8192);
+        assert_eq!(thinking.unwrap()["budget_tokens"], 8191);
+    }
+
+    #[test]
+    fn test_thinking_params_disabled_when_max_tokens_too_small_for_budget() {
+        // max_tokens below the 1024 budget floor: an enabled-only model has no
+        // valid thinking mode, so thinking is disabled rather than 400.
+        let opts = json!({ "reasoning_effort": "high" });
+        let (thinking, output) = build_thinking_params(&opts, "claude-haiku-4-5", 1024);
+        assert!(thinking.is_none(), "no valid budget → thinking disabled");
+        assert!(output.is_none());
+    }
+
+    #[test]
+    fn test_thinking_params_budget_falls_back_to_adaptive_when_no_room() {
+        // A both-modes model (4.6) with no room for a valid budget falls back
+        // to adaptive (which has no budget floor) rather than disabling.
+        let opts = json!({ "budget_tokens": 4096 });
+        let (thinking, _) = build_thinking_params(&opts, "claude-sonnet-4-6", 1024);
+        let thinking = thinking.unwrap();
+        assert_eq!(thinking["type"], "adaptive");
+        assert_eq!(thinking["display"], "summarized");
+    }
+
+    #[test]
+    fn test_thinking_params_budget_enabled_model() {
         let opts = json!({"thinking": true, "budget_tokens": 2048});
-        let config = build_thinking_config(&opts).unwrap();
-        assert_eq!(config["type"], "enabled");
-        assert_eq!(config["budget_tokens"], 2048);
+        let (thinking, output) = build_thinking_params(&opts, "claude-sonnet-4-5", TEST_MAX_TOKENS);
+        let thinking = thinking.unwrap();
+        assert_eq!(thinking["type"], "enabled");
+        assert_eq!(thinking["budget_tokens"], 2048);
+        assert!(output.is_none());
     }
 
     #[test]
-    fn test_build_thinking_config_none() {
+    fn test_thinking_params_budget_upgraded_on_adaptive_only_model() {
+        // Opus 4.8 rejects enabled — a budget request becomes adaptive.
+        let opts = json!({"budget_tokens": 2048});
+        let (thinking, output) = build_thinking_params(&opts, "claude-opus-4-8", TEST_MAX_TOKENS);
+        let thinking = thinking.unwrap();
+        assert_eq!(thinking["type"], "adaptive");
+        assert_eq!(thinking["display"], "summarized");
+        assert!(output.is_none());
+    }
+
+    #[test]
+    fn test_thinking_params_none() {
         let opts = json!({});
-        assert!(build_thinking_config(&opts).is_none());
+        let (thinking, output) = build_thinking_params(&opts, "claude-opus-4-8", TEST_MAX_TOKENS);
+        assert!(thinking.is_none());
+        assert!(output.is_none());
     }
 
     // ── build_body ────────────────────────────────────────────────────
