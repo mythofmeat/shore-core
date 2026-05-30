@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [8.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v7.0.0...shore-daemon-v8.0.0) - 2026-05-30
 
+### Breaking
+
+- **PromptMessage API change**: The public struct `PromptMessage` now includes a `provider_key` field to track which provider originally generated each message. This is a breaking change for any code that directly constructs `PromptMessage` instances.
+
+  **Migration**: When constructing `PromptMessage`, you must now supply a `provider_key` field. For messages being replayed or reconstructed, use the provider key that originally generated the message. For new messages or when the provider is unknown, consider using a helper constructor or setting an appropriate default:
+
+  ```rust
+  // Old (7.x):
+  // PromptMessage { role: "user", content: "...", ... }
+
+  // New (8.0.0):
+  PromptMessage {
+      role: "user",
+      content: "...",
+      provider_key: "anthropic".to_string(), // or the appropriate provider
+      ...
+  }
+  ```
+
+  See [#99](https://github.com/mythofmeat/shore-core/pull/99) for context on provider provenance tracking.
+
 ### Fixed
 
 - *(replay)* track provider provenance; strip non-portable thinking on provider switch ([#99](https://github.com/mythofmeat/shore-core/pull/99))

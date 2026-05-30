@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.0](https://github.com/mythofmeat/shore-core/compare/shore-protocol-v0.5.0...shore-protocol-v0.6.0) - 2026-05-30
 
+### Breaking
+
+- **Message.provider_key field added**: The `Message` struct now includes a public `provider_key: Option<String>` field to track which provider originally generated each message. This is a breaking change because downstream code that exhaustively constructs or pattern-matches `Message` instances must account for the new field.
+
+  **Migration**: Update all code that constructs `Message` to include the `provider_key` field. For messages from a known provider, populate it with the provider's key (e.g., `"anthropic"`, `"openai"`). For legacy messages or when the provider is unknown, use `None`:
+
+  ```rust
+  // Old (0.5.x):
+  // Message { role: "user", content: vec![...], ... }
+
+  // New (0.6.0):
+  Message {
+      role: "user",
+      content: vec![...],
+      provider_key: Some("anthropic".to_string()),
+      ...
+  }
+  ```
+
+  This change enables provider-aware message replay and allows the system to strip non-portable content (like extended thinking) when switching providers. See [#99](https://github.com/mythofmeat/shore-core/pull/99) for more context.
+
 ### Fixed
 
 - *(replay)* track provider provenance; strip non-portable thinking on provider switch ([#99](https://github.com/mythofmeat/shore-core/pull/99))
