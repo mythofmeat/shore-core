@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v8.0.1...shore-daemon-v9.0.0) - 2026-05-30
+
+### Breaking
+
+- **CompactionManager API change**: The `CompactionManager::build_final_message` method signature has changed (parameter count reduced from 4 to 3).
+
+  **Migration**: Update all call sites to the new signature by removing the obsolete argument and adapting any dependent logic. Run your builds and tests after updating from 8.0.1 to 9.0.0 to catch any compilation errors (cargo-semver-checks will flag this breaking change).
+
+### Other
+
+- *(compaction)* stop inlining full memory snapshot into compact prompt ([#107](https://github.com/mythofmeat/shore-core/pull/107))
+
 ## [8.0.1](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v8.0.0...shore-daemon-v8.0.1) - 2026-05-30
 
 ### Other
