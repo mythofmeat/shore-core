@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.11](https://github.com/mythofmeat/shore-core/compare/shore-swp-server-v1.8.10...shore-swp-server-v1.8.11) - 2026-05-30
+
+### Fixed
+
+- *(replay)* track provider provenance; strip non-portable thinking on provider switch ([#99](https://github.com/mythofmeat/shore-core/pull/99))
+
 ## [1.8.10](https://github.com/mythofmeat/shore-core/compare/shore-swp-server-v1.8.9...shore-swp-server-v1.8.10) - 2026-05-29
 
 ### Other

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v7.0.0...shore-daemon-v8.0.0) - 2026-05-30
+
+### Fixed
+
+- *(replay)* track provider provenance; strip non-portable thinking on provider switch ([#99](https://github.com/mythofmeat/shore-core/pull/99))
+
 ## [7.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v6.0.0...shore-daemon-v7.0.0) - 2026-05-29
 
 ### Added
