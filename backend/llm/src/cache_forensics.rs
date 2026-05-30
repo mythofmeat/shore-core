@@ -16,6 +16,7 @@ use serde_json::json;
 static FORENSIC_DIR: OnceLock<PathBuf> = OnceLock::new();
 static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Copy)]
 pub struct RequestLog<'a> {
     pub call_id: u64,
     pub character: Option<&'a str>,
@@ -30,6 +31,7 @@ pub struct RequestLog<'a> {
     pub rid: Option<&'a str>,
 }
 
+#[derive(Clone, Copy)]
 pub struct ResponseLog<'a> {
     pub call_id: u64,
     pub model: &'a str,
@@ -75,10 +77,6 @@ pub fn write_entry(entry: &serde_json::Value) {
 }
 
 /// Log the request-side cache placement for an Anthropic call.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "RequestLog is a small borrowed-field view passed once per call; by-value keeps call sites clean"
-)]
 pub fn log_request(entry: RequestLog<'_>) {
     let ts = chrono::Local::now().to_rfc3339();
     write_entry(&json!({
@@ -99,10 +97,6 @@ pub fn log_request(entry: RequestLog<'_>) {
 }
 
 /// Log the response-side cache event.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "ResponseLog is a small borrowed-field view passed once per call; by-value keeps call sites clean"
-)]
 pub fn log_response(entry: ResponseLog<'_>) {
     let ts = chrono::Local::now().to_rfc3339();
     write_entry(&json!({

@@ -26,7 +26,7 @@ const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 // ── Message & tool translation ──────────────────────────────────────
 
 /// Translate Anthropic-format messages into OpenAI chat completion messages.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "message-translation covers many block types inline; clearer as one pass"
 )]
@@ -244,7 +244,7 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
 }
 
 /// Translate Anthropic-format tool definitions to OpenAI function-calling format.
-#[allow(
+#[expect(
     clippy::ref_option,
     reason = "mirrors LlmRequest.tools (&Option) and forwards by reference to translate_tool_declarations"
 )]
@@ -349,7 +349,7 @@ fn build_chat_body(request: &LlmRequest, ctx: &ProviderContext, streaming: bool)
 ///
 /// Returns a `DuplexStream` that yields NDJSON `StreamEvent` lines. A background
 /// tokio task reads SSE from the upstream API and writes translated events.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "end-to-end streaming setup; clearer as one function than artificially split"
 )]

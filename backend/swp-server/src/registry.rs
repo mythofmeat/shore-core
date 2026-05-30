@@ -306,10 +306,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::case_sensitive_file_extension_comparisons,
-        reason = "matching backup filenames this test created itself, always lowercase .json"
-    )]
     fn register_rejects_corrupt_registry_and_preserves_backup() {
         let (_tmp, reg) = test_registry();
         let corrupt = "{ definitely not valid json";
@@ -330,11 +326,15 @@ mod tests {
             .filter_map(std::result::Result::ok)
             .map(|entry| entry.path())
             .filter(|path| {
-                path.file_name()
+                let is_json = path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+                let is_corrupt_backup = path
+                    .file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| {
-                        name.starts_with("instances.corrupt-") && name.ends_with(".json")
-                    })
+                    .is_some_and(|name| name.starts_with("instances.corrupt-"));
+                is_json && is_corrupt_backup
             })
             .collect();
         assert_eq!(backups.len(), 1, "expected one preserved corrupt backup");

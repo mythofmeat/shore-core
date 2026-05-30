@@ -64,7 +64,7 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
     super::openai::translate_messages(request, &ctx)
 }
 
-#[allow(
+#[expect(
     clippy::ref_option,
     reason = "mirrors LlmRequest.tools (&Option) and delegates to openai::translate_tools by reference"
 )]
@@ -127,7 +127,7 @@ fn build_chat_body(request: &LlmRequest, streaming: bool) -> Value {
 ///
 /// Returns a `DuplexStream` that yields NDJSON `StreamEvent` lines. A background
 /// tokio task reads SSE from the upstream API and writes translated events.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "end-to-end streaming setup; clearer as one function than artificially split"
 )]

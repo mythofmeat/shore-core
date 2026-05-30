@@ -75,7 +75,7 @@ fn resolve_addr(addr: Option<&str>, config: Option<&str>) -> crate::Result<Serve
     discover_or_default(config)
 }
 
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "single reconnect state machine; splitting would obscure the control flow"
 )]

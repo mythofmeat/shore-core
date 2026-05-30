@@ -871,7 +871,7 @@ pub struct CommandNotifyConfig {
 /// Per-event notification toggles. All default to true (fire when enabled).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "each bool maps 1:1 to an independent TOML notification toggle"
 )]
@@ -1218,7 +1218,7 @@ binary = "metadata"
     }
 
     #[test]
-    #[allow(
+    #[expect(
         clippy::float_cmp,
         reason = "exact round-trip assertion on float literals parsed from TOML"
     )]

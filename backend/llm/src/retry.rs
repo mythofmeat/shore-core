@@ -48,7 +48,7 @@ pub enum RetryDecision {
 /// surfacing immediately so it can rotate to the next configured key.
 /// Plain transient errors (5xx, generic 429, network blips) still go
 /// through the normal exponential-backoff retry path.
-#[allow(
+#[expect(
     clippy::match_same_arms,
     reason = "non-retryable error categories kept as separate arms, each documented at its decision point"
 )]

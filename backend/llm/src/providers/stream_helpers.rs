@@ -216,7 +216,7 @@ pub(crate) fn wrap_inline_system_instruction(text: &str) -> String {
 ///
 /// Covers OpenAI (lowercase), Gemini (UPPERCASE), and Anthropic (already
 /// canonical) values in a single collision-free match table.
-#[allow(
+#[expect(
     clippy::match_same_arms,
     reason = "per-provider finish-reason groups kept distinct as a documentation table"
 )]
@@ -265,7 +265,7 @@ pub(crate) fn apply_common_params(body: &mut Value, request: &LlmRequest) {
 /// Each provider wraps the result in its own envelope:
 /// - OpenAI: `{type: "function", function: <decl>}`
 /// - Gemini: `[{functionDeclarations: <decls>}]`
-#[allow(
+#[expect(
     clippy::ref_option,
     reason = "mirrors LlmRequest.tools (&Option); avoids cloning the tool list at every call site"
 )]

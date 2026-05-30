@@ -157,7 +157,7 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
 }
 
 /// Translate Anthropic-format tool definitions into Gemini `tools` array.
-#[allow(
+#[expect(
     clippy::ref_option,
     reason = "mirrors LlmRequest.tools (&Option) and forwards by reference to translate_tool_declarations"
 )]
@@ -371,7 +371,7 @@ fn base_url(request: &LlmRequest) -> &str {
 // ── Streaming ────────────────────────────────────────────────────────
 
 /// Send a streaming request to the Gemini REST API.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "end-to-end streaming setup; clearer as one function than artificially split"
 )]

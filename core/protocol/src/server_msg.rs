@@ -34,7 +34,7 @@ pub struct History {
     pub revision: u64,
 }
 
-#[allow(
+#[expect(
     clippy::trivially_copy_pass_by_ref,
     reason = "serde skip_serializing_if requires a &T predicate signature"
 )]

@@ -742,7 +742,7 @@ mod tests {
     /// the intermediate "Let me search memory—" text, miss the ToolCall
     /// and ToolResult frames entirely, and surface the wrong finish_reason.
     #[tokio::test]
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
         clippy::items_after_statements,
         reason = "long end-to-end stream test with a local helper fn for readability"

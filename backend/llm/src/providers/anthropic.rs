@@ -925,15 +925,11 @@ pub async fn stream(
 }
 
 /// Translate an SSE event into an optional NDJSON line to write to the stream.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "SseEvent is consumed per-event by the streaming dispatch; ownership keeps the call site clean"
-)]
 fn handle_sse_event(event: SseEvent, state: &mut StreamState) -> Option<String> {
     // Prefer the SSE `event:` field; fall back to the `type` field inside the
     // JSON `data:` payload.  Some proxies (e.g. OpenRouter) may strip the
     // `event:` line and only forward `data:`.
-    let event_type_owned: Option<String> = event.event.clone().or_else(|| {
+    let event_type_owned: Option<String> = event.event.or_else(|| {
         serde_json::from_str::<serde_json::Value>(&event.data)
             .ok()
             .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(String::from))

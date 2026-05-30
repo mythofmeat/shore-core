@@ -322,7 +322,7 @@ impl LlmClient {
 
         let read_half = providers::stream(&self.http_client, &request).await?;
         let reader: Box<dyn AsyncRead + Send + Unpin> = match handle {
-            Some(h) => Box::new(debug_log::TeeReader::new(read_half, h)),
+            Some(h) => Box::new(debug_log::TeeReader::new(read_half, &h)),
             None => Box::new(read_half),
         };
         Ok(BufReader::new(reader))
@@ -340,7 +340,7 @@ impl LlmClient {
         let result = providers::generate(&self.http_client, &request).await;
         if let Some(h) = handle {
             match &result {
-                Ok(resp) => debug_log::log_response(h, resp),
+                Ok(resp) => debug_log::log_response(&h, resp),
                 Err(e) => debug_log::log_error(&h, e),
             }
         }
