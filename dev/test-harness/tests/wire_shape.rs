@@ -358,11 +358,16 @@ async fn tool_loop_iter2_request_preserves_assistant_block_order() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async fn capture_anthropic_body(opts: Value) -> Value {
+    capture_anthropic_body_for_model(opts, "claude-sonnet-4-6").await
+}
+
+async fn capture_anthropic_body_for_model(opts: Value, model: &str) -> Value {
     let mock = MockLlmServer::start().await;
     mock.enqueue_stream(AnthropicStreamBuilder::new().text("ok"))
         .await;
     let client = LlmClient::new();
     let mut req = base_request(&mock.base_url());
+    req.model = model.into();
     req.provider_options = Some(opts);
     drain_stream(&client, &req).await;
     single_request(&mock).await
@@ -371,14 +376,20 @@ async fn capture_anthropic_body(opts: Value) -> Value {
 #[tokio::test]
 async fn thinking_named_effort_high_sends_adaptive_plus_output_config() {
     let body = capture_anthropic_body(json!({"reasoning_effort": "high"})).await;
-    assert_eq!(body["thinking"], json!({"type": "adaptive"}));
+    assert_eq!(
+        body["thinking"],
+        json!({"type": "adaptive", "display": "summarized"})
+    );
     assert_eq!(body["output_config"], json!({"effort": "high"}));
 }
 
 #[tokio::test]
 async fn thinking_literal_adaptive_omits_output_config() {
     let body = capture_anthropic_body(json!({"reasoning_effort": "adaptive"})).await;
-    assert_eq!(body["thinking"], json!({"type": "adaptive"}));
+    assert_eq!(
+        body["thinking"],
+        json!({"type": "adaptive", "display": "summarized"})
+    );
     assert!(
         body.get("output_config").is_none(),
         "literal `adaptive` must NOT set output_config, got {body:#}"
@@ -399,6 +410,32 @@ async fn thinking_explicit_budget_uses_enabled_mode() {
 async fn thinking_disabled_when_no_thinking_options() {
     let body = capture_anthropic_body(json!({})).await;
     assert!(body.get("thinking").is_none(), "no thinking expected");
+    assert!(body.get("output_config").is_none());
+}
+
+#[tokio::test]
+async fn thinking_named_effort_downgrades_to_budget_on_legacy_model() {
+    // Sonnet 4.5 rejects adaptive — effort must map to enabled+budget.
+    let body =
+        capture_anthropic_body_for_model(json!({"reasoning_effort": "high"}), "claude-sonnet-4-5")
+            .await;
+    assert_eq!(body["thinking"]["type"], "enabled");
+    assert!(body["thinking"]["budget_tokens"].is_number());
+    assert!(
+        body.get("output_config").is_none(),
+        "enabled mode must not carry output_config, got {body:#}"
+    );
+}
+
+#[tokio::test]
+async fn thinking_budget_upgrades_to_adaptive_on_opus_48() {
+    // Opus 4.8 rejects enabled — a legacy budget request must become adaptive.
+    let body =
+        capture_anthropic_body_for_model(json!({"budget_tokens": 4096}), "claude-opus-4-8").await;
+    assert_eq!(
+        body["thinking"],
+        json!({"type": "adaptive", "display": "summarized"})
+    );
     assert!(body.get("output_config").is_none());
 }
 
