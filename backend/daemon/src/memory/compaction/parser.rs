@@ -23,7 +23,6 @@ pub const DEFAULT_COMPACT_SYSTEM: &str =
 ///
 /// Placeholders:
 /// - `{{char}}`, `{{user}}` — character and user names
-/// - `{{existing_memories}}` — bounded snapshot of current markdown memories
 pub const DEFAULT_COMPACT_PROMPT: &str =
     include_prompt!("../../../prompts/memory/compaction/compact.md");
 
