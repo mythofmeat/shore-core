@@ -306,7 +306,7 @@ fn build_headers(
         }
     }
 
-    headers
+    Ok(headers)
 }
 
 /// Build the JSON body for chat completions (shared by stream and generate).
