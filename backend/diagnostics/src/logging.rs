@@ -62,13 +62,15 @@ where
     ctx.visit_spans(|span| {
         let mut rendered = span.name().to_string();
         let ext = span.extensions();
-        let fields = ext
-            .get::<FormattedFields<N>>()
-            .expect("formatted span fields are present after new_span");
-        if !fields.is_empty() {
-            rendered.push('{');
-            rendered.push_str(fields);
-            rendered.push('}');
+        // Formatted fields are normally populated by the subscriber on
+        // new_span, but absence is not worth panicking over inside a log
+        // formatter — fall back to rendering just the span name.
+        if let Some(fields) = ext.get::<FormattedFields<N>>() {
+            if !fields.is_empty() {
+                rendered.push('{');
+                rendered.push_str(fields);
+                rendered.push('}');
+            }
         }
         spans.push(rendered);
         Ok(())
