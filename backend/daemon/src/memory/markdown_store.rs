@@ -309,14 +309,13 @@ fn is_internal_dream_path(base_dir: &Path, path: &Path) -> bool {
     components
         .next()
         .and_then(|c| c.as_os_str().to_str())
-        .map(|name| {
+        .is_some_and(|name| {
             let lower = name.to_ascii_lowercase();
             matches!(
                 lower.as_str(),
                 ".dreams" | "dreaming" | "dreams.md" | "memory.md"
             )
         })
-        .unwrap_or(false)
 }
 
 fn format_modified_at(time: std::time::SystemTime) -> String {
