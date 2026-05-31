@@ -1,5 +1,5 @@
 use super::{ToolCategory, ToolContext, ToolDef, ToolError};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -29,11 +29,11 @@ pub fn tool_defs() -> Vec<ToolDef> {
 
 /// Handle `activity_heatmap` — returns real data from the ActivityTracker
 /// when available, otherwise an empty heatmap.
-pub async fn handle_activity_heatmap(
-    input: Value,
-    ctx: &dyn ToolContext,
-) -> Result<Value, ToolError> {
-    let days = input.get("days").and_then(|v| v.as_u64()).unwrap_or(30);
+pub fn handle_activity_heatmap(input: &Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
+    let days = input
+        .get("days")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(30);
 
     let character = ctx.character_name();
     let autonomy = ctx.autonomy_manager();
@@ -100,11 +100,11 @@ mod tests {
         assert_eq!(defs[0].category, ToolCategory::Other);
     }
 
-    #[tokio::test]
-    async fn test_activity_heatmap_no_autonomy() {
+    #[test]
+    fn test_activity_heatmap_no_autonomy() {
         // TestToolContext has no autonomy manager — should return empty heatmap.
         let ctx = TestToolContext::new();
-        let result = handle_activity_heatmap(json!({}), &ctx).await.unwrap();
+        let result = handle_activity_heatmap(&json!({}), &ctx).unwrap();
         assert_eq!(result["days"], 30);
         assert_eq!(result["total_messages"], 0);
         assert_eq!(result["total_turns"], 0);
@@ -114,19 +114,17 @@ mod tests {
         assert_eq!(hours.len(), 24);
     }
 
-    #[tokio::test]
-    async fn test_activity_heatmap_custom_days() {
+    #[test]
+    fn test_activity_heatmap_custom_days() {
         let ctx = TestToolContext::new();
-        let result = handle_activity_heatmap(json!({"days": 7}), &ctx)
-            .await
-            .unwrap();
+        let result = handle_activity_heatmap(&json!({"days": 7}), &ctx).unwrap();
         assert_eq!(result["days"], 7);
     }
 
-    #[tokio::test]
-    async fn test_activity_heatmap_empty_heatmap_structure() {
+    #[test]
+    fn test_activity_heatmap_empty_heatmap_structure() {
         let ctx = TestToolContext::new();
-        let result = handle_activity_heatmap(json!({}), &ctx).await.unwrap();
+        let result = handle_activity_heatmap(&json!({}), &ctx).unwrap();
 
         let hours = result["hours"].as_array().unwrap();
         for (i, hour) in hours.iter().enumerate() {
@@ -138,8 +136,10 @@ mod tests {
         assert_eq!(result["sessions_per_day"], 0.0);
     }
 
-    #[tokio::test]
-    async fn test_activity_heatmap_with_autonomy_data() {
+    #[test]
+    fn test_activity_heatmap_with_autonomy_data() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
         let mgr = AutonomyManager::new(
@@ -157,7 +157,7 @@ mod tests {
         }
 
         let ctx = TestToolContext::new().with_autonomy(mgr, "TestChar");
-        let result = handle_activity_heatmap(json!({}), &ctx).await.unwrap();
+        let result = handle_activity_heatmap(&json!({}), &ctx).unwrap();
 
         assert_eq!(result["days"], 30);
         assert_eq!(result["total_messages"], 5);
@@ -171,8 +171,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_activity_heatmap_wrong_character_returns_empty() {
+    #[test]
+    fn test_activity_heatmap_wrong_character_returns_empty() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
         let mgr = AutonomyManager::new(
@@ -187,7 +189,7 @@ mod tests {
         mgr.notify_user_message("TestChar", 1);
 
         let ctx = TestToolContext::new().with_autonomy(mgr, "OtherChar");
-        let result = handle_activity_heatmap(json!({}), &ctx).await.unwrap();
+        let result = handle_activity_heatmap(&json!({}), &ctx).unwrap();
 
         assert_eq!(result["total_messages"], 0);
         assert_eq!(result["total_turns"], 0);

@@ -10,8 +10,8 @@ use crate::autonomy::manager::AutonomyManager;
 use crate::memory::compaction_impls::ImageGenConfig;
 use serde_json::Value;
 use shore_config::app::{RetrievalConfig, RetrievalMode};
-use shore_llm::embed::Embedder;
 use shore_llm::LlmClient;
+use shore_llm::embed::Embedder;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -77,6 +77,10 @@ pub trait ToolContext: Sync {
     fn autonomy_manager(&self) -> Option<&AutonomyManager> {
         None
     }
+    #[expect(
+        clippy::unnecessary_literal_bound,
+        reason = "real ToolContext implementations return character names borrowed from self"
+    )]
     fn character_name(&self) -> &str {
         ""
     }
@@ -85,11 +89,19 @@ pub trait ToolContext: Sync {
     }
 
     // Workspace directory for general filesystem tools
+    #[expect(
+        clippy::unnecessary_literal_bound,
+        reason = "real ToolContext implementations return workspace paths borrowed from self"
+    )]
     fn workspace_dir(&self) -> &str {
         ""
     }
 
     // Character data directory for conversation history search.
+    #[expect(
+        clippy::unnecessary_literal_bound,
+        reason = "real ToolContext implementations return data paths borrowed from self"
+    )]
     fn character_data_dir(&self) -> &str {
         ""
     }
@@ -114,6 +126,10 @@ pub trait ToolContext: Sync {
     }
 
     // Config directory for deferred character self-edits
+    #[expect(
+        clippy::unnecessary_literal_bound,
+        reason = "real ToolContext implementations return config paths borrowed from self"
+    )]
     fn config_dir(&self) -> &str {
         ""
     }
@@ -231,7 +247,7 @@ pub fn dispatch_tool<'a>(
             "check_time" => basic::handle_check_time(input).await,
             "roll_dice" => basic::handle_roll_dice(input).await,
             // Other
-            "activity_heatmap" => activity::handle_activity_heatmap(input, ctx).await,
+            "activity_heatmap" => activity::handle_activity_heatmap(&input, ctx),
             // Workspace tools
             "read" => workspace::handle_read(input, ctx.workspace_dir()).await,
             "write" => {
