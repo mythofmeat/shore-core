@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v6.0.3...shore-llm-v7.0.0) - 2026-05-31
+
+### Other
+
+- [codex] Add correctness ratchet tier 2/3 coverage ([#121](https://github.com/mythofmeat/shore-core/pull/121))
+- Correctness ratchet: strict clippy + panic hygiene + dep checks ([#114](https://github.com/mythofmeat/shore-core/pull/114))
+
 ## [6.0.3](https://github.com/mythofmeat/shore-core/compare/shore-llm-v6.0.2...shore-llm-v6.0.3) - 2026-05-31
 
 ### Other

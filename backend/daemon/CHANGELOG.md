@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [11.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v10.0.0...shore-daemon-v11.0.0) - 2026-05-31
+
+### Other
+
+- Correctness ratchet: strict clippy + panic hygiene + dep checks ([#114](https://github.com/mythofmeat/shore-core/pull/114))
+
 ## [10.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v9.0.0...shore-daemon-v10.0.0) - 2026-05-31
 
 ### Added
