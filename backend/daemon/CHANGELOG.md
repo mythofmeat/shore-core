@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [10.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v9.0.0...shore-daemon-v10.0.0) - 2026-05-31
+
+### Added
+
+- *(tool_use)* truncate oversized tool results ([#110](https://github.com/mythofmeat/shore-core/pull/110))
+
 ## [9.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v8.0.1...shore-daemon-v9.0.0) - 2026-05-30
 
 ### Breaking
