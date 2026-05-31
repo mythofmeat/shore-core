@@ -33,7 +33,9 @@ fn require_provider(args: &Value) -> Result<&str, (ErrorCode, String)> {
 /// Whether the env var holding a key has a non-empty value. Returns just
 /// the boolean — the value itself is never exposed.
 fn env_set(var: &str) -> bool {
-    std::env::var(var).is_ok_and(|v| !v.trim().is_empty())
+    std::env::var(var)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
 }
 
 // ── list_providers ─────────────────────────────────────────────────────
@@ -93,7 +95,7 @@ pub fn list_providers(ctx: &CommandContext) -> CommandResult {
             json!({
                 "name": name,
                 "enabled": entry.enabled,
-                "sdk": entry.sdk.as_ref().map(Sdk::as_str),
+                "sdk": entry.sdk.as_ref().map(|s| s.as_str()),
                 "base_url": entry.base_url,
                 "discovery_enabled": entry.discovery.enabled,
                 "keys": keys,
@@ -305,7 +307,7 @@ pub fn list_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult
     let provider = require_provider(args)?;
     let include_hidden = args
         .get("include_hidden")
-        .and_then(Value::as_bool)
+        .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
     // Validate that the provider is at least *known* (configured in the
@@ -332,7 +334,9 @@ pub fn list_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult
     let mut hidden: Vec<Value> = Vec::new();
     if let Some(c) = cache.as_ref() {
         for m in &c.models {
-            let is_visible = registry_entry.is_none_or(|e| e.discovery.is_visible(&m.model_id));
+            let is_visible = registry_entry
+                .map(|e| e.discovery.is_visible(&m.model_id))
+                .unwrap_or(true);
             if is_visible || include_hidden {
                 discovered.push(discovered_to_json(m));
             } else {
@@ -396,7 +400,6 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    use shore_config::app::{AutonomyConfig, CompactionConfig};
     use shore_config::providers::ProviderRegistry;
     use shore_diagnostics::Diagnostics;
     use shore_ledger::LedgerClient;
@@ -432,12 +435,8 @@ mod tests {
         loaded.providers = providers;
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let autonomy = AutonomyManager::new(
-            AutonomyConfig::default(),
-            CompactionConfig::default(),
-            data_dir.clone(),
-            rx,
-        );
+        let autonomy =
+            AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
 
         CommandContext {
             config_path: loaded.dirs.config.join("config.toml"),
@@ -660,12 +659,7 @@ model_id = "kimi-k2"
     // ── ignore filtering ────────────────────────────────────────────────
 
     fn build_ctx_with_ignore(tmp: &tempfile::TempDir, ignore: &[&str]) -> CommandContext {
-        use std::fmt::Write as _;
-
-        let mut v = String::new();
-        for p in ignore {
-            let _ = writeln!(&mut v, "  {p:?},");
-        }
+        let v: String = ignore.iter().map(|p| format!("  {:?},\n", p)).collect();
         let toml_str = format!(
             r#"
 [providers.openrouter]
@@ -1089,7 +1083,7 @@ enabled = true
             "object": "list",
             "data": [
                 { "id": "openai/gpt-4o", "object": "model", "owned_by": "openai" },
-                { "id": "anthropic/claude-3.5-sonnet", "object": "model", "context_length": 200_000 }
+                { "id": "anthropic/claude-3.5-sonnet", "object": "model", "context_length": 200000 }
             ]
         });
         let mock = wiremock::MockServer::start().await;

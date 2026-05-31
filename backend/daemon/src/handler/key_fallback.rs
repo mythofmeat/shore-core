@@ -29,7 +29,7 @@
 use chrono::Utc;
 use tracing::{debug, error, warn};
 
-use shore_config::{models::ResolvedModel, LoadedConfig};
+use shore_config::LoadedConfig;
 use shore_diagnostics::KeyFallbackEntry;
 use shore_llm::credentials::{
     classify_credential_failure, read_candidate_env, resolve_key_candidates, CredentialFailureKind,
@@ -49,10 +49,11 @@ use super::GenContext;
 /// `stream_with_retry`; only credential-classified failures rotate to
 /// the next candidate. The request's `api_key` is rewritten in-place
 /// before each attempt — callers must pass `&mut`.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn stream_with_credential_fallback(
     ctx: &GenContext,
     request: &mut LlmRequest,
-    resolved: &ResolvedModel,
+    resolved: &shore_config::models::ResolvedModel,
     effective_config: &LoadedConfig,
     regen: bool,
     char_name: &str,
@@ -88,14 +89,22 @@ pub(super) async fn stream_with_credential_fallback(
         // Step 1: resolve the env var. A missing/empty value is a
         // credential failure (`MissingKey`) — rotate without touching
         // the network.
-        let Some(api_key) = read_candidate_env(cand) else {
-            last_err = Some(record_missing_key_fallback(
-                ctx, request, resolved, char_name, cand, next_cand,
-            ));
-            if next_cand.is_some() {
-                continue;
+        let api_key = match read_candidate_env(cand) {
+            Some(v) => v,
+            None => {
+                let kind = CredentialFailureKind::MissingKey;
+                let reason = format!("env {:?} unset or empty", cand.env);
+                record_fallback(
+                    ctx, request, resolved, char_name, cand, next_cand, kind, None, &reason,
+                );
+                last_err = Some(LlmError::MissingApiKey {
+                    var: cand.env.clone(),
+                });
+                if next_cand.is_some() {
+                    continue;
+                }
+                break;
             }
-            break;
         };
 
         request.api_key = api_key;
@@ -138,17 +147,7 @@ pub(super) async fn stream_with_credential_fallback(
                 };
                 let reason = sanitize_reason(&e);
                 record_fallback(
-                    ctx,
-                    FallbackRecord {
-                        request,
-                        resolved,
-                        char_name,
-                        from: cand,
-                        to: next_cand,
-                        kind,
-                        status,
-                        reason: &reason,
-                    },
+                    ctx, request, resolved, char_name, cand, next_cand, kind, status, &reason,
                 );
                 last_err = Some(e);
                 if next_cand.is_none() {
@@ -179,57 +178,18 @@ pub(super) async fn stream_with_credential_fallback(
 /// abandoning) has `warn_on_fallback = true`. Diagnostics records every
 /// rotation regardless, so `shore status --diagnostics` shows the full
 /// picture even when the user did not opt into a visible warning.
-#[derive(Clone, Copy)]
-struct FallbackRecord<'a> {
-    request: &'a LlmRequest,
-    resolved: &'a ResolvedModel,
-    char_name: &'a str,
-    from: &'a KeyCandidate,
-    to: Option<&'a KeyCandidate>,
-    kind: CredentialFailureKind,
-    status: Option<u16>,
-    reason: &'a str,
-}
-
-fn record_missing_key_fallback(
+#[allow(clippy::too_many_arguments)]
+fn record_fallback(
     ctx: &GenContext,
     request: &LlmRequest,
-    resolved: &ResolvedModel,
+    resolved: &shore_config::models::ResolvedModel,
     char_name: &str,
-    cand: &KeyCandidate,
-    next_cand: Option<&KeyCandidate>,
-) -> LlmError {
-    let kind = CredentialFailureKind::MissingKey;
-    let reason = format!("env {:?} unset or empty", cand.env);
-    record_fallback(
-        ctx,
-        FallbackRecord {
-            request,
-            resolved,
-            char_name,
-            from: cand,
-            to: next_cand,
-            kind,
-            status: None,
-            reason: &reason,
-        },
-    );
-    LlmError::MissingApiKey {
-        var: cand.env.clone(),
-    }
-}
-
-fn record_fallback(ctx: &GenContext, record: FallbackRecord<'_>) {
-    let FallbackRecord {
-        request,
-        resolved,
-        char_name,
-        from,
-        to,
-        kind,
-        status,
-        reason,
-    } = record;
+    from: &KeyCandidate,
+    to: Option<&KeyCandidate>,
+    kind: CredentialFailureKind,
+    status: Option<u16>,
+    reason: &str,
+) {
     let timestamp = Utc::now().to_rfc3339();
     let to_name = to.map(|k| k.name.clone());
 
@@ -336,7 +296,10 @@ fn build_warning_message(
             // Should never happen — we only call build_warning_message
             // for rotation-triggering kinds — but stay defensive so a
             // future caller change doesn't leak a misleading message.
-            format!("{provider} fallback from {:?} to {:?}.", from.name, to.name)
+            format!(
+                "{provider} fallback from {:?} to {:?}.",
+                from.name, to.name
+            )
         }
     }
 }

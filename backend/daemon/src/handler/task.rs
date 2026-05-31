@@ -8,7 +8,6 @@ use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{debug, info, instrument};
 
 use crate::autonomy::parse_cache_ttl_secs;
-use crate::convert::u64_to_usize;
 use crate::engine::messages::PendingAlt;
 use crate::engine::prompt;
 use crate::handler::generation::{run_tool_phase, thinking_enabled_from_request};
@@ -28,10 +27,6 @@ use super::{GenContext, GenerationParams, PrepareChatContextParams, PreparedChat
         char = %params.char_name,
         rid = params.rid.as_deref().unwrap_or("-")
     )
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "generation orchestration phase split is tracked in #109"
 )]
 pub(super) async fn handle_generation(
     ctx: GenContext,
@@ -136,11 +131,11 @@ pub(super) async fn handle_generation(
     };
     let resolved_base = &resolved_base_owned;
     let resolved_owned;
-    let resolved: &shore_config::models::ResolvedModel = if sampler_overlay.is_empty() {
-        resolved_base
-    } else {
+    let resolved: &shore_config::models::ResolvedModel = if !sampler_overlay.is_empty() {
         resolved_owned = crate::preferences::apply_sampler_overlay(resolved_base, &sampler_overlay);
         &resolved_owned
+    } else {
+        resolved_base
     };
     debug!(
         model = %resolved.qualified_name,
@@ -195,7 +190,7 @@ pub(super) async fn handle_generation(
                 count = timestamps.len(),
                 "Backfilling activity tracker from chat history"
             );
-            ctx.autonomy.backfill_activity(&char_name, &timestamps);
+            ctx.autonomy.backfill_activity(&char_name, timestamps);
         }
     }
 
@@ -224,6 +219,8 @@ pub(super) async fn handle_generation(
         system,
         tool_defs,
         prompt: prompt_result,
+        character_definition,
+        user_definition,
     } = super::prepare_chat_context(PrepareChatContextParams {
         character: &char_name,
         character_data_dir: &character_data_dir,
@@ -257,7 +254,7 @@ pub(super) async fn handle_generation(
         None,
     );
     request.rid = rid;
-    request.forensic_character = Some(char_name.clone());
+    request.forensic_character = Some(char_name.to_owned());
 
     if let Some(ref ov) = body.overrides {
         if let Some(t) = ov.temperature {
@@ -302,6 +299,8 @@ pub(super) async fn handle_generation(
                 &data_dir,
                 &char_name,
                 &effective_config,
+                &character_definition,
+                &user_definition,
                 &mut request,
                 result,
             )
@@ -351,9 +350,9 @@ pub(super) async fn handle_generation(
     let (turn_count, context_tokens, should_compact) = {
         let engine = engine_arc.lock().await;
         let turn_count = engine.turn_count();
-        let context_tokens = u64_to_usize(result.usage.input_tokens)
-            .saturating_add(u64_to_usize(result.usage.cache_read_tokens))
-            .saturating_add(u64_to_usize(result.usage.cache_creation_tokens));
+        let context_tokens = result.usage.input_tokens as usize
+            + result.usage.cache_read_tokens as usize
+            + result.usage.cache_creation_tokens as usize;
         let should_compact =
             ctx.autonomy
                 .should_compact_now(&char_name, turn_count, context_tokens);
@@ -499,9 +498,7 @@ pub(crate) fn build_llm_messages(
                 Role::Assistant => "assistant",
                 Role::System => "system",
             };
-            let content = if m.content_blocks.is_empty() {
-                super::build_content(&m.content, &m.images, max_image_size, cache_dir)
-            } else {
+            let content = if !m.content_blocks.is_empty() {
                 let mut blocks: Vec<Value> = Vec::new();
 
                 for img in &m.images {
@@ -527,6 +524,8 @@ pub(crate) fn build_llm_messages(
                     );
                 }
                 json!(blocks)
+            } else {
+                super::build_content(&m.content, &m.images, max_image_size, cache_dir)
             };
             json!({ "role": role, "content": content })
         })

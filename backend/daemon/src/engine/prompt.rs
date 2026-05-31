@@ -1,11 +1,8 @@
 use std::collections::HashMap;
-use std::hash::BuildHasher;
 
 use chrono::{DateTime, FixedOffset, Local};
 use shore_protocol::types::{ContentBlock, ImageRef, Message, Role};
 use tracing::{debug, warn};
-
-use crate::convert::{f64_to_u32_saturating, i64_to_f64};
 
 /// Default context window size when not specified in model config.
 const DEFAULT_MAX_CONTEXT_TOKENS: usize = 200_000;
@@ -20,19 +17,13 @@ const CHARS_PER_TOKEN: usize = 4;
 /// included in a marker. Markers may still be injected for shorter gaps when
 /// triggered by the hourly tick or by lost prior context — those use the
 /// absolute-time-only form.
-const TIME_GAP_THRESHOLD_SECS: f64 = 1_800.0; // 30 minutes
+const TIME_GAP_THRESHOLD_SECS: f64 = 1800.0; // 30 minutes
 
 /// Minimum elapsed time since the previous injected marker before a fresh
 /// "hourly tick" marker is injected on the next user message. Keeps long,
 /// slow conversations time-aware even when no individual gap crosses the
 /// relative-marker threshold.
-const HOURLY_MARKER_INTERVAL_SECS: f64 = 3_600.0; // 1 hour
-
-const ONE_AND_HALF_HOURS_SECS: f64 = 5_400.0;
-const EIGHTEEN_HOURS_SECS: f64 = 64_800.0;
-const THIRTY_SIX_HOURS_SECS: f64 = 129_600.0;
-const SECS_PER_HOUR: f64 = 3_600.0;
-const SECS_PER_DAY: f64 = 86_400.0;
+const HOURLY_MARKER_INTERVAL_SECS: f64 = 3600.0; // 1 hour
 
 /// Built-in system prompt template used when no override is found on disk.
 ///
@@ -124,9 +115,24 @@ pub struct PromptParams<'a> {
 ///
 /// Then trims conversation history to fit the token budget.
 pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
-    let max_context = configured_token_limit(params.max_context_tokens, DEFAULT_MAX_CONTEXT_TOKENS);
-    let max_output = configured_token_limit(params.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS);
+    let max_context = params
+        .max_context_tokens
+        .map(|t| t as usize)
+        .unwrap_or(DEFAULT_MAX_CONTEXT_TOKENS);
+    let max_output = params
+        .max_output_tokens
+        .map(|t| t as usize)
+        .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
 
+    // ── 1. Build template variables ───────────────────────────────────
+    let mut vars = HashMap::new();
+    vars.insert("char".into(), params.character_name.to_string());
+    vars.insert("character_name".into(), params.character_name.to_string());
+    vars.insert("user".into(), params.display_name.to_string());
+    vars.insert("date".into(), String::new());
+    vars.insert("time".into(), String::new());
+
+    // ── 2. Resolve and render system template ─────────────────────────
     let using_builtin = params.system_prompt.is_none();
     let template = params.system_prompt.unwrap_or(BUILTIN_SYSTEM_TEMPLATE);
     debug!(
@@ -135,48 +141,12 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         "assembling prompt"
     );
 
-    let system = build_system_blocks(params, template);
-    log_system_blocks(params, system.len());
-
-    let available_for_messages =
-        available_message_tokens(&system, max_context, max_output, params.messages.len());
-    let messages = trim_messages(
-        params.messages,
-        available_for_messages,
-        params.has_prior_context,
-    );
-
-    debug!(
-        input_messages = params.messages.len(),
-        output_messages = messages.len(),
-        trimmed = params.messages.len().saturating_sub(messages.len()),
-        "prompt assembly complete"
-    );
-
-    AssembledPrompt { system, messages }
-}
-
-fn configured_token_limit(configured: Option<u32>, default: usize) -> usize {
-    configured.map_or(default, |tokens| {
-        usize::try_from(tokens).unwrap_or(usize::MAX)
-    })
-}
-
-fn template_vars(params: &PromptParams<'_>) -> HashMap<String, String> {
-    let mut vars = HashMap::new();
-    vars.insert("char".into(), params.character_name.to_string());
-    vars.insert("character_name".into(), params.character_name.to_string());
-    vars.insert("user".into(), params.display_name.to_string());
-    vars.insert("date".into(), String::new());
-    vars.insert("time".into(), String::new());
-    vars
-}
-
-fn build_system_blocks(params: &PromptParams<'_>, template: &str) -> Vec<SystemBlock> {
-    let vars = template_vars(params);
     let rendered_system = render_template(template, &vars);
 
+    // ── 3. Build system blocks ────────────────────────────────────────
     let mut system = Vec::new();
+
+    // Block 1: core system prompt.
     system.push(SystemBlock {
         label: "system".into(),
         content: rendered_system,
@@ -225,25 +195,18 @@ fn build_system_blocks(params: &PromptParams<'_>, template: &str) -> Vec<SystemB
         }
     }
 
-    system
-}
-
-fn log_system_blocks(params: &PromptParams<'_>, system_block_count: usize) {
     debug!(
-        system_blocks = system_block_count,
-        has_char_def = params.character_definition.is_some_and(|s| !s.is_empty()),
-        has_user_def = params.user_definition.is_some_and(|s| !s.is_empty()),
-        has_memory_index = params.memory_index.is_some_and(|s| !s.is_empty()),
+        system_blocks = system.len(),
+        has_char_def = params
+            .character_definition
+            .filter(|s| !s.is_empty())
+            .is_some(),
+        has_user_def = params.user_definition.filter(|s| !s.is_empty()).is_some(),
+        has_memory_index = params.memory_index.filter(|s| !s.is_empty()).is_some(),
         "system blocks assembled"
     );
-}
 
-fn available_message_tokens(
-    system: &[SystemBlock],
-    max_context: usize,
-    max_output: usize,
-    input_message_count: usize,
-) -> usize {
+    // ── 4. Calculate token budget for messages ────────────────────────
     let system_tokens = estimate_tokens(
         &system
             .iter()
@@ -260,7 +223,7 @@ fn available_message_tokens(
         max_output,
         system_tokens,
         available_for_messages,
-        input_messages = input_message_count,
+        input_messages = params.messages.len(),
         "token budget calculated"
     );
 
@@ -272,7 +235,22 @@ fn available_message_tokens(
             "zero tokens available for messages — system prompt may exceed context window"
         );
     }
-    available_for_messages
+
+    // ── 5. Trim conversation history to fit budget ────────────────────
+    let messages = trim_messages(
+        params.messages,
+        available_for_messages,
+        params.has_prior_context,
+    );
+
+    debug!(
+        input_messages = params.messages.len(),
+        output_messages = messages.len(),
+        trimmed = params.messages.len().saturating_sub(messages.len()),
+        "prompt assembly complete"
+    );
+
+    AssembledPrompt { system, messages }
 }
 
 // ---------------------------------------------------------------------------
@@ -286,10 +264,7 @@ fn available_message_tokens(
 ///
 /// Processes conditionals first (one pass per `{{#if ...}}`), then substitutes
 /// remaining `{{key}}` variables.
-pub fn render_template<S: BuildHasher>(
-    template: &str,
-    vars: &HashMap<String, String, S>,
-) -> String {
+pub fn render_template(template: &str, vars: &HashMap<String, String>) -> String {
     let mut result = template.to_string();
 
     // Process all conditional blocks.
@@ -389,18 +364,18 @@ fn estimate_message_tokens(msg: &Message) -> usize {
 /// for a gap in seconds. Used as part of the full marker when the gap crosses
 /// `TIME_GAP_THRESHOLD_SECS`.
 fn relative_gap_phrase(gap_secs: f64) -> String {
-    if gap_secs < ONE_AND_HALF_HOURS_SECS {
+    if gap_secs < 5400.0 {
         // < 1.5 hours
         "about an hour later".to_string()
-    } else if gap_secs < EIGHTEEN_HOURS_SECS {
+    } else if gap_secs < 64800.0 {
         // < 18 hours
-        let hours = f64_to_u32_saturating((gap_secs / SECS_PER_HOUR).round());
+        let hours = (gap_secs / 3600.0).round() as u32;
         format!("{hours} hours later")
-    } else if gap_secs < THIRTY_SIX_HOURS_SECS {
+    } else if gap_secs < 129600.0 {
         // < 36 hours
         "about a day later".to_string()
     } else {
-        let days = f64_to_u32_saturating((gap_secs / SECS_PER_DAY).round());
+        let days = (gap_secs / 86400.0).round() as u32;
         format!("{days} days later")
     }
 }
@@ -493,9 +468,8 @@ fn trim_messages(
 
         if pm.role == Role::User {
             if let Some(cur) = current_ts {
-                let gap_secs = prev_ts.map(|p| i64_to_f64((cur - p).num_seconds()));
-                let elapsed_since_marker =
-                    last_marker_ts.map(|m| i64_to_f64((cur - m).num_seconds()));
+                let gap_secs = prev_ts.map(|p| (cur - p).num_seconds() as f64);
+                let elapsed_since_marker = last_marker_ts.map(|m| (cur - m).num_seconds() as f64);
 
                 let big_gap = matches!(gap_secs, Some(g) if g >= TIME_GAP_THRESHOLD_SECS);
                 let hourly_tick =
@@ -544,7 +518,7 @@ fn is_tool_loop_msg_prompt(msg: &PromptMessage) -> bool {
                 .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
             !has_text && has_tool_use
         }
-        Role::System => false,
+        _ => false,
     }
 }
 
@@ -575,7 +549,7 @@ mod tests {
         vars
     }
 
-    fn make_params(messages: &[Message]) -> PromptParams<'_> {
+    fn make_params<'a>(messages: &'a [Message]) -> PromptParams<'a> {
         PromptParams {
             character_name: "TestChar",
             display_name: "TestUser",
@@ -790,10 +764,10 @@ mod tests {
             images: vec![],
             content_blocks: vec![
                 ContentBlock::Text {
-                    text: "A".repeat(40).clone(),
+                    text: "A".repeat(40).to_string(),
                 },
                 ContentBlock::Thinking {
-                    thinking: "B".repeat(20).clone(),
+                    thinking: "B".repeat(20).to_string(),
                     signature: None,
                 },
             ],

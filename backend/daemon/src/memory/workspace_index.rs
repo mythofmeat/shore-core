@@ -123,10 +123,6 @@ impl HybridMode {
 /// message) serialize through a per-path async mutex so the load → mutate →
 /// save sequence is exclusive. Different characters (different paths) do
 /// not block each other.
-#[expect(
-    clippy::too_many_lines,
-    reason = "workspace index refresh/search orchestration split is tracked in #109"
-)]
 pub async fn hybrid_search(
     workspace_dir: &str,
     retrieval_config: &RetrievalConfig,
@@ -220,45 +216,51 @@ pub async fn hybrid_search(
                 && e.max_embed_chars_per_file == Some(retrieval_config.max_embed_chars_per_file)
         });
 
-        let Ok(bytes) = tokio::fs::read(&file.fs_path).await else {
-            file.skip_reason = Some("read failed".into());
-            if index.entries.remove(&file.display_path).is_some() {
+        let bytes = match tokio::fs::read(&file.fs_path).await {
+            Ok(b) => b,
+            Err(_) => {
+                file.skip_reason = Some("read failed".into());
+                if index.entries.remove(&file.display_path).is_some() {
+                    index_dirty = true;
+                }
+                continue;
+            }
+        };
+        match String::from_utf8(bytes) {
+            Ok(text) => {
+                if !fresh {
+                    stale.push((file.display_path.clone(), file.size, file.modified_at_secs));
+                    stale_docs.push(document_for_embedding(
+                        &file.display_path,
+                        &text,
+                        retrieval_config.max_embed_chars_per_file,
+                    ));
+                }
+                file.content = Some(text);
+            }
+            Err(_) => {
+                skipped_binary_or_large += 1;
+                let reason = match retrieval_config.binary {
+                    RetrievalBinaryMode::Skip => "non-utf8",
+                    RetrievalBinaryMode::Metadata => "binary-metadata-only",
+                    RetrievalBinaryMode::TryEmbed => "binary-embedding-unsupported",
+                };
+                file.skip_reason = Some(reason.into());
+                index.entries.insert(
+                    file.display_path.clone(),
+                    IndexedEntry {
+                        hash: skip_tag(file.size, file.modified_at_secs),
+                        size: file.size,
+                        modified_at_secs: file.modified_at_secs,
+                        model_id: model_id.clone(),
+                        max_embed_chars_per_file: Some(retrieval_config.max_embed_chars_per_file),
+                        embedded: false,
+                        reason: Some(reason.into()),
+                        embedding: Vec::new(),
+                    },
+                );
                 index_dirty = true;
             }
-            continue;
-        };
-        if let Ok(text) = String::from_utf8(bytes) {
-            if !fresh {
-                stale.push((file.display_path.clone(), file.size, file.modified_at_secs));
-                stale_docs.push(document_for_embedding(
-                    &file.display_path,
-                    &text,
-                    retrieval_config.max_embed_chars_per_file,
-                ));
-            }
-            file.content = Some(text);
-        } else {
-            skipped_binary_or_large += 1;
-            let reason = match retrieval_config.binary {
-                RetrievalBinaryMode::Skip => "non-utf8",
-                RetrievalBinaryMode::Metadata => "binary-metadata-only",
-                RetrievalBinaryMode::TryEmbed => "binary-embedding-unsupported",
-            };
-            file.skip_reason = Some(reason.into());
-            index.entries.insert(
-                file.display_path.clone(),
-                IndexedEntry {
-                    hash: skip_tag(file.size, file.modified_at_secs),
-                    size: file.size,
-                    modified_at_secs: file.modified_at_secs,
-                    model_id: model_id.clone(),
-                    max_embed_chars_per_file: Some(retrieval_config.max_embed_chars_per_file),
-                    embedded: false,
-                    reason: Some(reason.into()),
-                    embedding: Vec::new(),
-                },
-            );
-            index_dirty = true;
         }
     }
 
@@ -316,14 +318,16 @@ pub async fn hybrid_search(
     let mut scored: Vec<ScoredFile> = candidates
         .into_iter()
         .map(|file| {
-            let lexical = file.content.as_deref().map_or(0, |c| {
-                lexical_score(&file.display_path, c, &q_lower, &terms)
-            });
+            let lexical = file
+                .content
+                .as_deref()
+                .map(|c| lexical_score(&file.display_path, c, &q_lower, &terms))
+                .unwrap_or(0);
             let entry = index.entries.get(&file.display_path);
             let semantic = entry
                 .filter(|e| e.embedded)
                 .map(|e| cosine_similarity(&query_vector, &e.embedding));
-            let has_embedding_entry = entry.is_some_and(|e| e.embedded);
+            let embedded = entry.map(|e| e.embedded).unwrap_or(false);
             ScoredFile {
                 display_path: file.display_path,
                 fs_path: file.fs_path,
@@ -331,7 +335,7 @@ pub async fn hybrid_search(
                 lexical_score: lexical,
                 semantic_score: semantic,
                 combined_score: 0.0,
-                embedded: has_embedding_entry,
+                embedded,
                 skip_reason: file.skip_reason,
             }
         })
@@ -342,13 +346,12 @@ pub async fn hybrid_search(
         .map(|f| f.lexical_score)
         .max()
         .unwrap_or(1)
-        .max(1);
-    let max_lex = crate::convert::usize_to_f32(max_lex);
+        .max(1) as f32;
     let embedded_files = scored.iter().filter(|f| f.semantic_score.is_some()).count();
 
     let (lw, sw) = mode.weights();
     for f in &mut scored {
-        let lex_norm = crate::convert::usize_to_f32(f.lexical_score) / max_lex;
+        let lex_norm = f.lexical_score as f32 / max_lex;
         let sem_norm = f.semantic_score.unwrap_or(0.0).max(0.0);
         f.combined_score = lex_norm * lw + sem_norm * sw;
     }
@@ -399,8 +402,9 @@ async fn enumerate_files(
             break;
         }
 
-        let Ok(meta) = tokio::fs::symlink_metadata(&path).await else {
-            continue;
+        let meta = match tokio::fs::symlink_metadata(&path).await {
+            Ok(m) => m,
+            Err(_) => continue,
         };
 
         if meta.file_type().is_symlink() {
@@ -408,8 +412,9 @@ async fn enumerate_files(
         }
 
         if meta.is_dir() {
-            let Ok(mut read_dir) = tokio::fs::read_dir(&path).await else {
-                continue;
+            let mut read_dir = match tokio::fs::read_dir(&path).await {
+                Ok(rd) => rd,
+                Err(_) => continue,
             };
             while let Ok(Some(entry)) = read_dir.next_entry().await {
                 pending.push(entry.path());
@@ -427,7 +432,8 @@ async fn enumerate_files(
             .modified()
             .ok()
             .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
 
         let skip_reason = if size > retrieval_config.max_file_bytes {
             Some("oversize".to_string())
@@ -670,7 +676,7 @@ mod tests {
             self.input_count.fetch_add(inputs.len(), Ordering::SeqCst);
             Ok(inputs.iter().map(|s| self.vector_for(s)).collect())
         }
-        fn model_id(&self) -> &'static str {
+        fn model_id(&self) -> &str {
             "topic-test"
         }
         fn dimensions(&self) -> usize {
@@ -680,12 +686,12 @@ mod tests {
 
     #[test]
     fn cosine_handles_zero_vectors() {
-        assert!(cosine_similarity(&[0.0, 0.0], &[1.0, 0.0]).abs() <= f32::EPSILON);
+        assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
     }
 
     #[test]
     fn cosine_handles_mismatched_dims() {
-        assert!(cosine_similarity(&[1.0, 0.0], &[1.0, 0.0, 0.0]).abs() <= f32::EPSILON);
+        assert_eq!(cosine_similarity(&[1.0, 0.0], &[1.0, 0.0, 0.0]), 0.0);
     }
 
     #[test]
@@ -1025,8 +1031,7 @@ mod tests {
         write_file(&ws, "small.md", "tea time").await;
         // Just over the 2 MiB cap.
         fs::create_dir_all(&ws).await.unwrap();
-        let big_len = crate::convert::u64_to_usize(RetrievalConfig::default().max_file_bytes + 1);
-        let big = vec![b'a'; big_len];
+        let big = vec![b'a'; (RetrievalConfig::default().max_file_bytes + 1) as usize];
         fs::write(ws.join("huge.md"), &big).await.unwrap();
 
         let embedder = TopicEmbedder::new(&["tea"]);

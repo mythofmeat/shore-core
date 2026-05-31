@@ -44,21 +44,30 @@ impl CrashedHarness {
     /// storage corruption.
     ///
     /// `relative_path` is resolved against `data_dir`.
-    pub fn corrupt_file(&self, relative_path: &str) -> std::io::Result<()> {
+    pub fn corrupt_file(&self, relative_path: &str) {
         let path = self.data_dir.join(relative_path);
         let garbage: &[u8] = b"\x00\xff\xfe\xfd\xfc\xfb\xfa\xf9\xf8\xf7CORRUPT";
-        std::fs::write(path, garbage)
+        std::fs::write(&path, garbage)
+            .unwrap_or_else(|e| panic!("corrupt_file failed for {}: {}", path.display(), e));
     }
 
     /// Truncate a file inside `data_dir` to `bytes_to_keep` bytes.
     ///
     /// `relative_path` is resolved against `data_dir`.
-    pub fn truncate_file(&self, relative_path: &str, bytes_to_keep: u64) -> std::io::Result<()> {
+    pub fn truncate_file(&self, relative_path: &str, bytes_to_keep: u64) {
         let path = self.data_dir.join(relative_path);
-        let file = OpenOptions::new().write(true).open(path)?;
-        file.set_len(bytes_to_keep)?;
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap_or_else(|e| panic!("truncate_file: could not open {}: {}", path.display(), e));
+        file.set_len(bytes_to_keep).unwrap_or_else(|e| {
+            panic!(
+                "truncate_file: set_len failed for {}: {}",
+                path.display(),
+                e
+            )
+        });
         // Flush to ensure the truncation is visible immediately.
         drop(file);
-        Ok(())
     }
 }

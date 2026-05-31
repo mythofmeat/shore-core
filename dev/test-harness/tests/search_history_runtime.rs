@@ -12,12 +12,6 @@ use shore_config::{character_data_dir, COMPACTION_MANIFEST_FILE, SEGMENTS_DIR};
 use shore_protocol::types::{ContentBlock, Message, Role};
 use shore_test_harness::TestHarness;
 
-type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-
-fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
-    std::io::Error::other(message.into()).into()
-}
-
 fn msg(id: &str, role: Role, text: &str, ts: &str) -> Message {
     Message {
         msg_id: id.to_string(),
@@ -35,19 +29,18 @@ fn msg(id: &str, role: Role, text: &str, ts: &str) -> Message {
     }
 }
 
-fn write_segment(dir: &std::path::Path, file: &str, msgs: &[Message]) -> TestResult {
+fn write_segment(dir: &std::path::Path, file: &str, msgs: &[Message]) {
     let lines = msgs
         .iter()
-        .map(Message::serialize_for_storage)
-        .collect::<Result<Vec<_>, _>>()?
+        .map(|m| m.serialize_for_storage().unwrap())
+        .collect::<Vec<_>>()
         .join("\n");
-    std::fs::write(dir.join(file), format!("{lines}\n"))?;
-    Ok(())
+    std::fs::write(dir.join(file), format!("{lines}\n")).unwrap();
 }
 
 /// Pull the most recent `search_history` tool-result JSON out of the persisted
 /// transcript whose echoed `query` matches.
-fn tool_result_for(harness: &TestHarness, query: &str) -> TestResult<Value> {
+fn tool_result_for(harness: &TestHarness, query: &str) -> Value {
     let mut found = None;
     for message in harness.read_persisted_messages() {
         let Some(blocks) = message.get("content_blocks").and_then(|b| b.as_array()) else {
@@ -67,18 +60,11 @@ fn tool_result_for(harness: &TestHarness, query: &str) -> TestResult<Value> {
             }
         }
     }
-    found.ok_or_else(|| test_error(format!("no tool_result found for query {query:?}")))
+    found.unwrap_or_else(|| panic!("no tool_result found for query {query:?}"))
 }
 
-fn results_array<'a>(result: &'a Value, label: &str) -> TestResult<&'a [Value]> {
-    result["results"]
-        .as_array()
-        .map(Vec::as_slice)
-        .ok_or_else(|| test_error(format!("{label} missing results array")))
-}
-
-fn print_result(label: &str, result: &Value) -> TestResult {
-    let results = results_array(result, label)?;
+fn print_result(label: &str, result: &Value) {
+    let results = result["results"].as_array().unwrap();
     println!("\n=== {label} ===");
     println!("query            : {}", result["query"]);
     println!("count            : {}", result["count"]);
@@ -89,10 +75,9 @@ fn print_result(label: &str, result: &Value) -> TestResult {
             hit["msg_id"], hit["timestamp"], hit["source"], hit["excerpt"]
         );
     }
-    Ok(())
 }
 
-async fn run_search(harness: &mut TestHarness, id: &str, input: Value) -> TestResult {
+async fn run_search(harness: &mut TestHarness, id: &str, input: Value) {
     harness
         .mock_llm
         .enqueue_tool_use(id, "search_history", input)
@@ -101,26 +86,22 @@ async fn run_search(harness: &mut TestHarness, id: &str, input: Value) -> TestRe
     harness
         .conn
         .send_message("please search the history", true)
-        .await?;
+        .await
+        .expect("send failed");
     // A tool call yields two stream phases: the tool-use turn, then the final
     // answer turn. Drain both so the tool_result is persisted before we read.
     let _tool_turn = harness.collect_stream().await;
     let _final_turn = harness.collect_stream().await;
-    Ok(())
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "runtime smoke test keeps seed data, probes, and assertions together"
-)]
-async fn search_history_runtime_smoke() -> TestResult {
+async fn search_history_runtime_smoke() {
     let mut harness = TestHarness::boot().await;
 
     // Seed an on-disk corpus under the live character's data dir.
     let char_dir = character_data_dir(&harness.data_dir, "TestChar");
     let seg_dir = char_dir.join(SEGMENTS_DIR);
-    std::fs::create_dir_all(&seg_dir)?;
+    std::fs::create_dir_all(&seg_dir).unwrap();
 
     // Oldest segment: mid-2025 imported history (mirrors the user's report).
     write_segment(
@@ -146,7 +127,7 @@ async fn search_history_runtime_smoke() -> TestResult {
                 "2025-06-12T09:00:00Z",
             ),
         ],
-    )?;
+    );
 
     // Recent segment: this week. These should outrank the 2025 hits.
     write_segment(
@@ -166,7 +147,7 @@ async fn search_history_runtime_smoke() -> TestResult {
                 "2026-05-28T09:00:00Z",
             ),
         ],
-    )?;
+    );
 
     std::fs::write(
         char_dir.join(COMPACTION_MANIFEST_FILE),
@@ -177,13 +158,14 @@ async fn search_history_runtime_smoke() -> TestResult {
           ],
           "total_compacted_messages": 5
         }"#,
-    )?;
+    )
+    .unwrap();
 
     // Report item #2: recency-weighted ranking. Run first, on a clean
     // transcript, so the only "cache" hits are the seeded corpus.
-    run_search(&mut harness, "toolu_cache", json!({"query": "cache"})).await?;
-    let cache = tool_result_for(&harness, "cache")?;
-    print_result("single keyword: \"cache\" (recency blend)", &cache)?;
+    run_search(&mut harness, "toolu_cache", json!({"query": "cache"})).await;
+    let cache = tool_result_for(&harness, "cache");
+    print_result("single keyword: \"cache\" (recency blend)", &cache);
 
     // Report item #1: multi-word natural-language query (previously 0 results).
     run_search(
@@ -191,9 +173,9 @@ async fn search_history_runtime_smoke() -> TestResult {
         "toolu_multi",
         json!({"query": "cache daemon overnight"}),
     )
-    .await?;
-    let multi = tool_result_for(&harness, "cache daemon overnight")?;
-    print_result("multi-word query: \"cache daemon overnight\"", &multi)?;
+    .await;
+    let multi = tool_result_for(&harness, "cache daemon overnight");
+    print_result("multi-word query: \"cache daemon overnight\"", &multi);
 
     // Report item #3: searched_messages should reflect the full corpus even
     // with a small cap.
@@ -202,32 +184,30 @@ async fn search_history_runtime_smoke() -> TestResult {
         "toolu_cap",
         json!({"query": "cache", "max_results": 2}),
     )
-    .await?;
-    let capped = tool_result_for(&harness, "cache")?;
-    print_result("capped max_results=2", &capped)?;
+    .await;
+    let capped = tool_result_for(&harness, "cache");
+    print_result("capped max_results=2", &capped);
 
     // --- assertions the verdict rests on (evidence is the printed output) ---
 
     // #1: multi-word query returns matches (was 0 before the fix).
     assert!(
-        !results_array(&multi, "multi-word query")?.is_empty(),
+        !multi["results"].as_array().unwrap().is_empty(),
         "multi-word query must return matches"
     );
 
     // #2: among the seeded corpus, the 2026 hits rank above the 2025 hits.
-    let seeded = results_array(&cache, "cache query")?
+    let seeded: Vec<&str> = cache["results"]
+        .as_array()
+        .unwrap()
         .iter()
         .filter(|h| {
             h["source"]
                 .as_str()
                 .is_some_and(|s| s.starts_with("segment:"))
         })
-        .map(|h| {
-            h["timestamp"]
-                .as_str()
-                .ok_or_else(|| test_error(format!("seeded hit missing timestamp: {h}")))
-        })
-        .collect::<TestResult<Vec<_>>>()?;
+        .map(|h| h["timestamp"].as_str().unwrap())
+        .collect();
     assert_eq!(
         seeded,
         vec![
@@ -241,14 +221,10 @@ async fn search_history_runtime_smoke() -> TestResult {
 
     // #3: cap limits returned results but not the corpus scanned.
     assert_eq!(capped["count"], 2, "max_results cap must be honored");
-    let searched_messages = capped["searched_messages"]
-        .as_u64()
-        .ok_or_else(|| test_error("capped result missing searched_messages"))?;
     assert!(
-        searched_messages >= 5,
+        capped["searched_messages"].as_u64().unwrap() >= 5,
         "searched_messages must report the full corpus, not just the cap"
     );
 
     harness.shutdown().await;
-    Ok(())
 }

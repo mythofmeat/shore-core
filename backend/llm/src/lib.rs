@@ -1,19 +1,4 @@
-// Panic-hygiene lock (see [workspace.lints] in root Cargo.toml): this crate is
-// cleaned, so these can never regress. Tests are exempt via clippy.toml.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unreachable,
-    clippy::todo,
-    clippy::unimplemented,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
-)]
-
 pub mod cache_forensics;
-mod convert;
 pub mod credentials;
 pub mod debug_log;
 pub mod discovery;
@@ -88,17 +73,11 @@ impl LlmClient {
     /// A global request timeout here would fire mid-body-read for any
     /// long generation and surface as the misleading "error decoding
     /// response body".
-    #[must_use]
     pub fn new() -> Self {
-        // The customized builder only fails if the TLS backend can't
-        // initialize — a process-level invariant. Rather than make `new`
-        // (and the `Default` impl + ~30 call sites) fallible for that, fall
-        // back to reqwest's default client, which drops only the
-        // connect_timeout customization.
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("failed to create HTTP client");
 
         Self {
             http_client,
@@ -107,7 +86,6 @@ impl LlmClient {
     }
 
     /// Enable API payload logging under the given cache directory.
-    #[must_use]
     pub fn with_payload_logging(mut self, dir: PathBuf) -> Self {
         self.payload_log_dir = Some(dir);
         self
@@ -218,7 +196,7 @@ impl LlmClient {
                 req.api_key_name = Some(cand.name.clone());
                 return Ok(req);
             }
-            last_env.clone_from(&cand.env);
+            last_env = cand.env.clone();
         }
 
         Err(LlmError::MissingApiKey { var: last_env })
@@ -322,7 +300,7 @@ impl LlmClient {
 
         let read_half = providers::stream(&self.http_client, &request).await?;
         let reader: Box<dyn AsyncRead + Send + Unpin> = match handle {
-            Some(h) => Box::new(debug_log::TeeReader::new(read_half, &h)),
+            Some(h) => Box::new(debug_log::TeeReader::new(read_half, h)),
             None => Box::new(read_half),
         };
         Ok(BufReader::new(reader))
@@ -340,8 +318,8 @@ impl LlmClient {
         let result = providers::generate(&self.http_client, &request).await;
         if let Some(h) = handle {
             match &result {
-                Ok(resp) => debug_log::log_response(&h, resp),
-                Err(e) => debug_log::log_error(&h, e),
+                Ok(resp) => debug_log::log_response(h, resp),
+                Err(e) => debug_log::log_error(h, e),
             }
         }
         result
@@ -660,7 +638,7 @@ sdk = "openai"
             LlmError::MissingApiKey { var } => {
                 assert_eq!(var, "NONEXISTENT_KEY_015");
             }
-            other => panic!("Expected MissingApiKey, got {other:?}"),
+            other => panic!("Expected MissingApiKey, got {:?}", other),
         }
     }
 

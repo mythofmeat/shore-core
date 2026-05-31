@@ -57,8 +57,9 @@ fn character_avatar(config_dir: &std::path::Path, name: &str) -> Option<Characte
         if !path.is_file() {
             continue;
         }
-        let Ok(data) = std::fs::read(&path) else {
-            continue;
+        let data = match std::fs::read(&path) {
+            Ok(data) => data,
+            Err(_) => continue,
         };
         if data.is_empty() {
             continue;
@@ -178,7 +179,6 @@ pub fn switch_character(
 mod tests {
     use super::*;
     use crate::commands::SessionTokens;
-    use shore_config::app::{AutonomyConfig, CompactionConfig};
     use shore_protocol::server_msg::ServerMessage;
     use tempfile::TempDir;
     use tokio::sync::broadcast;
@@ -209,8 +209,8 @@ mod tests {
 
         let (_tx, rx) = tokio::sync::watch::channel(());
         let autonomy = crate::autonomy::manager::AutonomyManager::new(
-            AutonomyConfig::default(),
-            CompactionConfig::default(),
+            Default::default(),
+            Default::default(),
             data_dir.clone(),
             rx,
         );

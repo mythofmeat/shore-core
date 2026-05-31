@@ -7,7 +7,6 @@
 //! - XDG disk cache to avoid re-encoding on every turn
 //! - Async pre-warming via spawn_blocking
 
-use crate::convert::{f64_to_u32_saturating, u64_to_f64, usize_to_f64};
 use fast_image_resize as fir;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
@@ -19,7 +18,7 @@ use tracing::{info, warn};
 const DIMENSION_FLOOR: u32 = 2048;
 
 pub(super) fn has_meaningful_alpha(img: &DynamicImage) -> bool {
-    use image::DynamicImage::{ImageLumaA16, ImageLumaA8, ImageRgba16, ImageRgba32F, ImageRgba8};
+    use image::DynamicImage::*;
     match img {
         ImageRgba8(rgba) => rgba.pixels().any(|p| p[3] < 255),
         ImageRgba16(rgba) => rgba.pixels().any(|p| p[3] < 65535),
@@ -74,14 +73,14 @@ fn resize_transparent(
     src_bytes: u64,
     max_bytes: u64,
 ) -> Option<(Vec<u8>, &'static str)> {
-    let scale = ((u64_to_f64(max_bytes) / u64_to_f64(src_bytes)).sqrt() * 0.85).min(1.0);
+    let scale = ((max_bytes as f64 / src_bytes as f64).sqrt() * 0.85).min(1.0);
     let (new_w, new_h) = scaled_dims(src_w, src_h, scale);
     if let Some(buf) = fir_resize_and_encode_png(img, new_w, new_h) {
         if (buf.len() as u64) <= max_bytes {
             log_resize(src_w, src_h, new_w, new_h, src_bytes, buf.len() as u64);
             return Some((buf, "image/png"));
         }
-        let correction = ((u64_to_f64(max_bytes) / usize_to_f64(buf.len())).sqrt() * 0.85).min(1.0);
+        let correction = ((max_bytes as f64 / buf.len() as f64).sqrt() * 0.85).min(1.0);
         let (retry_w, retry_h) = scaled_dims(new_w, new_h, correction);
         if let Some(buf2) = fir_resize_and_encode_png(img, retry_w, retry_h) {
             if (buf2.len() as u64) > max_bytes {
@@ -122,18 +121,17 @@ fn resize_with_dims(
     src_bytes: u64,
     max_bytes: u64,
 ) -> Option<(Vec<u8>, &'static str)> {
-    let format_factor = if u64_to_f64(src_bytes) / (f64::from(src_w) * f64::from(src_h)) > 3.0 {
+    let format_factor = if src_bytes as f64 / (src_w as f64 * src_h as f64) > 3.0 {
         3.0
     } else {
         1.0
     };
-    let raw_scale =
-        ((u64_to_f64(max_bytes) * format_factor / u64_to_f64(src_bytes)).sqrt() * 0.85).min(1.0);
+    let raw_scale = ((max_bytes as f64 * format_factor / src_bytes as f64).sqrt() * 0.85).min(1.0);
     let (mut new_w, mut new_h) = scaled_dims(src_w, src_h, raw_scale);
     if src_w.max(src_h) >= DIMENSION_FLOOR && new_w.max(new_h) < DIMENSION_FLOOR {
-        let boost = f64::from(DIMENSION_FLOOR) / f64::from(new_w.max(new_h));
-        new_w = f64_to_u32_saturating((f64::from(new_w) * boost).round());
-        new_h = f64_to_u32_saturating((f64::from(new_h) * boost).round());
+        let boost = DIMENSION_FLOOR as f64 / new_w.max(new_h) as f64;
+        new_w = ((new_w as f64) * boost).round() as u32;
+        new_h = ((new_h as f64) * boost).round() as u32;
     }
     let quality: u8 = 90;
     if let Some(buf) = fir_resize_and_encode_jpeg(img, new_w, new_h, quality) {
@@ -141,7 +139,7 @@ fn resize_with_dims(
             log_resize(src_w, src_h, new_w, new_h, src_bytes, buf.len() as u64);
             return Some((buf, "image/jpeg"));
         }
-        let correction = ((u64_to_f64(max_bytes) / usize_to_f64(buf.len())).sqrt() * 0.9).min(1.0);
+        let correction = ((max_bytes as f64 / buf.len() as f64).sqrt() * 0.9).min(1.0);
         let (retry_w, retry_h) = scaled_dims(new_w, new_h, correction);
         let retry_q: u8 = 85;
         if let Some(buf2) = fir_resize_and_encode_jpeg(img, retry_w, retry_h, retry_q) {
@@ -162,8 +160,8 @@ fn resize_with_dims(
 
 fn scaled_dims(w: u32, h: u32, scale: f64) -> (u32, u32) {
     (
-        f64_to_u32_saturating((f64::from(w) * scale).round().max(1.0)),
-        f64_to_u32_saturating((f64::from(h) * scale).round().max(1.0)),
+        ((w as f64) * scale).round().max(1.0) as u32,
+        ((h as f64) * scale).round().max(1.0) as u32,
     )
 }
 
@@ -389,15 +387,15 @@ mod tests {
         let mut state = seed;
         for byte in pixels.iter_mut() {
             state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
-            *byte = u8::try_from((state >> 33) & 0xff).unwrap_or(0);
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *byte = (state >> 33) as u8;
         }
     }
 
     fn make_noisy_jpeg(w: u32, h: u32) -> Vec<u8> {
         let mut pixels = vec![0u8; (w * h * 3) as usize];
-        fill_noise(&mut pixels, 0xdead_beef_cafe_babe);
+        fill_noise(&mut pixels, 0xdeadbeef_cafebabe);
         let img = image::RgbImage::from_raw(w, h, pixels).unwrap();
         let mut buf = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut buf);

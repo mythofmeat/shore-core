@@ -53,7 +53,7 @@ impl CallType {
         }
     }
 
-    fn affects_cache_tracker(self) -> bool {
+    fn affects_cache_tracker(&self) -> bool {
         !matches!(self, CallType::Dreaming)
     }
 }
@@ -83,67 +83,6 @@ pub(crate) struct RecordCall<'a> {
     pub(crate) cache_ttl: Option<String>,
 }
 
-/// Run the warm/cold cache state machine for calls that report cache metrics,
-/// emitting a forensics anomaly notification on divergence. Returns the
-/// `(cache_state, cache_anomaly)` strings to persist on the call row.
-fn track_cache_state(
-    cache_trackers: &Mutex<HashMap<String, CacheTracker>>,
-    record: &RecordCall<'_>,
-    ts: &str,
-    has_cache_metrics: bool,
-) -> (Option<String>, Option<String>) {
-    if !(record.call_type.affects_cache_tracker()
-        && (has_cache_metrics || record.provider == "anthropic"))
-    {
-        return (None, None);
-    }
-
-    let obs = Observation {
-        ts: ts.to_string(),
-        model: record.model.to_string(),
-        thinking_enabled: record.thinking_enabled,
-        cache_read_tokens: record.usage.cache_read_tokens,
-        cache_write_tokens: record.usage.cache_creation_tokens,
-        call_type: record.call_type.as_str().to_string(),
-    };
-
-    let mut trackers = lock_or_recover("ledger cache tracker map", cache_trackers);
-    let tracker = trackers.entry(record.character.to_string()).or_default();
-    let result = tracker.observe(&obs);
-
-    let state_str = match result.state {
-        CacheState::Cold => "cold",
-        CacheState::Warm => "warm",
-    };
-    let anomaly_str = result.anomaly.map(|a| match a {
-        Anomaly::UnexpectedWrite => "unexpected_write",
-        Anomaly::KeepaliveMiss => "keepalive_miss",
-    });
-
-    if let Some(anomaly) = &anomaly_str {
-        error!(
-            provider = record.provider,
-            model = record.model,
-            character = record.character,
-            call_type = record.call_type.as_str(),
-            cache_state = state_str,
-            anomaly,
-            cache_read_tokens = record.usage.cache_read_tokens,
-            cache_creation_tokens = record.usage.cache_creation_tokens,
-            "Cache anomaly detected"
-        );
-        shore_llm::cache_forensics::notify_anomaly(
-            record.character,
-            anomaly,
-            record.call_type.as_str(),
-            record.usage.cache_read_tokens,
-            record.usage.cache_creation_tokens,
-        );
-    }
-
-    (Some(state_str.to_string()), anomaly_str.map(String::from))
-}
-
 #[instrument(skip(ledger, pricing, cache_trackers, record), fields(call_type = record.call_type.as_str()))]
 pub(crate) fn record_call(
     ledger: &Ledger,
@@ -151,14 +90,6 @@ pub(crate) fn record_call(
     cache_trackers: &Mutex<HashMap<String, CacheTracker>>,
     record: RecordCall<'_>,
 ) {
-    let ts = Utc::now().to_rfc3339();
-    // Cache tracking: run for any call that reports cache metrics (not just
-    // provider == "anthropic", which misses OpenRouter-routed Anthropic calls).
-    let has_cache_metrics =
-        record.usage.cache_read_tokens > 0 || record.usage.cache_creation_tokens > 0;
-    let (cache_state, cache_anomaly) =
-        track_cache_state(cache_trackers, &record, &ts, has_cache_metrics);
-
     let RecordCall {
         provider,
         api_key_name,
@@ -171,6 +102,61 @@ pub(crate) fn record_call(
         thinking_enabled,
         cache_ttl,
     } = record;
+    let ts = Utc::now().to_rfc3339();
+
+    // Cache tracking: run for any call that reports cache metrics (not just
+    // provider == "anthropic", which misses OpenRouter-routed Anthropic calls).
+    let has_cache_metrics = usage.cache_read_tokens > 0 || usage.cache_creation_tokens > 0;
+    let (cache_state, cache_anomaly) =
+        if call_type.affects_cache_tracker() && (has_cache_metrics || provider == "anthropic") {
+            let obs = Observation {
+                ts: ts.clone(),
+                model: model.to_string(),
+                thinking_enabled,
+                cache_read_tokens: usage.cache_read_tokens,
+                cache_write_tokens: usage.cache_creation_tokens,
+                call_type: call_type.as_str().to_string(),
+            };
+
+            let mut trackers = lock_or_recover("ledger cache tracker map", cache_trackers);
+            let tracker = trackers.entry(character.to_string()).or_default();
+            let result = tracker.observe(&obs);
+
+            let state_str = match result.state {
+                CacheState::Cold => "cold",
+                CacheState::Warm => "warm",
+            };
+
+            let anomaly_str = result.anomaly.map(|a| match a {
+                Anomaly::UnexpectedWrite => "unexpected_write",
+                Anomaly::KeepaliveMiss => "keepalive_miss",
+            });
+
+            if let Some(anomaly) = &anomaly_str {
+                error!(
+                    provider,
+                    model,
+                    character,
+                    call_type = call_type.as_str(),
+                    cache_state = state_str,
+                    anomaly,
+                    cache_read_tokens = usage.cache_read_tokens,
+                    cache_creation_tokens = usage.cache_creation_tokens,
+                    "Cache anomaly detected"
+                );
+                shore_llm::cache_forensics::notify_anomaly(
+                    character,
+                    anomaly,
+                    call_type.as_str(),
+                    usage.cache_read_tokens,
+                    usage.cache_creation_tokens,
+                );
+            }
+
+            (Some(state_str.to_string()), anomaly_str.map(String::from))
+        } else {
+            (None, None)
+        };
 
     // Cost calculation (sync — cached pricing only, no fetch)
     let priced_cost = pricing
@@ -191,12 +177,6 @@ pub(crate) fn record_call(
     } else {
         "pricing_catalog"
     };
-    // Per-component costs are recorded only when we priced the call ourselves; a
-    // provider-reported total leaves the breakdown null.
-    let breakdown = total_cost_override
-        .is_none()
-        .then_some(())
-        .and(priced_cost.as_ref());
 
     let row = CallRow {
         ts,
@@ -216,10 +196,26 @@ pub(crate) fn record_call(
         thinking_enabled,
         cache_state,
         cache_anomaly,
-        input_cost: breakdown.map(|c| c.input),
-        output_cost: breakdown.map(|c| c.output),
-        cache_read_cost: breakdown.map(|c| c.cache_read),
-        cache_write_cost: breakdown.map(|c| c.cache_write),
+        input_cost: if total_cost_override.is_some() {
+            None
+        } else {
+            priced_cost.as_ref().map(|c| c.input)
+        },
+        output_cost: if total_cost_override.is_some() {
+            None
+        } else {
+            priced_cost.as_ref().map(|c| c.output)
+        },
+        cache_read_cost: if total_cost_override.is_some() {
+            None
+        } else {
+            priced_cost.as_ref().map(|c| c.cache_read)
+        },
+        cache_write_cost: if total_cost_override.is_some() {
+            None
+        } else {
+            priced_cost.as_ref().map(|c| c.cache_write)
+        },
         cost_source: Some(cost_source.to_string()),
         total_cost: total_cost_override.or_else(|| priced_cost.as_ref().map(|c| c.total)),
     };
@@ -528,29 +524,23 @@ impl LedgerClient {
         for (i, cand) in candidates.iter().enumerate() {
             let next_cand = candidates.get(i + 1);
 
-            let Some(api_key) = read_candidate_env(cand) else {
-                let kind = CredentialFailureKind::MissingKey;
-                let reason = format!("env {:?} unset or empty", cand.env);
-                events.push(record_generate_fallback_event(
-                    FallbackContext {
-                        request,
-                        resolved,
-                        call_type,
-                        character,
-                    },
-                    cand,
-                    next_cand,
-                    kind,
-                    None,
-                    &reason,
-                ));
-                last_err = Some(LlmError::MissingApiKey {
-                    var: cand.env.clone(),
-                });
-                if next_cand.is_some() {
-                    continue;
+            let api_key = match read_candidate_env(cand) {
+                Some(value) => value,
+                None => {
+                    let kind = CredentialFailureKind::MissingKey;
+                    let reason = format!("env {:?} unset or empty", cand.env);
+                    events.push(record_generate_fallback_event(
+                        request, resolved, call_type, character, cand, next_cand, kind, None,
+                        &reason,
+                    ));
+                    last_err = Some(LlmError::MissingApiKey {
+                        var: cand.env.clone(),
+                    });
+                    if next_cand.is_some() {
+                        continue;
+                    }
+                    break;
                 }
-                break;
             };
 
             request.api_key = api_key;
@@ -573,16 +563,7 @@ impl LedgerClient {
                     };
                     let reason = sanitize_fallback_reason(&e);
                     events.push(record_generate_fallback_event(
-                        FallbackContext {
-                            request,
-                            resolved,
-                            call_type,
-                            character,
-                        },
-                        cand,
-                        next_cand,
-                        kind,
-                        status,
+                        request, resolved, call_type, character, cand, next_cand, kind, status,
                         &reason,
                     ));
                     last_err = Some(e);
@@ -621,27 +602,30 @@ impl LedgerClient {
         thinking_enabled: bool,
     ) -> Result<(GenerateResponse, Vec<CredentialFallbackEvent>), LlmError> {
         let resolved = resolve_model_for_request(request, config).cloned();
-        if let Some(resolved) = resolved {
-            self.generate_with_credential_fallback(
-                request,
-                &resolved,
-                &config.providers,
-                call_type,
-                character,
-                thinking_enabled,
-            )
-            .await
-        } else {
-            debug!(
-                provider = request.provider_key.as_deref().unwrap_or(request.sdk.as_str()),
-                model = %request.model,
-                call_type = call_type.as_str(),
-                character,
-                "generate_with_config_fallback could not resolve model; using single-key request"
-            );
-            self.generate(request, call_type, character, thinking_enabled)
+        match resolved {
+            Some(resolved) => {
+                self.generate_with_credential_fallback(
+                    request,
+                    &resolved,
+                    &config.providers,
+                    call_type,
+                    character,
+                    thinking_enabled,
+                )
                 .await
-                .map(|resp| (resp, Vec::new()))
+            }
+            None => {
+                debug!(
+                    provider = request.provider_key.as_deref().unwrap_or(request.sdk.as_str()),
+                    model = %request.model,
+                    call_type = call_type.as_str(),
+                    character,
+                    "generate_with_config_fallback could not resolve model; using single-key request"
+                );
+                self.generate(request, call_type, character, thinking_enabled)
+                    .await
+                    .map(|resp| (resp, Vec::new()))
+            }
         }
     }
 
@@ -702,15 +686,13 @@ impl LedgerClient {
 
         Ok(LedgerStream::new(
             reader,
-            crate::stream::CallMeta {
-                provider: provider_key.to_string(),
-                api_key_name: request.api_key_name.clone(),
-                model: request.model.clone(),
-                call_type,
-                character: character.to_string(),
-                thinking_enabled,
-                cache_ttl,
-            },
+            provider_key.to_string(),
+            request.api_key_name.clone(),
+            request.model.clone(),
+            call_type,
+            character.to_string(),
+            thinking_enabled,
+            cache_ttl,
             self.ledger.clone(),
             self.pricing.clone(),
             self.cache_trackers.clone(),
@@ -743,7 +725,9 @@ impl LedgerClient {
                     row.cache_read_tokens,
                     ttl_secs,
                 );
-                lock_or_recover("ledger cache tracker map", &self.cache_trackers)
+                self.cache_trackers
+                    .lock()
+                    .unwrap()
                     .insert(character.to_string(), tracker);
             }
             Ok(None) => {} // No prior call — start cold
@@ -775,17 +759,12 @@ fn resolve_model_for_request<'a>(
         })
 }
 
-/// Loop-invariant context for a credential-fallback attempt.
-#[derive(Clone, Copy)]
-struct FallbackContext<'a> {
-    request: &'a LlmRequest,
-    resolved: &'a ResolvedModel,
-    call_type: CallType,
-    character: &'a str,
-}
-
+#[allow(clippy::too_many_arguments)]
 fn record_generate_fallback_event(
-    ctx: FallbackContext<'_>,
+    request: &LlmRequest,
+    resolved: &ResolvedModel,
+    call_type: CallType,
+    character: &str,
     from: &KeyCandidate,
     to: Option<&KeyCandidate>,
     kind: CredentialFailureKind,
@@ -794,15 +773,15 @@ fn record_generate_fallback_event(
 ) -> CredentialFallbackEvent {
     let to_key = to.map(|candidate| candidate.name.clone());
     warn!(
-        provider = %ctx.resolved.provider_key,
-        model = %ctx.resolved.qualified_name,
-        call_type = ctx.call_type.as_str(),
-        character = ctx.character,
+        provider = %resolved.provider_key,
+        model = %resolved.qualified_name,
+        call_type = call_type.as_str(),
+        character,
         from_key = %from.name,
         to_key = to_key.as_deref().unwrap_or("-"),
         kind = kind.as_str(),
         status = ?status,
-        rid = ctx.request.rid.as_deref().unwrap_or("-"),
+        rid = request.rid.as_deref().unwrap_or("-"),
         reason = %reason,
         "rotating provider key after non-streaming credential failure"
     );

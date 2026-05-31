@@ -1,8 +1,7 @@
-use serde_json::{json, Value};
+use serde_json::json;
 use shore_protocol::error::ErrorCode;
 
 use crate::autonomy::activity::HourClassification;
-use crate::convert::u64_to_usize;
 use crate::engine::ConversationEngine;
 use crate::sync::lock_or_recover;
 
@@ -69,8 +68,8 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
 }
 
 /// Return recent diagnostics from in-memory ring buffers.
-pub fn diagnostics(ctx: &CommandContext, args: &Value) -> CommandResult {
-    let count = count_arg(args, 10);
+pub fn diagnostics(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
+    let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
     let diag = lock_or_recover("command diagnostics buffer", &ctx.diagnostics);
     Ok(diag.to_json(count))
 }
@@ -79,9 +78,9 @@ pub fn diagnostics(ctx: &CommandContext, args: &Value) -> CommandResult {
 pub fn heartbeat_log(
     engine: &ConversationEngine,
     ctx: &CommandContext,
-    args: &Value,
+    args: &serde_json::Value,
 ) -> CommandResult {
-    let limit = count_arg(args, 20);
+    let limit = args.get("count").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
     let events = ctx.autonomy.heartbeat_log(engine.character_name(), limit);
     let events_json: Vec<serde_json::Value> = events
         .iter()
@@ -118,12 +117,6 @@ pub fn heartbeat_tick_now(engine: &ConversationEngine, ctx: &CommandContext) -> 
             format!("No autonomy state for character '{char_name}'"),
         )),
     }
-}
-
-fn count_arg(args: &Value, default: usize) -> usize {
-    args.get("count")
-        .and_then(Value::as_u64)
-        .map_or(default, u64_to_usize)
 }
 
 pub fn heartbeat_set_dormant(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {

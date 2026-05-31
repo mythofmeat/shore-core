@@ -79,7 +79,7 @@ async fn refresh_pass(config: &LoadedConfig, cache_dir: &std::path::Path, llm: &
 
         let cache_path = discovery::cache_path(cache_dir, name);
         let cache = discovery::read_cache(&cache_path).ok().flatten();
-        let needs_refresh = cache.as_ref().is_none_or(discovery::is_stale);
+        let needs_refresh = cache.as_ref().map(discovery::is_stale).unwrap_or(true);
         if !needs_refresh {
             debug!(provider = %name, "Cache fresh; skipping auto-refresh");
             continue;
@@ -103,11 +103,9 @@ async fn refresh_pass(config: &LoadedConfig, cache_dir: &std::path::Path, llm: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-
     use shore_config::providers::ProviderRegistry;
 
-    fn loaded_with(toml_str: &str, data_dir: &Path) -> LoadedConfig {
+    fn loaded_with(toml_str: &str, data_dir: PathBuf) -> LoadedConfig {
         let providers = if toml_str.is_empty() {
             ProviderRegistry::default()
         } else {
@@ -120,7 +118,7 @@ mod tests {
             shore_config::models::ModelCatalog::default(),
             shore_config::ShoreDirs {
                 config: data_dir.join("config"),
-                data: data_dir.to_path_buf(),
+                data: data_dir.clone(),
                 runtime: data_dir.join("runtime"),
                 cache: data_dir.join("cache"),
             },
@@ -132,7 +130,7 @@ mod tests {
     #[tokio::test]
     async fn run_loop_exits_on_shutdown() {
         let tmp = tempfile::tempdir().unwrap();
-        let config = loaded_with("", tmp.path());
+        let config = loaded_with("", tmp.path().to_path_buf());
         let llm =
             LedgerClient::new(shore_llm::LlmClient::new(), &tmp.path().join("ledger.db")).unwrap();
 
@@ -165,7 +163,7 @@ api_key_env = "BETA_KEY"
 [providers.beta.discovery]
 enabled = false
 "#,
-            tmp.path(),
+            tmp.path().to_path_buf(),
         );
         let llm =
             LedgerClient::new(shore_llm::LlmClient::new(), &tmp.path().join("ledger.db")).unwrap();
@@ -198,7 +196,7 @@ env = "{key}"
 enabled = true
 "#
             ),
-            tmp.path(),
+            tmp.path().to_path_buf(),
         );
         let llm =
             LedgerClient::new(shore_llm::LlmClient::new(), &tmp.path().join("ledger.db")).unwrap();

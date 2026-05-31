@@ -33,8 +33,7 @@ pub struct CacheKeepalive {
 
 /// Break-even point: if the gap to next wake exceeds this, pings cost more
 /// than the cold-start savings.
-const KEEPALIVE_BREAKEVEN: Duration = Duration::from_hours(18);
-const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_mins(55);
+const KEEPALIVE_BREAKEVEN: Duration = Duration::from_secs(18 * 3600); // 18h
 
 /// Ping interval: 55 minutes — 5 minutes of headroom before the 60-minute
 /// cache TTL expires. If the first attempt fails, retries use short
@@ -47,10 +46,10 @@ const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_mins(55);
 fn ping_interval() -> Duration {
     match std::env::var("SHORE_KEEPALIVE_INTERVAL_SECS") {
         Ok(s) => {
-            let secs = s.parse().unwrap_or(DEFAULT_KEEPALIVE_INTERVAL.as_secs());
+            let secs: u64 = s.parse().unwrap_or(55 * 60);
             Duration::from_secs(secs)
         }
-        Err(_) => DEFAULT_KEEPALIVE_INTERVAL,
+        Err(_) => Duration::from_secs(55 * 60), // 55 min default
     }
 }
 
@@ -113,8 +112,9 @@ impl CacheKeepalive {
             _ => return CacheKeepaliveAction::None,
         };
 
-        let Some(wake_at) = self.next_wake_at else {
-            return CacheKeepaliveAction::None;
+        let wake_at = match self.next_wake_at {
+            Some(t) => t,
+            None => return CacheKeepaliveAction::None,
         };
 
         // Don't ping if the next wake is too far out — not worth the cost.

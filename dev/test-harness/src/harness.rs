@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
-use shore_config::{app::NotificationsConfig, LoadedConfig};
+use shore_config::LoadedConfig;
 use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
@@ -11,7 +11,7 @@ use shore_daemon::handler::{MessageHandler, MessageHandlerDeps};
 use shore_daemon::handshake::build_handshake_provider;
 use shore_ledger::LedgerClient;
 use shore_llm::LlmClient;
-use shore_protocol::server_msg::{ServerHello, ServerMessage};
+use shore_protocol::server_msg::ServerMessage;
 use shore_swp_client::connection::{SWPConnection, ServerAddr};
 use shore_swp_server::{Server, ServerConfig};
 use tokio::sync::watch;
@@ -69,22 +69,12 @@ impl TestHarness {
         let mock_llm = MockLlmServer::start().await;
 
         // Create temp directory tree and build config.
-        let tmp_dir = fail_fast(tempfile::tempdir(), "failed to create temp dir");
-        let config = fail_fast(
-            builder.try_build(tmp_dir.path(), &mock_llm.base_url()),
-            "failed to build test config",
-        );
+        let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config = builder.build(tmp_dir.path(), &mock_llm.base_url());
 
         let addr = {
-            let listener = fail_fast(
-                std::net::TcpListener::bind("127.0.0.1:0"),
-                "failed to bind ephemeral harness port",
-            );
-            let port = fail_fast(
-                listener.local_addr(),
-                "failed to inspect ephemeral harness port",
-            )
-            .port();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
             format!("127.0.0.1:{port}")
         };
         let data_dir = config.dirs.data.clone();
@@ -96,10 +86,6 @@ impl TestHarness {
     ///
     /// Called by both `boot_with` (fresh start) and `CrashedHarness::reboot`
     /// (restart from existing state on disk).
-    #[expect(
-        clippy::too_many_lines,
-        reason = "test harness daemon wiring split is tracked in #109"
-    )]
     pub(crate) async fn wire_daemon(
         config: LoadedConfig,
         mock_llm: MockLlmServer,
@@ -144,14 +130,11 @@ impl TestHarness {
             std::fs::create_dir_all(&config.dirs.cache).ok();
             raw_llm_client.set_payload_log_dir(config.dirs.cache.clone());
         }
-        let llm_client = fail_fast(
-            LedgerClient::new(raw_llm_client, &config.dirs.data.join("ledger.db")),
-            "failed to create LedgerClient",
-        );
+        let llm_client = LedgerClient::new(raw_llm_client, &config.dirs.data.join("ledger.db"))
+            .expect("failed to create LedgerClient");
         llm_client.set_usage_config(config.app.usage.clone());
 
-        let notifier =
-            shore_daemon::notifications::NotificationService::new(NotificationsConfig::default());
+        let notifier = shore_daemon::notifications::NotificationService::new(Default::default());
 
         // Wire up autonomy with LLM resources (mirrors main.rs wiring).
         autonomy.set_resources(
@@ -206,16 +189,17 @@ impl TestHarness {
         // Spawn server loop.
         let server_shutdown_rx = shutdown_rx.clone();
         let server_handle = tokio::spawn(async move {
-            if let Err(error) = server.run(server_shutdown_rx).await {
-                info!(error = %error, "TestHarness server exited with error");
-            }
+            server.run(server_shutdown_rx).await.unwrap();
         });
 
         // Give the server time to bind the socket.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // ── SWP Client Connection ────────────────────────────────────
-        let (conn, server_hello) = connect_client(&addr, "harness", None).await;
+        let (conn, server_hello, _history) =
+            SWPConnection::connect(&ServerAddr(addr.clone()), "test", "harness", None)
+                .await
+                .expect("failed to connect to daemon");
 
         assert_eq!(
             server_hello.v,
@@ -337,10 +321,10 @@ impl TestHarness {
     /// Enqueues nothing on the mock — caller must call `mock_llm.enqueue_text()`
     /// (or similar) before calling this method.
     pub async fn send_and_collect(&mut self, text: &str) -> CollectedResponse {
-        fail_fast(
-            self.conn.send_message(text, true).await,
-            "failed to send message",
-        );
+        self.conn
+            .send_message(text, true)
+            .await
+            .expect("failed to send message");
         self.collect_stream().await
     }
 
@@ -352,18 +336,17 @@ impl TestHarness {
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                fail_harness(format_args!(
+                panic!(
                     "collect_stream timed out after {:?}; collected {} messages so far",
                     COLLECT_TIMEOUT,
                     collected.raw_messages.len(),
-                ));
+                );
             }
 
-            let msg = fail_fast(
-                timeout(remaining, self.conn.recv()).await,
-                "collect_stream timed out waiting for message",
-            );
-            let msg = fail_fast(msg, "failed to recv server message");
+            let msg = timeout(remaining, self.conn.recv())
+                .await
+                .expect("collect_stream timed out waiting for message")
+                .expect("failed to recv server message");
 
             if collected.push(msg) {
                 return collected;
@@ -384,10 +367,10 @@ impl TestHarness {
         cmd: &str,
         args: serde_json::Value,
     ) -> Vec<ServerMessage> {
-        fail_fast(
-            self.conn.send_command(cmd, args).await,
-            "failed to send command",
-        );
+        self.conn
+            .send_command(cmd, args)
+            .await
+            .expect("failed to send command");
 
         let mut messages = Vec::new();
         let deadline = tokio::time::Instant::now() + CMD_TIMEOUT;
@@ -409,7 +392,8 @@ impl TestHarness {
                         break;
                     }
                 }
-                Ok(Err(_)) | Err(_) => break,
+                Ok(Err(_)) => break,
+                Err(_) => break,
             }
         }
 
@@ -422,8 +406,9 @@ impl TestHarness {
     pub fn read_persisted_messages(&self) -> Vec<serde_json::Value> {
         let mut messages = Vec::new();
 
-        let Ok(entries) = std::fs::read_dir(&self.data_dir) else {
-            return messages;
+        let entries = match std::fs::read_dir(&self.data_dir) {
+            Ok(e) => e,
+            Err(_) => return messages,
         };
 
         for entry in entries.flatten() {
@@ -435,8 +420,9 @@ impl TestHarness {
             if !jsonl_path.exists() {
                 continue;
             }
-            let Ok(content) = std::fs::read_to_string(&jsonl_path) else {
-                continue;
+            let content = match std::fs::read_to_string(&jsonl_path) {
+                Ok(c) => c,
+                Err(_) => continue,
             };
             for line in content.lines() {
                 if line.is_empty() {
@@ -458,19 +444,21 @@ impl TestHarness {
     /// calling this, as ledger writes happen synchronously but may lag slightly.
     pub fn read_ledger_entries(&self) -> Vec<serde_json::Value> {
         let db_path = self.data_dir.join("ledger.db");
-        let Ok(conn) = rusqlite::Connection::open(&db_path) else {
-            return Vec::new();
+        let conn = match rusqlite::Connection::open(&db_path) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
         };
 
-        let Ok(mut stmt) = conn.prepare(
+        let mut stmt = match conn.prepare(
             "SELECT id, ts, character, provider, model, call_type, \
              input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, \
              cache_ttl, total_ms, ttft_ms, finish_reason, thinking_enabled, \
              cache_state, cache_anomaly, input_cost, output_cost, \
              cache_read_cost, cache_write_cost, total_cost \
              FROM calls ORDER BY id ASC",
-        ) else {
-            return Vec::new();
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
         };
 
         let rows = stmt.query_map([], |row| {
@@ -500,15 +488,22 @@ impl TestHarness {
             }))
         });
 
-        let Ok(iter) = rows else {
-            return Vec::new();
-        };
-        iter.filter_map(Result::ok).collect()
+        match rows {
+            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
     }
 
     /// Connect an additional SWP client to the same daemon.
     pub async fn connect_second_client(&self) -> SWPConnection {
-        let (conn, _hello) = connect_client(&self.addr, "second-client", None).await;
+        let (conn, _hello, _history) = SWPConnection::connect(
+            &ServerAddr(self.addr.clone()),
+            "test",
+            "second-client",
+            None,
+        )
+        .await
+        .expect("Failed to connect second client");
         conn
     }
 
@@ -516,8 +511,14 @@ impl TestHarness {
     /// Used by Phase 10 per-character preference tests where each
     /// connection drives commands against its own character workspace.
     pub async fn connect_as_character(&self, character: &str) -> SWPConnection {
-        let (conn, _hello) =
-            connect_client(&self.addr, character, Some(character.to_string())).await;
+        let (conn, _hello, _history) = SWPConnection::connect(
+            &ServerAddr(self.addr.clone()),
+            "test",
+            character,
+            Some(character.to_string()),
+        )
+        .await
+        .expect("Failed to connect as character");
         conn
     }
 
@@ -530,7 +531,9 @@ impl TestHarness {
         cmd: &str,
         args: serde_json::Value,
     ) -> Vec<ServerMessage> {
-        fail_fast(conn.send_command(cmd, args).await, "failed to send command");
+        conn.send_command(cmd, args)
+            .await
+            .expect("failed to send command");
 
         let mut messages = Vec::new();
         let deadline = tokio::time::Instant::now() + CMD_TIMEOUT;
@@ -551,7 +554,8 @@ impl TestHarness {
                         break;
                     }
                 }
-                Ok(Err(_)) | Err(_) => break,
+                Ok(Err(_)) => break,
+                Err(_) => break,
             }
         }
         messages
@@ -563,37 +567,4 @@ impl TestHarness {
         let _ = self.server_handle.await;
         let _ = self.handler_handle.await;
     }
-}
-
-async fn connect_client(
-    addr: &str,
-    client_name: &str,
-    selected_character: Option<String>,
-) -> (SWPConnection, ServerHello) {
-    match SWPConnection::connect(
-        &ServerAddr(addr.to_string()),
-        "test",
-        client_name,
-        selected_character,
-    )
-    .await
-    {
-        Ok((conn, hello, _history)) => (conn, hello),
-        Err(error) => fail_harness(format_args!("failed to connect {client_name}: {error}")),
-    }
-}
-
-fn fail_fast<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
-    match result {
-        Ok(value) => value,
-        Err(error) => fail_harness(format_args!("{context}: {error}")),
-    }
-}
-
-#[expect(
-    clippy::panic,
-    reason = "test harness helper APIs preserve fail-fast setup semantics"
-)]
-fn fail_harness(message: std::fmt::Arguments<'_>) -> ! {
-    panic!("{message}")
 }

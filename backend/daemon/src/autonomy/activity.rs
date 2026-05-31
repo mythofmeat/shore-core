@@ -1,4 +1,3 @@
-use crate::convert::{i64_to_f64, u64_to_f64, usize_to_f64};
 use chrono::{Datelike, Local, NaiveDateTime, Timelike, Weekday};
 use tokio::time::Instant;
 use tracing::debug;
@@ -118,7 +117,7 @@ impl ActivityTracker {
     ///
     /// Used on first creation to seed from existing chat history.
     /// No-op if the tracker already has data (safety guard).
-    pub fn backfill(&mut self, wall_clocks: &[NaiveDateTime]) {
+    pub fn backfill(&mut self, wall_clocks: Vec<NaiveDateTime>) {
         if !self.timestamps.is_empty() || wall_clocks.is_empty() {
             return;
         }
@@ -151,10 +150,10 @@ impl ActivityTracker {
 
     /// Get cached stats, recomputing if stale or absent.
     pub fn stats(&mut self) -> &ActivityStats {
-        let need_recompute = self
-            .cached_stats
-            .as_ref()
-            .is_none_or(|s| s.computed_at.elapsed().as_secs() >= STATS_CACHE_TTL);
+        let need_recompute = match &self.cached_stats {
+            Some(s) => s.computed_at.elapsed().as_secs() >= STATS_CACHE_TTL,
+            None => true,
+        };
         if need_recompute {
             debug!(
                 messages = self.timestamps.len(),
@@ -163,10 +162,6 @@ impl ActivityTracker {
             let stats = self.compute_stats();
             self.cached_stats = Some(stats);
         }
-        #[expect(
-            clippy::unwrap_used,
-            reason = "cached_stats is Some here: set above when stale, pre-existing when fresh"
-        )]
         self.cached_stats.as_ref().unwrap()
     }
 
@@ -177,7 +172,8 @@ impl ActivityTracker {
             "Force-recomputing activity stats"
         );
         let stats = self.compute_stats();
-        self.cached_stats.insert(stats)
+        self.cached_stats = Some(stats);
+        self.cached_stats.as_ref().unwrap()
     }
 
     // -----------------------------------------------------------------------
@@ -202,7 +198,7 @@ impl ActivityTracker {
 
         // Sessions per day.
         let sessions_per_day = if distinct_days > 0 {
-            usize_to_f64(session_count) / usize_to_f64(distinct_days)
+            session_count as f64 / distinct_days as f64
         } else {
             0.0
         };
@@ -259,18 +255,19 @@ impl ActivityTracker {
 
     /// Consistency: ratio of active days to total span days.
     fn compute_consistency(&self) -> f64 {
-        let [first, .., last] = self.timestamps.as_slice() else {
+        if self.timestamps.len() < 2 {
             return if self.timestamps.is_empty() { 0.0 } else { 1.0 };
-        };
-        let first = first.wall_clock.date();
-        let last = last.wall_clock.date();
+        }
+
+        let first = self.timestamps.first().unwrap().wall_clock.date();
+        let last = self.timestamps.last().unwrap().wall_clock.date();
         let span_days = (last - first).num_days() + 1;
         if span_days <= 0 {
             return 1.0;
         }
 
         let active_days = self.distinct_days();
-        (usize_to_f64(active_days) / i64_to_f64(span_days)).clamp(0.0, 1.0)
+        (active_days as f64 / span_days as f64).clamp(0.0, 1.0)
     }
 
     /// Detect sessions: each session is a slice of contiguous timestamps where
@@ -311,16 +308,12 @@ impl ActivityTracker {
 
         let mut gaps = Vec::with_capacity(sessions.len() - 1);
         for pair in sessions.windows(2) {
-            let Some(&last_of_prev) = pair[0].last() else {
-                continue;
-            };
+            let last_of_prev = *pair[0].last().unwrap();
             let first_of_next = pair[1][0];
-            let gap = u64_to_f64(
-                (self.timestamps[first_of_next].wall_clock
-                    - self.timestamps[last_of_prev].wall_clock)
-                    .num_seconds()
-                    .unsigned_abs(),
-            );
+            let gap = (self.timestamps[first_of_next].wall_clock
+                - self.timestamps[last_of_prev].wall_clock)
+                .num_seconds()
+                .unsigned_abs() as f64;
             gaps.push(gap);
         }
         gaps
@@ -332,11 +325,10 @@ impl ActivityTracker {
         let mut all_gaps = Vec::new();
         for session in sessions {
             for pair in session.windows(2) {
-                let gap = u64_to_f64(
-                    (self.timestamps[pair[1]].wall_clock - self.timestamps[pair[0]].wall_clock)
-                        .num_seconds()
-                        .unsigned_abs(),
-                );
+                let gap = (self.timestamps[pair[1]].wall_clock
+                    - self.timestamps[pair[0]].wall_clock)
+                    .num_seconds()
+                    .unsigned_abs() as f64;
                 all_gaps.push(gap);
             }
         }
@@ -391,16 +383,15 @@ impl ActivityTracker {
             return None;
         }
 
-        let mean = gaps.iter().sum::<f64>() / usize_to_f64(gaps.len());
-        let variance =
-            gaps.iter().map(|g| (g - mean).powi(2)).sum::<f64>() / usize_to_f64(gaps.len());
+        let mean = gaps.iter().sum::<f64>() / gaps.len() as f64;
+        let variance = gaps.iter().map(|g| (g - mean).powi(2)).sum::<f64>() / gaps.len() as f64;
         let std_dev = variance.sqrt();
 
         if std_dev < f64::EPSILON {
             return Some(0.0);
         }
 
-        let last_gap = *gaps.last()?;
+        let last_gap = *gaps.last().unwrap();
         Some((last_gap - mean) / std_dev)
     }
 }
@@ -417,8 +408,9 @@ impl Default for ActivityTracker {
 
 /// Tempo score logistic: 1 / (1 + e^((median_gap - 900) / 400)).
 pub fn compute_tempo_score(gaps: &[f64]) -> f64 {
-    let Some(med) = median(gaps) else {
-        return 0.5; // neutral when no data
+    let med = match median(gaps) {
+        Some(m) => m,
+        None => return 0.5, // neutral when no data
     };
     1.0 / (1.0 + ((med - 900.0) / 400.0).exp())
 }
@@ -429,7 +421,7 @@ pub fn classify_hours(histogram: &[f64; 24]) -> [HourClassification; 24] {
     let avg = if non_zero.is_empty() {
         0.0
     } else {
-        non_zero.iter().sum::<f64>() / usize_to_f64(non_zero.len())
+        non_zero.iter().sum::<f64>() / non_zero.len() as f64
     };
 
     let mut result = [HourClassification::Normal; 24];
@@ -456,7 +448,7 @@ fn median(values: &[f64]) -> Option<f64> {
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = sorted.len() / 2;
     if sorted.len().is_multiple_of(2) {
-        Some(sorted[mid - 1].midpoint(sorted[mid]))
+        Some((sorted[mid - 1] + sorted[mid]) / 2.0)
     } else {
         Some(sorted[mid])
     }
@@ -758,9 +750,9 @@ mod tests {
     fn test_session_medians_window_limit() {
         // Create 35 sessions (more than SESSION_MEDIANS_WINDOW=30).
         let mut times = Vec::new();
-        for s in 0u32..35 {
-            let base_hour = s % 12;
-            let day = 1 + s / 12;
+        for s in 0..35 {
+            let base_hour = (s % 12) as u32;
+            let day = 1 + (s / 12) as u32;
             // Each session: 2 messages 1 minute apart.
             times.push(dt(2026, 3, day, base_hour, 0, 0));
             times.push(dt(2026, 3, day, base_hour, 1, 0));
@@ -780,7 +772,7 @@ mod tests {
             dt(2026, 3, 21, 14, 0, 0),
             dt(2026, 3, 22, 9, 0, 0),
         ];
-        tracker.backfill(&times);
+        tracker.backfill(times);
         assert_eq!(tracker.message_count(), 3);
         assert!(tracker.cached_stats.is_none());
 
@@ -796,21 +788,21 @@ mod tests {
         tracker.record_message();
         assert_eq!(tracker.message_count(), 1);
 
-        tracker.backfill(&[dt(2026, 3, 20, 10, 0, 0), dt(2026, 3, 21, 14, 0, 0)]);
+        tracker.backfill(vec![dt(2026, 3, 20, 10, 0, 0), dt(2026, 3, 21, 14, 0, 0)]);
         assert_eq!(tracker.message_count(), 1);
     }
 
     #[test]
     fn test_backfill_empty_vec_is_noop() {
         let mut tracker = ActivityTracker::new();
-        tracker.backfill(&[]);
+        tracker.backfill(vec![]);
         assert_eq!(tracker.message_count(), 0);
     }
 
     #[test]
     fn test_backfill_then_record_message() {
         let mut tracker = ActivityTracker::new();
-        tracker.backfill(&[dt(2026, 3, 20, 10, 0, 0), dt(2026, 3, 21, 14, 0, 0)]);
+        tracker.backfill(vec![dt(2026, 3, 20, 10, 0, 0), dt(2026, 3, 21, 14, 0, 0)]);
         assert_eq!(tracker.message_count(), 2);
 
         tracker.record_message();
@@ -820,7 +812,7 @@ mod tests {
     #[test]
     fn test_backfill_sorts_unordered_input() {
         let mut tracker = ActivityTracker::new();
-        tracker.backfill(&[
+        tracker.backfill(vec![
             dt(2026, 3, 22, 9, 0, 0),
             dt(2026, 3, 20, 10, 0, 0),
             dt(2026, 3, 21, 14, 0, 0),

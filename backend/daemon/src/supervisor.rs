@@ -6,7 +6,7 @@ use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 const MAX_CONSECUTIVE_FAILURES: u32 = 5;
-const STABLE_RUNTIME_THRESHOLD: Duration = Duration::from_mins(5);
+const STABLE_RUNTIME_THRESHOLD: Duration = Duration::from_secs(300);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 const MATRIX_LOG_ENV: &str = "SHORE_MATRIX_RUST_LOG";
 const DEFAULT_MATRIX_LOG_FILTER: &str = "warn,shore_matrix=info,matrix_sdk_crypto::backups=error";
@@ -134,18 +134,9 @@ async fn supervise(binary: PathBuf, shutdown_rx: &mut watch::Receiver<()>) {
 /// its own tuwunel subprocess or flush Matrix SDK state.
 async fn graceful_shutdown(child: &mut tokio::process::Child, grace: Duration) {
     if let Some(pid) = child.id() {
-        let Ok(pid_t) = libc::pid_t::try_from(pid) else {
-            warn!(
-                pid,
-                "shore-matrix pid does not fit platform pid_t; escalating"
-            );
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            return;
-        };
         // SAFETY: `libc::kill` is a standard syscall; passing a valid pid
         // retrieved from the still-running child is sound.
-        let rc = unsafe { libc::kill(pid_t, libc::SIGTERM) };
+        let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
         if rc != 0 {
             let err = std::io::Error::last_os_error();
             warn!(pid, error = %err, "SIGTERM to shore-matrix failed; escalating");
@@ -155,13 +146,16 @@ async fn graceful_shutdown(child: &mut tokio::process::Child, grace: Duration) {
         return;
     }
 
-    if tokio::time::timeout(grace, child.wait()).await.is_err() {
-        warn!(
-            grace_secs = grace.as_secs(),
-            "shore-matrix did not exit within grace period; sending SIGKILL"
-        );
-        let _ = child.start_kill();
-        let _ = child.wait().await;
+    match tokio::time::timeout(grace, child.wait()).await {
+        Ok(_) => {}
+        Err(_) => {
+            warn!(
+                grace_secs = grace.as_secs(),
+                "shore-matrix did not exit within grace period; sending SIGKILL"
+            );
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+        }
     }
 }
 
@@ -187,7 +181,7 @@ fn matrix_log_filter_from(value: Option<String>) -> String {
 /// shutdown.
 async fn sleep_or_shutdown(dur: Duration, rx: &mut watch::Receiver<()>) -> bool {
     tokio::select! {
-        () = tokio::time::sleep(dur) => true,
+        _ = tokio::time::sleep(dur) => true,
         _ = rx.changed() => false,
     }
 }

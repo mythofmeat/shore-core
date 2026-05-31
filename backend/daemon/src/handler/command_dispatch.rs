@@ -76,10 +76,6 @@ impl MessageHandler {
     }
 
     /// Resolve the engine for a character and dispatch a command.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "command-routing phase split is tracked in #109"
-    )]
     pub(super) async fn dispatch_command(
         &mut self,
         cmd: &shore_protocol::client_msg::Command,
@@ -164,7 +160,7 @@ impl MessageHandler {
             let result = commands::dispatch_characterless(&ctx, cmd);
             {
                 let session = self.session_state_mut(session_id);
-                session.active_model.clone_from(&ctx.active_model);
+                session.active_model = ctx.active_model.clone();
             }
             return match result {
                 Ok(data) => {
@@ -277,7 +273,7 @@ impl MessageHandler {
 
         {
             let session = self.session_state_mut(session_id);
-            session.active_model.clone_from(&active_model_after_command);
+            session.active_model = active_model_after_command.clone();
         }
 
         if runtime_config_set {

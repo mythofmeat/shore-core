@@ -28,7 +28,7 @@ fn opt_bool(request: &LlmRequest, key: &str) -> Option<bool> {
         .provider_options
         .as_ref()
         .and_then(|opts| opts.get(key))
-        .and_then(serde_json::Value::as_bool)
+        .and_then(|v| v.as_bool())
 }
 
 /// Resolve the base URL: explicit override → subscription toggle → default.
@@ -64,10 +64,6 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
     super::openai::translate_messages(request, &ctx)
 }
 
-#[expect(
-    clippy::ref_option,
-    reason = "mirrors LlmRequest.tools (&Option) and delegates to openai::translate_tools by reference"
-)]
 fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
     super::openai::translate_tools(tools)
 }
@@ -75,23 +71,24 @@ fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
 // ── Request body builder ────────────────────────────────────────────────
 
 /// Build common request headers.
-fn build_headers(request: &LlmRequest) -> Result<reqwest::header::HeaderMap, LlmError> {
+fn build_headers(request: &LlmRequest) -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
-    let auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", request.api_key))
-        .map_err(|e| LlmError::Provider {
-            message: format!("API key is not a valid HTTP header value: {e}"),
-        })?;
-    headers.insert(reqwest::header::AUTHORIZATION, auth);
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        format!("Bearer {}", request.api_key)
+            .parse()
+            .expect("valid header value"),
+    );
     headers.insert(
         reqwest::header::CONTENT_TYPE,
-        reqwest::header::HeaderValue::from_static("application/json"),
+        "application/json".parse().unwrap(),
     );
     if let Some(ref rid) = request.rid {
         if let Ok(hv) = rid.parse::<reqwest::header::HeaderValue>() {
             headers.insert("X-Request-ID", hv);
         }
     }
-    Ok(headers)
+    headers
 }
 
 /// Build the JSON body for Z.AI chat completions.
@@ -127,17 +124,13 @@ fn build_chat_body(request: &LlmRequest, streaming: bool) -> Value {
 ///
 /// Returns a `DuplexStream` that yields NDJSON `StreamEvent` lines. A background
 /// tokio task reads SSE from the upstream API and writes translated events.
-#[expect(
-    clippy::too_many_lines,
-    reason = "end-to-end streaming setup; clearer as one function than artificially split"
-)]
 pub async fn stream(
     client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<DuplexStream, LlmError> {
     let base_url = resolve_base_url(request);
     let url = format!("{base_url}/chat/completions");
-    let headers = build_headers(request)?;
+    let headers = build_headers(request);
     let body = build_chat_body(request, true);
 
     let response = client
@@ -231,10 +224,7 @@ pub async fn stream(
                         .and_then(|t| t.as_array())
                     {
                         for tc in tcs {
-                            let index = tc
-                                .get("index")
-                                .and_then(serde_json::Value::as_u64)
-                                .unwrap_or(0);
+                            let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
                             let entry = tool_calls
                                 .entry(index)
                                 .or_insert_with(|| (String::new(), String::new(), Vec::new()));
@@ -296,7 +286,7 @@ pub async fn stream(
 
         // Emit accumulated tool calls.
         let mut indices: Vec<u64> = tool_calls.keys().copied().collect();
-        indices.sort_unstable();
+        indices.sort();
         for idx in indices {
             if let Some((id, name, arg_chunks)) = tool_calls.remove(&idx) {
                 let raw = arg_chunks.join("");
@@ -337,7 +327,7 @@ pub async fn generate(
 ) -> Result<GenerateResponse, LlmError> {
     let base_url = resolve_base_url(request);
     let url = format!("{base_url}/chat/completions");
-    let headers = build_headers(request)?;
+    let headers = build_headers(request);
     let body = build_chat_body(request, false);
 
     let start = Instant::now();
@@ -355,7 +345,7 @@ pub async fn generate(
 
     let response = super::check_response(response).await?;
 
-    let total_ms = crate::convert::elapsed_ms_u32(start.elapsed());
+    let total_ms = start.elapsed().as_millis() as u32;
 
     let resp_body: Value = response.json().await.map_err(|e| LlmError::Provider {
         message: format!(

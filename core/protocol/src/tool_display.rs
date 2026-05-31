@@ -9,7 +9,7 @@ pub fn format_tool_input(input: &Value) -> Option<String> {
 
 /// Format a tool input, truncating the rendered text when `max_bytes` is set.
 pub fn format_tool_input_with_limit(input: &Value, max_bytes: Option<usize>) -> Option<String> {
-    if input.as_object().is_some_and(serde_json::Map::is_empty) {
+    if input.as_object().is_some_and(|o| o.is_empty()) {
         return None;
     }
 
@@ -235,11 +235,11 @@ mod tests {
 
     #[test]
     fn fixture_plain_literal_backslash_n_stays_literal() {
-        let output = r"line one\nline two";
+        let output = r#"line one\nline two"#;
 
         let formatted = format_tool_output(output);
 
-        assert_eq!(formatted, r"line one\nline two");
+        assert_eq!(formatted, r#"line one\nline two"#);
     }
 
     #[test]

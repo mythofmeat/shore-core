@@ -10,21 +10,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tracing::error;
 
-/// Owned call metadata carried by a [`LedgerStream`] until finalization, where
-/// it is borrowed into a [`crate::client::RecordCall`].
-pub(crate) struct CallMeta {
-    pub(crate) provider: String,
-    pub(crate) api_key_name: Option<String>,
-    pub(crate) model: String,
-    pub(crate) call_type: CallType,
-    pub(crate) character: String,
-    pub(crate) thinking_enabled: bool,
-    pub(crate) cache_ttl: Option<String>,
-}
-
 pub struct LedgerStream {
     reader: StreamReader,
-    meta: CallMeta,
+    provider: String,
+    api_key_name: Option<String>,
+    model: String,
+    call_type: CallType,
+    character: String,
+    thinking_enabled: bool,
+    cache_ttl: Option<String>,
     ledger: Arc<Ledger>,
     pricing: Arc<PricingEngine>,
     cache_trackers: Arc<Mutex<HashMap<String, CacheTracker>>>,
@@ -32,16 +26,29 @@ pub struct LedgerStream {
 }
 
 impl LedgerStream {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         reader: StreamReader,
-        meta: CallMeta,
+        provider: String,
+        api_key_name: Option<String>,
+        model: String,
+        call_type: CallType,
+        character: String,
+        thinking_enabled: bool,
+        cache_ttl: Option<String>,
         ledger: Arc<Ledger>,
         pricing: Arc<PricingEngine>,
         cache_trackers: Arc<Mutex<HashMap<String, CacheTracker>>>,
     ) -> Self {
         Self {
             reader,
-            meta,
+            provider,
+            api_key_name,
+            model,
+            call_type,
+            character,
+            thinking_enabled,
+            cache_ttl,
             ledger,
             pricing,
             cache_trackers,
@@ -50,8 +57,15 @@ impl LedgerStream {
     }
 
     #[cfg(test)]
-    pub(crate) fn new_test(
-        meta: CallMeta,
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_test(
+        provider: String,
+        api_key_name: Option<String>,
+        model: String,
+        call_type: CallType,
+        character: String,
+        thinking_enabled: bool,
+        cache_ttl: Option<String>,
         ledger: Arc<Ledger>,
         pricing: Arc<PricingEngine>,
         cache_trackers: Arc<Mutex<HashMap<String, CacheTracker>>>,
@@ -60,7 +74,13 @@ impl LedgerStream {
         let boxed: Box<dyn tokio::io::AsyncRead + Send + Unpin> = Box::new(read);
         Self::new(
             tokio::io::BufReader::new(boxed),
-            meta,
+            provider,
+            api_key_name,
+            model,
+            call_type,
+            character,
+            thinking_enabled,
+            cache_ttl,
             ledger,
             pricing,
             cache_trackers,
@@ -77,16 +97,16 @@ impl LedgerStream {
             &self.pricing,
             &self.cache_trackers,
             crate::client::RecordCall {
-                provider: &self.meta.provider,
-                api_key_name: self.meta.api_key_name.clone(),
-                model: &self.meta.model,
-                call_type: self.meta.call_type,
-                character: &self.meta.character,
+                provider: &self.provider,
+                api_key_name: self.api_key_name.clone(),
+                model: &self.model,
+                call_type: self.call_type,
+                character: &self.character,
                 usage: &result.usage,
                 timing: &result.timing,
                 finish_reason: &result.finish_reason,
-                thinking_enabled: self.meta.thinking_enabled,
-                cache_ttl: self.meta.cache_ttl.clone(),
+                thinking_enabled: self.thinking_enabled,
+                cache_ttl: self.cache_ttl.clone(),
             },
         );
         self.finalized = true;
@@ -101,16 +121,16 @@ impl LedgerStream {
             &self.pricing,
             &self.cache_trackers,
             crate::client::RecordCall {
-                provider: &self.meta.provider,
-                api_key_name: self.meta.api_key_name.clone(),
-                model: &self.meta.model,
-                call_type: self.meta.call_type,
-                character: &self.meta.character,
+                provider: &self.provider,
+                api_key_name: self.api_key_name.clone(),
+                model: &self.model,
+                call_type: self.call_type,
+                character: &self.character,
                 usage: &Usage::default(),
                 timing: &Timing::default(),
                 finish_reason: "error",
-                thinking_enabled: self.meta.thinking_enabled,
-                cache_ttl: self.meta.cache_ttl.clone(),
+                thinking_enabled: self.thinking_enabled,
+                cache_ttl: self.cache_ttl.clone(),
             },
         );
         self.finalized = true;
@@ -125,10 +145,10 @@ impl Drop for LedgerStream {
     fn drop(&mut self) {
         if !self.finalized {
             error!(
-                provider = %self.meta.provider,
-                model = %self.meta.model,
-                character = %self.meta.character,
-                call_type = self.meta.call_type.as_str(),
+                provider = %self.provider,
+                model = %self.model,
+                character = %self.character,
+                call_type = self.call_type.as_str(),
                 "LedgerStream dropped without finalize — API call was NOT recorded"
             );
         }
@@ -152,15 +172,13 @@ mod tests {
         let trackers = Arc::new(Mutex::new(HashMap::<String, CacheTracker>::new()));
 
         let mut stream = LedgerStream::new_test(
-            CallMeta {
-                provider: "anthropic".into(),
-                api_key_name: None,
-                model: "claude-opus-4-6".into(),
-                call_type: CallType::Message,
-                character: "aria".into(),
-                thinking_enabled: true,
-                cache_ttl: None,
-            },
+            "anthropic".into(),
+            None,
+            "claude-opus-4-6".into(),
+            CallType::Message,
+            "aria".into(),
+            true,
+            None,
             ledger.clone(),
             pricing,
             trackers,
@@ -202,15 +220,13 @@ mod tests {
         let trackers = Arc::new(Mutex::new(HashMap::<String, CacheTracker>::new()));
 
         let mut stream = LedgerStream::new_test(
-            CallMeta {
-                provider: "anthropic".into(),
-                api_key_name: None,
-                model: "claude-opus-4-6".into(),
-                call_type: CallType::Message,
-                character: "aria".into(),
-                thinking_enabled: true,
-                cache_ttl: None,
-            },
+            "anthropic".into(),
+            None,
+            "claude-opus-4-6".into(),
+            CallType::Message,
+            "aria".into(),
+            true,
+            None,
             ledger.clone(),
             pricing,
             trackers.clone(),

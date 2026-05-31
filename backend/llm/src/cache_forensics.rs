@@ -16,7 +16,6 @@ use serde_json::json;
 static FORENSIC_DIR: OnceLock<PathBuf> = OnceLock::new();
 static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Copy)]
 pub struct RequestLog<'a> {
     pub call_id: u64,
     pub character: Option<&'a str>,
@@ -31,16 +30,15 @@ pub struct RequestLog<'a> {
     pub rid: Option<&'a str>,
 }
 
-#[derive(Clone, Copy)]
 pub struct ResponseLog<'a> {
     pub call_id: u64,
     pub model: &'a str,
     pub character: &'a str,
     pub call_type: &'a str,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_creation_tokens: u64,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_creation_tokens: u32,
 }
 
 /// Enable cache forensics.  Call once at startup with the cache directory.
@@ -135,8 +133,8 @@ pub fn notify_anomaly(
     character: &str,
     anomaly: &str,
     call_type: &str,
-    cache_read: u64,
-    cache_write: u64,
+    cache_read: u32,
+    cache_write: u32,
 ) {
     if !is_enabled() {
         return;

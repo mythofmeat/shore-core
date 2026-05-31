@@ -155,8 +155,8 @@ pub fn log_request(
 }
 
 /// Write the paired response file for a successful non-streaming call.
-pub fn log_response(handle: &CallHandle, resp: &GenerateResponse) {
-    let duration_ms = crate::convert::elapsed_ms_u64(handle.started.elapsed());
+pub fn log_response(handle: CallHandle, resp: &GenerateResponse) {
+    let duration_ms = handle.started.elapsed().as_millis() as u64;
     let doc = serde_json::json!({
         "ts": Local::now().to_rfc3339(),
         "direction": "response",
@@ -174,8 +174,8 @@ pub fn log_response(handle: &CallHandle, resp: &GenerateResponse) {
 }
 
 /// Write the paired response file for a failed call.
-pub fn log_error(handle: &CallHandle, err: &LlmError) {
-    let duration_ms = crate::convert::elapsed_ms_u64(handle.started.elapsed());
+pub fn log_error(handle: CallHandle, err: &LlmError) {
+    let duration_ms = handle.started.elapsed().as_millis() as u64;
     let doc = serde_json::json!({
         "ts": Local::now().to_rfc3339(),
         "direction": "error",
@@ -234,7 +234,7 @@ pub struct TeeReader<R> {
 }
 
 impl<R> TeeReader<R> {
-    pub fn new(inner: R, handle: &CallHandle) -> Self {
+    pub fn new(inner: R, handle: CallHandle) -> Self {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -261,7 +261,7 @@ impl<R> TeeReader<R> {
                 "character": handle.envelope.character,
                 "rid": handle.envelope.rid,
             });
-            let _ = writeln!(f, "{header}");
+            let _ = writeln!(f, "{}", header);
         }
         // call_id field kept for future use (e.g. logging); silence unused.
         let _ = handle.call_id;

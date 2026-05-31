@@ -2,7 +2,6 @@ use super::*;
 use crate::commands::CommandContext;
 use crate::engine::ConversationEngine;
 use serde_json::json;
-use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::models::ModelCatalog;
 use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{ContentBlock, Message, Role};
@@ -46,8 +45,8 @@ fn make_ctx_with_models(
 
     let (_tx, rx) = tokio::sync::watch::channel(());
     let autonomy = crate::autonomy::manager::AutonomyManager::new(
-        AutonomyConfig::default(),
-        CompactionConfig::default(),
+        Default::default(),
+        Default::default(),
         data_dir.clone(),
         rx,
     );
@@ -1027,7 +1026,7 @@ mod phase7 {
             Some(pats) => {
                 let pats_lit = pats
                     .iter()
-                    .map(|p| format!("  {p:?}"))
+                    .map(|p| format!("  {:?}", p))
                     .collect::<Vec<_>>()
                     .join(",\n");
                 format!(
@@ -1045,7 +1044,7 @@ mod phase7 {
                 .unwrap()
         };
 
-        let (_discarded_engine, mut ctx, push_rx) = make_ctx_with_models(tmp, catalog);
+        let (mut _engine, mut ctx, push_rx) = make_ctx_with_models(tmp, catalog);
         ctx.config.providers = providers;
         // Reattach an engine that matches the existing make_ctx_with_models
         // engine pattern (we discard the original since we mutated config).
@@ -1055,6 +1054,7 @@ mod phase7 {
             ctx.push_tx.clone(),
         )
         .unwrap();
+        _engine = engine;
 
         // Write the discovery cache for the requested provider.
         let cache = ProviderModelsCache {
@@ -1087,7 +1087,7 @@ mod phase7 {
         let path = shore_llm::discovery::cache_path(&ctx.config.dirs.cache, provider);
         shore_llm::discovery::write_cache(&path, &cache).unwrap();
 
-        (engine, ctx, push_rx)
+        (_engine, ctx, push_rx)
     }
 
     // ── Validation: discovered model can be selected ────────────────────

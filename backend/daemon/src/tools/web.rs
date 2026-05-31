@@ -68,8 +68,8 @@ pub async fn handle_web_search(input: Value, ctx: &dyn ToolContext) -> Result<Va
 
     let max_results = input
         .get("max_results")
-        .and_then(Value::as_u64)
-        .unwrap_or(u64::from(search_cfg.max_results));
+        .and_then(|v| v.as_u64())
+        .unwrap_or(search_cfg.max_results as u64);
 
     let body = json!({
         "api_key": api_key,
@@ -215,7 +215,7 @@ fn strip_html(html: &str) -> String {
             let remaining_lower = html[i..].to_ascii_lowercase();
             if let Some(tag) = ["script", "style", "head"]
                 .iter()
-                .find(|tag| remaining_lower.starts_with(&format!("<{tag}")))
+                .find(|t| remaining_lower.starts_with(&format!("<{}", t)))
             {
                 // Find the closing tag (case-insensitive) in the original string.
                 let close = format!("</{tag}");
@@ -326,7 +326,7 @@ mod tests {
 
     /// Live integration test — requires TAVILY_API_KEY env var.
     #[tokio::test]
-    #[ignore = "live web search requires TAVILY_API_KEY and network access"]
+    #[ignore]
     async fn test_web_search_live() {
         let ctx = TestToolContext::new();
         let result = handle_web_search(
@@ -366,11 +366,11 @@ mod tests {
 
     #[test]
     fn test_strip_html_removes_script_and_style() {
-        let html = r"<html><head><title>T</title></head><body>
+        let html = r#"<html><head><title>T</title></head><body>
             <script>var x = 1;</script>
             <style>.foo { color: red; }</style>
             <p>Visible text</p>
-        </body></html>";
+        </body></html>"#;
         let text = strip_html(html);
         assert!(text.contains("Visible text"));
         assert!(!text.contains("var x"));
@@ -405,6 +405,6 @@ mod tests {
         let html = format!("{}<b>x</b>", "ẞ".repeat(10));
         let result = strip_html(&html);
         // Should extract the text content without panicking.
-        assert!(result.contains('x'));
+        assert!(result.contains("x"));
     }
 }

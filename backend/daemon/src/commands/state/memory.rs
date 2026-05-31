@@ -15,7 +15,6 @@ use shore_config::character_memory_dir;
 use shore_config::resolve_prompt_template;
 
 use crate::commands::{CommandContext, CommandResult};
-use crate::convert::u64_to_usize;
 
 async fn open_markdown_store(
     ctx: &CommandContext,
@@ -37,11 +36,7 @@ pub fn memory_changelog(
     ctx: &CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let limit = args
-        .get("limit")
-        .and_then(serde_json::Value::as_i64)
-        .unwrap_or(20);
-    let limit = usize::try_from(limit.max(0)).unwrap_or(usize::MAX);
+    let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
 
     let char_name = engine.character_name();
     let dreams_path = crate::memory::dreams_log::dreams_log_path(&ctx.config.dirs.data, char_name);
@@ -87,7 +82,7 @@ pub fn memory_changelog(
         })
         .collect::<Vec<_>>();
     sections.reverse();
-    sections.truncate(limit);
+    sections.truncate(limit.max(0) as usize);
 
     debug!(
         character = char_name,
@@ -105,8 +100,9 @@ pub fn memory_dreams(
 ) -> CommandResult {
     let limit = args
         .get("limit")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(10, u64_to_usize);
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .unwrap_or(10);
     let char_name = engine.character_name();
     let path = crate::memory::dreams_log::dreams_log_path(&ctx.config.dirs.data, char_name);
     if !path.exists() {
@@ -153,16 +149,13 @@ pub async fn memory_dream(
 ) -> CommandResult {
     let status = args
         .get("status")
-        .and_then(serde_json::Value::as_bool)
+        .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let dry_run = args
         .get("dry_run")
-        .and_then(serde_json::Value::as_bool)
+        .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let force = args
-        .get("force")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let char_name = engine.character_name();
     let cfg = &ctx.config.app.memory.dreaming;
 
@@ -287,10 +280,6 @@ async fn memory_query(
 }
 
 /// Run compaction on the current character's conversation.
-#[expect(
-    clippy::too_many_lines,
-    reason = "manual compaction command orchestration split is tracked in #109"
-)]
 pub async fn compact(
     engine: &mut ConversationEngine,
     ctx: &CommandContext,
@@ -298,13 +287,13 @@ pub async fn compact(
 ) -> CommandResult {
     let dry_run = args
         .get("dry_run")
-        .and_then(serde_json::Value::as_bool)
+        .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
     let keep_turns_override = args
         .get("keep_turns")
-        .and_then(serde_json::Value::as_u64)
-        .map(u64_to_usize);
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
 
     let char_name = engine.character_name().to_string();
     let _compaction_guard =
@@ -385,36 +374,38 @@ pub async fn compact(
     // in-memory cached `last_request`; fall back to rebuilding from disk
     // via the same path chat would have used. The wire shape — system,
     // tools, messages — is identical either way; only the source differs.
-    let chat_request = if let Some(req) = ctx.autonomy.cached_last_request(&char_name) {
-        req
-    } else {
-        let chat_model =
-            crate::preferences::resolve_chat_model_for_character(&ctx.config, &char_name)
-                .ok_or_else(|| {
-                    (
-                        ErrorCode::InternalError,
-                        "No chat model configured for compaction prefix rebuild".to_string(),
-                    )
-                })?;
-        let character_dir = engine.character_dir().clone();
-        let has_prior_context = crate::engine::segments::SegmentReader::load(&character_dir)
-            .is_ok_and(|r| r.segment_count() > 0);
-        crate::handler::build_chat_shape_request_from_disk(
-            &char_name,
-            &character_dir,
-            &ctx.config,
-            &chat_model,
-            engine.messages(),
-            has_prior_context,
-        )
-        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
+    let chat_request = match ctx.autonomy.cached_last_request(&char_name) {
+        Some(req) => req,
+        None => {
+            let chat_model =
+                crate::preferences::resolve_chat_model_for_character(&ctx.config, &char_name)
+                    .ok_or_else(|| {
+                        (
+                            ErrorCode::InternalError,
+                            "No chat model configured for compaction prefix rebuild".to_string(),
+                        )
+                    })?;
+            let character_dir = engine.character_dir().to_path_buf();
+            let has_prior_context = crate::engine::segments::SegmentReader::load(&character_dir)
+                .map(|r| r.segment_count() > 0)
+                .unwrap_or(false);
+            crate::handler::build_chat_shape_request_from_disk(
+                &char_name,
+                &character_dir,
+                &ctx.config,
+                &chat_model,
+                engine.messages(),
+                has_prior_context,
+            )
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
+        }
     };
 
     // Build the canonical tool context for the compaction loop. Mirrors
     // the background-task wiring so manual `swp memory_compact` and the
     // idle-trigger path see an identical workspace/markdown-store/embedder
     // view.
-    let tool_ctx = build_swp_compaction_tool_context(ctx, &char_name);
+    let tool_ctx = build_swp_compaction_tool_context(ctx, &char_name).await;
 
     let outcome = mgr
         .compact(
@@ -436,7 +427,7 @@ pub async fn compact(
             tool_ctx.as_ref(),
         )
         .await
-        .map_err(|e| compaction_err(&e))?;
+        .map_err(compaction_err)?;
 
     match outcome {
         CompactionOutcome::Compacted(result) => {
@@ -533,7 +524,7 @@ pub async fn compact(
 /// call. Mirrors the background-task wiring exactly so both code paths
 /// see the same workspace, markdown store, embedder, and image-gen
 /// config.
-fn build_swp_compaction_tool_context(
+async fn build_swp_compaction_tool_context(
     ctx: &CommandContext,
     char_name: &str,
 ) -> std::sync::Arc<crate::tools::context::SharedToolContext> {
@@ -553,34 +544,34 @@ fn build_swp_compaction_tool_context(
     .ok();
 
     std::sync::Arc::new(crate::tools::context::SharedToolContext {
-        image_dir: character_data_dir_path
+        image_dir_val: character_data_dir_path
             .join("images")
             .to_string_lossy()
             .into_owned(),
-        llm_client: ctx.llm_client.inner().clone(),
-        image_gen_config,
-        search_config: ctx.config.app.behavior.tool_use.search.clone(),
-        character_name: char_name.to_string(),
-        workspace_dir: character_workspace_dir(&ctx.config.dirs.config, char_name)
+        llm_client_val: ctx.llm_client.inner().clone(),
+        image_gen_config_val: image_gen_config,
+        search_config_val: ctx.config.app.behavior.tool_use.search.clone(),
+        character_name_val: char_name.to_string(),
+        workspace_dir_val: character_workspace_dir(&ctx.config.dirs.config, char_name)
             .to_string_lossy()
             .into_owned(),
-        markdown_store: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
+        markdown_store_val: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
             character_memory_dir(&ctx.config.dirs.config, char_name),
         )
         .ok(),
-        memory_retrieval_config: ctx.config.app.memory.retrieval.clone(),
-        embedder,
-        memory_index_path: crate::memory::workspace_index::index_path(
+        memory_retrieval_config_val: ctx.config.app.memory.retrieval.clone(),
+        embedder_val: embedder,
+        memory_index_path_val: crate::memory::workspace_index::index_path(
             &ctx.config.dirs.cache,
             char_name,
         ),
-        config_dir: ctx.config.dirs.config.to_string_lossy().into_owned(),
-        character_data_dir: character_data_dir_path.to_string_lossy().into_owned(),
+        config_dir_val: ctx.config.dirs.config.to_string_lossy().into_owned(),
+        character_data_dir_val: character_data_dir_path.to_string_lossy().into_owned(),
     })
 }
 
-fn compaction_err(e: &CompactionError) -> (ErrorCode, String) {
-    match e {
+fn compaction_err(e: CompactionError) -> (ErrorCode, String) {
+    match &e {
         CompactionError::PrivateConversation | CompactionError::InsufficientMessages => {
             (ErrorCode::InvalidRequest, e.to_string())
         }

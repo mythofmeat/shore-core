@@ -675,14 +675,13 @@ pub fn apply_sampler_overlay(
         // `set_model_setting` validates the string before it reaches the
         // file; anything unparseable here would be a corrupted preferences
         // edit, so log and leave the catalog SDK in place.
-        if let Some(sdk) = shore_config::models::Sdk::parse_wire(s) {
-            patched.sdk = sdk;
-        } else {
-            tracing::warn!(
+        match shore_config::models::Sdk::parse_wire(s) {
+            Some(sdk) => patched.sdk = sdk,
+            None => tracing::warn!(
                 model = %patched.qualified_name,
                 sdk = %s,
                 "preferences overlay carries unknown sdk; keeping catalog value"
-            );
+            ),
         }
     }
     patched

@@ -22,10 +22,10 @@ use shore_ledger::LedgerClient;
 /// Cumulative token usage tracked across the daemon session.
 #[derive(Debug, Default)]
 pub struct SessionTokens {
-    pub input: u64,
-    pub output: u64,
-    pub cache_read: u64,
-    pub cache_write: u64,
+    pub input: u32,
+    pub output: u32,
+    pub cache_read: u32,
+    pub cache_write: u32,
 }
 
 /// Shared state for command handlers (does not own the engine).
@@ -161,23 +161,18 @@ pub fn dispatch_characterless(ctx: &CommandContext, cmd: &Command) -> CommandRes
 
 /// Convert an EngineError to a command error tuple.
 pub fn engine_err(e: EngineError) -> (ErrorCode, String) {
-    match e {
-        EngineError::MessageNotFound(message) => {
-            (ErrorCode::NotFound, format!("message not found: {message}"))
+    match &e {
+        EngineError::MessageNotFound(_) | EngineError::CharacterNotFound(_) => {
+            (ErrorCode::NotFound, e.to_string())
         }
-        EngineError::CharacterNotFound(character) => (
-            ErrorCode::NotFound,
-            format!("character not found: {character}"),
-        ),
-        EngineError::InvalidAlt(message) => (ErrorCode::InvalidRequest, message),
-        other => (ErrorCode::InternalError, other.to_string()),
+        EngineError::InvalidAlt(_) => (ErrorCode::InvalidRequest, e.to_string()),
+        _ => (ErrorCode::InternalError, e.to_string()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shore_config::app::{AutonomyConfig, CompactionConfig};
     use shore_protocol::client_msg::Command;
 
     fn make_ctx(
@@ -205,12 +200,8 @@ mod tests {
         );
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let autonomy = AutonomyManager::new(
-            AutonomyConfig::default(),
-            CompactionConfig::default(),
-            data_dir.clone(),
-            rx,
-        );
+        let autonomy =
+            AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
 
         let ctx = CommandContext {
             config_path: config.dirs.config.join("config.toml"),
@@ -247,7 +238,7 @@ mod tests {
                 assert_eq!(e.code, ErrorCode::InvalidRequest);
                 assert!(e.message.contains("bogus_command"));
             }
-            other => panic!("Expected Error, got {other:?}"),
+            other => panic!("Expected Error, got {:?}", other),
         }
     }
 
@@ -269,7 +260,7 @@ mod tests {
                 assert_eq!(output.name, "status");
                 assert!(output.data.is_object());
             }
-            other => panic!("Expected CommandOutput, got {other:?}"),
+            other => panic!("Expected CommandOutput, got {:?}", other),
         }
     }
 

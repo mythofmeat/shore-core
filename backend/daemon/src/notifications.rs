@@ -78,7 +78,7 @@ impl NotificationService {
     /// exceeds the configured threshold (0 = always notify).
     pub fn notify_message_complete(&self, title: &str, body: &str, total_ms: u32) {
         let threshold_ms = self.config.generation_threshold.as_millis();
-        if threshold_ms > 0 && u64::from(total_ms) < threshold_ms {
+        if threshold_ms > 0 && (total_ms as u64) < threshold_ms {
             return;
         }
         self.notify(NotificationEvent::MessageComplete, title, body);
