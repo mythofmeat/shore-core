@@ -54,13 +54,13 @@ async-trait = "0.1"
 # disabled). Versions here track what is published on crates.io for the
 # core library crates so packaged manifests stay coherent.
 shore-protocol = { path = "core/protocol", version = "0.6.0" }
-shore-config = { path = "core/config", version = "0.7.0" }
-shore-swp-client = { path = "core/swp-client", version = "0.2.7" }
+shore-config = { path = "core/config", version = "0.8.0" }
+shore-swp-client = { path = "core/swp-client", version = "0.2.8" }
 shore-diagnostics = { path = "backend/diagnostics", version = "0.2.0" }
-shore-llm = { path = "backend/llm", version = "6.0.2" }
-shore-ledger = { path = "backend/ledger", version = "2.0.3" }
-shore-swp-server = { path = "backend/swp-server", version = "1.8.11" }
-shore-daemon = { path = "backend/daemon", version = "9.0.0" }
+shore-llm = { path = "backend/llm", version = "6.0.3" }
+shore-ledger = { path = "backend/ledger", version = "2.0.4" }
+shore-swp-server = { path = "backend/swp-server", version = "1.8.12" }
+shore-daemon = { path = "backend/daemon", version = "10.0.0" }
 # Intentionally path-only (no `version`). shore-test-harness is a dev-only
 # crate that shore-daemon pulls in as a dev-dependency, and it depends
 # back on shore-daemon — a versioned cycle there causes
