@@ -1,5 +1,6 @@
 //! Per-character Anthropic cache warm/cold state machine.
 
+use crate::convert::u64_to_i64;
 use chrono::{DateTime, Utc};
 use tracing::debug;
 
@@ -22,8 +23,8 @@ pub struct Observation {
     pub ts: String,
     pub model: String,
     pub thinking_enabled: bool,
-    pub cache_read_tokens: u32,
-    pub cache_write_tokens: u32,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
     pub call_type: String,
 }
 
@@ -39,9 +40,9 @@ pub struct CacheTracker {
     last_model: Option<String>,
     last_thinking: Option<bool>,
     last_call_type: Option<String>,
-    last_cache_read: u32,
+    last_cache_read: u64,
     last_tool_loop_kind: Option<String>,
-    last_tool_loop_cache_read: u32,
+    last_tool_loop_cache_read: u64,
     ttl_secs: u64,
     /// True when the cache was Warm and just transitioned to Cold via TTL
     /// expiry. The next non-keepalive call in this state triggers a
@@ -83,7 +84,7 @@ impl CacheTracker {
         self.state
     }
 
-    pub fn last_cache_read(&self) -> u32 {
+    pub fn last_cache_read(&self) -> u64 {
         self.last_cache_read
     }
 
@@ -91,7 +92,7 @@ impl CacheTracker {
         last_ts_str: &str,
         last_model: &str,
         last_thinking: bool,
-        last_cache_read: u32,
+        last_cache_read: u64,
         ttl_secs: u64,
     ) -> Self {
         let parsed = DateTime::parse_from_rfc3339(last_ts_str).map(|dt| dt.with_timezone(&Utc));
@@ -99,7 +100,7 @@ impl CacheTracker {
         let state = match &parsed {
             Ok(ts) => {
                 let elapsed = Utc::now().signed_duration_since(*ts);
-                if elapsed.num_seconds() < ttl_secs as i64 && last_cache_read > 0 {
+                if elapsed.num_seconds() < u64_to_i64(ttl_secs) && last_cache_read > 0 {
                     CacheState::Warm
                 } else {
                     CacheState::Cold
@@ -154,7 +155,7 @@ impl CacheTracker {
         if self.state == CacheState::Warm {
             if let (Some(last), Some(now)) = (self.last_ts, obs_ts) {
                 let elapsed = now.signed_duration_since(last);
-                if elapsed.num_seconds() > self.ttl_secs as i64 {
+                if elapsed.num_seconds() > u64_to_i64(self.ttl_secs) {
                     self.state = CacheState::Cold;
                     self.last_cache_read = 0;
                     self.clear_tool_loop_baseline();

@@ -16,10 +16,10 @@ use shore_config::app::HeartbeatConfig;
 // ---------------------------------------------------------------------------
 
 /// Minimum interval a character can schedule (1 hour).
-pub const MIN_WAKE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+pub const MIN_WAKE_INTERVAL: Duration = Duration::from_hours(1);
 
 /// Maximum interval a character can schedule (48 hours).
-pub const MAX_WAKE_INTERVAL: Duration = Duration::from_secs(48 * 60 * 60);
+pub const MAX_WAKE_INTERVAL: Duration = Duration::from_hours(48);
 
 // ---------------------------------------------------------------------------
 // Action enum
@@ -189,7 +189,7 @@ impl HeartbeatClock {
         // Step 1: bootstrap if no deadline set — but only if the guard hasn't
         // already tripped. Once abandoned, we stay dormant until reset by a
         // user message.
-        if self.next_wake_at.is_none() {
+        let Some(wake_at) = self.next_wake_at else {
             if self.is_abandoned(now) {
                 return HeartbeatAction::None;
             }
@@ -200,10 +200,9 @@ impl HeartbeatClock {
                 "HeartbeatClock: no deadline set, scheduling default"
             );
             return HeartbeatAction::None;
-        }
+        };
 
         // Step 2: not due yet.
-        let wake_at = self.next_wake_at.unwrap();
         if now < wake_at {
             return HeartbeatAction::None;
         }
@@ -283,13 +282,14 @@ impl HeartbeatClock {
         self.last_user_at = Some(now);
 
         let min_wake = now + self.min_wake_interval;
-        self.next_wake_at = Some(match self.next_wake_at {
+        let wake_at = match self.next_wake_at {
             Some(existing) if existing > min_wake => existing,
             _ => min_wake,
-        });
+        };
+        self.next_wake_at = Some(wake_at);
 
         debug!(
-            wake_in_secs = self.next_wake_at.unwrap().duration_since(now).as_secs(),
+            wake_in_secs = wake_at.duration_since(now).as_secs(),
             "HeartbeatClock: user message, deadline set"
         );
     }
@@ -332,8 +332,8 @@ mod tests {
             enabled: true,
             fallback_heartbeat_interval: ConfigDuration::from_secs(interval_secs),
             dormant_after_heartbeat_turns: max_idle,
-            dormant_after_idle_time: ConfigDuration::from_secs(172800), // 48h
-            minimum_heartbeat_latency: ConfigDuration::from_secs(3600), // 1h
+            dormant_after_idle_time: ConfigDuration::from_secs(172_800), // 48h
+            minimum_heartbeat_latency: ConfigDuration::from_secs(3600),  // 1h
             max_tool_rounds: 3,
             wrap_up_grace_rounds: 1,
         };
@@ -468,7 +468,7 @@ mod tests {
         c.on_user_message(now);
 
         // Character schedules 4h out.
-        c.schedule(now + Duration::from_secs(4 * 3600), now);
+        c.schedule(now + Duration::from_hours(4), now);
         assert!(c.next_wake_at.is_some());
 
         // Should not fire at 3h.

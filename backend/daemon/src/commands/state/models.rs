@@ -53,11 +53,11 @@ fn resolve_active_model(
             "No model specified and no active model set".into(),
         ))?;
     effective_catalog::find_effective_model(&ctx.config, &ctx.config.dirs.cache, name, true)
-        .map_err(effective_catalog_err)
+        .map_err(|e| effective_catalog_err(&e))
 }
 
-fn effective_catalog_err(e: EffectiveCatalogError) -> (ErrorCode, String) {
-    match &e {
+fn effective_catalog_err(e: &EffectiveCatalogError) -> (ErrorCode, String) {
+    match e {
         EffectiveCatalogError::NotFound { .. } | EffectiveCatalogError::Hidden { .. } => {
             (ErrorCode::NotFound, e.to_string())
         }
@@ -122,7 +122,7 @@ pub fn list_models(ctx: &CommandContext) -> CommandResult {
 pub fn list_models_with_args(ctx: &CommandContext, args: &Value) -> CommandResult {
     let include_hidden = args
         .get("include_hidden")
-        .and_then(|v| v.as_bool())
+        .and_then(Value::as_bool)
         .unwrap_or(false);
 
     let entries = effective_catalog::list_effective_models(
@@ -236,7 +236,7 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
     let resolved = match name_arg {
         Some(name) => {
             effective_catalog::find_effective_model(&ctx.config, &ctx.config.dirs.cache, name, true)
-                .map_err(effective_catalog_err)?
+                .map_err(|e| effective_catalog_err(&e))?
         }
         None => resolve_active_model(ctx)?,
     };
@@ -293,7 +293,7 @@ pub fn switch_model(ctx: &mut CommandContext, args: &Value) -> CommandResult {
     let name = args.get("name").and_then(|v| v.as_str());
     let include_hidden = args
         .get("include_hidden")
-        .and_then(|v| v.as_bool())
+        .and_then(Value::as_bool)
         .unwrap_or(false);
 
     match name {
@@ -305,7 +305,7 @@ pub fn switch_model(ctx: &mut CommandContext, args: &Value) -> CommandResult {
                 name,
                 include_hidden,
             )
-            .map_err(effective_catalog_err)?;
+            .map_err(|e| effective_catalog_err(&e))?;
 
             let char_name = require_character(ctx)?.to_string();
             let mut prefs = load_char_prefs(ctx, &char_name)?;
@@ -407,15 +407,12 @@ pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResul
     let qualified = active.qualified_name.clone();
 
     // Load the appropriate preferences file.
-    let mut prefs = match scope {
-        "global" => {
-            preferences::load_preferences(&preferences::global_preferences_path(&ctx.data_dir))
-                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
-        }
-        _ => {
-            let char_name = require_character(ctx)?;
-            load_char_prefs(ctx, char_name)?
-        }
+    let mut prefs = if scope == "global" {
+        preferences::load_preferences(&preferences::global_preferences_path(&ctx.data_dir))
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
+    } else {
+        let char_name = require_character(ctx)?;
+        load_char_prefs(ctx, char_name)?
     };
 
     let entry = prefs
@@ -434,15 +431,12 @@ pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResul
             .remove(&preferences::preference_key(&provider, &model_id));
     }
 
-    match scope {
-        "global" => {
-            preferences::save_global_preferences(&ctx.data_dir, &prefs)
-                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-        }
-        _ => {
-            let char_name = require_character(ctx)?.to_string();
-            save_char_prefs(ctx, &char_name, &prefs)?;
-        }
+    if scope == "global" {
+        preferences::save_global_preferences(&ctx.data_dir, &prefs)
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    } else {
+        let char_name = require_character(ctx)?.to_string();
+        save_char_prefs(ctx, &char_name, &prefs)?;
     }
 
     info!(
@@ -559,7 +553,7 @@ fn apply_sampler_value(
                 Some(s.to_string())
             };
         }
-        _ => unreachable!("guarded by SAMPLER_KEYS"),
+        _ => return Err(invalid(format!("unknown setting key: {key}"))),
     }
     Ok(())
 }
@@ -585,7 +579,7 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
     {
         Some(name) => {
             effective_catalog::find_effective_model(&ctx.config, &ctx.config.dirs.cache, name, true)
-                .map_err(effective_catalog_err)?
+                .map_err(|e| effective_catalog_err(&e))?
         }
         None => resolve_active_model(ctx)?,
     };

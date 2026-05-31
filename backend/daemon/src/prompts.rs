@@ -24,11 +24,7 @@ pub const fn trim_trailing_newline(s: &'static str) -> &'static str {
     let bytes = s.as_bytes();
     let len = bytes.len();
     if len > 0 && bytes[len - 1] == b'\n' {
-        let (head, _) = bytes.split_at(len - 1);
-        match std::str::from_utf8(head) {
-            Ok(s) => s,
-            Err(_) => panic!("prompt file is not valid UTF-8 after stripping trailing newline"),
-        }
+        s.split_at(len - 1).0
     } else {
         s
     }

@@ -10,6 +10,7 @@ use chrono::{DateTime, FixedOffset};
 use serde_json::{json, Value};
 use shore_protocol::types::{derive_content_from_blocks_with, Message, Role};
 
+use crate::convert::{i64_to_f64, u64_to_usize};
 use crate::engine::messages::MessageStore;
 use crate::engine::segments::SegmentReader;
 
@@ -144,9 +145,8 @@ fn filters_from(input: &Value) -> Result<(Option<String>, TimeRange), ToolError>
 fn max_results_from(input: &Value) -> usize {
     input
         .get("max_results")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
-        .unwrap_or(DEFAULT_MAX_RESULTS)
+        .and_then(Value::as_u64)
+        .map_or(DEFAULT_MAX_RESULTS, u64_to_usize)
         .clamp(1, MAX_RESULTS)
 }
 
@@ -202,7 +202,9 @@ impl QueryMatcher {
             return None;
         }
 
-        let mut score = hits as i64 * TERM_HIT;
+        let mut score = i64::try_from(hits)
+            .unwrap_or(i64::MAX / TERM_HIT)
+            .saturating_mul(TERM_HIT);
         if hits == self.terms.len() {
             score += FULL_COVERAGE_BONUS;
         }
@@ -241,8 +243,7 @@ fn excerpt_for(content: &str, matcher: Option<&QueryMatcher>) -> String {
 
     let start_char = content
         .get(..byte_idx)
-        .map(|prefix| prefix.chars().count().saturating_sub(80))
-        .unwrap_or(0);
+        .map_or(0, |prefix| prefix.chars().count().saturating_sub(80));
     let mut excerpt: String = content
         .chars()
         .skip(start_char)
@@ -284,12 +285,11 @@ fn matches_time_range(
         return true;
     }
 
-    match DateTime::parse_from_rfc3339(timestamp) {
-        Ok(parsed) => range.contains(parsed),
-        Err(_) => {
-            *skipped_invalid_timestamps += 1;
-            false
-        }
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(timestamp) {
+        range.contains(parsed)
+    } else {
+        *skipped_invalid_timestamps += 1;
+        false
     }
 }
 
@@ -393,11 +393,11 @@ fn combined_score(
 ) -> f64 {
     let recency = match (candidate.parsed_ts, min_ts) {
         (Some(ts), Some(min)) if span_secs > 0.0 => {
-            ((ts - min).num_seconds() as f64 / span_secs) * RECENCY_WEIGHT
+            (i64_to_f64((ts - min).num_seconds()) / span_secs) * RECENCY_WEIGHT
         }
         _ => 0.0,
     };
-    candidate.relevance as f64 + recency
+    i64_to_f64(candidate.relevance) + recency
 }
 
 /// Orders keyword-query candidates by relevance blended with recency, newest
@@ -412,7 +412,7 @@ fn rank_candidates(candidates: &mut [ScoredCandidate]) {
         }
     }
     let span_secs = match (min_ts, max_ts) {
-        (Some(min), Some(max)) => (max - min).num_seconds().max(0) as f64,
+        (Some(min), Some(max)) => i64_to_f64((max - min).num_seconds().max(0)),
         _ => 0.0,
     };
 
@@ -424,10 +424,7 @@ fn rank_candidates(candidates: &mut [ScoredCandidate]) {
     });
 }
 
-pub async fn handle_search_history(
-    input: Value,
-    ctx: &dyn ToolContext,
-) -> Result<Value, ToolError> {
+pub fn handle_search_history(input: &Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
     let character_data_dir = ctx.character_data_dir();
     if character_data_dir.is_empty() {
         return Err(ToolError::InvalidArgs(
@@ -435,9 +432,9 @@ pub async fn handle_search_history(
         ));
     }
 
-    let (query, range) = filters_from(&input)?;
+    let (query, range) = filters_from(input)?;
     let matcher = query.as_deref().map(QueryMatcher::new);
-    let max_results = max_results_from(&input);
+    let max_results = max_results_from(input);
     let character_dir = PathBuf::from(character_data_dir);
 
     let mut candidates: Vec<ScoredCandidate> = Vec::new();
@@ -580,9 +577,7 @@ mod tests {
         .unwrap();
 
         let ctx = TestToolContext::new().with_character_data_dir(character_dir.to_str().unwrap());
-        let result = handle_search_history(json!({"query": "tea"}), &ctx)
-            .await
-            .unwrap();
+        let result = handle_search_history(&json!({"query": "tea"}), &ctx).unwrap();
         let hits = result["results"].as_array().unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0]["msg_id"], "old");
@@ -620,9 +615,7 @@ mod tests {
         .unwrap();
 
         let ctx = TestToolContext::new().with_character_data_dir(character_dir.to_str().unwrap());
-        let result = handle_search_history(json!({"query": "coffee"}), &ctx)
-            .await
-            .unwrap();
+        let result = handle_search_history(&json!({"query": "coffee"}), &ctx).unwrap();
         let hits = result["results"].as_array().unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["msg_id"], "active");
@@ -688,13 +681,12 @@ mod tests {
 
         let ctx = TestToolContext::new().with_character_data_dir(character_dir.to_str().unwrap());
         let result = handle_search_history(
-            json!({
+            &json!({
                 "start_time": "2026-05-13T09:00:00+10:00",
                 "end_time": "2026-05-13T10:59:59+10:00"
             }),
             &ctx,
         )
-        .await
         .unwrap();
 
         let hits = result["results"].as_array().unwrap();
@@ -739,14 +731,13 @@ mod tests {
 
         let ctx = TestToolContext::new().with_character_data_dir(character_dir.to_str().unwrap());
         let result = handle_search_history(
-            json!({
+            &json!({
                 "query": "tea",
                 "start_time": "2026-05-13T09:00:00+10:00",
                 "end_time": "2026-05-13T10:00:00+10:00"
             }),
             &ctx,
         )
-        .await
         .unwrap();
 
         let hits = result["results"].as_array().unwrap();
@@ -787,14 +778,13 @@ mod tests {
 
         let ctx = TestToolContext::new().with_character_data_dir(character_dir.to_str().unwrap());
         let result = handle_search_history(
-            json!({
+            &json!({
                 "query": "tea",
                 "start_time": "2026-05-13T09:00:00+10:00",
                 "end_time": "2026-05-13T10:00:00+10:00"
             }),
             &ctx,
         )
-        .await
         .unwrap();
 
         let hits = result["results"].as_array().unwrap();
@@ -846,13 +836,12 @@ mod tests {
 
         let ctx = TestToolContext::new().with_character_data_dir(character_dir.to_str().unwrap());
         let result = handle_search_history(
-            json!({
+            &json!({
                 "start_time": "2026-05-13T09:00:00+10:00",
                 "end_time": "2026-05-13T11:00:00+10:00"
             }),
             &ctx,
         )
-        .await
         .unwrap();
 
         let order: Vec<&str> = result["results"]
@@ -875,7 +864,7 @@ mod tests {
     #[tokio::test]
     async fn search_history_requires_query_or_time_range() {
         let ctx = TestToolContext::new().with_character_data_dir("/tmp");
-        let result = handle_search_history(json!({}), &ctx).await;
+        let result = handle_search_history(&json!({}), &ctx);
         assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
     }
 
@@ -884,22 +873,20 @@ mod tests {
         let ctx = TestToolContext::new().with_character_data_dir("/tmp");
 
         let invalid = handle_search_history(
-            json!({
+            &json!({
                 "start_time": "not-a-timestamp"
             }),
             &ctx,
-        )
-        .await;
+        );
         assert!(matches!(invalid, Err(ToolError::InvalidArgs(_))));
 
         let reversed = handle_search_history(
-            json!({
+            &json!({
                 "start_time": "2026-05-13T10:00:00+10:00",
                 "end_time": "2026-05-13T09:00:00+10:00"
             }),
             &ctx,
-        )
-        .await;
+        );
         assert!(matches!(reversed, Err(ToolError::InvalidArgs(_))));
     }
 
@@ -937,18 +924,14 @@ mod tests {
         let ctx = TestToolContext::new().with_character_data_dir(character_dir.to_str().unwrap());
 
         // Visible text matches.
-        let hit = handle_search_history(json!({"query": "apples"}), &ctx)
-            .await
-            .unwrap();
+        let hit = handle_search_history(&json!({"query": "apples"}), &ctx).unwrap();
         let hits = hit["results"].as_array().unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["msg_id"], "answer");
 
         // Terms that appear only inside thinking / tool results never match.
         for buried in ["bananas", "cherries", "durian"] {
-            let miss = handle_search_history(json!({"query": buried}), &ctx)
-                .await
-                .unwrap();
+            let miss = handle_search_history(&json!({"query": buried}), &ctx).unwrap();
             assert_eq!(
                 miss["results"].as_array().unwrap().len(),
                 0,
@@ -958,13 +941,12 @@ mod tests {
 
         // Time-range-only search excludes the tool-result-only turn entirely.
         let range = handle_search_history(
-            json!({
+            &json!({
                 "start_time": "2026-01-01T00:00:00Z",
                 "end_time": "2026-01-03T00:00:00Z"
             }),
             &ctx,
         )
-        .await
         .unwrap();
         let range_hits = range["results"].as_array().unwrap();
         assert_eq!(range_hits.len(), 1);
@@ -1003,9 +985,7 @@ mod tests {
         );
 
         let ctx = TestToolContext::new().with_character_data_dir(character_dir.to_str().unwrap());
-        let result = handle_search_history(json!({"query": "cache daemon"}), &ctx)
-            .await
-            .unwrap();
+        let result = handle_search_history(&json!({"query": "cache daemon"}), &ctx).unwrap();
         let hits = result["results"].as_array().unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0]["msg_id"], "both");
@@ -1035,9 +1015,7 @@ mod tests {
         );
 
         let ctx = TestToolContext::new().with_character_data_dir(character_dir.to_str().unwrap());
-        let result = handle_search_history(json!({"query": "cache"}), &ctx)
-            .await
-            .unwrap();
+        let result = handle_search_history(&json!({"query": "cache"}), &ctx).unwrap();
         let hits = result["results"].as_array().unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0]["msg_id"], "newer");
@@ -1064,9 +1042,8 @@ mod tests {
         write_active(character_dir, &many);
 
         let ctx = TestToolContext::new().with_character_data_dir(character_dir.to_str().unwrap());
-        let result = handle_search_history(json!({"query": "cache", "max_results": 3}), &ctx)
-            .await
-            .unwrap();
+        let result =
+            handle_search_history(&json!({"query": "cache", "max_results": 3}), &ctx).unwrap();
         let hits = result["results"].as_array().unwrap();
         assert_eq!(hits.len(), 3);
         // Newest three despite the cap, and the full corpus is reported scanned.

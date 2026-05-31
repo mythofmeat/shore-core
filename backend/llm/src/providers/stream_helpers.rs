@@ -21,12 +21,12 @@ impl StreamTiming {
     /// Record the first token time (idempotent — only records the first call).
     pub(crate) fn record_first_token(&mut self) {
         if self.first_token_ms.is_none() {
-            self.first_token_ms = Some(self.start.elapsed().as_millis() as u32);
+            self.first_token_ms = Some(crate::convert::elapsed_ms_u32(self.start.elapsed()));
         }
     }
 
     pub(crate) fn total_ms(&self) -> u32 {
-        self.start.elapsed().as_millis() as u32
+        crate::convert::elapsed_ms_u32(self.start.elapsed())
     }
 
     pub(crate) fn ttft_ms(&self) -> u32 {
@@ -71,20 +71,20 @@ pub(crate) fn build_start_event(model: &str) -> String {
 pub(crate) fn merge_anthropic_usage(usage: &mut Usage, raw: &Value) {
     if let Some(v) = raw.get("input_tokens").and_then(Value::as_u64) {
         if v > 0 {
-            usage.input_tokens = v as u32;
+            usage.input_tokens = v;
         }
     }
     if let Some(v) = raw.get("output_tokens").and_then(Value::as_u64) {
-        usage.output_tokens = v as u32;
+        usage.output_tokens = v;
     }
     if let Some(v) = raw.get("cache_read_input_tokens").and_then(Value::as_u64) {
-        usage.cache_read_tokens = v as u32;
+        usage.cache_read_tokens = v;
     }
     if let Some(v) = raw
         .get("cache_creation_input_tokens")
         .and_then(Value::as_u64)
     {
-        usage.cache_creation_tokens = v as u32;
+        usage.cache_creation_tokens = v;
     }
     if let Some(v) = raw.get("cost").and_then(Value::as_f64) {
         usage.total_cost_usd = Some(v);
@@ -96,19 +96,19 @@ pub(crate) fn extract_anthropic_usage(body: Option<&Value>) -> Usage {
     let mut usage = Usage::default();
     if let Some(raw) = body {
         // Non-streaming: all fields present in one object, set unconditionally.
-        usage.input_tokens = raw.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
+        usage.input_tokens = raw.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
         usage.output_tokens = raw
             .get("output_tokens")
             .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
+            .unwrap_or(0);
         usage.cache_read_tokens = raw
             .get("cache_read_input_tokens")
             .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
+            .unwrap_or(0);
         usage.cache_creation_tokens = raw
             .get("cache_creation_input_tokens")
             .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
+            .unwrap_or(0);
         usage.total_cost_usd = raw.get("cost").and_then(Value::as_f64);
     }
     usage
@@ -122,16 +122,16 @@ pub(crate) fn extract_gemini_usage(meta: Option<&Value>) -> Usage {
     Usage {
         input_tokens: m
             .get("promptTokenCount")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
         output_tokens: m
             .get("candidatesTokenCount")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
         cache_read_tokens: m
             .get("cachedContentTokenCount")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
         cache_creation_tokens: 0,
         ..Default::default()
     }
@@ -165,8 +165,7 @@ pub(crate) fn extract_system_text(value: &Value) -> String {
                     None
                 }
             })
-            .collect::<Vec<_>>()
-            .join(""),
+            .collect::<String>(),
         _ => String::new(),
     }
 }
@@ -179,19 +178,22 @@ pub(crate) fn extract_openai_usage(u: &Value) -> Usage {
     let prompt_details = u.get("prompt_tokens_details");
     let cached = prompt_details
         .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     let cache_write = prompt_details
         .and_then(|d| d.get("cache_write_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
 
     Usage {
-        input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+        input_tokens: u
+            .get("prompt_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
         output_tokens: u
             .get("completion_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
         cache_read_tokens: cached,
         cache_creation_tokens: cache_write,
         total_cost_usd: u.get("cost").and_then(Value::as_f64),
@@ -214,6 +216,10 @@ pub(crate) fn wrap_inline_system_instruction(text: &str) -> String {
 ///
 /// Covers OpenAI (lowercase), Gemini (UPPERCASE), and Anthropic (already
 /// canonical) values in a single collision-free match table.
+#[expect(
+    clippy::match_same_arms,
+    reason = "per-provider finish-reason groups kept distinct as a documentation table"
+)]
 pub(crate) fn normalize_finish_reason(reason: Option<&str>) -> &'static str {
     match reason {
         // OpenAI
@@ -259,6 +265,10 @@ pub(crate) fn apply_common_params(body: &mut Value, request: &LlmRequest) {
 /// Each provider wraps the result in its own envelope:
 /// - OpenAI: `{type: "function", function: <decl>}`
 /// - Gemini: `[{functionDeclarations: <decls>}]`
+#[expect(
+    clippy::ref_option,
+    reason = "mirrors LlmRequest.tools (&Option); avoids cloning the tool list at every call site"
+)]
 pub(crate) fn translate_tool_declarations(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
     let tools = tools.as_ref()?;
     if tools.is_empty() {

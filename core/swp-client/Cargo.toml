@@ -24,3 +24,6 @@ libc = "0.2"
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

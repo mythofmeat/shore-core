@@ -104,6 +104,7 @@ pub fn test_model() -> ResolvedModel {
 // ── TestToolContext ─────────────────────────────────────────────────────
 
 /// Shared `ToolContext` implementation for unit tests.
+#[must_use]
 pub struct TestToolContext {
     pub model: ResolvedModel,
     pub image_dir_val: String,
@@ -216,7 +217,7 @@ impl ToolContext for TestToolContext {
     fn character_data_dir(&self) -> &str {
         &self.character_data_dir_val
     }
-    fn config_dir(&self) -> &str {
+    fn config_dir(&self) -> &'static str {
         ""
     }
     fn defer_edit(&self, _path: &str) {}

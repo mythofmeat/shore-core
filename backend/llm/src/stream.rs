@@ -40,33 +40,7 @@ impl StreamConsumer {
         reader: &mut BufReader<impl AsyncRead + Unpin>,
         regen: bool,
     ) -> Result<StreamResult, LlmError> {
-        let mut model = String::new();
-        let mut tool_uses = Vec::new();
-        let mut content_blocks: Vec<ContentBlock> = Vec::new();
-        let mut text_buf = String::new();
-        let mut thinking_buf = String::new();
-        let mut pending_signature: Option<String> = None;
-        let mut started = false;
-
-        // Flush accumulated text buffer into content_blocks.
-        let flush_text = |buf: &mut String, blocks: &mut Vec<ContentBlock>| {
-            if !buf.is_empty() {
-                blocks.push(ContentBlock::Text {
-                    text: std::mem::take(buf),
-                });
-            }
-        };
-
-        // Flush accumulated thinking buffer into content_blocks, attaching any pending signature.
-        let flush_thinking =
-            |buf: &mut String, blocks: &mut Vec<ContentBlock>, sig: &mut Option<String>| {
-                if !buf.is_empty() {
-                    blocks.push(ContentBlock::Thinking {
-                        thinking: std::mem::take(buf),
-                        signature: sig.take(),
-                    });
-                }
-            };
+        let mut st = ConsumeState::default();
 
         loop {
             let mut line = String::new();
@@ -89,131 +63,178 @@ impl StreamConsumer {
             let event: StreamEvent =
                 serde_json::from_str(trimmed).map_err(LlmError::Deserialize)?;
 
-            match event {
-                StreamEvent::Start { model: start_model } => {
-                    model = start_model;
-                    started = true;
+            if let Some(result) = self.handle_event(&mut st, event, regen).await {
+                return Ok(result);
+            }
+        }
+    }
 
-                    // Emit stream_start to the requesting SWP session.
-                    let _ = self
-                        .direct_tx
-                        .send(ServerMessage::StreamStart(StreamStart {
-                            rid: self.rid.clone(),
-                            regen,
-                        }))
-                        .await;
+    /// Handle one decoded SSE event: relay any `StreamChunk`/`StreamStart`
+    /// frame to the session, accumulate content into `st`, and return the
+    /// final `StreamResult` once the terminal `Done` event arrives.
+    async fn handle_event(
+        &self,
+        st: &mut ConsumeState,
+        event: StreamEvent,
+        regen: bool,
+    ) -> Option<StreamResult> {
+        match event {
+            StreamEvent::Start { model: start_model } => {
+                st.model = start_model;
+                st.started = true;
 
-                    debug!(model = %model, "Stream started");
-                }
+                // Emit stream_start to the requesting SWP session.
+                let _ = self
+                    .direct_tx
+                    .send(ServerMessage::StreamStart(StreamStart {
+                        rid: self.rid.clone(),
+                        regen,
+                    }))
+                    .await;
 
-                StreamEvent::Text { text } => {
-                    // Flush any pending thinking before accumulating text.
-                    flush_thinking(
-                        &mut thinking_buf,
-                        &mut content_blocks,
-                        &mut pending_signature,
-                    );
-                    text_buf.push_str(&text);
+                debug!(model = %st.model, "Stream started");
+            }
 
-                    // Relay as StreamChunk with content_type "text".
-                    let _ = self
-                        .direct_tx
-                        .send(ServerMessage::StreamChunk(StreamChunk {
-                            rid: self.rid.clone(),
-                            text,
-                            content_type: "text".into(),
-                        }))
-                        .await;
-                }
+            StreamEvent::Text { text } => {
+                // Flush any pending thinking before accumulating text.
+                st.flush_thinking();
+                st.text_buf.push_str(&text);
 
-                StreamEvent::Thinking { text } => {
-                    // Flush any pending text before accumulating thinking.
-                    flush_text(&mut text_buf, &mut content_blocks);
-                    thinking_buf.push_str(&text);
+                // Relay as StreamChunk with content_type "text".
+                let _ = self
+                    .direct_tx
+                    .send(ServerMessage::StreamChunk(StreamChunk {
+                        rid: self.rid.clone(),
+                        text,
+                        content_type: "text".into(),
+                    }))
+                    .await;
+            }
 
-                    // Relay as StreamChunk with content_type "thinking".
-                    let _ = self
-                        .direct_tx
-                        .send(ServerMessage::StreamChunk(StreamChunk {
-                            rid: self.rid.clone(),
-                            text,
-                            content_type: "thinking".into(),
-                        }))
-                        .await;
-                }
+            StreamEvent::Thinking { text } => {
+                // Flush any pending text before accumulating thinking.
+                st.flush_text();
+                st.thinking_buf.push_str(&text);
 
-                StreamEvent::ThinkingSignature { signature } => {
-                    // Buffer the signature to attach when the thinking block is flushed.
-                    pending_signature = Some(signature);
-                }
+                // Relay as StreamChunk with content_type "thinking".
+                let _ = self
+                    .direct_tx
+                    .send(ServerMessage::StreamChunk(StreamChunk {
+                        rid: self.rid.clone(),
+                        text,
+                        content_type: "thinking".into(),
+                    }))
+                    .await;
+            }
 
-                StreamEvent::RedactedThinking { data } => {
-                    // Redacted thinking is a complete block — flush buffers and push directly.
-                    flush_text(&mut text_buf, &mut content_blocks);
-                    flush_thinking(
-                        &mut thinking_buf,
-                        &mut content_blocks,
-                        &mut pending_signature,
-                    );
-                    content_blocks.push(ContentBlock::RedactedThinking { data });
-                }
+            StreamEvent::ThinkingSignature { signature } => {
+                // Buffer the signature to attach when the thinking block is flushed.
+                st.pending_signature = Some(signature);
+            }
 
-                StreamEvent::ToolUse { id, name, input } => {
-                    // Flush pending buffers before tool_use block.
-                    flush_text(&mut text_buf, &mut content_blocks);
-                    flush_thinking(
-                        &mut thinking_buf,
-                        &mut content_blocks,
-                        &mut pending_signature,
-                    );
+            StreamEvent::RedactedThinking { data } => {
+                // Redacted thinking is a complete block — flush buffers and push directly.
+                st.flush_text();
+                st.flush_thinking();
+                st.content_blocks
+                    .push(ContentBlock::RedactedThinking { data });
+            }
 
-                    content_blocks.push(ContentBlock::ToolUse {
-                        id: id.clone(),
-                        name: name.clone(),
-                        input: input.clone(),
-                    });
+            StreamEvent::ToolUse { id, name, input } => {
+                // Flush pending buffers before tool_use block.
+                st.flush_text();
+                st.flush_thinking();
 
-                    tool_uses.push(ToolUseEvent { id, name, input });
-                }
+                st.content_blocks.push(ContentBlock::ToolUse {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                });
 
-                StreamEvent::Done {
+                st.tool_uses.push(ToolUseEvent { id, name, input });
+            }
+
+            StreamEvent::Done {
+                content,
+                finish_reason,
+                usage,
+                timing,
+            } => {
+                // Flush any remaining buffers.
+                st.flush_text();
+                st.flush_thinking();
+
+                info!(
+                    model = %st.model,
+                    input_tokens = usage.input_tokens,
+                    output_tokens = usage.output_tokens,
+                    cache_read = usage.cache_read_tokens,
+                    cache_write = usage.cache_creation_tokens,
+                    total_ms = timing.total_ms,
+                    ttft_ms = timing.time_to_first_token_ms,
+                    "Stream completed"
+                );
+
+                // StreamEnd is emitted by the caller — see emit_stream_end.
+
+                return Some(StreamResult {
                     content,
+                    model: if st.started {
+                        std::mem::take(&mut st.model)
+                    } else {
+                        String::new()
+                    },
                     finish_reason,
                     usage,
                     timing,
-                } => {
-                    // Flush any remaining buffers.
-                    flush_text(&mut text_buf, &mut content_blocks);
-                    flush_thinking(
-                        &mut thinking_buf,
-                        &mut content_blocks,
-                        &mut pending_signature,
-                    );
-
-                    info!(
-                        model = %model,
-                        input_tokens = usage.input_tokens,
-                        output_tokens = usage.output_tokens,
-                        cache_read = usage.cache_read_tokens,
-                        cache_write = usage.cache_creation_tokens,
-                        total_ms = timing.total_ms,
-                        ttft_ms = timing.time_to_first_token_ms,
-                        "Stream completed"
-                    );
-
-                    // StreamEnd is emitted by the caller — see emit_stream_end.
-
-                    return Ok(StreamResult {
-                        content,
-                        model: if started { model } else { String::new() },
-                        finish_reason,
-                        usage,
-                        timing,
-                        tool_uses,
-                        content_blocks,
-                    });
-                }
+                    tool_uses: std::mem::take(&mut st.tool_uses),
+                    content_blocks: std::mem::take(&mut st.content_blocks),
+                });
             }
+        }
+
+        None
+    }
+}
+
+/// Mutable accumulator threaded through SSE event handling in
+/// [`StreamConsumer::consume`].
+#[derive(Default)]
+struct ConsumeState {
+    /// Model name from the `start` event.
+    model: String,
+    /// Tool-use events surfaced to the caller's tool loop.
+    tool_uses: Vec<ToolUseEvent>,
+    /// Accumulated content blocks in arrival order.
+    content_blocks: Vec<ContentBlock>,
+    /// Pending text not yet flushed into `content_blocks`.
+    text_buf: String,
+    /// Pending thinking not yet flushed into `content_blocks`.
+    thinking_buf: String,
+    /// Signature buffered until the current thinking block is flushed.
+    pending_signature: Option<String>,
+    /// Whether a `start` event has been seen.
+    started: bool,
+}
+
+impl ConsumeState {
+    /// Flush accumulated text into `content_blocks`.
+    fn flush_text(&mut self) {
+        if !self.text_buf.is_empty() {
+            self.content_blocks.push(ContentBlock::Text {
+                text: std::mem::take(&mut self.text_buf),
+            });
+        }
+    }
+
+    /// Flush accumulated thinking into `content_blocks`, attaching any
+    /// pending signature.
+    fn flush_thinking(&mut self) {
+        if !self.thinking_buf.is_empty() {
+            self.content_blocks.push(ContentBlock::Thinking {
+                thinking: std::mem::take(&mut self.thinking_buf),
+                signature: self.pending_signature.take(),
+            });
         }
     }
 }
@@ -330,7 +351,7 @@ mod tests {
                 assert_eq!(chunk.text, "Hello ");
                 assert_eq!(chunk.content_type, "text");
             }
-            other => panic!("Expected StreamChunk, got {:?}", other),
+            other => panic!("Expected StreamChunk, got {other:?}"),
         }
 
         let msg3 = direct_rx.recv().await.unwrap();
@@ -339,7 +360,7 @@ mod tests {
                 assert_eq!(chunk.text, "world");
                 assert_eq!(chunk.content_type, "text");
             }
-            other => panic!("Expected StreamChunk, got {:?}", other),
+            other => panic!("Expected StreamChunk, got {other:?}"),
         }
 
         // consume() must NOT have emitted a StreamEnd yet.
@@ -362,7 +383,7 @@ mod tests {
                 assert_eq!(end.metadata.tokens.cache_read, 8);
                 assert_eq!(end.metadata.timing.ttft_ms, 50);
             }
-            other => panic!("Expected StreamEnd, got {:?}", other),
+            other => panic!("Expected StreamEnd, got {other:?}"),
         }
 
         server_handle.await.unwrap();
@@ -421,7 +442,7 @@ mod tests {
                 assert_eq!(chunk.text, "Let me think...");
                 assert_eq!(chunk.content_type, "thinking");
             }
-            other => panic!("Expected StreamChunk(thinking), got {:?}", other),
+            other => panic!("Expected StreamChunk(thinking), got {other:?}"),
         }
 
         server_handle.await.unwrap();
@@ -460,7 +481,7 @@ mod tests {
                 assert_eq!(thinking, "Let me reason...");
                 assert_eq!(signature.as_deref(), Some("sig_test_abc"));
             }
-            other => panic!("Expected Thinking with signature, got {:?}", other),
+            other => panic!("Expected Thinking with signature, got {other:?}"),
         }
         assert!(
             matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "The answer")
@@ -502,13 +523,13 @@ mod tests {
                 assert_eq!(thinking, "Visible thinking");
                 assert_eq!(signature.as_deref(), Some("sig_1"));
             }
-            other => panic!("Expected Thinking, got {:?}", other),
+            other => panic!("Expected Thinking, got {other:?}"),
         }
         match &result.content_blocks[1] {
             ContentBlock::RedactedThinking { data } => {
                 assert_eq!(data, "opaque_encrypted_bytes");
             }
-            other => panic!("Expected RedactedThinking, got {:?}", other),
+            other => panic!("Expected RedactedThinking, got {other:?}"),
         }
         assert!(
             matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "Answer")
@@ -539,7 +560,7 @@ mod tests {
         let msg = push_rx.try_recv().unwrap();
         match msg {
             ServerMessage::StreamStart(start) => assert!(start.regen),
-            other => panic!("Expected StreamStart with regen=true, got {:?}", other),
+            other => panic!("Expected StreamStart with regen=true, got {other:?}"),
         }
 
         server_handle.await.unwrap();
@@ -846,15 +867,15 @@ mod tests {
 
         match direct_rx.recv().await.unwrap() {
             ServerMessage::StreamStart(msg) => {
-                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"))
+                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"));
             }
-            other => panic!("Expected StreamStart, got {:?}", other),
+            other => panic!("Expected StreamStart, got {other:?}"),
         }
         match direct_rx.recv().await.unwrap() {
             ServerMessage::StreamChunk(msg) => {
-                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"))
+                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"));
             }
-            other => panic!("Expected StreamChunk, got {:?}", other),
+            other => panic!("Expected StreamChunk, got {other:?}"),
         }
 
         // The caller emits StreamEnd, propagating the same rid.
@@ -873,7 +894,7 @@ mod tests {
                 assert_eq!(msg.msg_id.as_deref(), Some("m_stream_01"));
                 assert_eq!(msg.revision, Some(42));
             }
-            other => panic!("Expected StreamEnd, got {:?}", other),
+            other => panic!("Expected StreamEnd, got {other:?}"),
         }
 
         server_handle.await.unwrap();

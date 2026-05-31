@@ -1,3 +1,11 @@
+#![expect(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    reason = "integration tests fail fast on setup/assertion failures; long scenario splits are tracked in #109"
+)]
+
 mod helpers;
 
 mod autonomy;

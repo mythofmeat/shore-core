@@ -1,3 +1,17 @@
+// Panic-hygiene lock (see [workspace.lints] in root Cargo.toml): this binary is
+// cleaned, so these can never regress.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -120,6 +134,10 @@ enum StartupError {
 }
 
 #[tokio::main]
+#[expect(
+    clippy::too_many_lines,
+    reason = "daemon startup orchestration split is tracked in #109"
+)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Human-readable logging (journalctl already adds timestamps) ──
     tracing_subscriber::fmt()
@@ -197,8 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     let resolved_addr = listener
         .local_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| addr.clone());
+        .map_or_else(|_| addr.clone(), |a| a.to_string());
     drop(pre_bind_server);
 
     let server_config = ServerConfig {
@@ -240,20 +257,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm = signal(SignalKind::terminate())
-                .expect("startup-fatal: failed to listen for SIGTERM");
-            tokio::select! {
-                _ = ctrl_c => info!("Received SIGINT"),
-                _ = sigterm.recv() => info!("Received SIGTERM"),
+            match signal(SignalKind::terminate()) {
+                Ok(mut sigterm) => {
+                    tokio::select! {
+                        result = ctrl_c => match result {
+                            Ok(()) => info!("Received SIGINT"),
+                            Err(error) => error!(error = %error, "Failed to listen for SIGINT"),
+                        },
+                        _ = sigterm.recv() => info!("Received SIGTERM"),
+                    }
+                }
+                Err(error) => {
+                    error!(error = %error, "Failed to listen for SIGTERM; falling back to SIGINT only");
+                    match ctrl_c.await {
+                        Ok(()) => info!("Received SIGINT"),
+                        Err(error) => error!(error = %error, "Failed to listen for SIGINT"),
+                    }
+                }
             }
         }
 
         #[cfg(not(unix))]
         {
-            ctrl_c
-                .await
-                .expect("startup-fatal: failed to listen for Ctrl+C");
-            info!("Received shutdown signal");
+            match ctrl_c.await {
+                Ok(()) => info!("Received shutdown signal"),
+                Err(error) => error!(error = %error, "Failed to listen for Ctrl+C"),
+            }
         }
 
         let _ = shutdown_tx.send(());

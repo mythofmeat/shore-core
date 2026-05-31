@@ -83,7 +83,7 @@ pub async fn handle_generate_image(
         decode_data_url(&result.url)?
     } else {
         let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_mins(1))
             .build()
             .map_err(|e| ToolError::Http(format!("failed to create HTTP client: {e}")))?;
 

@@ -1,5 +1,6 @@
 use super::*;
 use images::media_type_for_path;
+use shore_config::app::{AutonomyConfig, CompactionConfig, NotificationsConfig};
 use shore_protocol::client_msg::{Command, Regen};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::MessageOrigin;
@@ -77,8 +78,8 @@ async fn make_basic_handler_with_models(
 
     let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
     let autonomy = AutonomyManager::new(
-        Default::default(),
-        Default::default(),
+        AutonomyConfig::default(),
+        CompactionConfig::default(),
         data_dir.clone(),
         shutdown_rx,
     );
@@ -118,7 +119,7 @@ async fn make_basic_handler_with_models(
         push_tx: push_tx.clone(),
         session_router,
         autonomy,
-        notifier: NotificationService::new(Default::default()),
+        notifier: NotificationService::new(NotificationsConfig::default()),
         control_rx,
     });
 
@@ -167,8 +168,7 @@ async fn dispatch_command_valid_character() {
     let result = handler.dispatch_command(&cmd, &meta).await;
     assert!(
         matches!(result, ServerMessage::CommandOutput(_)),
-        "Expected CommandOutput, got {:?}",
-        result
+        "Expected CommandOutput, got {result:?}"
     );
 }
 
@@ -201,7 +201,7 @@ async fn list_models_reports_effective_active_model_for_selected_character() {
             assert_eq!(output.name, "list_models");
             assert_eq!(output.data["active"], "chat.openrouter.gpt-4o");
         }
-        other => panic!("Expected CommandOutput, got {:?}", other),
+        other => panic!("Expected CommandOutput, got {other:?}"),
     }
 
     let session = handler.session_state_mut(shore_swp_server::SessionId(1));
@@ -253,7 +253,7 @@ async fn dispatch_command_invalid_character() {
             assert_eq!(e.code, ErrorCode::InvalidRequest);
             assert!(e.message.contains("Bob"));
         }
-        other => panic!("Expected Error, got {:?}", other),
+        other => panic!("Expected Error, got {other:?}"),
     }
 }
 
@@ -272,8 +272,7 @@ async fn dispatch_command_auto_select() {
     let result = handler.dispatch_command(&cmd, &meta).await;
     assert!(
         matches!(result, ServerMessage::CommandOutput(_)),
-        "Expected auto-select to succeed, got {:?}",
-        result
+        "Expected auto-select to succeed, got {result:?}"
     );
 }
 
@@ -323,7 +322,7 @@ async fn switch_character_pushes_authoritative_history_to_session() {
             assert_eq!(output.data["selected_character"], "Bob");
             assert_eq!(output.data["private"], false);
         }
-        other => panic!("Expected CommandOutput, got {:?}", other),
+        other => panic!("Expected CommandOutput, got {other:?}"),
     }
 
     let history = direct_rx.recv().await.unwrap();
@@ -334,7 +333,7 @@ async fn switch_character_pushes_authoritative_history_to_session() {
             assert_eq!(history.messages[0].content, "hello from bob");
             assert_eq!(history.config["private"], false);
         }
-        other => panic!("Expected direct History, got {:?}", other),
+        other => panic!("Expected direct History, got {other:?}"),
     }
 }
 
@@ -355,7 +354,7 @@ async fn dispatch_command_ambiguous_character() {
         ServerMessage::Error(e) => {
             assert_eq!(e.code, ErrorCode::InvalidRequest);
         }
-        other => panic!("Expected Error, got {:?}", other),
+        other => panic!("Expected Error, got {other:?}"),
     }
 }
 
@@ -409,7 +408,7 @@ async fn config_reset_refreshes_registry_runtime_state() {
             assert_eq!(output.name, "config_reset");
             assert_eq!(output.data["invalidated"]["character_discovery"], true);
         }
-        other => panic!("Expected CommandOutput, got {:?}", other),
+        other => panic!("Expected CommandOutput, got {other:?}"),
     }
 
     {
@@ -603,7 +602,7 @@ async fn config_set_runtime_override_survives_next_command() {
             assert_eq!(output.data["set"], "defaults.stream");
             assert_eq!(output.data["value"], false);
         }
-        other => panic!("Expected CommandOutput, got {:?}", other),
+        other => panic!("Expected CommandOutput, got {other:?}"),
     }
 
     let result = handler
@@ -624,7 +623,7 @@ async fn config_set_runtime_override_survives_next_command() {
         ServerMessage::CommandOutput(output) => {
             assert_eq!(output.data["config"]["stream"], false);
         }
-        other => panic!("Expected CommandOutput, got {:?}", other),
+        other => panic!("Expected CommandOutput, got {other:?}"),
     }
 }
 
@@ -667,11 +666,11 @@ async fn handle_engine_message_regen_builds_empty_body() {
         .sender_for(shore_swp_server::SessionId(1))
         .await
         .unwrap();
-    let gen = handler.gen_context(shore_swp_server::SessionId(1), direct_tx);
+    let gen_ctx = handler.gen_context(shore_swp_server::SessionId(1), direct_tx);
     let data_dir = handler.cmd_ctx.data_dir.clone();
 
     let result = super::task::handle_generation(
-        gen,
+        gen_ctx,
         GenerationParams {
             request: RequestMeta {
                 kind: shore_swp_server::RequestKind::Regen,
@@ -702,7 +701,7 @@ async fn run_cancel_route_aborts_active_generation() {
     handler
         .session_state_mut(shore_swp_server::SessionId(1))
         .generation_handle = Some(tokio::spawn(async {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        tokio::time::sleep(std::time::Duration::from_mins(1)).await;
     }));
 
     let handler_task = tokio::spawn(async move {
@@ -724,7 +723,7 @@ async fn run_cancel_route_aborts_active_generation() {
     let msg = direct_rx.recv().await.unwrap();
     match msg {
         ServerMessage::StreamEnd(end) => assert_eq!(end.finish_reason, "cancelled"),
-        other => panic!("Expected StreamEnd, got {:?}", other),
+        other => panic!("Expected StreamEnd, got {other:?}"),
     }
 
     handler_task.await.unwrap();
@@ -946,8 +945,8 @@ async fn make_handler_with_models(
 
     let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
     let autonomy = AutonomyManager::new(
-        Default::default(),
-        Default::default(),
+        AutonomyConfig::default(),
+        CompactionConfig::default(),
         data_dir.clone(),
         shutdown_rx,
     );
@@ -987,7 +986,7 @@ async fn make_handler_with_models(
         push_tx: push_tx.clone(),
         session_router,
         autonomy,
-        notifier: NotificationService::new(Default::default()),
+        notifier: NotificationService::new(NotificationsConfig::default()),
         control_rx,
     });
 
@@ -995,7 +994,7 @@ async fn make_handler_with_models(
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "live pipeline test requires an explicit mock/provider run"]
 async fn pipeline_user_message_to_persisted_response() {
     let (base_url, _server) = mock_sse_server(sse_text_response("Hello from the mock LLM!")).await;
     let models = mock_model_catalog(&base_url);
@@ -1026,11 +1025,11 @@ async fn pipeline_user_message_to_persisted_response() {
         .sender_for(shore_swp_server::SessionId(1))
         .await
         .unwrap();
-    let gen = handler.gen_context(shore_swp_server::SessionId(1), direct_tx);
+    let gen_ctx = handler.gen_context(shore_swp_server::SessionId(1), direct_tx);
     let data_dir = handler.cmd_ctx.data_dir.clone();
 
     let result = super::task::handle_generation(
-        gen,
+        gen_ctx,
         GenerationParams {
             request: RequestMeta {
                 kind: shore_swp_server::RequestKind::Message,
@@ -1239,7 +1238,7 @@ async fn resolve_lease_evicts_expired() {
         "Alice".into(),
         LastUserLease {
             session_id: shore_swp_server::SessionId(2),
-            expires_at: Instant::now() - Duration::from_secs(1),
+            expires_at: Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
         },
     );
 

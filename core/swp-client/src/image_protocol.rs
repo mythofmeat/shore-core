@@ -70,13 +70,12 @@ pub fn detect_protocol_probe() -> Option<ImageProtocol> {
 /// responds with OK. Requires raw mode to be active.
 fn probe_kitty_graphics() -> bool {
     // Use /dev/tty to avoid conflicts with stdin/stdout redirection.
-    let mut tty = match std::fs::OpenOptions::new()
+    let Ok(mut tty) = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/tty")
-    {
-        Ok(f) => f,
-        Err(_) => return false,
+    else {
+        return false;
     };
 
     // Query: transmit a 1x1 pixel with action=query, id=31.
@@ -121,7 +120,7 @@ fn read_with_timeout(file: &mut std::fs::File, buf: &mut [u8], timeout: Duration
     use std::os::unix::io::AsRawFd;
 
     let fd = file.as_raw_fd();
-    let timeout_ms = timeout.as_millis() as i32;
+    let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
 
     let mut pfd = libc::pollfd {
         fd,
@@ -130,7 +129,7 @@ fn read_with_timeout(file: &mut std::fs::File, buf: &mut [u8], timeout: Duration
     };
 
     // Safety: single pollfd, valid fd, bounded timeout.
-    let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+    let ready = unsafe { libc::poll(&raw mut pfd, 1, timeout_ms) };
     if ready <= 0 {
         return 0;
     }
@@ -156,7 +155,7 @@ pub fn detect_protocol_from_env(
         return match val.to_lowercase().as_str() {
             "kitty" => Some(ImageProtocol::Kitty),
             "iterm2" | "iterm" => Some(ImageProtocol::Iterm2),
-            "off" => None,
+            // "off" or any unrecognized value disables image output.
             _ => None,
         };
     }

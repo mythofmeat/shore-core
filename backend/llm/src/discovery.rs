@@ -40,7 +40,7 @@ pub const CACHE_VERSION: u32 = 1;
 /// Default TTL for cached provider catalogs. The auto-discovery loop in
 /// the daemon refreshes any discovery-enabled provider whose cache is
 /// older than this (or absent).
-pub const REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+pub const REFRESH_INTERVAL: Duration = Duration::from_hours(24);
 
 /// Required by Anthropic's API on every native HTTP request.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -410,30 +410,38 @@ fn map_entry(
         .get("name")
         .or_else(|| raw.get("display_name"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let created_at = raw.get("created").and_then(|v| v.as_i64()).or_else(|| {
-        raw.get("created_at")
-            .and_then(|v| v.as_str())
-            .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
-            .map(|v| v.timestamp())
-    });
+        .map(std::string::ToString::to_string);
+    let created_at = raw
+        .get("created")
+        .and_then(serde_json::Value::as_i64)
+        .or_else(|| {
+            raw.get("created_at")
+                .and_then(|v| v.as_str())
+                .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
+                .map(|v| v.timestamp())
+        });
     let owned_by = raw
         .get("owned_by")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
     let description = raw
         .get("description")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
-    let context_length = raw.get("context_length").and_then(|v| v.as_u64());
+    let context_length = raw
+        .get("context_length")
+        .and_then(serde_json::Value::as_u64);
 
     // OpenRouter shape: top_provider.max_completion_tokens
     let max_output_tokens = raw
         .get("top_provider")
         .and_then(|v| v.get("max_completion_tokens"))
-        .and_then(|v| v.as_u64())
-        .or_else(|| raw.get("max_completion_tokens").and_then(|v| v.as_u64()));
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            raw.get("max_completion_tokens")
+                .and_then(serde_json::Value::as_u64)
+        });
 
     // Capabilities — best-effort, otherwise unknown.
     let supports_tools = supported_param(raw, &["tools", "tool_use", "function_calling"]);
@@ -598,7 +606,7 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].model_id, "gpt-4o");
         assert_eq!(models[0].owned_by.as_deref(), Some("openai"));
-        assert_eq!(models[0].created_at, Some(1234567890));
+        assert_eq!(models[0].created_at, Some(1_234_567_890));
         assert!(models[0].supports_tools.is_none(), "unknown stays unknown");
         assert!(models[0].supports_images.is_none());
         assert_eq!(models[0].sdk, "openai");
@@ -706,8 +714,8 @@ mod tests {
     fn cache_age_parses_rfc3339_and_returns_elapsed() {
         let one_hour_ago = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
         let age = cache_age(&one_hour_ago).expect("parses");
-        assert!(age >= Duration::from_secs(60 * 59));
-        assert!(age < Duration::from_secs(60 * 61));
+        assert!(age >= Duration::from_mins(59));
+        assert!(age < Duration::from_mins(61));
     }
 
     #[test]

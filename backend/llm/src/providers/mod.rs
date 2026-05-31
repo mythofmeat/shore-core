@@ -25,7 +25,7 @@ use tokio::io::DuplexStream;
 /// 10 minutes). Without this, the shared client used to apply a 5-minute
 /// ceiling that fired mid-body and surfaced as "error decoding response
 /// body".
-pub(crate) const NON_STREAMING_TIMEOUT: Duration = Duration::from_secs(1800);
+pub(crate) const NON_STREAMING_TIMEOUT: Duration = Duration::from_mins(30);
 
 /// Format a reqwest error with its full source chain so the proximate
 /// cause (e.g. `request timed out`) appears in the log instead of just
@@ -134,7 +134,7 @@ pub async fn generate(
             "non-streaming request completed"
         ),
         Err(e) => {
-            warn!(sdk = ?request.sdk, model = %request.model, error = %e, "non-streaming request failed")
+            warn!(sdk = ?request.sdk, model = %request.model, error = %e, "non-streaming request failed");
         }
     }
     result

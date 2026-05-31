@@ -68,10 +68,10 @@ impl ConversationEngine {
     /// path from `character_name`).
     pub fn new(
         character_name: String,
-        data_dir: PathBuf,
+        data_dir: impl AsRef<std::path::Path>,
         push_tx: broadcast::Sender<ServerMessage>,
     ) -> Result<Self, EngineError> {
-        let character_dir = data_dir.join(&character_name);
+        let character_dir = data_dir.as_ref().join(&character_name);
         info!(
             character = %character_name,
             dir = %character_dir.display(),
@@ -360,9 +360,7 @@ mod tests {
 
     fn make_engine(tmp: &TempDir) -> (ConversationEngine, broadcast::Receiver<ServerMessage>) {
         let (push_tx, push_rx) = broadcast::channel(16);
-        let engine =
-            ConversationEngine::new("TestChar".to_string(), tmp.path().to_path_buf(), push_tx)
-                .unwrap();
+        let engine = ConversationEngine::new("TestChar".to_string(), tmp.path(), push_tx).unwrap();
         (engine, push_rx)
     }
 
@@ -455,7 +453,7 @@ mod tests {
                 assert_eq!(h.messages.len(), 1);
                 assert_eq!(h.messages[0].content, "Hi");
             }
-            other => panic!("Expected History, got {:?}", other),
+            other => panic!("Expected History, got {other:?}"),
         }
 
         // edit_message broadcasts.
@@ -466,7 +464,7 @@ mod tests {
                 assert_eq!(h.revision, 2);
                 assert_eq!(h.messages[0].content, "Hello");
             }
-            other => panic!("Expected History, got {:?}", other),
+            other => panic!("Expected History, got {other:?}"),
         }
 
         // delete_message broadcasts.
@@ -477,7 +475,7 @@ mod tests {
                 assert_eq!(h.revision, 3);
                 assert!(h.messages.is_empty());
             }
-            other => panic!("Expected History, got {:?}", other),
+            other => panic!("Expected History, got {other:?}"),
         }
     }
 
@@ -606,7 +604,7 @@ mod tests {
                 assert_eq!(h.revision, 2);
                 assert!(h.messages.is_empty());
             }
-            other => panic!("Expected History, got {:?}", other),
+            other => panic!("Expected History, got {other:?}"),
         }
     }
 
@@ -631,12 +629,8 @@ mod tests {
         // First engine instance — add messages.
         {
             let (push_tx, _) = broadcast::channel(16);
-            let mut engine = ConversationEngine::new(
-                "ReloadChar".to_string(),
-                tmp.path().to_path_buf(),
-                push_tx,
-            )
-            .unwrap();
+            let mut engine =
+                ConversationEngine::new("ReloadChar".to_string(), tmp.path(), push_tx).unwrap();
             engine
                 .append_message(make_msg("m1", Role::User, "Persisted"))
                 .unwrap();
@@ -645,8 +639,7 @@ mod tests {
         // Second engine instance — should reload.
         let (push_tx, _) = broadcast::channel(16);
         let engine =
-            ConversationEngine::new("ReloadChar".to_string(), tmp.path().to_path_buf(), push_tx)
-                .unwrap();
+            ConversationEngine::new("ReloadChar".to_string(), tmp.path(), push_tx).unwrap();
 
         assert_eq!(engine.messages().len(), 1);
         assert_eq!(engine.messages()[0].content, "Persisted");

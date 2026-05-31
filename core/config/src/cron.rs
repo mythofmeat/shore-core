@@ -142,16 +142,16 @@ impl CronSchedule {
             return false;
         }
 
-        let dom_matches = self.day_of_month.matches(date.day());
-        let dow_matches = self
+        let day_of_month_matches = self.day_of_month.matches(date.day());
+        let day_of_week_matches = self
             .day_of_week
             .matches(date.weekday().num_days_from_sunday());
 
         match (self.day_of_month.wildcard, self.day_of_week.wildcard) {
             (true, true) => true,
-            (true, false) => dow_matches,
-            (false, true) => dom_matches,
-            (false, false) => dom_matches || dow_matches,
+            (true, false) => day_of_week_matches,
+            (false, true) => day_of_month_matches,
+            (false, false) => day_of_month_matches || day_of_week_matches,
         }
     }
 

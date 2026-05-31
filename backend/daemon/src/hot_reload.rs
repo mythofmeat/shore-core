@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 use crate::handler::HandlerControl;
 
 const DEBOUNCE: Duration = Duration::from_millis(500);
-const FAR_FUTURE: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+const FAR_FUTURE: Duration = Duration::from_hours(8_760);
 
 pub fn spawn_config_watcher(
     config_path: PathBuf,
@@ -82,7 +82,7 @@ pub fn spawn_config_watcher(
                         }
                     }
                 }
-                _ = &mut debounce, if armed => {
+                () = &mut debounce, if armed => {
                     let changed_paths = pending.iter().cloned().collect::<Vec<_>>();
                     pending.clear();
                     armed = false;

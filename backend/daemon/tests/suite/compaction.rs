@@ -146,7 +146,7 @@ async fn test_compaction_keeps_recent_turns() {
     // The last 2 user messages must still be present.
     let raw = messages
         .iter()
-        .map(|m| m.to_string())
+        .map(std::string::ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -203,7 +203,7 @@ async fn test_messages_still_work_after_compaction() {
     .await;
     let raw = messages
         .iter()
-        .map(|m| m.to_string())
+        .map(std::string::ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -371,10 +371,7 @@ async fn test_retain_long_routes_background_payloads_to_long_tier() {
     );
     assert!(
         !long_logs.exists()
-            || std::fs::read_dir(&long_logs)
-                .map(|d| d.count())
-                .unwrap_or(0)
-                == 0,
+            || std::fs::read_dir(&long_logs).map_or(0, std::iter::Iterator::count) == 0,
         "long-retention dir should be empty before any background task runs; \
          path: {}",
         long_logs.display(),
@@ -529,7 +526,7 @@ async fn test_character_data_dir_paths_through_full_stack() {
     let stray_dirs: Vec<String> = std::fs::read_dir(&data_dir)
         .expect("data_dir readable")
         .filter_map(Result::ok)
-        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .filter_map(|e| e.file_name().into_string().ok())
         // ledger.db / cache / runtime files; only character-shaped dirs.
         .filter(|name| !name.starts_with('.'))
@@ -538,8 +535,7 @@ async fn test_character_data_dir_paths_through_full_stack() {
     assert!(
         stray_dirs.is_empty(),
         "no character-shaped directories besides `TestChar/` should exist \
-         under data_dir; found: {:?}",
-        stray_dirs
+         under data_dir; found: {stray_dirs:?}"
     );
 
     harness.shutdown().await;

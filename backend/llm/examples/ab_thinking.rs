@@ -47,6 +47,13 @@ fn make_model(effort: &str) -> ResolvedModel {
 // ── Tool definitions (production-style copies) ──────────────────────────
 
 fn all_tool_defs() -> Vec<serde_json::Value> {
+    let mut defs = memory_image_tool_defs();
+    defs.extend(web_misc_tool_defs());
+    defs.extend(scratchpad_tool_defs());
+    defs
+}
+
+fn memory_image_tool_defs() -> Vec<serde_json::Value> {
     vec![
         json!({
             "name": "memory_search",
@@ -104,6 +111,11 @@ fn all_tool_defs() -> Vec<serde_json::Value> {
                 "required": ["prompt"]
             }
         }),
+    ]
+}
+
+fn web_misc_tool_defs() -> Vec<serde_json::Value> {
+    vec![
         json!({
             "name": "web_search",
             "description": "Search the web for information. Returns a list of results with titles, URLs, and content snippets. Use fetch_url to read full pages from the results.",
@@ -160,6 +172,11 @@ fn all_tool_defs() -> Vec<serde_json::Value> {
                 "required": ["notation"]
             }
         }),
+    ]
+}
+
+fn scratchpad_tool_defs() -> Vec<serde_json::Value> {
+    vec![
         json!({
             "name": "scratchpad_list",
             "description": "List files and directories in your scratchpad. Returns names and sizes. Optionally pass a subdirectory path.",
@@ -532,7 +549,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "  messages: {} | tools: {}",
                 request.messages.len(),
-                request.tools.as_ref().map(|t| t.len()).unwrap_or(0)
+                request.tools.as_ref().map_or(0, std::vec::Vec::len)
             );
         }
 
@@ -544,13 +561,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .any(|t| !scratchpad_names.contains(t.as_str()));
             if has_non_scratchpad {
-                println!("\n>>> NON-SCRATCHPAD TOOL USED: {:?}", tools_used);
+                println!("\n>>> NON-SCRATCHPAD TOOL USED: {tools_used:?}");
                 println!(">>> Stopping after {run} runs.");
                 break;
             } else if tools_used.is_empty() {
                 println!("\n  (no tool use — text-only response)");
             } else {
-                println!("\n  scratchpad only: {:?} — continuing...", tools_used);
+                println!("\n  scratchpad only: {tools_used:?} — continuing...");
             }
         }
     }

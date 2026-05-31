@@ -6,6 +6,7 @@ use shore_protocol::types::{
 use tracing::info;
 
 use super::EngineError;
+use crate::convert::usize_to_u32;
 
 /// Alternatives captured before a regeneration replaces the active response.
 #[derive(Debug, Clone)]
@@ -150,11 +151,9 @@ impl MessageStore {
                 .iter()
                 .rposition(|m| {
                     DateTime::parse_from_rfc3339(&m.timestamp)
-                        .map(|existing| existing <= new_ts)
-                        .unwrap_or(true)
+                        .map_or(true, |existing| existing <= new_ts)
                 })
-                .map(|i| i + 1)
-                .unwrap_or(0),
+                .map_or(0, |i| i + 1),
             Err(_) => self.messages.len(),
         };
         info!(
@@ -280,10 +279,8 @@ impl MessageStore {
         if alternatives.is_empty() {
             alternatives.push(current);
         } else {
-            let idx = active
-                .alt_index
-                .unwrap_or_else(|| alternatives.len().saturating_sub(1) as u32)
-                .min(alternatives.len().saturating_sub(1) as u32) as usize;
+            let last_alt = usize_to_u32(alternatives.len().saturating_sub(1));
+            let idx = active.alt_index.unwrap_or(last_alt).min(last_alt) as usize;
             alternatives[idx] = current;
         }
 
@@ -300,9 +297,9 @@ impl MessageStore {
         let active = merged.iter().rev().find(|m| m.role == Role::Assistant)?;
         let active_msg_id = active.msg_id.clone();
         let new_alt = alternative_from_message(active);
-        let alt_index = prior.len() as u32;
+        let alt_index = usize_to_u32(prior.len());
         prior.push(new_alt);
-        let alt_count = prior.len() as u32;
+        let alt_count = usize_to_u32(prior.len());
 
         let target = messages
             .iter_mut()
@@ -321,7 +318,7 @@ impl MessageStore {
             .iter()
             .find(|m| m.msg_id == msg_id)
             .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_string()))?;
-        let alt_count = target.alternatives.len() as u32;
+        let alt_count = usize_to_u32(target.alternatives.len());
         if alt_count == 0 {
             return Err(EngineError::InvalidAlt(format!(
                 "message {msg_id} has no alternate responses"
@@ -416,7 +413,7 @@ fn alternative_from_message(msg: &Message) -> MessageAlternative {
         .collect();
     let mut content = derive_content_from_blocks_with(&content_blocks, false);
     if content.is_empty() && !msg.content.trim().is_empty() {
-        content = msg.content.clone();
+        content.clone_from(&msg.content);
         content_blocks = vec![ContentBlock::Text {
             text: msg.content.clone(),
         }];
@@ -439,7 +436,7 @@ fn message_from_alternative(template: &Message, index: u32) -> Message {
         images: alt.images,
         content_blocks: alt.content_blocks,
         alt_index: Some(index),
-        alt_count: Some(template.alternatives.len() as u32),
+        alt_count: Some(usize_to_u32(template.alternatives.len())),
         alternatives: template.alternatives.clone(),
         provider_key: template.provider_key.clone(),
         timestamp: if alt.timestamp.is_empty() {
@@ -714,7 +711,7 @@ mod tests {
             "images": [],
             "timestamp": "2026-01-01T00:00:00Z"
         });
-        std::fs::write(&path, format!("{}\n", legacy)).unwrap();
+        std::fs::write(&path, format!("{legacy}\n")).unwrap();
 
         let store = MessageStore::load(path).unwrap();
         assert_eq!(store.messages().len(), 1);

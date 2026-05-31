@@ -1,5 +1,5 @@
 use std::io::{self, IsTerminal, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
@@ -13,6 +13,10 @@ struct SpinnerState {
     model: Option<String>,
     start: Instant,
     active: bool,
+}
+
+fn lock_state(state: &Mutex<SpinnerState>) -> MutexGuard<'_, SpinnerState> {
+    state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Live-updating status line shown during LLM streaming.
@@ -61,7 +65,7 @@ impl StreamSpinner {
         }
         self.cleared = false;
         {
-            let mut s = self.state.lock().unwrap();
+            let mut s = lock_state(&self.state);
             s.start = Instant::now();
             s.active = true;
         }
@@ -76,7 +80,7 @@ impl StreamSpinner {
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
                 let line = {
-                    let s = state.lock().unwrap();
+                    let s = lock_state(&state);
                     if !s.active {
                         break;
                     }
@@ -101,18 +105,18 @@ impl StreamSpinner {
     }
 
     pub fn set_phase(&self, phase: &str) {
-        let mut s = self.state.lock().unwrap();
+        let mut s = lock_state(&self.state);
         s.phase = phase.to_string();
     }
 
     pub fn set_model(&self, model: Option<String>) {
-        let mut s = self.state.lock().unwrap();
+        let mut s = lock_state(&self.state);
         s.model = model;
     }
 
     /// Whether the spinner render loop is running.
     pub fn is_active(&self) -> bool {
-        self.state.lock().unwrap().active
+        lock_state(&self.state).active
     }
 
     /// Clear the spinner line and stop the render task.
@@ -122,7 +126,7 @@ impl StreamSpinner {
         }
         self.cleared = true;
         {
-            let mut s = self.state.lock().unwrap();
+            let mut s = lock_state(&self.state);
             s.active = false;
         }
         if let Some(h) = self.handle.take() {

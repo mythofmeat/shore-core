@@ -2,6 +2,7 @@ use super::parser::{DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM};
 use super::types::{CompactionOutcome, ConversationMessage};
 use super::CompactionManager;
 use std::sync::Arc;
+use tracing::{info, warn};
 
 /// Run compaction for a single character (called from the background task).
 /// Returns the number of retained turns on success.
@@ -25,13 +26,10 @@ pub async fn run_compaction(
     keep_turns_override: Option<usize>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     use crate::engine::messages::MessageStore;
-    use crate::handler::build_chat_shape_request_from_disk;
     use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
-    use crate::notifications::NotificationEvent;
     use shore_config::{
         character_active_jsonl, character_data_dir, load_character_config, resolve_prompt_template,
     };
-    use tracing::{info, warn};
 
     let data_dir = config.dirs.data.as_path();
     let _compaction_guard = super::try_begin_compaction(data_dir, character).ok_or_else(|| {
@@ -110,32 +108,20 @@ pub async fn run_compaction(
     // Mirrors the heartbeat/librarian wiring so write/edit dispatch
     // resolves paths, queues prompt-visible refreshes, and routes search
     // through the configured embedder.
-    let tool_ctx = build_compaction_tool_context(&effective, data_dir, llm_client, character).await;
+    let tool_ctx = build_compaction_tool_context(&effective, data_dir, llm_client, character);
 
     // Resolve the chat-shape request compaction will extend. Prefer the
     // in-memory cached `last_request` — it's already warmed against the
     // provider's prompt cache. Fall back to rebuilding from disk via the
     // same path chat would have used, so the wire shape matches and a
     // subsequent chat call can still hit (or seed) the same cache prefix.
-    let chat_request = match cached_request {
-        Some(req) => req,
-        None => {
-            let chat_model =
-                crate::preferences::resolve_chat_model_for_character(&effective, character)
-                    .ok_or("No chat model configured for compaction prefix rebuild")?;
-            let has_prior_context = crate::engine::segments::SegmentReader::load(&character_dir)
-                .map(|r| r.segment_count() > 0)
-                .unwrap_or(false);
-            build_chat_shape_request_from_disk(
-                character,
-                &character_dir,
-                &effective,
-                &chat_model,
-                store.messages(),
-                has_prior_context,
-            )?
-        }
-    };
+    let chat_request = resolve_compaction_chat_request(
+        cached_request,
+        character,
+        &character_dir,
+        &effective,
+        store.messages(),
+    )?;
 
     let outcome = mgr
         .compact(
@@ -158,6 +144,40 @@ pub async fn run_compaction(
         )
         .await?;
 
+    Ok(handle_compaction_outcome(character, notifier, outcome))
+}
+
+fn resolve_compaction_chat_request(
+    cached_request: Option<shore_llm::types::LlmRequest>,
+    character: &str,
+    character_dir: &std::path::Path,
+    effective: &shore_config::LoadedConfig,
+    messages: &[shore_protocol::types::Message],
+) -> Result<shore_llm::types::LlmRequest, Box<dyn std::error::Error + Send + Sync>> {
+    let Some(cached_request) = cached_request else {
+        let chat_model = crate::preferences::resolve_chat_model_for_character(effective, character)
+            .ok_or("No chat model configured for compaction prefix rebuild")?;
+        let has_prior_context = crate::engine::segments::SegmentReader::load(character_dir)
+            .is_ok_and(|r| r.segment_count() > 0);
+        return Ok(crate::handler::build_chat_shape_request_from_disk(
+            character,
+            character_dir,
+            effective,
+            &chat_model,
+            messages,
+            has_prior_context,
+        )?);
+    };
+    Ok(cached_request)
+}
+
+fn handle_compaction_outcome(
+    character: &str,
+    notifier: &crate::notifications::NotificationService,
+    outcome: CompactionOutcome,
+) -> usize {
+    use crate::notifications::NotificationEvent;
+
     match outcome {
         CompactionOutcome::Compacted(result) => {
             info!(
@@ -179,7 +199,7 @@ pub async fn run_compaction(
                 ),
             );
 
-            Ok(result.retained_turns)
+            result.retained_turns
         }
         CompactionOutcome::NoMemoryWrites(result) => {
             // Compaction ran but the model produced no allowed memory
@@ -205,12 +225,12 @@ pub async fn run_compaction(
                     if result.tool_rounds == 1 { "" } else { "s" },
                 ),
             );
-            Ok(0)
+            0
         }
         CompactionOutcome::DryRun(_) => {
             // Should not happen in background mode (dry_run is hard-coded
             // to false above), but harmless.
-            Ok(0)
+            0
         }
     }
 }
@@ -220,7 +240,7 @@ pub async fn run_compaction(
 /// that compaction sees an identical view of the workspace, memory store,
 /// embedder, and image-gen config. Returned as `Arc` so the caller can
 /// hand out a `&dyn ToolContext` whose lifetime is bound to the function.
-async fn build_compaction_tool_context(
+fn build_compaction_tool_context(
     effective: &shore_config::LoadedConfig,
     data_dir: &std::path::Path,
     llm_client: &shore_ledger::LedgerClient,
@@ -242,28 +262,28 @@ async fn build_compaction_tool_context(
     .ok();
 
     Arc::new(crate::tools::context::SharedToolContext {
-        image_dir_val: character_data_dir_path
+        image_dir: character_data_dir_path
             .join("images")
             .to_string_lossy()
             .into_owned(),
-        llm_client_val: llm_client.inner().clone(),
-        image_gen_config_val: image_gen_config,
-        search_config_val: effective.app.behavior.tool_use.search.clone(),
-        character_name_val: character.to_string(),
-        workspace_dir_val: character_workspace_dir(&effective.dirs.config, character)
+        llm_client: llm_client.inner().clone(),
+        image_gen_config,
+        search_config: effective.app.behavior.tool_use.search.clone(),
+        character_name: character.to_string(),
+        workspace_dir: character_workspace_dir(&effective.dirs.config, character)
             .to_string_lossy()
             .into_owned(),
-        markdown_store_val: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
+        markdown_store: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
             character_memory_dir(&effective.dirs.config, character),
         )
         .ok(),
-        memory_retrieval_config_val: effective.app.memory.retrieval.clone(),
-        embedder_val: embedder,
-        memory_index_path_val: crate::memory::workspace_index::index_path(
+        memory_retrieval_config: effective.app.memory.retrieval.clone(),
+        embedder,
+        memory_index_path: crate::memory::workspace_index::index_path(
             &effective.dirs.cache,
             character,
         ),
-        config_dir_val: effective.dirs.config.to_string_lossy().into_owned(),
-        character_data_dir_val: character_data_dir_path.to_string_lossy().into_owned(),
+        config_dir: effective.dirs.config.to_string_lossy().into_owned(),
+        character_data_dir: character_data_dir_path.to_string_lossy().into_owned(),
     })
 }
