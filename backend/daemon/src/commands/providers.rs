@@ -9,8 +9,8 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
-use shore_config::{models::Sdk, LoadedConfig};
+use serde_json::{Value, json};
+use shore_config::{LoadedConfig, models::Sdk};
 use shore_ledger::LedgerClient;
 use shore_llm::discovery::ProviderModelsCache;
 use shore_protocol::error::ErrorCode;
@@ -33,9 +33,7 @@ fn require_provider(args: &Value) -> Result<&str, (ErrorCode, String)> {
 /// Whether the env var holding a key has a non-empty value. Returns just
 /// the boolean — the value itself is never exposed.
 fn env_set(var: &str) -> bool {
-    std::env::var(var)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
+    std::env::var(var).is_ok_and(|v| !v.trim().is_empty())
 }
 
 // ── list_providers ─────────────────────────────────────────────────────
@@ -95,7 +93,7 @@ pub fn list_providers(ctx: &CommandContext) -> CommandResult {
             json!({
                 "name": name,
                 "enabled": entry.enabled,
-                "sdk": entry.sdk.as_ref().map(|s| s.as_str()),
+                "sdk": entry.sdk.as_ref().map(Sdk::as_str),
                 "base_url": entry.base_url,
                 "discovery_enabled": entry.discovery.enabled,
                 "keys": keys,
@@ -307,7 +305,7 @@ pub fn list_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult
     let provider = require_provider(args)?;
     let include_hidden = args
         .get("include_hidden")
-        .and_then(|v| v.as_bool())
+        .and_then(Value::as_bool)
         .unwrap_or(false);
 
     // Validate that the provider is at least *known* (configured in the
@@ -334,9 +332,7 @@ pub fn list_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult
     let mut hidden: Vec<Value> = Vec::new();
     if let Some(c) = cache.as_ref() {
         for m in &c.models {
-            let is_visible = registry_entry
-                .map(|e| e.discovery.is_visible(&m.model_id))
-                .unwrap_or(true);
+            let is_visible = registry_entry.is_none_or(|e| e.discovery.is_visible(&m.model_id));
             if is_visible || include_hidden {
                 discovered.push(discovered_to_json(m));
             } else {
@@ -403,7 +399,7 @@ mod tests {
     use shore_config::providers::ProviderRegistry;
     use shore_diagnostics::Diagnostics;
     use shore_ledger::LedgerClient;
-    use shore_llm::discovery::{DiscoveredModel, ProviderModelsCache, CACHE_VERSION};
+    use shore_llm::discovery::{CACHE_VERSION, DiscoveredModel, ProviderModelsCache};
     use shore_protocol::server_msg::ServerMessage;
     use tokio::sync::broadcast;
 
@@ -1123,10 +1119,12 @@ enabled = true
             .unwrap()
             .expect("cache");
         assert_eq!(cache.models.len(), 2);
-        assert!(cache
-            .models
-            .iter()
-            .any(|m| m.model_id == "anthropic/claude-3.5-sonnet"));
+        assert!(
+            cache
+                .models
+                .iter()
+                .any(|m| m.model_id == "anthropic/claude-3.5-sonnet")
+        );
         assert_eq!(cache.models[1].context_length, Some(200_000));
 
         std::env::remove_var(&unique);
@@ -1289,10 +1287,12 @@ enabled = true
         assert_eq!(by_name["good"]["ok"], true);
         assert_eq!(by_name["good"]["model_count"], 1);
         assert_eq!(by_name["bad"]["ok"], false);
-        assert!(by_name["bad"]["error"]
-            .as_str()
-            .unwrap()
-            .contains("API key"));
+        assert!(
+            by_name["bad"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("API key")
+        );
         assert!(out["skipped"].as_array().unwrap().is_empty());
 
         std::env::remove_var(&good_key);
