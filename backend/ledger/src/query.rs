@@ -520,10 +520,10 @@ pub fn null_cost_rows(ledger: &Ledger) -> Result<Vec<CostRow>, rusqlite::Error> 
                 id: row.get(0)?,
                 provider: row.get(1)?,
                 model: row.get(2)?,
-                input_tokens: row.get(3)?,
-                output_tokens: row.get(4)?,
-                cache_read_tokens: row.get(5)?,
-                cache_write_tokens: row.get(6)?,
+                input_tokens: i64_to_u64(row.get::<_, i64>(3)?),
+                output_tokens: i64_to_u64(row.get::<_, i64>(4)?),
+                cache_read_tokens: i64_to_u64(row.get::<_, i64>(5)?),
+                cache_write_tokens: i64_to_u64(row.get::<_, i64>(6)?),
                 cache_ttl: row.get(7)?,
             })
         })?;
@@ -542,10 +542,10 @@ pub fn all_cost_rows(ledger: &Ledger) -> Result<Vec<CostRow>, rusqlite::Error> {
                 id: row.get(0)?,
                 provider: row.get(1)?,
                 model: row.get(2)?,
-                input_tokens: row.get(3)?,
-                output_tokens: row.get(4)?,
-                cache_read_tokens: row.get(5)?,
-                cache_write_tokens: row.get(6)?,
+                input_tokens: i64_to_u64(row.get::<_, i64>(3)?),
+                output_tokens: i64_to_u64(row.get::<_, i64>(4)?),
+                cache_read_tokens: i64_to_u64(row.get::<_, i64>(5)?),
+                cache_write_tokens: i64_to_u64(row.get::<_, i64>(6)?),
                 cache_ttl: row.get(7)?,
             })
         })?;

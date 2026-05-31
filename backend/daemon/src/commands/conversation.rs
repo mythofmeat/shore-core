@@ -472,7 +472,7 @@ fn resolve_alt_target(
                 ErrorCode::InvalidRequest,
                 format!(
                     "alternate index {} out of range (message has {} alternate response(s))",
-                    index + 1,
+                    index.saturating_add(1),
                     count
                 ),
             ));

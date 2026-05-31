@@ -183,16 +183,20 @@ fn state_path(data_dir: &Path, character: &str) -> PathBuf {
 fn instant_to_rfc3339(instant: Instant) -> String {
     let now_instant = Instant::now();
     let now_utc = chrono::Utc::now();
+    // `DateTime + Duration` panics on overflow, so use the checked APIs and
+    // fall back to `now_utc` if the delta is out of range (unreachable in
+    // practice for two instants captured back-to-back, but keeps the path
+    // panic-free).
     let wall = if instant > now_instant {
-        now_utc
-            + chrono::Duration::from_std(instant.duration_since(now_instant))
-                .unwrap_or(chrono::Duration::MAX)
+        chrono::Duration::from_std(instant.duration_since(now_instant))
+            .ok()
+            .and_then(|delta| now_utc.checked_add_signed(delta))
     } else {
-        now_utc
-            - chrono::Duration::from_std(now_instant.duration_since(instant))
-                .unwrap_or(chrono::Duration::MAX)
+        chrono::Duration::from_std(now_instant.duration_since(instant))
+            .ok()
+            .and_then(|delta| now_utc.checked_sub_signed(delta))
     };
-    wall.to_rfc3339()
+    wall.unwrap_or(now_utc).to_rfc3339()
 }
 
 fn duration_secs_i64(duration: Duration) -> i64 {

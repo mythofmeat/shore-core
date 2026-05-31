@@ -488,9 +488,17 @@ pub fn deep_merge(base: &mut toml::Table, overlay: &toml::Table) {
 
 /// Load and merge all `*.toml` files from a `conf.d/` directory, sorted alphabetically.
 fn load_conf_d(dir: &Path, table: &mut toml::Table) -> Result<(), ConfigError> {
-    // Directory doesn't exist — that's fine.
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Ok(());
+    // A missing directory is fine; any other read error (permissions, I/O)
+    // must surface rather than silently loading an incomplete config.
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(ConfigError::ReadFile {
+                path: dir.to_path_buf(),
+                source: err,
+            });
+        }
     };
 
     let mut paths: Vec<PathBuf> = entries
