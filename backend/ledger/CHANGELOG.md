@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v2.0.4...shore-ledger-v3.0.0) - 2026-05-31
+
+### Other
+
+- Correctness ratchet: strict clippy + panic hygiene + dep checks ([#114](https://github.com/mythofmeat/shore-core/pull/114))
+
 ## [2.0.4](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v2.0.3...shore-ledger-v2.0.4) - 2026-05-31
 
 ### Other
