@@ -4,6 +4,7 @@ use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::debug;
 
 use super::{engine_err, CommandContext, CommandResult};
+use crate::convert::{u64_to_usize, usize_to_u32};
 use crate::engine::ConversationEngine;
 
 const DEFAULT_LOG_TURNS: usize = 64;
@@ -30,24 +31,26 @@ fn resolve_ref(messages: &[Message], reference: &str) -> Result<String, (ErrorCo
 
         let idx = if n < 0 {
             // -1 = last, -2 = second-to-last, etc.
-            (messages.len() as i64) + n
+            i64::try_from(messages.len()).unwrap_or(i64::MAX) + n
         } else {
             // 1-based positive index
             n - 1
         };
 
-        if idx < 0 || idx as usize >= messages.len() {
-            return Err((
-                ErrorCode::NotFound,
-                format!(
-                    "Message index {} out of range (conversation has {} messages)",
-                    reference,
-                    messages.len()
-                ),
-            ));
-        }
+        let idx = match usize::try_from(idx) {
+            Ok(i) if i < messages.len() => i,
+            _ => {
+                return Err((
+                    ErrorCode::NotFound,
+                    format!(
+                        "Message index {reference} out of range (conversation has {} messages)",
+                        messages.len()
+                    ),
+                ));
+            }
+        };
 
-        return Ok(messages[idx as usize].msg_id.clone());
+        return Ok(messages[idx].msg_id.clone());
     }
 
     // Literal msg_id passthrough
@@ -59,7 +62,7 @@ fn resolve_assistant_ref(
     reference: Option<&str>,
 ) -> Result<String, (ErrorCode, String)> {
     match reference {
-        None | Some("last") | Some("latest") => messages
+        None | Some("last" | "latest") => messages
             .iter()
             .rev()
             .find(|m| m.role == Role::Assistant)
@@ -113,12 +116,12 @@ fn count_user_turns(messages: &[Message]) -> usize {
 }
 
 fn page_start_by_args(messages: &[Message], end: usize, args: &serde_json::Value) -> usize {
-    if let Some(turns) = args.get("turns").and_then(|v| v.as_u64()) {
-        return page_start_by_turns(messages, end, turns as usize);
+    if let Some(turns) = args.get("turns").and_then(serde_json::Value::as_u64) {
+        return page_start_by_turns(messages, end, u64_to_usize(turns));
     }
 
-    if let Some(count) = args.get("count").and_then(|v| v.as_u64()) {
-        return end.saturating_sub(count as usize);
+    if let Some(count) = args.get("count").and_then(serde_json::Value::as_u64) {
+        return end.saturating_sub(u64_to_usize(count));
     }
 
     page_start_by_turns(messages, end, DEFAULT_LOG_TURNS)
@@ -159,9 +162,9 @@ fn resolve_history_before(
             ErrorCode::InvalidRequest,
             "before must be \"active\" or a message cursor".into(),
         )
-    })? as usize;
+    })?;
 
-    Ok(index.min(total))
+    Ok(u64_to_usize(index).min(total))
 }
 
 fn history_page_payload(
@@ -211,7 +214,7 @@ pub fn get(
     _ctx: &CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let raw_ref = args.get("ref").and_then(|v| v.as_str()).ok_or_else(|| {
+    let raw_ref = args.get("ref").and_then(serde_json::Value::as_str).ok_or_else(|| {
         (
             ErrorCode::InvalidRequest,
             "Missing required argument: ref".into(),
@@ -288,7 +291,7 @@ pub fn edit(
     _ctx: &mut CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let raw_ref = args.get("ref").and_then(|v| v.as_str()).ok_or_else(|| {
+    let raw_ref = args.get("ref").and_then(serde_json::Value::as_str).ok_or_else(|| {
         (
             ErrorCode::InvalidRequest,
             "Missing required argument: ref".into(),
@@ -297,7 +300,7 @@ pub fn edit(
 
     let content = args
         .get("content")
-        .and_then(|v| v.as_str())
+        .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
             (
                 ErrorCode::InvalidRequest,
@@ -332,7 +335,7 @@ pub fn delete(
                 })
             })
             .collect::<Result<Vec<_>, _>>()?
-    } else if let Some(s) = args.get("refs").and_then(|v| v.as_str()) {
+    } else if let Some(s) = args.get("refs").and_then(serde_json::Value::as_str) {
         vec![s]
     } else {
         return Err((
@@ -368,26 +371,27 @@ pub fn list_alternatives(
     args: &serde_json::Value,
 ) -> CommandResult {
     let merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
-    let raw_ref = args.get("ref").and_then(|v| v.as_str());
+    let raw_ref = args.get("ref").and_then(serde_json::Value::as_str);
     let msg_id = resolve_assistant_ref(&merged, raw_ref)?;
     let msg = merged
         .iter()
         .find(|m| m.msg_id == msg_id)
         .ok_or_else(|| (ErrorCode::NotFound, format!("Message not found: {msg_id}")))?;
 
-    let alt_count = msg.alternatives.len() as u32;
+    let alt_count = usize_to_u32(msg.alternatives.len());
     let current = msg.alt_index.unwrap_or(0).min(alt_count.saturating_sub(1));
     let alternatives: Vec<serde_json::Value> = msg
         .alternatives
         .iter()
         .enumerate()
         .map(|(index, alt)| {
+            let idx = usize_to_u32(index);
             let mut images = alt.images.clone();
             crate::handler::embed_image_data(&mut images);
             json!({
-                "index": index as u32,
-                "position": index as u32 + 1,
-                "active": index as u32 == current,
+                "index": idx,
+                "position": idx + 1,
+                "active": idx == current,
                 "content": alt.content.clone(),
                 "images": images,
                 "timestamp": alt.timestamp.clone(),
@@ -417,14 +421,14 @@ pub fn alt(
     args: &serde_json::Value,
 ) -> CommandResult {
     let merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
-    let raw_ref = args.get("ref").and_then(|v| v.as_str());
+    let raw_ref = args.get("ref").and_then(serde_json::Value::as_str);
     let msg_id = resolve_assistant_ref(&merged, raw_ref)?;
     let msg = merged
         .iter()
         .find(|m| m.msg_id == msg_id)
         .ok_or_else(|| (ErrorCode::NotFound, format!("Message not found: {msg_id}")))?;
 
-    let alt_count = msg.alternatives.len() as u32;
+    let alt_count = usize_to_u32(msg.alternatives.len());
     if alt_count == 0 {
         return Err((
             ErrorCode::InvalidRequest,
@@ -455,8 +459,8 @@ fn resolve_alt_target(
     current: u32,
     count: u32,
 ) -> Result<u32, (ErrorCode, String)> {
-    if let Some(index) = args.get("index").and_then(|v| v.as_u64()) {
-        let index = index as u32;
+    if let Some(index) = args.get("index").and_then(serde_json::Value::as_u64) {
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
         if index >= count {
             return Err((
                 ErrorCode::InvalidRequest,
@@ -470,8 +474,8 @@ fn resolve_alt_target(
         return Ok(index);
     }
 
-    if let Some(position) = args.get("position").and_then(|v| v.as_u64()) {
-        if position == 0 || position > count as u64 {
+    if let Some(position) = args.get("position").and_then(serde_json::Value::as_u64) {
+        if position == 0 || position > u64::from(count) {
             return Err((
                 ErrorCode::InvalidRequest,
                 format!(
@@ -479,12 +483,12 @@ fn resolve_alt_target(
                 ),
             ));
         }
-        return Ok(position as u32 - 1);
+        return Ok(u32::try_from(position).unwrap_or(u32::MAX) - 1);
     }
 
     match args
         .get("direction")
-        .and_then(|v| v.as_str())
+        .and_then(serde_json::Value::as_str)
         .unwrap_or("next")
     {
         "prev" | "previous" => Ok(current.saturating_sub(1)),
@@ -508,7 +512,7 @@ pub fn inject_system(
     _ctx: &mut CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let text = args.get("text").and_then(|v| v.as_str()).ok_or_else(|| {
+    let text = args.get("text").and_then(serde_json::Value::as_str).ok_or_else(|| {
         (
             ErrorCode::InvalidRequest,
             "Missing required argument: text".into(),
@@ -570,8 +574,8 @@ mod tests {
 
         let (_tx, rx) = tokio::sync::watch::channel(());
         let autonomy = crate::autonomy::manager::AutonomyManager::new(
-            Default::default(),
-            Default::default(),
+            shore_config::app::AutonomyConfig::default(),
+            shore_config::app::CompactionConfig::default(),
             data_dir.clone(),
             rx,
         );
