@@ -8,10 +8,6 @@
 //! - Missing optionals: deserialize to None/default
 //! - Version mismatch: produces ProtocolError
 
-// Test helpers panic on malformed fixtures by design; clippy's
-// allow-expect-in-tests doesn't reach non-#[test] helpers in integration tests.
-#![allow(clippy::expect_used)]
-
 use serde_json::{json, Value};
 use shore_protocol::client_msg::*;
 use shore_protocol::error::*;
@@ -61,7 +57,7 @@ fn server_hello_golden() {
             assert_eq!(h.characters[0].avatar, None);
             assert_eq!(h.characters[1].name, "bob");
         }
-        other => panic!("expected Hello, got {other:?}"),
+        other => panic!("expected Hello, got {:?}", other),
     }
 }
 
@@ -87,7 +83,7 @@ fn server_hello_with_avatar_golden() {
             assert_eq!(avatar.mime_type, "image/png");
             assert_eq!(avatar.data, "cG5n");
         }
-        other => panic!("expected Hello, got {other:?}"),
+        other => panic!("expected Hello, got {:?}", other),
     }
 }
 
@@ -147,7 +143,7 @@ fn history_golden() {
             assert_eq!(h.active_start, 0);
             assert_eq!(h.revision, 12);
         }
-        other => panic!("expected History, got {other:?}"),
+        other => panic!("expected History, got {:?}", other),
     }
 }
 
@@ -189,7 +185,7 @@ fn command_output_golden() {
             assert_eq!(co.name, "list_conversations");
             assert_eq!(co.data["conversations"][0]["id"], "c1");
         }
-        other => panic!("expected CommandOutput, got {other:?}"),
+        other => panic!("expected CommandOutput, got {:?}", other),
     }
 }
 
@@ -211,7 +207,7 @@ fn error_golden() {
             assert_eq!(e.code, ErrorCode::Busy);
             assert_eq!(e.message, "Engine is currently processing another request");
         }
-        other => panic!("expected Error, got {other:?}"),
+        other => panic!("expected Error, got {:?}", other),
     }
 }
 
@@ -227,7 +223,7 @@ fn stream_start_golden() {
             assert_eq!(s.rid.as_deref(), Some("msg_01"));
             assert!(!s.regen);
         }
-        other => panic!("expected StreamStart, got {other:?}"),
+        other => panic!("expected StreamStart, got {:?}", other),
     }
 }
 
@@ -249,7 +245,7 @@ fn stream_chunk_golden() {
             assert_eq!(c.text, "Hello, how can I ");
             assert_eq!(c.content_type, "text");
         }
-        other => panic!("expected StreamChunk, got {other:?}"),
+        other => panic!("expected StreamChunk, got {:?}", other),
     }
 }
 
@@ -268,7 +264,7 @@ fn stream_chunk_thinking_golden() {
             assert_eq!(c.rid.as_deref(), Some("msg_01"));
             assert_eq!(c.content_type, "thinking");
         }
-        other => panic!("expected StreamChunk, got {other:?}"),
+        other => panic!("expected StreamChunk, got {:?}", other),
     }
 }
 
@@ -314,7 +310,7 @@ fn stream_end_golden() {
             assert_eq!(se.metadata.model, "claude-haiku-4-5-20251001");
             assert!(se.is_final);
         }
-        other => panic!("expected StreamEnd, got {other:?}"),
+        other => panic!("expected StreamEnd, got {:?}", other),
     }
 }
 
@@ -336,7 +332,7 @@ fn phase_golden() {
             assert_eq!(p.phase, "thinking");
             assert_eq!(p.model.as_deref(), Some("claude-haiku-4-5-20251001"));
         }
-        other => panic!("expected Phase, got {other:?}"),
+        other => panic!("expected Phase, got {:?}", other),
     }
 }
 
@@ -372,7 +368,7 @@ fn new_message_golden() {
             assert_eq!(nm.message.alt_count, None);
             assert_eq!(nm.message.timestamp, "2026-01-15T10:35:00Z");
         }
-        other => panic!("expected NewMessage, got {other:?}"),
+        other => panic!("expected NewMessage, got {:?}", other),
     }
 }
 
@@ -401,7 +397,7 @@ fn new_message_with_alts_golden() {
             assert_eq!(nm.message.alt_index, Some(1));
             assert_eq!(nm.message.alt_count, Some(3));
         }
-        other => panic!("expected NewMessage, got {other:?}"),
+        other => panic!("expected NewMessage, got {:?}", other),
     }
 }
 
@@ -428,7 +424,7 @@ fn tool_call_golden() {
             assert_eq!(tc.input["query"], "rust serde tutorial");
             assert_eq!(tc.input["max_results"], 5);
         }
-        other => panic!("expected ToolCall, got {other:?}"),
+        other => panic!("expected ToolCall, got {:?}", other),
     }
 }
 
@@ -454,7 +450,7 @@ fn tool_result_golden() {
             assert_eq!(tr.output, "Found 5 results for 'rust serde tutorial'");
             assert!(!tr.is_error);
         }
-        other => panic!("expected ToolResult, got {other:?}"),
+        other => panic!("expected ToolResult, got {:?}", other),
     }
 }
 
@@ -476,7 +472,7 @@ fn send_image_golden() {
             assert_eq!(si.path, "/tmp/chart.png");
             assert_eq!(si.caption.as_deref(), Some("Monthly revenue chart"));
         }
-        other => panic!("expected SendImage, got {other:?}"),
+        other => panic!("expected SendImage, got {:?}", other),
     }
 }
 
@@ -499,7 +495,7 @@ fn cache_warning_golden() {
                 "Cache miss: context was evicted, re-processing 5000 tokens"
             );
         }
-        other => panic!("expected CacheWarning, got {other:?}"),
+        other => panic!("expected CacheWarning, got {:?}", other),
     }
 }
 
@@ -530,7 +526,7 @@ fn usage_warning_golden() {
             assert_eq!(w.period, "day");
             assert_eq!(w.crossed_warn_at, vec![0.8]);
         }
-        other => panic!("expected UsageWarning, got {other:?}"),
+        other => panic!("expected UsageWarning, got {:?}", other),
     }
 }
 
@@ -554,7 +550,7 @@ fn client_hello_golden() {
             assert_eq!(h.client_name, "shore-tui");
             assert_eq!(h.capabilities, vec!["streaming", "images"]);
         }
-        other => panic!("expected Hello, got {other:?}"),
+        other => panic!("expected Hello, got {:?}", other),
     }
 }
 
@@ -577,7 +573,7 @@ fn client_message_golden() {
             assert_eq!(m.images, vec!["/tmp/screenshot.png"]);
             assert_eq!(m.absence_seconds, None);
         }
-        other => panic!("expected Message, got {other:?}"),
+        other => panic!("expected Message, got {:?}", other),
     }
 }
 
@@ -597,7 +593,7 @@ fn client_regen_golden() {
             assert!(r.stream);
             assert_eq!(r.guidance.as_deref(), Some("Be more concise"));
         }
-        other => panic!("expected Regen, got {other:?}"),
+        other => panic!("expected Regen, got {:?}", other),
     }
 }
 
@@ -619,7 +615,7 @@ fn client_command_golden() {
             assert_eq!(c.args["character"], "alice");
             assert_eq!(c.args["greeting"], true);
         }
-        other => panic!("expected Command, got {other:?}"),
+        other => panic!("expected Command, got {:?}", other),
     }
 }
 
@@ -703,7 +699,7 @@ fn server_hello_unknown_fields_ignored() {
             assert_eq!(h.v, 1);
             assert_eq!(h.server_name, "shore-daemon");
         }
-        other => panic!("expected Hello, got {other:?}"),
+        other => panic!("expected Hello, got {:?}", other),
     }
 }
 
@@ -722,7 +718,7 @@ fn client_message_unknown_fields_ignored() {
             assert_eq!(m.text, "Hi");
             assert!(!m.stream);
         }
-        other => panic!("expected Message, got {other:?}"),
+        other => panic!("expected Message, got {:?}", other),
     }
 }
 
@@ -741,7 +737,7 @@ fn stream_chunk_unknown_fields_ignored() {
             assert_eq!(c.text, "partial");
             assert_eq!(c.content_type, "text");
         }
-        other => panic!("expected StreamChunk, got {other:?}"),
+        other => panic!("expected StreamChunk, got {:?}", other),
     }
 }
 
@@ -761,7 +757,7 @@ fn tool_call_unknown_fields_ignored() {
             assert_eq!(tc.tool_id, "tc_99");
             assert_eq!(tc.tool_name, "future_tool");
         }
-        other => panic!("expected ToolCall, got {other:?}"),
+        other => panic!("expected ToolCall, got {:?}", other),
     }
 }
 
@@ -836,7 +832,7 @@ fn stream_chunk_missing_content_type_defaults_to_text() {
         ServerMessage::StreamChunk(c) => {
             assert_eq!(c.content_type, "text"); // default
         }
-        other => panic!("expected StreamChunk, got {other:?}"),
+        other => panic!("expected StreamChunk, got {:?}", other),
     }
 }
 
@@ -848,7 +844,7 @@ fn stream_start_missing_regen_defaults_to_false() {
         ServerMessage::StreamStart(s) => {
             assert!(!s.regen); // default false
         }
-        other => panic!("expected StreamStart, got {other:?}"),
+        other => panic!("expected StreamStart, got {:?}", other),
     }
 }
 
@@ -864,7 +860,7 @@ fn client_hello_missing_capabilities_defaults_to_empty() {
         ClientMessage::Hello(h) => {
             assert!(h.capabilities.is_empty());
         }
-        other => panic!("expected Hello, got {other:?}"),
+        other => panic!("expected Hello, got {:?}", other),
     }
 }
 
@@ -882,7 +878,7 @@ fn client_message_missing_optionals() {
             assert!(m.images.is_empty()); // default empty
             assert_eq!(m.absence_seconds, None);
         }
-        other => panic!("expected Message, got {other:?}"),
+        other => panic!("expected Message, got {:?}", other),
     }
 }
 
@@ -898,7 +894,7 @@ fn client_regen_missing_optionals() {
             assert!(!r.stream);
             assert_eq!(r.guidance, None);
         }
-        other => panic!("expected Regen, got {other:?}"),
+        other => panic!("expected Regen, got {:?}", other),
     }
 }
 
@@ -914,7 +910,7 @@ fn server_hello_missing_characters_defaults_to_empty() {
         ServerMessage::Hello(h) => {
             assert!(h.characters.is_empty());
         }
-        other => panic!("expected Hello, got {other:?}"),
+        other => panic!("expected Hello, got {:?}", other),
     }
 }
 
@@ -930,7 +926,7 @@ fn phase_missing_model() {
             assert_eq!(p.phase, "text_generation");
             assert_eq!(p.model, None);
         }
-        other => panic!("expected Phase, got {other:?}"),
+        other => panic!("expected Phase, got {:?}", other),
     }
 }
 
@@ -947,7 +943,7 @@ fn send_image_missing_caption() {
             assert_eq!(si.path, "/tmp/img.png");
             assert_eq!(si.caption, None);
         }
-        other => panic!("expected SendImage, got {other:?}"),
+        other => panic!("expected SendImage, got {:?}", other),
     }
 }
 
@@ -965,7 +961,7 @@ fn tool_result_missing_is_error_defaults_to_false() {
             assert_eq!(tr.rid, None);
             assert!(!tr.is_error);
         }
-        other => panic!("expected ToolResult, got {other:?}"),
+        other => panic!("expected ToolResult, got {:?}", other),
     }
 }
 
@@ -999,7 +995,7 @@ fn request_scoped_server_messages_missing_rid_default_to_none() {
             ServerMessage::ToolCall(msg) => assert_eq!(msg.rid, None),
             ServerMessage::ToolResult(msg) => assert_eq!(msg.rid, None),
             ServerMessage::SendImage(msg) => assert_eq!(msg.rid, None),
-            other => panic!("unexpected message for missing rid test: {other:?}"),
+            other => panic!("unexpected message for missing rid test: {:?}", other),
         }
     }
 }
@@ -1039,7 +1035,7 @@ fn protocol_version_mismatch_produces_error() {
                 .unwrap()
                 .contains("protocol version mismatch"));
         }
-        other => panic!("expected Hello, got {other:?}"),
+        other => panic!("expected Hello, got {:?}", other),
     }
 }
 
@@ -1056,7 +1052,7 @@ fn protocol_error_code_golden() {
             assert_eq!(e.code, ErrorCode::ProtocolError);
             assert_eq!(e.message, "unsupported protocol version");
         }
-        other => panic!("expected Error, got {other:?}"),
+        other => panic!("expected Error, got {:?}", other),
     }
 }
 
@@ -1076,7 +1072,10 @@ fn all_error_codes_golden() {
         ("internal_error", ErrorCode::InternalError),
     ];
     for (json_str, expected_code) in cases {
-        let fixture = format!(r#"{{"type": "error", "code": "{json_str}", "message": "test"}}"#);
+        let fixture = format!(
+            r#"{{"type": "error", "code": "{}", "message": "test"}}"#,
+            json_str
+        );
         let msg: ServerMessage = serde_json::from_str(&fixture).expect("error code deserializes");
         match msg {
             ServerMessage::Error(e) => {
@@ -1085,7 +1084,7 @@ fn all_error_codes_golden() {
                 let json = serde_json::to_value(&e.code).unwrap();
                 assert_eq!(json.as_str().unwrap(), json_str);
             }
-            other => panic!("expected Error, got {other:?}"),
+            other => panic!("expected Error, got {:?}", other),
         }
     }
 }

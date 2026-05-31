@@ -176,7 +176,7 @@ impl StreamHandler {
                 self.active = false;
                 self.final_content = Some(end.content.clone());
                 self.metadata = Some(end.metadata.clone());
-                self.msg_id.clone_from(&end.msg_id);
+                self.msg_id = end.msg_id.clone();
                 self.revision = end.revision;
                 debug!(
                     finish_reason = %end.finish_reason,

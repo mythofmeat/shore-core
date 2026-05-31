@@ -1,5 +1,3 @@
-use std::fmt::Write as _;
-
 use serde_json::{json, Value};
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -7,7 +5,7 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 // ── SSE helpers ──────────────────────────────────────────────────────────────
 
 fn sse_event(event_type: &str, data: &Value) -> String {
-    format!("event: {event_type}\ndata: {data}\n\n")
+    format!("event: {}\ndata: {}\n\n", event_type, data)
 }
 
 // ── ContentBlock ─────────────────────────────────────────────────────────────
@@ -30,7 +28,6 @@ enum ContentBlock {
 
 // ── AnthropicStreamBuilder ───────────────────────────────────────────────────
 
-#[must_use]
 pub struct AnthropicStreamBuilder {
     content_blocks: Vec<ContentBlock>,
     input_tokens: u32,
@@ -115,10 +112,6 @@ impl AnthropicStreamBuilder {
         self
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Anthropic SSE fixture assembly split is tracked in #109"
-    )]
     pub fn build(self) -> String {
         let mut out = String::new();
 
@@ -308,7 +301,6 @@ impl Default for AnthropicStreamBuilder {
 /// returned by `POST /v1/messages` without `stream: true`). Lets tests
 /// exercise `LlmClient::generate` against the mock with a structured
 /// response that includes thinking/redacted_thinking blocks.
-#[must_use]
 pub struct AnthropicJsonBuilder {
     content_blocks: Vec<ContentBlock>,
     input_tokens: u32,
@@ -440,7 +432,6 @@ impl Default for AnthropicJsonBuilder {
 /// Build OpenAI-compatible `chat/completions` responses (streaming and
 /// non-streaming). Used for adapter wire tests against the OpenAI path
 /// (DeepSeek, xAI, OpenRouter→OpenAI models, etc.).
-#[must_use]
 pub struct OpenAiResponseBuilder {
     text: String,
     reasoning: Option<String>,
@@ -578,36 +569,40 @@ impl OpenAiResponseBuilder {
             );
         }
 
-        let first_chunk = json!({
-            "id": id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": self.model,
-            "choices": [{
-                "index": 0,
-                "delta": delta,
-                "finish_reason": Value::Null,
-            }],
-        });
-        let _ = write!(out, "data: {first_chunk}\n\n");
-        let final_chunk = json!({
-            "id": id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": self.model,
-            "choices": [{
-                "index": 0,
-                "delta": {},
-                "finish_reason": self.finish_reason,
-            }],
-            "usage": {
-                "prompt_tokens": self.prompt_tokens,
-                "completion_tokens": self.completion_tokens,
-                "total_tokens": self.prompt_tokens + self.completion_tokens,
-                "prompt_tokens_details": {"cached_tokens": self.cached_tokens},
-            },
-        });
-        let _ = write!(out, "data: {final_chunk}\n\n");
+        out.push_str(&format!(
+            "data: {}\n\n",
+            json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": self.model,
+                "choices": [{
+                    "index": 0,
+                    "delta": delta,
+                    "finish_reason": Value::Null,
+                }],
+            })
+        ));
+        out.push_str(&format!(
+            "data: {}\n\n",
+            json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": self.model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": self.finish_reason,
+                }],
+                "usage": {
+                    "prompt_tokens": self.prompt_tokens,
+                    "completion_tokens": self.completion_tokens,
+                    "total_tokens": self.prompt_tokens + self.completion_tokens,
+                    "prompt_tokens_details": {"cached_tokens": self.cached_tokens},
+                },
+            })
+        ));
         out.push_str("data: [DONE]\n\n");
         out
     }
@@ -635,7 +630,7 @@ pub fn find_cache_control_paths(body: &Value) -> Vec<String> {
                 }
             }
             Value::Object(map) => {
-                for (k, val) in map {
+                for (k, val) in map.iter() {
                     if k == "cache_control" {
                         out.push(base.to_string());
                         continue;
@@ -931,7 +926,7 @@ impl MockLlmServer {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
-                    .set_delay(std::time::Duration::from_hours(1)),
+                    .set_delay(std::time::Duration::from_secs(3600)),
             )
             .up_to_n_times(1)
             .expect(1)
@@ -947,7 +942,7 @@ impl MockLlmServer {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
-                    .set_delay(std::time::Duration::from_hours(1)),
+                    .set_delay(std::time::Duration::from_secs(3600)),
             )
             .up_to_n_times(1)
             .mount(&self.server)

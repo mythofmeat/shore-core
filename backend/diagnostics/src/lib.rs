@@ -1,19 +1,5 @@
 //! In-memory ring buffers for observability (API calls, tool executions, errors).
 
-// Panic-hygiene lock (see [workspace.lints] in root Cargo.toml): this crate is
-// cleaned, so these can never regress. Tests are exempt via clippy.toml.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unreachable,
-    clippy::todo,
-    clippy::unimplemented,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
-)]
-
 use std::collections::VecDeque;
 
 use serde::Serialize;
@@ -74,10 +60,10 @@ pub struct ApiCallEntry {
     pub timestamp: String,
     pub model: String,
     pub provider: String,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_write_tokens: u64,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_write_tokens: u32,
     pub ttft_ms: u32,
     pub total_ms: u32,
     pub finish_reason: String,

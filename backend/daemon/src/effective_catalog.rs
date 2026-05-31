@@ -166,9 +166,7 @@ pub fn find_effective_model(
             }
         }
         1 => {
-            let Some((_, resolved, _)) = visible_hits.into_iter().next() else {
-                return Err(EffectiveCatalogError::NotFound { name: name.into() });
-            };
+            let (_, resolved, _) = visible_hits.into_iter().next().unwrap();
             Ok(resolved)
         }
         _ => {
@@ -602,10 +600,10 @@ sdk = "anthropic"
 api_key_env = "OR_KEY"
 base_url = "https://openrouter.ai/api/v1"
 "#,
-            r"
+            r#"
 [chat.openrouter]
 max_output_tokens = 32768
-",
+"#,
         );
         // write_cache_for reports max_output_tokens = 8192.
         write_cache_for(&tmp, "openrouter", &["anthropic/claude-opus-4.8"]);

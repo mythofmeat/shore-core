@@ -32,7 +32,7 @@ impl IntegrationToolContext {
 }
 
 impl ToolContext for IntegrationToolContext {
-    fn image_dir(&self) -> &'static str {
+    fn image_dir(&self) -> &str {
         ""
     }
     fn llm_client(&self) -> Option<&shore_llm::LlmClient> {

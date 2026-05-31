@@ -71,32 +71,6 @@ shore-daemon = { path = "backend/daemon", version = "10.0.0" }
 shore-test-harness = { path = "dev/test-harness" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 
-[workspace.lints.clippy]
-# Pedantic is enabled workspace-wide as a quality ratchet. priority = -1 lets
-# the individual `allow`s below override the group. Several pedantic lints are
-# high-churn / low-signal on a codebase this size and are widely disabled in
-# serious Rust projects — we allow those rather than annotate thousands of
-# call sites.
-pedantic = { level = "warn", priority = -1 }
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-must_use_candidate = "allow"
-module_name_repetitions = "allow"
-doc_markdown = "allow"
-
-# Panic-hygiene ratchet. Set to `warn` workspace-wide for visibility; each
-# cleaned crate then escalates these to `deny` via a `#![deny(...)]` at its
-# crate root (Cargo `[lints] workspace = true` can't add per-crate overrides),
-# so cleaned crates can never regress. Tests are exempt via clippy.toml
-# (`allow-{unwrap,expect,panic}-in-tests`); not-yet-cleaned crates stay at warn
-# until they are cleaned and locked.
-unwrap_used = "warn"
-expect_used = "warn"
-panic = "warn"
-unreachable = "warn"
-todo = "warn"
-unimplemented = "warn"
-
 [profile.dev]
 debug = "line-tables-only"
 

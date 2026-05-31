@@ -68,17 +68,13 @@ fn next_backoff(current: Duration, max: Duration) -> Duration {
     (current * 2).min(max)
 }
 
-fn resolve_addr(addr: Option<&str>, config: Option<&str>) -> crate::Result<ServerAddr> {
+fn resolve_addr(addr: &Option<String>, config: &Option<String>) -> crate::Result<ServerAddr> {
     if let Some(addr) = addr {
-        return Ok(ServerAddr(addr.to_string()));
+        return Ok(ServerAddr(addr.clone()));
     }
-    discover_or_default(config)
+    discover_or_default(config.as_deref())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "single reconnect state machine; splitting would obscure the control flow"
-)]
 async fn connection_loop(
     addr: Option<String>,
     config: Option<String>,
@@ -92,7 +88,7 @@ async fn connection_loop(
     let max_backoff = Duration::from_secs(15);
 
     loop {
-        let addr = match resolve_addr(addr.as_deref(), config.as_deref()) {
+        let addr = match resolve_addr(&addr, &config) {
             Ok(addr) => addr,
             Err(e) => {
                 error!(error = %e, "failed to resolve daemon address");
@@ -219,15 +215,15 @@ mod tests {
         let max = Duration::from_secs(15);
         assert_eq!(
             next_backoff(Duration::from_millis(500), max),
-            Duration::from_secs(1)
+            Duration::from_millis(1000)
         );
         assert_eq!(
-            next_backoff(Duration::from_secs(1), max),
-            Duration::from_secs(2)
+            next_backoff(Duration::from_millis(1000), max),
+            Duration::from_millis(2000)
         );
         assert_eq!(
-            next_backoff(Duration::from_secs(2), max),
-            Duration::from_secs(4)
+            next_backoff(Duration::from_millis(2000), max),
+            Duration::from_millis(4000)
         );
     }
 
@@ -252,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_resolve_addr_explicit_tcp() {
-        let addr = resolve_addr(Some("127.0.0.1:9090"), None).unwrap();
+        let addr = resolve_addr(&Some("127.0.0.1:9090".into()), &None).unwrap();
         assert_eq!(addr.0, "127.0.0.1:9090");
     }
 }

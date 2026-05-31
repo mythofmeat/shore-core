@@ -153,7 +153,7 @@ struct LastUserLease {
     expires_at: Instant,
 }
 
-const LEASE_TTL: Duration = Duration::from_hours(1);
+const LEASE_TTL: Duration = Duration::from_secs(60 * 60);
 
 /// Internal daemon control messages handled on the same task as SWP commands.
 #[derive(Debug)]
@@ -231,11 +231,13 @@ impl MessageHandler {
             self.last_user_session.remove(char_name);
             return None;
         }
-        let Some(tx) = self.session_router.sender_for(lease.session_id).await else {
-            self.last_user_session.remove(char_name);
-            return None;
-        };
-        Some(tx)
+        match self.session_router.sender_for(lease.session_id).await {
+            Some(tx) => Some(tx),
+            None => {
+                self.last_user_session.remove(char_name);
+                None
+            }
+        }
     }
 
     /// Build a fanout `direct_tx` that forwards every server message to both
@@ -320,10 +322,6 @@ impl MessageHandler {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "engine-message orchestration phase split is tracked in #109"
-    )]
     async fn handle_engine_message(&mut self, msg: ClientMessage, meta: RequestMeta) {
         let msg_kind = match &msg {
             ClientMessage::Message(_) => "message",
@@ -409,12 +407,13 @@ impl MessageHandler {
             .rid
             .clone()
             .filter(|r| r.is_ascii() && !r.contains('\0'));
-        let Some(direct_tx) = self
+        let direct_tx = match self
             .session_router
             .sender_for(meta.session.session_id)
             .await
-        else {
-            return;
+        {
+            Some(tx) => tx,
+            None => return,
         };
         // Phase 3: preferences are authoritative. Legacy
         // `runtime_state.json` remains as a migration fallback for one
@@ -458,7 +457,7 @@ impl MessageHandler {
         let fanout_tx = self
             .build_fanout_tx(meta.session.session_id, &char_name, direct_tx)
             .await;
-        let gen_ctx = self.gen_context(meta.session.session_id, fanout_tx.clone());
+        let gen = self.gen_context(meta.session.session_id, fanout_tx.clone());
         let notifier = self.notifier.clone();
         let params = GenerationParams {
             request: meta.clone(),
@@ -480,7 +479,7 @@ impl MessageHandler {
         session.generation_handle = Some(tokio::spawn(async move {
             let notify_name = params.char_name.clone();
             let request_rid = params.rid.clone();
-            if let Err(e) = handle_generation(gen_ctx, params).await {
+            if let Err(e) = handle_generation(gen, params).await {
                 error!(error = %e, "Error processing engine message");
                 let err_msg = e.to_string();
                 let _ = fanout_tx

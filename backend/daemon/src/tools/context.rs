@@ -25,62 +25,62 @@ use super::ToolContext;
 /// Used directly by heartbeat ticks. Wrapped by `HandlerToolContext` in the
 /// message handler (which adds `AutonomyManager` access).
 pub(crate) struct SharedToolContext {
-    pub(crate) image_dir: String,
-    pub(crate) llm_client: LlmClient,
-    pub(crate) image_gen_config: Option<ImageGenConfig>,
-    pub(crate) search_config: SearchConfig,
-    pub(crate) character_name: String,
-    pub(crate) workspace_dir: String,
-    pub(crate) markdown_store: Option<MarkdownMemoryStore>,
-    pub(crate) memory_retrieval_config: RetrievalConfig,
-    pub(crate) embedder: Option<Arc<dyn Embedder>>,
-    pub(crate) memory_index_path: std::path::PathBuf,
-    pub(crate) config_dir: String,
-    pub(crate) character_data_dir: String,
+    pub(crate) image_dir_val: String,
+    pub(crate) llm_client_val: LlmClient,
+    pub(crate) image_gen_config_val: Option<ImageGenConfig>,
+    pub(crate) search_config_val: SearchConfig,
+    pub(crate) character_name_val: String,
+    pub(crate) workspace_dir_val: String,
+    pub(crate) markdown_store_val: Option<MarkdownMemoryStore>,
+    pub(crate) memory_retrieval_config_val: RetrievalConfig,
+    pub(crate) embedder_val: Option<Arc<dyn Embedder>>,
+    pub(crate) memory_index_path_val: std::path::PathBuf,
+    pub(crate) config_dir_val: String,
+    pub(crate) character_data_dir_val: String,
 }
 
 impl ToolContext for SharedToolContext {
     fn image_dir(&self) -> &str {
-        &self.image_dir
+        &self.image_dir_val
     }
     fn llm_client(&self) -> Option<&LlmClient> {
-        Some(&self.llm_client)
+        Some(&self.llm_client_val)
     }
     fn image_gen_config(&self) -> Option<&ImageGenConfig> {
-        self.image_gen_config.as_ref()
+        self.image_gen_config_val.as_ref()
     }
     fn search_config(&self) -> &SearchConfig {
-        &self.search_config
+        &self.search_config_val
     }
     fn character_name(&self) -> &str {
-        &self.character_name
+        &self.character_name_val
     }
     fn workspace_dir(&self) -> &str {
-        &self.workspace_dir
+        &self.workspace_dir_val
     }
     fn character_data_dir(&self) -> &str {
-        &self.character_data_dir
+        &self.character_data_dir_val
     }
     fn markdown_store(&self) -> Option<&MarkdownMemoryStore> {
-        self.markdown_store.as_ref()
+        self.markdown_store_val.as_ref()
     }
     fn memory_retrieval_config(&self) -> &RetrievalConfig {
-        &self.memory_retrieval_config
+        &self.memory_retrieval_config_val
     }
     fn embedder(&self) -> Option<&dyn Embedder> {
-        self.embedder.as_deref()
+        self.embedder_val.as_deref()
     }
     fn memory_index_path(&self) -> Option<&std::path::Path> {
-        Some(&self.memory_index_path)
+        Some(&self.memory_index_path_val)
     }
     fn config_dir(&self) -> &str {
-        &self.config_dir
+        &self.config_dir_val
     }
     fn defer_edit(&self, path: &str) {
         if !crate::memory::deferred_edits::is_prompt_visible_path(path) {
             return;
         }
-        let data_dir = Path::new(&self.character_data_dir);
+        let data_dir = Path::new(&self.character_data_dir_val);
         if let Err(e) = crate::memory::deferred_edits::queue_deferred_edit(data_dir, path) {
             tracing::warn!(path = %path, error = %e, "Failed to queue deferred edit");
         }

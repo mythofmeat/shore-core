@@ -169,15 +169,12 @@ impl CompactionManager {
         char_name: &str,
         user_name: &str,
     ) -> String {
-        use std::fmt::Write as _;
-
         let mut conversation_text = String::new();
         for msg in messages {
-            let _ = writeln!(
-                &mut conversation_text,
-                "[{}] {}: {}",
+            conversation_text.push_str(&format!(
+                "[{}] {}: {}\n",
                 msg.timestamp, msg.role, msg.content
-            );
+            ));
         }
 
         let mut result = template.replace("{{conversation}}", &conversation_text);
@@ -266,14 +263,7 @@ impl CompactionManager {
     /// returned preview but no files are modified and the conversation is
     /// not archived.
     #[instrument(skip(self, messages, active_content, system_template, prompt_template, llm, conversation_mgr, markdown_store, tool_ctx), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "compaction boundary still carries storage, prompt, and tool-loop state"
-    )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "compaction orchestration phase split is tracked in #109"
-    )]
+    #[allow(clippy::too_many_arguments)]
     pub async fn compact(
         &self,
         conversation_id: &str,
@@ -507,9 +497,7 @@ impl CompactionManager {
                     );
                 }
             } else {
-                warn!(
-                    "compaction: MEMORY.md updated but data_dir was unavailable for prompt refresh queue"
-                );
+                warn!("compaction: MEMORY.md updated but data_dir was unavailable for prompt refresh queue");
             }
         }
         let dream_body = format!(
@@ -814,6 +802,7 @@ impl IdleTimer {
                 () = self.activity_notify.notified() => {
                     // Activity detected — reset timer by restarting loop.
                     debug!("Idle timer reset by activity");
+                    continue;
                 }
             }
         }
@@ -1215,7 +1204,7 @@ mod tests {
     }
 
     impl ToolContext for TestCtx {
-        fn image_dir(&self) -> &'static str {
+        fn image_dir(&self) -> &str {
             ""
         }
         fn llm_client(&self) -> Option<&shore_llm::LlmClient> {
@@ -1332,7 +1321,7 @@ mod tests {
             },
             ConversationMessage {
                 role: "assistant".to_string(),
-                content: String::new(),
+                content: "".to_string(),
                 timestamp: "t1".to_string(),
                 is_tool_result_only: false,
             },
@@ -2126,11 +2115,11 @@ mod tests {
             fired_clone.store(true, Ordering::SeqCst);
         });
 
-        tokio::time::advance(Duration::from_mins(4)).await;
+        tokio::time::advance(Duration::from_secs(4 * 60)).await;
         tokio::task::yield_now().await;
         assert!(!fired.load(Ordering::SeqCst));
 
-        tokio::time::advance(Duration::from_mins(1)).await;
+        tokio::time::advance(Duration::from_secs(60)).await;
         handle.await.unwrap();
         assert!(fired.load(Ordering::SeqCst));
     }
@@ -2153,18 +2142,18 @@ mod tests {
             fired_clone.store(true, Ordering::SeqCst);
         });
 
-        tokio::time::advance(Duration::from_mins(4)).await;
+        tokio::time::advance(Duration::from_secs(4 * 60)).await;
         tokio::task::yield_now().await;
         assert!(!fired.load(Ordering::SeqCst));
 
         mgr.notify_activity();
         tokio::task::yield_now().await;
 
-        tokio::time::advance(Duration::from_mins(4)).await;
+        tokio::time::advance(Duration::from_secs(4 * 60)).await;
         tokio::task::yield_now().await;
         assert!(!fired.load(Ordering::SeqCst));
 
-        tokio::time::advance(Duration::from_mins(1)).await;
+        tokio::time::advance(Duration::from_secs(60)).await;
         handle.await.unwrap();
         assert!(fired.load(Ordering::SeqCst));
     }

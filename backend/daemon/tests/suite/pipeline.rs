@@ -157,7 +157,8 @@ async fn test_tool_use_roundtrip() {
     });
     assert!(
         has_tool_result,
-        "Second LLM request should contain a tool_result block; messages: {messages:#?}"
+        "Second LLM request should contain a tool_result block; messages: {:#?}",
+        messages
     );
 
     // The second phase raw messages should include a ToolCall event.
@@ -216,13 +217,14 @@ async fn test_tool_result_persisted_in_jsonl() {
     // The JSONL must contain either a "tool_use" type block or the "check_time" name.
     let raw_jsonl: String = messages
         .iter()
-        .map(std::string::ToString::to_string)
+        .map(|m| m.to_string())
         .collect::<Vec<_>>()
         .join("\n");
 
     assert!(
         raw_jsonl.contains("tool_use") || raw_jsonl.contains("check_time"),
-        "Expected JSONL to contain 'tool_use' or 'check_time', but got:\n{raw_jsonl}"
+        "Expected JSONL to contain 'tool_use' or 'check_time', but got:\n{}",
+        raw_jsonl
     );
 
     harness.shutdown().await;
@@ -321,7 +323,8 @@ async fn test_request_body_contains_user_message() {
 
     assert!(
         found,
-        "Expected 'Hello test message' in the LLM request messages, but did not find it.\nMessages: {messages:#?}"
+        "Expected 'Hello test message' in the LLM request messages, but did not find it.\nMessages: {:#?}",
+        messages
     );
 
     harness.shutdown().await;

@@ -81,7 +81,7 @@ impl ToolContext for HeartbeatToolContext {
         self.inner.character_name()
     }
     fn schedule_next_wake(&self, input: &Value) -> Option<Result<Value, ToolError>> {
-        Some(Ok(schedule_next_wake_in_state(self.state.as_ref(), input)))
+        Some(schedule_next_wake_in_state(self.state.as_ref(), input))
     }
     fn workspace_dir(&self) -> &str {
         self.inner.workspace_dir()
@@ -114,10 +114,6 @@ impl ToolContext for HeartbeatToolContext {
 // ---------------------------------------------------------------------------
 
 /// All autonomy state for a single character.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "autonomy state tracks independent persisted and runtime flags"
-)]
 pub struct AutonomyState {
     pub heartbeat: HeartbeatClock,
     pub cache_keepalive: CacheKeepalive,
@@ -154,7 +150,7 @@ impl AutonomyState {
 fn background_retry_delay(failure_count: u32) -> Duration {
     let exponent = failure_count.saturating_sub(1).min(6);
     let secs = 60u64.saturating_mul(1u64 << exponent);
-    Duration::from_secs(secs.min(3_600))
+    Duration::from_secs(secs.min(60 * 60))
 }
 
 // ---------------------------------------------------------------------------
@@ -184,19 +180,11 @@ fn instant_to_rfc3339(instant: Instant) -> String {
     let now_instant = Instant::now();
     let now_utc = chrono::Utc::now();
     let wall = if instant > now_instant {
-        now_utc
-            + chrono::Duration::from_std(instant.duration_since(now_instant))
-                .unwrap_or(chrono::Duration::MAX)
+        now_utc + chrono::Duration::from_std(instant.duration_since(now_instant)).unwrap()
     } else {
-        now_utc
-            - chrono::Duration::from_std(now_instant.duration_since(instant))
-                .unwrap_or(chrono::Duration::MAX)
+        now_utc - chrono::Duration::from_std(now_instant.duration_since(instant)).unwrap()
     };
     wall.to_rfc3339()
-}
-
-fn duration_secs_i64(duration: Duration) -> i64 {
-    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
 }
 
 /// Convert an RFC3339 string back to an `Instant` via the delta from current wall time.
@@ -443,10 +431,9 @@ impl AutonomyManager {
         }
 
         // Use per-character autonomy config if available, otherwise global.
-        let autonomy_cfg = effective_config.map_or_else(
-            || self.config.clone(),
-            |c| Arc::new(c.app.behavior.autonomy.clone()),
-        );
+        let autonomy_cfg = effective_config
+            .map(|c| Arc::new(c.app.behavior.autonomy.clone()))
+            .unwrap_or_else(|| self.config.clone());
 
         // Create heartbeat clock with config values.
         let mut heartbeat = HeartbeatClock::with_config(&autonomy_cfg.heartbeat);
@@ -587,7 +574,7 @@ impl AutonomyManager {
     ///
     /// Called once after `ensure_state` returns `true` (newly created state)
     /// to seed the tracker from existing chat history.
-    pub fn backfill_activity(&self, character: &str, timestamps: &[chrono::NaiveDateTime]) {
+    pub fn backfill_activity(&self, character: &str, timestamps: Vec<chrono::NaiveDateTime>) {
         let count = timestamps.len();
         // Seed the heartbeat's last_user_at from the most recent backfilled user
         // turn so dreaming's inactivity gate isn't bypassed for characters
@@ -789,16 +776,16 @@ impl AutonomyManager {
             let next_wake_at = s.heartbeat.next_wake().map(instant_to_rfc3339);
             let seconds_until_wake = s.heartbeat.next_wake().map(|w| {
                 if w >= now {
-                    duration_secs_i64(w.duration_since(now))
+                    w.duration_since(now).as_secs() as i64
                 } else {
-                    -duration_secs_i64(now.duration_since(w))
+                    -(now.duration_since(w).as_secs() as i64)
                 }
             });
             let last_user_at = s.heartbeat.last_user_at().map(instant_to_rfc3339);
             let seconds_since_user = s
                 .heartbeat
                 .last_user_at()
-                .map(|u| duration_secs_i64(now.duration_since(u)));
+                .map(|u| now.duration_since(u).as_secs() as i64);
             let recent_events = s
                 .heartbeat_log
                 .recent(RECENT_EVENT_LIMIT)
@@ -863,7 +850,7 @@ const TICK_INTERVAL: Duration = Duration::from_secs(10);
 /// `max_tool_rounds` iterations normally fits; tight enough that a runaway
 /// loop can't block subsequent ticks for an hour. Per-call HTTP timeouts
 /// (300s, enforced by `LlmClient`) still bound each individual request.
-const HEARTBEAT_LOOP_DEADLINE: Duration = Duration::from_mins(30);
+const HEARTBEAT_LOOP_DEADLINE: Duration = Duration::from_secs(30 * 60); // 30 minutes
 
 /// Lock the per-character autonomy state, recovering from mutex poisoning
 /// instead of panicking. A poisoned mutex means a previous holder panicked,
@@ -918,7 +905,7 @@ fn push_provider_fallback_events(
     for event in events {
         let to_key = event.to_key.as_deref().unwrap_or("none");
         state.heartbeat_log.push(
-            kind,
+            kind.clone(),
             format!(
                 "Provider key fallback: {} -> {} ({})",
                 event.from_key, to_key, event.kind
@@ -927,7 +914,10 @@ fn push_provider_fallback_events(
     }
 }
 
-fn schedule_next_wake_in_state(state: &Mutex<AutonomyState>, input: &Value) -> Value {
+fn schedule_next_wake_in_state(
+    state: &Mutex<AutonomyState>,
+    input: &Value,
+) -> Result<Value, ToolError> {
     let hours = input
         .get("hours_from_now")
         .and_then(Value::as_f64)
@@ -951,7 +941,9 @@ fn schedule_next_wake_in_state(state: &Mutex<AutonomyState>, input: &Value) -> V
     );
     s.mark_dirty();
 
-    json!(format!("Scheduled next moment in {clamped:.1} hours."))
+    Ok(json!(format!(
+        "Scheduled next moment in {clamped:.1} hours."
+    )))
 }
 
 async fn character_tick_loop(
@@ -987,10 +979,6 @@ async fn character_tick_loop(
 }
 
 /// One tick for a single character.
-#[expect(
-    clippy::too_many_lines,
-    reason = "autonomy tick orchestration split is tracked in #109"
-)]
 async fn tick_character(character: &str, ctx: &TickContext) {
     let now = Instant::now();
 
@@ -1234,17 +1222,21 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 /// the engine's cached messages on success so the next turn (or heartbeat
 /// tick) sees the compacted `active.jsonl`.
 async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
-    let Some(llm_client) = ctx.llm_client.as_ref() else {
-        return;
+    let llm_client = match ctx.llm_client.as_ref() {
+        Some(c) => c,
+        None => return,
     };
-    let Some(loaded_config) = ctx.loaded_config.as_deref() else {
-        return;
+    let loaded_config = match ctx.loaded_config.as_deref() {
+        Some(c) => c,
+        None => return,
     };
-    let Some(notifier) = ctx.notifier.as_ref() else {
-        return;
+    let notifier = match ctx.notifier.as_ref() {
+        Some(n) => n,
+        None => return,
     };
-    let Some(registry) = ctx.registry.as_ref() else {
-        return;
+    let registry = match ctx.registry.as_ref() {
+        Some(r) => r,
+        None => return,
     };
 
     info!(
@@ -1616,7 +1608,8 @@ fn rebuild_request_from_disk(
         return None;
     }
     let has_prior_context = crate::engine::segments::SegmentReader::load(&char_dir)
-        .is_ok_and(|r| r.segment_count() > 0);
+        .map(|r| r.segment_count() > 0)
+        .unwrap_or(false);
     if !history_is_between_turns(store.messages()) {
         info!(
             character,
@@ -1749,14 +1742,7 @@ fn apply_heartbeat_model_override(
 /// generate() calls. Tool loop messages are ephemeral — only <sendMessage>
 /// output persists to active.jsonl. All activity is logged to the ring buffer
 /// for `shore log --heartbeat`.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "heartbeat tick boundary carries scheduler dependencies"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "heartbeat tick tool-loop orchestration split is tracked in #109"
-)]
+#[allow(clippy::too_many_arguments)]
 async fn execute_heartbeat_tick(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
@@ -1772,25 +1758,29 @@ async fn execute_heartbeat_tick(
     // Clone last_request under the lock, then release.
     let mut request = {
         let s = lock_state(state);
-        if let Some(req) = &s.last_request {
-            req.clone()
-        } else {
-            drop(s);
-            let Some(config) = loaded_config else { return };
-            if let Some(req) = rebuild_request_from_disk(character, data_dir, config) {
-                // Persist the rebuilt request so keepalive pings can use it;
-                // otherwise pings silently no-op after daemon restart until
-                // the next user message.
-                let mut s = lock_state(state);
-                cache_last_request(&mut s, character, req.clone());
+        match &s.last_request {
+            Some(req) => req.clone(),
+            None => {
                 drop(s);
-                req
-            } else {
-                info!(
-                    character,
-                    "Heartbeat: skipping tick (no prior conversation)"
-                );
-                return;
+                let Some(config) = loaded_config else { return };
+                match rebuild_request_from_disk(character, data_dir, config) {
+                    Some(req) => {
+                        // Persist the rebuilt request so keepalive pings can
+                        // use it — without this, pings silently no-op after
+                        // every daemon restart until the next user message.
+                        let mut s = lock_state(state);
+                        cache_last_request(&mut s, character, req.clone());
+                        drop(s);
+                        req
+                    }
+                    None => {
+                        info!(
+                            character,
+                            "Heartbeat: skipping tick (no prior conversation)"
+                        );
+                        return;
+                    }
+                }
             }
         }
     };
@@ -1860,7 +1850,16 @@ async fn execute_heartbeat_tick(
     // This prevents cache prefix invalidation. Instructions for using
     // set_next_wake are in the heartbeat prompt.
 
-    let tool_ctx = build_tool_context(character, data_dir, client, lc);
+    let tool_ctx = match build_tool_context(character, data_dir, client, lc).await {
+        Some(ctx) => ctx,
+        None => {
+            warn!(
+                character,
+                "Heartbeat: failed to build tool context, skipping tick"
+            );
+            return;
+        }
+    };
     let tool_ctx = Arc::new(HeartbeatToolContext {
         inner: tool_ctx,
         state: state.clone(),
@@ -2014,10 +2013,10 @@ async fn execute_heartbeat_tick(
 
             // Intercept set_next_wake — handled inline, not dispatched.
             let (output_str, is_error) = if name.as_str() == "set_next_wake" {
-                crate::content_util::dispatch_result_to_output(Ok(schedule_next_wake_in_state(
+                crate::content_util::dispatch_result_to_output(schedule_next_wake_in_state(
                     state.as_ref(),
                     input,
-                )))
+                ))
             } else {
                 crate::content_util::dispatch_result_to_output(
                     tool_system::dispatch_tool(name, input.clone(), tool_ctx.as_ref()).await,
@@ -2157,12 +2156,12 @@ async fn execute_heartbeat_tick(
 /// but resolves models with heartbeat-specific fallbacks. All tools work —
 /// workspace/memory files, images, and web. The only gap is AutonomyManager (the
 /// heatmap tool degrades gracefully via the trait default).
-fn build_tool_context(
+async fn build_tool_context(
     character: &str,
     data_dir: &Path,
     client: &LedgerClient,
     config: &LoadedConfig,
-) -> SharedToolContext {
+) -> Option<SharedToolContext> {
     let char_dir = character_data_dir(data_dir, character);
 
     let image_gen_config = resolve_image_gen_config(
@@ -2186,28 +2185,28 @@ fn build_tool_context(
         "Heartbeat: tool context built"
     );
 
-    SharedToolContext {
-        image_dir: char_dir.join("images").to_string_lossy().into_owned(),
-        llm_client: client.inner().clone(),
-        image_gen_config,
-        search_config: config.app.behavior.tool_use.search.clone(),
-        character_name: character.to_string(),
-        workspace_dir: character_workspace_dir(&config.dirs.config, character)
+    Some(SharedToolContext {
+        image_dir_val: char_dir.join("images").to_string_lossy().into_owned(),
+        llm_client_val: client.inner().clone(),
+        image_gen_config_val: image_gen_config,
+        search_config_val: config.app.behavior.tool_use.search.clone(),
+        character_name_val: character.to_string(),
+        workspace_dir_val: character_workspace_dir(&config.dirs.config, character)
             .to_string_lossy()
             .into_owned(),
-        markdown_store: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
+        markdown_store_val: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
             character_memory_dir(&config.dirs.config, character),
         )
         .ok(),
-        memory_retrieval_config: config.app.memory.retrieval.clone(),
-        embedder,
-        memory_index_path: crate::memory::workspace_index::index_path(
+        memory_retrieval_config_val: config.app.memory.retrieval.clone(),
+        embedder_val: embedder,
+        memory_index_path_val: crate::memory::workspace_index::index_path(
             &config.dirs.cache,
             character,
         ),
-        config_dir: config.dirs.config.to_string_lossy().into_owned(),
-        character_data_dir: char_dir.to_string_lossy().into_owned(),
-    }
+        config_dir_val: config.dirs.config.to_string_lossy().into_owned(),
+        character_data_dir_val: char_dir.to_string_lossy().into_owned(),
+    })
 }
 
 /// Extract text between XML-style tags. Returns the last match (last-wins).
@@ -2272,8 +2271,8 @@ fn append_wrap_up_nudge(request: &mut LlmRequest) {
 // ---------------------------------------------------------------------------
 
 struct DormantPingUsage {
-    input_tokens: u64,
-    cache_read_tokens: u64,
+    input_tokens: u32,
+    cache_read_tokens: u32,
 }
 
 enum DormantPingOutcome {
@@ -2329,27 +2328,33 @@ async fn execute_dormant_ping(
 
     let mut request = {
         let s = lock_state(state);
-        if let Some(req) = &s.last_request {
-            build_keepalive_ping(req, character)
-        } else {
-            drop(s);
-            let Some(config) = loaded_config else {
-                debug!(character, "Dormant ping: no cached request, skipping");
-                return DormantPingOutcome::Skipped(
-                    "no cached request and no loaded config for rebuild".to_string(),
-                );
-            };
-            if let Some(req) = rebuild_request_from_disk(character, data_dir, config) {
-                let mut s = lock_state(state);
-                cache_last_request(&mut s, character, req.clone());
+        match &s.last_request {
+            Some(req) => build_keepalive_ping(req, character),
+            None => {
                 drop(s);
-                build_keepalive_ping(&req, character)
-            } else {
-                debug!(
-                    character,
-                    "Dormant ping: failed to rebuild request, skipping"
-                );
-                return DormantPingOutcome::Skipped("no cached or rebuildable request".to_string());
+                let Some(config) = loaded_config else {
+                    debug!(character, "Dormant ping: no cached request, skipping");
+                    return DormantPingOutcome::Skipped(
+                        "no cached request and no loaded config for rebuild".to_string(),
+                    );
+                };
+                match rebuild_request_from_disk(character, data_dir, config) {
+                    Some(req) => {
+                        let mut s = lock_state(state);
+                        cache_last_request(&mut s, character, req.clone());
+                        drop(s);
+                        build_keepalive_ping(&req, character)
+                    }
+                    None => {
+                        debug!(
+                            character,
+                            "Dormant ping: failed to rebuild request, skipping"
+                        );
+                        return DormantPingOutcome::Skipped(
+                            "no cached or rebuildable request".to_string(),
+                        );
+                    }
+                }
             }
         }
     };
@@ -2403,8 +2408,6 @@ mod tests {
     use super::*;
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
-    use shore_config::app::HeartbeatConfig;
-
     fn test_config() -> AutonomyConfig {
         AutonomyConfig::default()
     }
@@ -2430,7 +2433,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::watch::channel(());
         AutonomyManager::new(
             test_config(),
-            CompactionConfig::default(),
+            Default::default(),
             data_dir.to_path_buf(),
             rx,
         )
@@ -2570,7 +2573,7 @@ mod tests {
         let (tx, rx) = tokio::sync::watch::channel(());
         let mgr = AutonomyManager::new(
             test_config(),
-            CompactionConfig::default(),
+            Default::default(),
             tmp.path().to_path_buf(),
             rx,
         );
@@ -2600,7 +2603,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::watch::channel(());
         let mgr = AutonomyManager::new(
             test_config(),
-            CompactionConfig::default(),
+            Default::default(),
             tmp.path().to_path_buf(),
             rx,
         );
@@ -2617,7 +2620,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::watch::channel(());
         let mgr = AutonomyManager::new(
             test_config(),
-            CompactionConfig::default(),
+            Default::default(),
             tmp.path().to_path_buf(),
             rx,
         );
@@ -2672,7 +2675,8 @@ mod tests {
             mgr.ensure_state("alice", None);
             mgr.with_state("alice", |s| {
                 let now = Instant::now();
-                s.heartbeat.on_user_message(now - Duration::from_hours(72));
+                s.heartbeat
+                    .on_user_message(now - Duration::from_secs(3 * 24 * 60 * 60));
             });
 
             let status = mgr.status("alice").unwrap();
@@ -2723,7 +2727,7 @@ mod tests {
                     .and_hms_opt(9, 0, 0)
                     .unwrap(),
             ];
-            mgr.backfill_activity("alice", &timestamps);
+            mgr.backfill_activity("alice", timestamps);
 
             let (_stats, count) = mgr.activity_stats("alice").unwrap();
             assert_eq!(count, 3);
@@ -2750,15 +2754,15 @@ mod tests {
                 now_local - chrono::Duration::minutes(30),
                 now_local - chrono::Duration::minutes(2),
             ];
-            mgr.backfill_activity("alice", &timestamps);
+            mgr.backfill_activity("alice", timestamps);
 
             // last_user_at is now seeded and reflects the recent (~2min) turn,
             // so a short inactivity window would NOT be satisfied.
             mgr.with_state("alice", |s| {
                 let last = s.heartbeat.last_user_at().expect("seeded");
                 let elapsed = Instant::now().duration_since(last);
-                assert!(elapsed < Duration::from_mins(5));
-                assert!(elapsed >= Duration::from_mins(1));
+                assert!(elapsed < Duration::from_secs(5 * 60));
+                assert!(elapsed >= Duration::from_secs(60));
             });
         });
     }
@@ -2773,7 +2777,7 @@ mod tests {
 
         // Create and save.
         let mut state = AutonomyState {
-            heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
+            heartbeat: HeartbeatClock::with_config(&Default::default()),
             cache_keepalive: CacheKeepalive::new(),
             activity: ActivityTracker::new(),
             heartbeat_log: HeartbeatLog::new(),
@@ -2821,7 +2825,7 @@ mod tests {
         assert!(loaded.next_wake_at.is_some());
 
         // Test the full restore path: verify Instant conversion doesn't panic.
-        let mut clock = HeartbeatClock::with_config(&HeartbeatConfig::default());
+        let mut clock = HeartbeatClock::with_config(&Default::default());
         restore_from_persisted(&loaded, &mut clock);
         assert_eq!(clock.ticks_without_user(), 5);
     }
@@ -2831,7 +2835,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config();
         let state = Arc::new(Mutex::new(AutonomyState {
-            heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
+            heartbeat: HeartbeatClock::with_config(&Default::default()),
             cache_keepalive: CacheKeepalive::new(),
             activity: ActivityTracker::new(),
             heartbeat_log: HeartbeatLog::new(),
@@ -2855,7 +2859,7 @@ mod tests {
         let tick_ctx = TickContext {
             state,
             config: Arc::new(config),
-            compaction: Arc::new(CompactionConfig::default()),
+            compaction: Arc::new(Default::default()),
             data_dir: tmp.path().to_path_buf(),
             llm_client: None,
             push_tx: None,
@@ -2872,7 +2876,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::watch::channel(());
         let mgr = AutonomyManager::new(
             test_config(),
-            CompactionConfig::default(),
+            Default::default(),
             tmp.path().to_path_buf(),
             rx,
         );
@@ -2947,7 +2951,7 @@ mod tests {
             next_wake_at: None,
             last_user_at: None,
         };
-        let mut clock = HeartbeatClock::with_config(&HeartbeatConfig::default());
+        let mut clock = HeartbeatClock::with_config(&Default::default());
         restore_from_persisted(&persisted, &mut clock);
         assert_eq!(clock.ticks_without_user(), 7);
     }
@@ -2978,7 +2982,7 @@ mod tests {
         TickContext {
             state,
             config: Arc::new(test_config()),
-            compaction: Arc::new(CompactionConfig::default()),
+            compaction: Arc::new(Default::default()),
             data_dir: data_dir.to_path_buf(),
             llm_client: None,
             push_tx: None,
@@ -3000,16 +3004,16 @@ mod tests {
 
         let mut ka = CacheKeepalive::new();
         // Simulate: cache was warmed 59+ minutes ago, wake is set.
-        ka.on_cache_warmed(now - Duration::from_hours(1));
-        ka.set_next_wake(Some(now + Duration::from_hours(1)));
+        ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
+        ka.set_next_wake(Some(now + Duration::from_secs(3600)));
 
         // Precondition: keepalive is due right now.
         assert_eq!(ka.tick(now), CacheKeepaliveAction::Ping);
         // Reset — tick() didn't advance, so re-prime for the actual test.
-        ka.on_cache_warmed(now - Duration::from_hours(1));
+        ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
 
         let state = Arc::new(Mutex::new(AutonomyState {
-            heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
+            heartbeat: HeartbeatClock::with_config(&Default::default()),
             cache_keepalive: ka,
             activity: ActivityTracker::new(),
             heartbeat_log: HeartbeatLog::new(),
@@ -3049,8 +3053,8 @@ mod tests {
         // 55 minutes later.
         let now = Instant::now();
         let mut ka = CacheKeepalive::new();
-        ka.on_cache_warmed(now - Duration::from_hours(1));
-        ka.set_next_wake(Some(now + Duration::from_hours(1)));
+        ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
+        ka.set_next_wake(Some(now + Duration::from_secs(3600)));
 
         // Ping is due.
         assert_eq!(ka.tick(now), CacheKeepaliveAction::Ping);
@@ -3064,7 +3068,7 @@ mod tests {
         );
         // 55 minutes later: should fire again.
         assert_eq!(
-            ka.tick(now + Duration::from_mins(55)),
+            ka.tick(now + Duration::from_secs(55 * 60)),
             CacheKeepaliveAction::Ping
         );
     }
@@ -3078,9 +3082,9 @@ mod tests {
         let now = Instant::now();
         mgr.with_state("alice", |s| {
             s.cache_keepalive
-                .on_cache_warmed(now - Duration::from_hours(1));
+                .on_cache_warmed(now - Duration::from_secs(60 * 60));
             s.cache_keepalive
-                .set_next_wake(Some(now + Duration::from_hours(1)));
+                .set_next_wake(Some(now + Duration::from_secs(3600)));
             s.last_request = Some(empty_request());
         });
 
@@ -3161,7 +3165,7 @@ mod tests {
         // return Ping (not None).
         let state = mgr.states.get("alice").unwrap();
         let mut s = lock_state(&state);
-        let future = Instant::now() + Duration::from_mins(55);
+        let future = Instant::now() + Duration::from_secs(55 * 60);
         let action = s.cache_keepalive.tick(future);
         assert_eq!(
             action,
@@ -3491,7 +3495,7 @@ api_key_env = "{heartbeat_env}"
         assert!(dream_inactivity_satisfied(Some(&cfg), None, now));
 
         // User active 2min ago, 5min window: not satisfied.
-        let two_min_ago = now - Duration::from_mins(2);
+        let two_min_ago = now - Duration::from_secs(120);
         assert!(!dream_inactivity_satisfied(
             Some(&cfg),
             Some(two_min_ago),
@@ -3499,7 +3503,7 @@ api_key_env = "{heartbeat_env}"
         ));
 
         // User active 6min ago: satisfied.
-        let six_min_ago = now - Duration::from_mins(6);
+        let six_min_ago = now - Duration::from_secs(360);
         assert!(dream_inactivity_satisfied(
             Some(&cfg),
             Some(six_min_ago),
@@ -3520,12 +3524,8 @@ api_key_env = "{heartbeat_env}"
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr = AutonomyManager::new(
-            AutonomyConfig::default(),
-            compaction,
-            tmp.path().to_path_buf(),
-            rx,
-        );
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3556,12 +3556,8 @@ api_key_env = "{heartbeat_env}"
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr = AutonomyManager::new(
-            AutonomyConfig::default(),
-            compaction,
-            tmp.path().to_path_buf(),
-            rx,
-        );
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3595,12 +3591,8 @@ api_key_env = "{heartbeat_env}"
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr = AutonomyManager::new(
-            AutonomyConfig::default(),
-            compaction,
-            tmp.path().to_path_buf(),
-            rx,
-        );
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3626,12 +3618,8 @@ api_key_env = "{heartbeat_env}"
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr = AutonomyManager::new(
-            AutonomyConfig::default(),
-            compaction,
-            tmp.path().to_path_buf(),
-            rx,
-        );
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -3662,12 +3650,8 @@ api_key_env = "{heartbeat_env}"
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr = AutonomyManager::new(
-            AutonomyConfig::default(),
-            compaction,
-            tmp.path().to_path_buf(),
-            rx,
-        );
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -3689,12 +3673,8 @@ api_key_env = "{heartbeat_env}"
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr = AutonomyManager::new(
-            AutonomyConfig::default(),
-            compaction,
-            tmp.path().to_path_buf(),
-            rx,
-        );
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3750,7 +3730,7 @@ api_key_env = "{heartbeat_env}"
         };
 
         let state = Arc::new(Mutex::new(AutonomyState {
-            heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
+            heartbeat: HeartbeatClock::with_config(&Default::default()),
             cache_keepalive: CacheKeepalive::new(),
             activity: ActivityTracker::new(),
             heartbeat_log: HeartbeatLog::new(),

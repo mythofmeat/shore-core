@@ -1,8 +1,8 @@
 //! Usage budget evaluation over the append-only ledger.
 
 use chrono::{
-    DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime,
-    TimeZone, Timelike, Utc,
+    DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike,
+    Utc,
 };
 use rusqlite::params;
 use serde::Serialize;
@@ -74,7 +74,7 @@ pub struct UsageBudgetWarningEvent {
     pub reset_at_display: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct BudgetCallContext<'a> {
     pub provider: &'a str,
     pub api_key_name: Option<&'a str>,
@@ -208,7 +208,9 @@ pub fn spike_warnings(
     } else {
         None
     };
-    let is_spike = multiplier.map_or(previous_cost == 0.0, |m| m >= spike.multiplier);
+    let is_spike = multiplier
+        .map(|m| m >= spike.multiplier)
+        .unwrap_or(previous_cost == 0.0);
     if !is_spike {
         return Ok(Vec::new());
     }
@@ -273,7 +275,10 @@ pub fn newly_crossed_budget_warnings(
             continue;
         }
 
-        let highest = newly_crossed.iter().copied().fold(0.0_f64, f64::max);
+        let highest = newly_crossed
+            .iter()
+            .copied()
+            .fold(0.0_f64, |acc, v| acc.max(v));
         let reset_display = format_local_ampm(&status.reset_at);
         events.push(UsageBudgetWarningEvent {
             budget: status.name.clone(),
@@ -303,14 +308,13 @@ pub fn newly_crossed_budget_warnings(
 /// local time. Falls back to the raw input if it doesn't parse — better to
 /// show something than nothing in a warning message.
 fn format_local_ampm(rfc3339: &str) -> String {
-    DateTime::parse_from_rfc3339(rfc3339).map_or_else(
-        |_| rfc3339.to_string(),
-        |dt| {
+    DateTime::parse_from_rfc3339(rfc3339)
+        .map(|dt| {
             dt.with_timezone(&Local)
                 .format("%Y-%m-%d %I:%M %p")
                 .to_string()
-        },
-    )
+        })
+        .unwrap_or_else(|_| rfc3339.to_string())
 }
 
 fn record_budget_warning_threshold(
@@ -323,9 +327,9 @@ fn record_budget_warning_threshold(
     let threshold_key = format!("{threshold:.6}");
     ledger.with_conn(|conn| {
         let changed = conn.execute(
-            r"INSERT OR IGNORE INTO usage_budget_warnings
+            r#"INSERT OR IGNORE INTO usage_budget_warnings
                (budget_name, period_start, threshold, created_at)
-               VALUES (?1, ?2, ?3, ?4)",
+               VALUES (?1, ?2, ?3, ?4)"#,
             params![budget_name, period_start, threshold_key, now.to_rfc3339()],
         )?;
         Ok(changed > 0)
@@ -345,7 +349,7 @@ fn budget_status(
     let current_cost = totals.total_cost;
     let percent_used = current_cost / budget.cost_usd;
     let mut warning_thresholds = budget.warn_at.clone();
-    warning_thresholds.sort_by(f64::total_cmp);
+    warning_thresholds.sort_by(|a, b| a.total_cmp(b));
     warning_thresholds.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
     let crossed_warn_at: Vec<f64> = warning_thresholds
         .iter()
@@ -506,19 +510,19 @@ fn is_background_call(call_type: CallType) -> bool {
 #[derive(Debug, Clone, Copy)]
 struct BudgetAnchors {
     /// Hour-of-day (0-23) at which day/week/month windows reset.
-    hour: u32,
+    reset_hour: u32,
     /// 0 = Monday .. 6 = Sunday. Used only for week windows.
-    day_of_week: u32,
+    reset_day_of_week: u32,
     /// Day-of-month (1-31). Clamped to the last day on short months.
-    day_of_month: u32,
+    reset_day_of_month: u32,
 }
 
 impl Default for BudgetAnchors {
     fn default() -> Self {
         Self {
-            hour: 0,
-            day_of_week: 0,
-            day_of_month: 1,
+            reset_hour: 0,
+            reset_day_of_week: 0,
+            reset_day_of_month: 1,
         }
     }
 }
@@ -526,11 +530,12 @@ impl Default for BudgetAnchors {
 impl BudgetAnchors {
     fn from_budget(budget: &UsageBudgetConfig) -> Self {
         Self {
-            hour: budget.reset_hour.unwrap_or(0),
-            day_of_week: budget
+            reset_hour: budget.reset_hour.unwrap_or(0),
+            reset_day_of_week: budget
                 .reset_day_of_week
-                .map_or(0, shore_config::app::BudgetWeekday::num_days_from_monday),
-            day_of_month: budget.reset_day_of_month.unwrap_or(1),
+                .map(|w| w.num_days_from_monday())
+                .unwrap_or(0),
+            reset_day_of_month: budget.reset_day_of_month.unwrap_or(1),
         }
     }
 }
@@ -586,25 +591,35 @@ fn period_start_naive(
     let anchors = anchors.copied().unwrap_or_default();
     let date = now.date();
     match period {
-        UsageBudgetPeriod::Hour => at_hour(date, now.hour()),
+        UsageBudgetPeriod::Hour => date
+            .and_hms_opt(now.hour(), 0, 0)
+            .expect("valid hour boundary"),
         UsageBudgetPeriod::Day => {
-            let today_reset = at_hour(date, anchors.hour);
+            let today_reset = date
+                .and_hms_opt(anchors.reset_hour, 0, 0)
+                .expect("valid day anchor");
             if now >= today_reset {
                 today_reset
             } else {
-                let yesterday = date.pred_opt().unwrap_or(date);
-                at_hour(yesterday, anchors.hour)
+                let yesterday = date.pred_opt().expect("date predecessor exists");
+                yesterday
+                    .and_hms_opt(anchors.reset_hour, 0, 0)
+                    .expect("valid day anchor")
             }
         }
         UsageBudgetPeriod::Week => {
             let today_dow = date.weekday().num_days_from_monday();
-            let days_back = (today_dow + 7 - anchors.day_of_week) % 7;
+            let days_back = (today_dow + 7 - anchors.reset_day_of_week) % 7;
             let candidate_date = date - Duration::days(i64::from(days_back));
-            let candidate = at_hour(candidate_date, anchors.hour);
+            let candidate = candidate_date
+                .and_hms_opt(anchors.reset_hour, 0, 0)
+                .expect("valid week anchor");
             if now >= candidate {
                 candidate
             } else {
-                at_hour(candidate_date - Duration::days(7), anchors.hour)
+                (candidate_date - Duration::days(7))
+                    .and_hms_opt(anchors.reset_hour, 0, 0)
+                    .expect("valid week anchor")
             }
         }
         UsageBudgetPeriod::Month => {
@@ -646,21 +661,11 @@ fn period_end_naive(
 
 fn month_anchor_naive(year: i32, month: u32, anchors: &BudgetAnchors) -> NaiveDateTime {
     let max_day = days_in_month(year, month);
-    let day = anchors.day_of_month.clamp(1, max_day);
-    // `month` originates from a valid `NaiveDate` (1..=12) and `day` is clamped
-    // into range, so construction succeeds; fall back to the first of the month
-    // (always valid) rather than panic if a caller ever passes a bad month.
-    let date = NaiveDate::from_ymd_opt(year, month, day)
-        .or_else(|| NaiveDate::from_ymd_opt(year, month, 1))
-        .unwrap_or_default();
-    at_hour(date, anchors.hour)
-}
-
-/// Datetime at `hour:00:00` on `date`. `hour` is clamped into 0..=23 and
-/// [`NaiveDate::and_time`] is total, so this never panics.
-fn at_hour(date: NaiveDate, hour: u32) -> NaiveDateTime {
-    let time = NaiveTime::from_hms_opt(hour.min(23), 0, 0).unwrap_or_default();
-    date.and_time(time)
+    let day = anchors.reset_day_of_month.min(max_day);
+    NaiveDate::from_ymd_opt(year, month, day)
+        .expect("valid month anchor date")
+        .and_hms_opt(anchors.reset_hour, 0, 0)
+        .expect("valid month anchor time")
 }
 
 fn days_in_month(year: i32, month: u32) -> u32 {
@@ -671,7 +676,8 @@ fn days_in_month(year: i32, month: u32) -> u32 {
     };
     NaiveDate::from_ymd_opt(next_year, next_month, 1)
         .and_then(|d| d.pred_opt())
-        .map_or(28, |d| d.day())
+        .map(|d| d.day())
+        .unwrap_or(28)
 }
 
 fn resolve_local(naive: NaiveDateTime) -> DateTime<Local> {
@@ -742,10 +748,7 @@ mod tests {
             "2026-05-18T12:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
-        #[expect(clippy::float_cmp, reason = "sum of four $1.00 rows is exact in f64")]
-        {
-            assert_eq!(statuses[0].current_cost, 4.0);
-        }
+        assert_eq!(statuses[0].current_cost, 4.0);
         assert_eq!(statuses[0].status, "ok");
     }
 
@@ -832,10 +835,7 @@ mod tests {
             "2026-05-18T12:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
-        #[expect(clippy::float_cmp, reason = "sum of three $1.00 rows is exact in f64")]
-        {
-            assert_eq!(statuses[0].current_cost, 3.0);
-        }
+        assert_eq!(statuses[0].current_cost, 3.0);
     }
 
     #[test]

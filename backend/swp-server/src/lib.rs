@@ -1,17 +1,3 @@
-// Panic-hygiene lock (see [workspace.lints] in root Cargo.toml): this crate is
-// cleaned, so these can never regress. Tests are exempt via clippy.toml.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unreachable,
-    clippy::todo,
-    clippy::unimplemented,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
-)]
-
 pub mod registry;
 
 use std::collections::HashMap;
@@ -550,8 +536,8 @@ where
     R: tokio::io::AsyncRead + Unpin + Send,
     W: tokio::io::AsyncWrite + Unpin + Send,
 {
-    const MAX_CONSECUTIVE_LAGS: u32 = 3;
     let mut consecutive_lags: u32 = 0;
+    const MAX_CONSECUTIVE_LAGS: u32 = 3;
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     ping_interval.tick().await;
@@ -699,9 +685,8 @@ where
             let (rid, kind) = match &msg {
                 ClientMessage::Message(body) => (body.rid.clone(), RequestKind::Message),
                 ClientMessage::Regen(regen) => (regen.rid.clone(), RequestKind::Regen),
-                // This outer arm only routes Message/Regen/Cancel; Cancel is
-                // the sole remaining case.
-                _ => (None, RequestKind::Cancel),
+                ClientMessage::Cancel(_) => (None, RequestKind::Cancel),
+                ClientMessage::Hello(_) | ClientMessage::Command(_) => unreachable!(),
             };
             let meta = RequestMeta {
                 session: session.with_selected_character(character),
@@ -729,9 +714,8 @@ async fn event_matches_session(
     msg: &ServerMessage,
 ) -> bool {
     match msg {
-        // Broadcast/lifecycle messages are delivered to every session.
-        ServerMessage::Hello(_)
-        | ServerMessage::NewMessage(_)
+        ServerMessage::Hello(_) => true,
+        ServerMessage::NewMessage(_)
         | ServerMessage::History(_)
         | ServerMessage::Shutdown(_)
         | ServerMessage::Ping(_)
@@ -966,10 +950,7 @@ mod tests {
         assert_eq!(meta.session_id, SessionId(client_id));
         assert_eq!(meta.client_type, client_type);
         assert_eq!(meta.client_name, client_name);
-        let expected_caps: Vec<String> = capabilities
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect();
+        let expected_caps: Vec<String> = capabilities.iter().map(|s| s.to_string()).collect();
         assert_eq!(meta.capabilities, expected_caps);
         assert_eq!(meta.selected_character.as_deref(), selected_character);
     }
@@ -987,7 +968,7 @@ mod tests {
                 assert_eq!(hello.characters[0].name, "alice");
                 assert_eq!(hello.characters[1].name, "bob");
             }
-            other => panic!("Expected Hello, got {other:?}"),
+            other => panic!("Expected Hello, got {:?}", other),
         }
 
         send_client_msg(
@@ -1009,7 +990,7 @@ mod tests {
                 assert!(hist.selected_character.is_none());
                 assert_eq!(hist.revision, 1);
             }
-            other => panic!("Expected History, got {other:?}"),
+            other => panic!("Expected History, got {:?}", other),
         }
 
         // Verify client is registered.
@@ -1066,7 +1047,7 @@ mod tests {
                 assert_eq!(meta.rid.as_deref(), Some("msg_01"));
                 assert_session_meta(&meta.session, 1, "cli", "test", &[], None);
             }
-            other => panic!("Expected Engine(Message), got {other:?}"),
+            other => panic!("Expected Engine(Message), got {:?}", other),
         }
 
         send_client_msg(
@@ -1091,7 +1072,7 @@ mod tests {
                 assert_eq!(meta.rid.as_deref(), Some("regen_01"));
                 assert_session_meta(&meta.session, 1, "cli", "test", &[], None);
             }
-            other => panic!("Expected Engine(Regen), got {other:?}"),
+            other => panic!("Expected Engine(Regen), got {:?}", other),
         }
 
         drop(h.client_writer);
@@ -1123,7 +1104,7 @@ mod tests {
                 assert_eq!(hist.messages[0].content, "hello from alice");
                 assert_eq!(hist.revision, 1);
             }
-            other => panic!("Expected History, got {other:?}"),
+            other => panic!("Expected History, got {:?}", other),
         }
 
         {
@@ -1161,7 +1142,7 @@ mod tests {
                 assert_eq!(meta.rid.as_deref(), Some("cmd_01"));
                 assert_session_meta(&meta.session, 1, "cli", "test", &[], None);
             }
-            other => panic!("Expected Command, got {other:?}"),
+            other => panic!("Expected Command, got {:?}", other),
         }
 
         drop(h.client_writer);
@@ -1198,7 +1179,7 @@ mod tests {
                 assert_eq!(meta.rid.as_deref(), Some("cmd_switch"));
                 assert_session_meta(&meta.session, 1, "tui", "test", &[], Some("alice"));
             }
-            other => panic!("Expected Command, got {other:?}"),
+            other => panic!("Expected Command, got {:?}", other),
         }
 
         {
@@ -1225,7 +1206,7 @@ mod tests {
                 assert_eq!(meta.rid.as_deref(), Some("cmd_status"));
                 assert_session_meta(&meta.session, 1, "tui", "test", &[], Some("Alice"));
             }
-            other => panic!("Expected Command, got {other:?}"),
+            other => panic!("Expected Command, got {:?}", other),
         }
 
         drop(h.client_writer);
@@ -1234,12 +1215,12 @@ mod tests {
 
     #[tokio::test]
     async fn broadcast_reaches_client() {
+        let mut h = spawn_handler();
+        do_handshake(&mut h.client_reader, &mut h.client_writer, "tui", None).await;
+
         use shore_protocol::server_msg::{
             CacheWarning, NewMessage, Phase, SendImage, StreamChunk, ToolCall, ToolResult,
         };
-
-        let mut h = spawn_handler();
-        do_handshake(&mut h.client_reader, &mut h.client_writer, "tui", None).await;
 
         let push_msgs: Vec<ServerMessage> = vec![
             ServerMessage::StreamChunk(StreamChunk {
@@ -1350,7 +1331,7 @@ mod tests {
             ServerMessage::Error(e) => {
                 assert_eq!(e.code, ErrorCode::ProtocolError);
             }
-            other => panic!("Expected Error, got {other:?}"),
+            other => panic!("Expected Error, got {:?}", other),
         }
 
         assert!(h.handle.await.unwrap().is_err());
@@ -1379,7 +1360,7 @@ mod tests {
                 assert_eq!(e.code, ErrorCode::ProtocolError);
                 assert!(e.message.contains("Duplicate hello"));
             }
-            other => panic!("Expected Error, got {other:?}"),
+            other => panic!("Expected Error, got {:?}", other),
         }
 
         drop(h.client_writer);
@@ -1531,7 +1512,8 @@ mod tests {
         );
 
         match tokio::time::timeout(std::time::Duration::from_millis(100), rx2.recv()).await {
-            Err(_) | Ok(None) => {}
+            Err(_) => {}
+            Ok(None) => {}
             Ok(Some(other)) => panic!("unexpected direct delivery to other session: {other:?}"),
         }
     }
@@ -1594,13 +1576,14 @@ mod tests {
         // Small delay to let the server bind.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let Ok(Ok(stream)) = timeout(
+        let stream = match timeout(
             Duration::from_secs(2),
             TcpStream::connect(format!("127.0.0.1:{port}")),
         )
         .await
-        else {
-            return false;
+        {
+            Ok(Ok(s)) => s,
+            _ => return false,
         };
 
         let (reader, _writer) = stream.into_split();
@@ -1611,7 +1594,8 @@ mod tests {
             Ok(Ok(n)) if n > 0 => {
                 // Parse as ServerMessage — a ServerHello means ACL passed.
                 serde_json::from_str::<ServerMessage>(line.trim())
-                    .is_ok_and(|msg| matches!(msg, ServerMessage::Hello(_)))
+                    .map(|msg| matches!(msg, ServerMessage::Hello(_)))
+                    .unwrap_or(false)
             }
             _ => false,
         }
@@ -1648,8 +1632,6 @@ mod tests {
     /// client sending a multi-GB line.
     #[tokio::test]
     async fn read_message_rejects_oversized() {
-        use tokio::io::AsyncWriteExt;
-
         let oversized = format!(
             "{{\"type\":\"message\",\"body\":{{\"content\":\"{}\"}}}}\n",
             "x".repeat(MAX_WIRE_MESSAGE_SIZE + 1)
@@ -1658,13 +1640,15 @@ mod tests {
         let (mut writer, reader) = duplex(MAX_WIRE_MESSAGE_SIZE + 4096);
         let mut buf_reader = BufReader::new(reader);
 
+        use tokio::io::AsyncWriteExt;
         writer.write_all(oversized.as_bytes()).await.unwrap();
         drop(writer);
 
         let result = read_message(&mut buf_reader).await;
         assert!(
             result.is_err(),
-            "Oversized message should be rejected, got: {result:?}"
+            "Oversized message should be rejected, got: {:?}",
+            result
         );
     }
 

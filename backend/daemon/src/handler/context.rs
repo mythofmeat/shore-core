@@ -27,7 +27,6 @@ use crate::engine::prompt::{self, AssembledPrompt, PromptParams};
 
 /// Inputs for [`prepare_chat_context`]. Callers fill this in instead of
 /// passing seven parallel arguments.
-#[derive(Clone, Copy)]
 pub struct PrepareChatContextParams<'a> {
     pub character: &'a str,
     pub character_data_dir: &'a Path,
@@ -51,6 +50,13 @@ pub struct PreparedChatContext {
     pub system: Option<Value>,
     pub tool_defs: Option<Vec<Value>>,
     pub prompt: AssembledPrompt,
+    /// Raw contents of `active_prompt/SOUL.md` (character definition).
+    /// Surfaced so callers that need it for downstream rendering
+    /// (e.g. tool-phase system prompts) don't re-read the file and risk
+    /// observing a different value mid-turn.
+    pub character_definition: Option<String>,
+    /// Raw contents of `active_prompt/USER.md` (user definition).
+    pub user_definition: Option<String>,
 }
 
 /// Load the four active-prompt files (SOUL/USER/AGENTS/TOOLS) plus the
@@ -145,6 +151,8 @@ pub fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> PreparedCha
         system,
         tool_defs,
         prompt,
+        character_definition,
+        user_definition,
     }
 }
 

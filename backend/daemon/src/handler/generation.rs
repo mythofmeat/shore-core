@@ -1,5 +1,7 @@
 //! Stream retry and tool-phase execution for the generation pipeline.
 
+#![allow(clippy::items_after_test_module)]
+
 use tracing::{debug, error, instrument, warn};
 
 /// True when the request has extended thinking / reasoning enabled via
@@ -17,13 +19,65 @@ fn thinking_enabled_from_provider_options(opts: Option<&serde_json::Value>) -> b
     };
     let budget_on = opts
         .get("budget_tokens")
-        .and_then(serde_json::Value::as_u64)
+        .and_then(|v| v.as_u64())
         .is_some_and(|b| b > 0);
     let effort_on = opts.get("reasoning_effort").is_some_and(|v| !v.is_null());
     budget_on || effort_on
 }
 
-use crate::convert::elapsed_ms_u64;
+#[cfg(test)]
+mod tests {
+    use super::thinking_enabled_from_provider_options;
+    use serde_json::json;
+
+    #[test]
+    fn thinking_enabled_none_provider_options() {
+        assert!(!thinking_enabled_from_provider_options(None));
+    }
+
+    #[test]
+    fn thinking_enabled_empty_object() {
+        let v = json!({});
+        assert!(!thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_budget_zero() {
+        let v = json!({ "budget_tokens": 0 });
+        assert!(!thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_budget_positive() {
+        let v = json!({ "budget_tokens": 4096 });
+        assert!(thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_reasoning_effort_string() {
+        let v = json!({ "reasoning_effort": "high" });
+        assert!(thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_reasoning_effort_null_ignored() {
+        let v = json!({ "reasoning_effort": null });
+        assert!(!thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_both_knobs_set() {
+        let v = json!({ "budget_tokens": 2048, "reasoning_effort": "medium" });
+        assert!(thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_unrelated_keys_only() {
+        let v = json!({ "cache_ttl": "1h", "vertex_project": "x" });
+        assert!(!thinking_enabled_from_provider_options(Some(&v)));
+    }
+}
+
 use crate::engine::tools;
 use crate::memory::compaction_impls::resolve_image_gen_config;
 use crate::memory::markdown_store::MarkdownMemoryStore;
@@ -45,6 +99,7 @@ use super::{GenContext, HandlerToolContext};
 /// (5xx, 429, network blips) are absorbed here; credential-shaped
 /// failures bubble up to the rotation layer above.
 #[instrument(skip(ctx, request, effective_config), fields(char = char_name, model = %resolved.qualified_name))]
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn stream_with_retry(
     ctx: &GenContext,
     request: &shore_llm::types::LlmRequest,
@@ -109,11 +164,12 @@ pub(super) async fn stream_with_retry(
                         .app
                         .advanced
                         .retry_backoff
-                        .map_or(500, |d| d.as_millis());
+                        .map(|d| d.as_millis())
+                        .unwrap_or(500);
                     let delay = std::time::Duration::from_millis(base_ms * 2u64.pow(attempt));
                     warn!(
                         attempt,
-                        delay_ms = elapsed_ms_u64(delay),
+                        delay_ms = delay.as_millis() as u64,
                         error = %e,
                         "Retrying after transient LLM error"
                     );
@@ -134,12 +190,15 @@ pub(super) async fn stream_with_retry(
 }
 
 /// Phase 11: Set up tool context and run the tool loop.
-#[instrument(skip(ctx, effective_config, request, result), fields(char = char_name))]
+#[instrument(skip(ctx, effective_config, _character_definition, _user_definition, request, result), fields(char = char_name))]
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_tool_phase(
     ctx: &GenContext,
     data_dir: &std::path::Path,
     char_name: &str,
     effective_config: &LoadedConfig,
+    _character_definition: &Option<String>,
+    _user_definition: &Option<String>,
     request: &mut shore_llm::types::LlmRequest,
     result: shore_llm::types::StreamResult,
 ) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
@@ -174,24 +233,24 @@ pub(super) async fn run_tool_phase(
 
     let tool_ctx = HandlerToolContext {
         inner: SharedToolContext {
-            image_dir: character_data_dir
+            image_dir_val: character_data_dir
                 .join("images")
                 .to_string_lossy()
                 .into_owned(),
-            llm_client: ctx.llm_client.inner().clone(),
-            image_gen_config,
-            search_config: effective_config.app.behavior.tool_use.search.clone(),
-            character_name: char_name.to_owned(),
-            workspace_dir: workspace_dir.to_string_lossy().into_owned(),
-            markdown_store: MarkdownMemoryStore::open_sync(memory_dir).ok(),
-            memory_retrieval_config: effective_config.app.memory.retrieval.clone(),
-            embedder,
-            memory_index_path: crate::memory::workspace_index::index_path(
+            llm_client_val: ctx.llm_client.inner().clone(),
+            image_gen_config_val: image_gen_config,
+            search_config_val: effective_config.app.behavior.tool_use.search.clone(),
+            character_name_val: char_name.to_owned(),
+            workspace_dir_val: workspace_dir.to_string_lossy().into_owned(),
+            markdown_store_val: MarkdownMemoryStore::open_sync(memory_dir).ok(),
+            memory_retrieval_config_val: effective_config.app.memory.retrieval.clone(),
+            embedder_val: embedder,
+            memory_index_path_val: crate::memory::workspace_index::index_path(
                 &effective_config.dirs.cache,
                 char_name,
             ),
-            config_dir: config_dir.to_string_lossy().into_owned(),
-            character_data_dir: character_data_dir.to_string_lossy().into_owned(),
+            config_dir_val: config_dir.to_string_lossy().into_owned(),
+            character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
         },
         autonomy_val: ctx.autonomy.clone(),
     };
@@ -218,57 +277,4 @@ pub(super) async fn run_tool_phase(
         "run_tool_phase complete"
     );
     Ok(tool_loop_result)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::thinking_enabled_from_provider_options;
-    use serde_json::json;
-
-    #[test]
-    fn thinking_enabled_none_provider_options() {
-        assert!(!thinking_enabled_from_provider_options(None));
-    }
-
-    #[test]
-    fn thinking_enabled_empty_object() {
-        let v = json!({});
-        assert!(!thinking_enabled_from_provider_options(Some(&v)));
-    }
-
-    #[test]
-    fn thinking_enabled_budget_zero() {
-        let v = json!({ "budget_tokens": 0 });
-        assert!(!thinking_enabled_from_provider_options(Some(&v)));
-    }
-
-    #[test]
-    fn thinking_enabled_budget_positive() {
-        let v = json!({ "budget_tokens": 4096 });
-        assert!(thinking_enabled_from_provider_options(Some(&v)));
-    }
-
-    #[test]
-    fn thinking_enabled_reasoning_effort_string() {
-        let v = json!({ "reasoning_effort": "high" });
-        assert!(thinking_enabled_from_provider_options(Some(&v)));
-    }
-
-    #[test]
-    fn thinking_enabled_reasoning_effort_null_ignored() {
-        let v = json!({ "reasoning_effort": null });
-        assert!(!thinking_enabled_from_provider_options(Some(&v)));
-    }
-
-    #[test]
-    fn thinking_enabled_both_knobs_set() {
-        let v = json!({ "budget_tokens": 2048, "reasoning_effort": "medium" });
-        assert!(thinking_enabled_from_provider_options(Some(&v)));
-    }
-
-    #[test]
-    fn thinking_enabled_unrelated_keys_only() {
-        let v = json!({ "cache_ttl": "1h", "vertex_project": "x" });
-        assert!(!thinking_enabled_from_provider_options(Some(&v)));
-    }
 }

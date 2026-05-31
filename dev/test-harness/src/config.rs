@@ -1,4 +1,3 @@
-use std::fmt::Write as _;
 use std::path::Path;
 
 use shore_config::{
@@ -9,13 +8,6 @@ use shore_config::{
     LoadedConfig, ShoreDirs,
 };
 
-type BuildResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-#[must_use]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "test harness builder mirrors daemon config toggles for concise tests"
-)]
 #[derive(Clone)]
 pub struct TestConfigBuilder {
     pub character_name: String,
@@ -170,18 +162,7 @@ impl TestConfigBuilder {
         self
     }
 
-    #[expect(
-        clippy::panic,
-        reason = "legacy test harness convenience API fails fast during setup"
-    )]
     pub fn build(&self, tmp_dir: &Path, mock_base_url: &str) -> LoadedConfig {
-        match self.try_build(tmp_dir, mock_base_url) {
-            Ok(config) => config,
-            Err(error) => panic!("failed to build test config: {error}"),
-        }
-    }
-
-    pub fn try_build(&self, tmp_dir: &Path, mock_base_url: &str) -> BuildResult<LoadedConfig> {
         // Set a dummy API key so LlmClient::build_request succeeds.
         std::env::set_var("SHORE_TEST_API_KEY", "sk-test-dummy");
 
@@ -189,41 +170,28 @@ impl TestConfigBuilder {
         let data_dir = tmp_dir.join("data");
         let runtime_dir = tmp_dir.join("runtime");
 
-        std::fs::create_dir_all(&config_dir)?;
-        std::fs::create_dir_all(&data_dir)?;
-        std::fs::create_dir_all(&runtime_dir)?;
-        self.write_character_files(&config_dir)?;
+        // Create required directories.
+        std::fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
+        std::fs::create_dir_all(&runtime_dir).expect("failed to create runtime dir");
 
-        let models = self.build_model_catalog(mock_base_url)?;
-        let mut loaded = LoadedConfig::new_for_test(
-            self.build_app_config(),
-            models,
-            ShoreDirs {
-                config: config_dir,
-                data: data_dir,
-                runtime: runtime_dir,
-                cache: tmp_dir.join("cache"),
-            },
-        );
-        self.apply_provider_registry(&mut loaded)?;
+        // Write character definition file.
+        let char_dir = config_dir.join("characters").join(&self.character_name);
+        std::fs::create_dir_all(&char_dir).expect("failed to create character dir");
+        std::fs::write(char_dir.join("character.md"), &self.character_definition)
+            .expect("failed to write character.md");
 
-        Ok(loaded)
-    }
-
-    fn write_character_files(&self, config_dir: &Path) -> std::io::Result<()> {
-        let characters_dir = config_dir.join("characters");
-        write_character_file(
-            &characters_dir,
-            &self.character_name,
-            &self.character_definition,
-        )?;
+        // Pre-create any additional character workspaces requested by the
+        // builder. They share the same model defaults — only the
+        // identifier and prompt change.
         for (extra_name, extra_def) in &self.extra_characters {
-            write_character_file(&characters_dir, extra_name, extra_def)?;
+            let extra_dir = config_dir.join("characters").join(extra_name);
+            std::fs::create_dir_all(&extra_dir).expect("failed to create extra character dir");
+            std::fs::write(extra_dir.join("character.md"), extra_def)
+                .expect("failed to write extra character.md");
         }
-        Ok(())
-    }
 
-    fn build_app_config(&self) -> AppConfig {
+        // Build AppConfig.
         let mut app = AppConfig::default();
         app.defaults.model = Some(self.model_alias.clone());
         app.behavior = BehaviorConfig {
@@ -236,12 +204,13 @@ impl TestConfigBuilder {
         };
         app.behavior.autonomy.enabled = self.autonomy_enabled;
         app.advanced.api_payload_logging = self.api_payload_logging;
-
         if let Some(rounds) = self.heartbeat_max_tool_rounds {
             app.behavior.autonomy.heartbeat = HeartbeatConfig {
                 max_tool_rounds: rounds,
                 // Long intervals so spontaneous ticks don't fire during the
-                // test. The caller drives manual ticks and virtual time.
+                // test — the caller drives the tick manually with
+                // `AutonomyManager::heartbeat_tick_now` and advances virtual
+                // time to fire the per-character tick loop.
                 fallback_heartbeat_interval: ConfigDuration::from_secs(86400),
                 minimum_heartbeat_latency: ConfigDuration::from_secs(86400),
                 ..HeartbeatConfig::default()
@@ -251,98 +220,91 @@ impl TestConfigBuilder {
         if self.compaction_enabled {
             app.memory.compaction = CompactionConfig {
                 enabled: true,
-                idle_trigger: ConfigDuration::from_secs(86400),
+                idle_trigger: ConfigDuration::from_secs(86400), // very long — tests use max_turns
                 min_turns: self.compaction_min_turns.unwrap_or(2),
                 max_turns: self.compaction_max_turns.unwrap_or(16),
                 max_context_tokens: 0,
                 keep_recent_turns: self.compaction_keep_recent.unwrap_or(2),
                 ..CompactionConfig::default()
             };
+            // Also set a default embedding profile name.
             app.defaults.embedding = Some("test-embed".into());
         }
-
-        app
-    }
-
-    fn build_model_catalog(&self, mock_base_url: &str) -> BuildResult<ModelCatalog> {
-        let chat_table: toml::Table = self.models_toml(mock_base_url).parse()?;
-        let embed_table = self
-            .embed_toml(mock_base_url)
-            .map(|toml| toml.parse())
-            .transpose()?;
-        Ok(ModelCatalog::from_sections(
-            Some(&chat_table),
-            None,
-            embed_table.as_ref(),
-            None,
-        )?)
-    }
-
-    fn models_toml(&self, mock_base_url: &str) -> String {
-        let model_alias = &self.model_alias;
-        let model_id = &self.model_id;
-        let max_output_tokens = self.max_output_tokens;
+        // Build ModelCatalog from TOML pointing at the mock server.
         let mut models_toml = format!(
             r#"
 [openrouter]
-base_url = "{mock_base_url}"
+base_url = "{base_url}"
 sdk = "anthropic"
 api_key_env = "SHORE_TEST_API_KEY"
 
-[openrouter.{model_alias}]
+[openrouter.{alias}]
 model_id = "{model_id}"
 max_output_tokens = {max_output_tokens}
 temperature = 0.0
 "#,
+            base_url = mock_base_url,
+            alias = self.model_alias,
+            model_id = self.model_id,
+            max_output_tokens = self.max_output_tokens,
         );
-        push_cache_ttl(&mut models_toml, self.cache_ttl.as_deref());
-        for (extra_alias, extra_model_id) in &self.extra_chat_aliases {
-            let _ = write!(
-                models_toml,
-                "\n[openrouter.{extra_alias}]\nmodel_id = \"{extra_model_id}\"\nmax_output_tokens = {max_output_tokens}\ntemperature = 0.0\n",
-            );
-            push_cache_ttl(&mut models_toml, self.cache_ttl.as_deref());
+        if let Some(cache_ttl) = &self.cache_ttl {
+            models_toml.push_str(&format!("cache_ttl = \"{cache_ttl}\"\n"));
         }
-        models_toml
-    }
+        for (extra_alias, extra_model_id) in &self.extra_chat_aliases {
+            models_toml.push_str(&format!(
+                "\n[openrouter.{alias}]\nmodel_id = \"{model_id}\"\nmax_output_tokens = {max_output_tokens}\ntemperature = 0.0\n",
+                alias = extra_alias,
+                model_id = extra_model_id,
+                max_output_tokens = self.max_output_tokens,
+            ));
+            if let Some(cache_ttl) = &self.cache_ttl {
+                models_toml.push_str(&format!("cache_ttl = \"{cache_ttl}\"\n"));
+            }
+        }
+        let chat_table: toml::Table = models_toml.parse().expect("failed to parse model TOML");
 
-    fn embed_toml(&self, mock_base_url: &str) -> Option<String> {
-        self.compaction_enabled.then(|| {
-            format!(
+        let embed_table: Option<toml::Table> = if self.compaction_enabled {
+            let embed_toml = format!(
                 r#"
 [test-embed]
 model_id = "text-embedding-3-small"
 provider = "openai"
 api_key_env = "SHORE_TEST_API_KEY"
-base_url = "{mock_base_url}"
+base_url = "{base_url}"
 dimensions = 8
 "#,
-            )
-        })
-    }
+                base_url = mock_base_url,
+            );
+            Some(embed_toml.parse().expect("failed to parse embed TOML"))
+        } else {
+            None
+        };
 
-    fn apply_provider_registry(&self, loaded: &mut LoadedConfig) -> BuildResult<()> {
+        let models =
+            ModelCatalog::from_sections(Some(&chat_table), None, embed_table.as_ref(), None)
+                .expect("failed to build ModelCatalog");
+
+        let mut loaded = LoadedConfig::new_for_test(
+            app,
+            models,
+            ShoreDirs {
+                config: config_dir,
+                data: data_dir,
+                runtime: runtime_dir,
+                cache: tmp_dir.join("cache"),
+            },
+        );
+
         if let Some(ref toml_text) = self.provider_registry_toml {
-            let table: toml::Table = toml_text.parse()?;
+            let table: toml::Table = toml_text
+                .parse()
+                .expect("failed to parse provider_registry_toml");
             let providers_section = table.get("providers").and_then(|v| v.as_table());
-            loaded.providers = ProviderRegistry::from_section(providers_section)?;
+            loaded.providers = ProviderRegistry::from_section(providers_section)
+                .expect("failed to build ProviderRegistry from test toml");
         }
-        Ok(())
-    }
-}
 
-fn write_character_file(
-    characters_dir: &Path,
-    name: &str,
-    definition: &str,
-) -> std::io::Result<()> {
-    let char_dir = characters_dir.join(name);
-    std::fs::create_dir_all(&char_dir)?;
-    std::fs::write(char_dir.join("character.md"), definition)
-}
-
-fn push_cache_ttl(models_toml: &mut String, cache_ttl: Option<&str>) {
-    if let Some(cache_ttl) = cache_ttl {
-        let _ = writeln!(models_toml, "cache_ttl = \"{cache_ttl}\"");
+        loaded
     }
 }

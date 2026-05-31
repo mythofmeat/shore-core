@@ -10,7 +10,6 @@ use serde_json::{json, Value};
 use shore_config::app::RetrievalConfig;
 use shore_llm::embed::Embedder;
 
-use crate::convert::u64_to_usize;
 use crate::memory::workspace_index::{self, HybridMode};
 
 use super::{ToolCategory, ToolDef, ToolError};
@@ -19,10 +18,6 @@ use super::{ToolCategory, ToolDef, ToolError};
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "workspace tool schema literals are tracked for extraction in #109"
-)]
 pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
@@ -270,7 +265,7 @@ fn resolve_list_path(workspace_dir: &str, relative: Option<&str>) -> Result<Path
     }
 
     match relative {
-        None | Some("" | ".") => Ok(PathBuf::from(workspace_dir)),
+        None | Some("") | Some(".") => Ok(PathBuf::from(workspace_dir)),
         Some(rel) => {
             let (base, stripped) = resolve_roots(workspace_dir, rel)?;
             if stripped.is_empty() {
@@ -307,8 +302,9 @@ fn normalize_search_query(input: &Value) -> Result<String, ToolError> {
 fn search_result_limit(input: &Value) -> usize {
     input
         .get("max_results")
-        .and_then(Value::as_u64)
-        .map_or(SEARCH_DEFAULT_MAX_RESULTS, u64_to_usize)
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(SEARCH_DEFAULT_MAX_RESULTS)
         .clamp(1, SEARCH_MAX_RESULTS)
 }
 
@@ -449,15 +445,17 @@ pub async fn handle_read(input: Value, workspace_dir: &str) -> Result<Value, Too
 
     let offset = input
         .get("offset")
-        .and_then(Value::as_u64)
-        .map_or(1, u64_to_usize)
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(1)
         .saturating_sub(1)
         .min(total_lines);
 
     let limit = input
         .get("limit")
-        .and_then(Value::as_u64)
-        .map_or(total_lines, u64_to_usize);
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(total_lines);
 
     let end = (offset + limit).min(total_lines);
     let selected: Vec<&str> = lines
@@ -653,28 +651,27 @@ pub async fn handle_search(
     let retrieval_config = retrieval_config.cloned().unwrap_or_default();
     let requested_mode = parse_search_mode(input.get("mode"))?;
     let requested_hybrid = !matches!(requested_mode, RequestedMode::Lexical);
+    let can_hybrid = embedder.is_some() && workspace_index_path.is_some();
     let path_str = input.get("path").and_then(|v| v.as_str());
+    let path_scoped = !matches!(path_str, None | Some("") | Some("."));
 
-    if let (true, Some(embedder), Some(workspace_index_path)) =
-        (requested_hybrid, embedder, workspace_index_path)
-    {
+    if requested_hybrid && can_hybrid {
         let mode = match requested_mode {
             RequestedMode::Vector => HybridMode::Vector,
             _ => HybridMode::Hybrid,
         };
-        let scope = match path_str {
-            Some(raw) if !raw.is_empty() && raw != "." => {
-                Some(scope_prefix_for(workspace_dir, raw)?)
-            }
-            _ => None,
+        let scope = if path_scoped {
+            Some(scope_prefix_for(workspace_dir, path_str.unwrap())?)
+        } else {
+            None
         };
         return handle_search_hybrid(
             input,
             workspace_dir,
             &retrieval_config,
             mode,
-            embedder,
-            workspace_index_path,
+            embedder.unwrap(),
+            workspace_index_path.unwrap(),
             scope.as_deref(),
         )
         .await;
@@ -726,10 +723,6 @@ fn parse_search_mode(raw: Option<&Value>) -> Result<RequestedMode, ToolError> {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "lexical workspace search walk/rank/render split is tracked in #109"
-)]
 async fn handle_search_lexical(
     input: Value,
     workspace_dir: &str,
@@ -767,8 +760,9 @@ async fn handle_search_lexical(
     let mut skipped_binary_or_large = 0usize;
 
     while let Some(path) = pending.pop() {
-        let Ok(meta) = tokio::fs::symlink_metadata(&path).await else {
-            continue;
+        let meta = match tokio::fs::symlink_metadata(&path).await {
+            Ok(meta) => meta,
+            Err(_) => continue,
         };
 
         if meta.file_type().is_symlink() {
@@ -777,8 +771,9 @@ async fn handle_search_lexical(
 
         if meta.is_dir() {
             let mut entries = Vec::new();
-            let Ok(mut read_dir) = tokio::fs::read_dir(&path).await else {
-                continue;
+            let mut read_dir = match tokio::fs::read_dir(&path).await {
+                Ok(read_dir) => read_dir,
+                Err(_) => continue,
             };
             while let Ok(Some(entry)) = read_dir.next_entry().await {
                 entries.push(entry.path());
@@ -809,12 +804,16 @@ async fn handle_search_lexical(
     let mut searched_files = 0usize;
 
     for (path, _) in candidates {
-        let Ok(bytes) = tokio::fs::read(&path).await else {
-            continue;
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
         };
-        let Ok(content) = String::from_utf8(bytes) else {
-            skipped_binary_or_large += 1;
-            continue;
+        let content = match String::from_utf8(bytes) {
+            Ok(content) => content,
+            Err(_) => {
+                skipped_binary_or_large += 1;
+                continue;
+            }
         };
 
         searched_files += 1;
@@ -1084,10 +1083,10 @@ pub async fn handle_delete(
     }
 
     let workspace_root = PathBuf::from(workspace_dir);
-    let relative_under_workspace = path.strip_prefix(&workspace_root).map_or_else(
-        |_| PathBuf::from(path.file_name().unwrap_or_default()),
-        Path::to_path_buf,
-    );
+    let relative_under_workspace = path
+        .strip_prefix(&workspace_root)
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|_| PathBuf::from(path.file_name().unwrap_or_default()));
 
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%3fZ").to_string();
     let trash_root = PathBuf::from(character_data_dir).join("trash").join(&stamp);
@@ -1111,12 +1110,14 @@ pub async fn handle_delete(
             .map_err(|e| ToolError::Io(format!("could not remove original after copy: {e}")))?;
     }
 
-    let character_data_root = PathBuf::from(character_data_dir);
-    let trash_display_root = character_data_root.parent().unwrap_or(Path::new(""));
-    let trashed_display = trash_target.strip_prefix(trash_display_root).map_or_else(
-        |_| trash_target.to_string_lossy().replace('\\', "/"),
-        |p| p.to_string_lossy().replace('\\', "/"),
-    );
+    let trashed_display = trash_target
+        .strip_prefix(
+            PathBuf::from(character_data_dir)
+                .parent()
+                .unwrap_or(Path::new("")),
+        )
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| trash_target.to_string_lossy().replace('\\', "/"));
 
     Ok(json!({
         "path": path_str,
@@ -1652,7 +1653,7 @@ mod tests {
         // mtime resolution can be coarse (e.g. 1s on some filesystems), so
         // bump the older file backwards in time rather than relying on the
         // write order alone.
-        let past = std::time::SystemTime::now() - std::time::Duration::from_mins(1);
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
         std::fs::File::options()
             .write(true)
             .open(ws.join("older.md"))
@@ -1711,7 +1712,8 @@ mod tests {
         let ws_str = ws.to_string_lossy().to_string();
         let metadata = "metadata ".repeat(200);
         let line = format!(
-            r#"{{"metadata":"{metadata}","message":"spotted a German Shepherd near the gate"}}"#
+            r#"{{"metadata":"{}","message":"spotted a German Shepherd near the gate"}}"#,
+            metadata
         );
 
         handle_write(
@@ -1829,7 +1831,7 @@ mod tests {
             Ok(inputs.iter().map(|_| vec![0.0; dim]).collect())
         }
 
-        fn model_id(&self) -> &'static str {
+        fn model_id(&self) -> &str {
             "dummy"
         }
 

@@ -48,11 +48,10 @@ pub async fn build_session_history_snapshot(
 ) -> HistorySnapshot {
     let (engine, config) = {
         let mut registry = registry.lock().await;
-        let effective_config = if let Some(name) = selected_character.as_deref() {
-            registry.effective_config(name).clone()
-        } else {
-            registry.global_config().clone()
-        };
+        let effective_config = selected_character
+            .as_deref()
+            .map(|name| registry.effective_config(name).clone())
+            .unwrap_or_else(|| registry.global_config().clone());
         let active_model = resolve_snapshot_active_model(
             &effective_config,
             selected_character.as_deref(),

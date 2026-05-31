@@ -34,10 +34,6 @@ pub struct History {
     pub revision: u64,
 }
 
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde skip_serializing_if requires a &T predicate signature"
-)]
 fn is_zero(value: &usize) -> bool {
     *value == 0
 }
@@ -290,23 +286,20 @@ impl ServerMessage {
     /// Attach a request ID to request-scoped responses.
     ///
     /// Unsolicited push/broadcast messages intentionally ignore `rid`.
-    #[must_use]
     pub fn with_rid(mut self, rid: Option<String>) -> Self {
-        // Exactly one arm runs per call, so `rid` is moved into the matched
-        // field rather than cloned per variant.
         match &mut self {
-            ServerMessage::History(msg) => msg.rid = rid,
-            ServerMessage::CommandOutput(msg) => msg.rid = rid,
-            ServerMessage::Error(msg) => msg.rid = rid,
-            ServerMessage::StreamStart(msg) => msg.rid = rid,
-            ServerMessage::StreamChunk(msg) => msg.rid = rid,
-            ServerMessage::StreamEnd(msg) => msg.rid = rid,
-            ServerMessage::Phase(msg) => msg.rid = rid,
-            ServerMessage::ToolCall(msg) => msg.rid = rid,
-            ServerMessage::ToolResult(msg) => msg.rid = rid,
-            ServerMessage::SendImage(msg) => msg.rid = rid,
-            ServerMessage::ProviderFallbackWarning(msg) => msg.rid = rid,
-            ServerMessage::UsageWarning(msg) => msg.rid = rid,
+            ServerMessage::History(msg) => msg.rid = rid.clone(),
+            ServerMessage::CommandOutput(msg) => msg.rid = rid.clone(),
+            ServerMessage::Error(msg) => msg.rid = rid.clone(),
+            ServerMessage::StreamStart(msg) => msg.rid = rid.clone(),
+            ServerMessage::StreamChunk(msg) => msg.rid = rid.clone(),
+            ServerMessage::StreamEnd(msg) => msg.rid = rid.clone(),
+            ServerMessage::Phase(msg) => msg.rid = rid.clone(),
+            ServerMessage::ToolCall(msg) => msg.rid = rid.clone(),
+            ServerMessage::ToolResult(msg) => msg.rid = rid.clone(),
+            ServerMessage::SendImage(msg) => msg.rid = rid.clone(),
+            ServerMessage::ProviderFallbackWarning(msg) => msg.rid = rid.clone(),
+            ServerMessage::UsageWarning(msg) => msg.rid = rid.clone(),
             ServerMessage::Hello(_)
             | ServerMessage::Shutdown(_)
             | ServerMessage::Ping(_)

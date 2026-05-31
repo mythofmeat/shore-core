@@ -227,26 +227,22 @@ fn resolve_pinned_positions(
     let mut msg_indices = Vec::new();
     for &pos in positions {
         if pos <= 0 {
-            // System block breakpoint: 0 = last block, -1 = second-to-last, …
-            // `back` is the distance from the last block; skip if it runs off
-            // the front (mirrors the old `idx >= 0` guard).
-            let back = usize::try_from(pos.unsigned_abs()).unwrap_or(usize::MAX);
-            if let Some(idx) = system_len
-                .checked_sub(1)
-                .and_then(|last| last.checked_sub(back))
-            {
-                sys_indices.push(idx);
+            // System block breakpoint.
+            // 0 = last block, -1 = second-to-last, etc.
+            let idx = system_len as i32 - 1 + pos; // 0→last, -1→second-to-last
+            if idx >= 0 && (idx as usize) < system_len {
+                sys_indices.push(idx as usize);
             }
         } else {
-            // Positive: pin at the Nth user turn. `pos > 0`, so it fits u32.
-            let target = u32::try_from(pos).unwrap_or(u32::MAX);
+            // Positive: pin at Nth user turn.
+            // Find the message index of the Nth real user turn.
             let mut user_count = 0u32;
             for (i, msg) in messages.iter().enumerate() {
                 if msg.get("role").and_then(Value::as_str) == Some("user")
                     && !is_tool_result_message(msg)
                 {
                     user_count += 1;
-                    if user_count == target {
+                    if user_count == pos as u32 {
                         // Breakpoint on the message after this user turn's
                         // assistant response (or the user message itself if
                         // there's no assistant response yet).
@@ -276,11 +272,11 @@ fn normalize_for_caching(messages: &[Value], system: &Value) -> (Vec<Value>, Val
     } else {
         system.clone()
     };
-    let sys_blocks = system.as_array().map_or(0, std::vec::Vec::len);
+    let sys_blocks = system.as_array().map(|a| a.len()).unwrap_or(0);
 
     let mut result: Vec<Value> = messages.to_vec();
     strip_cache_control(&mut result);
-    for msg in &mut result {
+    for msg in result.iter_mut() {
         if let Some(Value::String(text)) = msg.get("content").cloned() {
             msg["content"] = json!([{ "type": "text", "text": text }]);
         }
@@ -328,7 +324,7 @@ fn compute_prefix_hash(system: &Value, messages: &[Value], msg_bp: &[usize]) -> 
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     system.to_string().hash(&mut hasher);
-    let end = msg_bp.first().map_or(0, |&p| p + 1);
+    let end = msg_bp.first().map(|&p| p + 1).unwrap_or(0);
     for msg in &messages[..end.min(messages.len())] {
         msg.to_string().hash(&mut hasher);
     }
@@ -606,31 +602,40 @@ fn thinking_caps(model: &str) -> ThinkingCaps {
         };
     }
 
-    let parsed = parse_anthropic_model(model);
-    if matches!(parsed, (Some("opus"), Some(4), Some(minor)) if minor >= 7) {
+    match parse_anthropic_model(model) {
         // Opus 4.7/4.8 (and any later 4.x): adaptive-only.
-        return ThinkingCaps {
+        (Some("opus"), Some(4), Some(minor)) if minor >= 7 => ThinkingCaps {
             adaptive: true,
             enabled: false,
-        };
-    }
-
-    if matches!(
-        parsed,
+        },
+        // Opus 4.6: both modes.
+        (Some("opus"), Some(4), Some(6)) => ThinkingCaps {
+            adaptive: true,
+            enabled: true,
+        },
+        // Sonnet 4.6+: both modes.
+        (Some("sonnet"), Some(4), Some(minor)) if minor >= 6 => ThinkingCaps {
+            adaptive: true,
+            enabled: true,
+        },
         // Sonnet 4.5 / Opus 4.5 / Haiku (any) / 3.x: enabled-only.
-        (Some("sonnet" | "opus"), Some(4), Some(5)) | (Some("haiku"), _, _) | (_, Some(0..=3), _)
-    ) {
-        return ThinkingCaps {
+        (Some("sonnet") | Some("opus"), Some(4), Some(5)) => ThinkingCaps {
             adaptive: false,
             enabled: true,
-        };
-    }
-
-    // Opus 4.6, Sonnet 4.6+, newer/unknown majors, and unrecognized ids:
-    // permissive.
-    ThinkingCaps {
-        adaptive: true,
-        enabled: true,
+        },
+        (Some("haiku"), _, _) => ThinkingCaps {
+            adaptive: false,
+            enabled: true,
+        },
+        (_, Some(major), _) if major <= 3 => ThinkingCaps {
+            adaptive: false,
+            enabled: true,
+        },
+        // Newer/unknown majors (Opus/Sonnet 5+, unrecognized ids): permissive.
+        _ => ThinkingCaps {
+            adaptive: true,
+            enabled: true,
+        },
     }
 }
 
@@ -640,10 +645,11 @@ fn thinking_caps(model: &str) -> ThinkingCaps {
 fn effort_to_budget(effort: &str) -> u32 {
     match effort {
         "low" => 4096,
+        "medium" => 8192,
         "high" => 12288,
         "xhigh" => 16384,
         "max" => 24576,
-        _ => 8192, // "medium", literal "adaptive", or anything else.
+        _ => 8192, // literal "adaptive" or anything else → medium-ish
     }
 }
 
@@ -768,11 +774,14 @@ fn convert_inline_system_messages(messages: &[Value]) -> Vec<Value> {
             // break tool_use/tool_result pairing.
             if let Some(prev) = out.last_mut() {
                 if prev.get("role").and_then(Value::as_str) == Some("user") {
-                    if let Some(Value::Array(blocks)) = prev.get_mut("content") {
-                        blocks.push(json!({"type": "text", "text": wrapped}));
-                    } else {
-                        let prev_text = extract_text_content(prev);
-                        prev["content"] = json!(format!("{prev_text}\n\n{wrapped}"));
+                    match prev.get_mut("content") {
+                        Some(Value::Array(blocks)) => {
+                            blocks.push(json!({"type": "text", "text": wrapped}));
+                        }
+                        _ => {
+                            let prev_text = extract_text_content(prev);
+                            prev["content"] = json!(format!("{prev_text}\n\n{wrapped}"));
+                        }
                     }
                     continue;
                 }
@@ -930,7 +939,7 @@ fn build_http_request(
     client: &reqwest::Client,
     request: &LlmRequest,
     streaming: bool,
-) -> (reqwest::RequestBuilder, u64) {
+) -> Result<(reqwest::RequestBuilder, u64), LlmError> {
     let base = request.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL);
     // If the base_url already includes a version path (e.g. OpenRouter's
     // default "https://openrouter.ai/api/v1"), just append /messages.
@@ -958,16 +967,19 @@ fn build_http_request(
         let max_tokens = body["max_tokens"].as_u64().unwrap_or(0);
         let thinking = body
             .get("thinking")
-            .map_or_else(|| "none".into(), std::string::ToString::to_string);
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "none".into());
         let output_cfg = body
             .get("output_config")
-            .map_or_else(|| "none".into(), std::string::ToString::to_string);
-        let sys_blocks = body["system"].as_array().map_or(0, std::vec::Vec::len);
-        let msg_count = body["messages"].as_array().map_or(0, std::vec::Vec::len);
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "none".into());
+        let sys_blocks = body["system"].as_array().map(|a| a.len()).unwrap_or(0);
+        let msg_count = body["messages"].as_array().map(|a| a.len()).unwrap_or(0);
         let tool_count = body
             .get("tools")
             .and_then(|v| v.as_array())
-            .map_or(0, std::vec::Vec::len);
+            .map(|a| a.len())
+            .unwrap_or(0);
         tracing::debug!(
             model, max_tokens, %thinking, output_config = %output_cfg,
             sys_blocks, msg_count, tool_count,
@@ -985,7 +997,7 @@ fn build_http_request(
         builder = builder.header("X-Request-ID", rid);
     }
 
-    (builder.json(&body), call_id)
+    Ok((builder.json(&body), call_id))
 }
 
 use super::check_response;
@@ -1049,7 +1061,7 @@ pub async fn stream(
     client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<DuplexStream, LlmError> {
-    let (http_req, _call_id) = build_http_request(client, request, true);
+    let (http_req, _call_id) = build_http_request(client, request, true)?;
     let response = http_req.send().await.map_err(|e| LlmError::Provider {
         message: format!("HTTP request failed: {e}"),
     })?;
@@ -1082,7 +1094,7 @@ fn handle_sse_event(event: SseEvent, state: &mut StreamState) -> Option<String> 
     // Prefer the SSE `event:` field; fall back to the `type` field inside the
     // JSON `data:` payload.  Some proxies (e.g. OpenRouter) may strip the
     // `event:` line and only forward `data:`.
-    let event_type_owned: Option<String> = event.event.or_else(|| {
+    let event_type_owned: Option<String> = event.event.clone().or_else(|| {
         serde_json::from_str::<serde_json::Value>(&event.data)
             .ok()
             .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(String::from))
@@ -1280,10 +1292,11 @@ fn handle_message_delta(data: &str, state: &mut StreamState) {
 }
 
 fn handle_message_stop(state: &mut StreamState) -> String {
-    let total_ms = crate::convert::elapsed_ms_u32(state.start_time.elapsed());
-    let ttft_ms = state.first_token_time.map_or(total_ms, |t| {
-        crate::convert::elapsed_ms_u32(t.duration_since(state.start_time))
-    });
+    let total_ms = state.start_time.elapsed().as_millis() as u32;
+    let ttft_ms = state
+        .first_token_time
+        .map(|t| t.duration_since(state.start_time).as_millis() as u32)
+        .unwrap_or(total_ms);
     build_done_event(
         &state.text_content,
         &state.finish_reason,
@@ -1295,77 +1308,13 @@ fn handle_message_stop(state: &mut StreamState) -> String {
 
 // ── Non-streaming ────────────────────────────────────────────────────────
 
-/// Parse Anthropic response `content` blocks into accumulated plain text and
-/// structured [`ContentBlock`]s. Unknown block types are ignored.
-fn parse_content_blocks(raw_blocks: Option<&Vec<Value>>) -> (String, Vec<ContentBlock>) {
-    let mut text_content = String::new();
-    let mut content_blocks = Vec::new();
-
-    let Some(blocks) = raw_blocks else {
-        return (text_content, content_blocks);
-    };
-
-    for block in blocks {
-        let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
-        match block_type {
-            "text" => {
-                let text = block.get("text").and_then(Value::as_str).unwrap_or("");
-                text_content.push_str(text);
-                content_blocks.push(ContentBlock::Text {
-                    text: text.to_string(),
-                });
-            }
-            "thinking" => {
-                let thinking = block
-                    .get("thinking")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let signature = block
-                    .get("signature")
-                    .and_then(Value::as_str)
-                    .map(String::from);
-                content_blocks.push(ContentBlock::Thinking {
-                    thinking,
-                    signature,
-                });
-            }
-            "redacted_thinking" => {
-                let data = block
-                    .get("data")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                content_blocks.push(ContentBlock::RedactedThinking { data });
-            }
-            "tool_use" => {
-                let id = block
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let name = block
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let input = block.get("input").cloned().unwrap_or(json!({}));
-                content_blocks.push(ContentBlock::ToolUse { id, name, input });
-            }
-            _ => {}
-        }
-    }
-
-    (text_content, content_blocks)
-}
-
 /// Send a non-streaming generate request to the Anthropic Messages API.
 pub async fn generate(
     client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<GenerateResponse, LlmError> {
     let start = Instant::now();
-    let (http_req, call_id) = build_http_request(client, request, false);
+    let (http_req, call_id) = build_http_request(client, request, false)?;
     let response = http_req
         .timeout(super::NON_STREAMING_TIMEOUT)
         .send()
@@ -1382,7 +1331,7 @@ pub async fn generate(
         ),
     })?;
 
-    let total_ms = crate::convert::elapsed_ms_u32(start.elapsed());
+    let total_ms = start.elapsed().as_millis() as u32;
 
     // Extract model.
     let model = body
@@ -1402,8 +1351,63 @@ pub async fn generate(
     let usage = extract_anthropic_usage(body.get("usage"));
 
     // Extract content blocks.
-    let (text_content, content_blocks) =
-        parse_content_blocks(body.get("content").and_then(Value::as_array));
+    let raw_blocks = body.get("content").and_then(Value::as_array);
+
+    let mut text_content = String::new();
+    let mut content_blocks = Vec::new();
+
+    if let Some(blocks) = raw_blocks {
+        for block in blocks {
+            let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
+            match block_type {
+                "text" => {
+                    let text = block.get("text").and_then(Value::as_str).unwrap_or("");
+                    text_content.push_str(text);
+                    content_blocks.push(ContentBlock::Text {
+                        text: text.to_string(),
+                    });
+                }
+                "thinking" => {
+                    let thinking = block
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let signature = block
+                        .get("signature")
+                        .and_then(Value::as_str)
+                        .map(String::from);
+                    content_blocks.push(ContentBlock::Thinking {
+                        thinking,
+                        signature,
+                    });
+                }
+                "redacted_thinking" => {
+                    let data = block
+                        .get("data")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    content_blocks.push(ContentBlock::RedactedThinking { data });
+                }
+                "tool_use" => {
+                    let id = block
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let name = block
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let input = block.get("input").cloned().unwrap_or(json!({}));
+                    content_blocks.push(ContentBlock::ToolUse { id, name, input });
+                }
+                _ => {}
+            }
+        }
+    }
 
     let timing = Timing {
         total_ms,
@@ -1760,7 +1764,8 @@ mod tests {
                 .expect("should have text block");
             assert!(
                 last_text.get("cache_control").is_some(),
-                "message breakpoint at index {bp_idx} missing cache_control"
+                "message breakpoint at index {} missing cache_control",
+                bp_idx
             );
         }
 
@@ -1895,12 +1900,14 @@ mod tests {
                 // in the prefix (would change the serialized form).
                 for (i, msg) in result[..earliest_bp].iter().enumerate() {
                     if !p.msg_breakpoints.contains(&i) {
-                        let has_cc = msg["content"].as_array().is_some_and(|arr| {
-                            arr.iter().any(|b| b.get("cache_control").is_some())
-                        });
+                        let has_cc = msg["content"]
+                            .as_array()
+                            .map(|arr| arr.iter().any(|b| b.get("cache_control").is_some()))
+                            .unwrap_or(false);
                         assert!(
                             !has_cc,
-                            "turn {turn_count}: non-breakpoint message {i} in prefix has cache_control"
+                            "turn {}: non-breakpoint message {} in prefix has cache_control",
+                            turn_count, i
                         );
                     }
                 }
@@ -1908,7 +1915,9 @@ mod tests {
                 if turn_count > 5 {
                     assert!(
                         earliest_bp >= 2,
-                        "turn {turn_count}: earliest breakpoint {earliest_bp} is too close to start"
+                        "turn {}: earliest breakpoint {} is too close to start",
+                        turn_count,
+                        earliest_bp
                     );
                 }
             }
@@ -1942,7 +1951,7 @@ mod tests {
                         prv + 2,
                         "breakpoint {} shifted by {} (expected 2) between turn {} and {}",
                         i,
-                        i64::try_from(cur).unwrap() - i64::try_from(prv).unwrap(),
+                        cur as i64 - prv as i64,
                         turn_count - 1,
                         turn_count
                     );
@@ -1966,7 +1975,8 @@ mod tests {
             for &bp in &p.msg_breakpoints {
                 assert_ne!(
                     bp, last_idx,
-                    "turn {turn_count}: breakpoint at index {bp} is the final message"
+                    "turn {}: breakpoint at index {} is the final message",
+                    turn_count, bp
                 );
             }
         }
@@ -2037,7 +2047,8 @@ mod tests {
         let total = p.sys_breakpoints.len() + p.msg_breakpoints.len();
         assert!(
             total <= 4,
-            "total breakpoints {total} exceeds Anthropic limit of 4"
+            "total breakpoints {} exceeds Anthropic limit of 4",
+            total
         );
         // System breakpoints should be preserved (priority).
         assert_eq!(
@@ -2829,8 +2840,11 @@ mod tests {
         let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         request.base_url = Some("https://openrouter.ai/api".into());
 
-        // Custom base_url is accepted (no error path).
-        let (builder, _) = build_http_request(&client, &request, false);
+        // Should NOT return an error — custom base_url is now accepted.
+        let result = build_http_request(&client, &request, false);
+        assert!(result.is_ok(), "custom base_url should be accepted");
+
+        let (builder, _) = result.unwrap();
         let built = builder.build().unwrap();
         assert_eq!(
             built.url().as_str(),
@@ -2843,7 +2857,10 @@ mod tests {
         let client = reqwest::Client::new();
         let request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
 
-        let (builder, _) = build_http_request(&client, &request, false);
+        let result = build_http_request(&client, &request, false);
+        assert!(result.is_ok());
+
+        let (builder, _) = result.unwrap();
         let built = builder.build().unwrap();
         assert_eq!(
             built.url().as_str(),
@@ -2858,7 +2875,10 @@ mod tests {
         // OpenRouter's default base_url ends with /v1 — should not double it.
         request.base_url = Some("https://openrouter.ai/api/v1".into());
 
-        let (builder, _) = build_http_request(&client, &request, false);
+        let result = build_http_request(&client, &request, false);
+        assert!(result.is_ok());
+
+        let (builder, _) = result.unwrap();
         let built = builder.build().unwrap();
         assert_eq!(
             built.url().as_str(),
@@ -2872,7 +2892,10 @@ mod tests {
         let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         request.base_url = Some("http://127.0.0.1:8080".into());
 
-        let (builder, _) = build_http_request(&client, &request, false);
+        let result = build_http_request(&client, &request, false);
+        assert!(result.is_ok());
+
+        let (builder, _) = result.unwrap();
         let built = builder.build().unwrap();
         assert_eq!(built.url().as_str(), "http://127.0.0.1:8080/v1/messages");
     }

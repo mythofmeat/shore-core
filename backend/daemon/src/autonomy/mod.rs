@@ -61,7 +61,7 @@ pub struct HeartbeatEvent {
 }
 
 /// Categorised heartbeat event types.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HeartbeatEventKind {
     /// A heartbeat tick fired.

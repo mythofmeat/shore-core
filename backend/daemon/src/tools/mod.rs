@@ -77,10 +77,6 @@ pub trait ToolContext: Sync {
     fn autonomy_manager(&self) -> Option<&AutonomyManager> {
         None
     }
-    #[expect(
-        clippy::unnecessary_literal_bound,
-        reason = "real ToolContext implementations return character names borrowed from self"
-    )]
     fn character_name(&self) -> &str {
         ""
     }
@@ -89,19 +85,11 @@ pub trait ToolContext: Sync {
     }
 
     // Workspace directory for general filesystem tools
-    #[expect(
-        clippy::unnecessary_literal_bound,
-        reason = "real ToolContext implementations return workspace paths borrowed from self"
-    )]
     fn workspace_dir(&self) -> &str {
         ""
     }
 
     // Character data directory for conversation history search.
-    #[expect(
-        clippy::unnecessary_literal_bound,
-        reason = "real ToolContext implementations return data paths borrowed from self"
-    )]
     fn character_data_dir(&self) -> &str {
         ""
     }
@@ -126,10 +114,6 @@ pub trait ToolContext: Sync {
     }
 
     // Config directory for deferred character self-edits
-    #[expect(
-        clippy::unnecessary_literal_bound,
-        reason = "real ToolContext implementations return config paths borrowed from self"
-    )]
     fn config_dir(&self) -> &str {
         ""
     }
@@ -238,16 +222,16 @@ pub fn dispatch_tool<'a>(
 ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
     Box::pin(async move {
         match name {
-            "search_history" => history::handle_search_history(&input, ctx),
+            "search_history" => history::handle_search_history(input, ctx).await,
             "generate_image" => images::handle_generate_image(input, ctx).await,
             // Web tools
             "web_search" => web::handle_web_search(input, ctx).await,
             "fetch_url" => web::handle_fetch_url(input).await,
             // Basic tools
-            "check_time" => basic::handle_check_time(input),
-            "roll_dice" => basic::handle_roll_dice(&input),
+            "check_time" => basic::handle_check_time(input).await,
+            "roll_dice" => basic::handle_roll_dice(input).await,
             // Other
-            "activity_heatmap" => activity::handle_activity_heatmap(&input, ctx),
+            "activity_heatmap" => activity::handle_activity_heatmap(input, ctx).await,
             // Workspace tools
             "read" => workspace::handle_read(input, ctx.workspace_dir()).await,
             "write" => {
@@ -442,7 +426,7 @@ mod tests {
         let tools = all_tools();
         let mut names: Vec<&str> = tools.iter().map(|t| t.name).collect();
         let original_len = names.len();
-        names.sort_unstable();
+        names.sort();
         names.dedup();
         assert_eq!(names.len(), original_len, "duplicate tool names found");
     }

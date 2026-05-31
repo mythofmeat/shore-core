@@ -81,7 +81,7 @@ pub fn sha256_hex(content: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content);
     let result = hasher.finalize();
-    format!("sha256:{result:x}")
+    format!("sha256:{:x}", result)
 }
 
 // ---------------------------------------------------------------------------

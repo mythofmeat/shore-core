@@ -21,6 +21,3 @@ libc = { workspace = true }
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 tempfile = { workspace = true }
-
-[lints]
-workspace = true

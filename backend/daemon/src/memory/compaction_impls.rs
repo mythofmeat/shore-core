@@ -50,17 +50,25 @@ pub fn resolve_image_gen_config(
     image_gen_catalog: &std::collections::BTreeMap<String, toml::Value>,
 ) -> Result<ImageGenConfig, String> {
     let profile_name = default_name
-        .or_else(|| image_gen_catalog.keys().next().map(String::as_str))
+        .or_else(|| image_gen_catalog.keys().next().map(|s| s.as_str()))
         .ok_or_else(|| "no image generation model configured".to_string())?;
 
     let entry = image_gen_catalog.get(profile_name).ok_or_else(|| {
-        format!("image generation profile '{profile_name}' not found in model catalog")
+        format!(
+            "image generation profile '{}' not found in model catalog",
+            profile_name
+        )
     })?;
 
     let model_id = entry
         .get("model_id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| format!("image generation profile '{profile_name}' is missing model_id"))?
+        .ok_or_else(|| {
+            format!(
+                "image generation profile '{}' is missing model_id",
+                profile_name
+            )
+        })?
         .to_string();
 
     let provider = entry
@@ -78,13 +86,17 @@ pub fn resolve_image_gen_config(
         .and_then(|v| v.as_str())
         .unwrap_or(default_api_key_env);
 
-    let api_key = std::env::var(api_key_env)
-        .map_err(|_| format!("image generation API key env var '{api_key_env}' is not set"))?;
+    let api_key = std::env::var(api_key_env).map_err(|_| {
+        format!(
+            "image generation API key env var '{}' is not set",
+            api_key_env
+        )
+    })?;
 
     let base_url = entry
         .get("base_url")
         .and_then(|v| v.as_str())
-        .map(ToString::to_string);
+        .map(|s| s.to_string());
 
     let size = entry
         .get("size")
@@ -95,17 +107,17 @@ pub fn resolve_image_gen_config(
     let quality = entry
         .get("quality")
         .and_then(|v| v.as_str())
-        .map(ToString::to_string);
+        .map(|s| s.to_string());
 
     let aspect_ratio = entry
         .get("aspect_ratio")
         .and_then(|v| v.as_str())
-        .map(ToString::to_string);
+        .map(|s| s.to_string());
 
     let image_size = entry
         .get("image_size")
         .and_then(|v| v.as_str())
-        .map(ToString::to_string);
+        .map(|s| s.to_string());
 
     Ok(ImageGenConfig {
         provider,
@@ -259,7 +271,7 @@ impl CompactionLlm for RealCompactionLlm {
         chat_request: LlmRequest,
     ) -> Result<LlmRequest, CompactionError> {
         let chat_msg_count = chat_request.messages.len();
-        let chat_tools_count = chat_request.tools.as_ref().map_or(0, Vec::len);
+        let chat_tools_count = chat_request.tools.as_ref().map(Vec::len).unwrap_or(0);
         let request = self.build_compaction_request(system, compact_now_user, chat_request)?;
         debug!(
             system_len = system.len(),
@@ -314,7 +326,7 @@ impl RealConversationManager {
     pub fn archive_and_retain(
         &self,
         _conversation_id: &str,
-        params: &RetentionParams,
+        params: RetentionParams,
     ) -> Result<String, CompactionError> {
         let started = std::time::Instant::now();
         let active_path = self.character_dir.join(shore_config::ACTIVE_JSONL_FILE);
@@ -354,7 +366,7 @@ impl RealConversationManager {
             };
 
             let segment_index = manifest.segments.len() + 1;
-            let segment_file = format!("{segment_index:04}.jsonl");
+            let segment_file = format!("{:04}.jsonl", segment_index);
             let segments_dir = self.character_dir.join(shore_config::SEGMENTS_DIR);
 
             std::fs::create_dir_all(&segments_dir).map_err(|e| {
@@ -420,7 +432,7 @@ impl ConversationManager for RealConversationManager {
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let mgr = RealConversationManager { character_dir };
-                mgr.archive_and_retain(&conversation_id, &params)
+                mgr.archive_and_retain(&conversation_id, params)
             })
             .await
             .map_err(|e| {
@@ -960,7 +972,7 @@ mod tests {
         let new_id = mgr
             .archive_and_retain(
                 "test-conv",
-                &RetentionParams {
+                RetentionParams {
                     keep_last_n: 1,
                     active_content: content,
                 },
@@ -1005,7 +1017,7 @@ mod tests {
         let mgr = RealConversationManager::new(dir);
         mgr.archive_and_retain(
             "conv",
-            &RetentionParams {
+            RetentionParams {
                 keep_last_n: 5, // more than available
                 active_content: content,
             },
@@ -1047,7 +1059,7 @@ mod tests {
         let mgr = RealConversationManager::new(dir);
         mgr.archive_and_retain(
             "conv",
-            &RetentionParams {
+            RetentionParams {
                 keep_last_n: 0,
                 active_content: content,
             },
@@ -1071,7 +1083,7 @@ mod tests {
 
         let valid1 =
             r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
-        let garbage = r"corrupted{{{not valid json at all";
+        let garbage = r#"corrupted{{{not valid json at all"#;
         let valid2 =
             r#"{"msg_id":"m2","role":"User","content":"bye","images":[],"timestamp":"t2"}"#;
         let content = format!("{valid1}\n{garbage}\n{valid2}\n");
@@ -1081,7 +1093,7 @@ mod tests {
         let new_id = mgr
             .archive_and_retain(
                 "conv",
-                &RetentionParams {
+                RetentionParams {
                     keep_last_n: 1,
                     active_content: content,
                 },
@@ -1129,7 +1141,7 @@ mod tests {
         let mgr = RealConversationManager::new(dir);
         let result = mgr.archive_and_retain(
             "conv",
-            &RetentionParams {
+            RetentionParams {
                 keep_last_n: 1,
                 active_content: content,
             },
@@ -1170,7 +1182,7 @@ mod tests {
         let mgr = RealConversationManager::new(dir);
         let result = mgr.archive_and_retain(
             "conv",
-            &RetentionParams {
+            RetentionParams {
                 keep_last_n: 1,
                 active_content: content,
             },
@@ -1193,7 +1205,7 @@ mod tests {
         let mgr = RealConversationManager::new(dir);
         let result = mgr.archive_and_retain(
             "conv",
-            &RetentionParams {
+            RetentionParams {
                 keep_last_n: 1,
                 active_content: String::new(),
             },

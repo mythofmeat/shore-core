@@ -1,6 +1,5 @@
 //! Aggregation and filter queries for the CLI.
 
-use crate::convert::{i64_to_u32, i64_to_u64};
 use crate::ledger::{row_from_sqlite, CallRow, Ledger};
 use rusqlite::params_from_iter;
 
@@ -18,13 +17,13 @@ pub struct QueryFilter {
     pub usage_kinds: Vec<String>,
 }
 
-const USAGE_KIND_EXPR: &str = r"CASE
+const USAGE_KIND_EXPR: &str = r#"CASE
     WHEN call_type = 'heartbeat_tool_loop' THEN 'heartbeat'
     WHEN call_type = 'message' AND finish_reason = 'tool_use' THEN 'message_with_tools'
     WHEN call_type = 'tool_loop' THEN 'message_with_tools'
     WHEN call_type = 'message' THEN 'message_no_tools'
     ELSE call_type
-END";
+END"#;
 
 /// Collects WHERE clause fragments and their bound values from a `QueryFilter`.
 fn build_where(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
@@ -113,25 +112,25 @@ pub struct UsageTotals {
 pub fn usage_totals(ledger: &Ledger, filter: &QueryFilter) -> Result<UsageTotals, rusqlite::Error> {
     let (where_clause, values) = build_where(filter);
     let sql = format!(
-        r"SELECT COUNT(*) as call_count,
+        r#"SELECT COUNT(*) as call_count,
                   COALESCE(SUM(input_tokens), 0) as total_input,
                   COALESCE(SUM(output_tokens), 0) as total_output,
                   COALESCE(SUM(cache_read_tokens), 0) as total_cache_read,
                   COALESCE(SUM(cache_write_tokens), 0) as total_cache_write,
                   TOTAL(total_cost) as total_cost
              FROM calls
-             {where_clause}",
+             {where_clause}"#,
     );
 
     ledger.with_conn(|conn| {
         let mut stmt = conn.prepare(&sql)?;
         stmt.query_row(params_from_iter(values.iter()), |row| {
             Ok(UsageTotals {
-                call_count: i64_to_u32(row.get::<_, i64>(0)?),
-                total_input: i64_to_u64(row.get::<_, i64>(1)?),
-                total_output: i64_to_u64(row.get::<_, i64>(2)?),
-                total_cache_read: i64_to_u64(row.get::<_, i64>(3)?),
-                total_cache_write: i64_to_u64(row.get::<_, i64>(4)?),
+                call_count: row.get::<_, i64>(0)? as u32,
+                total_input: row.get::<_, i64>(1)? as u64,
+                total_output: row.get::<_, i64>(2)? as u64,
+                total_cache_read: row.get::<_, i64>(3)? as u64,
+                total_cache_write: row.get::<_, i64>(4)? as u64,
                 total_cost: row.get::<_, f64>(5)?,
             })
         })
@@ -146,7 +145,7 @@ pub fn usage_summary(
 ) -> Result<Vec<UsageSummary>, rusqlite::Error> {
     let (where_clause, values) = build_where(filter);
     let sql = format!(
-        r"SELECT provider, model,
+        r#"SELECT provider, model,
                   COUNT(*) as call_count,
                   SUM(input_tokens) as total_input,
                   SUM(output_tokens) as total_output,
@@ -156,7 +155,7 @@ pub fn usage_summary(
              FROM calls
              {where_clause}
             GROUP BY provider, model
-            ORDER BY total_cost DESC",
+            ORDER BY total_cost DESC"#,
     );
 
     ledger.with_conn(|conn| {
@@ -165,11 +164,11 @@ pub fn usage_summary(
             Ok(UsageSummary {
                 provider: row.get(0)?,
                 model: row.get(1)?,
-                call_count: i64_to_u32(row.get::<_, i64>(2)?),
-                total_input: i64_to_u64(row.get::<_, i64>(3)?),
-                total_output: i64_to_u64(row.get::<_, i64>(4)?),
-                total_cache_read: i64_to_u64(row.get::<_, i64>(5)?),
-                total_cache_write: i64_to_u64(row.get::<_, i64>(6)?),
+                call_count: row.get::<_, i64>(2)? as u32,
+                total_input: row.get::<_, i64>(3)? as u64,
+                total_output: row.get::<_, i64>(4)? as u64,
+                total_cache_read: row.get::<_, i64>(5)? as u64,
+                total_cache_write: row.get::<_, i64>(6)? as u64,
                 total_cost: row.get::<_, f64>(7)?,
             })
         })?;
@@ -197,7 +196,7 @@ pub fn usage_summary_by_call_type(
 ) -> Result<Vec<CallTypeSummary>, rusqlite::Error> {
     let (where_clause, values) = build_where(filter);
     let sql = format!(
-        r"SELECT call_type,
+        r#"SELECT call_type,
                   COUNT(*) as call_count,
                   SUM(input_tokens) as total_input,
                   SUM(output_tokens) as total_output,
@@ -207,7 +206,7 @@ pub fn usage_summary_by_call_type(
              FROM calls
              {where_clause}
             GROUP BY call_type
-            ORDER BY total_cost DESC, call_count DESC",
+            ORDER BY total_cost DESC, call_count DESC"#,
     );
 
     ledger.with_conn(|conn| {
@@ -215,11 +214,11 @@ pub fn usage_summary_by_call_type(
         let rows = stmt.query_map(params_from_iter(values.iter()), |row| {
             Ok(CallTypeSummary {
                 call_type: row.get(0)?,
-                call_count: i64_to_u32(row.get::<_, i64>(1)?),
-                total_input: i64_to_u64(row.get::<_, i64>(2)?),
-                total_output: i64_to_u64(row.get::<_, i64>(3)?),
-                total_cache_read: i64_to_u64(row.get::<_, i64>(4)?),
-                total_cache_write: i64_to_u64(row.get::<_, i64>(5)?),
+                call_count: row.get::<_, i64>(1)? as u32,
+                total_input: row.get::<_, i64>(2)? as u64,
+                total_output: row.get::<_, i64>(3)? as u64,
+                total_cache_read: row.get::<_, i64>(4)? as u64,
+                total_cache_write: row.get::<_, i64>(5)? as u64,
                 total_cost: row.get::<_, f64>(6)?,
             })
         })?;
@@ -248,7 +247,7 @@ pub fn usage_summary_by_usage_kind(
 ) -> Result<Vec<UsageKindSummary>, rusqlite::Error> {
     let (where_clause, values) = build_where(filter);
     let sql = format!(
-        r"SELECT usage_kind,
+        r#"SELECT usage_kind,
                   COUNT(*) as call_count,
                   SUM(input_tokens) as total_input,
                   SUM(output_tokens) as total_output,
@@ -263,7 +262,7 @@ pub fn usage_summary_by_usage_kind(
                   {where_clause}
              )
             GROUP BY usage_kind
-            ORDER BY total_cost DESC, call_count DESC",
+            ORDER BY total_cost DESC, call_count DESC"#,
     );
 
     ledger.with_conn(|conn| {
@@ -271,11 +270,11 @@ pub fn usage_summary_by_usage_kind(
         let rows = stmt.query_map(params_from_iter(values.iter()), |row| {
             Ok(UsageKindSummary {
                 usage_kind: row.get(0)?,
-                call_count: i64_to_u32(row.get::<_, i64>(1)?),
-                total_input: i64_to_u64(row.get::<_, i64>(2)?),
-                total_output: i64_to_u64(row.get::<_, i64>(3)?),
-                total_cache_read: i64_to_u64(row.get::<_, i64>(4)?),
-                total_cache_write: i64_to_u64(row.get::<_, i64>(5)?),
+                call_count: row.get::<_, i64>(1)? as u32,
+                total_input: row.get::<_, i64>(2)? as u64,
+                total_output: row.get::<_, i64>(3)? as u64,
+                total_cache_read: row.get::<_, i64>(4)? as u64,
+                total_cache_write: row.get::<_, i64>(5)? as u64,
                 total_cost: row.get::<_, f64>(6)?,
             })
         })?;
@@ -304,7 +303,7 @@ pub fn usage_summary_by_api_key(
 ) -> Result<Vec<ApiKeySummary>, rusqlite::Error> {
     let (where_clause, values) = build_where(filter);
     let sql = format!(
-        r"SELECT provider,
+        r#"SELECT provider,
                   COALESCE(api_key_name, 'unknown') as api_key_name,
                   COUNT(*) as call_count,
                   SUM(input_tokens) as total_input,
@@ -315,7 +314,7 @@ pub fn usage_summary_by_api_key(
              FROM calls
              {where_clause}
             GROUP BY provider, COALESCE(api_key_name, 'unknown')
-            ORDER BY total_cost DESC, call_count DESC",
+            ORDER BY total_cost DESC, call_count DESC"#,
     );
 
     ledger.with_conn(|conn| {
@@ -324,11 +323,11 @@ pub fn usage_summary_by_api_key(
             Ok(ApiKeySummary {
                 provider: row.get(0)?,
                 api_key_name: row.get(1)?,
-                call_count: i64_to_u32(row.get::<_, i64>(2)?),
-                total_input: i64_to_u64(row.get::<_, i64>(3)?),
-                total_output: i64_to_u64(row.get::<_, i64>(4)?),
-                total_cache_read: i64_to_u64(row.get::<_, i64>(5)?),
-                total_cache_write: i64_to_u64(row.get::<_, i64>(6)?),
+                call_count: row.get::<_, i64>(2)? as u32,
+                total_input: row.get::<_, i64>(3)? as u64,
+                total_output: row.get::<_, i64>(4)? as u64,
+                total_cache_read: row.get::<_, i64>(5)? as u64,
+                total_cache_write: row.get::<_, i64>(6)? as u64,
                 total_cost: row.get::<_, f64>(7)?,
             })
         })?;
@@ -369,8 +368,8 @@ const TSV_HEADER: &str = "ts\tcharacter\tprovider\tapi_key_name\tmodel\tcall_typ
     cache_state\tcache_anomaly\t\
     input_cost\toutput_cost\tcache_read_cost\tcache_write_cost\tcost_source\ttotal_cost";
 
-fn opt_str(v: Option<&String>) -> &str {
-    v.map_or("", String::as_str)
+fn opt_str(v: &Option<String>) -> &str {
+    v.as_deref().unwrap_or("")
 }
 
 fn opt_f64(v: Option<f64>) -> String {
@@ -386,25 +385,25 @@ fn row_to_tsv(r: &CallRow) -> String {
         r.ts,
         r.character,
         r.provider,
-        opt_str(r.api_key_name.as_ref()),
+        opt_str(&r.api_key_name),
         r.model,
         r.call_type,
         r.input_tokens,
         r.output_tokens,
         r.cache_read_tokens,
         r.cache_write_tokens,
-        opt_str(r.cache_ttl.as_ref()),
+        opt_str(&r.cache_ttl),
         r.total_ms,
         r.ttft_ms,
         r.finish_reason,
         r.thinking_enabled,
-        opt_str(r.cache_state.as_ref()),
-        opt_str(r.cache_anomaly.as_ref()),
+        opt_str(&r.cache_state),
+        opt_str(&r.cache_anomaly),
         opt_f64(r.input_cost),
         opt_f64(r.output_cost),
         opt_f64(r.cache_read_cost),
         opt_f64(r.cache_write_cost),
-        opt_str(r.cost_source.as_ref()),
+        opt_str(&r.cost_source),
         opt_f64(r.total_cost),
     )
 }
@@ -451,14 +450,14 @@ pub fn active_anthropic_characters(
 
     // Subquery: for each character, find the max id among matching Anthropic rows.
     let sql = format!(
-        r"SELECT c.* FROM calls c
+        r#"SELECT c.* FROM calls c
            INNER JOIN (
                SELECT character, MAX(id) as max_id
                FROM calls
                {provider_cond}
                GROUP BY character
            ) latest ON c.id = latest.max_id
-           ORDER BY c.id DESC",
+           ORDER BY c.id DESC"#,
     );
 
     ledger.with_conn(|conn| {
@@ -502,10 +501,10 @@ pub struct CostRow {
     pub id: i64,
     pub provider: String,
     pub model: String,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_write_tokens: u64,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_write_tokens: u32,
     pub cache_ttl: Option<String>,
 }
 
@@ -598,9 +597,9 @@ mod tests {
             input_cost: Some(0.0015),
             output_cost: Some(0.00375),
             cache_read_cost: Some(0.00012),
-            cache_write_cost: Some(0.000_375),
+            cache_write_cost: Some(0.000375),
             cost_source: Some("pricing_catalog".into()),
-            total_cost: Some(0.005_745),
+            total_cost: Some(0.005745),
         };
         ledger.insert(&base).unwrap();
 

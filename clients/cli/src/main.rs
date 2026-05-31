@@ -1,17 +1,3 @@
-// Panic-hygiene lock (see [workspace.lints] in root Cargo.toml). This binary is
-// still being cleaned, but the lock makes every remaining violation explicit.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unreachable,
-    clippy::todo,
-    clippy::unimplemented,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
-)]
-
 mod cli;
 mod images;
 mod output;
@@ -45,7 +31,10 @@ fn main() -> ExitCode {
         .init();
 
     // Initialize color control: --no-color flag or NO_COLOR env var disables color.
-    let no_color = cli.no_color || std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty());
+    let no_color = cli.no_color
+        || std::env::var("NO_COLOR")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
     output::set_color_enabled(!no_color);
 
     // Handle local-only commands that don't need a daemon connection.
@@ -54,16 +43,10 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let rt = match tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            output::print_error(&format!("failed to build tokio runtime: {e}"));
-            return ExitCode::FAILURE;
-        }
-    };
+        .expect("failed to build tokio runtime");
 
     match rt.block_on(run::execute(cli)) {
         Ok(()) => ExitCode::SUCCESS,

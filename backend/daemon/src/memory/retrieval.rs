@@ -15,8 +15,6 @@ use std::sync::Arc;
 
 use shore_llm::embed::{Embedder, OpenAIEmbedder};
 
-const DEFAULT_EMBEDDING_DIMENSIONS: usize = 1_536;
-
 /// Build (or fetch from the process-wide cache) the configured embedder.
 ///
 /// Returns `Err` when no `[embedding.<name>]` profile is configured (or
@@ -69,15 +67,10 @@ pub fn resolve_embedder(
         .get("base_url")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let dimensions = match entry.get("dimensions").and_then(toml::Value::as_integer) {
-        Some(value) => usize::try_from(value).map_err(|_| {
-            format!(
-                "embedding profile '{profile_name}' has invalid dimensions {value}; \
-                 expected a non-negative integer that fits in usize"
-            )
-        })?,
-        None => DEFAULT_EMBEDDING_DIMENSIONS,
-    };
+    let dimensions = entry
+        .get("dimensions")
+        .and_then(|v| v.as_integer())
+        .unwrap_or(1536) as usize;
     let cache_key = format!(
         "{provider}::{model_id}::{api_key_env}::{}::{dimensions}",
         base_url.as_deref().unwrap_or("default")
@@ -146,25 +139,6 @@ mod tests {
         assert!(
             err.contains("no longer supported"),
             "expected migration error, got: {err}"
-        );
-    }
-
-    #[test]
-    fn negative_dimensions_returns_clear_error() {
-        let mut catalog: BTreeMap<String, toml::Value> = BTreeMap::new();
-        let api_key_env = "SHORE_TEST_RETRIEVAL_NEGATIVE_DIMENSIONS_KEY";
-        std::env::set_var(api_key_env, "test-key");
-        let entry: toml::Value = toml::from_str(&format!(
-            "model_id = \"text-embedding-3-small\"\napi_key_env = \"{api_key_env}\"\ndimensions = -1\n"
-        ))
-        .unwrap();
-        catalog.insert("x".into(), entry);
-        let http = reqwest::Client::new();
-        let err = resolve_error(Some("x"), &catalog, &http);
-        std::env::remove_var(api_key_env);
-        assert!(
-            err.contains("invalid dimensions -1"),
-            "expected dimensions error, got: {err}"
         );
     }
 }

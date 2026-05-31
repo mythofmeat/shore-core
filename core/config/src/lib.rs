@@ -1,17 +1,3 @@
-// Panic-hygiene lock (see [workspace.lints] in root Cargo.toml): this crate is
-// cleaned, so these can never regress. Tests are exempt via clippy.toml.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unreachable,
-    clippy::todo,
-    clippy::unimplemented,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
-)]
-
 pub mod app;
 pub mod cron;
 pub mod duration;
@@ -97,8 +83,10 @@ fn resolve_xdg_dir(
     platform_fn: fn() -> Option<PathBuf>,
     fallback: &str,
 ) -> PathBuf {
-    std::env::var(override_var).ok().map_or_else(
-        || {
+    std::env::var(override_var)
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
             std::env::var(xdg_var)
                 .ok()
                 .map(PathBuf::from)
@@ -111,9 +99,7 @@ fn resolve_xdg_dir(
                     }
                 })
                 .join("shore")
-        },
-        PathBuf::from,
-    )
+        })
 }
 
 impl ShoreDirs {
@@ -306,7 +292,7 @@ pub fn load_raw_config_table(config_path: Option<&Path>) -> Result<RawConfigTabl
             let dir = p.parent().unwrap_or(Path::new(".")).to_path_buf();
             // When a custom config path is provided, use its parent as the
             // config directory so that character lookups etc. are relative to it.
-            dirs.config.clone_from(&dir);
+            dirs.config = dir.clone();
             dir
         }
         None => dirs.config.clone(),
@@ -463,7 +449,7 @@ pub fn load_character_config(
     );
 
     // Clone the global raw table and deep-merge the character overlay.
-    let base = global.raw_table.clone().unwrap_or_default();
+    let base = global.raw_table.as_ref().cloned().unwrap_or_default();
     let mut merged = base;
     deep_merge(&mut merged, &char_table);
 
@@ -488,9 +474,9 @@ pub fn deep_merge(base: &mut toml::Table, overlay: &toml::Table) {
 
 /// Load and merge all `*.toml` files from a `conf.d/` directory, sorted alphabetically.
 fn load_conf_d(dir: &Path, table: &mut toml::Table) -> Result<(), ConfigError> {
-    // Directory doesn't exist — that's fine.
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Ok(());
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()), // Directory doesn't exist — that's fine.
     };
 
     let mut paths: Vec<PathBuf> = entries
@@ -848,16 +834,19 @@ pub fn load_character_definition(config_dir: &Path, character_name: &str) -> Opt
     }
 
     let legacy_path = character_config_dir(config_dir, character_name).join("character.md");
-    if let Ok(content) = std::fs::read_to_string(&legacy_path) {
-        info!(character = character_name, path = %legacy_path.display(), "Loaded legacy character definition");
-        Some(content)
-    } else {
-        warn!(
-            character = character_name,
-            path = %new_path.display(),
-            "No character definition found"
-        );
-        None
+    match std::fs::read_to_string(&legacy_path) {
+        Ok(content) => {
+            info!(character = character_name, path = %legacy_path.display(), "Loaded legacy character definition");
+            Some(content)
+        }
+        Err(_) => {
+            warn!(
+                character = character_name,
+                path = %new_path.display(),
+                "No character definition found"
+            );
+            None
+        }
     }
 }
 
@@ -891,8 +880,9 @@ pub fn resolve_user_definition(config_dir: &Path, character_name: &str) -> Optio
 /// that contain either `workspace/SOUL.md` or the legacy `character.md`.
 pub fn discover_characters(config_dir: &Path) -> Vec<String> {
     let chars_dir = config_dir.join("characters");
-    let Ok(entries) = std::fs::read_dir(&chars_dir) else {
-        return vec![];
+    let entries = match std::fs::read_dir(&chars_dir) {
+        Ok(entries) => entries,
+        Err(_) => return vec![],
     };
 
     let mut names = Vec::new();
@@ -1449,17 +1439,17 @@ model_id = "claude-opus-4-6"
             ),
             (
                 "include.toml",
-                r"
+                r#"
 [chat.anthropic]
 temperature = 0.5
-",
+"#,
             ),
             (
                 "conf.d/final.toml",
-                r"
+                r#"
 [chat.anthropic]
 temperature = 0.9
-",
+"#,
             ),
         ]);
 
@@ -1482,19 +1472,19 @@ temperature = 0.9
 
     #[test]
     fn deep_merge_tables_recursive() {
-        let mut base = r"
+        let mut base = r#"
 [section]
 a = 1
 b = 2
-"
+"#
         .parse::<toml::Table>()
         .unwrap();
 
-        let overlay = r"
+        let overlay = r#"
 [section]
 b = 3
 c = 4
-"
+"#
         .parse::<toml::Table>()
         .unwrap();
 

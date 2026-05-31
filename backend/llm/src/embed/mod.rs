@@ -119,14 +119,14 @@ mod tests {
                 .map(|s| {
                     let mut v = vec![0.0_f32; self.dim];
                     if !s.is_empty() {
-                        let h = s.bytes().fold(0u32, |a, b| a.wrapping_add(u32::from(b)));
+                        let h = s.bytes().fold(0u32, |a, b| a.wrapping_add(b as u32));
                         v[(h as usize) % self.dim] = 1.0;
                     }
                     v
                 })
                 .collect())
         }
-        fn model_id(&self) -> &'static str {
+        fn model_id(&self) -> &str {
             "fake"
         }
         fn dimensions(&self) -> usize {
