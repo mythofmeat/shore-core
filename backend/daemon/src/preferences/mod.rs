@@ -675,13 +675,14 @@ pub fn apply_sampler_overlay(
         // `set_model_setting` validates the string before it reaches the
         // file; anything unparseable here would be a corrupted preferences
         // edit, so log and leave the catalog SDK in place.
-        match shore_config::models::Sdk::parse_wire(s) {
-            Some(sdk) => patched.sdk = sdk,
-            None => tracing::warn!(
+        if let Some(sdk) = shore_config::models::Sdk::parse_wire(s) {
+            patched.sdk = sdk;
+        } else {
+            tracing::warn!(
                 model = %patched.qualified_name,
                 sdk = %s,
                 "preferences overlay carries unknown sdk; keeping catalog value"
-            ),
+            );
         }
     }
     patched
@@ -1473,7 +1474,7 @@ model_id = "kimi-k2"
         // not silently fall through to the static default.
         use shore_config::providers::ProviderRegistry;
         use shore_llm::discovery::{
-            cache_path, write_cache, DiscoveredModel, ProviderModelsCache, CACHE_VERSION,
+            CACHE_VERSION, DiscoveredModel, ProviderModelsCache, cache_path, write_cache,
         };
 
         let tmp = tempfile::tempdir().unwrap();
