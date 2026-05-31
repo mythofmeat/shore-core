@@ -79,7 +79,7 @@ async fn refresh_pass(config: &LoadedConfig, cache_dir: &std::path::Path, llm: &
 
         let cache_path = discovery::cache_path(cache_dir, name);
         let cache = discovery::read_cache(&cache_path).ok().flatten();
-        let needs_refresh = cache.as_ref().map(discovery::is_stale).unwrap_or(true);
+        let needs_refresh = cache.as_ref().is_none_or(discovery::is_stale);
         if !needs_refresh {
             debug!(provider = %name, "Cache fresh; skipping auto-refresh");
             continue;
