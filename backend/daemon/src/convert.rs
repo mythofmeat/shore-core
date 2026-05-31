@@ -5,8 +5,9 @@
 //! the truncation/precision policy lives in one documented place rather than
 //! scattered `as` casts:
 //!
-//! * `*_to_f64` widen counts for ratio/percentage math; precision is lost only
-//!   above `f64`'s 2^53 exact-integer ceiling, which no real count reaches;
+//! * `*_to_f64` / `*_to_f32` widen counts for ratio/percentage math; precision
+//!   is lost only above the floating-point exact-integer ceiling, which no real
+//!   count reaches;
 //! * `f64_to_u32_saturating` clamps a (rounded) non-negative float back into
 //!   `u32` range, saturating rather than wrapping on overflow.
 
@@ -28,6 +29,15 @@ pub(crate) fn u64_to_f64(v: u64) -> f64 {
 )]
 pub(crate) fn usize_to_f64(v: usize) -> f64 {
     v as f64
+}
+
+/// Widen a `usize` to `f32` for local score normalization.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "lexical scores are small ranking weights, far below f32's exact-integer ceiling"
+)]
+pub(crate) fn usize_to_f32(v: usize) -> f32 {
+    v as f32
 }
 
 /// Widen an `i64` to `f64` for ratio/duration math.
