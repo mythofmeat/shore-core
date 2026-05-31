@@ -68,13 +68,21 @@ fn arb_sdk() -> impl Strategy<Value = Sdk> {
     ]
 }
 
-fn arb_toml_value() -> impl Strategy<Value = toml::Value> {
-    prop_oneof![
+fn arb_toml_value() -> BoxedStrategy<toml::Value> {
+    let leaf = prop_oneof![
         any::<bool>().prop_map(toml::Value::Boolean),
+        (-100_000i64..100_000).prop_map(toml::Value::Integer),
+        arb_decimal(10_000).prop_map(toml::Value::Float),
         arb_text().prop_map(toml::Value::String),
         prop::collection::vec(arb_text().prop_map(toml::Value::String), 0..4)
             .prop_map(toml::Value::Array),
-    ]
+    ];
+
+    leaf.prop_recursive(2, 16, 4, |inner| {
+        prop::collection::btree_map(arb_nonempty_text(), inner, 0..4)
+            .prop_map(|entries| toml::Value::Table(entries.into_iter().collect()))
+    })
+    .boxed()
 }
 
 fn arb_model_config_fields() -> impl Strategy<Value = ModelConfigFields> {
