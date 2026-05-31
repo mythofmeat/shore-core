@@ -78,40 +78,32 @@ fn extract_write_ops(text: &str) -> Vec<MemoryFileOp> {
     while let Some(start) = text[search_from..].find("<write ") {
         let abs_start = search_from + start;
         // Find path attribute
-        let path_start = match text[abs_start..].find("path=\"") {
-            Some(p) => abs_start + p + 6,
-            None => {
-                search_from = abs_start + 1;
-                continue;
-            }
+        let Some(path_offset) = text[abs_start..].find("path=\"") else {
+            search_from = abs_start + 1;
+            continue;
         };
-        let path_end = match text[path_start..].find('"') {
-            Some(p) => path_start + p,
-            None => {
-                search_from = abs_start + 1;
-                continue;
-            }
+        let path_start = abs_start + path_offset + 6;
+        let Some(path_offset_end) = text[path_start..].find('"') else {
+            search_from = abs_start + 1;
+            continue;
         };
+        let path_end = path_start + path_offset_end;
         let path = text[path_start..path_end].trim().to_string();
 
         // Find closing > of the opening tag
-        let content_start = match text[abs_start..].find('>') {
-            Some(p) => abs_start + p + 1,
-            None => {
-                search_from = abs_start + 1;
-                continue;
-            }
+        let Some(content_offset) = text[abs_start..].find('>') else {
+            search_from = abs_start + 1;
+            continue;
         };
+        let content_start = abs_start + content_offset + 1;
 
         // Find </write>
         let close = "</write>";
-        let content_end = match text[content_start..].find(close) {
-            Some(p) => content_start + p,
-            None => {
-                search_from = abs_start + 1;
-                continue;
-            }
+        let Some(content_offset_end) = text[content_start..].find(close) else {
+            search_from = abs_start + 1;
+            continue;
         };
+        let content_end = content_start + content_offset_end;
 
         let content = text[content_start..content_end].trim().to_string();
         if !path.is_empty() {
