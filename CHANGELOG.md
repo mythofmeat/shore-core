@@ -7,6 +7,14 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 
 ## [Unreleased]
 
+### Added
+- `[behavior.tool_use] max_result_chars` caps how many characters a single tool
+  result may contribute to the conversation. Defaults to `20000` (~5k tokens of
+  code-like output); set to `0` to disable. Longer results are cut at a
+  character boundary and a notice is appended so the model knows output was
+  truncated. The truncation is persisted, so the shortened result is what later
+  turns replay.
+
 ### Changed (BREAKING)
 - Renamed the model-config key `max_tokens` to `max_output_tokens` to disambiguate
   it from `max_context_tokens` (the context-window size) and to match the
@@ -17,6 +25,22 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   `max_output_tokens`). No backward-compatible alias is kept — configs and any
   persisted per-character settings using `max_tokens` must be updated. The
   Anthropic wire field (`max_tokens` on the request body) is unchanged.
+
+### Fixed
+- Anthropic extended thinking is now model-aware and renders again on Opus
+  4.8/4.7. The thinking request param is matched to what each model accepts
+  instead of a single fixed shape:
+  - Adaptive thinking now carries `display: "summarized"`. Opus 4.8/4.7 default
+    `thinking.display` to `"omitted"`, which returns thinking blocks with an
+    empty text field — the model still reasoned (and was billed for it) but the
+    text never reached the client, looking like thinking was off.
+  - `reasoning_effort` on models that don't support adaptive thinking
+    (Sonnet 4.5 / Opus 4.5 / Haiku) no longer sends `type: "adaptive"` (a hard
+    400); it maps to `type: "enabled"` with a `budget_tokens` derived from the
+    effort level and clamped below `max_output_tokens`.
+  - A legacy `budget_tokens`/`thinking` request against Opus 4.7/4.8 (which
+    reject `type: "enabled"`) now upgrades to adaptive thinking instead of 400ing.
+  Unknown/future model ids stay permissive and honor the requested mode.
 
 ### Removed
 - `clients/gui-godot/` moved to its own repository at
@@ -43,6 +67,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   entry with an API key.
 
 ### Changed
+- Compaction no longer inlines a snapshot of every markdown memory file into
+  the "compact now" user turn. That dump sat past the cached chat prefix, so
+  Anthropic wrote it fresh (~11–20k tokens, growing with the character's memory
+  corpus) on the first round of every compaction. The model already carries the
+  `MEMORY.md` index in its system prompt and can pull full files on demand via
+  its `read`/`list_files`/`search` tools, so the inline copy was redundant; the
+  prompt now nudges it to consult the index and read before writing to keep
+  editing-in-place behavior. Drops the per-compaction cache-write cost to the
+  size of the static instruction.
 - Reworked the CLI transcript and live stream around one cohesive layout:
   response text (speech) is the primary, flush-left voice, while thinking, tool
   calls, and tool results form a single inset "process" channel. Each block

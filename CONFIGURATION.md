@@ -334,6 +334,7 @@ Autonomy requires the master switch. Heartbeat controls private autonomous ticks
 [behavior.tool_use]
 enabled = true
 max_iterations = 10
+max_result_chars = 20000  # Truncate each tool result past this many characters; 0 disables
 
 [behavior.tool_use.tools]
 web_search = true
@@ -353,6 +354,15 @@ exec = true
 ```
 
 All tools default to enabled. Set `enabled = false` to disable tool use entirely.
+
+`max_result_chars` caps how many characters a single tool result may contribute
+to the conversation. It defaults to `20000` (~5k tokens of code-like output);
+set it to `0` to disable truncation and preserve full tool output. When a result
+exceeds the limit it is cut at a character boundary and a one-line notice
+(`[tool_result truncated: showing first N of M characters]`) is appended so the
+model knows output was dropped. The truncation is persisted, so the shortened
+result — not the original — is what gets replayed on later turns, capping its
+context cost for the rest of the conversation.
 
 - In private conversations, `search_history` and `exec` are hidden.
 - Workspace file tools (`read`, `write`, `edit`, `list_files`, `search`, `delete`) treat `memory/...` as an ordinary workspace subdirectory.

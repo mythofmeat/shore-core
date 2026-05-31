@@ -56,6 +56,7 @@ pub async fn run_tool_loop(
     mut result: StreamResult,
     ctx: &dyn ToolContext,
     max_iterations: u32,
+    max_result_chars: usize,
     diag: &Arc<Mutex<Diagnostics>>,
     character: &str,
     thinking_enabled: bool,
@@ -106,6 +107,7 @@ pub async fn run_tool_loop(
                 direct_tx,
                 request.rid.as_deref(),
                 ctx,
+                max_result_chars,
                 diag,
                 intermediate_messages.as_mut_slice(),
             )
@@ -199,6 +201,7 @@ async fn execute_tool_use(
     direct_tx: &mpsc::Sender<ServerMessage>,
     request_rid: Option<&str>,
     ctx: &dyn ToolContext,
+    max_result_chars: usize,
     diag: &Arc<Mutex<Diagnostics>>,
     intermediate_messages: &mut [Message],
 ) -> ToolDispatchOutcome {
@@ -231,6 +234,10 @@ async fn execute_tool_use(
         }
         Err(e) => (e.to_string(), true, None),
     };
+    // Cap how much a single result contributes to the conversation. Apply
+    // before the SWP event, persistence, and LLM payload so every replay path
+    // sees the same bounded result. A limit of 0 leaves output untouched.
+    let output_str = crate::content_util::truncate_tool_result(output_str, max_result_chars);
 
     if !is_error && tool_use.name == "generate_image" {
         if let Some(value) = &ok_value {
@@ -522,6 +529,7 @@ mod tests {
                 result,
                 &ctx,
                 10,
+                0,
                 &test_diag(),
                 "test",
                 false,
@@ -570,6 +578,7 @@ mod tests {
             initial,
             &ctx,
             10,
+            0,
             &test_diag(),
             "test",
             false,
@@ -674,6 +683,7 @@ mod tests {
             initial,
             &ctx,
             3,
+            0,
             &test_diag(),
             "test",
             false,
@@ -719,6 +729,7 @@ mod tests {
             initial,
             &ctx,
             10,
+            0,
             &test_diag(),
             "test",
             false,
@@ -787,6 +798,7 @@ mod tests {
                 result,
                 &ctx,
                 10,
+                0,
                 &test_diag(),
                 "test",
                 false,
@@ -796,6 +808,92 @@ mod tests {
 
             assert_eq!(out.result.content, "Let me check the time...");
         });
+    }
+
+    #[tokio::test]
+    async fn tool_loop_truncates_result_when_limit_set() {
+        // A small max_result_chars must cut the tool output everywhere it
+        // flows: the live SWP event, the LLM payload, and the persisted
+        // content block (which is what later turns replay).
+        let sse = sse_text_end_turn("Noted.");
+        let (base_url, server) = mock_sse_server(sse, 1).await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let client = test_ledger_client(&tmp);
+        let (push_tx, mut push_rx) = mpsc::channel(64);
+        let ctx = TestToolContext::new();
+
+        let mut request = test_request(
+            &base_url,
+            vec![json!({"role": "user", "content": "What time is it?"})],
+        );
+
+        let initial = StreamResult {
+            content: String::new(),
+            model: "test".into(),
+            finish_reason: "tool_use".into(),
+            usage: Usage::default(),
+            timing: Timing::default(),
+            tool_uses: vec![ToolUseEvent {
+                id: "t1".into(),
+                name: "check_time".into(),
+                input: json!({}),
+            }],
+            content_blocks: vec![],
+        };
+
+        let result = run_tool_loop(
+            &client,
+            &push_tx,
+            &mut request,
+            initial,
+            &ctx,
+            10,
+            5,
+            &test_diag(),
+            "test",
+            false,
+        )
+        .await
+        .unwrap();
+
+        // SWP event carries the truncated output.
+        let _ = push_rx.try_recv().unwrap(); // intermediate StreamEnd
+        let _ = push_rx.try_recv().unwrap(); // ToolCall
+        let tr = push_rx.try_recv().unwrap();
+        match tr {
+            ServerMessage::ToolResult(res) => {
+                assert!(
+                    res.output.contains("tool_result truncated"),
+                    "live event should show truncation notice: {}",
+                    res.output
+                );
+            }
+            other => panic!("Expected ToolResult, got {other:?}"),
+        }
+
+        // LLM payload carries the truncated output.
+        let llm_content = request.messages[2]["content"][0]["content"]
+            .as_str()
+            .unwrap();
+        assert!(
+            llm_content.contains("tool_result truncated"),
+            "LLM payload should be truncated: {llm_content}"
+        );
+
+        // Persisted block (replayed on later turns) carries it too.
+        let persisted = &result.intermediate_messages[1].content_blocks[0];
+        match persisted {
+            ContentBlock::ToolResult { content, .. } => {
+                assert!(
+                    content.contains("tool_result truncated"),
+                    "persisted block should be truncated: {content}"
+                );
+            }
+            other => panic!("Expected ToolResult block, got {other:?}"),
+        }
+
+        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -839,6 +937,7 @@ mod tests {
             initial,
             &ctx,
             10,
+            0,
             &test_diag(),
             "test",
             false,

@@ -20,9 +20,6 @@ use tokio::sync::{Mutex, Notify, OwnedMutexGuard};
 use tokio::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
-const EXISTING_MEMORY_CONTEXT_MAX_FILES: usize = 24;
-const EXISTING_MEMORY_CONTEXT_MAX_CHARS_PER_FILE: usize = 1_800;
-
 static COMPACTION_LOCKS: OnceLock<DashMap<PathBuf, Arc<Mutex<()>>>> = OnceLock::new();
 
 /// Held while a character data root has a compaction pass in flight.
@@ -55,17 +52,6 @@ pub fn try_begin_compaction(data_dir: &Path, character: &str) -> Option<Compacti
 pub struct CompactionManager {
     config: CompactionConfig,
     activity_notify: Arc<Notify>,
-}
-
-fn truncate_chars(text: &str, limit: usize) -> String {
-    text.chars().take(limit).collect()
-}
-
-fn escape_attr(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 impl CompactionManager {
@@ -143,22 +129,19 @@ impl CompactionManager {
     }
 
     /// Render the final compaction user message. The template supports:
-    /// - `{{existing_memories}}` — bounded snapshot of current markdown memories
     /// - `{{char}}` / `{{user}}` — character and user names
     /// - legacy `{{#if recap}}...{{/if}}` and `{{recap}}` placeholders, which
     ///   are stripped (recaps are no longer generated).
+    ///
+    /// Existing memory is no longer inlined here: the model already has the
+    /// `MEMORY.md` index in its system prompt and reaches full files via its
+    /// `read`/`list_files`/`search` tools on demand.
     pub fn build_final_message(
         final_message_template: &str,
-        existing_memories: Option<&str>,
         char_name: &str,
         user_name: &str,
     ) -> String {
-        let existing_memories_text = existing_memories
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or("No existing memory files were available.");
-
         let mut final_msg = final_message_template
-            .replace("{{existing_memories}}", existing_memories_text)
             .replace("{{char}}", char_name)
             .replace("{{user}}", user_name);
 
@@ -177,14 +160,12 @@ impl CompactionManager {
     /// Build a compaction prompt from a template and conversation messages.
     ///
     /// Legacy helper used by tests that check the flattened prompt string.
-    /// Replaces `{{conversation}}` with formatted messages, replaces
-    /// `{{existing_memories}}` with a bounded markdown-memory snapshot, and
-    /// substitutes `{{char}}` / `{{user}}` with the provided names.
+    /// Replaces `{{conversation}}` with formatted messages and substitutes
+    /// `{{char}}` / `{{user}}` with the provided names.
     #[cfg(test)]
     pub fn build_prompt(
         template: &str,
         messages: &[ConversationMessage],
-        existing_memories: Option<&str>,
         char_name: &str,
         user_name: &str,
     ) -> String {
@@ -200,10 +181,6 @@ impl CompactionManager {
         }
 
         let mut result = template.replace("{{conversation}}", &conversation_text);
-        let existing_memories_text = existing_memories
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or("No existing memory files were available.");
-        result = result.replace("{{existing_memories}}", existing_memories_text);
 
         while let (Some(if_start), Some(endif_pos)) =
             (result.find("{{#if recap}}"), result.find("{{/if}}"))
@@ -220,53 +197,6 @@ impl CompactionManager {
         result = result.replace("{{user}}", user_name);
 
         result
-    }
-
-    async fn build_existing_memory_context(markdown_store: Option<&MarkdownMemoryStore>) -> String {
-        let Some(store) = markdown_store else {
-            return "No existing memory files were available.".to_string();
-        };
-
-        let entries = match store.list_all().await {
-            Ok(entries) => entries,
-            Err(e) => {
-                warn!(error = %e, "compaction: failed to read existing memory files");
-                return format!("Existing memory files could not be loaded: {e}");
-            }
-        };
-
-        let mut entries: Vec<_> = entries
-            .into_iter()
-            .filter(|entry| entry.path != "DREAMS.md")
-            .collect();
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
-
-        if entries.is_empty() {
-            return "No existing memory files yet.".to_string();
-        }
-
-        let total = entries.len();
-        let mut context = String::new();
-        for entry in entries.into_iter().take(EXISTING_MEMORY_CONTEXT_MAX_FILES) {
-            context.push_str("<file path=\"memory/");
-            context.push_str(&escape_attr(&entry.path));
-            context.push_str("\">\n");
-            context.push_str(&truncate_chars(
-                &entry.content,
-                EXISTING_MEMORY_CONTEXT_MAX_CHARS_PER_FILE,
-            ));
-            if entry.content.chars().count() > EXISTING_MEMORY_CONTEXT_MAX_CHARS_PER_FILE {
-                context.push_str("\n...[truncated]");
-            }
-            context.push_str("\n</file>\n\n");
-        }
-
-        if total > EXISTING_MEMORY_CONTEXT_MAX_FILES {
-            context.push_str(&(total - EXISTING_MEMORY_CONTEXT_MAX_FILES).to_string());
-            context.push_str(" additional memory files omitted from this snapshot.\n");
-        }
-
-        context.trim_end().to_string()
     }
 
     pub(crate) fn write_allowed_path(path: &str) -> bool {
@@ -401,8 +331,6 @@ impl CompactionManager {
             ));
         }
 
-        let existing_memory_context = Self::build_existing_memory_context(markdown_store).await;
-
         // Build the compaction system prompt + the single "compact now"
         // user message. `chat_request` carries chat's full prefix
         // (`system`, `tools`, `messages`); the LLM impl rebuilds it
@@ -414,12 +342,7 @@ impl CompactionManager {
         // compact-now slot byte-stable across the compaction tool loop,
         // so chat's cache prefix continues to extend cleanly.
         let system = Self::build_system(system_template, char_name, user_name);
-        let final_msg = Self::build_final_message(
-            prompt_template,
-            Some(&existing_memory_context),
-            char_name,
-            user_name,
-        );
+        let final_msg = Self::build_final_message(prompt_template, char_name, user_name);
         let compact_now_user = json!({"role": "user", "content": final_msg});
         let mut request = llm.build_initial_request(&system, compact_now_user, chat_request)?;
 
@@ -1334,7 +1257,6 @@ mod tests {
         let prompt = CompactionManager::build_prompt(
             "Template:\n{{conversation}}",
             &messages,
-            None,
             "Char",
             "User",
         );
@@ -1348,48 +1270,12 @@ mod tests {
         let messages = make_messages(2);
         let template = "Before\n{{#if recap}}RECAP: {{recap}}{{/if}}\nAfter\n{{conversation}}";
 
-        let prompt = CompactionManager::build_prompt(template, &messages, None, "Char", "User");
+        let prompt = CompactionManager::build_prompt(template, &messages, "Char", "User");
         assert!(!prompt.contains("RECAP"));
         assert!(!prompt.contains("{{#if recap}}"));
         assert!(!prompt.contains("{{/if}}"));
         assert!(prompt.contains("Before"));
         assert!(prompt.contains("After"));
-    }
-
-    #[test]
-    fn test_build_prompt_includes_existing_memories() {
-        let messages = make_messages(2);
-        let template = "Existing:\n{{existing_memories}}\nConversation:\n{{conversation}}";
-
-        let prompt = CompactionManager::build_prompt(
-            template,
-            &messages,
-            Some("<file path=\"people/User.md\">\n# User\n</file>"),
-            "Char",
-            "User",
-        );
-
-        assert!(prompt.contains("people/User.md"));
-        assert!(!prompt.contains("{{existing_memories}}"));
-    }
-
-    #[tokio::test]
-    async fn test_build_existing_memory_context_reads_markdown_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
-            .await
-            .unwrap();
-        store
-            .write("people/User.md", "# User\n\n- Likes tea.")
-            .await
-            .unwrap();
-        store.write("DREAMS.md", "# Dreams").await.unwrap();
-
-        let context = CompactionManager::build_existing_memory_context(Some(&store)).await;
-
-        assert!(context.contains("people/User.md"));
-        assert!(context.contains("Likes tea"));
-        assert!(!context.contains("DREAMS.md"));
     }
 
     // -- Tests: helper methods -----------------------------------------------
@@ -2217,53 +2103,7 @@ mod tests {
             "exactly one trailing user message must be appended to the chat prefix"
         );
         let user_text = llm.last_user_text().expect("captured final user prompt");
-        assert!(user_text.contains("Existing memory files"));
-    }
-
-    #[tokio::test]
-    async fn test_compact_prompt_includes_existing_markdown_context() {
-        let llm = ScriptedLlm::writing(&[("memory/notes/x.md", "# x")]);
-        let conv_mgr = MockConversationMgr::new("new-conv-context");
-        let mgr = CompactionManager::new(make_config_with_keep(2));
-        let messages = make_messages(10);
-        let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
-            .await
-            .unwrap();
-        store
-            .write(
-                "people/TestUser.md",
-                "# TestUser\n\n- Already likes green tea.",
-            )
-            .await
-            .unwrap();
-        let ctx = TestCtx::new(tmp.path().to_string_lossy().into_owned());
-
-        mgr.compact(
-            "conv-context",
-            &messages,
-            "",
-            false,
-            DEFAULT_COMPACT_SYSTEM,
-            DEFAULT_COMPACT_PROMPT,
-            "TestChar",
-            "TestUser",
-            &llm,
-            &conv_mgr,
-            Some(&store),
-            false,
-            None,
-            make_chat_request(&[]),
-            None,
-            &ctx,
-        )
-        .await
-        .unwrap();
-
-        let prompt = llm.last_user_text().expect("captured final user prompt");
-        assert!(prompt.contains("people/TestUser.md"));
-        assert!(prompt.contains("Already likes green tea"));
-        assert!(!prompt.contains("{{existing_memories}}"));
+        assert!(user_text.contains("The conversation above is now complete"));
     }
 
     // -- Tests: idle timer scheduling logic ----------------------------------

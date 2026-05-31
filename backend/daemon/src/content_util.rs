@@ -229,6 +229,30 @@ pub fn strip_thinking_from_assistant_history(messages: &mut [Value]) {
     }
 }
 
+/// Truncate a tool result to at most `max_chars` characters, appending a
+/// notice so the model knows output was cut.
+///
+/// `max_chars == 0` disables truncation and returns `output` unchanged. When
+/// the output exceeds the limit, it is cut at a character boundary (counting
+/// Unicode scalar values, not bytes, so multi-byte text is never split) and a
+/// one-line notice with the kept/total character counts is appended.
+///
+/// Callers apply this before persisting the result, so the shortened form is
+/// what gets stored and replayed on later turns — capping the context cost of
+/// a large result for the rest of the conversation, not just the current
+/// request.
+pub fn truncate_tool_result(output: String, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return output;
+    }
+    let total = output.chars().count();
+    if total <= max_chars {
+        return output;
+    }
+    let kept: String = output.chars().take(max_chars).collect();
+    format!("{kept}\n\n[tool_result truncated: showing first {max_chars} of {total} characters]")
+}
+
 /// Build a `tool_result` JSON value for the LLM request payload.
 ///
 /// The `is_error` field is only included when `true`, matching the
@@ -576,6 +600,52 @@ mod tests {
             },
         ];
         assert!(extract_tool_uses(&blocks).is_empty());
+    }
+
+    // ── truncate_tool_result ──────────────────────────────────────────
+
+    #[test]
+    fn truncate_zero_disables_returns_unchanged() {
+        let s = "x".repeat(10_000);
+        assert_eq!(truncate_tool_result(s.clone(), 0), s);
+    }
+
+    #[test]
+    fn truncate_under_limit_returns_unchanged() {
+        let s = "short output".to_string();
+        assert_eq!(truncate_tool_result(s.clone(), 100), s);
+    }
+
+    #[test]
+    fn truncate_at_exact_limit_returns_unchanged() {
+        let s = "abcde".to_string();
+        assert_eq!(truncate_tool_result(s.clone(), 5), s);
+    }
+
+    #[test]
+    fn truncate_over_limit_cuts_and_annotates() {
+        let s = "abcdefghij".to_string(); // 10 chars
+        let result = truncate_tool_result(s, 4);
+        assert!(result.starts_with("abcd"));
+        assert!(
+            result.contains("truncated"),
+            "must tell the model it was truncated"
+        );
+        assert!(
+            result.contains("first 4 of 10 characters"),
+            "notice should carry kept/total counts, got: {result}"
+        );
+    }
+
+    #[test]
+    fn truncate_respects_char_boundaries() {
+        // Multi-byte characters must never be split mid-codepoint.
+        let s = "héllo wörld 🌊🌊🌊".to_string();
+        let result = truncate_tool_result(s, 7);
+        // First 7 chars are "héllo w"; the kept prefix must be valid UTF-8
+        // (guaranteed by String) and start with those characters.
+        assert!(result.starts_with("héllo w"));
+        assert!(result.contains("truncated"));
     }
 
     // ── thinking_block_portable_to ────────────────────────────────────
