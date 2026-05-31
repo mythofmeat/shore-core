@@ -4,7 +4,7 @@
 //! and legacy filesystem paths), and wire-embedding of image data.
 
 use base64::Engine as _;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shore_protocol::types::{ContentBlock, ImageRef, Message};
 use tracing::{info, warn};
 
@@ -38,12 +38,9 @@ pub(crate) fn build_content(
     let mut blocks: Vec<Value> = Vec::with_capacity(images.len() + 1);
 
     for img in images {
-        let media_type = match media_type_for_path(&img.path) {
-            Some(mt) => mt,
-            None => {
-                warn!(path = %img.path, "Skipping image with unsupported extension");
-                continue;
-            }
+        let Some(media_type) = media_type_for_path(&img.path) else {
+            warn!(path = %img.path, "Skipping image with unsupported extension");
+            continue;
         };
         match std::fs::read(&img.path) {
             Ok(bytes) => {
@@ -148,8 +145,7 @@ pub(super) fn ingest_images(
             }
             let original_name = src_path
                 .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "image".to_string());
+                .map_or_else(|| "image".to_string(), |n| n.to_string_lossy().to_string());
             let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
             let dest_name = format!("{timestamp}_{original_name}");
             let dest_path = attachments_dir.join(&dest_name);
