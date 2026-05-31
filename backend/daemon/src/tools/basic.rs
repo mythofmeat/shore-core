@@ -4,7 +4,7 @@
 
 use chrono::{Datelike, Local};
 use rand::Rng;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{ToolCategory, ToolDef, ToolError};
 
@@ -88,11 +88,11 @@ pub(crate) fn format_friendly_datetime() -> String {
 // Handlers
 // ---------------------------------------------------------------------------
 
-pub async fn handle_check_time(_input: Value) -> Result<Value, ToolError> {
+pub fn handle_check_time(_input: Value) -> Result<Value, ToolError> {
     Ok(json!(format_friendly_datetime()))
 }
 
-pub async fn handle_roll_dice(input: Value) -> Result<Value, ToolError> {
+pub fn handle_roll_dice(input: &Value) -> Result<Value, ToolError> {
     let notation_str = input
         .get("notation")
         .and_then(|v| v.as_str())
@@ -148,10 +148,9 @@ pub fn parse_dice_notation(notation: &str) -> Result<DiceNotation, String> {
 
     let modifier_pos = after_d
         .char_indices()
-        .position(|(i, c)| i > 0 && (c == '+' || c == '-'));
+        .find_map(|(i, c)| (i > 0 && (c == '+' || c == '-')).then_some(i));
 
-    let (sides_str, modifier) = if let Some(pos) = modifier_pos {
-        let byte_pos = after_d.char_indices().nth(pos).map(|(i, _)| i).unwrap();
+    let (sides_str, modifier) = if let Some(byte_pos) = modifier_pos {
         let sides = &after_d[..byte_pos];
         let mod_str = &after_d[byte_pos..];
         let modifier = mod_str
@@ -182,7 +181,10 @@ pub fn execute_dice_roll(notation: &DiceNotation) -> (Vec<u32>, i32) {
     let rolls: Vec<u32> = (0..notation.count)
         .map(|_| rng.gen_range(1..=notation.sides))
         .collect();
-    let sum: i32 = rolls.iter().map(|&r| r as i32).sum::<i32>() + notation.modifier;
+    let sum = rolls
+        .iter()
+        .map(|&r| i32::try_from(r).unwrap_or(i32::MAX))
+        .fold(notation.modifier, i32::saturating_add);
     (rolls, sum)
 }
 
@@ -278,9 +280,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn handle_check_time_returns_friendly_datetime() {
-        let result = handle_check_time(json!({})).await.unwrap();
+    #[test]
+    fn handle_check_time_returns_friendly_datetime() {
+        let result = handle_check_time(json!({})).unwrap();
         let s = result.as_str().unwrap();
         // e.g. "Friday, April 4th, 2026 at 4:34 PM"
         assert!(s.contains(" at "), "expected friendly format, got: {s}");
@@ -302,17 +304,17 @@ mod tests {
         assert_eq!(ordinal_suffix(31), "st");
     }
 
-    #[tokio::test]
-    async fn handle_roll_dice_valid() {
-        let result = handle_roll_dice(json!({"notation": "2d6"})).await.unwrap();
+    #[test]
+    fn handle_roll_dice_valid() {
+        let result = handle_roll_dice(&json!({"notation": "2d6"})).unwrap();
         assert_eq!(result["notation"], "2d6");
         assert!(result["rolls"].is_array());
         assert_eq!(result["rolls"].as_array().unwrap().len(), 2);
     }
 
-    #[tokio::test]
-    async fn handle_roll_dice_missing_notation() {
-        let result = handle_roll_dice(json!({})).await;
+    #[test]
+    fn handle_roll_dice_missing_notation() {
+        let result = handle_roll_dice(&json!({}));
         assert!(result.is_err());
     }
 }

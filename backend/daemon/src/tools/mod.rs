@@ -244,8 +244,8 @@ pub fn dispatch_tool<'a>(
             "web_search" => web::handle_web_search(input, ctx).await,
             "fetch_url" => web::handle_fetch_url(input).await,
             // Basic tools
-            "check_time" => basic::handle_check_time(input).await,
-            "roll_dice" => basic::handle_roll_dice(input).await,
+            "check_time" => basic::handle_check_time(input),
+            "roll_dice" => basic::handle_roll_dice(&input),
             // Other
             "activity_heatmap" => activity::handle_activity_heatmap(&input, ctx),
             // Workspace tools
