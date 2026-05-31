@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Local, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shore_config::app::DreamingConfig;
 use shore_config::cron::CronSchedule;
 use shore_config::{
-    character_data_dir, character_memory_dir, character_workspace_dir, LoadedConfig, SOUL_FILE,
-    USER_FILE,
+    LoadedConfig, SOUL_FILE, USER_FILE, character_data_dir, character_memory_dir,
+    character_workspace_dir,
 };
 
 use shore_ledger::{CallType, LedgerClient};
@@ -409,7 +409,11 @@ pub async fn run_librarian_sweep(
                 "AI librarian pass used {} tool round(s), changed {} file(s), and {} DREAMS.md audit fallback",
                 loop_result.tool_rounds,
                 changed.len(),
-                if audit_appended { "needed a" } else { "did not need a" }
+                if audit_appended {
+                    "needed a"
+                } else {
+                    "did not need a"
+                }
             ),
             candidate_count: 0,
             promoted_count: indexed_count,
@@ -842,30 +846,30 @@ async fn build_librarian_tool_context(
     .ok();
 
     Some(SharedToolContext {
-        image_dir_val: character_data_dir
+        image_dir: character_data_dir
             .join("images")
             .to_string_lossy()
             .into_owned(),
-        llm_client_val: llm_client.inner().clone(),
-        image_gen_config_val: image_gen_config,
-        search_config_val: loaded_config.app.behavior.tool_use.search.clone(),
-        character_name_val: character.to_string(),
-        workspace_dir_val: character_workspace_dir(&loaded_config.dirs.config, character)
+        llm_client: llm_client.inner().clone(),
+        image_gen_config,
+        search_config: loaded_config.app.behavior.tool_use.search.clone(),
+        character_name: character.to_string(),
+        workspace_dir: character_workspace_dir(&loaded_config.dirs.config, character)
             .to_string_lossy()
             .into_owned(),
-        markdown_store_val: MarkdownMemoryStore::open_sync(character_memory_dir(
+        markdown_store: MarkdownMemoryStore::open_sync(character_memory_dir(
             &loaded_config.dirs.config,
             character,
         ))
         .ok(),
-        memory_retrieval_config_val: loaded_config.app.memory.retrieval.clone(),
-        embedder_val: embedder,
-        memory_index_path_val: crate::memory::workspace_index::index_path(
+        memory_retrieval_config: loaded_config.app.memory.retrieval.clone(),
+        embedder,
+        memory_index_path: crate::memory::workspace_index::index_path(
             &loaded_config.dirs.cache,
             character,
         ),
-        config_dir_val: loaded_config.dirs.config.to_string_lossy().into_owned(),
-        character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
+        config_dir: loaded_config.dirs.config.to_string_lossy().into_owned(),
+        character_data_dir: character_data_dir.to_string_lossy().into_owned(),
     })
 }
 
@@ -2505,8 +2509,11 @@ mod tests {
             .unwrap();
         assert!(memory.contains("# Memory Index"));
         assert!(memory.contains("shore-notes.md"));
-        assert!(!memory
-            .contains("Trevor wants Shore memory to use MEMORY.md as an index.\n- Trevor wants"));
+        assert!(
+            !memory.contains(
+                "Trevor wants Shore memory to use MEMORY.md as an index.\n- Trevor wants"
+            )
+        );
         let dreams_path = crate::memory::dreams_log::dreams_log_path(&config.dirs.data, "alice");
         let dreams = fs::read_to_string(&dreams_path).await.unwrap();
         assert!(dreams.contains("AI librarian dreaming pass"));
@@ -2580,10 +2587,12 @@ mod tests {
         assert!(messages[2].to_string().contains("memory librarian pass"));
         assert!(body["system"].to_string().contains("cached system prefix"));
         assert_eq!(body["tools"][0]["name"], "read");
-        assert!(body["tools"][0]["description"]
-            .as_str()
-            .unwrap()
-            .contains("sentinel cached"));
+        assert!(
+            body["tools"][0]["description"]
+                .as_str()
+                .unwrap()
+                .contains("sentinel cached")
+        );
     }
 
     /// Regression contract for issue #84 (the librarian counterpart of the
@@ -2772,10 +2781,12 @@ mod tests {
 
         assert!(result.dry_run);
         assert!(result.paths_written.is_empty());
-        assert!(result
-            .would_write_paths
-            .iter()
-            .any(|path| path.ends_with("MEMORY.md")));
+        assert!(
+            result
+                .would_write_paths
+                .iter()
+                .any(|path| path.ends_with("MEMORY.md"))
+        );
         assert!(!workspace.join("MEMORY.md").exists());
         assert!(!mem.join("DREAMS.md").exists());
         assert!(!config.dirs.data.join("alice/dreams/state.json").exists());
@@ -2903,14 +2914,18 @@ mod tests {
             .unwrap();
         assert!(result.dry_run);
         assert_eq!(result.paths_written.len(), 0);
-        assert!(result
-            .would_write_paths
-            .iter()
-            .any(|path| path.replace('\\', "/").contains("alice/dreams")));
-        assert!(result
-            .would_write_paths
-            .iter()
-            .any(|path| path.ends_with("MEMORY.md")));
+        assert!(
+            result
+                .would_write_paths
+                .iter()
+                .any(|path| path.replace('\\', "/").contains("alice/dreams"))
+        );
+        assert!(
+            result
+                .would_write_paths
+                .iter()
+                .any(|path| path.ends_with("MEMORY.md"))
+        );
         assert!(!data_dir.join("alice/dreams").exists());
         assert!(!mem.join(".dreams").exists());
         assert!(!mem.join("DREAMS.md").exists());
@@ -3199,10 +3214,12 @@ mod tests {
             status.last_run_at.as_deref(),
             Some("2026-04-01T00:00:00+00:00")
         );
-        assert!(status
-            .state_path
-            .replace('\\', "/")
-            .ends_with("alice/dreams/state.json"));
+        assert!(
+            status
+                .state_path
+                .replace('\\', "/")
+                .ends_with("alice/dreams/state.json")
+        );
         assert!(!data_dir.join("alice/dreams/state.json").exists());
     }
 

@@ -262,28 +262,28 @@ fn build_compaction_tool_context(
     .ok();
 
     Arc::new(crate::tools::context::SharedToolContext {
-        image_dir_val: character_data_dir_path
+        image_dir: character_data_dir_path
             .join("images")
             .to_string_lossy()
             .into_owned(),
-        llm_client_val: llm_client.inner().clone(),
-        image_gen_config_val: image_gen_config,
-        search_config_val: effective.app.behavior.tool_use.search.clone(),
-        character_name_val: character.to_string(),
-        workspace_dir_val: character_workspace_dir(&effective.dirs.config, character)
+        llm_client: llm_client.inner().clone(),
+        image_gen_config,
+        search_config: effective.app.behavior.tool_use.search.clone(),
+        character_name: character.to_string(),
+        workspace_dir: character_workspace_dir(&effective.dirs.config, character)
             .to_string_lossy()
             .into_owned(),
-        markdown_store_val: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
+        markdown_store: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
             character_memory_dir(&effective.dirs.config, character),
         )
         .ok(),
-        memory_retrieval_config_val: effective.app.memory.retrieval.clone(),
-        embedder_val: embedder,
-        memory_index_path_val: crate::memory::workspace_index::index_path(
+        memory_retrieval_config: effective.app.memory.retrieval.clone(),
+        embedder,
+        memory_index_path: crate::memory::workspace_index::index_path(
             &effective.dirs.cache,
             character,
         ),
-        config_dir_val: effective.dirs.config.to_string_lossy().into_owned(),
-        character_data_dir_val: character_data_dir_path.to_string_lossy().into_owned(),
+        config_dir: effective.dirs.config.to_string_lossy().into_owned(),
+        character_data_dir: character_data_dir_path.to_string_lossy().into_owned(),
     })
 }

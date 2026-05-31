@@ -13,9 +13,9 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shore_protocol::server_msg::ServerMessage;
-use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
+use shore_protocol::types::{ContentBlock, Message, Role, derive_content_from_blocks};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -31,10 +31,10 @@ use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
 use crate::tools::context::SharedToolContext;
 use crate::tools::{ToolContext, ToolError};
-use shore_config::app::{AutonomyConfig, CompactionConfig, DreamingConfig};
 use shore_config::LoadedConfig;
+use shore_config::app::{AutonomyConfig, CompactionConfig, DreamingConfig};
 use shore_config::{
-    character_data_dir, character_memory_dir, character_workspace_dir, HEARTBEAT_FILE,
+    HEARTBEAT_FILE, character_data_dir, character_memory_dir, character_workspace_dir,
 };
 use shore_diagnostics::truncate_summary;
 use shore_ledger::{CallType, CredentialFallbackEvent, LedgerClient};
@@ -1595,7 +1595,7 @@ fn rebuild_request_from_disk(
     config: &LoadedConfig,
 ) -> Option<LlmRequest> {
     use crate::engine::messages::MessageStore;
-    use crate::handler::{prepare_chat_context, PrepareChatContextParams, PreparedChatContext};
+    use crate::handler::{PrepareChatContextParams, PreparedChatContext, prepare_chat_context};
     use shore_config::character_active_jsonl;
 
     let char_dir = character_data_dir(data_dir, character);
@@ -2186,26 +2186,26 @@ async fn build_tool_context(
     );
 
     Some(SharedToolContext {
-        image_dir_val: char_dir.join("images").to_string_lossy().into_owned(),
-        llm_client_val: client.inner().clone(),
-        image_gen_config_val: image_gen_config,
-        search_config_val: config.app.behavior.tool_use.search.clone(),
-        character_name_val: character.to_string(),
-        workspace_dir_val: character_workspace_dir(&config.dirs.config, character)
+        image_dir: char_dir.join("images").to_string_lossy().into_owned(),
+        llm_client: client.inner().clone(),
+        image_gen_config,
+        search_config: config.app.behavior.tool_use.search.clone(),
+        character_name: character.to_string(),
+        workspace_dir: character_workspace_dir(&config.dirs.config, character)
             .to_string_lossy()
             .into_owned(),
-        markdown_store_val: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
+        markdown_store: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
             character_memory_dir(&config.dirs.config, character),
         )
         .ok(),
-        memory_retrieval_config_val: config.app.memory.retrieval.clone(),
-        embedder_val: embedder,
-        memory_index_path_val: crate::memory::workspace_index::index_path(
+        memory_retrieval_config: config.app.memory.retrieval.clone(),
+        embedder,
+        memory_index_path: crate::memory::workspace_index::index_path(
             &config.dirs.cache,
             character,
         ),
-        config_dir_val: config.dirs.config.to_string_lossy().into_owned(),
-        character_data_dir_val: char_dir.to_string_lossy().into_owned(),
+        config_dir: config.dirs.config.to_string_lossy().into_owned(),
+        character_data_dir: char_dir.to_string_lossy().into_owned(),
     })
 }
 
@@ -2406,7 +2406,7 @@ async fn execute_dormant_ping(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     fn test_config() -> AutonomyConfig {
         AutonomyConfig::default()
@@ -2490,10 +2490,12 @@ mod tests {
             .expect("array content");
         assert_eq!(content.len(), 2);
         assert_eq!(content[1]["type"], "text");
-        assert!(content[1]["text"]
-            .as_str()
-            .unwrap()
-            .contains("HEARTBEAT.md"));
+        assert!(
+            content[1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("HEARTBEAT.md")
+        );
     }
 
     #[test]
@@ -2516,10 +2518,12 @@ mod tests {
         append_wrap_up_nudge(&mut req);
         assert_eq!(req.messages.len(), 3);
         assert_eq!(req.messages[2]["role"], "user");
-        assert!(req.messages[2]["content"]
-            .as_str()
-            .unwrap()
-            .contains("HEARTBEAT.md"));
+        assert!(
+            req.messages[2]["content"]
+                .as_str()
+                .unwrap()
+                .contains("HEARTBEAT.md")
+        );
     }
 
     #[test]

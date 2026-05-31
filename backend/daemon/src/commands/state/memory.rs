@@ -544,29 +544,29 @@ async fn build_swp_compaction_tool_context(
     .ok();
 
     std::sync::Arc::new(crate::tools::context::SharedToolContext {
-        image_dir_val: character_data_dir_path
+        image_dir: character_data_dir_path
             .join("images")
             .to_string_lossy()
             .into_owned(),
-        llm_client_val: ctx.llm_client.inner().clone(),
-        image_gen_config_val: image_gen_config,
-        search_config_val: ctx.config.app.behavior.tool_use.search.clone(),
-        character_name_val: char_name.to_string(),
-        workspace_dir_val: character_workspace_dir(&ctx.config.dirs.config, char_name)
+        llm_client: ctx.llm_client.inner().clone(),
+        image_gen_config,
+        search_config: ctx.config.app.behavior.tool_use.search.clone(),
+        character_name: char_name.to_string(),
+        workspace_dir: character_workspace_dir(&ctx.config.dirs.config, char_name)
             .to_string_lossy()
             .into_owned(),
-        markdown_store_val: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
+        markdown_store: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
             character_memory_dir(&ctx.config.dirs.config, char_name),
         )
         .ok(),
-        memory_retrieval_config_val: ctx.config.app.memory.retrieval.clone(),
-        embedder_val: embedder,
-        memory_index_path_val: crate::memory::workspace_index::index_path(
+        memory_retrieval_config: ctx.config.app.memory.retrieval.clone(),
+        embedder,
+        memory_index_path: crate::memory::workspace_index::index_path(
             &ctx.config.dirs.cache,
             char_name,
         ),
-        config_dir_val: ctx.config.dirs.config.to_string_lossy().into_owned(),
-        character_data_dir_val: character_data_dir_path.to_string_lossy().into_owned(),
+        config_dir: ctx.config.dirs.config.to_string_lossy().into_owned(),
+        character_data_dir: character_data_dir_path.to_string_lossy().into_owned(),
     })
 }
 

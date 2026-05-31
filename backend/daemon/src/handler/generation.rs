@@ -174,24 +174,24 @@ pub(super) async fn run_tool_phase(
 
     let tool_ctx = HandlerToolContext {
         inner: SharedToolContext {
-            image_dir_val: character_data_dir
+            image_dir: character_data_dir
                 .join("images")
                 .to_string_lossy()
                 .into_owned(),
-            llm_client_val: ctx.llm_client.inner().clone(),
-            image_gen_config_val: image_gen_config,
-            search_config_val: effective_config.app.behavior.tool_use.search.clone(),
-            character_name_val: char_name.to_owned(),
-            workspace_dir_val: workspace_dir.to_string_lossy().into_owned(),
-            markdown_store_val: MarkdownMemoryStore::open_sync(memory_dir).ok(),
-            memory_retrieval_config_val: effective_config.app.memory.retrieval.clone(),
-            embedder_val: embedder,
-            memory_index_path_val: crate::memory::workspace_index::index_path(
+            llm_client: ctx.llm_client.inner().clone(),
+            image_gen_config,
+            search_config: effective_config.app.behavior.tool_use.search.clone(),
+            character_name: char_name.to_owned(),
+            workspace_dir: workspace_dir.to_string_lossy().into_owned(),
+            markdown_store: MarkdownMemoryStore::open_sync(memory_dir).ok(),
+            memory_retrieval_config: effective_config.app.memory.retrieval.clone(),
+            embedder,
+            memory_index_path: crate::memory::workspace_index::index_path(
                 &effective_config.dirs.cache,
                 char_name,
             ),
-            config_dir_val: config_dir.to_string_lossy().into_owned(),
-            character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
+            config_dir: config_dir.to_string_lossy().into_owned(),
+            character_data_dir: character_data_dir.to_string_lossy().into_owned(),
         },
         autonomy_val: ctx.autonomy.clone(),
     };
