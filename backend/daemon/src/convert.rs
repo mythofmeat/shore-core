@@ -63,3 +63,8 @@ pub(crate) fn u64_to_usize(v: u64) -> usize {
 pub(crate) fn elapsed_ms_u64(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
+
+/// Whole milliseconds of an elapsed `Duration`, saturating at `u32::MAX`.
+pub(crate) fn elapsed_ms_u32(d: Duration) -> u32 {
+    u32::try_from(d.as_millis()).unwrap_or(u32::MAX)
+}

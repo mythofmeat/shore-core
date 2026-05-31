@@ -3,17 +3,18 @@
 //! Writes assistant messages to the conversation engine, records diagnostics,
 //! tracks token usage, and sends push notifications.
 
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::time::Instant;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shore_config::app::UsageBudgetPeriod;
 use shore_config::models::Sdk;
 use shore_protocol::server_msg::{MessageOrigin, NewMessage, ServerMessage, UsageWarning};
-use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
-use tokio::sync::{broadcast, Mutex};
+use shore_protocol::types::{ContentBlock, Message, Role, derive_content_from_blocks};
+use tokio::sync::{Mutex, broadcast};
 use tracing::{info, instrument, warn};
 
+use crate::convert::elapsed_ms_u32;
 use crate::engine::messages::{MessageStore, PendingAlt};
 use crate::notifications::NotificationEvent;
 
@@ -27,7 +28,10 @@ struct CompletedResponseMessage {
 
 /// Phase 12: Persist messages, record diagnostics, and send notifications.
 #[instrument(skip(ctx, engine_arc, result, request, tool_intermediate_messages), fields(char = char_name, model = %resolved.qualified_name))]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "generation persistence boundary mirrors handler state; parameter object tracked in #109"
+)]
 pub(super) async fn persist_and_notify(
     ctx: &GenContext,
     engine_arc: &Arc<Mutex<crate::engine::ConversationEngine>>,
@@ -40,52 +44,10 @@ pub(super) async fn persist_and_notify(
     preserve_prior_turn_thinking: bool,
     regen_alt: Option<PendingAlt>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    record_completion_diagnostics(ctx, result, request, resolved);
+
     let notify_content = {
         let mut engine = engine_arc.lock().await;
-
-        // Track cumulative token usage.
-        {
-            let mut tokens = ctx.session_tokens.lock().unwrap_or_else(|e| e.into_inner());
-            tokens.input += result.usage.input_tokens;
-            tokens.output += result.usage.output_tokens;
-            tokens.cache_read += result.usage.cache_read_tokens;
-            tokens.cache_write += result.usage.cache_creation_tokens;
-        }
-
-        // Record API call in diagnostics ring buffer.
-        {
-            let entry = shore_diagnostics::ApiCallEntry {
-                timestamp: chrono::Local::now().to_rfc3339(),
-                model: result.model.clone(),
-                provider: request
-                    .provider_key
-                    .clone()
-                    .unwrap_or_else(|| resolved.provider_key.clone()),
-                input_tokens: result.usage.input_tokens,
-                output_tokens: result.usage.output_tokens,
-                cache_read_tokens: result.usage.cache_read_tokens,
-                cache_write_tokens: result.usage.cache_creation_tokens,
-                ttft_ms: result.timing.time_to_first_token_ms,
-                total_ms: result.timing.total_ms,
-                finish_reason: result.finish_reason.clone(),
-                total_cost_usd: result.usage.total_cost_usd,
-                error: None,
-            };
-            ctx.diagnostics
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .api_calls
-                .push(entry);
-        }
-
-        info!(
-            input_tokens = result.usage.input_tokens,
-            output_tokens = result.usage.output_tokens,
-            cache_read = result.usage.cache_read_tokens,
-            cache_creation = result.usage.cache_creation_tokens,
-            model = %result.model,
-            "Response complete"
-        );
 
         let response_messages = completed_response_messages(result, &request.sdk);
 
@@ -175,18 +137,67 @@ pub(super) async fn persist_and_notify(
         notify_content
     }; // engine lock released
 
-    let wall_clock_ms = wall_clock_start.elapsed().as_millis() as u32;
+    let wall_clock_ms = elapsed_ms_u32(wall_clock_start.elapsed());
     ctx.notifier.notify_message_complete(
         &format!("Shore — {char_name}"),
         &notify_content,
         wall_clock_ms,
     );
-    emit_usage_budget_warnings(ctx, request.rid.clone());
+    emit_usage_budget_warnings(ctx, request.rid.as_deref());
 
     Ok(())
 }
 
-fn emit_usage_budget_warnings(ctx: &GenContext, rid: Option<String>) {
+fn record_completion_diagnostics(
+    ctx: &GenContext,
+    result: &shore_llm::types::StreamResult,
+    request: &shore_llm::types::LlmRequest,
+    resolved: &shore_config::models::ResolvedModel,
+) {
+    let mut tokens = ctx
+        .session_tokens
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    tokens.input += result.usage.input_tokens;
+    tokens.output += result.usage.output_tokens;
+    tokens.cache_read += result.usage.cache_read_tokens;
+    tokens.cache_write += result.usage.cache_creation_tokens;
+    drop(tokens);
+
+    let entry = shore_diagnostics::ApiCallEntry {
+        timestamp: chrono::Local::now().to_rfc3339(),
+        model: result.model.clone(),
+        provider: request
+            .provider_key
+            .clone()
+            .unwrap_or_else(|| resolved.provider_key.clone()),
+        input_tokens: result.usage.input_tokens,
+        output_tokens: result.usage.output_tokens,
+        cache_read_tokens: result.usage.cache_read_tokens,
+        cache_write_tokens: result.usage.cache_creation_tokens,
+        ttft_ms: result.timing.time_to_first_token_ms,
+        total_ms: result.timing.total_ms,
+        finish_reason: result.finish_reason.clone(),
+        total_cost_usd: result.usage.total_cost_usd,
+        error: None,
+    };
+    ctx.diagnostics
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .api_calls
+        .push(entry);
+
+    info!(
+        input_tokens = result.usage.input_tokens,
+        output_tokens = result.usage.output_tokens,
+        cache_read = result.usage.cache_read_tokens,
+        cache_creation = result.usage.cache_creation_tokens,
+        model = %result.model,
+        "Response complete"
+    );
+}
+
+fn emit_usage_budget_warnings(ctx: &GenContext, rid: Option<&str>) {
     let warnings = match ctx.llm_client.newly_crossed_usage_budget_warnings() {
         Ok(warnings) => warnings,
         Err(e) => {
@@ -198,7 +209,7 @@ fn emit_usage_budget_warnings(ctx: &GenContext, rid: Option<String>) {
     for warning in warnings {
         let message = warning.message.clone();
         let frame = UsageWarning {
-            rid: rid.clone(),
+            rid: rid.map(str::to_string),
             budget: warning.budget,
             message: message.clone(),
             current_cost: warning.current_cost,
