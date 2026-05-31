@@ -6,6 +6,7 @@
 //! bleeds into prompts or memory snapshots.
 
 use std::cmp::Reverse;
+use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -45,12 +46,9 @@ pub async fn append_dream_entry(
     if !updated.is_empty() {
         updated.push_str("\n\n");
     }
-    updated.push_str(&format!(
-        "## {} - {}\n\n{}\n",
-        timestamp.format("%Y-%m-%d %H:%M"),
-        title,
-        body.trim()
-    ));
+    let timestamp = timestamp.format("%Y-%m-%d %H:%M");
+    let body = body.trim();
+    write!(updated, "## {timestamp} - {title}\n\n{body}\n").map_err(io::Error::other)?;
 
     fs::write(&path, updated).await
 }
@@ -157,9 +155,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let recent = recent_dream_entries(tmp.path(), "ghost", 5).await.unwrap();
         assert!(recent.is_empty());
-        assert!(read_dreams_log(tmp.path(), "ghost")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            read_dreams_log(tmp.path(), "ghost")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }
