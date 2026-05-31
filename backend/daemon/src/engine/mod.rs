@@ -68,10 +68,10 @@ impl ConversationEngine {
     /// path from `character_name`).
     pub fn new(
         character_name: String,
-        data_dir: PathBuf,
+        data_dir: impl AsRef<std::path::Path>,
         push_tx: broadcast::Sender<ServerMessage>,
     ) -> Result<Self, EngineError> {
-        let character_dir = data_dir.join(&character_name);
+        let character_dir = data_dir.as_ref().join(&character_name);
         info!(
             character = %character_name,
             dir = %character_dir.display(),
