@@ -161,12 +161,16 @@ pub fn dispatch_characterless(ctx: &CommandContext, cmd: &Command) -> CommandRes
 
 /// Convert an EngineError to a command error tuple.
 pub fn engine_err(e: EngineError) -> (ErrorCode, String) {
-    match &e {
-        EngineError::MessageNotFound(_) | EngineError::CharacterNotFound(_) => {
-            (ErrorCode::NotFound, e.to_string())
+    match e {
+        EngineError::MessageNotFound(message) => {
+            (ErrorCode::NotFound, format!("message not found: {message}"))
         }
-        EngineError::InvalidAlt(_) => (ErrorCode::InvalidRequest, e.to_string()),
-        _ => (ErrorCode::InternalError, e.to_string()),
+        EngineError::CharacterNotFound(character) => (
+            ErrorCode::NotFound,
+            format!("character not found: {character}"),
+        ),
+        EngineError::InvalidAlt(message) => (ErrorCode::InvalidRequest, message),
+        other => (ErrorCode::InternalError, other.to_string()),
     }
 }
 
