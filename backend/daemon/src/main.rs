@@ -2,15 +2,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
-use shore_config::{config_dir, load_config, ConfigError, LoadedConfig};
+use shore_config::{ConfigError, LoadedConfig, config_dir, load_config};
 use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::handler::{MessageHandler, MessageHandlerDeps};
 use shore_daemon::handshake::build_handshake_provider;
 use shore_daemon::notifications::NotificationService;
-use shore_diagnostics::logging::HumanLogFormat;
 use shore_diagnostics::Diagnostics;
+use shore_diagnostics::logging::HumanLogFormat;
 use shore_ledger::LedgerClient;
 use shore_llm::LlmClient;
 use shore_swp_server::registry::{InstanceInfo, Registry};
@@ -120,6 +120,10 @@ enum StartupError {
 }
 
 #[tokio::main]
+#[expect(
+    clippy::too_many_lines,
+    reason = "daemon startup orchestration split is tracked in #109"
+)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Human-readable logging (journalctl already adds timestamps) ──
     tracing_subscriber::fmt()
@@ -196,7 +200,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             source,
         })?;
     let resolved_addr = listener
-        .local_addr().map_or_else(|_| addr.clone(), |a| a.to_string());
+        .local_addr()
+        .map_or_else(|_| addr.clone(), |a| a.to_string());
     drop(pre_bind_server);
 
     let server_config = ServerConfig {
@@ -237,21 +242,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm = signal(SignalKind::terminate())
-                .expect("startup-fatal: failed to listen for SIGTERM");
-            tokio::select! {
-                _ = ctrl_c => info!("Received SIGINT"),
-                _ = sigterm.recv() => info!("Received SIGTERM"),
+            use tokio::signal::unix::{SignalKind, signal};
+            match signal(SignalKind::terminate()) {
+                Ok(mut sigterm) => {
+                    tokio::select! {
+                        result = ctrl_c => match result {
+                            Ok(()) => info!("Received SIGINT"),
+                            Err(error) => error!(error = %error, "Failed to listen for SIGINT"),
+                        },
+                        _ = sigterm.recv() => info!("Received SIGTERM"),
+                    }
+                }
+                Err(error) => {
+                    error!(error = %error, "Failed to listen for SIGTERM; falling back to SIGINT only");
+                    match ctrl_c.await {
+                        Ok(()) => info!("Received SIGINT"),
+                        Err(error) => error!(error = %error, "Failed to listen for SIGINT"),
+                    }
+                }
             }
         }
 
         #[cfg(not(unix))]
         {
-            ctrl_c
-                .await
-                .expect("startup-fatal: failed to listen for Ctrl+C");
-            info!("Received shutdown signal");
+            match ctrl_c.await {
+                Ok(()) => info!("Received shutdown signal"),
+                Err(error) => error!(error = %error, "Failed to listen for Ctrl+C"),
+            }
         }
 
         let _ = shutdown_tx.send(());
@@ -592,8 +609,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        epoch_timestamp, resolve_explicit_config_path, resolve_listen_addr, resolve_startup,
-        validate_remote_access_policy, Cli, StartupError, StartupValueSource,
+        Cli, StartupError, StartupValueSource, epoch_timestamp, resolve_explicit_config_path,
+        resolve_listen_addr, resolve_startup, validate_remote_access_policy,
     };
     use clap::Parser;
     use tempfile::TempDir;
