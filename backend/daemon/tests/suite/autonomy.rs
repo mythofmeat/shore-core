@@ -206,6 +206,7 @@ async fn test_failed_ping_retries() {
         "Expected at least one request attempt (even if it failed). \
          Baseline: {baseline}, After error: {after_error}"
     );
+    wait_for_heartbeat_detail(&harness, "TestChar", "Cache keepalive ping failed").await;
 
     // Enqueue a success response for the retry.
     harness
@@ -213,9 +214,11 @@ async fn test_failed_ping_retries() {
         .enqueue_json_text_optional("retry ping ok")
         .await;
 
-    // Advance another full ping cycle for the retry.
-    tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
-    tokio::time::advance(Duration::from_mins(1)).await;
+    // The failed ping schedules a short retry backoff. Wait for the failure
+    // log before advancing so the retry deadline is based on the settled
+    // failure, not on a still-in-flight request under paused virtual time.
+    tokio::time::advance(Duration::from_secs(31)).await;
+    tokio::time::advance(Duration::from_secs(10)).await;
     let after_retry = wait_until_count_above(&harness.mock_llm, after_error, 200).await;
     assert!(
         after_retry > after_error,
