@@ -68,12 +68,12 @@ async fn test_multi_turn_tool_conversation_valid() {
     let mut tool_use_ids: Vec<String> = Vec::new();
     let mut tool_result_ids: Vec<String> = Vec::new();
 
-    for msg in messages.iter() {
+    for msg in messages {
         let content = match msg.get("content").and_then(|c| c.as_array()) {
             Some(c) => c,
             None => continue,
         };
-        for block in content.iter() {
+        for block in content {
             match block.get("type").and_then(|t| t.as_str()) {
                 Some("tool_use") => {
                     if let Some(id) = block.get("id").and_then(|id| id.as_str()) {
@@ -94,9 +94,7 @@ async fn test_multi_turn_tool_conversation_valid() {
     for result_id in &tool_result_ids {
         assert!(
             tool_use_ids.contains(result_id),
-            "tool_result with id '{}' has no matching tool_use. tool_use IDs: {:?}",
-            result_id,
-            tool_use_ids
+            "tool_result with id '{result_id}' has no matching tool_use. tool_use IDs: {tool_use_ids:?}"
         );
     }
 
@@ -104,9 +102,7 @@ async fn test_multi_turn_tool_conversation_valid() {
     for use_id in &tool_use_ids {
         assert!(
             tool_result_ids.contains(use_id),
-            "tool_use with id '{}' has no matching tool_result. tool_result IDs: {:?}",
-            use_id,
-            tool_result_ids
+            "tool_use with id '{use_id}' has no matching tool_result. tool_result IDs: {tool_result_ids:?}"
         );
     }
 
@@ -132,8 +128,7 @@ async fn test_multi_turn_tool_conversation_valid() {
     for window in roles.windows(2) {
         assert!(
             !(window[0] == "assistant" && window[1] == "assistant"),
-            "Found two consecutive 'assistant' messages in the messages array: {:?}",
-            roles
+            "Found two consecutive 'assistant' messages in the messages array: {roles:?}"
         );
     }
 
@@ -177,13 +172,11 @@ async fn test_request_body_no_stale_metadata() {
 
     assert!(
         !system_str.contains("<sendMessage>"),
-        "System prompt contains leaked <sendMessage> open tag:\n{}",
-        system_str
+        "System prompt contains leaked <sendMessage> open tag:\n{system_str}"
     );
     assert!(
         !system_str.contains("</sendMessage>"),
-        "System prompt contains leaked </sendMessage> close tag:\n{}",
-        system_str
+        "System prompt contains leaked </sendMessage> close tag:\n{system_str}"
     );
 
     harness.shutdown().await;
@@ -229,11 +222,9 @@ async fn test_system_prompt_always_array_format() {
 
         assert!(
             system.is_array(),
-            "Request {} has 'system' as a string instead of an array. \
+            "Request {i} has 'system' as a string instead of an array. \
              All system prompts must be arrays of {{\"type\": \"text\", \"text\": \"...\"}} blocks. \
-             Got: {}",
-            i,
-            system
+             Got: {system}"
         );
 
         let blocks = system.as_array().unwrap();
@@ -241,17 +232,11 @@ async fn test_system_prompt_always_array_format() {
             assert_eq!(
                 block.get("type").and_then(|t| t.as_str()),
                 Some("text"),
-                "Request {} system block {} missing type: 'text'. Got: {}",
-                i,
-                j,
-                block
+                "Request {i} system block {j} missing type: 'text'. Got: {block}"
             );
             assert!(
                 block.get("text").and_then(|t| t.as_str()).is_some(),
-                "Request {} system block {} missing 'text' field. Got: {}",
-                i,
-                j,
-                block
+                "Request {i} system block {j} missing 'text' field. Got: {block}"
             );
         }
     }
@@ -302,12 +287,12 @@ async fn test_multiple_tool_calls_have_unique_ids() {
 
     // Collect all tool_result IDs.
     let mut result_ids: Vec<String> = Vec::new();
-    for msg in messages.iter() {
+    for msg in messages {
         let content = match msg.get("content").and_then(|c| c.as_array()) {
             Some(c) => c,
             None => continue,
         };
-        for block in content.iter() {
+        for block in content {
             if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
                 if let Some(id) = block.get("tool_use_id").and_then(|id| id.as_str()) {
                     result_ids.push(id.to_string());
@@ -329,21 +314,18 @@ async fn test_multiple_tool_calls_have_unique_ids() {
     let id1 = &result_ids[1];
     assert_ne!(
         id0, id1,
-        "tool_result IDs must be unique, but both are '{}'. \
-         This indicates duplicate tool_use IDs were emitted.",
-        id0
+        "tool_result IDs must be unique, but both are '{id0}'. \
+         This indicates duplicate tool_use IDs were emitted."
     );
 
     // IDs must match the original tool_use IDs.
     assert!(
         result_ids.contains(&"toolu_multi_01".to_string()),
-        "Expected tool_result for 'toolu_multi_01', got: {:?}",
-        result_ids
+        "Expected tool_result for 'toolu_multi_01', got: {result_ids:?}"
     );
     assert!(
         result_ids.contains(&"toolu_multi_02".to_string()),
-        "Expected tool_result for 'toolu_multi_02', got: {:?}",
-        result_ids
+        "Expected tool_result for 'toolu_multi_02', got: {result_ids:?}"
     );
 
     // Verify no ToolCall/ToolResult server messages have duplicate tool IDs either.
@@ -369,8 +351,7 @@ async fn test_multiple_tool_calls_have_unique_ids() {
         assert_eq!(
             unique_count,
             tool_call_ids.len(),
-            "Duplicate tool_id values in ToolCall server messages: {:?}",
-            tool_call_ids
+            "Duplicate tool_id values in ToolCall server messages: {tool_call_ids:?}"
         );
     }
 

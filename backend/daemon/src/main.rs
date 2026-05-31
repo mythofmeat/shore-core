@@ -196,9 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             source,
         })?;
     let resolved_addr = listener
-        .local_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| addr.clone());
+        .local_addr().map_or_else(|_| addr.clone(), |a| a.to_string());
     drop(pre_bind_server);
 
     let server_config = ServerConfig {

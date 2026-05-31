@@ -107,7 +107,7 @@ async fn test_keepalive_ping_fires_after_59_minutes() {
 
     tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
     // Advance a bit more to give the tick loop another cycle.
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     let after = wait_until_count_above(&harness.mock_llm, baseline, 200).await;
 
     let requests = harness.mock_llm.received_requests().await;
@@ -156,10 +156,10 @@ async fn test_no_phantom_ping_without_prior_request() {
     // Pause and advance well past keepalive interval (120 minutes).
     tokio::time::pause();
 
-    tokio::time::advance(Duration::from_secs(120 * 60)).await;
+    tokio::time::advance(Duration::from_hours(2)).await;
     yield_many(20).await;
 
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     yield_many(20).await;
 
     let requests = harness.mock_llm.received_requests().await;
@@ -199,7 +199,7 @@ async fn test_failed_ping_retries() {
     tokio::time::pause();
 
     tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     let after_error = wait_until_count_above(&harness.mock_llm, baseline, 200).await;
     assert!(
         after_error > baseline,
@@ -215,7 +215,7 @@ async fn test_failed_ping_retries() {
 
     // Advance another full ping cycle for the retry.
     tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     let after_retry = wait_until_count_above(&harness.mock_llm, after_error, 200).await;
     assert!(
         after_retry > after_error,
@@ -258,7 +258,7 @@ async fn test_keepalive_rotates_provider_key_on_budget_error() {
 
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     let after = wait_until_count_above(&harness.mock_llm, baseline + 1, 200).await;
 
     assert!(
@@ -298,7 +298,7 @@ async fn test_user_message_resets_keepalive_timer() {
     tokio::time::pause();
 
     // Advance to 50 minutes — just before the 55min ping would fire.
-    tokio::time::advance(Duration::from_secs(50 * 60)).await;
+    tokio::time::advance(Duration::from_mins(50)).await;
     yield_many(10).await;
 
     // Resume to send a real user message (network I/O needs real time).
@@ -317,7 +317,7 @@ async fn test_user_message_resets_keepalive_timer() {
     tokio::time::pause();
 
     // Advance just past original 55 min mark (5 more minutes from t=50).
-    tokio::time::advance(Duration::from_secs(10 * 60)).await;
+    tokio::time::advance(Duration::from_mins(10)).await;
     yield_many(20).await;
 
     let after_original_time = harness.mock_llm.received_requests().await.len();
@@ -331,7 +331,7 @@ async fn test_user_message_resets_keepalive_timer() {
         .mock_llm
         .enqueue_json_text_optional("deferred ping")
         .await;
-    tokio::time::advance(Duration::from_secs(50 * 60)).await;
+    tokio::time::advance(Duration::from_mins(50)).await;
     let after_deferred = wait_until_count_above(&harness.mock_llm, after_msg, 200).await;
     assert!(
         after_deferred > after_msg,
@@ -366,7 +366,7 @@ async fn test_sustained_keepalive_over_four_hours() {
         harness.mock_llm.enqueue_json_text_optional("ping").await;
 
         // Advance 56 minutes (past the 55min interval).
-        tokio::time::advance(Duration::from_secs(56 * 60)).await;
+        tokio::time::advance(Duration::from_mins(56)).await;
         // Small extra advance to ensure tick fires.
         tokio::time::advance(Duration::from_secs(30)).await;
         let current = wait_until_count_above(&harness.mock_llm, baseline + i, 200).await;
@@ -411,7 +411,7 @@ async fn test_burst_messages_single_deferred_ping() {
     // Pause and advance to 50 min — short of the 55min interval from the
     // last message. Should NOT ping.
     tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(50 * 60)).await;
+    tokio::time::advance(Duration::from_mins(50)).await;
     yield_many(20).await;
 
     let at_50 = harness.mock_llm.received_requests().await.len();
@@ -425,8 +425,8 @@ async fn test_burst_messages_single_deferred_ping() {
         .mock_llm
         .enqueue_json_text_optional("deferred")
         .await;
-    tokio::time::advance(Duration::from_secs(7 * 60)).await;
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(7)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     let after_deferred = wait_until_count_above(&harness.mock_llm, at_50, 200).await;
 
     // At least one additional request (the keepalive ping).
@@ -538,7 +538,7 @@ async fn test_keepalive_survives_crash() {
 
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
-    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::advance(Duration::from_mins(1)).await;
     let after = wait_until_count_above(&harness.mock_llm, baseline, 200).await;
     assert!(
         after > baseline,

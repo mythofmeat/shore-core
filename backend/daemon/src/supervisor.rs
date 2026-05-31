@@ -6,7 +6,7 @@ use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 const MAX_CONSECUTIVE_FAILURES: u32 = 5;
-const STABLE_RUNTIME_THRESHOLD: Duration = Duration::from_secs(300);
+const STABLE_RUNTIME_THRESHOLD: Duration = Duration::from_mins(5);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 const MATRIX_LOG_ENV: &str = "SHORE_MATRIX_RUST_LOG";
 const DEFAULT_MATRIX_LOG_FILTER: &str = "warn,shore_matrix=info,matrix_sdk_crypto::backups=error";
@@ -146,16 +146,13 @@ async fn graceful_shutdown(child: &mut tokio::process::Child, grace: Duration) {
         return;
     }
 
-    match tokio::time::timeout(grace, child.wait()).await {
-        Ok(_) => {}
-        Err(_) => {
-            warn!(
-                grace_secs = grace.as_secs(),
-                "shore-matrix did not exit within grace period; sending SIGKILL"
-            );
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-        }
+    if let Ok(_) = tokio::time::timeout(grace, child.wait()).await {} else {
+        warn!(
+            grace_secs = grace.as_secs(),
+            "shore-matrix did not exit within grace period; sending SIGKILL"
+        );
+        let _ = child.start_kill();
+        let _ = child.wait().await;
     }
 }
 
@@ -181,7 +178,7 @@ fn matrix_log_filter_from(value: Option<String>) -> String {
 /// shutdown.
 async fn sleep_or_shutdown(dur: Duration, rx: &mut watch::Receiver<()>) -> bool {
     tokio::select! {
-        _ = tokio::time::sleep(dur) => true,
+        () = tokio::time::sleep(dur) => true,
         _ = rx.changed() => false,
     }
 }

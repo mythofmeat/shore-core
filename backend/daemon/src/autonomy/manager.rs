@@ -585,7 +585,7 @@ impl AutonomyManager {
             .max()
             .and_then(|n| naive_local_to_instant(*n));
         self.with_state(character, |s| {
-            s.activity.backfill(timestamps);
+            s.activity.backfill(&timestamps);
             if let Some(at) = latest_user {
                 s.heartbeat.seed_last_user_at_if_unset(at);
             }
