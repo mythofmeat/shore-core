@@ -332,8 +332,8 @@ mod tests {
             enabled: true,
             fallback_heartbeat_interval: ConfigDuration::from_secs(interval_secs),
             dormant_after_heartbeat_turns: max_idle,
-            dormant_after_idle_time: ConfigDuration::from_secs(172800), // 48h
-            minimum_heartbeat_latency: ConfigDuration::from_secs(3600), // 1h
+            dormant_after_idle_time: ConfigDuration::from_secs(172_800), // 48h
+            minimum_heartbeat_latency: ConfigDuration::from_secs(3600),  // 1h
             max_tool_rounds: 3,
             wrap_up_grace_rounds: 1,
         };
@@ -468,7 +468,7 @@ mod tests {
         c.on_user_message(now);
 
         // Character schedules 4h out.
-        c.schedule(now + Duration::from_secs(4 * 3600), now);
+        c.schedule(now + Duration::from_hours(4), now);
         assert!(c.next_wake_at.is_some());
 
         // Should not fire at 3h.

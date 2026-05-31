@@ -442,7 +442,7 @@ mod tests {
         let tools = all_tools();
         let mut names: Vec<&str> = tools.iter().map(|t| t.name).collect();
         let original_len = names.len();
-        names.sort();
+        names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), original_len, "duplicate tool names found");
     }

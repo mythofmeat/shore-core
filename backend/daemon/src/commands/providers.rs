@@ -396,6 +396,7 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    use shore_config::app::{AutonomyConfig, CompactionConfig};
     use shore_config::providers::ProviderRegistry;
     use shore_diagnostics::Diagnostics;
     use shore_ledger::LedgerClient;
@@ -431,8 +432,12 @@ mod tests {
         loaded.providers = providers;
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let autonomy =
-            AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
+        let autonomy = AutonomyManager::new(
+            AutonomyConfig::default(),
+            CompactionConfig::default(),
+            data_dir.clone(),
+            rx,
+        );
 
         CommandContext {
             config_path: loaded.dirs.config.join("config.toml"),
@@ -655,7 +660,12 @@ model_id = "kimi-k2"
     // ── ignore filtering ────────────────────────────────────────────────
 
     fn build_ctx_with_ignore(tmp: &tempfile::TempDir, ignore: &[&str]) -> CommandContext {
-        let v: String = ignore.iter().map(|p| format!("  {:?},\n", p)).collect();
+        use std::fmt::Write as _;
+
+        let mut v = String::new();
+        for p in ignore {
+            let _ = writeln!(&mut v, "  {p:?},");
+        }
         let toml_str = format!(
             r#"
 [providers.openrouter]
@@ -1079,7 +1089,7 @@ enabled = true
             "object": "list",
             "data": [
                 { "id": "openai/gpt-4o", "object": "model", "owned_by": "openai" },
-                { "id": "anthropic/claude-3.5-sonnet", "object": "model", "context_length": 200000 }
+                { "id": "anthropic/claude-3.5-sonnet", "object": "model", "context_length": 200_000 }
             ]
         });
         let mock = wiremock::MockServer::start().await;

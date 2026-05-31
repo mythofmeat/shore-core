@@ -1071,7 +1071,7 @@ mod tests {
 
         let valid1 =
             r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
-        let garbage = r#"corrupted{{{not valid json at all"#;
+        let garbage = r"corrupted{{{not valid json at all";
         let valid2 =
             r#"{"msg_id":"m2","role":"User","content":"bye","images":[],"timestamp":"t2"}"#;
         let content = format!("{valid1}\n{garbage}\n{valid2}\n");

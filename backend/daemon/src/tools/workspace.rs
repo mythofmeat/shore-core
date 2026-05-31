@@ -1652,7 +1652,7 @@ mod tests {
         // mtime resolution can be coarse (e.g. 1s on some filesystems), so
         // bump the older file backwards in time rather than relying on the
         // write order alone.
-        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let past = std::time::SystemTime::now() - std::time::Duration::from_mins(1);
         std::fs::File::options()
             .write(true)
             .open(ws.join("older.md"))
@@ -1711,8 +1711,7 @@ mod tests {
         let ws_str = ws.to_string_lossy().to_string();
         let metadata = "metadata ".repeat(200);
         let line = format!(
-            r#"{{"metadata":"{}","message":"spotted a German Shepherd near the gate"}}"#,
-            metadata
+            r#"{{"metadata":"{metadata}","message":"spotted a German Shepherd near the gate"}}"#
         );
 
         handle_write(
@@ -1830,7 +1829,7 @@ mod tests {
             Ok(inputs.iter().map(|_| vec![0.0; dim]).collect())
         }
 
-        fn model_id(&self) -> &str {
+        fn model_id(&self) -> &'static str {
             "dummy"
         }
 

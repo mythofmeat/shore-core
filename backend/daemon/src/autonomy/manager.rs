@@ -2403,6 +2403,8 @@ mod tests {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
+    use shore_config::app::HeartbeatConfig;
+
     fn test_config() -> AutonomyConfig {
         AutonomyConfig::default()
     }
@@ -2428,7 +2430,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::watch::channel(());
         AutonomyManager::new(
             test_config(),
-            Default::default(),
+            CompactionConfig::default(),
             data_dir.to_path_buf(),
             rx,
         )
@@ -2572,7 +2574,7 @@ mod tests {
         let (tx, rx) = tokio::sync::watch::channel(());
         let mgr = AutonomyManager::new(
             test_config(),
-            Default::default(),
+            CompactionConfig::default(),
             tmp.path().to_path_buf(),
             rx,
         );
@@ -2602,7 +2604,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::watch::channel(());
         let mgr = AutonomyManager::new(
             test_config(),
-            Default::default(),
+            CompactionConfig::default(),
             tmp.path().to_path_buf(),
             rx,
         );
@@ -2619,7 +2621,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::watch::channel(());
         let mgr = AutonomyManager::new(
             test_config(),
-            Default::default(),
+            CompactionConfig::default(),
             tmp.path().to_path_buf(),
             rx,
         );
@@ -2674,8 +2676,7 @@ mod tests {
             mgr.ensure_state("alice", None);
             mgr.with_state("alice", |s| {
                 let now = Instant::now();
-                s.heartbeat
-                    .on_user_message(now - Duration::from_secs(3 * 24 * 60 * 60));
+                s.heartbeat.on_user_message(now - Duration::from_hours(72));
             });
 
             let status = mgr.status("alice").unwrap();
@@ -2760,8 +2761,8 @@ mod tests {
             mgr.with_state("alice", |s| {
                 let last = s.heartbeat.last_user_at().expect("seeded");
                 let elapsed = Instant::now().duration_since(last);
-                assert!(elapsed < Duration::from_secs(5 * 60));
-                assert!(elapsed >= Duration::from_secs(60));
+                assert!(elapsed < Duration::from_mins(5));
+                assert!(elapsed >= Duration::from_mins(1));
             });
         });
     }
@@ -2776,7 +2777,7 @@ mod tests {
 
         // Create and save.
         let mut state = AutonomyState {
-            heartbeat: HeartbeatClock::with_config(&Default::default()),
+            heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
             cache_keepalive: CacheKeepalive::new(),
             activity: ActivityTracker::new(),
             heartbeat_log: HeartbeatLog::new(),
@@ -2824,7 +2825,7 @@ mod tests {
         assert!(loaded.next_wake_at.is_some());
 
         // Test the full restore path: verify Instant conversion doesn't panic.
-        let mut clock = HeartbeatClock::with_config(&Default::default());
+        let mut clock = HeartbeatClock::with_config(&HeartbeatConfig::default());
         restore_from_persisted(&loaded, &mut clock);
         assert_eq!(clock.ticks_without_user(), 5);
     }
@@ -2834,7 +2835,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config();
         let state = Arc::new(Mutex::new(AutonomyState {
-            heartbeat: HeartbeatClock::with_config(&Default::default()),
+            heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
             cache_keepalive: CacheKeepalive::new(),
             activity: ActivityTracker::new(),
             heartbeat_log: HeartbeatLog::new(),
@@ -2858,7 +2859,7 @@ mod tests {
         let tick_ctx = TickContext {
             state,
             config: Arc::new(config),
-            compaction: Arc::new(Default::default()),
+            compaction: Arc::new(CompactionConfig::default()),
             data_dir: tmp.path().to_path_buf(),
             llm_client: None,
             push_tx: None,
@@ -2875,7 +2876,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::watch::channel(());
         let mgr = AutonomyManager::new(
             test_config(),
-            Default::default(),
+            CompactionConfig::default(),
             tmp.path().to_path_buf(),
             rx,
         );
@@ -2950,7 +2951,7 @@ mod tests {
             next_wake_at: None,
             last_user_at: None,
         };
-        let mut clock = HeartbeatClock::with_config(&Default::default());
+        let mut clock = HeartbeatClock::with_config(&HeartbeatConfig::default());
         restore_from_persisted(&persisted, &mut clock);
         assert_eq!(clock.ticks_without_user(), 7);
     }
@@ -2981,7 +2982,7 @@ mod tests {
         TickContext {
             state,
             config: Arc::new(test_config()),
-            compaction: Arc::new(Default::default()),
+            compaction: Arc::new(CompactionConfig::default()),
             data_dir: data_dir.to_path_buf(),
             llm_client: None,
             push_tx: None,
@@ -3003,16 +3004,16 @@ mod tests {
 
         let mut ka = CacheKeepalive::new();
         // Simulate: cache was warmed 59+ minutes ago, wake is set.
-        ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
-        ka.set_next_wake(Some(now + Duration::from_secs(3600)));
+        ka.on_cache_warmed(now - Duration::from_hours(1));
+        ka.set_next_wake(Some(now + Duration::from_hours(1)));
 
         // Precondition: keepalive is due right now.
         assert_eq!(ka.tick(now), CacheKeepaliveAction::Ping);
         // Reset — tick() didn't advance, so re-prime for the actual test.
-        ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
+        ka.on_cache_warmed(now - Duration::from_hours(1));
 
         let state = Arc::new(Mutex::new(AutonomyState {
-            heartbeat: HeartbeatClock::with_config(&Default::default()),
+            heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
             cache_keepalive: ka,
             activity: ActivityTracker::new(),
             heartbeat_log: HeartbeatLog::new(),
@@ -3052,8 +3053,8 @@ mod tests {
         // 55 minutes later.
         let now = Instant::now();
         let mut ka = CacheKeepalive::new();
-        ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
-        ka.set_next_wake(Some(now + Duration::from_secs(3600)));
+        ka.on_cache_warmed(now - Duration::from_hours(1));
+        ka.set_next_wake(Some(now + Duration::from_hours(1)));
 
         // Ping is due.
         assert_eq!(ka.tick(now), CacheKeepaliveAction::Ping);
@@ -3067,7 +3068,7 @@ mod tests {
         );
         // 55 minutes later: should fire again.
         assert_eq!(
-            ka.tick(now + Duration::from_secs(55 * 60)),
+            ka.tick(now + Duration::from_mins(55)),
             CacheKeepaliveAction::Ping
         );
     }
@@ -3081,9 +3082,9 @@ mod tests {
         let now = Instant::now();
         mgr.with_state("alice", |s| {
             s.cache_keepalive
-                .on_cache_warmed(now - Duration::from_secs(60 * 60));
+                .on_cache_warmed(now - Duration::from_hours(1));
             s.cache_keepalive
-                .set_next_wake(Some(now + Duration::from_secs(3600)));
+                .set_next_wake(Some(now + Duration::from_hours(1)));
             s.last_request = Some(empty_request());
         });
 
@@ -3164,7 +3165,7 @@ mod tests {
         // return Ping (not None).
         let state = mgr.states.get("alice").unwrap();
         let mut s = lock_state(&state);
-        let future = Instant::now() + Duration::from_secs(55 * 60);
+        let future = Instant::now() + Duration::from_mins(55);
         let action = s.cache_keepalive.tick(future);
         assert_eq!(
             action,
@@ -3494,7 +3495,7 @@ api_key_env = "{heartbeat_env}"
         assert!(dream_inactivity_satisfied(Some(&cfg), None, now));
 
         // User active 2min ago, 5min window: not satisfied.
-        let two_min_ago = now - Duration::from_secs(120);
+        let two_min_ago = now - Duration::from_mins(2);
         assert!(!dream_inactivity_satisfied(
             Some(&cfg),
             Some(two_min_ago),
@@ -3502,7 +3503,7 @@ api_key_env = "{heartbeat_env}"
         ));
 
         // User active 6min ago: satisfied.
-        let six_min_ago = now - Duration::from_secs(360);
+        let six_min_ago = now - Duration::from_mins(6);
         assert!(dream_inactivity_satisfied(
             Some(&cfg),
             Some(six_min_ago),
@@ -3523,8 +3524,12 @@ api_key_env = "{heartbeat_env}"
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr =
-            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+        let mgr = AutonomyManager::new(
+            AutonomyConfig::default(),
+            compaction,
+            tmp.path().to_path_buf(),
+            rx,
+        );
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3555,8 +3560,12 @@ api_key_env = "{heartbeat_env}"
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr =
-            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+        let mgr = AutonomyManager::new(
+            AutonomyConfig::default(),
+            compaction,
+            tmp.path().to_path_buf(),
+            rx,
+        );
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3590,8 +3599,12 @@ api_key_env = "{heartbeat_env}"
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr =
-            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+        let mgr = AutonomyManager::new(
+            AutonomyConfig::default(),
+            compaction,
+            tmp.path().to_path_buf(),
+            rx,
+        );
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3617,8 +3630,12 @@ api_key_env = "{heartbeat_env}"
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr =
-            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+        let mgr = AutonomyManager::new(
+            AutonomyConfig::default(),
+            compaction,
+            tmp.path().to_path_buf(),
+            rx,
+        );
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -3649,8 +3666,12 @@ api_key_env = "{heartbeat_env}"
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr =
-            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+        let mgr = AutonomyManager::new(
+            AutonomyConfig::default(),
+            compaction,
+            tmp.path().to_path_buf(),
+            rx,
+        );
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -3672,8 +3693,12 @@ api_key_env = "{heartbeat_env}"
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr =
-            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+        let mgr = AutonomyManager::new(
+            AutonomyConfig::default(),
+            compaction,
+            tmp.path().to_path_buf(),
+            rx,
+        );
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3729,7 +3754,7 @@ api_key_env = "{heartbeat_env}"
         };
 
         let state = Arc::new(Mutex::new(AutonomyState {
-            heartbeat: HeartbeatClock::with_config(&Default::default()),
+            heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
             cache_keepalive: CacheKeepalive::new(),
             activity: ActivityTracker::new(),
             heartbeat_log: HeartbeatLog::new(),

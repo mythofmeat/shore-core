@@ -69,9 +69,8 @@ async fn test_multi_turn_tool_conversation_valid() {
     let mut tool_result_ids: Vec<String> = Vec::new();
 
     for msg in messages {
-        let content = match msg.get("content").and_then(|c| c.as_array()) {
-            Some(c) => c,
-            None => continue,
+        let Some(content) = msg.get("content").and_then(|c| c.as_array()) else {
+            continue;
         };
         for block in content {
             match block.get("type").and_then(|t| t.as_str()) {
@@ -215,9 +214,9 @@ async fn test_system_prompt_always_array_format() {
     );
 
     for (i, req) in requests.iter().enumerate() {
-        let system = match req.get("system") {
-            Some(s) => s,
-            None => continue, // system field absent is fine (unlikely but valid)
+        let Some(system) = req.get("system") else {
+            // system field absent is fine (unlikely but valid)
+            continue;
         };
 
         assert!(
@@ -288,9 +287,8 @@ async fn test_multiple_tool_calls_have_unique_ids() {
     // Collect all tool_result IDs.
     let mut result_ids: Vec<String> = Vec::new();
     for msg in messages {
-        let content = match msg.get("content").and_then(|c| c.as_array()) {
-            Some(c) => c,
-            None => continue,
+        let Some(content) = msg.get("content").and_then(|c| c.as_array()) else {
+            continue;
         };
         for block in content {
             if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {

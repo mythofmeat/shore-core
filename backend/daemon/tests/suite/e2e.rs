@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::json;
-use shore_config::app::AppConfig;
+use shore_config::app::{AppConfig, AutonomyConfig, CompactionConfig, NotificationsConfig};
 use shore_config::models::ModelCatalog;
 use shore_config::{LoadedConfig, ShoreDirs};
 use shore_daemon::characters::CharacterRegistry;
@@ -53,7 +53,10 @@ where
     let deadline = tokio::time::Instant::now() + dur;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        assert!(!remaining.is_zero(), "Timed out waiting for matching message");
+        assert!(
+            !remaining.is_zero(),
+            "Timed out waiting for matching message"
+        );
         let msg = recv_timeout(conn, remaining).await;
         if pred(&msg) {
             return msg;
@@ -179,8 +182,8 @@ async fn e2e_conversation_milestone() {
     server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
 
     let autonomy = shore_daemon::autonomy::manager::AutonomyManager::new(
-        Default::default(),
-        Default::default(),
+        AutonomyConfig::default(),
+        CompactionConfig::default(),
         loaded.dirs.data.clone(),
         shutdown_rx.clone(),
     );
@@ -212,7 +215,9 @@ async fn e2e_conversation_milestone() {
         push_tx: push_tx.clone(),
         session_router,
         autonomy,
-        notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
+        notifier: shore_daemon::notifications::NotificationService::new(
+            NotificationsConfig::default(),
+        ),
         control_rx,
     });
 
@@ -312,7 +317,10 @@ async fn e2e_conversation_milestone() {
     let deadline = tokio::time::Instant::now() + RECV_TIMEOUT;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        assert!(!remaining.is_zero(), "Timed out waiting for streaming response to complete");
+        assert!(
+            !remaining.is_zero(),
+            "Timed out waiting for streaming response to complete"
+        );
         let msg = recv_timeout(&mut conn, remaining).await;
         match &msg {
             ServerMessage::StreamStart(_) => {
@@ -403,11 +411,10 @@ async fn e2e_conversation_milestone() {
                     break;
                 }
             }
-            ServerMessage::StreamStart(_) | ServerMessage::StreamChunk(_) => {
-                // Expected during streaming.
-            }
-            ServerMessage::History(_) => {
-                // Expected — engine broadcasts on changes.
+            ServerMessage::StreamStart(_)
+            | ServerMessage::StreamChunk(_)
+            | ServerMessage::History(_) => {
+                // Expected during streaming and history broadcasts.
             }
             other => {
                 eprintln!("  (other: {:?})", std::mem::discriminant(other));
@@ -659,8 +666,8 @@ impl E2EHarness {
         server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
 
         let autonomy = shore_daemon::autonomy::manager::AutonomyManager::new(
-            Default::default(),
-            Default::default(),
+            AutonomyConfig::default(),
+            CompactionConfig::default(),
             loaded.dirs.data.clone(),
             shutdown_rx.clone(),
         );
@@ -692,7 +699,9 @@ impl E2EHarness {
             push_tx: push_tx.clone(),
             session_router,
             autonomy,
-            notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
+            notifier: shore_daemon::notifications::NotificationService::new(
+                NotificationsConfig::default(),
+            ),
             control_rx,
         });
 
@@ -765,7 +774,10 @@ async fn e2e_generate_image() {
     let deadline = tokio::time::Instant::now() + Duration::from_mins(2);
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        assert!(!remaining.is_zero(), "Timed out waiting for image generation response");
+        assert!(
+            !remaining.is_zero(),
+            "Timed out waiting for image generation response"
+        );
         let msg = recv_timeout(&mut harness.conn, remaining).await;
         match &msg {
             ServerMessage::ToolCall(tc) => {
@@ -793,8 +805,9 @@ async fn e2e_generate_image() {
                     break;
                 }
             }
-            ServerMessage::StreamStart(_) | ServerMessage::StreamChunk(_) => {}
-            ServerMessage::History(_) => {
+            ServerMessage::StreamStart(_)
+            | ServerMessage::StreamChunk(_)
+            | ServerMessage::History(_) => {
                 // Expected while tool-use and tool-result messages persist;
                 // keep reading until the terminal StreamEnd.
             }
@@ -868,7 +881,10 @@ async fn e2e_web_search() {
     if let Some(msg) = check_prerequisites() {
         panic!("Skipping web search E2E test: {msg}");
     }
-    assert!(std::env::var("TAVILY_API_KEY").is_ok(), "Skipping web search E2E test: TAVILY_API_KEY not set");
+    assert!(
+        std::env::var("TAVILY_API_KEY").is_ok(),
+        "Skipping web search E2E test: TAVILY_API_KEY not set"
+    );
 
     let tmp = tempfile::tempdir().unwrap();
     let loaded = build_test_config(&tmp);
@@ -896,7 +912,10 @@ async fn e2e_web_search() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let final_content = loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        assert!(!remaining.is_zero(), "Timed out waiting for web search response");
+        assert!(
+            !remaining.is_zero(),
+            "Timed out waiting for web search response"
+        );
         let msg = recv_timeout(&mut harness.conn, remaining).await;
         match &msg {
             ServerMessage::ToolCall(tc) => {
@@ -926,8 +945,9 @@ async fn e2e_web_search() {
                     break end.content.clone();
                 }
             }
-            ServerMessage::StreamStart(_) | ServerMessage::StreamChunk(_) => {}
-            ServerMessage::History(_) => {
+            ServerMessage::StreamStart(_)
+            | ServerMessage::StreamChunk(_)
+            | ServerMessage::History(_) => {
                 // Expected while tool-use and tool-result messages persist;
                 // keep reading until the terminal StreamEnd.
             }

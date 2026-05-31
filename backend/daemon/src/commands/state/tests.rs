@@ -2,10 +2,11 @@ use super::*;
 use crate::commands::CommandContext;
 use crate::engine::ConversationEngine;
 use serde_json::json;
+use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::models::ModelCatalog;
 use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{ContentBlock, Message, Role};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use tempfile::TempDir;
 use tokio::sync::broadcast;
 
@@ -45,8 +46,8 @@ fn make_ctx_with_models(
 
     let (_tx, rx) = tokio::sync::watch::channel(());
     let autonomy = crate::autonomy::manager::AutonomyManager::new(
-        Default::default(),
-        Default::default(),
+        AutonomyConfig::default(),
+        CompactionConfig::default(),
         data_dir.clone(),
         rx,
     );
@@ -172,11 +173,13 @@ fn memory_dream_returns_useful_phase_json() {
         assert!(result["promoted_count"].as_u64().unwrap() >= 1);
         assert!(result["rejected_count"].as_u64().is_some());
         assert!(result["phase_summaries"].as_array().unwrap().len() == 3);
-        assert!(result["would_write_paths"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|path| path.as_str().unwrap().contains("dreams")));
+        assert!(
+            result["would_write_paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|path| path.as_str().unwrap().contains("dreams"))
+        );
         assert!(!mem.join("DREAMS.md").exists());
         assert!(!workspace.join("MEMORY.md").exists());
     });
@@ -497,9 +500,11 @@ async fn config_check_empty_catalog() {
     let result = config_check(&ctx).await.unwrap();
     assert!(!result["valid"].as_bool().unwrap());
     let warnings = result["warnings"].as_array().unwrap();
-    assert!(warnings
-        .iter()
-        .any(|w| w.as_str().unwrap().contains("No chat models")));
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("No chat models"))
+    );
     assert_eq!(result["chat_models"], 0);
 }
 
@@ -511,9 +516,10 @@ async fn config_check_with_models() {
     let result = config_check(&ctx).await.unwrap();
     assert_eq!(result["chat_models"], 2);
     let info = result["info"].as_array().unwrap();
-    assert!(info
-        .iter()
-        .any(|i| i.as_str().unwrap().contains("2 chat model")));
+    assert!(
+        info.iter()
+            .any(|i| i.as_str().unwrap().contains("2 chat model"))
+    );
 }
 
 #[test]
@@ -695,10 +701,12 @@ fn reset_model_clears_selection_in_preferences() {
 
     switch_model(&mut ctx, &json!({"name": "gpt-4o"})).unwrap();
     let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
-    assert!(crate::preferences::load_preferences(&path)
-        .unwrap()
-        .selected
-        .is_set());
+    assert!(
+        crate::preferences::load_preferences(&path)
+            .unwrap()
+            .selected
+            .is_set()
+    );
 
     reset_model(&mut ctx).unwrap();
     let prefs = crate::preferences::load_preferences(&path).unwrap();
@@ -990,7 +998,7 @@ fn model_info_includes_effective_sampler_for_active_character() {
 mod phase7 {
     use super::*;
     use shore_config::providers::ProviderRegistry;
-    use shore_llm::discovery::{DiscoveredModel, ProviderModelsCache, CACHE_VERSION};
+    use shore_llm::discovery::{CACHE_VERSION, DiscoveredModel, ProviderModelsCache};
 
     /// Build a context with a provider registry, optional static chat
     /// catalog, and a populated discovery cache for `provider`.
@@ -1026,7 +1034,7 @@ mod phase7 {
             Some(pats) => {
                 let pats_lit = pats
                     .iter()
-                    .map(|p| format!("  {:?}", p))
+                    .map(|p| format!("  {p:?}"))
                     .collect::<Vec<_>>()
                     .join(",\n");
                 format!(
@@ -1044,7 +1052,7 @@ mod phase7 {
                 .unwrap()
         };
 
-        let (mut _engine, mut ctx, push_rx) = make_ctx_with_models(tmp, catalog);
+        let (_discarded_engine, mut ctx, push_rx) = make_ctx_with_models(tmp, catalog);
         ctx.config.providers = providers;
         // Reattach an engine that matches the existing make_ctx_with_models
         // engine pattern (we discard the original since we mutated config).
@@ -1054,7 +1062,6 @@ mod phase7 {
             ctx.push_tx.clone(),
         )
         .unwrap();
-        _engine = engine;
 
         // Write the discovery cache for the requested provider.
         let cache = ProviderModelsCache {
@@ -1087,7 +1094,7 @@ mod phase7 {
         let path = shore_llm::discovery::cache_path(&ctx.config.dirs.cache, provider);
         shore_llm::discovery::write_cache(&path, &cache).unwrap();
 
-        (_engine, ctx, push_rx)
+        (engine, ctx, push_rx)
     }
 
     // ── Validation: discovered model can be selected ────────────────────

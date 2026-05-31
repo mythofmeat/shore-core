@@ -91,6 +91,7 @@ mod tests {
     use super::*;
     use crate::autonomy::manager::AutonomyManager;
     use crate::test_support::TestToolContext;
+    use shore_config::app::{AutonomyConfig, CompactionConfig};
 
     #[test]
     fn test_activity_tool_defs() {
@@ -143,8 +144,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
         let mgr = AutonomyManager::new(
-            Default::default(),
-            Default::default(),
+            AutonomyConfig::default(),
+            CompactionConfig::default(),
             tmp.path().to_path_buf(),
             rx,
         );
@@ -178,8 +179,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
         let mgr = AutonomyManager::new(
-            Default::default(),
-            Default::default(),
+            AutonomyConfig::default(),
+            CompactionConfig::default(),
             tmp.path().to_path_buf(),
             rx,
         );

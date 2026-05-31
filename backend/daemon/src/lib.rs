@@ -1,3 +1,12 @@
+#![cfg_attr(
+    test,
+    expect(
+        clippy::too_many_lines,
+        clippy::unreachable,
+        reason = "unit-test-only long helpers and unreachable assertions are tracked in #109"
+    )
+)]
+
 #[cfg(test)]
 pub mod test_support;
 

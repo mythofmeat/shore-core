@@ -575,7 +575,7 @@ mod tests {
         vars
     }
 
-    fn make_params<'a>(messages: &'a [Message]) -> PromptParams<'a> {
+    fn make_params(messages: &[Message]) -> PromptParams<'_> {
         PromptParams {
             character_name: "TestChar",
             display_name: "TestUser",
@@ -790,10 +790,10 @@ mod tests {
             images: vec![],
             content_blocks: vec![
                 ContentBlock::Text {
-                    text: "A".repeat(40).to_string(),
+                    text: "A".repeat(40).clone(),
                 },
                 ContentBlock::Thinking {
-                    thinking: "B".repeat(20).to_string(),
+                    thinking: "B".repeat(20).clone(),
                     signature: None,
                 },
             ],

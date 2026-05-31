@@ -178,6 +178,7 @@ pub fn switch_character(
 mod tests {
     use super::*;
     use crate::commands::SessionTokens;
+    use shore_config::app::{AutonomyConfig, CompactionConfig};
     use shore_protocol::server_msg::ServerMessage;
     use tempfile::TempDir;
     use tokio::sync::broadcast;
@@ -208,8 +209,8 @@ mod tests {
 
         let (_tx, rx) = tokio::sync::watch::channel(());
         let autonomy = crate::autonomy::manager::AutonomyManager::new(
-            Default::default(),
-            Default::default(),
+            AutonomyConfig::default(),
+            CompactionConfig::default(),
             data_dir.clone(),
             rx,
         );

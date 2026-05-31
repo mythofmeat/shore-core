@@ -184,14 +184,14 @@ mod tests {
 
     #[test]
     fn test_parse_empty_memory_block() {
-        let raw = r#"<memory></memory>"#;
+        let raw = r"<memory></memory>";
         let ops = parse_compaction_response(raw).unwrap();
         assert!(ops.is_empty());
     }
 
     #[test]
     fn test_parse_legacy_recap_without_memory_block() {
-        let raw = r#"<recap>The conversation was about cats</recap>"#;
+        let raw = r"<recap>The conversation was about cats</recap>";
         let ops = parse_compaction_response(raw).unwrap();
         assert!(ops.is_empty());
     }
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn test_extract_write_ops_malformed_missing_path() {
-        let text = r#"<write>Content A</write>"#;
+        let text = r"<write>Content A</write>";
         let ops = extract_write_ops(text);
         assert!(ops.is_empty());
     }

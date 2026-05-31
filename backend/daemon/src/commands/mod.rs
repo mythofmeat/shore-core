@@ -177,6 +177,7 @@ pub fn engine_err(e: EngineError) -> (ErrorCode, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shore_config::app::{AutonomyConfig, CompactionConfig};
     use shore_protocol::client_msg::Command;
 
     fn make_ctx(
@@ -204,8 +205,12 @@ mod tests {
         );
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let autonomy =
-            AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
+        let autonomy = AutonomyManager::new(
+            AutonomyConfig::default(),
+            CompactionConfig::default(),
+            data_dir.clone(),
+            rx,
+        );
 
         let ctx = CommandContext {
             config_path: config.dirs.config.join("config.toml"),
@@ -242,7 +247,7 @@ mod tests {
                 assert_eq!(e.code, ErrorCode::InvalidRequest);
                 assert!(e.message.contains("bogus_command"));
             }
-            other => panic!("Expected Error, got {:?}", other),
+            other => panic!("Expected Error, got {other:?}"),
         }
     }
 
@@ -264,7 +269,7 @@ mod tests {
                 assert_eq!(output.name, "status");
                 assert!(output.data.is_object());
             }
-            other => panic!("Expected CommandOutput, got {:?}", other),
+            other => panic!("Expected CommandOutput, got {other:?}"),
         }
     }
 

@@ -670,7 +670,7 @@ mod tests {
             self.input_count.fetch_add(inputs.len(), Ordering::SeqCst);
             Ok(inputs.iter().map(|s| self.vector_for(s)).collect())
         }
-        fn model_id(&self) -> &str {
+        fn model_id(&self) -> &'static str {
             "topic-test"
         }
         fn dimensions(&self) -> usize {
@@ -680,12 +680,12 @@ mod tests {
 
     #[test]
     fn cosine_handles_zero_vectors() {
-        assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
+        assert!(cosine_similarity(&[0.0, 0.0], &[1.0, 0.0]).abs() <= f32::EPSILON);
     }
 
     #[test]
     fn cosine_handles_mismatched_dims() {
-        assert_eq!(cosine_similarity(&[1.0, 0.0], &[1.0, 0.0, 0.0]), 0.0);
+        assert!(cosine_similarity(&[1.0, 0.0], &[1.0, 0.0, 0.0]).abs() <= f32::EPSILON);
     }
 
     #[test]
@@ -1025,7 +1025,8 @@ mod tests {
         write_file(&ws, "small.md", "tea time").await;
         // Just over the 2 MiB cap.
         fs::create_dir_all(&ws).await.unwrap();
-        let big = vec![b'a'; (RetrievalConfig::default().max_file_bytes + 1) as usize];
+        let big_len = crate::convert::u64_to_usize(RetrievalConfig::default().max_file_bytes + 1);
+        let big = vec![b'a'; big_len];
         fs::write(ws.join("huge.md"), &big).await.unwrap();
 
         let embedder = TopicEmbedder::new(&["tea"]);

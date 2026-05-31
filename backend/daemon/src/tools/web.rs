@@ -326,7 +326,7 @@ mod tests {
 
     /// Live integration test — requires TAVILY_API_KEY env var.
     #[tokio::test]
-    #[ignore]
+    #[ignore = "live web search requires TAVILY_API_KEY and network access"]
     async fn test_web_search_live() {
         let ctx = TestToolContext::new();
         let result = handle_web_search(
@@ -366,11 +366,11 @@ mod tests {
 
     #[test]
     fn test_strip_html_removes_script_and_style() {
-        let html = r#"<html><head><title>T</title></head><body>
+        let html = r"<html><head><title>T</title></head><body>
             <script>var x = 1;</script>
             <style>.foo { color: red; }</style>
             <p>Visible text</p>
-        </body></html>"#;
+        </body></html>";
         let text = strip_html(html);
         assert!(text.contains("Visible text"));
         assert!(!text.contains("var x"));
@@ -405,6 +405,6 @@ mod tests {
         let html = format!("{}<b>x</b>", "ẞ".repeat(10));
         let result = strip_html(&html);
         // Should extract the text content without panicking.
-        assert!(result.contains("x"));
+        assert!(result.contains('x'));
     }
 }

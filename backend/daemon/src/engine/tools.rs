@@ -388,7 +388,7 @@ mod tests {
     use super::*;
     use crate::test_support::TestToolContext;
     use shore_llm::LlmClient;
-    use shore_llm::types::ToolUseEvent;
+    use shore_llm::types::{Timing, ToolUseEvent, Usage};
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
@@ -509,8 +509,8 @@ mod tests {
                 content: "Hello".into(),
                 model: "test".into(),
                 finish_reason: "end_turn".into(),
-                usage: Default::default(),
-                timing: Default::default(),
+                usage: Usage::default(),
+                timing: Timing::default(),
                 tool_uses: vec![],
                 content_blocks: vec![],
             };
@@ -553,8 +553,8 @@ mod tests {
             content: String::new(),
             model: "test".into(),
             finish_reason: "tool_use".into(),
-            usage: Default::default(),
-            timing: Default::default(),
+            usage: Usage::default(),
+            timing: Timing::default(),
             tool_uses: vec![ToolUseEvent {
                 id: "t1".into(),
                 name: "check_time".into(),
@@ -597,7 +597,7 @@ mod tests {
             ServerMessage::StreamEnd(end) => {
                 assert_eq!(end.finish_reason, "tool_use");
             }
-            other => panic!("Expected intermediate StreamEnd(tool_use), got {:?}", other),
+            other => panic!("Expected intermediate StreamEnd(tool_use), got {other:?}"),
         }
 
         let tc = push_rx.try_recv().unwrap();
@@ -606,7 +606,7 @@ mod tests {
                 assert_eq!(call.tool_id, "t1");
                 assert_eq!(call.tool_name, "check_time");
             }
-            other => panic!("Expected ToolCall, got {:?}", other),
+            other => panic!("Expected ToolCall, got {other:?}"),
         }
 
         let tr = push_rx.try_recv().unwrap();
@@ -621,7 +621,7 @@ mod tests {
                     res.output
                 );
             }
-            other => panic!("Expected ToolResult, got {:?}", other),
+            other => panic!("Expected ToolResult, got {other:?}"),
         }
 
         let ss = push_rx.try_recv().unwrap();
@@ -657,8 +657,8 @@ mod tests {
             content: String::new(),
             model: "test".into(),
             finish_reason: "tool_use".into(),
-            usage: Default::default(),
-            timing: Default::default(),
+            usage: Usage::default(),
+            timing: Timing::default(),
             tool_uses: vec![ToolUseEvent {
                 id: "t1".into(),
                 name: "check_time".into(),
@@ -702,8 +702,8 @@ mod tests {
             content: String::new(),
             model: "test".into(),
             finish_reason: "tool_use".into(),
-            usage: Default::default(),
-            timing: Default::default(),
+            usage: Usage::default(),
+            timing: Timing::default(),
             tool_uses: vec![ToolUseEvent {
                 id: "t_img".into(),
                 name: "generate_image".into(),
@@ -745,7 +745,7 @@ mod tests {
                 assert!(res.is_error);
                 assert_eq!(res.tool_name, "generate_image");
             }
-            other => panic!("Expected ToolResult, got {:?}", other),
+            other => panic!("Expected ToolResult, got {other:?}"),
         }
 
         // The tool_result in request.messages should also have is_error.
@@ -774,8 +774,8 @@ mod tests {
                 content: "Let me check the time...".into(),
                 model: "test".into(),
                 finish_reason: "end_turn".into(),
-                usage: Default::default(),
-                timing: Default::default(),
+                usage: Usage::default(),
+                timing: Timing::default(),
                 tool_uses: vec![],
                 content_blocks: vec![],
             };
@@ -815,8 +815,8 @@ mod tests {
             content: String::new(),
             model: "test".into(),
             finish_reason: "tool_use".into(),
-            usage: Default::default(),
-            timing: Default::default(),
+            usage: Usage::default(),
+            timing: Timing::default(),
             tool_uses: vec![
                 ToolUseEvent {
                     id: "t1".into(),
@@ -859,7 +859,7 @@ mod tests {
             match push_rx.try_recv().unwrap() {
                 ServerMessage::ToolCall(tc) => tool_calls.push(tc),
                 ServerMessage::ToolResult(tr) => tool_results.push(tr),
-                other => panic!("Unexpected event: {:?}", other),
+                other => panic!("Unexpected event: {other:?}"),
             }
         }
 
