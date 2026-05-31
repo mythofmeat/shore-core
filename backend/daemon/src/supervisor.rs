@@ -134,9 +134,18 @@ async fn supervise(binary: PathBuf, shutdown_rx: &mut watch::Receiver<()>) {
 /// its own tuwunel subprocess or flush Matrix SDK state.
 async fn graceful_shutdown(child: &mut tokio::process::Child, grace: Duration) {
     if let Some(pid) = child.id() {
+        let Ok(pid_t) = libc::pid_t::try_from(pid) else {
+            warn!(
+                pid,
+                "shore-matrix pid does not fit platform pid_t; escalating"
+            );
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return;
+        };
         // SAFETY: `libc::kill` is a standard syscall; passing a valid pid
         // retrieved from the still-running child is sound.
-        let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        let rc = unsafe { libc::kill(pid_t, libc::SIGTERM) };
         if rc != 0 {
             let err = std::io::Error::last_os_error();
             warn!(pid, error = %err, "SIGTERM to shore-matrix failed; escalating");
@@ -146,7 +155,7 @@ async fn graceful_shutdown(child: &mut tokio::process::Child, grace: Duration) {
         return;
     }
 
-    if let Ok(_) = tokio::time::timeout(grace, child.wait()).await {} else {
+    if tokio::time::timeout(grace, child.wait()).await.is_err() {
         warn!(
             grace_secs = grace.as_secs(),
             "shore-matrix did not exit within grace period; sending SIGKILL"
