@@ -40,6 +40,15 @@ pub(crate) fn usize_to_f32(v: usize) -> f32 {
     v as f32
 }
 
+/// Widen a `u32` to `f32` for local score normalization.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "ranking counts are small weights, far below f32's exact-integer ceiling"
+)]
+pub(crate) fn u32_to_f32(v: u32) -> f32 {
+    v as f32
+}
+
 /// Widen an `i64` to `f64` for ratio/duration math.
 #[expect(
     clippy::cast_precision_loss,
