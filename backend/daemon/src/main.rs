@@ -1,16 +1,30 @@
+// Panic-hygiene lock (see [workspace.lints] in root Cargo.toml): this binary is
+// cleaned, so these can never regress.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
-use shore_config::{ConfigError, LoadedConfig, config_dir, load_config};
+use shore_config::{config_dir, load_config, ConfigError, LoadedConfig};
 use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::handler::{MessageHandler, MessageHandlerDeps};
 use shore_daemon::handshake::build_handshake_provider;
 use shore_daemon::notifications::NotificationService;
-use shore_diagnostics::Diagnostics;
 use shore_diagnostics::logging::HumanLogFormat;
+use shore_diagnostics::Diagnostics;
 use shore_ledger::LedgerClient;
 use shore_llm::LlmClient;
 use shore_swp_server::registry::{InstanceInfo, Registry};
@@ -242,7 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{SignalKind, signal};
+            use tokio::signal::unix::{signal, SignalKind};
             match signal(SignalKind::terminate()) {
                 Ok(mut sigterm) => {
                     tokio::select! {
@@ -609,8 +623,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        Cli, StartupError, StartupValueSource, epoch_timestamp, resolve_explicit_config_path,
-        resolve_listen_addr, resolve_startup, validate_remote_access_policy,
+        epoch_timestamp, resolve_explicit_config_path, resolve_listen_addr, resolve_startup,
+        validate_remote_access_policy, Cli, StartupError, StartupValueSource,
     };
     use clap::Parser;
     use tempfile::TempDir;

@@ -6,12 +6,12 @@
 use std::sync::{Arc, PoisonError};
 use std::time::Instant;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shore_config::app::UsageBudgetPeriod;
 use shore_config::models::Sdk;
 use shore_protocol::server_msg::{MessageOrigin, NewMessage, ServerMessage, UsageWarning};
-use shore_protocol::types::{ContentBlock, Message, Role, derive_content_from_blocks};
-use tokio::sync::{Mutex, broadcast};
+use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
+use tokio::sync::{broadcast, Mutex};
 use tracing::{info, instrument, warn};
 
 use crate::convert::elapsed_ms_u32;

@@ -208,8 +208,7 @@ pub fn spike_warnings(
     } else {
         None
     };
-    let is_spike = multiplier
-        .map_or(previous_cost == 0.0, |m| m >= spike.multiplier);
+    let is_spike = multiplier.map_or(previous_cost == 0.0, |m| m >= spike.multiplier);
     if !is_spike {
         return Ok(Vec::new());
     }
@@ -274,10 +273,7 @@ pub fn newly_crossed_budget_warnings(
             continue;
         }
 
-        let highest = newly_crossed
-            .iter()
-            .copied()
-            .fold(0.0_f64, f64::max);
+        let highest = newly_crossed.iter().copied().fold(0.0_f64, f64::max);
         let reset_display = format_local_ampm(&status.reset_at);
         events.push(UsageBudgetWarningEvent {
             budget: status.name.clone(),
@@ -307,11 +303,14 @@ pub fn newly_crossed_budget_warnings(
 /// local time. Falls back to the raw input if it doesn't parse — better to
 /// show something than nothing in a warning message.
 fn format_local_ampm(rfc3339: &str) -> String {
-    DateTime::parse_from_rfc3339(rfc3339).map_or_else(|_| rfc3339.to_string(), |dt| {
+    DateTime::parse_from_rfc3339(rfc3339).map_or_else(
+        |_| rfc3339.to_string(),
+        |dt| {
             dt.with_timezone(&Local)
                 .format("%Y-%m-%d %I:%M %p")
                 .to_string()
-        })
+        },
+    )
 }
 
 fn record_budget_warning_threshold(

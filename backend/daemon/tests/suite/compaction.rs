@@ -371,9 +371,7 @@ async fn test_retain_long_routes_background_payloads_to_long_tier() {
     );
     assert!(
         !long_logs.exists()
-            || std::fs::read_dir(&long_logs)
-                .map_or(0, std::iter::Iterator::count)
-                == 0,
+            || std::fs::read_dir(&long_logs).map_or(0, std::iter::Iterator::count) == 0,
         "long-retention dir should be empty before any background task runs; \
          path: {}",
         long_logs.display(),

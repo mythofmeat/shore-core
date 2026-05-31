@@ -1,6 +1,6 @@
-use super::CompactionManager;
 use super::parser::{DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM};
 use super::types::{CompactionOutcome, ConversationMessage};
+use super::CompactionManager;
 use std::sync::Arc;
 use tracing::{info, warn};
 

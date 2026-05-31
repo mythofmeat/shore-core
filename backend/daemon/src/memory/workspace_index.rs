@@ -617,8 +617,8 @@ fn save_index(path: &Path, index: &WorkspaceIndex) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;

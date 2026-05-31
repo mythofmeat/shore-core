@@ -1,4 +1,4 @@
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shore_protocol::error::ErrorCode;
 use tracing::info;
 

@@ -29,18 +29,18 @@
 use chrono::Utc;
 use tracing::{debug, error, warn};
 
-use shore_config::{LoadedConfig, models::ResolvedModel};
+use shore_config::{models::ResolvedModel, LoadedConfig};
 use shore_diagnostics::KeyFallbackEntry;
-use shore_llm::LlmError;
 use shore_llm::credentials::{
-    CredentialFailureKind, KeyCandidate, classify_credential_failure, read_candidate_env,
-    resolve_key_candidates,
+    classify_credential_failure, read_candidate_env, resolve_key_candidates, CredentialFailureKind,
+    KeyCandidate,
 };
 use shore_llm::types::{LlmRequest, StreamResult};
+use shore_llm::LlmError;
 use shore_protocol::server_msg::{ProviderFallbackWarning, ServerMessage};
 
-use super::GenContext;
 use super::generation::stream_with_retry;
+use super::GenContext;
 
 /// Stream the request with multi-key credential fallback.
 ///

@@ -4,7 +4,7 @@
 //! and legacy filesystem paths), and wire-embedding of image data.
 
 use base64::Engine as _;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shore_protocol::types::{ContentBlock, ImageRef, Message};
 use tracing::{info, warn};
 

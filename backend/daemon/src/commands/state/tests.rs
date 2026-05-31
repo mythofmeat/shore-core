@@ -6,7 +6,7 @@ use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::models::ModelCatalog;
 use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{ContentBlock, Message, Role};
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use tempfile::TempDir;
 use tokio::sync::broadcast;
 
@@ -173,13 +173,11 @@ fn memory_dream_returns_useful_phase_json() {
         assert!(result["promoted_count"].as_u64().unwrap() >= 1);
         assert!(result["rejected_count"].as_u64().is_some());
         assert!(result["phase_summaries"].as_array().unwrap().len() == 3);
-        assert!(
-            result["would_write_paths"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|path| path.as_str().unwrap().contains("dreams"))
-        );
+        assert!(result["would_write_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path.as_str().unwrap().contains("dreams")));
         assert!(!mem.join("DREAMS.md").exists());
         assert!(!workspace.join("MEMORY.md").exists());
     });
@@ -500,11 +498,9 @@ async fn config_check_empty_catalog() {
     let result = config_check(&ctx).await.unwrap();
     assert!(!result["valid"].as_bool().unwrap());
     let warnings = result["warnings"].as_array().unwrap();
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.as_str().unwrap().contains("No chat models"))
-    );
+    assert!(warnings
+        .iter()
+        .any(|w| w.as_str().unwrap().contains("No chat models")));
     assert_eq!(result["chat_models"], 0);
 }
 
@@ -516,10 +512,9 @@ async fn config_check_with_models() {
     let result = config_check(&ctx).await.unwrap();
     assert_eq!(result["chat_models"], 2);
     let info = result["info"].as_array().unwrap();
-    assert!(
-        info.iter()
-            .any(|i| i.as_str().unwrap().contains("2 chat model"))
-    );
+    assert!(info
+        .iter()
+        .any(|i| i.as_str().unwrap().contains("2 chat model")));
 }
 
 #[test]
@@ -701,12 +696,10 @@ fn reset_model_clears_selection_in_preferences() {
 
     switch_model(&mut ctx, &json!({"name": "gpt-4o"})).unwrap();
     let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
-    assert!(
-        crate::preferences::load_preferences(&path)
-            .unwrap()
-            .selected
-            .is_set()
-    );
+    assert!(crate::preferences::load_preferences(&path)
+        .unwrap()
+        .selected
+        .is_set());
 
     reset_model(&mut ctx).unwrap();
     let prefs = crate::preferences::load_preferences(&path).unwrap();
@@ -998,7 +991,7 @@ fn model_info_includes_effective_sampler_for_active_character() {
 mod phase7 {
     use super::*;
     use shore_config::providers::ProviderRegistry;
-    use shore_llm::discovery::{CACHE_VERSION, DiscoveredModel, ProviderModelsCache};
+    use shore_llm::discovery::{DiscoveredModel, ProviderModelsCache, CACHE_VERSION};
 
     /// Build a context with a provider registry, optional static chat
     /// catalog, and a populated discovery cache for `provider`.

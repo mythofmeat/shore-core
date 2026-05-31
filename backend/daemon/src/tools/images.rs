@@ -1,6 +1,6 @@
 use super::{ToolCategory, ToolContext, ToolDef, ToolError};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use serde_json::{Value, json};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use serde_json::{json, Value};
 use shore_llm::types::ImageGenerateParams;
 use tracing::info;
 
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn test_decode_data_url_png() {
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
         let raw = b"fake png bytes";
         let encoded = STANDARD.encode(raw);
         let url = format!("data:image/png;base64,{encoded}");
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn test_decode_data_url_jpeg() {
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
         let raw = b"fake jpeg bytes";
         let encoded = STANDARD.encode(raw);
         let url = format!("data:image/jpeg;base64,{encoded}");

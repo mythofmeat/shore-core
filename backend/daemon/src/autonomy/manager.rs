@@ -13,9 +13,9 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shore_protocol::server_msg::ServerMessage;
-use shore_protocol::types::{ContentBlock, Message, Role, derive_content_from_blocks};
+use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -31,10 +31,10 @@ use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
 use crate::tools::context::SharedToolContext;
 use crate::tools::{ToolContext, ToolError};
-use shore_config::LoadedConfig;
 use shore_config::app::{AutonomyConfig, CompactionConfig, DreamingConfig};
+use shore_config::LoadedConfig;
 use shore_config::{
-    HEARTBEAT_FILE, character_data_dir, character_memory_dir, character_workspace_dir,
+    character_data_dir, character_memory_dir, character_workspace_dir, HEARTBEAT_FILE,
 };
 use shore_diagnostics::truncate_summary;
 use shore_ledger::{CallType, CredentialFallbackEvent, LedgerClient};
@@ -1603,7 +1603,7 @@ fn rebuild_request_from_disk(
     config: &LoadedConfig,
 ) -> Option<LlmRequest> {
     use crate::engine::messages::MessageStore;
-    use crate::handler::{PrepareChatContextParams, PreparedChatContext, prepare_chat_context};
+    use crate::handler::{prepare_chat_context, PrepareChatContextParams, PreparedChatContext};
     use shore_config::character_active_jsonl;
 
     let char_dir = character_data_dir(data_dir, character);
@@ -2401,7 +2401,7 @@ async fn execute_dormant_ping(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     use shore_config::app::HeartbeatConfig;
 
@@ -2487,12 +2487,10 @@ mod tests {
             .expect("array content");
         assert_eq!(content.len(), 2);
         assert_eq!(content[1]["type"], "text");
-        assert!(
-            content[1]["text"]
-                .as_str()
-                .unwrap()
-                .contains("HEARTBEAT.md")
-        );
+        assert!(content[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("HEARTBEAT.md"));
     }
 
     #[test]
@@ -2515,12 +2513,10 @@ mod tests {
         append_wrap_up_nudge(&mut req);
         assert_eq!(req.messages.len(), 3);
         assert_eq!(req.messages[2]["role"], "user");
-        assert!(
-            req.messages[2]["content"]
-                .as_str()
-                .unwrap()
-                .contains("HEARTBEAT.md")
-        );
+        assert!(req.messages[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("HEARTBEAT.md"));
     }
 
     #[test]

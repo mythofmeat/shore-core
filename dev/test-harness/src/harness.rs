@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
-use shore_config::{LoadedConfig, app::NotificationsConfig};
+use shore_config::{app::NotificationsConfig, LoadedConfig};
 use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};

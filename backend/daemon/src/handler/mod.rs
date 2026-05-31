@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub(crate) use context::{
-    PrepareChatContextParams, PreparedChatContext, build_chat_shape_request_from_disk,
-    prepare_chat_context,
+    build_chat_shape_request_from_disk, prepare_chat_context, PrepareChatContextParams,
+    PreparedChatContext,
 };
 pub(crate) use images::{
     build_content, embed_image_data, embed_messages_image_data, image_data_for_path,
@@ -37,7 +37,7 @@ use task::handle_generation;
 use shore_protocol::client_msg::{ClientMessage, ClientMessageBody};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error as SwpError, ServerMessage};
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
 use crate::autonomy::manager::AutonomyManager;
@@ -45,10 +45,10 @@ use crate::characters::CharacterRegistry;
 use crate::commands::{CommandContext, SessionTokens};
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::notifications::{NotificationEvent, NotificationService};
-use crate::tools::ToolContext;
 use crate::tools::context::SharedToolContext;
+use crate::tools::ToolContext;
 use shore_config::app::SearchConfig;
-use shore_config::{LoadedConfig, character_data_dir, discover_characters, load_character_config};
+use shore_config::{character_data_dir, discover_characters, load_character_config, LoadedConfig};
 use shore_ledger::LedgerClient;
 use shore_swp_server::{RequestMeta, RoutedMessage, SessionId, SessionRouter};
 

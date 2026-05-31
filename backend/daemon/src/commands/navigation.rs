@@ -1,7 +1,7 @@
 use serde_json::json;
 use shore_config::{
-    AGENTS_FILE, HEARTBEAT_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE, character_data_dir,
-    character_workspace_dir,
+    character_data_dir, character_workspace_dir, AGENTS_FILE, HEARTBEAT_FILE, SOUL_FILE,
+    TOOLS_FILE, USER_FILE,
 };
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::{CharacterAvatar, CharacterInfo};
@@ -387,19 +387,15 @@ mod tests {
 
         let result = character_info(&engine, &ctx, &json!({})).unwrap();
         assert!(result["has_definition"].as_bool().unwrap());
-        assert!(
-            result["bootstrap_files"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v == "USER.md")
-        );
-        assert!(
-            result["definition_preview"]
-                .as_str()
-                .unwrap()
-                .contains("test character")
-        );
+        assert!(result["bootstrap_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "USER.md"));
+        assert!(result["definition_preview"]
+            .as_str()
+            .unwrap()
+            .contains("test character"));
     }
 
     #[test]

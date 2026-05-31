@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shore_config::character_data_dir;
 use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{debug, info, instrument};
@@ -537,13 +537,11 @@ pub(crate) fn build_llm_messages(
     } else if prompt_result.system.len() == 1 {
         Some(json!(prompt_result.system[0].content))
     } else {
-        Some(json!(
-            prompt_result
-                .system
-                .iter()
-                .map(|b| { json!({"type": "text", "text": b.content, "_label": b.label}) })
-                .collect::<Vec<_>>()
-        ))
+        Some(json!(prompt_result
+            .system
+            .iter()
+            .map(|b| { json!({"type": "text", "text": b.content, "_label": b.label}) })
+            .collect::<Vec<_>>()))
     };
 
     (llm_messages, system)

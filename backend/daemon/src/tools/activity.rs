@@ -1,5 +1,5 @@
 use super::{ToolCategory, ToolContext, ToolDef, ToolError};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 // ---------------------------------------------------------------------------
 // Tool definitions

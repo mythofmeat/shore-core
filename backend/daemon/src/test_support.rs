@@ -12,8 +12,8 @@ use crate::memory::markdown_store::MarkdownMemoryStore;
 use crate::tools::ToolContext;
 use shore_config::app::{RetrievalConfig, SearchConfig};
 use shore_config::models::{ResolvedModel, Sdk};
-use shore_llm::LlmClient;
 use shore_llm::embed::Embedder;
+use shore_llm::LlmClient;
 use shore_protocol::types::Message;
 
 // ── JSONL persistence helper ───────────────────────────────────────────

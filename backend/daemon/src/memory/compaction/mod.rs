@@ -4,14 +4,14 @@ pub mod types;
 
 pub use background::run_compaction;
 pub use parser::{
-    DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM, MemoryFileOp, parse_compaction_response,
+    parse_compaction_response, MemoryFileOp, DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM,
 };
 pub use types::*;
 
 use crate::memory::markdown_store::MarkdownMemoryStore;
 use crate::tools::{self as tool_system, ToolContext};
 use dashmap::DashMap;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shore_config::character_data_dir;
 use shore_llm::types::GenerateResponse;
 use std::path::{Path, PathBuf};
@@ -907,9 +907,9 @@ mod tests {
     use chrono::Local;
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::Mutex as StdMutex;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
+    use std::sync::Mutex as StdMutex;
     use tokio::sync::oneshot;
 
     #[test]
@@ -1699,11 +1699,10 @@ mod tests {
                 assert_eq!(r.rejected_paths.len(), 5);
                 assert!(r.rejected_paths.iter().any(|p| p == "SOUL.md"));
                 assert!(r.rejected_paths.iter().any(|p| p == "DREAMS.md"));
-                assert!(
-                    r.rejected_paths
-                        .iter()
-                        .any(|p| p == "memory/.dreams/notes.md")
-                );
+                assert!(r
+                    .rejected_paths
+                    .iter()
+                    .any(|p| p == "memory/.dreams/notes.md"));
             }
             other => panic!("expected NoMemoryWrites, got {other:?}"),
         }
@@ -1768,12 +1767,10 @@ mod tests {
         };
         assert_eq!(result.memory_files_written.len(), 2);
         assert!(result.memory_files_written.iter().any(|p| p == "MEMORY.md"));
-        assert!(
-            result
-                .memory_files_written
-                .iter()
-                .any(|p| p == "memory/notes/ok.md")
-        );
+        assert!(result
+            .memory_files_written
+            .iter()
+            .any(|p| p == "memory/notes/ok.md"));
 
         // MEMORY.md lands at workspace root, memory/notes/ok.md inside memory/.
         let mem = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
@@ -1828,11 +1825,10 @@ mod tests {
             CompactionOutcome::DryRun(r) => {
                 assert_eq!(r.would_write_files, 2);
                 assert_eq!(r.file_ops_preview.len(), 2);
-                assert!(
-                    r.file_ops_preview
-                        .iter()
-                        .any(|op| op.path == "memory/notes/preview.md")
-                );
+                assert!(r
+                    .file_ops_preview
+                    .iter()
+                    .any(|op| op.path == "memory/notes/preview.md"));
                 assert!(r.tool_rounds >= 1);
             }
             other => panic!("expected DryRun, got {other:?}"),

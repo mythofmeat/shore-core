@@ -4,7 +4,7 @@
 
 use chrono::{Datelike, Local};
 use rand::Rng;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::{ToolCategory, ToolDef, ToolError};
 

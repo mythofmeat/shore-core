@@ -8,8 +8,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use shore_config::app::{RetrievalConfig, SearchConfig};
-use shore_llm::LlmClient;
 use shore_llm::embed::Embedder;
+use shore_llm::LlmClient;
 
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::markdown_store::MarkdownMemoryStore;

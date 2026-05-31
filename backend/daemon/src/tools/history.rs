@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, FixedOffset};
-use serde_json::{Value, json};
-use shore_protocol::types::{Message, Role, derive_content_from_blocks_with};
+use serde_json::{json, Value};
+use shore_protocol::types::{derive_content_from_blocks_with, Message, Role};
 
 use crate::convert::{i64_to_f64, u64_to_usize};
 use crate::engine::messages::MessageStore;

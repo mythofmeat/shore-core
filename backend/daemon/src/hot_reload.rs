@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use tokio::sync::{mpsc, watch};
-use tokio::time::{Instant, sleep};
+use tokio::time::{sleep, Instant};
 use tracing::{debug, info, warn};
 
 use crate::handler::HandlerControl;

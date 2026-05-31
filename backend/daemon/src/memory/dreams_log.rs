@@ -155,11 +155,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let recent = recent_dream_entries(tmp.path(), "ghost", 5).await.unwrap();
         assert!(recent.is_empty());
-        assert!(
-            read_dreams_log(tmp.path(), "ghost")
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(read_dreams_log(tmp.path(), "ghost")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

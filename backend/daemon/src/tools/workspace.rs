@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shore_config::app::RetrievalConfig;
 use shore_llm::embed::Embedder;
 

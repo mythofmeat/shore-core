@@ -17,10 +17,10 @@ use std::path::Path;
 use serde_json::Value;
 use tracing::warn;
 
-use shore_config::{AGENTS_FILE, LoadedConfig, SOUL_FILE, TOOLS_FILE, USER_FILE};
+use shore_config::{LoadedConfig, AGENTS_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE};
 use shore_ledger::LedgerClient;
-use shore_llm::LlmError;
 use shore_llm::types::LlmRequest;
+use shore_llm::LlmError;
 use shore_protocol::types::Message;
 
 use crate::engine::prompt::{self, AssembledPrompt, PromptParams};

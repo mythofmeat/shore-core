@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Local, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shore_config::app::DreamingConfig;
 use shore_config::cron::CronSchedule;
 use shore_config::{
-    LoadedConfig, SOUL_FILE, USER_FILE, character_data_dir, character_memory_dir,
-    character_workspace_dir,
+    character_data_dir, character_memory_dir, character_workspace_dir, LoadedConfig, SOUL_FILE,
+    USER_FILE,
 };
 
 use shore_ledger::{CallType, LedgerClient};
@@ -2521,11 +2521,8 @@ mod tests {
             .unwrap();
         assert!(memory.contains("# Memory Index"));
         assert!(memory.contains("shore-notes.md"));
-        assert!(
-            !memory.contains(
-                "Trevor wants Shore memory to use MEMORY.md as an index.\n- Trevor wants"
-            )
-        );
+        assert!(!memory
+            .contains("Trevor wants Shore memory to use MEMORY.md as an index.\n- Trevor wants"));
         let dreams_path = crate::memory::dreams_log::dreams_log_path(&config.dirs.data, "alice");
         let dreams = fs::read_to_string(&dreams_path).await.unwrap();
         assert!(dreams.contains("AI librarian dreaming pass"));
@@ -2599,12 +2596,10 @@ mod tests {
         assert!(messages[2].to_string().contains("memory librarian pass"));
         assert!(body["system"].to_string().contains("cached system prefix"));
         assert_eq!(body["tools"][0]["name"], "read");
-        assert!(
-            body["tools"][0]["description"]
-                .as_str()
-                .unwrap()
-                .contains("sentinel cached")
-        );
+        assert!(body["tools"][0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("sentinel cached"));
     }
 
     /// Regression contract for issue #84 (the librarian counterpart of the
@@ -2793,12 +2788,10 @@ mod tests {
 
         assert!(result.dry_run);
         assert!(result.paths_written.is_empty());
-        assert!(
-            result
-                .would_write_paths
-                .iter()
-                .any(|path| path.ends_with("MEMORY.md"))
-        );
+        assert!(result
+            .would_write_paths
+            .iter()
+            .any(|path| path.ends_with("MEMORY.md")));
         assert!(!workspace.join("MEMORY.md").exists());
         assert!(!mem.join("DREAMS.md").exists());
         assert!(!config.dirs.data.join("alice/dreams/state.json").exists());
@@ -2926,18 +2919,14 @@ mod tests {
             .unwrap();
         assert!(result.dry_run);
         assert_eq!(result.paths_written.len(), 0);
-        assert!(
-            result
-                .would_write_paths
-                .iter()
-                .any(|path| path.replace('\\', "/").contains("alice/dreams"))
-        );
-        assert!(
-            result
-                .would_write_paths
-                .iter()
-                .any(|path| path.ends_with("MEMORY.md"))
-        );
+        assert!(result
+            .would_write_paths
+            .iter()
+            .any(|path| path.replace('\\', "/").contains("alice/dreams")));
+        assert!(result
+            .would_write_paths
+            .iter()
+            .any(|path| path.ends_with("MEMORY.md")));
         assert!(!data_dir.join("alice/dreams").exists());
         assert!(!mem.join(".dreams").exists());
         assert!(!mem.join("DREAMS.md").exists());
@@ -3226,12 +3215,10 @@ mod tests {
             status.last_run_at.as_deref(),
             Some("2026-04-01T00:00:00+00:00")
         );
-        assert!(
-            status
-                .state_path
-                .replace('\\', "/")
-                .ends_with("alice/dreams/state.json")
-        );
+        assert!(status
+            .state_path
+            .replace('\\', "/")
+            .ends_with("alice/dreams/state.json"));
         assert!(!data_dir.join("alice/dreams/state.json").exists());
     }
 

@@ -2,11 +2,11 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use shore_config::{
-    LoadedConfig, ShoreDirs,
     app::{AppConfig, BehaviorConfig, CompactionConfig, HeartbeatConfig, ToolUseConfig},
     duration::ConfigDuration,
     models::ModelCatalog,
     providers::ProviderRegistry,
+    LoadedConfig, ShoreDirs,
 };
 
 type BuildResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;

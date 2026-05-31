@@ -10,8 +10,8 @@ use crate::autonomy::manager::AutonomyManager;
 use crate::memory::compaction_impls::ImageGenConfig;
 use serde_json::Value;
 use shore_config::app::{RetrievalConfig, RetrievalMode};
-use shore_llm::LlmClient;
 use shore_llm::embed::Embedder;
+use shore_llm::LlmClient;
 use std::future::Future;
 use std::pin::Pin;
 

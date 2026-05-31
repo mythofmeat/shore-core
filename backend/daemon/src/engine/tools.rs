@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tracing::{debug, info, instrument, warn};
 
@@ -9,11 +9,11 @@ use crate::convert::elapsed_ms_u64;
 use crate::tools::{self as tool_system, ToolContext};
 use shore_diagnostics::{self as diagnostics, Diagnostics};
 use shore_ledger::{CallType, LedgerClient};
-use shore_llm::LlmError;
 use shore_llm::stream::StreamConsumer;
 use shore_llm::types::{LlmRequest, StreamResult, ToolUseEvent};
+use shore_llm::LlmError;
 use shore_protocol::server_msg::{SendImage, ServerMessage, ToolCall, ToolResult as SwpToolResult};
-use shore_protocol::types::{ContentBlock, ImageRef, Message, Role, derive_content_from_blocks};
+use shore_protocol::types::{derive_content_from_blocks, ContentBlock, ImageRef, Message, Role};
 
 // ── Errors ──────────────────────────────────────────────────────────────
 
@@ -387,8 +387,8 @@ async fn stream_tool_loop_continuation(
 mod tests {
     use super::*;
     use crate::test_support::TestToolContext;
-    use shore_llm::LlmClient;
     use shore_llm::types::{Timing, ToolUseEvent, Usage};
+    use shore_llm::LlmClient;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;

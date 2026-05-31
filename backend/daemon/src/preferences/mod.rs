@@ -1474,7 +1474,7 @@ model_id = "kimi-k2"
         // not silently fall through to the static default.
         use shore_config::providers::ProviderRegistry;
         use shore_llm::discovery::{
-            CACHE_VERSION, DiscoveredModel, ProviderModelsCache, cache_path, write_cache,
+            cache_path, write_cache, DiscoveredModel, ProviderModelsCache, CACHE_VERSION,
         };
 
         let tmp = tempfile::tempdir().unwrap();

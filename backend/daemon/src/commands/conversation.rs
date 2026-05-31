@@ -214,12 +214,15 @@ pub fn get(
     _ctx: &CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let raw_ref = args.get("ref").and_then(serde_json::Value::as_str).ok_or_else(|| {
-        (
-            ErrorCode::InvalidRequest,
-            "Missing required argument: ref".into(),
-        )
-    })?;
+    let raw_ref = args
+        .get("ref")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            (
+                ErrorCode::InvalidRequest,
+                "Missing required argument: ref".into(),
+            )
+        })?;
 
     let role = role_filter(args)?;
     let mut merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
@@ -291,12 +294,15 @@ pub fn edit(
     _ctx: &mut CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let raw_ref = args.get("ref").and_then(serde_json::Value::as_str).ok_or_else(|| {
-        (
-            ErrorCode::InvalidRequest,
-            "Missing required argument: ref".into(),
-        )
-    })?;
+    let raw_ref = args
+        .get("ref")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            (
+                ErrorCode::InvalidRequest,
+                "Missing required argument: ref".into(),
+            )
+        })?;
 
     let content = args
         .get("content")
@@ -512,12 +518,15 @@ pub fn inject_system(
     _ctx: &mut CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let text = args.get("text").and_then(serde_json::Value::as_str).ok_or_else(|| {
-        (
-            ErrorCode::InvalidRequest,
-            "Missing required argument: text".into(),
-        )
-    })?;
+    let text = args
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            (
+                ErrorCode::InvalidRequest,
+                "Missing required argument: text".into(),
+            )
+        })?;
 
     let msg = Message {
         msg_id: format!("m_{}", uuid::Uuid::new_v4()),

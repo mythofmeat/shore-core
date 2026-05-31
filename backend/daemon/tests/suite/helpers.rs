@@ -3,7 +3,7 @@ use std::time::Duration;
 use shore_daemon::autonomy::HeartbeatEvent;
 use shore_protocol::server_msg::ServerMessage;
 use shore_test_harness::TestHarness;
-use tokio::time::{Instant, sleep, timeout};
+use tokio::time::{sleep, timeout, Instant};
 
 /// Collect whatever messages arrive within a bounded duration.
 pub async fn collect_messages_for(
