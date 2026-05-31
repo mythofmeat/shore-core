@@ -1,18 +1,19 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tracing::{debug, info, instrument, warn};
 
+use crate::convert::elapsed_ms_u64;
 use crate::tools::{self as tool_system, ToolContext};
 use shore_diagnostics::{self as diagnostics, Diagnostics};
 use shore_ledger::{CallType, LedgerClient};
-use shore_llm::stream::StreamConsumer;
-use shore_llm::types::{LlmRequest, StreamResult};
 use shore_llm::LlmError;
+use shore_llm::stream::StreamConsumer;
+use shore_llm::types::{LlmRequest, StreamResult, ToolUseEvent};
 use shore_protocol::server_msg::{SendImage, ServerMessage, ToolCall, ToolResult as SwpToolResult};
-use shore_protocol::types::{derive_content_from_blocks, ContentBlock, ImageRef, Message, Role};
+use shore_protocol::types::{ContentBlock, ImageRef, Message, Role, derive_content_from_blocks};
 
 // ── Errors ──────────────────────────────────────────────────────────────
 
@@ -44,7 +45,10 @@ pub struct ToolLoopResult {
 ///
 /// Returns both the final result and any intermediate messages for persistence.
 #[instrument(skip(client, direct_tx, request, result, ctx, diag), fields(char = character, max_iterations))]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "tool-loop orchestration needs the live ledger, stream, request, context, diagnostics, and character inputs"
+)]
 pub async fn run_tool_loop(
     client: &LedgerClient,
     direct_tx: &mpsc::Sender<ServerMessage>,
@@ -90,217 +94,36 @@ pub async fn run_tool_loop(
             "Tool loop iteration"
         );
 
-        // Build content blocks for the assistant message.
-        // Use the accumulated content_blocks from streaming if available,
-        // otherwise fall back to constructing from content + tool_uses.
-        let assistant_blocks = if result.content_blocks.is_empty() {
-            let mut blocks = Vec::new();
-            if !result.content.is_empty() {
-                blocks.push(ContentBlock::Text {
-                    text: result.content.clone(),
-                });
-            }
-            for tu in &result.tool_uses {
-                blocks.push(ContentBlock::ToolUse {
-                    id: tu.id.clone(),
-                    name: tu.name.clone(),
-                    input: tu.input.clone(),
-                });
-            }
-            blocks
-        } else {
-            result.content_blocks.clone()
-        };
-
-        // Build LLM payload from content blocks. Provider adapters decide how
-        // to project unsigned reasoning for SDKs that can accept it.
-        let assistant_content: Vec<Value> = assistant_blocks
-            .iter()
-            .filter_map(|block| {
-                crate::content_util::content_block_to_request_json_for_sdk(block, &request.sdk)
-            })
-            .collect();
-
-        request.messages.push(json!({
-            "role": "assistant",
-            "content": assistant_content,
-        }));
-
-        // Persist assistant message with content_blocks. Stamp the minting
-        // provider so its opaque thinking data carries provenance for replay.
-        intermediate_messages.push(Message {
-            msg_id: format!("m_{}", uuid::Uuid::new_v4()),
-            role: Role::Assistant,
-            content: derive_content_from_blocks(&assistant_blocks),
-            images: vec![],
-            content_blocks: assistant_blocks,
-            alt_index: None,
-            alt_count: None,
-            alternatives: vec![],
-            timestamp: chrono::Local::now().to_rfc3339(),
-            provider_key: request.provider_key.clone(),
-        });
+        append_assistant_tool_use_turn(request, &mut intermediate_messages, &result);
 
         // Execute each tool and collect results.
         let mut tool_results: Vec<Value> = Vec::new();
         let mut tool_result_blocks: Vec<ContentBlock> = Vec::new();
 
         for tool_use in &result.tool_uses {
-            // Push ToolCall event to SWP clients.
-            let _ = direct_tx
-                .send(ServerMessage::ToolCall(ToolCall {
-                    rid: request.rid.clone(),
-                    tool_id: tool_use.id.clone(),
-                    tool_name: tool_use.name.clone(),
-                    input: tool_use.input.clone(),
-                }))
-                .await;
-
-            debug!(
-                tool_id = %tool_use.id,
-                tool_name = %tool_use.name,
-                "Executing tool"
-            );
-
-            // Dispatch through unified tool system.
-            let dispatch_start = Instant::now();
-            let dispatch_result =
-                tool_system::dispatch_tool(&tool_use.name, tool_use.input.clone(), ctx).await;
-            let dispatch_ms = dispatch_start.elapsed().as_millis() as u64;
-
-            let (output_str, is_error, ok_value) = match dispatch_result {
-                Ok(value) => {
-                    let s = if let Some(s) = value.as_str() {
-                        s.to_string()
-                    } else {
-                        serde_json::to_string(&value).unwrap_or_default()
-                    };
-                    (s, false, Some(value))
-                }
-                Err(e) => (e.to_string(), true, None),
-            };
-
-            // `generate_image` produces a structured result whose `path`
-            // should surface as an actual image attachment, not just a
-            // tool-result string. Attach it to the assistant message that
-            // issued the call (so log replay renders it inline) and broadcast
-            // a SendImage event for live clients (TUI image cache, matrix
-            // bridge collector).
-            if !is_error && tool_use.name == "generate_image" {
-                if let Some(value) = &ok_value {
-                    if let Some(path) = value.get("path").and_then(|v| v.as_str()) {
-                        let caption = value
-                            .get("caption")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let image_ref = ImageRef {
-                            path: path.to_string(),
-                            caption: caption.clone(),
-                            data: None,
-                        };
-                        if let Some(last) = intermediate_messages.last_mut() {
-                            last.images.push(image_ref);
-                        }
-                        let _ = direct_tx
-                            .send(ServerMessage::SendImage(SendImage {
-                                rid: request.rid.clone(),
-                                path: path.to_string(),
-                                caption,
-                                data: crate::handler::image_data_for_path(path),
-                            }))
-                            .await;
-                    }
-                }
-            }
-
-            // Record tool call in diagnostics ring buffer.
-            {
-                let input_str = serde_json::to_string(&tool_use.input).unwrap_or_default();
-                let entry = diagnostics::ToolCallEntry {
-                    timestamp: chrono::Local::now().to_rfc3339(),
-                    tool_name: tool_use.name.clone(),
-                    tool_id: tool_use.id.clone(),
-                    success: !is_error,
-                    duration_ms: dispatch_ms,
-                    input_summary: diagnostics::truncate_summary(&input_str, 200),
-                    output_summary: diagnostics::truncate_summary(&output_str, 200),
-                };
-                diag.lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .tool_calls
-                    .push(entry);
-            }
-
-            // Push ToolResult event to SWP clients.
-            let _ = direct_tx
-                .send(ServerMessage::ToolResult(SwpToolResult {
-                    rid: request.rid.clone(),
-                    tool_id: tool_use.id.clone(),
-                    tool_name: tool_use.name.clone(),
-                    output: output_str.clone(),
-                    is_error,
-                }))
-                .await;
-
-            debug!(
-                tool_id = %tool_use.id,
-                tool_name = %tool_use.name,
-                is_error,
-                "Tool completed"
-            );
-
-            // Content block for persistence.
-            tool_result_blocks.push(ContentBlock::ToolResult {
-                tool_use_id: tool_use.id.clone(),
-                content: output_str.clone(),
-                is_error,
-            });
-
-            // JSON for LLM payload.
-            tool_results.push(crate::content_util::build_tool_result_json(
-                &tool_use.id,
-                &output_str,
-                is_error,
-            ));
+            let outcome = execute_tool_use(
+                tool_use,
+                direct_tx,
+                request.rid.as_deref(),
+                ctx,
+                diag,
+                intermediate_messages.as_mut_slice(),
+            )
+            .await;
+            tool_results.push(outcome.llm_payload);
+            tool_result_blocks.push(outcome.content_block);
         }
 
-        // Append tool results as user message to LLM payload.
-        request.messages.push(json!({
-            "role": "user",
-            "content": tool_results,
-        }));
+        append_user_tool_result_turn(
+            request,
+            &mut intermediate_messages,
+            tool_results,
+            tool_result_blocks,
+        );
 
-        // Persist user message with tool_result content_blocks. Tool results
-        // carry no provider-bound data, so provenance is left unset.
-        intermediate_messages.push(Message {
-            msg_id: format!("m_{}", uuid::Uuid::new_v4()),
-            role: Role::User,
-            content: derive_content_from_blocks(&tool_result_blocks),
-            images: vec![],
-            content_blocks: tool_result_blocks,
-            alt_index: None,
-            alt_count: None,
-            alternatives: vec![],
-            timestamp: chrono::Local::now().to_rfc3339(),
-            provider_key: None,
-        });
-
-        // Call LLM again with the extended conversation. The Anthropic
-        // provider re-resolves cache breakpoints on stable tool-result
-        // boundaries so completed tool work can be reused by later iterations.
-        let mut ledger_stream = client
-            .stream_raw(request, CallType::ToolLoop, character, thinking_enabled)
-            .await?;
-        match consumer.consume(ledger_stream.reader_mut(), false).await {
-            Ok(r) => {
-                ledger_stream.finalize(&r);
-                result = r;
-            }
-            Err(e) => {
-                ledger_stream.finalize_error();
-                return Err(e.into());
-            }
-        }
+        result =
+            stream_tool_loop_continuation(client, &consumer, request, character, thinking_enabled)
+                .await?;
     }
 
     warn!(
@@ -313,14 +136,259 @@ pub async fn run_tool_loop(
     })
 }
 
+fn append_assistant_tool_use_turn(
+    request: &mut LlmRequest,
+    intermediate_messages: &mut Vec<Message>,
+    result: &StreamResult,
+) {
+    let assistant_blocks = assistant_blocks_from_result(result);
+    let assistant_content: Vec<Value> = assistant_blocks
+        .iter()
+        .filter_map(|block| {
+            crate::content_util::content_block_to_request_json_for_sdk(block, &request.sdk)
+        })
+        .collect();
+
+    request.messages.push(json!({
+        "role": "assistant",
+        "content": assistant_content,
+    }));
+
+    intermediate_messages.push(Message {
+        msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+        role: Role::Assistant,
+        content: derive_content_from_blocks(&assistant_blocks),
+        images: vec![],
+        content_blocks: assistant_blocks,
+        alt_index: None,
+        alt_count: None,
+        alternatives: vec![],
+        timestamp: chrono::Local::now().to_rfc3339(),
+        provider_key: request.provider_key.clone(),
+    });
+}
+
+fn assistant_blocks_from_result(result: &StreamResult) -> Vec<ContentBlock> {
+    if !result.content_blocks.is_empty() {
+        return result.content_blocks.clone();
+    }
+
+    let mut blocks = Vec::new();
+    if !result.content.is_empty() {
+        blocks.push(ContentBlock::Text {
+            text: result.content.clone(),
+        });
+    }
+    for tool_use in &result.tool_uses {
+        blocks.push(ContentBlock::ToolUse {
+            id: tool_use.id.clone(),
+            name: tool_use.name.clone(),
+            input: tool_use.input.clone(),
+        });
+    }
+    blocks
+}
+
+struct ToolDispatchOutcome {
+    llm_payload: Value,
+    content_block: ContentBlock,
+}
+
+async fn execute_tool_use(
+    tool_use: &ToolUseEvent,
+    direct_tx: &mpsc::Sender<ServerMessage>,
+    request_rid: Option<&str>,
+    ctx: &dyn ToolContext,
+    diag: &Arc<Mutex<Diagnostics>>,
+    intermediate_messages: &mut [Message],
+) -> ToolDispatchOutcome {
+    let _ = direct_tx
+        .send(ServerMessage::ToolCall(ToolCall {
+            rid: request_rid.map(str::to_string),
+            tool_id: tool_use.id.clone(),
+            tool_name: tool_use.name.clone(),
+            input: tool_use.input.clone(),
+        }))
+        .await;
+
+    debug!(
+        tool_id = %tool_use.id,
+        tool_name = %tool_use.name,
+        "Executing tool"
+    );
+
+    let dispatch_start = Instant::now();
+    let dispatch_result =
+        tool_system::dispatch_tool(&tool_use.name, tool_use.input.clone(), ctx).await;
+    let dispatch_ms = elapsed_ms_u64(dispatch_start.elapsed());
+    let (output_str, is_error, ok_value) = match dispatch_result {
+        Ok(value) => {
+            let output = value.as_str().map_or_else(
+                || serde_json::to_string(&value).unwrap_or_default(),
+                str::to_string,
+            );
+            (output, false, Some(value))
+        }
+        Err(e) => (e.to_string(), true, None),
+    };
+
+    if !is_error && tool_use.name == "generate_image" {
+        if let Some(value) = &ok_value {
+            attach_generated_image(value, intermediate_messages, direct_tx, request_rid).await;
+        }
+    }
+
+    record_tool_diagnostics(diag, tool_use, dispatch_ms, &output_str, is_error);
+    emit_tool_result(tool_use, direct_tx, request_rid, &output_str, is_error).await;
+
+    ToolDispatchOutcome {
+        llm_payload: crate::content_util::build_tool_result_json(
+            &tool_use.id,
+            &output_str,
+            is_error,
+        ),
+        content_block: ContentBlock::ToolResult {
+            tool_use_id: tool_use.id.clone(),
+            content: output_str,
+            is_error,
+        },
+    }
+}
+
+async fn attach_generated_image(
+    value: &Value,
+    intermediate_messages: &mut [Message],
+    direct_tx: &mpsc::Sender<ServerMessage>,
+    request_rid: Option<&str>,
+) {
+    let Some(path) = value.get("path").and_then(Value::as_str) else {
+        return;
+    };
+    let caption = value
+        .get("caption")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let image_ref = ImageRef {
+        path: path.to_string(),
+        caption: caption.clone(),
+        data: None,
+    };
+    if let Some(last) = intermediate_messages.last_mut() {
+        last.images.push(image_ref);
+    }
+    let _ = direct_tx
+        .send(ServerMessage::SendImage(SendImage {
+            rid: request_rid.map(str::to_string),
+            path: path.to_string(),
+            caption,
+            data: crate::handler::image_data_for_path(path),
+        }))
+        .await;
+}
+
+fn record_tool_diagnostics(
+    diag: &Arc<Mutex<Diagnostics>>,
+    tool_use: &ToolUseEvent,
+    duration_ms: u64,
+    output_str: &str,
+    is_error: bool,
+) {
+    let input_str = serde_json::to_string(&tool_use.input).unwrap_or_default();
+    let entry = diagnostics::ToolCallEntry {
+        timestamp: chrono::Local::now().to_rfc3339(),
+        tool_name: tool_use.name.clone(),
+        tool_id: tool_use.id.clone(),
+        success: !is_error,
+        duration_ms,
+        input_summary: diagnostics::truncate_summary(&input_str, 200),
+        output_summary: diagnostics::truncate_summary(output_str, 200),
+    };
+    diag.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .tool_calls
+        .push(entry);
+}
+
+async fn emit_tool_result(
+    tool_use: &ToolUseEvent,
+    direct_tx: &mpsc::Sender<ServerMessage>,
+    request_rid: Option<&str>,
+    output: &str,
+    is_error: bool,
+) {
+    let _ = direct_tx
+        .send(ServerMessage::ToolResult(SwpToolResult {
+            rid: request_rid.map(str::to_string),
+            tool_id: tool_use.id.clone(),
+            tool_name: tool_use.name.clone(),
+            output: output.to_string(),
+            is_error,
+        }))
+        .await;
+
+    debug!(
+        tool_id = %tool_use.id,
+        tool_name = %tool_use.name,
+        is_error,
+        "Tool completed"
+    );
+}
+
+fn append_user_tool_result_turn(
+    request: &mut LlmRequest,
+    intermediate_messages: &mut Vec<Message>,
+    tool_results: Vec<Value>,
+    tool_result_blocks: Vec<ContentBlock>,
+) {
+    let mut user_message = serde_json::Map::new();
+    user_message.insert("role".into(), Value::String("user".into()));
+    user_message.insert("content".into(), Value::Array(tool_results));
+    request.messages.push(Value::Object(user_message));
+
+    intermediate_messages.push(Message {
+        msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+        role: Role::User,
+        content: derive_content_from_blocks(&tool_result_blocks),
+        images: vec![],
+        content_blocks: tool_result_blocks,
+        alt_index: None,
+        alt_count: None,
+        alternatives: vec![],
+        timestamp: chrono::Local::now().to_rfc3339(),
+        provider_key: None,
+    });
+}
+
+async fn stream_tool_loop_continuation(
+    client: &LedgerClient,
+    consumer: &StreamConsumer,
+    request: &mut LlmRequest,
+    character: &str,
+    thinking_enabled: bool,
+) -> Result<StreamResult, ToolLoopError> {
+    let mut ledger_stream = client
+        .stream_raw(request, CallType::ToolLoop, character, thinking_enabled)
+        .await?;
+    match consumer.consume(ledger_stream.reader_mut(), false).await {
+        Ok(result) => {
+            ledger_stream.finalize(&result);
+            Ok(result)
+        }
+        Err(e) => {
+            ledger_stream.finalize_error();
+            Err(e.into())
+        }
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::TestToolContext;
-    use shore_llm::types::ToolUseEvent;
     use shore_llm::LlmClient;
+    use shore_llm::types::ToolUseEvent;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;

@@ -10,6 +10,8 @@
 //! * `f64_to_u32_saturating` clamps a (rounded) non-negative float back into
 //!   `u32` range, saturating rather than wrapping on overflow.
 
+use std::time::Duration;
+
 /// Widen a `u64` to `f64` for ratio/percentage math.
 #[expect(
     clippy::cast_precision_loss,
@@ -55,4 +57,9 @@ pub(crate) fn usize_to_u32(v: usize) -> u32 {
 /// Narrow a `u64` to `usize`, saturating at `usize::MAX` (a no-op on 64-bit).
 pub(crate) fn u64_to_usize(v: u64) -> usize {
     usize::try_from(v).unwrap_or(usize::MAX)
+}
+
+/// Whole milliseconds of an elapsed `Duration`, saturating at `u64::MAX`.
+pub(crate) fn elapsed_ms_u64(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
