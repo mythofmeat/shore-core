@@ -1,6 +1,6 @@
 use super::{ToolCategory, ToolContext, ToolDef, ToolError};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use serde_json::{json, Value};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use serde_json::{Value, json};
 use shore_llm::types::ImageGenerateParams;
 use tracing::info;
 
@@ -83,7 +83,7 @@ pub async fn handle_generate_image(
         decode_data_url(&result.url)?
     } else {
         let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_mins(1))
             .build()
             .map_err(|e| ToolError::Http(format!("failed to create HTTP client: {e}")))?;
 
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn test_decode_data_url_png() {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
         let raw = b"fake png bytes";
         let encoded = STANDARD.encode(raw);
         let url = format!("data:image/png;base64,{encoded}");
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn test_decode_data_url_jpeg() {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
         let raw = b"fake jpeg bytes";
         let encoded = STANDARD.encode(raw);
         let url = format!("data:image/jpeg;base64,{encoded}");
