@@ -1,5 +1,5 @@
 use std::io::{self, Write};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use shore_protocol::server_msg::{
@@ -19,6 +19,10 @@ use crate::images;
 /// Running state for the stream, tracking enough to render the same cohesive
 /// channel layout as the transcript: speech flush-left, and thinking/tool/result
 /// as a dim inset "process" channel with blank lines between blocks.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "stream rendering state tracks independent cursor/channel flags"
+)]
 struct ChunkState {
     /// Whether the previous chunk was thinking content.
     was_thinking: bool,
@@ -55,10 +59,14 @@ impl Default for ChunkState {
 
 static CHUNK_STATE: Mutex<ChunkState> = Mutex::new(ChunkState::INITIAL);
 
+fn lock_chunk_state() -> MutexGuard<'static, ChunkState> {
+    CHUNK_STATE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Reset stream chunk state. Call once at the start of each turn (not per
 /// tool-loop round) so blank-line separation survives across rounds.
 pub fn reset_chunk_state() {
-    *CHUNK_STATE.lock().unwrap() = ChunkState::INITIAL;
+    *lock_chunk_state() = ChunkState::INITIAL;
 }
 
 /// Begin a new block, inserting a blank-line separator when either this block
@@ -88,7 +96,7 @@ fn begin_block(out: &mut impl Write, state: &mut ChunkState, is_process: bool) {
 pub fn print_chunk(chunk: &StreamChunk) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    let mut state = CHUNK_STATE.lock().unwrap();
+    let mut state = lock_chunk_state();
     print_chunk_to(&mut out, &mut state, chunk);
     let _ = out.flush();
 }
@@ -154,7 +162,7 @@ pub fn print_stream_end(end: &StreamEnd) {
 
     // Commit any buffered thinking that ended without a newline.
     {
-        let mut state = CHUNK_STATE.lock().unwrap();
+        let mut state = lock_chunk_state();
         flush_thinking(&mut out, &mut state);
     }
 
@@ -278,7 +286,7 @@ pub(crate) fn write_tool_body_plain(out: &mut impl Write, body: &str) {
 pub fn print_tool_call(call: &ToolCall) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    let mut state = CHUNK_STATE.lock().unwrap();
+    let mut state = lock_chunk_state();
 
     flush_thinking(&mut out, &mut state); // commit any buffered thinking first
     begin_block(&mut out, &mut state, true);
@@ -300,7 +308,7 @@ pub fn print_tool_call(call: &ToolCall) {
 pub fn print_tool_result(result: &ToolResult) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    let mut state = CHUNK_STATE.lock().unwrap();
+    let mut state = lock_chunk_state();
 
     flush_thinking(&mut out, &mut state);
     begin_block(&mut out, &mut state, true);

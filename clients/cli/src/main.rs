@@ -45,10 +45,7 @@ fn main() -> ExitCode {
         .init();
 
     // Initialize color control: --no-color flag or NO_COLOR env var disables color.
-    let no_color = cli.no_color
-        || std::env::var("NO_COLOR")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
+    let no_color = cli.no_color || std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty());
     output::set_color_enabled(!no_color);
 
     // Handle local-only commands that don't need a daemon connection.
@@ -57,10 +54,16 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .expect("failed to build tokio runtime");
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            output::print_error(&format!("failed to build tokio runtime: {e}"));
+            return ExitCode::FAILURE;
+        }
+    };
 
     match rt.block_on(run::execute(cli)) {
         Ok(()) => ExitCode::SUCCESS,

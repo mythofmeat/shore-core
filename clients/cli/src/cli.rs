@@ -294,6 +294,10 @@ pub enum CliCommand {
 
         /// Filter by call type. Pass without a value to see a breakdown
         /// grouped by call type (useful for discovering what types exist).
+        #[expect(
+            clippy::option_option,
+            reason = "clap needs absent, present-without-value, and present-with-value states"
+        )]
         #[arg(long, num_args = 0..=1)]
         call_type: Option<Option<String>>,
 
@@ -616,12 +620,11 @@ fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
             .parse::<f64>()
             .ok()
             .and_then(serde_json::Number::from_f64)
-            .map(Value::Number)
-            .unwrap_or_else(|| Value::String(trimmed.to_string())),
-        "budget_tokens" | "max_output_tokens" => trimmed
-            .parse::<u64>()
-            .map(|n| Value::Number(n.into()))
-            .unwrap_or_else(|_| Value::String(trimmed.to_string())),
+            .map_or_else(|| Value::String(trimmed.to_string()), Value::Number),
+        "budget_tokens" | "max_output_tokens" => trimmed.parse::<u64>().map_or_else(
+            |_| Value::String(trimmed.to_string()),
+            |n| Value::Number(n.into()),
+        ),
         "reasoning_effort" => match trimmed.to_ascii_lowercase().as_str() {
             "off" | "none" | "disable" | "disabled" | "unset" | "" => Value::String("off".into()),
             _ => Value::String(trimmed.to_string()),
@@ -658,6 +661,10 @@ pub(crate) fn alt_command_to_swp(
 ///
 /// Returns `None` for `Send` and `Regen` which use dedicated SWP message types
 /// rather than the generic `command` type.
+#[expect(
+    clippy::too_many_lines,
+    reason = "central CLI-to-SWP command mapping is easier to audit as one dispatch table"
+)]
 pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
     use serde_json::json;
     match cmd {
@@ -763,7 +770,6 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             // right daemon command per case; keep this mapping aligned
             // with the "show" path (model_settings).
             match (key.as_deref(), value.as_deref(), *reset) {
-                (None, _, _) => Some(("model_settings", json!({}))),
                 (Some(k), _, true) => Some((
                     "set_model_setting",
                     json!({
@@ -772,7 +778,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
                         "scope": if *global { "global" } else { "character" },
                     }),
                 )),
-                (Some(_), None, false) => Some(("model_settings", json!({}))),
+                (None, _, _) | (Some(_), None, false) => Some(("model_settings", json!({}))),
                 (Some(k), Some(v), false) => Some((
                     "set_model_setting",
                     json!({
@@ -2255,6 +2261,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "command mapping coverage is clearer as one exhaustive table"
+    )]
     fn all_non_message_commands_map() {
         // Every variant except Send, Regen, Notify, Character (no --info),
         // Config --path, and Completions should produce Some.

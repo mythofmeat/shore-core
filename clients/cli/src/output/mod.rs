@@ -45,9 +45,7 @@ pub(crate) const MAX_TOOL_OUTPUT: usize = 500;
 
 /// Get terminal width, falling back to 80 columns.
 pub(crate) fn term_width() -> usize {
-    crossterm::terminal::size()
-        .map(|(w, _)| w as usize)
-        .unwrap_or(80)
+    crossterm::terminal::size().map_or(80, |(w, _)| w as usize)
 }
 
 // ---------------------------------------------------------------------------
@@ -284,9 +282,9 @@ pub(crate) fn print_dim_line(out: &mut impl Write, text: &str) {
 /// Write a section header: `-- Title ----------------------`
 pub(crate) fn write_section_header(out: &mut impl Write, title: &str, suffix: &str, width: usize) {
     let prefix = if suffix.is_empty() {
-        format!("\u{2500}\u{2500} {} ", title)
+        format!("\u{2500}\u{2500} {title} ")
     } else {
-        format!("\u{2500}\u{2500} {} ({}) ", title, suffix)
+        format!("\u{2500}\u{2500} {title} ({suffix}) ")
     };
     let prefix_len = prefix.chars().count();
     let trail = width.saturating_sub(prefix_len);

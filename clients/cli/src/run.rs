@@ -20,8 +20,7 @@ static SESSION_DISPLAY_CHARACTER: OnceLock<String> = OnceLock::new();
 fn session_display_character() -> &'static str {
     SESSION_DISPLAY_CHARACTER
         .get()
-        .map(String::as_str)
-        .unwrap_or("Assistant")
+        .map_or("Assistant", String::as_str)
 }
 
 fn log_role_matches(filter: Option<&LogRole>, role: &Role) -> bool {
@@ -33,8 +32,19 @@ fn log_role_matches(filter: Option<&LogRole>, role: &Role) -> bool {
     }
 }
 
+fn active_start_index(data: &serde_json::Value) -> usize {
+    data["active_start"]
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0)
+}
+
 /// Execute the CLI command by connecting to the daemon and dispatching.
 #[instrument(skip(cli))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "CLI dispatcher remains intentionally monolithic until command routing is split"
+)]
 pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // config --path: query the daemon for its actual config dir, fall back to local.
     if matches!(&cli.command, CliCommand::Config { path: true, .. }) {
@@ -49,7 +59,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         return handle_create_character(name);
     }
     if let CliCommand::Connectors { subcommand } = &cli.command {
-        return handle_connectors_command(subcommand, &cli).await;
+        return handle_connectors_command(subcommand, &cli);
     }
     if let CliCommand::Complete { kind } = &cli.command {
         // Any failure (daemon down, parse error) ends with empty stdout
@@ -279,20 +289,20 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(messages) = data["messages"].as_array() {
                     for msg in messages {
                         if let Some(c) = msg["content"].as_str() {
-                            println!("{}", c);
+                            println!("{c}");
                         }
                     }
                 }
             } else if *plain {
                 let char_name = display_character.as_str();
                 if let Some(messages) = data["messages"].as_array() {
-                    let active_start = data["active_start"].as_u64().unwrap_or(0) as usize;
+                    let active_start = active_start_index(&data);
                     output::print_log_plain_with_boundary(messages, active_start, char_name);
                 }
             } else {
                 let char_name = display_character.as_str();
                 if let Some(messages) = data["messages"].as_array() {
-                    let active_start = data["active_start"].as_u64().unwrap_or(0) as usize;
+                    let active_start = active_start_index(&data);
                     output::print_log_with_boundary(messages, active_start, char_name);
                 }
             }
@@ -314,10 +324,10 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             if log_role_matches(role.as_ref(), &Role::Assistant) =>
                         {
                             output::reset_chunk_state();
-                            if !start.regen {
-                                output::print_follow_stream_start(follow_char);
-                            } else {
+                            if start.regen {
                                 output::print_stream_start(start.regen);
+                            } else {
+                                output::print_follow_stream_start(follow_char);
                             }
                         }
                         ServerMessage::StreamChunk(chunk)
@@ -346,7 +356,6 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             output::print_phase(phase);
                         }
                         ServerMessage::Shutdown(_) => break,
-                        ServerMessage::Ping(_) | ServerMessage::History(_) => {}
                         _ => {}
                     }
                 }
@@ -450,8 +459,10 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     *json
                         || matches!(
                             subcommand,
-                            Some(crate::cli::ProviderCommand::Models { json: true, .. })
-                                | Some(crate::cli::ProviderCommand::Refresh { json: true, .. })
+                            Some(
+                                crate::cli::ProviderCommand::Models { json: true, .. }
+                                    | crate::cli::ProviderCommand::Refresh { json: true, .. }
+                            )
                         )
                 }
                 CliCommand::Character { json, .. }
@@ -476,8 +487,9 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             );
             let show_all = matches!(other, CliCommand::Config { all: true, .. });
-            let (name, args) = crate::cli::to_swp_command(other)
-                .expect("non-send/regen/local command must map to SWP command");
+            let Some((name, args)) = crate::cli::to_swp_command(other) else {
+                return Err("non-send/regen/local command must map to SWP command".into());
+            };
             conn.send_command(name, args).await?;
             let data = recv_command_data(&mut conn).await?;
             if toml_mode {
@@ -570,20 +582,20 @@ async fn handle_complete_query(
 
 /// Handle `shore connectors` subcommands. Today only Matrix exists, so
 /// this dispatches to its handler; new connectors get their own arms here.
-async fn handle_connectors_command(
+fn handle_connectors_command(
     subcommand: &crate::cli::ConnectorsCommand,
     cli: &Cli,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match subcommand {
         crate::cli::ConnectorsCommand::Matrix { subcommand } => {
-            handle_matrix_command(subcommand, cli).await
+            handle_matrix_command(subcommand, cli)
         }
     }
 }
 
 /// Handle `shore connectors matrix` subcommands by delegating to the
 /// `shore-matrix` binary.
-async fn handle_matrix_command(
+fn handle_matrix_command(
     subcommand: &crate::cli::MatrixCommand,
     cli: &Cli,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -924,22 +936,21 @@ async fn print_config_path(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> 
     let addr = resolve_addr(cli)?;
     let character = cli.character.clone().or_else(state::read_active_character);
 
-    match SWPConnection::connect(&addr, "cli", "shore-cli", character).await {
-        Ok((mut conn, _hello, _history)) => {
-            conn.send_command("status", serde_json::json!({})).await?;
-            let data = recv_command_data(&mut conn).await?;
-            if let Some(dir) = data["config_dir"].as_str() {
-                println!("{dir}");
-            } else {
-                println!("{}", config_dir().display());
-            }
-            Ok(())
-        }
-        Err(_) => {
-            eprintln!("(no daemon running — showing local config dir)");
+    if let Ok((mut conn, _hello, _history)) =
+        SWPConnection::connect(&addr, "cli", "shore-cli", character).await
+    {
+        conn.send_command("status", serde_json::json!({})).await?;
+        let data = recv_command_data(&mut conn).await?;
+        if let Some(dir) = data["config_dir"].as_str() {
+            println!("{dir}");
+        } else {
             println!("{}", config_dir().display());
-            Ok(())
         }
+        Ok(())
+    } else {
+        eprintln!("(no daemon running — showing local config dir)");
+        println!("{}", config_dir().display());
+        Ok(())
     }
 }
 
@@ -957,14 +968,13 @@ fn print_config_toml(
     // Prefer the daemon-supplied baseline; synthesize one locally if absent so
     // we behave the same against pre-defaults daemons.
     let local_baseline;
-    let defaults: Option<&serde_json::Value> = match data.get("defaults") {
-        Some(d) => Some(d),
-        None => {
-            local_baseline = serde_json::to_value(shore_config::app::AppConfig::default()).ok();
-            match key {
-                Some(k) => local_baseline.as_ref().and_then(|d| d.get(k)),
-                None => local_baseline.as_ref(),
-            }
+    let defaults: Option<&serde_json::Value> = if let Some(d) = data.get("defaults") {
+        Some(d)
+    } else {
+        local_baseline = serde_json::to_value(shore_config::app::AppConfig::default()).ok();
+        match key {
+            Some(k) => local_baseline.as_ref().and_then(|d| d.get(k)),
+            None => local_baseline.as_ref(),
         }
     };
     let filtered: serde_json::Value;
@@ -982,12 +992,12 @@ fn print_config_toml(
     // table name so the output drops into a config file as-is — otherwise
     // nested tables would be at root level (e.g. `[heartbeat]` instead of
     // `[behavior.heartbeat]`).
-    let wrapped;
+    let section_payload;
     let to_serialize: &serde_json::Value = if let Some(k) = key {
-        let mut wrapper = serde_json::Map::new();
-        wrapper.insert(k.to_string(), effective.clone());
-        wrapped = serde_json::Value::Object(wrapper);
-        &wrapped
+        let mut section_map = serde_json::Map::new();
+        section_map.insert(k.to_string(), effective.clone());
+        section_payload = serde_json::Value::Object(section_map);
+        &section_payload
     } else {
         effective
     };
@@ -1174,10 +1184,6 @@ async fn recv_streaming_response(
             ServerMessage::SendImage(img) => {
                 output::print_send_image(img);
             }
-            ServerMessage::NewMessage(_) => {
-                // Ignore — the sender already knows what they sent.
-                // NewMessage is for follow-mode / other clients.
-            }
             ServerMessage::Phase(phase) => {
                 // Update spinner instead of printing static label when active.
                 if spinner.is_active() {
@@ -1189,9 +1195,6 @@ async fn recv_streaming_response(
                     output::print_phase(phase);
                 }
             }
-            ServerMessage::Ping(_) => {
-                // Keepalive, ignore
-            }
             ServerMessage::ProviderFallbackWarning(w) => {
                 spinner.clear().await;
                 output::print_provider_fallback_warning(w);
@@ -1200,9 +1203,7 @@ async fn recv_streaming_response(
                 spinner.clear().await;
                 output::print_usage_warning(w);
             }
-            _ => {
-                // Other messages during streaming are unexpected but not fatal
-            }
+            _ => {}
         }
     }
 }
@@ -1224,7 +1225,6 @@ async fn recv_command_data(
                 );
                 return Err(err.message.clone().into());
             }
-            ServerMessage::Ping(_) | ServerMessage::History(_) => {}
             ServerMessage::SendImage(img) => {
                 output::print_send_image(img);
             }
@@ -1851,10 +1851,10 @@ mod tests {
         // wrapping logic by replicating the path.
         let payload = data.get("config").unwrap();
         let key = data.get("key").and_then(|v| v.as_str()).unwrap();
-        let mut wrapper = serde_json::Map::new();
-        wrapper.insert(key.to_string(), payload.clone());
-        let wrapped = serde_json::Value::Object(wrapper);
-        let toml_value = super::json_to_toml_value(&wrapped).expect("table");
+        let mut section_map = serde_json::Map::new();
+        section_map.insert(key.to_string(), payload.clone());
+        let section_payload = serde_json::Value::Object(section_map);
+        let toml_value = super::json_to_toml_value(&section_payload).expect("table");
         let rendered = match toml_value {
             toml::Value::Table(t) => toml::to_string_pretty(&t).expect("ok"),
             _ => panic!("expected table"),

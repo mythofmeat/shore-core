@@ -94,17 +94,25 @@ fn base_request(base_url: &str) -> LlmRequest {
 }
 
 /// Drain a streaming response so the mock observes the request completing.
-async fn drain_stream(client: &LlmClient, req: &LlmRequest) {
+async fn drain_stream(
+    client: &LlmClient,
+    req: &LlmRequest,
+) -> Result<(), Box<dyn std::error::Error>> {
     use tokio::io::AsyncBufReadExt;
-    let mut reader = client.stream_raw(req).await.expect("stream open");
+    let mut reader = client.stream_raw(req).await?;
     let mut line = String::new();
     loop {
         line.clear();
-        let n = reader.read_line(&mut line).await.expect("stream read");
+        let n = reader.read_line(&mut line).await?;
         if n == 0 {
             break;
         }
     }
+    Ok(())
+}
+
+fn assert_stream_drained(result: &Result<(), Box<dyn std::error::Error>>) {
+    assert!(result.is_ok(), "stream should drain: {result:?}");
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -143,7 +151,7 @@ async fn cache_control_pinned_zero_marks_last_system_block() {
     let client = LlmClient::new();
     let mut req = base_request(&mock.base_url());
     req.provider_options = Some(json!({"cache_ttl": "5m"}));
-    drain_stream(&client, &req).await;
+    assert_stream_drained(&drain_stream(&client, &req).await);
 
     let body = single_request(&mock).await;
     let paths = find_cache_control_paths(&body);
@@ -175,7 +183,7 @@ async fn cache_control_default_with_two_system_blocks_anchors_at_minus_one() {
         {"type": "text", "text": "memory_index simulated", "_label": "memory_index"}
     ]));
     req.provider_options = Some(json!({"cache_ttl": "5m"}));
-    drain_stream(&client, &req).await;
+    assert_stream_drained(&drain_stream(&client, &req).await);
 
     let body = single_request(&mock).await;
     let paths = find_cache_control_paths(&body);
@@ -197,7 +205,7 @@ async fn cache_control_disabled_when_cache_ttl_absent() {
 
     let client = LlmClient::new();
     let req = base_request(&mock.base_url());
-    drain_stream(&client, &req).await;
+    assert_stream_drained(&drain_stream(&client, &req).await);
 
     let body = single_request(&mock).await;
     let paths = find_cache_control_paths(&body);
@@ -309,7 +317,7 @@ async fn tool_loop_iter2_request_preserves_assistant_block_order() {
         "description": "roll dice",
         "input_schema": {"type": "object"}
     })]);
-    drain_stream(&client, &req).await;
+    assert_stream_drained(&drain_stream(&client, &req).await);
 
     // Caller-side tool-loop continuation: re-emit the assistant content
     // verbatim, then append a tool_result user turn.
@@ -325,7 +333,7 @@ async fn tool_loop_iter2_request_preserves_assistant_block_order() {
         "role": "user",
         "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "14"}]
     }));
-    drain_stream(&client, &req).await;
+    assert_stream_drained(&drain_stream(&client, &req).await);
 
     let bodies = mock.received_requests().await;
     assert_eq!(bodies.len(), 2);
@@ -372,7 +380,7 @@ async fn capture_anthropic_body_for_model(opts: Value, model: &str) -> Value {
     // 1024 <= budget < max_tokens) has room — base_request's 1024 is too low.
     req.max_tokens = 16_000;
     req.provider_options = Some(opts);
-    drain_stream(&client, &req).await;
+    assert_stream_drained(&drain_stream(&client, &req).await);
     single_request(&mock).await
 }
 
@@ -550,7 +558,7 @@ async fn inline_system_message_at_build_time_is_stable_across_tool_rounds() {
         "input_schema": {"type": "object"}
     })]);
 
-    drain_stream(&client, &req).await;
+    assert_stream_drained(&drain_stream(&client, &req).await);
 
     // Tool-loop continuation: assistant + user(tool_result) appear AFTER
     // the inline system message, not in place of it.
@@ -566,7 +574,7 @@ async fn inline_system_message_at_build_time_is_stable_across_tool_rounds() {
         "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}]
     }));
 
-    drain_stream(&client, &req).await;
+    assert_stream_drained(&drain_stream(&client, &req).await);
 
     let bodies = mock.received_requests().await;
     assert_eq!(bodies.len(), 2);
