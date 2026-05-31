@@ -4,14 +4,14 @@ pub mod types;
 
 pub use background::run_compaction;
 pub use parser::{
-    parse_compaction_response, MemoryFileOp, DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM,
+    DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM, MemoryFileOp, parse_compaction_response,
 };
 pub use types::*;
 
 use crate::memory::markdown_store::MarkdownMemoryStore;
 use crate::tools::{self as tool_system, ToolContext};
 use dashmap::DashMap;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shore_config::character_data_dir;
 use shore_llm::types::GenerateResponse;
 use std::path::{Path, PathBuf};
@@ -245,10 +245,9 @@ impl CompactionManager {
         let total = entries.len();
         let mut context = String::new();
         for entry in entries.into_iter().take(EXISTING_MEMORY_CONTEXT_MAX_FILES) {
-            context.push_str(&format!(
-                "<file path=\"memory/{}\">\n",
-                escape_attr(&entry.path)
-            ));
+            context.push_str("<file path=\"memory/");
+            context.push_str(&escape_attr(&entry.path));
+            context.push_str("\">\n");
             context.push_str(&truncate_chars(
                 &entry.content,
                 EXISTING_MEMORY_CONTEXT_MAX_CHARS_PER_FILE,
@@ -260,10 +259,8 @@ impl CompactionManager {
         }
 
         if total > EXISTING_MEMORY_CONTEXT_MAX_FILES {
-            context.push_str(&format!(
-                "{} additional memory files omitted from this snapshot.\n",
-                total - EXISTING_MEMORY_CONTEXT_MAX_FILES
-            ));
+            context.push_str(&(total - EXISTING_MEMORY_CONTEXT_MAX_FILES).to_string());
+            context.push_str(" additional memory files omitted from this snapshot.\n");
         }
 
         context.trim_end().to_string()
@@ -336,7 +333,14 @@ impl CompactionManager {
     /// returned preview but no files are modified and the conversation is
     /// not archived.
     #[instrument(skip(self, messages, active_content, system_template, prompt_template, llm, conversation_mgr, markdown_store, tool_ctx), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "compaction boundary still carries storage, prompt, and tool-loop state"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "compaction orchestration phase split is tracked in #109"
+    )]
     pub async fn compact(
         &self,
         conversation_id: &str,
@@ -577,7 +581,9 @@ impl CompactionManager {
                     );
                 }
             } else {
-                warn!("compaction: MEMORY.md updated but data_dir was unavailable for prompt refresh queue");
+                warn!(
+                    "compaction: MEMORY.md updated but data_dir was unavailable for prompt refresh queue"
+                );
             }
         }
         let dream_body = format!(
@@ -882,7 +888,6 @@ impl IdleTimer {
                 () = self.activity_notify.notified() => {
                     // Activity detected — reset timer by restarting loop.
                     debug!("Idle timer reset by activity");
-                    continue;
                 }
             }
         }
@@ -899,9 +904,9 @@ mod tests {
     use chrono::Local;
     use std::future::Future;
     use std::pin::Pin;
+    use std::sync::Mutex as StdMutex;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
-    use std::sync::Mutex as StdMutex;
     use tokio::sync::oneshot;
 
     #[test]
@@ -1691,10 +1696,11 @@ mod tests {
                 assert_eq!(r.rejected_paths.len(), 5);
                 assert!(r.rejected_paths.iter().any(|p| p == "SOUL.md"));
                 assert!(r.rejected_paths.iter().any(|p| p == "DREAMS.md"));
-                assert!(r
-                    .rejected_paths
-                    .iter()
-                    .any(|p| p == "memory/.dreams/notes.md"));
+                assert!(
+                    r.rejected_paths
+                        .iter()
+                        .any(|p| p == "memory/.dreams/notes.md")
+                );
             }
             other => panic!("expected NoMemoryWrites, got {other:?}"),
         }
@@ -1759,10 +1765,12 @@ mod tests {
         };
         assert_eq!(result.memory_files_written.len(), 2);
         assert!(result.memory_files_written.iter().any(|p| p == "MEMORY.md"));
-        assert!(result
-            .memory_files_written
-            .iter()
-            .any(|p| p == "memory/notes/ok.md"));
+        assert!(
+            result
+                .memory_files_written
+                .iter()
+                .any(|p| p == "memory/notes/ok.md")
+        );
 
         // MEMORY.md lands at workspace root, memory/notes/ok.md inside memory/.
         let mem = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
@@ -1817,10 +1825,11 @@ mod tests {
             CompactionOutcome::DryRun(r) => {
                 assert_eq!(r.would_write_files, 2);
                 assert_eq!(r.file_ops_preview.len(), 2);
-                assert!(r
-                    .file_ops_preview
-                    .iter()
-                    .any(|op| op.path == "memory/notes/preview.md"));
+                assert!(
+                    r.file_ops_preview
+                        .iter()
+                        .any(|op| op.path == "memory/notes/preview.md")
+                );
                 assert!(r.tool_rounds >= 1);
             }
             other => panic!("expected DryRun, got {other:?}"),
