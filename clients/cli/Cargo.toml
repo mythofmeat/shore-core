@@ -27,6 +27,7 @@ base64 = "0.22"
 tempfile = "3"
 
 [dev-dependencies]
+insta = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"

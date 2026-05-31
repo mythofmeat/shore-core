@@ -481,6 +481,12 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+CI also runs a visibility-only coverage report:
+
+```sh
+cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info
+```
+
 Release build gate:
 
 ```sh

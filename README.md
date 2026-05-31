@@ -150,6 +150,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release -p shore-daemon -p shore-cli
 ```
 
+Coverage visibility in CI is produced with:
+
+```sh
+cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info
+```
+
 Focused checks:
 
 ```sh

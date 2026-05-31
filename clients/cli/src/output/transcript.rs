@@ -234,6 +234,16 @@ pub fn print_log_with_boundary(
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let width = term_width();
+    write_log_with_boundary(&mut out, messages, active_start, character_name, width);
+}
+
+fn write_log_with_boundary(
+    out: &mut impl Write,
+    messages: &[serde_json::Value],
+    active_start: usize,
+    character_name: &str,
+    width: usize,
+) {
     let char_color = character_color(character_name);
 
     let mut prev_date: Option<String> = None;
@@ -242,7 +252,7 @@ pub fn print_log_with_boundary(
     let archived_turns = count_user_turn_values(&messages[..active_start]);
     for (index, msg) in messages.iter().enumerate() {
         if active_start > 0 && index == active_start {
-            write_archive_boundary(&mut out, width, archived_turns);
+            write_archive_boundary(out, width, archived_turns);
         }
 
         let role_str = msg["role"].as_str().unwrap_or("user");
@@ -274,8 +284,8 @@ pub fn print_log_with_boundary(
         // Write header (skip for tool result messages -- they're continuations).
         if !is_tool_result_msg {
             match role_str {
-                "user" => write_header(&mut out, "You", &time_str, Color::Cyan, width),
-                "assistant" => write_header(&mut out, character_name, &time_str, char_color, width),
+                "user" => write_header(out, "You", &time_str, Color::Cyan, width),
+                "assistant" => write_header(out, character_name, &time_str, char_color, width),
                 "system" => {
                     if use_color() {
                         let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
@@ -290,7 +300,7 @@ pub fn print_log_with_boundary(
             }
         }
 
-        render_message_content(&mut out, content_blocks, content, is_tool_result_msg);
+        render_message_content(out, content_blocks, content, is_tool_result_msg);
 
         // System messages: close dimming.
         if role_str == "system" && use_color() {
@@ -322,7 +332,7 @@ pub fn print_log_with_boundary(
     }
 
     if active_start > 0 && active_start == messages.len() {
-        write_archive_boundary(&mut out, width, archived_turns);
+        write_archive_boundary(out, width, archived_turns);
     }
 }
 
@@ -363,7 +373,15 @@ pub fn print_log_plain_with_boundary(
 ) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
+    write_log_plain_with_boundary(&mut out, messages, active_start, character_name);
+}
 
+fn write_log_plain_with_boundary(
+    out: &mut impl Write,
+    messages: &[serde_json::Value],
+    active_start: usize,
+    character_name: &str,
+) {
     let active_start = active_start.min(messages.len());
     let archived_turns = count_user_turn_values(&messages[..active_start]);
     for (index, msg) in messages.iter().enumerate() {
@@ -412,7 +430,7 @@ pub fn print_log_plain_with_boundary(
                             let name = block["name"].as_str().unwrap_or("?");
                             let _ = writeln!(out, "[tool: {name}]");
                             if let Some(input_str) = format_tool_input(&block["input"]) {
-                                write_tool_body_plain(&mut out, &input_str);
+                                write_tool_body_plain(out, &input_str);
                             }
                         }
                         "tool_result" => {
@@ -421,7 +439,7 @@ pub fn print_log_plain_with_boundary(
                             let label = if is_error { "error" } else { "result" };
                             let _ = writeln!(out, "[{label}]");
                             let output = format_tool_output(output);
-                            write_tool_body_plain(&mut out, &output);
+                            write_tool_body_plain(out, &output);
                         }
                         _ => {}
                     }
@@ -584,6 +602,76 @@ mod tests {
         let _ = stdout.write_all(&buf);
         let _ = stdout.write_all(b"----- end -----\n");
         let _ = stdout.flush();
+    }
+
+    fn transcript_snapshot_messages() -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({
+                "msg_id": "m1",
+                "role": "user",
+                "content": "Please patch the config loader.",
+                "content_blocks": [
+                    {"type": "text", "text": "Please patch the config loader."}
+                ],
+                "images": [
+                    {"path": "/tmp/config-error.png", "caption": "failing config"}
+                ],
+                "timestamp": ""
+            }),
+            serde_json::json!({
+                "msg_id": "m2",
+                "role": "assistant",
+                "content": "I'll inspect the loader and patch it.",
+                "content_blocks": [
+                    {"type": "thinking", "thinking": "The loader probably rejects an alias. I should verify the schema before changing behavior."},
+                    {"type": "text", "text": "I'll inspect the loader and patch it."},
+                    {"type": "tool_use", "id": "toolu_1", "name": "read", "input": {"path": "core/config/src/app.rs"}},
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "found DefaultsConfig", "is_error": false},
+                    {"type": "redacted_thinking", "data": "opaque"},
+                    {"type": "text", "text": "The fix belongs in the alias migration."}
+                ],
+                "images": [],
+                "timestamp": ""
+            }),
+            serde_json::json!({
+                "msg_id": "m3",
+                "role": "user",
+                "content": "patched",
+                "content_blocks": [
+                    {"type": "tool_result", "tool_use_id": "toolu_2", "content": "apply_patch ok", "is_error": false}
+                ],
+                "images": [],
+                "timestamp": ""
+            }),
+            serde_json::json!({
+                "msg_id": "m4",
+                "role": "assistant",
+                "content": "Done.",
+                "content_blocks": [
+                    {"type": "text", "text": "Done."}
+                ],
+                "images": [],
+                "timestamp": ""
+            }),
+        ]
+    }
+
+    #[test]
+    fn rich_transcript_render_snapshot() {
+        set_color_enabled(false);
+        let mut buf = Vec::new();
+        write_log_with_boundary(&mut buf, &transcript_snapshot_messages(), 2, "Sable", 72);
+        let output = String::from_utf8(buf).unwrap();
+        insta::assert_snapshot!("rich_transcript_render", output);
+    }
+
+    #[test]
+    fn plain_transcript_render_snapshot() {
+        set_color_enabled(false);
+        let mut buf = Vec::new();
+        write_log_plain_with_boundary(&mut buf, &transcript_snapshot_messages(), 2, "Sable");
+        let output = String::from_utf8(buf).unwrap();
+        insta::assert_snapshot!("plain_transcript_render", output);
     }
 
     #[test]

@@ -2344,6 +2344,110 @@ mod tests {
 
     // ── build_body ────────────────────────────────────────────────────
 
+    fn snapshot_request_messages() -> Vec<Value> {
+        vec![
+            json!({
+                "role": "user",
+                "content": "Summarize the active memory and update the plan."
+            }),
+            json!({
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "I need the current memory before writing.",
+                        "signature": "sig_abc"
+                    },
+                    {
+                        "type": "text",
+                        "text": "I'll inspect memory first."
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "read",
+                        "input": {"path": "MEMORY.md"}
+                    }
+                ]
+            }),
+            json!({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "content": "Current plan: stabilize request snapshots."
+                    }
+                ]
+            }),
+            json!({
+                "role": "system",
+                "content": "Write the final answer tersely."
+            }),
+        ]
+    }
+
+    fn snapshot_request_system() -> Value {
+        json!([
+            {"type": "text", "text": "You are Sable.", "_label": "soul"},
+            {"type": "text", "text": "User prefers concise answers.", "_label": "user"},
+            {"type": "text", "text": "MEMORY index changes often.", "_label": "memory_index"}
+        ])
+    }
+
+    fn snapshot_request_tools() -> Vec<Value> {
+        vec![json!({
+            "name": "read",
+            "description": "Read a workspace file.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"}
+                },
+                "required": ["path"]
+            }
+        })]
+    }
+
+    #[test]
+    fn snapshot_anthropic_request_body() {
+        let mut request =
+            make_request(snapshot_request_messages(), Some(snapshot_request_system()));
+        request.model = "claude-sonnet-4-6".into();
+        request.max_tokens = 8192;
+        request.temperature = Some(0.4);
+        request.top_p = Some(0.9);
+        request.tools = Some(snapshot_request_tools());
+        request.provider_options = Some(json!({
+            "cache_ttl": "1h",
+            "reasoning_effort": "high"
+        }));
+
+        let (body, _) = build_body(&request, true);
+        insta::assert_json_snapshot!("anthropic_request_body", body);
+    }
+
+    #[test]
+    fn snapshot_openrouter_anthropic_request_body() {
+        let mut request =
+            make_request(snapshot_request_messages(), Some(snapshot_request_system()));
+        request.model = "anthropic/claude-opus-4.8".into();
+        request.base_url = Some("https://openrouter.ai/api/v1".into());
+        request.provider_key = Some("openrouter".into());
+        request.max_tokens = 16_384;
+        request.tools = Some(snapshot_request_tools());
+        request.provider_options = Some(json!({
+            "cache_ttl": "1h",
+            "reasoning_effort": "max",
+            "openrouter_provider": {
+                "order": ["Anthropic"]
+            }
+        }));
+
+        let (body, _) = build_body(&request, false);
+        insta::assert_json_snapshot!("openrouter_anthropic_request_body", body);
+    }
+
     #[test]
     fn test_build_body_minimal() {
         let request = make_request(vec![json!({"role": "user", "content": "hi"})], None);

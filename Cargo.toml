@@ -49,6 +49,8 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 dashmap = "6"
 futures-util = "0.3"
 async-trait = "0.1"
+insta = { version = "1", features = ["json"] }
+proptest = "1"
 # `version` is required alongside `path` for `cargo package` to succeed
 # (cargo refuses path-only deps when packaging, even when publish is
 # disabled). Versions here track what is published on crates.io for the

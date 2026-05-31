@@ -1360,6 +1360,75 @@ mod tests {
         assert_eq!(provider["allow_fallbacks"], false);
     }
 
+    fn openrouter_openai_snapshot_messages() -> Vec<Value> {
+        vec![
+            json!({"role": "user", "content": "Check the provider route."}),
+            json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "The route should stay OpenAI-shaped."},
+                    {"type": "text", "text": "I'll inspect the route."},
+                    {
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "read",
+                        "input": {"path": "CONFIGURATION.md"}
+                    }
+                ]
+            }),
+            json!({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_1",
+                        "content": "openrouter_provider = { order = [\"OpenAI\"] }"
+                    }
+                ]
+            }),
+            json!({"role": "system", "content": "Keep the response short."}),
+            json!({"role": "user", "content": "Now answer."}),
+        ]
+    }
+
+    #[test]
+    fn snapshot_openrouter_openai_request_body() {
+        let mut request = make_request_with_model(
+            openrouter_openai_snapshot_messages(),
+            Some(json!([
+                {"type": "text", "text": "You are Sable."},
+                {"type": "text", "text": "Prefer exact provider facts."}
+            ])),
+            "openai/gpt-4.1-mini",
+        );
+        request.provider_key = Some("openrouter".into());
+        request.base_url = Some("https://openrouter.ai/api/v1".into());
+        request.max_tokens = 2048;
+        request.temperature = Some(0.2);
+        request.top_p = Some(0.95);
+        request.tools = Some(vec![json!({
+            "name": "read",
+            "description": "Read a workspace file.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"}
+                },
+                "required": ["path"]
+            }
+        })]);
+        request.provider_options = Some(json!({
+            "reasoning_effort": "medium",
+            "openrouter_provider": {
+                "order": ["OpenAI"]
+            }
+        }));
+
+        let ctx = build_provider_context(&request);
+        let body = build_chat_body(&request, &ctx, true);
+        insta::assert_json_snapshot!("openrouter_openai_request_body", body);
+    }
+
     #[test]
     fn test_build_headers_openrouter() {
         let mut request = make_request(vec![], None);
