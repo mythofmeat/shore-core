@@ -81,7 +81,7 @@ impl ToolContext for HeartbeatToolContext {
         self.inner.character_name()
     }
     fn schedule_next_wake(&self, input: &Value) -> Option<Result<Value, ToolError>> {
-        Some(schedule_next_wake_in_state(self.state.as_ref(), input))
+        Some(Ok(schedule_next_wake_in_state(self.state.as_ref(), input)))
     }
     fn workspace_dir(&self) -> &str {
         self.inner.workspace_dir()
@@ -114,6 +114,10 @@ impl ToolContext for HeartbeatToolContext {
 // ---------------------------------------------------------------------------
 
 /// All autonomy state for a single character.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "autonomy state tracks independent persisted and runtime flags"
+)]
 pub struct AutonomyState {
     pub heartbeat: HeartbeatClock,
     pub cache_keepalive: CacheKeepalive,
@@ -150,7 +154,7 @@ impl AutonomyState {
 fn background_retry_delay(failure_count: u32) -> Duration {
     let exponent = failure_count.saturating_sub(1).min(6);
     let secs = 60u64.saturating_mul(1u64 << exponent);
-    Duration::from_secs(secs.min(60 * 60))
+    Duration::from_secs(secs.min(3_600))
 }
 
 // ---------------------------------------------------------------------------
@@ -180,11 +184,19 @@ fn instant_to_rfc3339(instant: Instant) -> String {
     let now_instant = Instant::now();
     let now_utc = chrono::Utc::now();
     let wall = if instant > now_instant {
-        now_utc + chrono::Duration::from_std(instant.duration_since(now_instant)).unwrap()
+        now_utc
+            + chrono::Duration::from_std(instant.duration_since(now_instant))
+                .unwrap_or(chrono::Duration::MAX)
     } else {
-        now_utc - chrono::Duration::from_std(now_instant.duration_since(instant)).unwrap()
+        now_utc
+            - chrono::Duration::from_std(now_instant.duration_since(instant))
+                .unwrap_or(chrono::Duration::MAX)
     };
     wall.to_rfc3339()
+}
+
+fn duration_secs_i64(duration: Duration) -> i64 {
+    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
 }
 
 /// Convert an RFC3339 string back to an `Instant` via the delta from current wall time.
@@ -431,9 +443,10 @@ impl AutonomyManager {
         }
 
         // Use per-character autonomy config if available, otherwise global.
-        let autonomy_cfg = effective_config
-            .map(|c| Arc::new(c.app.behavior.autonomy.clone()))
-            .unwrap_or_else(|| self.config.clone());
+        let autonomy_cfg = effective_config.map_or_else(
+            || self.config.clone(),
+            |c| Arc::new(c.app.behavior.autonomy.clone()),
+        );
 
         // Create heartbeat clock with config values.
         let mut heartbeat = HeartbeatClock::with_config(&autonomy_cfg.heartbeat);
@@ -574,7 +587,7 @@ impl AutonomyManager {
     ///
     /// Called once after `ensure_state` returns `true` (newly created state)
     /// to seed the tracker from existing chat history.
-    pub fn backfill_activity(&self, character: &str, timestamps: Vec<chrono::NaiveDateTime>) {
+    pub fn backfill_activity(&self, character: &str, timestamps: &[chrono::NaiveDateTime]) {
         let count = timestamps.len();
         // Seed the heartbeat's last_user_at from the most recent backfilled user
         // turn so dreaming's inactivity gate isn't bypassed for characters
@@ -585,7 +598,7 @@ impl AutonomyManager {
             .max()
             .and_then(|n| naive_local_to_instant(*n));
         self.with_state(character, |s| {
-            s.activity.backfill(&timestamps);
+            s.activity.backfill(timestamps);
             if let Some(at) = latest_user {
                 s.heartbeat.seed_last_user_at_if_unset(at);
             }
@@ -776,16 +789,16 @@ impl AutonomyManager {
             let next_wake_at = s.heartbeat.next_wake().map(instant_to_rfc3339);
             let seconds_until_wake = s.heartbeat.next_wake().map(|w| {
                 if w >= now {
-                    w.duration_since(now).as_secs() as i64
+                    duration_secs_i64(w.duration_since(now))
                 } else {
-                    -(now.duration_since(w).as_secs() as i64)
+                    -duration_secs_i64(now.duration_since(w))
                 }
             });
             let last_user_at = s.heartbeat.last_user_at().map(instant_to_rfc3339);
             let seconds_since_user = s
                 .heartbeat
                 .last_user_at()
-                .map(|u| now.duration_since(u).as_secs() as i64);
+                .map(|u| duration_secs_i64(now.duration_since(u)));
             let recent_events = s
                 .heartbeat_log
                 .recent(RECENT_EVENT_LIMIT)
@@ -850,7 +863,7 @@ const TICK_INTERVAL: Duration = Duration::from_secs(10);
 /// `max_tool_rounds` iterations normally fits; tight enough that a runaway
 /// loop can't block subsequent ticks for an hour. Per-call HTTP timeouts
 /// (300s, enforced by `LlmClient`) still bound each individual request.
-const HEARTBEAT_LOOP_DEADLINE: Duration = Duration::from_secs(30 * 60); // 30 minutes
+const HEARTBEAT_LOOP_DEADLINE: Duration = Duration::from_mins(30);
 
 /// Lock the per-character autonomy state, recovering from mutex poisoning
 /// instead of panicking. A poisoned mutex means a previous holder panicked,
@@ -905,7 +918,7 @@ fn push_provider_fallback_events(
     for event in events {
         let to_key = event.to_key.as_deref().unwrap_or("none");
         state.heartbeat_log.push(
-            kind.clone(),
+            kind,
             format!(
                 "Provider key fallback: {} -> {} ({})",
                 event.from_key, to_key, event.kind
@@ -914,10 +927,7 @@ fn push_provider_fallback_events(
     }
 }
 
-fn schedule_next_wake_in_state(
-    state: &Mutex<AutonomyState>,
-    input: &Value,
-) -> Result<Value, ToolError> {
+fn schedule_next_wake_in_state(state: &Mutex<AutonomyState>, input: &Value) -> Value {
     let hours = input
         .get("hours_from_now")
         .and_then(Value::as_f64)
@@ -941,9 +951,7 @@ fn schedule_next_wake_in_state(
     );
     s.mark_dirty();
 
-    Ok(json!(format!(
-        "Scheduled next moment in {clamped:.1} hours."
-    )))
+    json!(format!("Scheduled next moment in {clamped:.1} hours."))
 }
 
 async fn character_tick_loop(
@@ -979,6 +987,10 @@ async fn character_tick_loop(
 }
 
 /// One tick for a single character.
+#[expect(
+    clippy::too_many_lines,
+    reason = "autonomy tick orchestration split is tracked in #109"
+)]
 async fn tick_character(character: &str, ctx: &TickContext) {
     let now = Instant::now();
 
@@ -1222,21 +1234,17 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 /// the engine's cached messages on success so the next turn (or heartbeat
 /// tick) sees the compacted `active.jsonl`.
 async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
-    let llm_client = match ctx.llm_client.as_ref() {
-        Some(c) => c,
-        None => return,
+    let Some(llm_client) = ctx.llm_client.as_ref() else {
+        return;
     };
-    let loaded_config = match ctx.loaded_config.as_deref() {
-        Some(c) => c,
-        None => return,
+    let Some(loaded_config) = ctx.loaded_config.as_deref() else {
+        return;
     };
-    let notifier = match ctx.notifier.as_ref() {
-        Some(n) => n,
-        None => return,
+    let Some(notifier) = ctx.notifier.as_ref() else {
+        return;
     };
-    let registry = match ctx.registry.as_ref() {
-        Some(r) => r,
-        None => return,
+    let Some(registry) = ctx.registry.as_ref() else {
+        return;
     };
 
     info!(
@@ -1608,8 +1616,7 @@ fn rebuild_request_from_disk(
         return None;
     }
     let has_prior_context = crate::engine::segments::SegmentReader::load(&char_dir)
-        .map(|r| r.segment_count() > 0)
-        .unwrap_or(false);
+        .is_ok_and(|r| r.segment_count() > 0);
     if !history_is_between_turns(store.messages()) {
         info!(
             character,
@@ -1742,7 +1749,14 @@ fn apply_heartbeat_model_override(
 /// generate() calls. Tool loop messages are ephemeral — only <sendMessage>
 /// output persists to active.jsonl. All activity is logged to the ring buffer
 /// for `shore log --heartbeat`.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "heartbeat tick boundary carries scheduler dependencies"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "heartbeat tick tool-loop orchestration split is tracked in #109"
+)]
 async fn execute_heartbeat_tick(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
@@ -1758,29 +1772,25 @@ async fn execute_heartbeat_tick(
     // Clone last_request under the lock, then release.
     let mut request = {
         let s = lock_state(state);
-        match &s.last_request {
-            Some(req) => req.clone(),
-            None => {
+        if let Some(req) = &s.last_request {
+            req.clone()
+        } else {
+            drop(s);
+            let Some(config) = loaded_config else { return };
+            if let Some(req) = rebuild_request_from_disk(character, data_dir, config) {
+                // Persist the rebuilt request so keepalive pings can use it;
+                // otherwise pings silently no-op after daemon restart until
+                // the next user message.
+                let mut s = lock_state(state);
+                cache_last_request(&mut s, character, req.clone());
                 drop(s);
-                let Some(config) = loaded_config else { return };
-                match rebuild_request_from_disk(character, data_dir, config) {
-                    Some(req) => {
-                        // Persist the rebuilt request so keepalive pings can
-                        // use it — without this, pings silently no-op after
-                        // every daemon restart until the next user message.
-                        let mut s = lock_state(state);
-                        cache_last_request(&mut s, character, req.clone());
-                        drop(s);
-                        req
-                    }
-                    None => {
-                        info!(
-                            character,
-                            "Heartbeat: skipping tick (no prior conversation)"
-                        );
-                        return;
-                    }
-                }
+                req
+            } else {
+                info!(
+                    character,
+                    "Heartbeat: skipping tick (no prior conversation)"
+                );
+                return;
             }
         }
     };
@@ -1850,16 +1860,7 @@ async fn execute_heartbeat_tick(
     // This prevents cache prefix invalidation. Instructions for using
     // set_next_wake are in the heartbeat prompt.
 
-    let tool_ctx = match build_tool_context(character, data_dir, client, lc).await {
-        Some(ctx) => ctx,
-        None => {
-            warn!(
-                character,
-                "Heartbeat: failed to build tool context, skipping tick"
-            );
-            return;
-        }
-    };
+    let tool_ctx = build_tool_context(character, data_dir, client, lc);
     let tool_ctx = Arc::new(HeartbeatToolContext {
         inner: tool_ctx,
         state: state.clone(),
@@ -2013,10 +2014,10 @@ async fn execute_heartbeat_tick(
 
             // Intercept set_next_wake — handled inline, not dispatched.
             let (output_str, is_error) = if name.as_str() == "set_next_wake" {
-                crate::content_util::dispatch_result_to_output(schedule_next_wake_in_state(
+                crate::content_util::dispatch_result_to_output(Ok(schedule_next_wake_in_state(
                     state.as_ref(),
                     input,
-                ))
+                )))
             } else {
                 crate::content_util::dispatch_result_to_output(
                     tool_system::dispatch_tool(name, input.clone(), tool_ctx.as_ref()).await,
@@ -2156,12 +2157,12 @@ async fn execute_heartbeat_tick(
 /// but resolves models with heartbeat-specific fallbacks. All tools work —
 /// workspace/memory files, images, and web. The only gap is AutonomyManager (the
 /// heatmap tool degrades gracefully via the trait default).
-async fn build_tool_context(
+fn build_tool_context(
     character: &str,
     data_dir: &Path,
     client: &LedgerClient,
     config: &LoadedConfig,
-) -> Option<SharedToolContext> {
+) -> SharedToolContext {
     let char_dir = character_data_dir(data_dir, character);
 
     let image_gen_config = resolve_image_gen_config(
@@ -2185,7 +2186,7 @@ async fn build_tool_context(
         "Heartbeat: tool context built"
     );
 
-    Some(SharedToolContext {
+    SharedToolContext {
         image_dir: char_dir.join("images").to_string_lossy().into_owned(),
         llm_client: client.inner().clone(),
         image_gen_config,
@@ -2206,7 +2207,7 @@ async fn build_tool_context(
         ),
         config_dir: config.dirs.config.to_string_lossy().into_owned(),
         character_data_dir: char_dir.to_string_lossy().into_owned(),
-    })
+    }
 }
 
 /// Extract text between XML-style tags. Returns the last match (last-wins).
@@ -2328,33 +2329,27 @@ async fn execute_dormant_ping(
 
     let mut request = {
         let s = lock_state(state);
-        match &s.last_request {
-            Some(req) => build_keepalive_ping(req, character),
-            None => {
+        if let Some(req) = &s.last_request {
+            build_keepalive_ping(req, character)
+        } else {
+            drop(s);
+            let Some(config) = loaded_config else {
+                debug!(character, "Dormant ping: no cached request, skipping");
+                return DormantPingOutcome::Skipped(
+                    "no cached request and no loaded config for rebuild".to_string(),
+                );
+            };
+            if let Some(req) = rebuild_request_from_disk(character, data_dir, config) {
+                let mut s = lock_state(state);
+                cache_last_request(&mut s, character, req.clone());
                 drop(s);
-                let Some(config) = loaded_config else {
-                    debug!(character, "Dormant ping: no cached request, skipping");
-                    return DormantPingOutcome::Skipped(
-                        "no cached request and no loaded config for rebuild".to_string(),
-                    );
-                };
-                match rebuild_request_from_disk(character, data_dir, config) {
-                    Some(req) => {
-                        let mut s = lock_state(state);
-                        cache_last_request(&mut s, character, req.clone());
-                        drop(s);
-                        build_keepalive_ping(&req, character)
-                    }
-                    None => {
-                        debug!(
-                            character,
-                            "Dormant ping: failed to rebuild request, skipping"
-                        );
-                        return DormantPingOutcome::Skipped(
-                            "no cached or rebuildable request".to_string(),
-                        );
-                    }
-                }
+                build_keepalive_ping(&req, character)
+            } else {
+                debug!(
+                    character,
+                    "Dormant ping: failed to rebuild request, skipping"
+                );
+                return DormantPingOutcome::Skipped("no cached or rebuildable request".to_string());
             }
         }
     };
@@ -2731,7 +2726,7 @@ mod tests {
                     .and_hms_opt(9, 0, 0)
                     .unwrap(),
             ];
-            mgr.backfill_activity("alice", timestamps);
+            mgr.backfill_activity("alice", &timestamps);
 
             let (_stats, count) = mgr.activity_stats("alice").unwrap();
             assert_eq!(count, 3);
@@ -2758,7 +2753,7 @@ mod tests {
                 now_local - chrono::Duration::minutes(30),
                 now_local - chrono::Duration::minutes(2),
             ];
-            mgr.backfill_activity("alice", timestamps);
+            mgr.backfill_activity("alice", &timestamps);
 
             // last_user_at is now seeded and reflects the recent (~2min) turn,
             // so a short inactivity window would NOT be satisfied.

@@ -195,7 +195,7 @@ pub(super) async fn handle_generation(
                 count = timestamps.len(),
                 "Backfilling activity tracker from chat history"
             );
-            ctx.autonomy.backfill_activity(&char_name, timestamps);
+            ctx.autonomy.backfill_activity(&char_name, &timestamps);
         }
     }
 
