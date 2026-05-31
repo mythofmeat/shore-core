@@ -378,6 +378,16 @@ pub struct ToolUseConfig {
     #[serde(default = "default_max_iterations")]
     pub max_iterations: u32,
 
+    /// Maximum number of characters a single tool result may contribute to the
+    /// conversation before it is truncated. Defaults to 20000 (~5k tokens of
+    /// code-like output); set to `0` to disable truncation and preserve full
+    /// tool output. When a result exceeds the limit it is cut at a character
+    /// boundary and a notice is appended so the model knows the output was
+    /// truncated. Truncation is persisted, so the shortened result is what
+    /// gets replayed on subsequent turns.
+    #[serde(default = "default_max_result_chars")]
+    pub max_result_chars: usize,
+
     /// Per-tool enable/disable toggles.
     #[serde(default)]
     pub tools: ToolToggles,
@@ -388,12 +398,14 @@ pub struct ToolUseConfig {
 }
 
 serde_default!(default_max_iterations -> u32 { 10 });
+serde_default!(default_max_result_chars -> usize { 20_000 });
 
 impl Default for ToolUseConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             max_iterations: default_max_iterations(),
+            max_result_chars: default_max_result_chars(),
             tools: ToolToggles::default(),
             search: SearchConfig::default(),
         }

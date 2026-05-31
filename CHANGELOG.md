@@ -7,6 +7,14 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 
 ## [Unreleased]
 
+### Added
+- `[behavior.tool_use] max_result_chars` caps how many characters a single tool
+  result may contribute to the conversation. Defaults to `20000` (~5k tokens of
+  code-like output); set to `0` to disable. Longer results are cut at a
+  character boundary and a notice is appended so the model knows output was
+  truncated. The truncation is persisted, so the shortened result is what later
+  turns replay.
+
 ### Changed (BREAKING)
 - Renamed the model-config key `max_tokens` to `max_output_tokens` to disambiguate
   it from `max_context_tokens` (the context-window size) and to match the
