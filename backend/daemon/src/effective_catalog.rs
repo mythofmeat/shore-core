@@ -23,12 +23,12 @@
 
 use std::path::Path;
 
+use shore_config::LoadedConfig;
 use shore_config::models::{
-    default_sdk, hardcoded_provider_defaults, ModelCatalog, ModelConfigFields, ResolvedModel, Sdk,
+    ModelCatalog, ModelConfigFields, ResolvedModel, Sdk, default_sdk, hardcoded_provider_defaults,
 };
 use shore_config::providers::ProviderEntry;
-use shore_config::LoadedConfig;
-use shore_llm::discovery::{cache_path, read_cache, DiscoveredModel};
+use shore_llm::discovery::{DiscoveredModel, cache_path, read_cache};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EffectiveCatalogError {
@@ -166,7 +166,9 @@ pub fn find_effective_model(
             }
         }
         1 => {
-            let (_, resolved, _) = visible_hits.into_iter().next().unwrap();
+            let Some((_, resolved, _)) = visible_hits.into_iter().next() else {
+                return Err(EffectiveCatalogError::NotFound { name: name.into() });
+            };
             Ok(resolved)
         }
         _ => {
@@ -367,10 +369,10 @@ fn build_resolved_from_discovered(
 mod tests {
     use super::*;
 
+    use shore_config::ShoreDirs;
     use shore_config::models::ModelCatalog;
     use shore_config::providers::ProviderRegistry;
-    use shore_config::ShoreDirs;
-    use shore_llm::discovery::{ProviderModelsCache, CACHE_VERSION};
+    use shore_llm::discovery::{CACHE_VERSION, ProviderModelsCache};
 
     fn make_loaded(tmp: &tempfile::TempDir, providers_toml: &str, chat_toml: &str) -> LoadedConfig {
         // Caches in production only exist after a successful refresh, which
