@@ -42,51 +42,43 @@ enum CalendarWindow {
     Month,
 }
 
+fn calendar_start_naive(date: chrono::NaiveDate, window: CalendarWindow) -> chrono::NaiveDateTime {
+    use chrono::Datelike;
+    let start_date = match window {
+        CalendarWindow::Day => date,
+        CalendarWindow::Week => {
+            date - chrono::Duration::days(i64::from(date.weekday().num_days_from_monday()))
+        }
+        CalendarWindow::Month => date - chrono::Duration::days(i64::from(date.day0())),
+    };
+    start_date.and_time(chrono::NaiveTime::MIN)
+}
+
 fn calendar_start(
     now: chrono::DateTime<chrono::Utc>,
     window: CalendarWindow,
     timezone: &str,
 ) -> chrono::DateTime<chrono::Utc> {
-    use chrono::{Datelike, TimeZone};
+    use chrono::TimeZone;
     if timezone == "utc" {
         let date = now.date_naive();
-        let start = match window {
-            CalendarWindow::Day => date.and_hms_opt(0, 0, 0).unwrap(),
-            CalendarWindow::Week => {
-                let monday =
-                    date - chrono::Duration::days(date.weekday().num_days_from_monday() as i64);
-                monday.and_hms_opt(0, 0, 0).unwrap()
-            }
-            CalendarWindow::Month => chrono::NaiveDate::from_ymd_opt(date.year(), date.month(), 1)
-                .unwrap()
-                .and_hms_opt(0, 0, 0)
-                .unwrap(),
-        };
+        let start = calendar_start_naive(date, window);
         return chrono::Utc.from_utc_datetime(&start);
     }
 
     let local_now = now.with_timezone(&chrono::Local);
     let date = local_now.date_naive();
-    let start = match window {
-        CalendarWindow::Day => date.and_hms_opt(0, 0, 0).unwrap(),
-        CalendarWindow::Week => {
-            let monday =
-                date - chrono::Duration::days(date.weekday().num_days_from_monday() as i64);
-            monday.and_hms_opt(0, 0, 0).unwrap()
-        }
-        CalendarWindow::Month => chrono::NaiveDate::from_ymd_opt(date.year(), date.month(), 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap(),
-    };
+    let start = calendar_start_naive(date, window);
     match chrono::Local.from_local_datetime(&start) {
         chrono::LocalResult::Single(dt) => dt.with_timezone(&chrono::Utc),
         chrono::LocalResult::Ambiguous(early, _) => early.with_timezone(&chrono::Utc),
         chrono::LocalResult::None => chrono::Local
             .from_local_datetime(&(start + chrono::Duration::hours(1)))
             .earliest()
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|| chrono::Utc.from_utc_datetime(&start)),
+            .map_or_else(
+                || chrono::Utc.from_utc_datetime(&start),
+                |dt| dt.with_timezone(&chrono::Utc),
+            ),
     }
 }
 
@@ -143,6 +135,10 @@ fn budget_payload(ctx: &CommandContext) -> CommandResult {
     }))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "usage command mode dispatcher split is tracked in #109"
+)]
 pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
     let ledger = ctx.llm_client.ledger();
 
@@ -150,17 +146,17 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     let (filter, last) = build_filter(args, timezone);
     debug!(period = %last, "Usage query started");
 
-    if args.get("budget").and_then(|v| v.as_bool()) == Some(true) {
+    if args.get("budget").and_then(serde_json::Value::as_bool) == Some(true) {
         return budget_payload(ctx);
     }
 
-    if args.get("export_tsv").and_then(|v| v.as_bool()) == Some(true) {
+    if args.get("export_tsv").and_then(serde_json::Value::as_bool) == Some(true) {
         let output = shore_ledger::query::export_tsv(ledger, &filter)
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
         return Ok(json!({ "mode": "tsv", "data": output }));
     }
 
-    if args.get("export_csv").and_then(|v| v.as_bool()) == Some(true) {
+    if args.get("export_csv").and_then(serde_json::Value::as_bool) == Some(true) {
         let tsv = shore_ledger::query::export_tsv(ledger, &filter)
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
         let mut csv_lines = Vec::new();
@@ -181,7 +177,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         return Ok(json!({ "mode": "csv", "data": csv_lines.join("\n") }));
     }
 
-    if args.get("by_kind").and_then(|v| v.as_bool()) == Some(true) {
+    if args.get("by_kind").and_then(serde_json::Value::as_bool) == Some(true) {
         let summary = shore_ledger::query::usage_summary_by_usage_kind(ledger, &filter)
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
         let rows: Vec<serde_json::Value> = summary
@@ -205,7 +201,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         }));
     }
 
-    if args.get("by_api_key").and_then(|v| v.as_bool()) == Some(true) {
+    if args.get("by_api_key").and_then(serde_json::Value::as_bool) == Some(true) {
         let summary = shore_ledger::query::usage_summary_by_api_key(ledger, &filter)
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
         let rows: Vec<serde_json::Value> = summary
@@ -230,7 +226,11 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         }));
     }
 
-    if args.get("by_call_type").and_then(|v| v.as_bool()) == Some(true) {
+    if args
+        .get("by_call_type")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
         let summary = shore_ledger::query::usage_summary_by_call_type(ledger, &filter)
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
         let rows: Vec<serde_json::Value> = summary
@@ -254,7 +254,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         }));
     }
 
-    if args.get("anomalies").and_then(|v| v.as_bool()) == Some(true) {
+    if args.get("anomalies").and_then(serde_json::Value::as_bool) == Some(true) {
         let anomaly_filter = if last == "today" {
             QueryFilter {
                 since: parse_last_period("7d", timezone),
@@ -282,7 +282,11 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         return Ok(json!({ "mode": "anomalies", "anomalies": anomalies }));
     }
 
-    if args.get("refresh_pricing").and_then(|v| v.as_bool()) == Some(true) {
+    if args
+        .get("refresh_pricing")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
         let pricing = ctx.llm_client.pricing();
         pricing
             .clear_cache()
@@ -290,8 +294,8 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         return Ok(json!({ "mode": "refresh_pricing" }));
     }
 
-    if args.get("recalculate").and_then(|v| v.as_bool()) == Some(true) {
-        let force = args.get("force").and_then(|v| v.as_bool()) == Some(true);
+    if args.get("recalculate").and_then(serde_json::Value::as_bool) == Some(true) {
+        let force = args.get("force").and_then(serde_json::Value::as_bool) == Some(true);
         let rows = if force {
             shore_ledger::query::all_cost_rows(ledger)
                 .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
@@ -312,14 +316,15 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
             let key = format!("{}/{}", row.provider, row.model);
             if models_fetched.insert(key.clone()) {
                 let model_id = shore_ledger::pricing::to_openrouter_id(&row.provider, &row.model);
-                match pricing.get_or_fetch(&row.provider, &row.model).await {
-                    Some(_) => {
-                        fetch_results.insert(key, None);
-                    }
-                    None => {
-                        tracing::warn!(model_id, "Pricing fetch returned no data for model");
-                        fetch_results.insert(key, Some(format!("no pricing data for {model_id}")));
-                    }
+                if pricing
+                    .get_or_fetch(&row.provider, &row.model)
+                    .await
+                    .is_some()
+                {
+                    fetch_results.insert(key, None);
+                } else {
+                    tracing::warn!(model_id, "Pricing fetch returned no data for model");
+                    fetch_results.insert(key, Some(format!("no pricing data for {model_id}")));
                 }
             }
         }
@@ -413,9 +418,8 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         since: parse_last_period("7d", timezone),
         ..Default::default()
     };
-    let anomaly_count = shore_ledger::query::query_anomalies(ledger, &anomaly_filter)
-        .map(|r| r.len())
-        .unwrap_or(0);
+    let anomaly_count =
+        shore_ledger::query::query_anomalies(ledger, &anomaly_filter).map_or(0, |r| r.len());
 
     debug!(
         period = %last,

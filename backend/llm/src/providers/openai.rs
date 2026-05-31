@@ -26,6 +26,10 @@ const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 // ── Message & tool translation ──────────────────────────────────────
 
 /// Translate Anthropic-format messages into OpenAI chat completion messages.
+#[expect(
+    clippy::too_many_lines,
+    reason = "message-translation covers many block types inline; clearer as one pass"
+)]
 pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) -> Vec<Value> {
     let mut out = Vec::new();
 
@@ -240,6 +244,10 @@ pub(super) fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) ->
 }
 
 /// Translate Anthropic-format tool definitions to OpenAI function-calling format.
+#[expect(
+    clippy::ref_option,
+    reason = "mirrors LlmRequest.tools (&Option) and forwards by reference to translate_tool_declarations"
+)]
 pub(super) fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
     translate_tool_declarations(tools).map(|decls| {
         decls
@@ -268,17 +276,19 @@ fn provider_opt_str<'a>(request: &'a LlmRequest, key: &str) -> Option<&'a str> {
 }
 
 /// Build common request headers.
-fn build_headers(request: &LlmRequest, ctx: &ProviderContext) -> reqwest::header::HeaderMap {
+fn build_headers(
+    request: &LlmRequest,
+    ctx: &ProviderContext,
+) -> Result<reqwest::header::HeaderMap, LlmError> {
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::AUTHORIZATION,
-        format!("Bearer {}", request.api_key)
-            .parse()
-            .expect("valid header value"),
-    );
+    let auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", request.api_key))
+        .map_err(|e| LlmError::Provider {
+            message: format!("API key is not a valid HTTP header value: {e}"),
+        })?;
+    headers.insert(reqwest::header::AUTHORIZATION, auth);
     headers.insert(
         reqwest::header::CONTENT_TYPE,
-        "application/json".parse().unwrap(),
+        reqwest::header::HeaderValue::from_static("application/json"),
     );
 
     for (name, value) in &ctx.extra_headers {
@@ -296,7 +306,7 @@ fn build_headers(request: &LlmRequest, ctx: &ProviderContext) -> reqwest::header
         }
     }
 
-    headers
+    Ok(headers)
 }
 
 /// Build the JSON body for chat completions (shared by stream and generate).
@@ -339,6 +349,10 @@ fn build_chat_body(request: &LlmRequest, ctx: &ProviderContext, streaming: bool)
 ///
 /// Returns a `DuplexStream` that yields NDJSON `StreamEvent` lines. A background
 /// tokio task reads SSE from the upstream API and writes translated events.
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end streaming setup; clearer as one function than artificially split"
+)]
 pub async fn stream(
     client: &reqwest::Client,
     request: &LlmRequest,
@@ -346,7 +360,7 @@ pub async fn stream(
 ) -> Result<DuplexStream, LlmError> {
     let base_url = resolve_base_url(request);
     let url = format!("{base_url}/chat/completions");
-    let headers = build_headers(request, ctx);
+    let headers = build_headers(request, ctx)?;
     let body = build_chat_body(request, ctx, true);
 
     let response = client
@@ -442,7 +456,10 @@ pub async fn stream(
                         .and_then(|t| t.as_array())
                     {
                         for tc in tcs {
-                            let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
+                            let index = tc
+                                .get("index")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0);
                             let entry = tool_calls
                                 .entry(index)
                                 .or_insert_with(|| (String::new(), String::new(), Vec::new()));
@@ -504,7 +521,7 @@ pub async fn stream(
 
         // Emit accumulated tool calls.
         let mut indices: Vec<u64> = tool_calls.keys().copied().collect();
-        indices.sort();
+        indices.sort_unstable();
         for idx in indices {
             if let Some((id, name, arg_chunks)) = tool_calls.remove(&idx) {
                 let raw = arg_chunks.join("");
@@ -547,7 +564,7 @@ pub async fn generate(
 ) -> Result<GenerateResponse, LlmError> {
     let base_url = resolve_base_url(request);
     let url = format!("{base_url}/chat/completions");
-    let headers = build_headers(request, ctx);
+    let headers = build_headers(request, ctx)?;
     let body = build_chat_body(request, ctx, false);
 
     let start = Instant::now();
@@ -565,7 +582,7 @@ pub async fn generate(
 
     let response = super::check_response(response).await?;
 
-    let total_ms = start.elapsed().as_millis() as u32;
+    let total_ms = crate::convert::elapsed_ms_u32(start.elapsed());
 
     let resp_body: Value = response.json().await.map_err(|e| LlmError::Provider {
         message: format!(
@@ -737,7 +754,12 @@ fn parse_embedding_response(
             nums.iter()
                 .enumerate()
                 .map(|(num_idx, n)| {
-                    n.as_f64().map(|f| f as f32).ok_or_else(|| LlmError::Provider {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "embeddings are downcast to f32 for storage; precision loss is acceptable"
+                    )]
+                    let value = n.as_f64().map(|f| f as f32);
+                    value.ok_or_else(|| LlmError::Provider {
                         message: format!(
                             "embedding response item {item_idx} has non-numeric value at position {num_idx}"
                         ),
@@ -773,7 +795,7 @@ pub async fn image_generate(
             params.image_size,
         )
         .await?;
-        let total_ms = start.elapsed().as_millis() as u32;
+        let total_ms = crate::convert::elapsed_ms_u32(start.elapsed());
         return Ok(ImageGenerateResponse {
             url: result.0,
             revised_prompt: result.1,
@@ -809,7 +831,7 @@ pub async fn image_generate(
 
     let response = super::check_response(response).await?;
 
-    let total_ms = start.elapsed().as_millis() as u32;
+    let total_ms = crate::convert::elapsed_ms_u32(start.elapsed());
     let resp: Value = response.json().await.map_err(LlmError::Request)?;
 
     let image = resp.get("data").and_then(|d| d.get(0));
@@ -847,19 +869,17 @@ async fn openrouter_image_generate(
     aspect_ratio: Option<&str>,
     image_size: Option<&str>,
 ) -> Result<(String, String), LlmError> {
-    // Try text+image first.
-    match try_openrouter_image(
-        client,
+    let params = OpenRouterImageParams {
         base_url,
         api_key,
         model,
         prompt,
-        &["image", "text"],
         aspect_ratio,
         image_size,
-    )
-    .await
-    {
+    };
+
+    // Try text+image first.
+    match try_openrouter_image(client, &params, &["image", "text"]).await {
         Ok(result) => return Ok(result),
         Err(LlmError::HttpStatus {
             status: 404,
@@ -871,44 +891,39 @@ async fn openrouter_image_generate(
     }
 
     // Retry with image-only modality.
-    try_openrouter_image(
-        client,
-        base_url,
-        api_key,
-        model,
-        prompt,
-        &["image"],
-        aspect_ratio,
-        image_size,
-    )
-    .await
+    try_openrouter_image(client, &params, &["image"]).await
 }
 
-#[allow(clippy::too_many_arguments)] // modalities is inherent to the retry logic
+/// Shared parameters for an OpenRouter chat-completions image request,
+/// reused across the text+image and image-only retry attempts.
+struct OpenRouterImageParams<'a> {
+    base_url: &'a str,
+    api_key: &'a str,
+    model: &'a str,
+    prompt: &'a str,
+    aspect_ratio: Option<&'a str>,
+    image_size: Option<&'a str>,
+}
+
 async fn try_openrouter_image(
     client: &reqwest::Client,
-    base_url: &str,
-    api_key: &str,
-    model: &str,
-    prompt: &str,
+    params: &OpenRouterImageParams<'_>,
     modalities: &[&str],
-    aspect_ratio: Option<&str>,
-    image_size: Option<&str>,
 ) -> Result<(String, String), LlmError> {
-    let url = format!("{base_url}/chat/completions");
+    let url = format!("{}/chat/completions", params.base_url);
 
     let mut body = json!({
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "model": params.model,
+        "messages": [{"role": "user", "content": params.prompt}],
         "modalities": modalities,
     });
 
     // Only include image_config when at least one field is set.
     let mut image_config = serde_json::Map::new();
-    if let Some(ar) = aspect_ratio {
+    if let Some(ar) = params.aspect_ratio {
         image_config.insert("aspect_ratio".into(), json!(ar));
     }
-    if let Some(is) = image_size {
+    if let Some(is) = params.image_size {
         image_config.insert("image_size".into(), json!(is));
     }
     if !image_config.is_empty() {
@@ -917,7 +932,10 @@ async fn try_openrouter_image(
 
     let response = client
         .post(&url)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", params.api_key),
+        )
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&body)
         .send()
@@ -1352,7 +1370,7 @@ mod tests {
         }));
 
         let ctx = build_provider_context(&request);
-        let headers = build_headers(&request, &ctx);
+        let headers = build_headers(&request, &ctx).unwrap();
         assert_eq!(headers.get("HTTP-Referer").unwrap(), "https://shore.ai");
         assert_eq!(headers.get("X-Title").unwrap(), "Shore");
     }

@@ -1,5 +1,6 @@
 //! SQLite-backed append-only ledger for LLM call recording.
 
+use crate::convert::{i64_to_u32, i64_to_u64, u64_to_i64};
 use crate::sync::lock_or_recover;
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::path::Path;
@@ -8,7 +9,7 @@ use tracing::{debug, info};
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 
-const SCHEMA: &str = r#"
+const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS calls (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     ts                  TEXT    NOT NULL,
@@ -60,7 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_provider  ON calls (provider);
 CREATE INDEX IF NOT EXISTS idx_calls_anomaly   ON calls (cache_anomaly) WHERE cache_anomaly IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_usage_budget_warnings_window
     ON usage_budget_warnings (budget_name, period_start);
-"#;
+";
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -72,10 +73,10 @@ pub struct CallRow {
     pub api_key_name: Option<String>,
     pub model: String,
     pub call_type: String,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-    pub cache_read_tokens: u32,
-    pub cache_write_tokens: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
     pub cache_ttl: Option<String>,
     pub total_ms: u32,
     pub ttft_ms: u32,
@@ -142,17 +143,17 @@ impl Ledger {
         // must not be replaced by catalog estimates during forced recalculation.
         add_if_missing("ALTER TABLE calls ADD COLUMN cost_source TEXT DEFAULT 'pricing_catalog'")?;
         conn.execute_batch(
-            r#"UPDATE calls
+            r"UPDATE calls
                   SET cost_source = 'provider_reported'
                 WHERE total_cost IS NOT NULL
                   AND input_cost IS NULL
                   AND output_cost IS NULL
                   AND cache_read_cost IS NULL
-                  AND cache_write_cost IS NULL"#,
+                  AND cache_write_cost IS NULL",
         )?;
         // v5: de-duplication state for budget threshold warnings.
         conn.execute_batch(
-            r#"CREATE TABLE IF NOT EXISTS usage_budget_warnings (
+            r"CREATE TABLE IF NOT EXISTS usage_budget_warnings (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 budget_name    TEXT NOT NULL,
                 period_start   TEXT NOT NULL,
@@ -161,7 +162,7 @@ impl Ledger {
                 UNIQUE (budget_name, period_start, threshold)
             );
             CREATE INDEX IF NOT EXISTS idx_usage_budget_warnings_window
-                ON usage_budget_warnings (budget_name, period_start);"#,
+                ON usage_budget_warnings (budget_name, period_start);",
         )?;
 
         Ok(())
@@ -172,7 +173,7 @@ impl Ledger {
         let started = std::time::Instant::now();
         let row_id = self.with_conn(|conn| {
             conn.execute(
-                r#"INSERT INTO calls (
+                r"INSERT INTO calls (
                     ts, character, provider, api_key_name, model, call_type,
                     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                     cache_ttl,
@@ -186,7 +187,7 @@ impl Ledger {
                     ?12, ?13, ?14, ?15,
                     ?16, ?17,
                     ?18, ?19, ?20, ?21, ?22, ?23
-                )"#,
+                )",
                 params![
                     row.ts,
                     row.character,
@@ -194,15 +195,15 @@ impl Ledger {
                     row.api_key_name,
                     row.model,
                     row.call_type,
-                    row.input_tokens,
-                    row.output_tokens,
-                    row.cache_read_tokens,
-                    row.cache_write_tokens,
+                    u64_to_i64(row.input_tokens),
+                    u64_to_i64(row.output_tokens),
+                    u64_to_i64(row.cache_read_tokens),
+                    u64_to_i64(row.cache_write_tokens),
                     row.cache_ttl,
                     row.total_ms,
                     row.ttft_ms,
                     row.finish_reason,
-                    row.thinking_enabled as i64,
+                    i64::from(row.thinking_enabled),
                     row.cache_state,
                     row.cache_anomaly,
                     row.input_cost,
@@ -243,12 +244,12 @@ impl Ledger {
         let started = std::time::Instant::now();
         let row = self.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                r#"SELECT * FROM calls
+                r"SELECT * FROM calls
                    WHERE character = ?1
                      AND provider  = 'anthropic'
                      AND call_type != 'compaction'
                    ORDER BY id DESC
-                   LIMIT 1"#,
+                   LIMIT 1",
             )?;
             let mut rows = stmt.query_map(params![character], row_from_sqlite)?;
             rows.next().transpose()
@@ -284,13 +285,13 @@ pub(crate) fn row_from_sqlite(row: &rusqlite::Row) -> SqlResult<CallRow> {
         api_key_name: row.get("api_key_name")?,
         model: row.get("model")?,
         call_type: row.get("call_type")?,
-        input_tokens: row.get::<_, i64>("input_tokens")? as u32,
-        output_tokens: row.get::<_, i64>("output_tokens")? as u32,
-        cache_read_tokens: row.get::<_, i64>("cache_read_tokens")? as u32,
-        cache_write_tokens: row.get::<_, i64>("cache_write_tokens")? as u32,
+        input_tokens: i64_to_u64(row.get::<_, i64>("input_tokens")?),
+        output_tokens: i64_to_u64(row.get::<_, i64>("output_tokens")?),
+        cache_read_tokens: i64_to_u64(row.get::<_, i64>("cache_read_tokens")?),
+        cache_write_tokens: i64_to_u64(row.get::<_, i64>("cache_write_tokens")?),
         cache_ttl: row.get("cache_ttl")?,
-        total_ms: row.get::<_, i64>("total_ms")? as u32,
-        ttft_ms: row.get::<_, i64>("ttft_ms")? as u32,
+        total_ms: i64_to_u32(row.get::<_, i64>("total_ms")?),
+        ttft_ms: i64_to_u32(row.get::<_, i64>("ttft_ms")?),
         finish_reason: row.get("finish_reason")?,
         thinking_enabled: row.get::<_, i64>("thinking_enabled")? != 0,
         cache_state: row.get("cache_state")?,
@@ -405,7 +406,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         // Pre-v2 schema: no cache_ttl column.
         conn.execute_batch(
-            r#"
+            r"
             CREATE TABLE calls (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts                  TEXT    NOT NULL,
@@ -442,7 +443,7 @@ mod tests {
                 'warm', 'unexpected_read',
                 0.0015, 0.00075, 0.0004, 0.0005, 0.00315
             );
-            "#,
+            ",
         )
         .unwrap();
 
@@ -475,7 +476,7 @@ mod tests {
     fn migration_backfills_provider_reported_cost_source() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            r#"
+            r"
             CREATE TABLE calls (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts                  TEXT    NOT NULL,
@@ -512,7 +513,7 @@ mod tests {
                 NULL, NULL,
                 NULL, NULL, NULL, NULL, 0.0042
             );
-            "#,
+            ",
         )
         .unwrap();
 

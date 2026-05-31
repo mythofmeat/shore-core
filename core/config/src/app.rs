@@ -293,7 +293,7 @@ pub struct HeartbeatConfig {
 
 serde_default!(default_fallback_heartbeat_interval -> ConfigDuration { ConfigDuration::from_secs(3600) });
 serde_default!(default_dormant_after_heartbeat_turns -> u32 { 3 });
-serde_default!(default_dormant_after_idle_time -> ConfigDuration { ConfigDuration::from_secs(172800) }); // 48 hours
+serde_default!(default_dormant_after_idle_time -> ConfigDuration { ConfigDuration::from_secs(172_800) }); // 48 hours
 serde_default!(default_minimum_heartbeat_latency -> ConfigDuration { ConfigDuration::from_secs(3600) }); // 1 hour
 serde_default!(default_max_tool_rounds -> u32 { 12 });
 serde_default!(default_wrap_up_grace_rounds -> u32 { 3 });
@@ -883,6 +883,10 @@ pub struct CommandNotifyConfig {
 /// Per-event notification toggles. All default to true (fire when enabled).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool maps 1:1 to an independent TOML notification toggle"
+)]
 pub struct NotificationEventsConfig {
     #[serde(default = "default_true")]
     pub autonomous_message: bool,
@@ -1173,7 +1177,7 @@ mod tests {
         );
         assert_eq!(
             config.behavior.autonomy.heartbeat.dormant_after_idle_time,
-            ConfigDuration::from_secs(172800)
+            ConfigDuration::from_secs(172_800)
         );
         assert_eq!(
             config.behavior.autonomy.heartbeat.minimum_heartbeat_latency,
@@ -1217,7 +1221,7 @@ binary = "metadata"
         assert_eq!(config.memory.retrieval.mode, RetrievalMode::Hybrid);
         assert_eq!(config.memory.retrieval.max_file_bytes, 12345);
         assert_eq!(config.memory.retrieval.max_indexed_files, 999);
-        assert_eq!(config.memory.retrieval.max_total_indexed_bytes, 777777);
+        assert_eq!(config.memory.retrieval.max_total_indexed_bytes, 777_777);
         assert_eq!(config.memory.retrieval.max_embed_chars_per_file, 222);
         assert_eq!(
             config.memory.retrieval.binary,
@@ -1226,6 +1230,10 @@ binary = "metadata"
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact round-trip assertion on float literals parsed from TOML"
+    )]
     fn usage_config_parses() {
         let toml_str = r#"
 [usage]
@@ -1266,11 +1274,11 @@ min_cost_usd = 2.5
 
     #[test]
     fn tool_toggles_disable_individual_tools() {
-        let toml_str = r#"
+        let toml_str = r"
 [behavior.tool_use.tools]
 roll_dice = false
 web_search = false
-"#;
+";
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(!config.behavior.tool_use.tools.roll_dice());
         assert!(!config.behavior.tool_use.tools.web_search());
@@ -1425,11 +1433,11 @@ bogus_key = "value"
 
     #[test]
     fn rejects_unknown_nested_key() {
-        let toml_str = r#"
+        let toml_str = r"
 [behavior.autonomy]
 enabled = true
 bogus_key = 42
-"#;
+";
         let result: Result<AppConfig, _> = toml::from_str(toml_str);
         assert!(result.is_err());
     }
@@ -1618,18 +1626,18 @@ homeserver = "https://matrix.example.com"
         assert_eq!(config.advanced.max_image_size, 2_000_000);
 
         // Override via TOML.
-        let toml_str = r#"
+        let toml_str = r"
 [advanced]
 max_image_size = 5000000
-"#;
+";
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.advanced.max_image_size, 5_000_000);
 
         // Disable via 0.
-        let toml_str = r#"
+        let toml_str = r"
 [advanced]
 max_image_size = 0
-"#;
+";
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.advanced.max_image_size, 0);
     }
@@ -1639,10 +1647,10 @@ max_image_size = 0
         let config = AppConfig::default();
         assert!(!config.advanced.cache_forensics);
 
-        let toml_str = r#"
+        let toml_str = r"
 [advanced]
 cache_forensics = true
-"#;
+";
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(config.advanced.cache_forensics);
     }

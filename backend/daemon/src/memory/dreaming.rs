@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Local, Utc};
@@ -16,6 +17,7 @@ use shore_llm::types::{GenerateResponse, LlmRequest};
 use tokio::fs;
 use tracing::{debug, info, warn};
 
+use crate::convert::{u32_to_f32, usize_to_f32};
 use crate::memory::deferred_edits::MEMORY_INDEX_FILE;
 use crate::memory::markdown_store::{MarkdownEntry, MarkdownMemoryStore, MarkdownStoreError};
 use crate::tools::context::SharedToolContext;
@@ -239,7 +241,10 @@ pub async fn dream_status(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "AI librarian sweep orchestration split is tracked in #109"
+)]
 pub async fn run_librarian_sweep(
     loaded_config: &LoadedConfig,
     data_dir: &Path,
@@ -267,14 +272,16 @@ pub async fn run_librarian_sweep(
     let ran_at = now.to_rfc3339();
 
     let mut request =
-        build_librarian_request(loaded_config, character, cached_request, dry_run, &ran_at).await?;
+        build_librarian_request(loaded_config, character, cached_request, dry_run, &ran_at)?;
     request.forensic_character = Some(character.to_string());
     request.rid = None;
-    let tool_ctx = std::sync::Arc::new(
-        build_librarian_tool_context(loaded_config, data_dir, llm_client, character, dry_run)
-            .await
-            .ok_or_else(|| DreamingError::Config("failed to build dreaming tool context".into()))?,
-    );
+    let tool_ctx = std::sync::Arc::new(build_librarian_tool_context(
+        loaded_config,
+        data_dir,
+        llm_client,
+        character,
+        dry_run,
+    ));
 
     info!(
         character,
@@ -409,7 +416,11 @@ pub async fn run_librarian_sweep(
                 "AI librarian pass used {} tool round(s), changed {} file(s), and {} DREAMS.md audit fallback",
                 loop_result.tool_rounds,
                 changed.len(),
-                if audit_appended { "needed a" } else { "did not need a" }
+                if audit_appended {
+                    "needed a"
+                } else {
+                    "did not need a"
+                }
             ),
             candidate_count: 0,
             promoted_count: indexed_count,
@@ -451,6 +462,10 @@ pub async fn run_librarian_sweep(
 /// Legacy deterministic sweep retained only for dry-run diagnostics and
 /// fallback-oriented unit coverage. Production scheduled and command-driven
 /// dreaming uses [`run_librarian_sweep`].
+#[expect(
+    clippy::too_many_lines,
+    reason = "legacy diagnostic dreaming sweep is retained during AI librarian migration and tracked in #109"
+)]
 pub async fn run_legacy_diagnostic_sweep(
     data_dir: &Path,
     config_dir: &Path,
@@ -643,7 +658,7 @@ struct LibrarianLoopResult {
 
 type MemorySnapshot = BTreeMap<String, String>;
 
-async fn build_librarian_request(
+fn build_librarian_request(
     loaded_config: &LoadedConfig,
     character: &str,
     cached_request: Option<&LlmRequest>,
@@ -821,13 +836,13 @@ fn build_librarian_tool_defs(character: &str, display_name: &str, dry_run: bool)
         .collect()
 }
 
-async fn build_librarian_tool_context(
+fn build_librarian_tool_context(
     loaded_config: &LoadedConfig,
     data_dir: &Path,
     llm_client: &LedgerClient,
     character: &str,
     _dry_run: bool,
-) -> Option<SharedToolContext> {
+) -> SharedToolContext {
     let character_data_dir = character_data_dir(data_dir, character);
     let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
         loaded_config.app.defaults.image_generation.as_deref(),
@@ -841,35 +856,34 @@ async fn build_librarian_tool_context(
     )
     .ok();
 
-    Some(SharedToolContext {
-        image_dir_val: character_data_dir
+    SharedToolContext {
+        image_dir: character_data_dir
             .join("images")
             .to_string_lossy()
             .into_owned(),
-        llm_client_val: llm_client.inner().clone(),
-        image_gen_config_val: image_gen_config,
-        search_config_val: loaded_config.app.behavior.tool_use.search.clone(),
-        character_name_val: character.to_string(),
-        workspace_dir_val: character_workspace_dir(&loaded_config.dirs.config, character)
+        llm_client: llm_client.inner().clone(),
+        image_gen_config,
+        search_config: loaded_config.app.behavior.tool_use.search.clone(),
+        character_name: character.to_string(),
+        workspace_dir: character_workspace_dir(&loaded_config.dirs.config, character)
             .to_string_lossy()
             .into_owned(),
-        markdown_store_val: MarkdownMemoryStore::open_sync(character_memory_dir(
+        markdown_store: MarkdownMemoryStore::open_sync(character_memory_dir(
             &loaded_config.dirs.config,
             character,
         ))
         .ok(),
-        memory_retrieval_config_val: loaded_config.app.memory.retrieval.clone(),
-        embedder_val: embedder,
-        memory_index_path_val: crate::memory::workspace_index::index_path(
+        memory_retrieval_config: loaded_config.app.memory.retrieval.clone(),
+        embedder,
+        memory_index_path: crate::memory::workspace_index::index_path(
             &loaded_config.dirs.cache,
             character,
         ),
-        config_dir_val: loaded_config.dirs.config.to_string_lossy().into_owned(),
-        character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
-    })
+        config_dir: loaded_config.dirs.config.to_string_lossy().into_owned(),
+        character_data_dir: character_data_dir.to_string_lossy().into_owned(),
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_private_librarian_loop(
     client: &LedgerClient,
     loaded_config: &LoadedConfig,
@@ -1089,19 +1103,15 @@ async fn write_fallback_memory_index(
     );
     body.push_str("Use it to decide which memory files to inspect before answering.\n\n");
     body.push_str("Core user facts and standing behavior guidance are already loaded from USER.md and AGENTS.md; do not duplicate them here unless needed as pointers to memory files.\n\n");
-    body.push_str(&format!("Character: {character}\n"));
-    body.push_str(&format!("Last updated: {ran_at}\n"));
+    let _ = writeln!(body, "Character: {character}");
+    let _ = writeln!(body, "Last updated: {ran_at}");
     body.push_str("Fallback note: Rust created this minimal index because the AI librarian pass did not leave a usable MEMORY.md.\n\n");
     body.push_str("## Memory areas\n\n");
     if entries.is_empty() {
         body.push_str("- No ordinary memory files were found yet.\n");
     } else {
         for entry in entries.iter().take(MAX_INDEX_FILES) {
-            body.push_str(&format!(
-                "- `{}` - {}\n",
-                entry.path,
-                memory_file_summary(entry)
-            ));
+            let _ = writeln!(body, "- `{}` - {}", entry.path, memory_file_summary(entry));
         }
     }
     body.push_str("\n## Recently updated files\n\n");
@@ -1130,7 +1140,7 @@ async fn append_librarian_audit(
     final_report: Option<&str>,
 ) -> Result<(), DreamingError> {
     let mut body = String::new();
-    body.push_str(&format!("AI librarian dreaming pass at `{ran_at}`.\n\n"));
+    let _ = write!(body, "AI librarian dreaming pass at `{ran_at}`.\n\n");
     body.push_str("Files inspected:\n");
     push_markdown_list_or_none(&mut body, inspected);
     body.push_str("\nFiles changed by tools:\n");
@@ -1164,7 +1174,7 @@ fn push_markdown_list_or_none(body: &mut String, items: &[String]) {
         return;
     }
     for item in items {
-        body.push_str(&format!("- `{}`\n", item.replace('`', "'")));
+        let _ = writeln!(body, "- `{}`", item.replace('`', "'"));
     }
 }
 
@@ -1398,10 +1408,10 @@ fn run_light_phase(
                 .map(|seen| seen.sources.iter().cloned().collect::<BTreeSet<_>>())
                 .unwrap_or_default();
             evidence_sources.insert(evidence.source.clone());
-            let first_seen_at = prior
-                .filter(|seen| !seen.first_seen_at.is_empty())
-                .map(|seen| seen.first_seen_at.clone())
-                .unwrap_or_else(|| ran_at.to_string());
+            let first_seen_at = match prior {
+                Some(seen) if !seen.first_seen_at.is_empty() => seen.first_seen_at.clone(),
+                _ => ran_at.to_string(),
+            };
             let themes = detect_themes(&text);
             let recency = recency_score(&entry.modified_at);
             let durability = durability_score(&text, &themes);
@@ -1527,9 +1537,11 @@ async fn run_deep_phase(
                 .gates
                 .iter()
                 .find(|gate| !gate.passed)
-                .map(|gate| gate.reason.clone())
-                .unwrap_or_else(|| "deferred for more evidence".to_string());
-            candidate.decision_reason = reason.clone();
+                .map_or_else(
+                    || "deferred for more evidence".to_string(),
+                    |gate| gate.reason.clone(),
+                );
+            candidate.decision_reason.clone_from(&reason);
             rejected.push(DreamRejection {
                 text: candidate.text.clone(),
                 score: candidate.promotion_score,
@@ -1616,8 +1628,8 @@ fn phase_summaries(
 }
 
 fn score_candidate(candidate: &DreamCandidate, rem: &RemPhaseOutput) -> f32 {
-    let evidence_score = (candidate.unique_source_count as f32 / 3.0).min(1.0);
-    let recall_score = (candidate.recall_count as f32 / 4.0).min(1.0);
+    let evidence_score = (usize_to_f32(candidate.unique_source_count) / 3.0).min(1.0);
+    let recall_score = (u32_to_f32(candidate.recall_count) / 4.0).min(1.0);
     let theme_score = if candidate.theme_hits.is_empty() {
         0.0
     } else {
@@ -1626,8 +1638,9 @@ fn score_candidate(candidate: &DreamCandidate, rem: &RemPhaseOutput) -> f32 {
             .iter()
             .filter_map(|theme| rem.reinforcement_signals.get(theme))
             .copied()
-            .sum::<usize>() as f32;
-        ((candidate.theme_hits.len() as f32 * 0.20) + (reinforced * 0.10)).min(1.0)
+            .sum::<usize>();
+        ((usize_to_f32(candidate.theme_hits.len()) * 0.20) + (usize_to_f32(reinforced) * 0.10))
+            .min(1.0)
     };
     round_score(
         candidate.durability_score * 0.30
@@ -1716,8 +1729,7 @@ async fn source_still_contains(
     if let Some(line) = candidate.line {
         if let Some(current) = entry.content.lines().nth(line.saturating_sub(1)) {
             if candidate_text_from_line(current)
-                .map(|text| normalize_candidate_text(&text) == wanted)
-                .unwrap_or(false)
+                .is_some_and(|text| normalize_candidate_text(&text) == wanted)
             {
                 return Ok(true);
             }
@@ -1772,31 +1784,26 @@ async fn append_dream_diary(
         Err(e) => return Err(DreamingError::Io(e.to_string())),
     };
 
-    body.push_str(&format!("## Dream Cycle - {ran_at}\n\n"));
+    let _ = write!(body, "## Dream Cycle - {ran_at}\n\n");
     body.push_str("### Light Sleep - Staging\n\n");
-    body.push_str(&format!("- Sources reviewed: {}\n", light.sources_reviewed));
-    body.push_str(&format!(
-        "- Candidates staged: {}\n",
-        light.candidates_staged
-    ));
-    body.push_str(&format!(
-        "- Duplicates ignored: {}\n",
-        light.duplicates_ignored
-    ));
+    let _ = writeln!(body, "- Sources reviewed: {}", light.sources_reviewed);
+    let _ = writeln!(body, "- Candidates staged: {}", light.candidates_staged);
+    let _ = writeln!(body, "- Duplicates ignored: {}", light.duplicates_ignored);
     body.push_str("- No durable memory was written\n\n");
 
     if !light.candidates.is_empty() {
         body.push_str("Staged examples:\n\n");
         for candidate in light.candidates.iter().take(MAX_DIARY_ITEMS) {
-            body.push_str(&format!(
-                "- {}\n  - source: `{}`{}\n",
+            let _ = writeln!(
+                body,
+                "- {}\n  - source: `{}`{}",
                 diary_text(&candidate.text),
                 candidate.source,
                 candidate
                     .line
                     .map(|line| format!(":{line}"))
                     .unwrap_or_default()
-            ));
+            );
         }
         body.push('\n');
     }
@@ -1807,7 +1814,7 @@ async fn append_dream_diary(
     } else {
         body.push_str("- Themes noticed:\n");
         for theme in rem.themes.iter().take(MAX_DIARY_ITEMS) {
-            body.push_str(&format!("  - {} ({} hits)\n", theme.theme, theme.hits));
+            let _ = writeln!(body, "  - {} ({} hits)", theme.theme, theme.hits);
         }
     }
     if rem.reinforcement_signals.is_empty() {
@@ -1815,7 +1822,7 @@ async fn append_dream_diary(
     } else {
         body.push_str("- Reinforcement signals:\n");
         for (theme, hits) in rem.reinforcement_signals.iter().take(MAX_DIARY_ITEMS) {
-            body.push_str(&format!("  - {theme}: {hits} supporting candidates\n"));
+            let _ = writeln!(body, "  - {theme}: {hits} supporting candidates");
         }
     }
     body.push_str("- No durable memory was written\n\n");
@@ -1826,22 +1833,24 @@ async fn append_dream_diary(
         body.push_str("- None\n");
     } else {
         for promotion in deep.promoted.iter().take(MAX_DIARY_ITEMS) {
-            body.push_str(&format!("- {}\n", diary_text(&promotion.text)));
-            body.push_str(&format!("  - score: {:.2}\n", promotion.score));
+            let _ = writeln!(body, "- {}", diary_text(&promotion.text));
+            let _ = writeln!(body, "  - score: {:.2}", promotion.score);
             if let Some(evidence) = promotion.evidence.first() {
-                body.push_str(&format!(
-                    "  - evidence/source: `{}`{}\n",
+                let _ = writeln!(
+                    body,
+                    "  - evidence/source: `{}`{}",
                     evidence.source,
                     evidence
                         .line
                         .map(|line| format!(":{line}"))
                         .unwrap_or_default()
-                ));
+                );
             }
-            body.push_str(&format!(
-                "  - gates passed: {}\n",
+            let _ = writeln!(
+                body,
+                "  - gates passed: {}",
                 promotion.gates_passed.join(", ")
-            ));
+            );
         }
     }
     body.push_str("\nRejected/deferred:\n\n");
@@ -1849,8 +1858,8 @@ async fn append_dream_diary(
         body.push_str("- None\n");
     } else {
         for rejection in deep.rejected.iter().take(MAX_DIARY_ITEMS) {
-            body.push_str(&format!("- {}\n", diary_text(&rejection.text)));
-            body.push_str(&format!("  - reason: {}\n", rejection.reason));
+            let _ = writeln!(body, "- {}", diary_text(&rejection.text));
+            let _ = writeln!(body, "  - reason: {}", rejection.reason);
         }
     }
     body.push_str("\n### Notes for Review\n\n");
@@ -1878,25 +1887,32 @@ async fn write_phase_reports(
 ) -> Result<(), DreamingError> {
     let (light_report_rel, rem_report_rel, deep_report_rel) = report_paths;
     let mut light_report = format!("# Light Sleep - {ran_at}\n\n");
-    light_report.push_str(&format!("- Sources reviewed: {}\n", light.sources_reviewed));
-    light_report.push_str(&format!(
-        "- Generated sources ignored: {}\n",
+    let _ = writeln!(
+        light_report,
+        "- Sources reviewed: {}",
+        light.sources_reviewed
+    );
+    let _ = writeln!(
+        light_report,
+        "- Generated sources ignored: {}",
         light.generated_sources_ignored
-    ));
-    light_report.push_str(&format!(
-        "- Candidates staged: {}\n",
+    );
+    let _ = writeln!(
+        light_report,
+        "- Candidates staged: {}",
         light.candidates_staged
-    ));
-    light_report.push_str(&format!(
-        "- Duplicates ignored: {}\n",
+    );
+    let _ = writeln!(
+        light_report,
+        "- Duplicates ignored: {}",
         light.duplicates_ignored
-    ));
+    );
     light_report.push_str("- No durable memory was written\n");
 
     let mut rem_report = format!("# REM Sleep - {ran_at}\n\n");
     rem_report.push_str("## Themes\n\n");
     for theme in &rem.themes {
-        rem_report.push_str(&format!("- {}: {} hits\n", theme.theme, theme.hits));
+        let _ = writeln!(rem_report, "- {}: {} hits", theme.theme, theme.hits);
     }
     if rem.themes.is_empty() {
         rem_report.push_str("- None\n");
@@ -1909,7 +1925,7 @@ async fn write_phase_reports(
         deep_report.push_str("- None\n");
     } else {
         for promotion in &deep.promoted {
-            deep_report.push_str(&format!("- {} ({:.2})\n", promotion.text, promotion.score));
+            let _ = writeln!(deep_report, "- {} ({:.2})", promotion.text, promotion.score);
         }
     }
     deep_report.push_str("\n## Rejected/deferred\n\n");
@@ -1917,7 +1933,7 @@ async fn write_phase_reports(
         deep_report.push_str("- None\n");
     } else {
         for rejection in &deep.rejected {
-            deep_report.push_str(&format!("- {} - {}\n", rejection.text, rejection.reason));
+            let _ = writeln!(deep_report, "- {} - {}", rejection.text, rejection.reason);
         }
     }
 
@@ -1951,8 +1967,8 @@ async fn write_memory_index(
 
     let mut body = String::new();
     body.push_str("# Memory Index\n\n");
-    body.push_str(&format!("Character: {character}\n"));
-    body.push_str(&format!("Last updated: {ran_at}\n\n"));
+    let _ = writeln!(body, "Character: {character}");
+    let _ = write!(body, "Last updated: {ran_at}\n\n");
     body.push_str("This file is the prompt-visible memory index. It maps durable memory files in workspace/memory, recent updates, and still-relevant conversational throughlines.\n\n");
     body.push_str("It is not the character definition, user profile, standing behavior, tool guide, or heartbeat guide. Those roles stay in SOUL.md, USER.md, AGENTS.md, TOOLS.md, and HEARTBEAT.md.\n\n");
 
@@ -1961,17 +1977,14 @@ async fn write_memory_index(
         body.push_str("- No memory files yet.\n");
     } else {
         for entry in entries.iter().take(MAX_INDEX_FILES) {
-            body.push_str(&format!(
-                "- `{}` - {}\n",
-                entry.path,
-                memory_file_summary(entry)
-            ));
+            let _ = writeln!(body, "- `{}` - {}", entry.path, memory_file_summary(entry));
         }
         if entries.len() > MAX_INDEX_FILES {
-            body.push_str(&format!(
-                "- {} additional memory files omitted from this index.\n",
+            let _ = writeln!(
+                body,
+                "- {} additional memory files omitted from this index.",
                 entries.len() - MAX_INDEX_FILES
-            ));
+            );
         }
     }
 
@@ -1980,11 +1993,12 @@ async fn write_memory_index(
         body.push_str("- No recent memory file updates.\n");
     } else {
         for entry in recent.iter().take(MAX_RECENT_INDEX_FILES) {
-            body.push_str(&format!(
-                "- `{}` - modified {}\n",
+            let _ = writeln!(
+                body,
+                "- `{}` - modified {}",
                 entry.path,
                 display_modified_at(&entry.modified_at)
-            ));
+            );
         }
     }
 
@@ -1993,16 +2007,17 @@ async fn write_memory_index(
         body.push_str("- No high-confidence throughlines selected in the latest dream cycle.\n");
     } else {
         for item in throughlines.iter().take(MAX_INDEX_THROUGHLINES) {
-            body.push_str(&format!("- {}\n", diary_text(&item.text)));
+            let _ = writeln!(body, "- {}", diary_text(&item.text));
             if let Some(evidence) = item.evidence.first() {
-                body.push_str(&format!(
-                    "  - source: `{}`{}\n",
+                let _ = writeln!(
+                    body,
+                    "  - source: `{}`{}",
                     evidence.source,
                     evidence
                         .line
                         .map(|line| format!(":{line}"))
                         .unwrap_or_default()
-                ));
+                );
             }
         }
     }
@@ -2101,8 +2116,12 @@ pub fn is_generated_dreaming_path(path: &str) -> bool {
 }
 
 fn is_candidate_source_path(path: &str) -> bool {
-    let lower = path.replace('\\', "/").to_lowercase();
-    !is_generated_dreaming_path(path) && lower.ends_with(".md")
+    let normalized = path.replace('\\', "/");
+    !is_generated_dreaming_path(path)
+        && Path::new(&normalized)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
 }
 
 fn candidate_text_from_line(line: &str) -> Option<String> {
@@ -2262,7 +2281,7 @@ fn recency_score(modified_at: &str) -> f32 {
 
 fn durability_score(text: &str, themes: &[String]) -> f32 {
     let lower = text.to_lowercase();
-    let mut score = 0.20 + (themes.len() as f32 * 0.16);
+    let mut score = 0.20 + (usize_to_f32(themes.len()) * 0.16);
     if contains_any(
         &lower,
         &[
@@ -2297,13 +2316,10 @@ fn specificity_score(text: &str) -> f32 {
     if text.chars().any(|c| c.is_ascii_digit()) {
         score += 0.10;
     }
-    if text.split_whitespace().any(|word| {
-        word.chars()
-            .next()
-            .map(|c| c.is_uppercase())
-            .unwrap_or(false)
-            && word.len() > 2
-    }) {
+    if text
+        .split_whitespace()
+        .any(|word| word.chars().next().is_some_and(char::is_uppercase) && word.len() > 2)
+    {
         score += 0.20;
     }
     if text.contains(':') || text.contains('/') || text.contains('@') {
@@ -2331,10 +2347,10 @@ fn unique_source_count(evidence: &[DreamEvidence]) -> usize {
 }
 
 fn candidate_id(normalized: &str) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in normalized.as_bytes() {
         hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     format!("dc-{hash:016x}")
 }

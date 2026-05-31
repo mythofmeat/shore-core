@@ -34,9 +34,27 @@ fn density_to_block(normalized: f64) -> char {
     if normalized < 0.05 {
         '\u{2591}'
     } else {
-        let idx = ((normalized * 7.0).round() as usize).min(7);
+        let level = (normalized.clamp(0.0, 1.0) * 7.0).round();
+        let idx = match level {
+            x if x <= 0.0 => 0,
+            x if x <= 1.0 => 1,
+            x if x <= 2.0 => 2,
+            x if x <= 3.0 => 3,
+            x if x <= 4.0 => 4,
+            x if x <= 5.0 => 5,
+            x if x <= 6.0 => 6,
+            _ => 7,
+        };
         BLOCKS[idx]
     }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "CLI display formatting can round huge counters without changing stored values"
+)]
+fn u64_to_f64_for_display(value: u64) -> f64 {
+    value as f64
 }
 
 /// Color for an hour classification label.
@@ -54,7 +72,7 @@ fn classification_color(class: &str) -> Color {
 /// underneath, plus engagement and session stats.
 fn write_activity_section(out: &mut impl Write, activity: &serde_json::Value, width: usize) {
     let histogram: Vec<f64> = match activity["hour_histogram"].as_array() {
-        Some(arr) => arr.iter().filter_map(|v| v.as_f64()).collect(),
+        Some(arr) => arr.iter().filter_map(serde_json::Value::as_f64).collect(),
         None => return,
     };
     if histogram.len() != 24 {
@@ -79,7 +97,7 @@ fn write_activity_section(out: &mut impl Write, activity: &serde_json::Value, wi
     write_section_header(out, "Activity", suffix, width);
 
     // -- bar chart row --
-    let max_val = histogram.iter().cloned().fold(0.0_f64, f64::max);
+    let max_val = histogram.iter().copied().fold(0.0_f64, f64::max);
     if use_color() {
         let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
@@ -382,8 +400,7 @@ fn alt_preview(content: &str, max_width: usize) -> String {
         .char_indices()
         .take_while(|(idx, _)| *idx <= max_width.saturating_sub(3))
         .last()
-        .map(|(idx, ch)| idx + ch.len_utf8())
-        .unwrap_or(0);
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
     format!("{}...", &compact[..end])
 }
 
@@ -392,8 +409,7 @@ fn print_alt_list(data: &serde_json::Value) {
     let msg_ref = data["ref"].as_str().unwrap_or("?");
     let alternatives = data["alternatives"]
         .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
+        .map_or(&[] as &[serde_json::Value], Vec::as_slice);
     if alternatives.is_empty() {
         println!("No alternate responses for {msg_ref}.");
         return;
@@ -591,10 +607,7 @@ fn print_model_settings(data: &serde_json::Value) {
     for key in keys {
         let value = match sampler.get(key) {
             Some(v) if v.is_null() => "(unset)".to_string(),
-            Some(v) => v
-                .as_str()
-                .map(String::from)
-                .unwrap_or_else(|| v.to_string()),
+            Some(v) => v.as_str().map_or_else(|| v.to_string(), String::from),
             None => "(unset)".to_string(),
         };
         let scope = scopes
@@ -613,10 +626,7 @@ fn print_set_model_setting(data: &serde_json::Value) {
     let scope = data["scope"].as_str().unwrap_or("?");
     let value = match data.get("value") {
         Some(v) if v.is_null() => "(cleared)".to_string(),
-        Some(v) => v
-            .as_str()
-            .map(String::from)
-            .unwrap_or_else(|| v.to_string()),
+        Some(v) => v.as_str().map_or_else(|| v.to_string(), String::from),
         None => "(cleared)".to_string(),
     };
     let model = data["model"].as_str().unwrap_or("?");
@@ -969,8 +979,7 @@ fn print_changelog(data: &serde_json::Value) {
                 let desc = entry["description"].as_str().unwrap_or("");
 
                 let time_display = parse_timestamp(ts)
-                    .map(|dt| dt.format("%b %d %H:%M").to_string())
-                    .unwrap_or_else(|| ts.to_string());
+                    .map_or_else(|| ts.to_string(), |dt| dt.format("%b %d %H:%M").to_string());
 
                 if use_color() {
                     let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
@@ -1031,7 +1040,7 @@ fn print_compact_result(data: &serde_json::Value) {
     } else {
         let files = data["memory_files_written"]
             .as_array()
-            .map_or(0, |files| files.len());
+            .map_or(0, std::vec::Vec::len);
         write_row(&mut out, "Memory files", &format!("{files} written"));
         let turns = data["compacted_turns"]
             .as_u64()
@@ -1073,12 +1082,11 @@ pub(crate) fn print_config(data: &serde_json::Value, show_all: bool) {
         // old daemons we synthesize the baseline locally and descend into the
         // matching subtree so the comparison stays aligned with `config`.
         let local_baseline;
-        let section_default = match data.get("defaults") {
-            Some(d) => Some(d),
-            None => {
-                local_baseline = local_defaults_baseline();
-                local_baseline.as_ref().and_then(|d| d.get(key))
-            }
+        let section_default = if let Some(d) = data.get("defaults") {
+            Some(d)
+        } else {
+            local_baseline = local_defaults_baseline();
+            local_baseline.as_ref().and_then(|d| d.get(key))
         };
         write_section_header(&mut out, "Config", key, width);
         print_config_section(&mut out, &data["config"], section_default, 1, show_all);
@@ -1089,12 +1097,11 @@ pub(crate) fn print_config(data: &serde_json::Value, show_all: bool) {
     // Full config: { "config": { ... }, "defaults": { ... } }
     if let Some(config) = data.get("config") {
         let local_baseline;
-        let defaults = match data.get("defaults") {
-            Some(d) => Some(d),
-            None => {
-                local_baseline = local_defaults_baseline();
-                local_baseline.as_ref()
-            }
+        let defaults = if let Some(d) = data.get("defaults") {
+            Some(d)
+        } else {
+            local_baseline = local_defaults_baseline();
+            local_baseline.as_ref()
         };
         write_section_header(&mut out, "Config", "", width);
         print_config_section(&mut out, config, defaults, 1, show_all);
@@ -1110,11 +1117,7 @@ fn render_config_value(v: &serde_json::Value) -> String {
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::Array(arr) => arr
             .iter()
-            .map(|i| {
-                i.as_str()
-                    .map(String::from)
-                    .unwrap_or_else(|| i.to_string())
-            })
+            .map(|i| i.as_str().map_or_else(|| i.to_string(), String::from))
             .collect::<Vec<_>>()
             .join(", "),
         _ => v.to_string(),
@@ -1166,7 +1169,7 @@ fn print_config_section(
     for (k, v) in map {
         let d = defaults.and_then(|dd| dd.get(k));
         match v {
-            serde_json::Value::Null => continue,
+            serde_json::Value::Null => {}
             serde_json::Value::Object(_) => {
                 if show_all || has_non_defaults(v, d) {
                     visible.push((k.as_str(), v, d, true, false));
@@ -1189,8 +1192,7 @@ fn print_config_section(
         .filter(|(_, _, _, is_sub, _)| !is_sub)
         .map(|(k, _, _, _, _)| k.len())
         .max()
-        .map(|m| m + 1)
-        .unwrap_or(0);
+        .map_or(0, |m| m + 1);
 
     for (k, v, d, is_subtable, is_default) in visible {
         if is_subtable {
@@ -1310,7 +1312,7 @@ pub fn print_diagnostics(data: &serde_json::Value) {
             let cr = call["cache_read_tokens"].as_u64().unwrap_or(0);
             let cw = call["cache_write_tokens"].as_u64().unwrap_or(0);
             let total = call["total_ms"].as_u64().unwrap_or(0);
-            let secs = total as f64 / 1000.0;
+            let secs = u64_to_f64_for_display(total) / 1000.0;
 
             let _ = write!(out, "{model:<24}");
             write_dim(
@@ -1380,9 +1382,10 @@ fn print_diagnostics_section<W: Write>(
         } else {
             for entry in entries {
                 let ts = entry["timestamp"].as_str().unwrap_or("");
-                let time = parse_timestamp(ts)
-                    .map(|dt| dt.format("%H:%M:%S").to_string())
-                    .unwrap_or_else(|| ts.chars().take(8).collect());
+                let time = parse_timestamp(ts).map_or_else(
+                    || ts.chars().take(8).collect(),
+                    |dt| dt.format("%H:%M:%S").to_string(),
+                );
 
                 write_dim(out, &format!("  {time}  "));
                 format_row(out, entry);
@@ -1398,7 +1401,7 @@ fn format_k(tokens: u64) -> String {
     } else if tokens < 1000 {
         tokens.to_string()
     } else {
-        format!("{:.1}K", tokens as f64 / 1000.0)
+        format!("{:.1}K", u64_to_f64_for_display(tokens) / 1000.0)
     }
 }
 
@@ -1423,24 +1426,26 @@ fn ellipsize(s: &str, max_width: usize) -> String {
 /// payload is always UTC; converting to local with AM/PM makes the value
 /// match the configured anchor at a glance.
 fn format_local_ampm(rfc3339: &str) -> String {
-    parse_timestamp(rfc3339)
-        .map(|dt| dt.format("%Y-%m-%d %I:%M %p").to_string())
-        .unwrap_or_else(|| rfc3339.to_string())
+    parse_timestamp(rfc3339).map_or_else(
+        || rfc3339.to_string(),
+        |dt| dt.format("%Y-%m-%d %I:%M %p").to_string(),
+    )
 }
 
 fn print_budget_table(data: &serde_json::Value) {
-    let budgets = data["budgets"].as_array();
-    if budgets.is_none_or(|rows| rows.is_empty()) {
-        println!("  No usage budgets configured.");
-        return;
-    }
-
     // Time columns match the width of `format_local_ampm`'s output
     // (`YYYY-MM-DD HH:MM AM` = 19 chars); raw-string fallbacks are ellipsized
     // to the same width so the divider always spans the table. `Started`
     // shows when the current window opened (so a user with `reset_hour=10`
     // can see why the budget total isn't the same as today's summary).
     const TIME_W: usize = 19;
+
+    let budgets = data["budgets"].as_array();
+    if budgets.is_none_or(std::vec::Vec::is_empty) {
+        println!("  No usage budgets configured.");
+        return;
+    }
+
     let table_w = 24 + 1 + 6 + 1 + 11 + 1 + 7 + 2 + 15 + 1 + 16 + 1 + TIME_W + 1 + TIME_W;
 
     println!(
@@ -1456,13 +1461,11 @@ fn print_budget_table(data: &serde_json::Value) {
             let started = budget["period_start"]
                 .as_str()
                 .map(format_local_ampm)
-                .map(|s| ellipsize(&s, TIME_W))
-                .unwrap_or_else(|| "?".into());
+                .map_or_else(|| "?".into(), |s| ellipsize(&s, TIME_W));
             let reset = budget["reset_at"]
                 .as_str()
                 .map(format_local_ampm)
-                .map(|s| ellipsize(&s, TIME_W))
-                .unwrap_or_else(|| "?".into());
+                .map_or_else(|| "?".into(), |s| ellipsize(&s, TIME_W));
             println!(
                 "{:<24} {:<6} {:>5.2}/{:<5.2} {:>6.0}%  {:<15} {:<16} {started:<TIME_W$} {reset:<TIME_W$}",
                 budget["name"].as_str().unwrap_or("budget"),
@@ -1479,7 +1482,7 @@ fn print_budget_table(data: &serde_json::Value) {
 
 fn print_spike_warnings(data: &serde_json::Value) {
     let warnings = data["spike_warnings"].as_array();
-    if warnings.is_none_or(|rows| rows.is_empty()) {
+    if warnings.is_none_or(std::vec::Vec::is_empty) {
         return;
     }
     println!("\nSpike Warnings:");
@@ -1550,13 +1553,13 @@ fn write_usage_summary_table(out: &mut impl Write, data: &serde_json::Value) -> 
     let mut grand_total = 0.0f64;
     if let Some(rows) = summary {
         for s in rows {
-            let cost_str = s["total_cost"]
-                .as_f64()
-                .map(|c| {
+            let cost_str = s["total_cost"].as_f64().map_or_else(
+                || "\u{2014}".into(),
+                |c| {
                     grand_total += c;
                     format!("${c:.2}")
-                })
-                .unwrap_or_else(|| "\u{2014}".into());
+                },
+            );
             let provider = ellipsize(s["provider"].as_str().unwrap_or(""), provider_w);
             let model = ellipsize(s["model"].as_str().unwrap_or(""), model_w);
             writeln!(
@@ -1570,20 +1573,24 @@ fn write_usage_summary_table(out: &mut impl Write, data: &serde_json::Value) -> 
                 cost_str,
             )?;
         }
-        if !rows.is_empty() {
+        if rows.is_empty() {
+            writeln!(out, "  No usage data for this period.")?;
+        } else {
             // "Total:" sits in the column space before Cost; the dollar amount
             // right-aligns inside the 8-char Cost column so it lines up with
             // the per-row costs above it.
             let label_w = total_w.saturating_sub(9);
             let total_str = format!("${grand_total:.2}");
             writeln!(out, "{:>label_w$} {total_str:>8}", "Total:")?;
-        } else {
-            writeln!(out, "  No usage data for this period.")?;
         }
     }
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "usage output is a single command renderer with several mutually-exclusive modes"
+)]
 pub fn print_usage(data: &serde_json::Value) {
     let mode = data["mode"].as_str().unwrap_or("summary");
 
@@ -1606,13 +1613,13 @@ pub fn print_usage(data: &serde_json::Value) {
             let mut grand_total = 0.0f64;
             if let Some(rows) = summary {
                 for s in rows {
-                    let cost_str = s["total_cost"]
-                        .as_f64()
-                        .map(|c| {
+                    let cost_str = s["total_cost"].as_f64().map_or_else(
+                        || "\u{2014}".into(),
+                        |c| {
                             grand_total += c;
                             format!("${c:.2}")
-                        })
-                        .unwrap_or_else(|| "\u{2014}".into());
+                        },
+                    );
                     println!(
                         "{:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
                         s["call_type"].as_str().unwrap_or(""),
@@ -1624,10 +1631,10 @@ pub fn print_usage(data: &serde_json::Value) {
                         cost_str,
                     );
                 }
-                if !rows.is_empty() {
-                    println!("{:>70} ${grand_total:.2}", "Total:");
-                } else {
+                if rows.is_empty() {
                     println!("  No usage data for this period.");
+                } else {
+                    println!("{:>70} ${grand_total:.2}", "Total:");
                 }
             }
         }
@@ -1644,13 +1651,13 @@ pub fn print_usage(data: &serde_json::Value) {
             let mut grand_total = 0.0f64;
             if let Some(rows) = summary {
                 for s in rows {
-                    let cost_str = s["total_cost"]
-                        .as_f64()
-                        .map(|c| {
+                    let cost_str = s["total_cost"].as_f64().map_or_else(
+                        || "\u{2014}".into(),
+                        |c| {
                             grand_total += c;
                             format!("${c:.2}")
-                        })
-                        .unwrap_or_else(|| "\u{2014}".into());
+                        },
+                    );
                     println!(
                         "{:<20} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
                         s["usage_kind"].as_str().unwrap_or(""),
@@ -1662,10 +1669,10 @@ pub fn print_usage(data: &serde_json::Value) {
                         cost_str,
                     );
                 }
-                if !rows.is_empty() {
-                    println!("{:>72} ${grand_total:.2}", "Total:");
-                } else {
+                if rows.is_empty() {
                     println!("  No usage data for this period.");
+                } else {
+                    println!("{:>72} ${grand_total:.2}", "Total:");
                 }
             }
         }
@@ -1682,13 +1689,13 @@ pub fn print_usage(data: &serde_json::Value) {
             let mut grand_total = 0.0f64;
             if let Some(rows) = summary {
                 for s in rows {
-                    let cost_str = s["total_cost"]
-                        .as_f64()
-                        .map(|c| {
+                    let cost_str = s["total_cost"].as_f64().map_or_else(
+                        || "\u{2014}".into(),
+                        |c| {
                             grand_total += c;
                             format!("${c:.2}")
-                        })
-                        .unwrap_or_else(|| "\u{2014}".into());
+                        },
+                    );
                     println!(
                         "{:<22} {:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
                         s["provider"].as_str().unwrap_or(""),
@@ -1701,10 +1708,10 @@ pub fn print_usage(data: &serde_json::Value) {
                         cost_str,
                     );
                 }
-                if !rows.is_empty() {
-                    println!("{:>94} ${grand_total:.2}", "Total:");
-                } else {
+                if rows.is_empty() {
                     println!("  No usage data for this period.");
+                } else {
+                    println!("{:>94} ${grand_total:.2}", "Total:");
                 }
             }
         }
@@ -1716,12 +1723,15 @@ pub fn print_usage(data: &serde_json::Value) {
             print_spike_warnings(data);
         }
         "anomalies" => {
-            let anomalies = data["anomalies"].as_array();
-            if anomalies.is_none() || anomalies.unwrap().is_empty() {
+            let Some(anomalies) = data["anomalies"].as_array() else {
                 println!("No cache anomalies found.");
-            } else if let Some(rows) = anomalies {
+                return;
+            };
+            if anomalies.is_empty() {
+                println!("No cache anomalies found.");
+            } else {
                 println!("Cache Anomalies:\n");
-                for r in rows {
+                for r in anomalies {
                     println!(
                         "  {} {} {} {} \u{2014} {} (read: {}, write: {})",
                         r["ts"].as_str().unwrap_or("?"),
@@ -1733,7 +1743,7 @@ pub fn print_usage(data: &serde_json::Value) {
                         r["cache_write_tokens"].as_u64().unwrap_or(0),
                     );
                 }
-                println!("\nTotal: {} anomalies", rows.len());
+                println!("\nTotal: {} anomalies", anomalies.len());
             }
         }
         "refresh_pricing" => {
@@ -1849,14 +1859,19 @@ fn format_threshold(secs: u64) -> String {
 /// Format an RFC3339 timestamp as "YYYY-MM-DD HH:MM" in local time, or the
 /// raw string on parse failure.
 fn format_local_timestamp(rfc3339: &str) -> String {
-    parse_timestamp(rfc3339)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_else(|| rfc3339.to_string())
+    parse_timestamp(rfc3339).map_or_else(
+        || rfc3339.to_string(),
+        |dt| dt.format("%Y-%m-%d %H:%M").to_string(),
+    )
 }
 
 /// Render the autonomy block of `shore status`. Reads the `AutonomyStatus`
 /// JSON snapshot from the daemon and renders state, schedule, thresholds,
 /// and the most recent heartbeat events.
+#[expect(
+    clippy::too_many_lines,
+    reason = "status dashboard renderer keeps related autonomy rows in display order"
+)]
 fn write_autonomy_section(out: &mut impl Write, autonomy: &serde_json::Value, width: usize) {
     let paused = autonomy["paused"].as_bool().unwrap_or(false);
     let suffix = if paused { "paused" } else { "" };
@@ -1967,20 +1982,20 @@ fn write_autonomy_section(out: &mut impl Write, autonomy: &serde_json::Value, wi
         let ts = event["timestamp"].as_str().unwrap_or("");
         let kind = event["kind"].as_str().unwrap_or("?");
         let detail = event["detail"].as_str().unwrap_or("");
-        let time_str = parse_timestamp(ts)
-            .map(|dt| {
+        let time_str = parse_timestamp(ts).map_or_else(
+            || ts.chars().take(8).collect(),
+            |dt| {
                 let formatted = format_time(&dt, prev_date.as_deref());
                 prev_date = Some(dt.format("%Y-%m-%d").to_string());
                 formatted
-            })
-            .unwrap_or_else(|| ts.chars().take(8).collect());
+            },
+        );
         let kind_color = match kind {
             "tick_fired" => Color::Blue,
-            "message_sent" => Color::Green,
+            "message_sent" | "wake" => Color::Green,
             "message_skipped" => Color::DarkGrey,
             "tool_use" => Color::Cyan,
             "dormant" => Color::Red,
-            "wake" => Color::Green,
             "dormant_ping" => Color::Magenta,
             "timeout" => Color::Yellow,
             _ => Color::White,

@@ -32,9 +32,10 @@ struct Target {
 }
 
 fn load_env_file() {
-    let path = env::var("SHORE_ENV_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/home/eshen/.config/shore/.env"));
+    let path = env::var("SHORE_ENV_FILE").map_or_else(
+        |_| PathBuf::from("/home/eshen/.config/shore/.env"),
+        PathBuf::from,
+    );
     let Ok(contents) = fs::read_to_string(path) else {
         return;
     };
@@ -114,6 +115,42 @@ fn opencode_auth_key(provider: &str) -> Option<String> {
     }
 }
 
+/// The fixed thinking → tool_use → tool_result conversation replayed at the
+/// provider to exercise prior-turn reasoning handling.
+fn replay_messages() -> Vec<serde_json::Value> {
+    vec![
+        json!({
+            "role": "user",
+            "content": "Use the tool result and answer in one short sentence."
+        }),
+        json!({
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "thinking",
+                    "thinking": "I need the lookup result before answering."
+                },
+                {
+                    "type": "tool_use",
+                    "id": "call_live_reasoning_1",
+                    "name": "lookup_fact",
+                    "input": {"topic": "live smoke test"}
+                }
+            ]
+        }),
+        json!({
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_live_reasoning_1",
+                    "content": "The lookup result is: live reasoning replay succeeded."
+                }
+            ]
+        }),
+    ]
+}
+
 #[tokio::main]
 async fn main() {
     load_env_file();
@@ -153,37 +190,7 @@ async fn main() {
         api_key,
         api_key_name: Some("default".into()),
         base_url: Some(target.base_url.to_string()),
-        messages: vec![
-            json!({
-                "role": "user",
-                "content": "Use the tool result and answer in one short sentence."
-            }),
-            json!({
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "thinking",
-                        "thinking": "I need the lookup result before answering."
-                    },
-                    {
-                        "type": "tool_use",
-                        "id": "call_live_reasoning_1",
-                        "name": "lookup_fact",
-                        "input": {"topic": "live smoke test"}
-                    }
-                ]
-            }),
-            json!({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "call_live_reasoning_1",
-                        "content": "The lookup result is: live reasoning replay succeeded."
-                    }
-                ]
-            }),
-        ],
+        messages: replay_messages(),
         system: Some(json!("You are a concise live API smoke-test assistant.")),
         tools: Some(vec![json!({
             "name": "lookup_fact",

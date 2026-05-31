@@ -35,21 +35,25 @@ use shore_config::models::Sdk;
 use shore_llm::types::{ContentBlock, GenerateResponse, LlmRequest, Usage};
 use shore_llm::LlmClient;
 
+const LCG_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
+const LCG_INCREMENT: u64 = 1_442_695_040_888_963_407;
+
 /// shore-llm reads `SHORE_CACHE_PINNED_POSITION` from the process env to
 /// override cache-breakpoint defaults. This test sets it, so it must not
 /// race with any other test in the same binary that also mutates env.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn load_env_file() {
-    let path = env::var("SHORE_ENV_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
+    let path = env::var("SHORE_ENV_FILE").map_or_else(
+        |_| {
             env::var_os("XDG_CONFIG_HOME")
                 .map(PathBuf::from)
                 .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("shore/.env")
-        });
+        },
+        PathBuf::from,
+    );
     let Ok(contents) = fs::read_to_string(path) else {
         return;
     };
@@ -75,18 +79,19 @@ fn load_env_file() {
     }
 }
 
-fn random_nonce() -> String {
-    let nanos = SystemTime::now()
+fn clock_seed() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+}
+
+fn random_nonce() -> String {
     let mut buf = String::with_capacity(32);
-    let mut x = nanos;
+    let mut x = clock_seed();
     while buf.len() < 32 {
-        buf.push(char::from_digit((x & 0xf) as u32, 16).unwrap_or('0'));
-        x = x
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+        let digit = u32::try_from(x & 0xf).unwrap_or(0);
+        buf.push(char::from_digit(digit, 16).unwrap_or('0'));
+        x = x.wrapping_mul(LCG_MULTIPLIER).wrapping_add(LCG_INCREMENT);
     }
     buf
 }
@@ -141,25 +146,30 @@ fn roll_dice_tool() -> Value {
     })
 }
 
+fn dice_param(input: &Value, key: &str, default: u32) -> u32 {
+    input
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
 fn fake_roll(input: &Value) -> String {
-    let count = input.get("count").and_then(Value::as_u64).unwrap_or(1) as u32;
-    let sides = input.get("sides").and_then(Value::as_u64).unwrap_or(6) as u32;
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let mut seed = nanos as u64;
-    let mut rolls = Vec::with_capacity(count as usize);
+    let count = dice_param(input, "count", 1);
+    let sides = dice_param(input, "sides", 6);
+    let mut seed = clock_seed();
+    let mut rolls = Vec::new();
     let mut total: u32 = 0;
     for _ in 0..count {
         seed = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let r = ((seed >> 33) as u32 % sides) + 1;
+            .wrapping_mul(LCG_MULTIPLIER)
+            .wrapping_add(LCG_INCREMENT);
+        let r = (u32::try_from(seed >> 33).unwrap_or(0) % sides) + 1;
         rolls.push(r);
         total += r;
     }
-    let parts: Vec<String> = rolls.iter().map(|r| r.to_string()).collect();
+    let parts: Vec<String> = rolls.iter().map(std::string::ToString::to_string).collect();
     format!("Rolled {count}d{sides}: [{}] = {total}", parts.join(", "))
 }
 
@@ -239,10 +249,10 @@ fn build_request(
 
 struct CallStat {
     label: String,
-    input: u32,
-    output: u32,
-    cache_r: u32,
-    cache_w: u32,
+    input: u64,
+    output: u64,
+    cache_r: u64,
+    cache_w: u64,
 }
 
 fn record(stats: &mut Vec<CallStat>, label: &str, usage: &Usage) {
@@ -280,7 +290,7 @@ async fn run_tool_loop(
     rid_prefix: &str,
     stats: &mut Vec<CallStat>,
     label_prefix: &str,
-    cold_write_out: &mut Option<u32>,
+    cold_write_out: &mut Option<u64>,
 ) -> Result<(), String> {
     let mut iter = 0usize;
     loop {
@@ -294,7 +304,9 @@ async fn run_tool_loop(
 
         let label = format!("{label_prefix}#{iter}");
         record(stats, &label, &resp.usage);
-        let stat = stats.last().expect("just recorded");
+        let Some(stat) = stats.last() else {
+            return Err(format!("no stats recorded for {label}"));
+        };
         println!(
             "  {:<28} input={:<6} output={:<5} cache_r={:<7} cache_w={}",
             stat.label, stat.input, stat.output, stat.cache_r, stat.cache_w
@@ -309,7 +321,9 @@ async fn run_tool_loop(
             }
             *cold_write_out = Some(resp.usage.cache_creation_tokens);
         } else {
-            let cold = cold_write_out.unwrap();
+            let Some(cold) = *cold_write_out else {
+                return Err("cold cache_creation missing after first call".into());
+            };
             if resp.usage.cache_read_tokens == 0 {
                 return Err(format!(
                     "BAIL on {label}: cache_read = 0 — prefix invalidated"
@@ -367,6 +381,10 @@ async fn run_tool_loop(
 /// -- --ignored --nocapture`.
 #[tokio::test]
 #[ignore = "Requires OPENROUTER_API_KEY; costs real money"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "live provider regression keeps the probe phases in one readable flow"
+)]
 async fn cache_holds_through_adaptive_tool_loop_and_followup() {
     // shore-llm reads SHORE_CACHE_PINNED_POSITION at request time — keep
     // the env-var setup serialized with any concurrent test that also
@@ -405,7 +423,7 @@ async fn cache_holds_through_adaptive_tool_loop_and_followup() {
 
     let client = LlmClient::new();
     let mut stats: Vec<CallStat> = Vec::new();
-    let mut cold_write: Option<u32> = None;
+    let mut cold_write: Option<u64> = None;
 
     // ── Turn 1: branching dice scenario, force ≥3 tool iterations ──
     let mut messages: Vec<Value> = vec![json!({

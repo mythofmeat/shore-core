@@ -15,16 +15,13 @@ use tracing::{debug, warn};
 pub fn render_image(path: &str, caption: Option<&str>, data: Option<&str>) {
     let label = caption.unwrap_or(path);
 
-    let bytes = match resolve_bytes(path, data) {
-        Some(bytes) => bytes,
-        None => {
-            debug!(
-                path,
-                "No local file and no embedded data, displaying as text"
-            );
-            println!("[img: {label}]");
-            return;
-        }
+    let Some(bytes) = resolve_bytes(path, data) else {
+        debug!(
+            path,
+            "No local file and no embedded data, displaying as text"
+        );
+        println!("[img: {label}]");
+        return;
     };
 
     match detect_protocol() {
@@ -74,8 +71,9 @@ fn render_kitty(data: &[u8]) -> io::Result<()> {
     let chunks: Vec<&str> = encoded
         .as_bytes()
         .chunks(chunk_size)
-        .map(|c| std::str::from_utf8(c).unwrap())
-        .collect();
+        .map(std::str::from_utf8)
+        .collect::<Result<_, _>>()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     for (i, chunk) in chunks.iter().enumerate() {
         let is_last = i == chunks.len() - 1;
@@ -84,17 +82,12 @@ fn render_kitty(data: &[u8]) -> io::Result<()> {
             write!(
                 out,
                 "\x1b_Ga=T,f=100,m={};{}\x1b\\",
-                if is_last { 0 } else { 1 },
+                i32::from(!is_last),
                 chunk
             )?;
         } else {
             // Continuation chunk
-            write!(
-                out,
-                "\x1b_Gm={};{}\x1b\\",
-                if is_last { 0 } else { 1 },
-                chunk
-            )?;
+            write!(out, "\x1b_Gm={};{}\x1b\\", i32::from(!is_last), chunk)?;
         }
     }
     writeln!(out)?;

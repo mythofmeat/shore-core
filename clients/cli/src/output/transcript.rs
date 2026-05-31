@@ -32,9 +32,9 @@ const CHARACTER_PALETTE: &[Color] = &[
 
 /// Deterministic color derived from a character name.
 pub(crate) fn character_color(name: &str) -> Color {
-    let hash = name
-        .bytes()
-        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+    let hash = name.bytes().fold(0u32, |acc, b| {
+        acc.wrapping_mul(31).wrapping_add(u32::from(b))
+    });
     CHARACTER_PALETTE[(hash as usize) % CHARACTER_PALETTE.len()]
 }
 
@@ -59,7 +59,7 @@ pub(crate) fn write_header(
     width: usize,
 ) {
     // "-- Name . HH:MM " = 4 + name.len() + 3 + time.len() + 1
-    let prefix = format!("\u{2500}\u{2500} {} \u{00b7} {} ", name, time_str);
+    let prefix = format!("\u{2500}\u{2500} {name} \u{00b7} {time_str} ");
     let prefix_len = prefix.chars().count();
     let trail = width.saturating_sub(prefix_len);
     let rule: String = "\u{2500}".repeat(trail);
@@ -134,7 +134,12 @@ fn render_message_content(
     is_tool_result_msg: bool,
 ) {
     if let Some(blocks) = content_blocks {
-        if !blocks.is_empty() {
+        if blocks.is_empty() {
+            // Empty content_blocks -- fall back to content string.
+            if !content.is_empty() {
+                let _ = writeln!(out, "{content}");
+            }
+        } else {
             // Speech (text) is the primary, flush-left voice; thinking, tool
             // calls, and results form one inset, gutter-barred "process"
             // channel. Consecutive process blocks are joined by a bar-only rule
@@ -202,11 +207,6 @@ fn render_message_content(
                     }
                     _ => {}
                 }
-            }
-        } else {
-            // Empty content_blocks -- fall back to content string.
-            if !content.is_empty() {
-                let _ = writeln!(out, "{content}");
             }
         }
     } else {
@@ -280,7 +280,7 @@ pub fn print_log_with_boundary(
                     if use_color() {
                         let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
                     }
-                    let prefix = format!("\u{2500}\u{2500} system \u{00b7} {} ", time_str);
+                    let prefix = format!("\u{2500}\u{2500} system \u{00b7} {time_str} ");
                     let prefix_len = prefix.chars().count();
                     let trail = width.saturating_sub(prefix_len);
                     let _ = write!(out, "{prefix}{}", "\u{2500}".repeat(trail));
@@ -489,12 +489,9 @@ pub fn print_heartbeat_log(data: &serde_json::Value) {
     let mut out = stdout.lock();
     let width = term_width();
 
-    let events = match data["events"].as_array() {
-        Some(arr) => arr,
-        None => {
-            print_dim_line(&mut out, "(no heartbeat events)");
-            return;
-        }
+    let Some(events) = data["events"].as_array() else {
+        print_dim_line(&mut out, "(no heartbeat events)");
+        return;
     };
 
     if events.is_empty() {
@@ -515,23 +512,22 @@ pub fn print_heartbeat_log(data: &serde_json::Value) {
         let kind = event["kind"].as_str().unwrap_or("?");
         let detail = event["detail"].as_str().unwrap_or("");
 
-        let time_str = parse_timestamp(ts)
-            .map(|dt| {
+        let time_str = parse_timestamp(ts).map_or_else(
+            || ts.chars().take(8).collect(),
+            |dt| {
                 let formatted = format_time(&dt, prev_date.as_deref());
                 prev_date = Some(dt.format("%Y-%m-%d").to_string());
                 formatted
-            })
-            .unwrap_or_else(|| ts.chars().take(8).collect());
+            },
+        );
 
         // Kind label with color
         let kind_color = match kind {
             "tick_fired" => Color::Blue,
-            "message_sent" => Color::Green,
+            "message_sent" | "wake" | "recap_written" => Color::Green,
             "message_skipped" => Color::DarkGrey,
             "tool_use" => Color::Cyan,
             "dormant" => Color::Red,
-            "wake" => Color::Green,
-            "recap_written" => Color::Green,
             "recap_missing" => Color::Yellow,
             _ => Color::White,
         };

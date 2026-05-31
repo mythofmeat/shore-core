@@ -21,8 +21,7 @@ pub async fn collect_messages_for(
 
         match timeout(remaining.min(Duration::from_millis(50)), conn.recv()).await {
             Ok(Ok(msg)) => messages.push(msg),
-            Ok(Err(_)) => return messages,
-            Err(_) => return messages,
+            Ok(Err(_)) | Err(_) => return messages,
         }
     }
 }

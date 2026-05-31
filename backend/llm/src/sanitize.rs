@@ -21,8 +21,8 @@ use serde_json::Value;
 /// `thinking`, etc.) are preserved verbatim.
 pub fn sanitize_tool_pairs(messages: &[Value]) -> Option<Vec<Value>> {
     // First pass: collect every tool_use id and every tool_result tool_use_id.
-    let mut tool_use_ids: std::collections::HashSet<String> = Default::default();
-    let mut tool_result_ids: std::collections::HashSet<String> = Default::default();
+    let mut tool_use_ids = std::collections::HashSet::<String>::default();
+    let mut tool_result_ids = std::collections::HashSet::<String>::default();
 
     for msg in messages {
         let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) else {
@@ -73,13 +73,11 @@ pub fn sanitize_tool_pairs(messages: &[Value]) -> Option<Vec<Value>> {
                 ("assistant", "tool_use") => block
                     .get("id")
                     .and_then(|i| i.as_str())
-                    .map(|id| orphan_tool_uses.contains(&id.to_string()))
-                    .unwrap_or(false),
+                    .is_some_and(|id| orphan_tool_uses.contains(&id.to_string())),
                 ("user", "tool_result") => block
                     .get("tool_use_id")
                     .and_then(|i| i.as_str())
-                    .map(|id| orphan_tool_results.contains(&id.to_string()))
-                    .unwrap_or(false),
+                    .is_some_and(|id| orphan_tool_results.contains(&id.to_string())),
                 _ => false,
             };
             if !drop {

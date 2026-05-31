@@ -38,12 +38,9 @@ pub(crate) fn build_content(
     let mut blocks: Vec<Value> = Vec::with_capacity(images.len() + 1);
 
     for img in images {
-        let media_type = match media_type_for_path(&img.path) {
-            Some(mt) => mt,
-            None => {
-                warn!(path = %img.path, "Skipping image with unsupported extension");
-                continue;
-            }
+        let Some(media_type) = media_type_for_path(&img.path) else {
+            warn!(path = %img.path, "Skipping image with unsupported extension");
+            continue;
         };
         match std::fs::read(&img.path) {
             Ok(bytes) => {
@@ -148,8 +145,7 @@ pub(super) fn ingest_images(
             }
             let original_name = src_path
                 .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "image".to_string());
+                .map_or_else(|| "image".to_string(), |n| n.to_string_lossy().to_string());
             let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
             let dest_name = format!("{timestamp}_{original_name}");
             let dest_path = attachments_dir.join(&dest_name);
@@ -271,12 +267,12 @@ mod tests {
     fn make_noisy_jpeg(width: u32, height: u32) -> Vec<u8> {
         let mut pixels = vec![0u8; (width * height * 3) as usize];
         // Simple LCG to fill with pseudo-random values without pulling in rand.
-        let mut state: u64 = 0xdeadbeef_cafebabe;
+        let mut state: u64 = 0xdead_beef_cafe_babe;
         for byte in &mut pixels {
             state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            *byte = (state >> 33) as u8;
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            *byte = u8::try_from((state >> 33) & 0xff).unwrap_or_default();
         }
         let img = image::RgbImage::from_raw(width, height, pixels).unwrap();
         let mut buf = Vec::new();
@@ -442,9 +438,9 @@ mod tests {
         let mut state: u64 = 0xcafe_f00d_1234_5678;
         for byte in &mut pixels {
             state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            *byte = (state >> 33) as u8;
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            *byte = u8::try_from((state >> 33) & 0xff).unwrap_or_default();
         }
         let img = image::RgbImage::from_raw(width, height, pixels).unwrap();
         let mut buf = Vec::new();
@@ -471,8 +467,7 @@ mod tests {
         let original_size = big_jpeg.len();
         assert!(
             original_size > 2_000_000,
-            "Test image should exceed 2MB, got {} bytes",
-            original_size
+            "Test image should exceed 2MB, got {original_size} bytes"
         );
 
         let images = vec![ImageRef {
@@ -558,8 +553,7 @@ mod tests {
         let original_size = big_png.len();
         assert!(
             original_size > 2_000_000,
-            "Test PNG should exceed 2MB, got {} bytes",
-            original_size
+            "Test PNG should exceed 2MB, got {original_size} bytes"
         );
 
         let images = vec![ImageRef {

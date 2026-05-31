@@ -192,7 +192,12 @@ enum ProcessState {
 
 #[cfg(unix)]
 fn pid_state(pid: u32) -> ProcessState {
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    // The kernel's pid_t is i32; real PIDs fit far below i32::MAX. A value that
+    // doesn't fit can't name a live process, so treat it as dead.
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return ProcessState::Dead;
+    };
+    let rc = unsafe { libc::kill(pid, 0) };
     if rc == 0 {
         return ProcessState::Alive;
     }
@@ -318,14 +323,18 @@ mod tests {
 
         let backups: Vec<_> = std::fs::read_dir(reg.path().parent().unwrap())
             .unwrap()
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .map(|entry| entry.path())
             .filter(|path| {
-                path.file_name()
+                let is_json = path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+                let is_corrupt_backup = path
+                    .file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| {
-                        name.starts_with("instances.corrupt-") && name.ends_with(".json")
-                    })
+                    .is_some_and(|name| name.starts_with("instances.corrupt-"));
+                is_json && is_corrupt_backup
             })
             .collect();
         assert_eq!(backups.len(), 1, "expected one preserved corrupt backup");

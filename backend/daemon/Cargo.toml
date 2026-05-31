@@ -46,3 +46,6 @@ shore-llm = { workspace = true }
 shore-test-harness = { workspace = true }
 wiremock = "0.6"
 async-trait = { workspace = true }
+
+[lints]
+workspace = true

@@ -23,18 +23,16 @@ async fn test_successful_call_recorded_in_ledger() {
     let entry = &entries[0];
     let input_tokens = entry
         .get("input_tokens")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .unwrap_or(0);
     let output_tokens = entry
         .get("output_tokens")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .unwrap_or(0);
 
     assert!(
         input_tokens > 0 || output_tokens > 0,
-        "Expected non-zero token counts in ledger entry, got input={} output={}",
-        input_tokens,
-        output_tokens
+        "Expected non-zero token counts in ledger entry, got input={input_tokens} output={output_tokens}"
     );
 
     harness.shutdown().await;
