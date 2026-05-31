@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub(crate) use context::{
-    build_chat_shape_request_from_disk, prepare_chat_context, PrepareChatContextParams,
-    PreparedChatContext,
+    PrepareChatContextParams, PreparedChatContext, build_chat_shape_request_from_disk,
+    prepare_chat_context,
 };
 pub(crate) use images::{
     build_content, embed_image_data, embed_messages_image_data, image_data_for_path,
@@ -37,7 +37,7 @@ use task::handle_generation;
 use shore_protocol::client_msg::{ClientMessage, ClientMessageBody};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error as SwpError, ServerMessage};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
 use crate::autonomy::manager::AutonomyManager;
@@ -45,10 +45,10 @@ use crate::characters::CharacterRegistry;
 use crate::commands::{CommandContext, SessionTokens};
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::notifications::{NotificationEvent, NotificationService};
-use crate::tools::context::SharedToolContext;
 use crate::tools::ToolContext;
+use crate::tools::context::SharedToolContext;
 use shore_config::app::SearchConfig;
-use shore_config::{character_data_dir, discover_characters, load_character_config, LoadedConfig};
+use shore_config::{LoadedConfig, character_data_dir, discover_characters, load_character_config};
 use shore_ledger::LedgerClient;
 use shore_swp_server::{RequestMeta, RoutedMessage, SessionId, SessionRouter};
 
@@ -153,7 +153,7 @@ struct LastUserLease {
     expires_at: Instant,
 }
 
-const LEASE_TTL: Duration = Duration::from_secs(60 * 60);
+const LEASE_TTL: Duration = Duration::from_hours(1);
 
 /// Internal daemon control messages handled on the same task as SWP commands.
 #[derive(Debug)]
@@ -231,13 +231,11 @@ impl MessageHandler {
             self.last_user_session.remove(char_name);
             return None;
         }
-        match self.session_router.sender_for(lease.session_id).await {
-            Some(tx) => Some(tx),
-            None => {
-                self.last_user_session.remove(char_name);
-                None
-            }
-        }
+        let Some(tx) = self.session_router.sender_for(lease.session_id).await else {
+            self.last_user_session.remove(char_name);
+            return None;
+        };
+        Some(tx)
     }
 
     /// Build a fanout `direct_tx` that forwards every server message to both
@@ -322,6 +320,10 @@ impl MessageHandler {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "engine-message orchestration phase split is tracked in #109"
+    )]
     async fn handle_engine_message(&mut self, msg: ClientMessage, meta: RequestMeta) {
         let msg_kind = match &msg {
             ClientMessage::Message(_) => "message",
@@ -407,13 +409,12 @@ impl MessageHandler {
             .rid
             .clone()
             .filter(|r| r.is_ascii() && !r.contains('\0'));
-        let direct_tx = match self
+        let Some(direct_tx) = self
             .session_router
             .sender_for(meta.session.session_id)
             .await
-        {
-            Some(tx) => tx,
-            None => return,
+        else {
+            return;
         };
         // Phase 3: preferences are authoritative. Legacy
         // `runtime_state.json` remains as a migration fallback for one
@@ -457,7 +458,7 @@ impl MessageHandler {
         let fanout_tx = self
             .build_fanout_tx(meta.session.session_id, &char_name, direct_tx)
             .await;
-        let gen = self.gen_context(meta.session.session_id, fanout_tx.clone());
+        let gen_ctx = self.gen_context(meta.session.session_id, fanout_tx.clone());
         let notifier = self.notifier.clone();
         let params = GenerationParams {
             request: meta.clone(),
@@ -479,7 +480,7 @@ impl MessageHandler {
         session.generation_handle = Some(tokio::spawn(async move {
             let notify_name = params.char_name.clone();
             let request_rid = params.rid.clone();
-            if let Err(e) = handle_generation(gen, params).await {
+            if let Err(e) = handle_generation(gen_ctx, params).await {
                 error!(error = %e, "Error processing engine message");
                 let err_msg = e.to_string();
                 let _ = fanout_tx
