@@ -1,5 +1,5 @@
 use super::{ToolCategory, ToolContext, ToolDef, ToolError};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -68,8 +68,8 @@ pub async fn handle_web_search(input: Value, ctx: &dyn ToolContext) -> Result<Va
 
     let max_results = input
         .get("max_results")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(search_cfg.max_results as u64);
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::from(search_cfg.max_results));
 
     let body = json!({
         "api_key": api_key,
@@ -215,7 +215,7 @@ fn strip_html(html: &str) -> String {
             let remaining_lower = html[i..].to_ascii_lowercase();
             if let Some(tag) = ["script", "style", "head"]
                 .iter()
-                .find(|t| remaining_lower.starts_with(&format!("<{}", t)))
+                .find(|tag| remaining_lower.starts_with(&format!("<{tag}")))
             {
                 // Find the closing tag (case-insensitive) in the original string.
                 let close = format!("</{tag}");
