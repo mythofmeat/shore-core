@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.13](https://github.com/mythofmeat/shore-core/compare/shore-swp-server-v1.8.12...shore-swp-server-v1.8.13) - 2026-05-31
+
+### Other
+
+- Correctness ratchet: strict clippy + panic hygiene + dep checks ([#106](https://github.com/mythofmeat/shore-core/pull/106))
+
 ## [1.8.12](https://github.com/mythofmeat/shore-core/compare/shore-swp-server-v1.8.11...shore-swp-server-v1.8.12) - 2026-05-31
 
 ### Other

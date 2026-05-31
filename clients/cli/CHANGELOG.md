@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.4](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.0.3...shore-cli-v2.0.4) - 2026-05-31
+
+### Other
+
+- Correctness ratchet: strict clippy + panic hygiene + dep checks ([#106](https://github.com/mythofmeat/shore-core/pull/106))
+
 ## [2.0.3](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.0.2...shore-cli-v2.0.3) - 2026-05-31
 
 ### Other
