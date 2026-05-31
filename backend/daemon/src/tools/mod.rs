@@ -238,7 +238,7 @@ pub fn dispatch_tool<'a>(
 ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
     Box::pin(async move {
         match name {
-            "search_history" => history::handle_search_history(input, ctx).await,
+            "search_history" => history::handle_search_history(&input, ctx),
             "generate_image" => images::handle_generate_image(input, ctx).await,
             // Web tools
             "web_search" => web::handle_web_search(input, ctx).await,
