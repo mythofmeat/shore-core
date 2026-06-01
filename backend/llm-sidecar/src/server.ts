@@ -4,6 +4,7 @@ import { generateImage } from "./llm/image_generate.ts";
 import { GeminiProvider } from "./llm/providers/gemini.ts";
 import { AnthropicProvider } from "./llm/providers/anthropic.ts";
 import { OpenAIProvider } from "./llm/providers/openai.ts";
+import { ZaiProvider } from "./llm/providers/zai.ts";
 import type {
   ImageRequest,
   ImageResponse,
@@ -30,6 +31,7 @@ const DEFAULT_PROVIDERS: Partial<Record<SidecarRequest["sdk"], SidecarProvider>>
   anthropic: new AnthropicProvider(),
   gemini: new GeminiProvider(),
   openai: new OpenAIProvider(),
+  zai: new ZaiProvider(),
 };
 
 const NDJSON_HEADERS = {

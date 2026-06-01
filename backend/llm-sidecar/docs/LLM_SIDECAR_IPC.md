@@ -176,9 +176,9 @@ which models all three first-class.
 base_url swap (`providers/zai.rs`):
 - dual base URLs — `api.z.ai/api/paas/v4` vs `…/coding/paas/v4`, toggled by the
   `zai_subscription` provider option;
-- custom thinking control in the request body: `"thinking":{"type":"enabled"}`,
-  `"clear_thinking":<bool>` (the `zai_clear_thinking` option) — NOT OpenAI's
-  `reasoning_effort`;
+- custom thinking control in the request body:
+  `"thinking":{"type":"enabled","clear_thinking":<bool>}` (the
+  `zai_clear_thinking` option) — NOT OpenAI's `reasoning_effort`;
 - a `reasoning_content` field.
 Use the official Z.ai JS SDK if a maintained one exists; otherwise the `openai`
 SDK pointed at the Z.ai base_url with the thinking/clear_thinking fields injected

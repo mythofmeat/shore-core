@@ -225,12 +225,14 @@ test("POST /v1/image routes to the image generator", async () => {
   expect(seenSignal).toBeInstanceOf(AbortSignal);
 });
 
-test("unsupported SDKs return 501 until their adapters land", async () => {
+test("unknown SDKs return 501", async () => {
   const handler = createSidecarHandler();
-  const res = await handler(post("/v1/stream", sidecarReq({ sdk: "zai" })));
+  const res = await handler(
+    post("/v1/stream", sidecarReq({ sdk: "bogus" as SidecarRequest["sdk"] })),
+  );
 
   expect(res.status).toBe(501);
-  expect(await res.text()).toContain("unsupported sdk: zai");
+  expect(await res.text()).toContain("unsupported sdk: bogus");
 });
 
 async function* unreachableStream(): AsyncIterable<StreamEvent> {
