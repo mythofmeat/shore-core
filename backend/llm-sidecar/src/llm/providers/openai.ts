@@ -247,7 +247,14 @@ function systemToText(system: ChatRequest["system"]): string {
   return system.map((b) => b.text).join("\n\n");
 }
 
-function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {
+/**
+ * Convert one canonical turn into OpenAI chat-completion message(s). Exported
+ * for the conversion regression test: it must NEVER emit a `reasoning_content`
+ * / `reasoning` field (the deepseek/kimi tool-loop bug — the Rust adapter
+ * replays prior thinking here; we don't), and must omit `content` (not emit
+ * `null`) on tool-call-only assistant turns.
+ */
+export function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {
   // OpenAI splits a tool_result-containing user turn into one `tool`
   // role message per result, and assistant tool_use becomes `tool_calls`
   // on the assistant message. Plain text falls through.

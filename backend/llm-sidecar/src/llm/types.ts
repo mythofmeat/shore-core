@@ -1,22 +1,121 @@
 /**
- * Provider-agnostic types for the LLM call boundary.
+ * Sidecar IPC contract + internal adapter types.
  *
- * We use Anthropic-style content blocks as the canonical in-process
- * representation because:
- *   1. Our on-disk format (`active.jsonl`) already stores blocks in this
- *      shape — see `src/engine/types.ts`.
- *   2. Anthropic is the picky one about block ordering (thinking →
- *      tool_use → tool_result → thinking → text); preserving its exact
- *      shape end-to-end is how we kill the cache regression.
- *   3. Converting Anthropic blocks → OpenAI messages is straightforward
- *      and contained inside the OpenAI adapter.
+ * The CONTRACT section mirrors the Rust wire types 1:1 (see
+ * `backend/llm/src/types.rs` and `docs/LLM_SIDECAR_IPC.md`). The Rust daemon
+ * serializes an `LlmRequest` to `SidecarRequest`; the sidecar streams
+ * `StreamEvent` NDJSON back, which `StreamConsumer` (`backend/llm/src/stream.rs`)
+ * already knows how to parse. Field names are snake_case to match serde.
  *
- * The "thinking" block's `signature` is opaque bytes from Anthropic.
- * Replay across turns is verbatim — we never inspect, regenerate, or
- * normalize it. (This was a recurring Rust bug surface.)
+ * The LEGACY section below holds the pre-migration adapter shapes
+ * (`ChatRequest`/`ChatEvent`/...). The adapters still speak these; they move to
+ * the contract types in the adapter-reshape task. Don't add new callers.
+ *
+ * Anthropic-style content blocks are the canonical in-process representation
+ * because our on-disk format stores blocks this way and Anthropic is the picky
+ * one about block ordering. The `thinking` block's `signature` is opaque bytes
+ * replayed verbatim — never inspected, regenerated, or normalized.
  */
 
 import type { ContentBlock, ImageRef } from "../engine/types.ts";
+
+// ─────────────────────────────────────────────────────────────────────────
+// CONTRACT — mirrors backend/llm/src/types.rs (the Rust↔sidecar wire)
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Which SDK/dialect to use. Serializes lowercase, matching Rust `Sdk`. */
+export type Sdk = "anthropic" | "openai" | "zai" | "gemini";
+
+/** One conversation turn as the daemon stores it: canonical Anthropic-shape
+ * blocks (or a bare string for legacy/simple turns). The sidecar's per-SDK
+ * adapter converts these to that provider's wire shape. */
+export interface WireMessage {
+  role: "user" | "assistant" | "system";
+  content: ContentBlock[] | string;
+}
+
+/** System prompt: structured text blocks (Anthropic keeps them separate;
+ * OpenAI gets them joined) or a bare string. */
+export type SystemContent =
+  | string
+  | Array<{ type: "text"; text: string; cache_control?: unknown; _label?: string }>;
+
+/**
+ * The request the sidecar receives — the serialized Rust `LlmRequest` minus its
+ * `#[serde(skip)]` transient fields (`api_key_name`, `rid`, `forensic_character`,
+ * `retain_long`), which stay Rust-side.
+ */
+export interface SidecarRequest {
+  sdk: Sdk;
+  model: string;
+  /** Bearer credential; adapter applies x-api-key vs Authorization. */
+  api_key: string;
+  /** Provider base URL override (e.g. OpenRouter, Z.ai). */
+  base_url?: string;
+  /** Conversation, already assembled into canonical blocks by the daemon. */
+  messages: WireMessage[];
+  system?: SystemContent;
+  /** Provider-native tool definitions (already shaped by the daemon). */
+  tools?: unknown[];
+  max_tokens: number;
+  temperature?: number;
+  top_p?: number;
+  /** cache_ttl, thinking config, budget_tokens, etc. */
+  provider_options?: Record<string, unknown>;
+  /** models.toml provider key (e.g. "openrouter", "deepseek", "zai"). */
+  provider_key?: string;
+}
+
+/** Token usage — mirrors Rust `Usage` (snake_case, cache fields default 0). */
+export interface Usage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  /** Provider-reported total cost when available (OpenRouter `cost`). */
+  total_cost_usd?: number;
+}
+
+/** Timing — mirrors Rust `Timing`. */
+export interface Timing {
+  total_ms: number;
+  time_to_first_token_ms: number;
+}
+
+/**
+ * The NDJSON event vocabulary the daemon's `StreamConsumer` consumes.
+ * Mirrors Rust `StreamEvent` (`#[serde(tag = "type", rename_all = "snake_case")]`).
+ * Ordering rules live in `docs/LLM_SIDECAR_IPC.md`.
+ */
+export type StreamEvent =
+  | { type: "start"; model: string }
+  | { type: "text"; text: string }
+  | { type: "thinking"; text: string }
+  | { type: "thinking_signature"; signature: string }
+  | { type: "redacted_thinking"; data: string }
+  | { type: "tool_use"; id: string; name: string; input: unknown }
+  | {
+      type: "done";
+      content: string;
+      finish_reason: string;
+      usage: Usage;
+      timing: Timing;
+    };
+
+/** Non-streaming result — mirrors Rust `GenerateResponse`. */
+export interface GenerateResponse {
+  content: string;
+  content_blocks: ContentBlock[];
+  finish_reason: string;
+  usage: Usage;
+  timing: Timing;
+  model: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// LEGACY — pre-migration adapter shapes. Replaced by the CONTRACT types when
+// the adapters are reshaped to consume SidecarRequest / emit StreamEvent.
+// ─────────────────────────────────────────────────────────────────────────
 
 export interface ToolDef {
   name: string;
@@ -25,25 +124,11 @@ export interface ToolDef {
   inputSchema: Record<string, unknown>;
 }
 
-/** One turn in the message array sent to the provider.
- *
- * `system` is allowed mid-history for heartbeat recaps and compaction
- * prompts. Adapters handle it differently — Anthropic must wrap it in
- * `<system_instruction>` user blocks (the Messages API rejects raw
- * `role:"system"` in the messages array), while OpenAI passes it through
- * natively. See providers/anthropic.ts::convertInlineSystemMessages.
- */
+/** One turn in the message array sent to the provider. */
 export interface TurnMessage {
   role: "user" | "assistant" | "system";
   content: ContentBlock[];
-  /**
-   * Images to prepend to the turn's content when building the
-   * provider-specific message. Stored separately (matching Rust's
-   * `Message.images`) so they're not entangled with the cache-stable
-   * `content_blocks` array. Each provider wraps these into its native
-   * image block shape — see `providers/anthropic.ts` and
-   * `providers/openai.ts`.
-   */
+  /** Images to prepend to the turn's content when building the request. */
   images?: ImageRef[];
 }
 
@@ -52,11 +137,7 @@ export interface ThinkingConfig {
   enabled: boolean;
   /** Anthropic budget_tokens (when reasoning_effort is not "adaptive"). */
   budgetTokens?: number;
-  /**
-   * Anthropic reasoning_effort. "adaptive" enables Claude's adaptive
-   * thinking (no fixed budget); other values map to fixed budgets.
-   * "low" | "medium" | "high" | "xhigh" | "max" | "adaptive".
-   */
+  /** Anthropic reasoning_effort: low | medium | high | xhigh | max | adaptive. */
   effort?: string;
 }
 
@@ -67,25 +148,19 @@ export interface SystemPromptBlock {
 }
 
 export interface ChatRequest {
-  /** System prompt as text blocks, or a legacy single string from tests/background callers. */
   system: string | SystemPromptBlock[];
   messages: TurnMessage[];
   tools: ToolDef[];
   thinking: ThinkingConfig;
   /** Empty string disables caching; otherwise a TTL like "1h" / "5m". */
   cacheTtl: string;
-  /** Model id sent on the wire (e.g. "anthropic/claude-haiku-4.5"). */
   modelId: string;
-  /** Bearer credential — adapter knows how to apply it (api-key vs Authorization). */
   apiKey: string;
-  /** Provider base URL override (e.g. https://openrouter.ai/api/v1). */
   baseUrl?: string;
   maxTokens: number;
   temperature?: number;
   topP?: number;
-  /** AbortSignal for cancelling the generation mid-stream. */
   signal?: AbortSignal;
-  /** Optional cache-forensics sink used by Anthropic request construction. */
   cacheForensics?: CacheForensicsSink;
   forensicCharacter?: string;
   forensicRid?: string;
@@ -123,20 +198,11 @@ export type ChatEvent =
   | { kind: "tool_use_done"; id: string }
   | {
       kind: "done";
-      /** Final assistant content blocks, in order. */
       content: ContentBlock[];
-      /** "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "refusal" */
       stopReason: string;
       usage: UsageStats;
     };
 
-/**
- * Resolved result of a non-streaming provider call. Same shape as the
- * payload of the streaming `{kind: "done"}` event so a non-streaming
- * caller can be a drop-in replacement when no token-by-token UI is
- * needed (background tasks like compaction, dreaming, heartbeat, plus
- * any future "no-stream" chat mode).
- */
 export interface GenerateResult {
   content: ContentBlock[];
   stopReason: string;
@@ -144,15 +210,6 @@ export interface GenerateResult {
 }
 
 export interface ProviderClient {
-  /** Async iterator over streaming events. Caller must consume until "done". */
   stream(req: ChatRequest): AsyncIterable<ChatEvent>;
-  /**
-   * Single-shot non-streaming call. Sends the request without
-   * `stream: true` on the wire (Anthropic returns a JSON Message,
-   * OpenAI-compatible returns a single ChatCompletion). Use for
-   * background tasks that don't need progressive output and where
-   * matching the non-streaming wire shape matters (cache-prefix
-   * parity, ledger accounting, etc.).
-   */
   generate(req: ChatRequest): Promise<GenerateResult>;
 }
