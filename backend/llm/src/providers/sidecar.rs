@@ -135,11 +135,16 @@ impl<'a> From<&'a ImageGenerateParams<'a>> for SidecarImageRequest<'a> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::io;
+
     use serde_json::json;
     use shore_config::models::Sdk;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{UnixListener, UnixStream};
     use tokio::sync::oneshot;
+
+    type TestError = Box<dyn std::error::Error + Send + Sync + 'static>;
+    type TestResult<T = ()> = Result<T, TestError>;
 
     fn test_request() -> LlmRequest {
         LlmRequest {
@@ -162,66 +167,84 @@ mod tests {
         }
     }
 
-    async fn serve_once(
+    fn serve_once(
         socket_path: &Path,
         status: &str,
         body: String,
-    ) -> oneshot::Receiver<(String, String)> {
-        let listener = UnixListener::bind(socket_path).unwrap();
+    ) -> TestResult<oneshot::Receiver<TestResult<(String, String)>>> {
+        let listener = UnixListener::bind(socket_path)?;
         let (tx, rx) = oneshot::channel();
         let status = status.to_string();
         tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let (path, request_body) = read_http_request(&mut stream).await;
-            let _ = tx.send((path, request_body));
-            let response = format!(
-                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
-                body.len()
-            );
-            stream.write_all(response.as_bytes()).await.unwrap();
+            let result = async {
+                let (mut stream, _) = listener.accept().await?;
+                let captured = read_http_request(&mut stream).await?;
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await?;
+                TestResult::Ok(captured)
+            }
+            .await;
+            let _ = tx.send(result);
         });
-        rx
+        Ok(rx)
     }
 
-    async fn read_http_request(stream: &mut UnixStream) -> (String, String) {
+    async fn read_http_request(stream: &mut UnixStream) -> TestResult<(String, String)> {
         let mut buf = Vec::new();
         let header_end = loop {
             let mut chunk = [0_u8; 1024];
-            let n = stream.read(&mut chunk).await.unwrap();
-            assert!(n > 0, "client closed before headers");
+            let n = stream.read(&mut chunk).await?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "client closed before headers",
+                )
+                .into());
+            }
             buf.extend_from_slice(&chunk[..n]);
             if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
                 break pos + 4;
             }
         };
 
-        let headers = String::from_utf8(buf[..header_end].to_vec()).unwrap();
-        let path = headers
-            .lines()
-            .next()
-            .unwrap()
+        let headers = String::from_utf8(buf[..header_end].to_vec())?;
+        let request_line = headers.lines().next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing HTTP request line")
+        })?;
+        let path = request_line
             .split_whitespace()
             .nth(1)
-            .unwrap()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing request path"))?
             .to_string();
-        let content_len = headers
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().unwrap())
-            })
-            .unwrap_or(0);
+        let mut content_len = 0;
+        for line in headers.lines() {
+            let Some((name, value)) = line.split_once(':') else {
+                continue;
+            };
+            if name.eq_ignore_ascii_case("content-length") {
+                content_len = value.trim().parse::<usize>()?;
+                break;
+            }
+        }
 
         while buf.len() < header_end + content_len {
             let mut chunk = [0_u8; 1024];
-            let n = stream.read(&mut chunk).await.unwrap();
-            assert!(n > 0, "client closed before body");
+            let n = stream.read(&mut chunk).await?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "client closed before body",
+                )
+                .into());
+            }
             buf.extend_from_slice(&chunk[..n]);
         }
 
-        let body = String::from_utf8(buf[header_end..header_end + content_len].to_vec()).unwrap();
-        (path, body)
+        let body = String::from_utf8(buf[header_end..header_end + content_len].to_vec())?;
+        Ok((path, body))
     }
 
     fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -231,8 +254,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generate_posts_request_over_unix_socket() {
-        let tmp = tempfile::tempdir().unwrap();
+    async fn generate_posts_request_over_unix_socket() -> TestResult {
+        let tmp = tempfile::tempdir()?;
         let socket = tmp.path().join("llm.sock");
         let response_body = json!({
             "content": "hello",
@@ -248,23 +271,22 @@ mod tests {
             "model": "openai/gpt-test"
         })
         .to_string();
-        let captured = serve_once(&socket, "200 OK", response_body).await;
+        let captured = serve_once(&socket, "200 OK", response_body)?;
 
-        let resp = generate(&test_request(), &socket).await.unwrap();
-        let (path, body) = captured.await.unwrap();
+        let resp = generate(&test_request(), &socket).await?;
+        let (path, body) = captured.await??;
+        let body: serde_json::Value = serde_json::from_str(&body)?;
 
         assert_eq!(path, "/v1/generate");
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&body).unwrap()["model"],
-            "openai/gpt-test"
-        );
+        assert_eq!(body["model"], "openai/gpt-test");
         assert_eq!(resp.content, "hello");
         assert_eq!(resp.usage.output_tokens, 2);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn stream_returns_sidecar_ndjson_reader() {
-        let tmp = tempfile::tempdir().unwrap();
+    async fn stream_returns_sidecar_ndjson_reader() -> TestResult {
+        let tmp = tempfile::tempdir()?;
         let socket = tmp.path().join("llm.sock");
         let response_body = concat!(
             "{\"type\":\"start\",\"model\":\"m\"}\n",
@@ -273,21 +295,22 @@ mod tests {
             "\"timing\":{\"total_ms\":1,\"time_to_first_token_ms\":1}}\n"
         )
         .to_string();
-        let captured = serve_once(&socket, "200 OK", response_body).await;
+        let captured = serve_once(&socket, "200 OK", response_body)?;
 
-        let mut reader = stream(&test_request(), &socket).await.unwrap();
+        let mut reader = stream(&test_request(), &socket).await?;
         let mut body = String::new();
-        reader.read_to_string(&mut body).await.unwrap();
-        let (path, _) = captured.await.unwrap();
+        reader.read_to_string(&mut body).await?;
+        let (path, _) = captured.await??;
 
         assert_eq!(path, "/v1/stream");
         assert!(body.contains("\"type\":\"start\""));
         assert!(body.contains("\"type\":\"done\""));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn image_generate_posts_request_over_unix_socket() {
-        let tmp = tempfile::tempdir().unwrap();
+    async fn image_generate_posts_request_over_unix_socket() -> TestResult {
+        let tmp = tempfile::tempdir()?;
         let socket = tmp.path().join("llm.sock");
         let response_body = json!({
             "url": "https://example.test/image.png",
@@ -295,7 +318,7 @@ mod tests {
             "timing": {"total_ms": 5}
         })
         .to_string();
-        let captured = serve_once(&socket, "200 OK", response_body).await;
+        let captured = serve_once(&socket, "200 OK", response_body)?;
 
         let params = ImageGenerateParams {
             provider_key: "openrouter",
@@ -308,9 +331,9 @@ mod tests {
             aspect_ratio: Some("16:9"),
             image_size: Some("1024x576"),
         };
-        let resp = image_generate(&params, &socket).await.unwrap();
-        let (path, body) = captured.await.unwrap();
-        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let resp = image_generate(&params, &socket).await?;
+        let (path, body) = captured.await??;
+        let body: serde_json::Value = serde_json::from_str(&body)?;
 
         assert_eq!(path, "/v1/image");
         assert_eq!(body["provider_key"], "openrouter");
@@ -319,16 +342,19 @@ mod tests {
         assert_eq!(body["image_size"], "1024x576");
         assert_eq!(resp.url, "https://example.test/image.png");
         assert_eq!(resp.timing.total_ms, 5);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn non_success_status_maps_to_http_status() {
-        let tmp = tempfile::tempdir().unwrap();
+    async fn non_success_status_maps_to_http_status() -> TestResult {
+        let tmp = tempfile::tempdir()?;
         let socket = tmp.path().join("llm.sock");
-        let captured = serve_once(&socket, "429 Too Many Requests", "slow down".into()).await;
+        let captured = serve_once(&socket, "429 Too Many Requests", "slow down".into())?;
 
-        let err = generate(&test_request(), &socket).await.unwrap_err();
-        let (path, _) = captured.await.unwrap();
+        let Err(err) = generate(&test_request(), &socket).await else {
+            return Err(io::Error::other("expected sidecar 429 to fail").into());
+        };
+        let (path, _) = captured.await??;
 
         assert_eq!(path, "/v1/generate");
         match err {
@@ -336,7 +362,10 @@ mod tests {
                 assert_eq!(status, 429);
                 assert_eq!(body, "slow down");
             }
-            other => panic!("expected HttpStatus, got {other:?}"),
+            other => {
+                return Err(io::Error::other(format!("expected HttpStatus, got {other:?}")).into());
+            }
         }
+        Ok(())
     }
 }
