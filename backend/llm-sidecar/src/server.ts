@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, lstatSync, unlinkSync } from "node:fs";
 
 import { generateImage } from "./llm/image_generate.ts";
+import { GeminiProvider } from "./llm/providers/gemini.ts";
 import { AnthropicProvider } from "./llm/providers/anthropic.ts";
 import { OpenAIProvider } from "./llm/providers/openai.ts";
 import type {
@@ -27,6 +28,7 @@ interface HttpishError {
 
 const DEFAULT_PROVIDERS: Partial<Record<SidecarRequest["sdk"], SidecarProvider>> = {
   anthropic: new AnthropicProvider(),
+  gemini: new GeminiProvider(),
   openai: new OpenAIProvider(),
 };
 
