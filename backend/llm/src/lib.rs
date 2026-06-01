@@ -67,15 +67,15 @@ pub enum LlmError {
     Refusal,
 }
 
-/// HTTP client that calls LLM provider APIs directly.
+/// HTTP client that calls LLM provider APIs through the sidecar.
 ///
 /// Uses reqwest for connection pooling and TLS session reuse.
 /// Each request is fully self-contained with provider, model, and API key.
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     http_client: reqwest::Client,
-    /// Unix socket for the Bun LLM sidecar. `None` keeps the legacy direct
-    /// Rust provider implementations active.
+    /// Unix socket for the Bun LLM sidecar. `None` makes chat/image calls
+    /// return a clear configuration error; embeddings still use HTTP directly.
     sidecar_socket: Option<PathBuf>,
     /// If set, per-call request/response files are written to
     /// `{cache_dir}/debug/api_logs/`. See `debug_log` module.
@@ -127,7 +127,8 @@ impl LlmClient {
         self.sidecar_socket = Some(path);
     }
 
-    /// Disable sidecar routing and use the direct Rust provider implementations.
+    /// Clear the sidecar socket. Chat/image calls then return a configuration
+    /// error because the legacy Rust provider wire has been removed.
     pub fn clear_sidecar_socket(&mut self) {
         self.sidecar_socket = None;
     }
@@ -456,12 +457,9 @@ pub fn default_base_url(provider_key: &str) -> Option<&'static str> {
 /// for these providers produces a 400 like
 /// `"reasoning_content in the thinking mode must be passed back to the API."`.
 ///
-/// This is a distinct concept from
-/// [`providers::context::reasoning_field_for`]: Z.ai also emits its
-/// reasoning into the `reasoning_content` field but does NOT require it
-/// be replayed (its `zai_clear_thinking` provider option exists
-/// specifically to drop prior thinking), so the two views are tracked
-/// separately.
+/// This is a prompt-history shaping hint, not a Rust-provider wire rule. The
+/// sidecar adapters own provider request conversion and do not replay prior
+/// thinking into output-only fields.
 pub fn requires_reasoning_replay(provider_key: &str) -> bool {
     matches!(provider_key, "deepseek" | "moonshot")
 }

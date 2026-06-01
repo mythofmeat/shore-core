@@ -396,88 +396,28 @@ mod tests {
     use crate::test_support::TestToolContext;
     use shore_llm::types::{Timing, ToolUseEvent, Usage};
     use shore_llm::LlmClient;
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::TcpListener;
+    use shore_test_harness::MockLlmSidecar;
     use tokio::sync::mpsc;
 
     fn test_ledger_client(tmp: &tempfile::TempDir) -> LedgerClient {
         LedgerClient::new(LlmClient::new(), &tmp.path().join("ledger.db")).unwrap()
     }
 
+    fn test_ledger_client_with_sidecar(
+        tmp: &tempfile::TempDir,
+        sidecar: &MockLlmSidecar,
+    ) -> LedgerClient {
+        let mut llm = LlmClient::new();
+        llm.set_sidecar_socket(sidecar.socket_path().to_path_buf());
+        LedgerClient::new(llm, &tmp.path().join("ledger.db")).unwrap()
+    }
+
     fn test_diag() -> Arc<Mutex<Diagnostics>> {
         Arc::new(Mutex::new(Diagnostics::default()))
     }
 
-    /// Build a mock Anthropic SSE response that returns a text completion with end_turn.
-    fn sse_text_end_turn(text: &str) -> String {
-        format!(
-            "event: message_start\n\
-             data: {{\"type\":\"message_start\",\"message\":{{\"model\":\"test\",\"usage\":{{\"input_tokens\":20}}}}}}\n\n\
-             event: content_block_start\n\
-             data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n\
-             event: content_block_delta\n\
-             data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\n\
-             event: content_block_stop\n\
-             data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n\
-             event: message_delta\n\
-             data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":10}}}}\n\n\
-             event: message_stop\n\
-             data: {{\"type\":\"message_stop\"}}\n\n"
-        )
-    }
-
-    /// Build a mock Anthropic SSE response that returns a tool_use with end_turn.
-    fn sse_tool_use(tool_id: &str, tool_name: &str) -> String {
-        format!(
-            "event: message_start\n\
-             data: {{\"type\":\"message_start\",\"message\":{{\"model\":\"test\",\"usage\":{{\"input_tokens\":10}}}}}}\n\n\
-             event: content_block_start\n\
-             data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"{tool_id}\",\"name\":\"{tool_name}\"}}}}\n\n\
-             event: content_block_delta\n\
-             data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":\"{{}}\"}}}}\n\n\
-             event: content_block_stop\n\
-             data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n\
-             event: message_delta\n\
-             data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"tool_use\"}},\"usage\":{{\"output_tokens\":5}}}}\n\n\
-             event: message_stop\n\
-             data: {{\"type\":\"message_stop\"}}\n\n"
-        )
-    }
-
-    /// Spawn a mock HTTP server that serves an SSE response for each connection.
-    /// Returns the base URL (e.g. "http://127.0.0.1:PORT") and the server handle.
-    async fn mock_sse_server(
-        sse_body: String,
-        accept_count: usize,
-    ) -> (String, tokio::task::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let base_url = format!("http://127.0.0.1:{port}");
-
-        let handle = tokio::spawn(async move {
-            for _ in 0..accept_count {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let (mut reader, mut writer) = stream.split();
-
-                // Drain the HTTP request.
-                let mut buf = vec![0u8; 16384];
-                let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
-
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\n\
-                     Content-Type: text/event-stream\r\n\
-                     \r\n\
-                     {sse_body}"
-                );
-                writer.write_all(response.as_bytes()).await.unwrap();
-                writer.shutdown().await.unwrap();
-            }
-        });
-
-        (base_url, handle)
-    }
-
-    /// Build a test LlmRequest pointing at a mock server.
+    /// Build a test LlmRequest. The sidecar mock handles transport; base_url
+    /// remains present to keep the request shape close to configured models.
     fn test_request(base_url: &str, messages: Vec<Value>) -> LlmRequest {
         LlmRequest {
             sdk: shore_config::models::Sdk::Anthropic,
@@ -544,11 +484,14 @@ mod tests {
 
     #[tokio::test]
     async fn tool_loop_executes_tool_and_continues() {
-        let sse = sse_text_end_turn("The current time is shown above.");
-        let (base_url, server) = mock_sse_server(sse, 1).await;
+        let sidecar = MockLlmSidecar::start().await;
+        sidecar
+            .enqueue_stream_text("The current time is shown above.")
+            .await;
+        let base_url = sidecar.base_url();
 
         let tmp = tempfile::tempdir().unwrap();
-        let client = test_ledger_client(&tmp);
+        let client = test_ledger_client_with_sidecar(&tmp, &sidecar);
         let (push_tx, mut push_rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
 
@@ -646,17 +589,20 @@ mod tests {
         assert_eq!(request.messages.len(), 3);
         assert_eq!(request.messages[1]["content"][0]["name"], "check_time");
         assert_eq!(request.messages[2]["content"][0]["type"], "tool_result");
-
-        server.await.unwrap();
     }
 
     #[tokio::test]
     async fn tool_loop_respects_max_iterations() {
-        let sse = sse_tool_use("t1", "check_time");
-        let (base_url, server) = mock_sse_server(sse, 3).await;
+        let sidecar = MockLlmSidecar::start().await;
+        for _ in 0..3 {
+            sidecar
+                .enqueue_stream_tool_use("t1", "check_time", json!({}))
+                .await;
+        }
+        let base_url = sidecar.base_url();
 
         let tmp = tempfile::tempdir().unwrap();
-        let client = test_ledger_client(&tmp);
+        let client = test_ledger_client_with_sidecar(&tmp, &sidecar);
         let (push_tx, _rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
 
@@ -692,17 +638,19 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.result.finish_reason, "tool_use");
-        server.await.unwrap();
     }
 
     #[tokio::test]
     async fn tool_loop_handles_tool_error() {
         // generate_image returns a tool error when no image-generation profile is configured.
-        let sse = sse_text_end_turn("Image generation is not available.");
-        let (base_url, server) = mock_sse_server(sse, 1).await;
+        let sidecar = MockLlmSidecar::start().await;
+        sidecar
+            .enqueue_stream_text("Image generation is not available.")
+            .await;
+        let base_url = sidecar.base_url();
 
         let tmp = tempfile::tempdir().unwrap();
-        let client = test_ledger_client(&tmp);
+        let client = test_ledger_client_with_sidecar(&tmp, &sidecar);
         let (push_tx, mut push_rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
 
@@ -762,8 +710,6 @@ mod tests {
         // The tool_result in request.messages should also have is_error.
         let tool_result_msg = &request.messages[1]["content"][0];
         assert_eq!(tool_result_msg["is_error"], json!(true));
-
-        server.await.unwrap();
     }
 
     #[test]
@@ -815,11 +761,12 @@ mod tests {
         // A small max_result_chars must cut the tool output everywhere it
         // flows: the live SWP event, the LLM payload, and the persisted
         // content block (which is what later turns replay).
-        let sse = sse_text_end_turn("Noted.");
-        let (base_url, server) = mock_sse_server(sse, 1).await;
+        let sidecar = MockLlmSidecar::start().await;
+        sidecar.enqueue_stream_text("Noted.").await;
+        let base_url = sidecar.base_url();
 
         let tmp = tempfile::tempdir().unwrap();
-        let client = test_ledger_client(&tmp);
+        let client = test_ledger_client_with_sidecar(&tmp, &sidecar);
         let (push_tx, mut push_rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
 
@@ -892,17 +839,16 @@ mod tests {
             }
             other => panic!("Expected ToolResult block, got {other:?}"),
         }
-
-        server.await.unwrap();
     }
 
     #[tokio::test]
     async fn tool_loop_multiple_tools_single_response() {
-        let sse = sse_text_end_turn("Done.");
-        let (base_url, server) = mock_sse_server(sse, 1).await;
+        let sidecar = MockLlmSidecar::start().await;
+        sidecar.enqueue_stream_text("Done.").await;
+        let base_url = sidecar.base_url();
 
         let tmp = tempfile::tempdir().unwrap();
-        let client = test_ledger_client(&tmp);
+        let client = test_ledger_client_with_sidecar(&tmp, &sidecar);
         let (push_tx, mut push_rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
 
@@ -975,7 +921,5 @@ mod tests {
         assert_eq!(assistant_content.len(), 2); // 2 tool_use blocks (no text)
         let user_content = request.messages[1]["content"].as_array().unwrap();
         assert_eq!(user_content.len(), 2); // 2 tool_result blocks
-
-        server.await.unwrap();
     }
 }

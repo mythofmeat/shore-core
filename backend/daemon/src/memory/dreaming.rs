@@ -735,11 +735,11 @@ fn build_librarian_request(
     // routes through Anthropic's prompt cache:
     //
     // - Anthropic: push the dreaming prompt as an inline `role:"system"`
-    //   entry right after the user turn. `convert_inline_system_messages`
-    //   merges it into the preceding user, giving the model an embedded
-    //   `<system_instruction>` block. The slot is fixed before the tool
-    //   loop, so the merge target stays byte-stable across iterations
-    //   (same invariant as the cached path).
+    //   entry right after the user turn. The sidecar Anthropic adapter merges
+    //   it into the preceding user, giving the model an embedded
+    //   `<system_instruction>` block. The slot is fixed before the tool loop,
+    //   so the merge target stays byte-stable across iterations (same
+    //   invariant as the cached path).
     //
     // - OpenAI / Gemini / Z.AI: keep the dreaming prompt at the
     //   top-level `request.system`. These providers don't merge inline
@@ -2394,11 +2394,13 @@ mod tests {
     use chrono::TimeZone;
     use shore_ledger::LedgerClient;
     use shore_llm::LlmClient;
-    use shore_test_harness::{MockLlmServer, TestConfigBuilder};
+    use shore_test_harness::{MockLlmSidecar, TestConfigBuilder};
     use tokio::fs;
 
-    fn test_ledger(tmp: &tempfile::TempDir) -> LedgerClient {
-        LedgerClient::new(LlmClient::new(), &tmp.path().join("ledger.db")).unwrap()
+    fn test_ledger(tmp: &tempfile::TempDir, sidecar: &MockLlmSidecar) -> LedgerClient {
+        let mut llm = LlmClient::new();
+        llm.set_sidecar_socket(sidecar.socket_path().to_path_buf());
+        LedgerClient::new(llm, &tmp.path().join("ledger.db")).unwrap()
     }
 
     fn local_dt(
@@ -2417,7 +2419,7 @@ mod tests {
 
     fn librarian_config(
         tmp: &tempfile::TempDir,
-        mock: &MockLlmServer,
+        mock: &MockLlmSidecar,
         character: &str,
         max_tool_rounds: u32,
     ) -> LoadedConfig {
@@ -2432,7 +2434,7 @@ mod tests {
     #[tokio::test]
     async fn ai_librarian_sweep_uses_tools_and_updates_memory_and_audit() {
         let tmp = tempfile::tempdir().unwrap();
-        let mock = MockLlmServer::start().await;
+        let mock = MockLlmSidecar::start().await;
         let config = librarian_config(&tmp, &mock, "alice", 10);
         let mem = character_memory_dir(&config.dirs.config, "alice");
         fs::create_dir_all(mem.join("daily")).await.unwrap();
@@ -2491,7 +2493,7 @@ mod tests {
         let result = run_librarian_sweep(
             &config,
             &config.dirs.data,
-            &test_ledger(&tmp),
+            &test_ledger(&tmp, &mock),
             "alice",
             None,
             false,
@@ -2549,7 +2551,7 @@ mod tests {
     #[tokio::test]
     async fn ai_librarian_sweep_appends_after_cached_request_prefix() {
         let tmp = tempfile::tempdir().unwrap();
-        let mock = MockLlmServer::start().await;
+        let mock = MockLlmSidecar::start().await;
         let config = librarian_config(&tmp, &mock, "alice", 3);
         let resolved = config.models.first_chat_model().unwrap();
         let cached_request = LedgerClient::build_request(
@@ -2573,7 +2575,7 @@ mod tests {
         run_librarian_sweep(
             &config,
             &config.dirs.data,
-            &test_ledger(&tmp),
+            &test_ledger(&tmp, &mock),
             "alice",
             Some(&cached_request),
             false,
@@ -2587,13 +2589,15 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let body = &requests[0];
         let messages = body["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 3);
+        assert_eq!(messages.len(), 4);
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[1]["role"], "assistant");
         assert_eq!(messages[2]["role"], "user");
+        assert_eq!(messages[3]["role"], "system");
         assert!(messages[0].to_string().contains("original user turn"));
         assert!(messages[1].to_string().contains("original assistant turn"));
         assert!(messages[2].to_string().contains("memory librarian pass"));
+        assert!(messages[3].to_string().contains("This is not a chat turn."));
         assert!(body["system"].to_string().contains("cached system prefix"));
         assert_eq!(body["tools"][0]["name"], "read");
         assert!(body["tools"][0]["description"]
@@ -2608,20 +2612,18 @@ mod tests {
     /// between iter-0 and iter-1.
     ///
     /// The librarian system instruction is pinned inline at a fixed slot via
-    /// `push_inline_system`. Under the Anthropic SDK (this test's config),
-    /// `convert_inline_system_messages` merges that inline system into the
-    /// immediately preceding user — the librarian user prompt at index 0.
-    /// Because the slot is fixed before the loop pushes
-    /// `assistant` + `user(tool_result)`, the merge target stays index 0 on
-    /// every round and its bytes never drift. If a future change reverts to
-    /// appending the instruction at the moving tail (the removed
-    /// `system_suffix` shape), the merge target slides to the new last user
-    /// and this assertion trips — exactly the cache-invalidation bug #84
-    /// reported (first ~4 librarian iterations re-paying full cache writes).
+    /// `push_inline_system`. The daemon now sends that canonical request to
+    /// the sidecar; the sidecar owns provider-specific conversion. Because the
+    /// slot is fixed before the loop pushes `assistant` + `user(tool_result)`,
+    /// the user and inline system entries stay byte-stable across rounds. If a
+    /// future change reverts to appending the instruction at the moving tail
+    /// (the removed `system_suffix` shape), this assertion trips — exactly the
+    /// cache-invalidation bug #84 reported (first ~4 librarian iterations
+    /// re-paying full cache writes).
     #[tokio::test]
     async fn librarian_tool_loop_keeps_user_prompt_byte_stable_across_rounds() {
         let tmp = tempfile::tempdir().unwrap();
-        let mock = MockLlmServer::start().await;
+        let mock = MockLlmSidecar::start().await;
         let config = librarian_config(&tmp, &mock, "alice", 10);
         let mem = character_memory_dir(&config.dirs.config, "alice");
         fs::create_dir_all(&mem).await.unwrap();
@@ -2639,7 +2641,7 @@ mod tests {
         run_librarian_sweep(
             &config,
             &config.dirs.data,
-            &test_ledger(&tmp),
+            &test_ledger(&tmp, &mock),
             "alice",
             None,
             false,
@@ -2655,12 +2657,12 @@ mod tests {
         let iter0 = requests[0]["messages"].as_array().expect("iter0 messages");
         let iter1 = requests[1]["messages"].as_array().expect("iter1 messages");
 
-        // iter-0 is the bare librarian turn (system merged into it); iter-1
-        // has grown by assistant + user(tool_result) AFTER index 0.
-        assert_eq!(iter0.len(), 1, "iter-0 should be a single merged user turn");
+        // iter-0 is the bare librarian turn plus pinned inline system; iter-1
+        // has grown by assistant + user(tool_result) after those fixed slots.
+        assert_eq!(iter0.len(), 2, "iter-0 should carry user + inline system");
         assert_eq!(
             iter1.len(),
-            3,
+            4,
             "iter-1 should append assistant + user(tool_result) after the fixed slot"
         );
 
@@ -2668,32 +2670,34 @@ mod tests {
         // allowed to shift across iterations (the iter-0 last-msg breakpoint
         // becomes a mid-prefix breakpoint on iter-1), and Anthropic excludes
         // cache_control from the content-addressed prefix hash. The cache
-        // *content* — the prompt bytes at the pinned slot — is what must
+        // *content* — the prompt bytes at the pinned slots — is what must
         // stay stable.
-        let mut iter0_slot = iter0[0].clone();
-        let mut iter1_slot = iter1[0].clone();
-        strip_cache_control(&mut iter0_slot);
-        strip_cache_control(&mut iter1_slot);
-        assert_eq!(
-            iter0_slot, iter1_slot,
-            "CACHE INVALIDATION: librarian user-prompt slot bytes differ \
-             between iter-0 and iter-1. The inline system instruction's merge \
-             target must stay pinned at index 0.\n\
-             iter-0: {iter0_slot}\n\niter-1: {iter1_slot}"
-        );
-        // The merged system instruction must actually be present (so we're
+        for (slot_name, idx) in [("librarian user", 0), ("inline system", 1)] {
+            let mut iter0_slot = iter0[idx].clone();
+            let mut iter1_slot = iter1[idx].clone();
+            strip_cache_control(&mut iter0_slot);
+            strip_cache_control(&mut iter1_slot);
+            assert_eq!(
+                iter0_slot, iter1_slot,
+                "CACHE INVALIDATION: {slot_name} slot bytes differ between \
+                 iter-0 and iter-1. The inline system instruction must stay \
+                 pinned at a fixed index.\n\
+                 iter-0[{idx}]: {iter0_slot}\n\niter-1[{idx}]: {iter1_slot}"
+            );
+        }
+        // The inline system instruction must actually be present (so we're
         // pinning the right slot, not an empty one). "This is not a chat
         // turn." is unique to the librarian system template and absent from
-        // the user prompt, so this trips if `push_inline_system` ever no-ops
-        // (which the byte-stability check above would not catch on its own).
-        let iter0_text = iter0_slot.to_string();
+        // the user prompt, so this trips if `push_inline_system` ever no-ops.
+        let iter0_user = iter0[0].to_string();
+        let iter0_system = iter0[1].to_string();
         assert!(
-            iter0_text.contains("memory librarian pass"),
+            iter0_user.contains("memory librarian pass"),
             "iter-0 user slot must carry the librarian prompt"
         );
         assert!(
-            iter0_text.contains("This is not a chat turn."),
-            "iter-0 user slot must include the merged inline system instruction"
+            iter0_system.contains("This is not a chat turn."),
+            "iter-0 system slot must include the inline system instruction"
         );
     }
 
@@ -2719,7 +2723,7 @@ mod tests {
     #[tokio::test]
     async fn zero_max_tool_rounds_sends_no_librarian_request() {
         let tmp = tempfile::tempdir().unwrap();
-        let mock = MockLlmServer::start().await;
+        let mock = MockLlmSidecar::start().await;
         let config = librarian_config(&tmp, &mock, "alice", 0);
         let mem = character_memory_dir(&config.dirs.config, "alice");
         let workspace = character_workspace_dir(&config.dirs.config, "alice");
@@ -2731,7 +2735,7 @@ mod tests {
         let result = run_librarian_sweep(
             &config,
             &config.dirs.data,
-            &test_ledger(&tmp),
+            &test_ledger(&tmp, &mock),
             "alice",
             None,
             false,
@@ -2758,7 +2762,7 @@ mod tests {
     #[tokio::test]
     async fn dry_run_librarian_sweep_blocks_writes() {
         let tmp = tempfile::tempdir().unwrap();
-        let mock = MockLlmServer::start().await;
+        let mock = MockLlmSidecar::start().await;
         let config = librarian_config(&tmp, &mock, "alice", 3);
         let mem = character_memory_dir(&config.dirs.config, "alice");
         let workspace = character_workspace_dir(&config.dirs.config, "alice");
@@ -2776,7 +2780,7 @@ mod tests {
         let result = run_librarian_sweep(
             &config,
             &config.dirs.data,
-            &test_ledger(&tmp),
+            &test_ledger(&tmp, &mock),
             "alice",
             None,
             true,
@@ -2801,7 +2805,7 @@ mod tests {
     #[tokio::test]
     async fn librarian_sweep_fallback_creates_memory_index_and_audit() {
         let tmp = tempfile::tempdir().unwrap();
-        let mock = MockLlmServer::start().await;
+        let mock = MockLlmSidecar::start().await;
         let config = librarian_config(&tmp, &mock, "alice", 3);
         let mem = character_memory_dir(&config.dirs.config, "alice");
         let workspace = character_workspace_dir(&config.dirs.config, "alice");
@@ -2816,7 +2820,7 @@ mod tests {
         let result = run_librarian_sweep(
             &config,
             &config.dirs.data,
-            &test_ledger(&tmp),
+            &test_ledger(&tmp, &mock),
             "alice",
             None,
             false,
@@ -2841,7 +2845,7 @@ mod tests {
     #[tokio::test]
     async fn librarian_sweep_writes_protected_prompt_file_via_deferred_edits() {
         let tmp = tempfile::tempdir().unwrap();
-        let mock = MockLlmServer::start().await;
+        let mock = MockLlmSidecar::start().await;
         let config = librarian_config(&tmp, &mock, "alice", 3);
         let workspace = character_workspace_dir(&config.dirs.config, "alice");
         fs::create_dir_all(&workspace).await.unwrap();
@@ -2867,7 +2871,7 @@ mod tests {
         let result = run_librarian_sweep(
             &config,
             &config.dirs.data,
-            &test_ledger(&tmp),
+            &test_ledger(&tmp, &mock),
             "alice",
             None,
             false,

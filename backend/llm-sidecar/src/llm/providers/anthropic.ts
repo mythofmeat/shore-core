@@ -2,13 +2,12 @@
  * Anthropic SDK adapter (sidecar contract shape).
  *
  * Consumes a `SidecarRequest` and emits the `StreamEvent` NDJSON vocabulary.
- * Ports the wire behavior of the Rust `backend/llm/src/providers/anthropic.rs`
- * for PARITY — the daemon is unchanged, so this must produce an equivalent
- * request. The pieces the SDK doesn't do natively (and we therefore keep):
+ * Owns the Anthropic wire behavior for the daemon's canonical request shape.
+ * The pieces the SDK doesn't do natively (and we therefore keep):
  *
  *   1. cache_control breakpoint placement — default schedule only (last stable
- *      system block + last-stable-assistant + last message). Mirrors Rust's
- *      `ts_default_placement`. The `cache_depth_turns`/`cache_pinned_position`
+ *      system block + last-stable-assistant + last message). The
+ *      `cache_depth_turns`/`cache_pinned_position`
  *      override + env vars are intentionally NOT ported (advanced tuning,
  *      unused in practice; default placement is the parity baseline).
  *   2. per-model thinking-mode selection (`thinking_caps`) — adaptive vs
@@ -218,8 +217,8 @@ function buildAnthropicCall(req: SidecarRequest): { client: Anthropic; params: A
 
 /**
  * Pure request-body builder. Exported for the parity test, which asserts the
- * cache-breakpoint placement, thinking config, and provider routing match
- * `anthropic.rs` without hitting the network.
+ * cache-breakpoint placement, thinking config, and provider routing without
+ * hitting the network.
  */
 export function buildAnthropicParams(req: SidecarRequest): AnthropicParams {
   const opts = req.provider_options ?? {};
@@ -417,7 +416,8 @@ function systemToBlocks(system: SystemContent | undefined): TextBlockParam[] {
 /**
  * Convert `role:"system"` turns into wrapped `role:"user"` turns (the API
  * rejects role:system in messages[]). Merge into a preceding user turn to avoid
- * consecutive user roles. Mirrors Rust `convert_inline_system_messages`.
+ * consecutive user roles. Mirrors the daemon's established inline-system wire
+ * behavior.
  */
 export function convertInlineSystemMessages(
   turns: WireMessage[],

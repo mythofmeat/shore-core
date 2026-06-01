@@ -11,8 +11,8 @@
  *
  * **It must never replay prior thinking back into the request** (no
  * `reasoning_content`/`reasoning` field on outbound assistant messages). That
- * replay is the Rust adapter's deepseek/kimi tool-loop bug; the conversion
- * regression test pins that we don't do it. (Inbound reasoning deltas ARE
+ * replay was the retired Rust adapter's deepseek/kimi tool-loop bug; the
+ * conversion regression test pins that we don't do it. (Inbound reasoning deltas ARE
  * surfaced as `thinking` events for display/persistence; they're dropped from
  * the request on the next turn by `turnToOpenAI`.)
  */
@@ -268,8 +268,8 @@ function systemToText(system: SystemContent | undefined): string {
 /**
  * Convert one canonical turn into OpenAI chat-completion message(s). Exported
  * for the conversion regression test: it must NEVER emit a `reasoning_content`
- * / `reasoning` field (the deepseek/kimi tool-loop bug — the Rust adapter
- * replays prior thinking here; we don't), and must omit `content` (not emit
+ * / `reasoning` field (the deepseek/kimi tool-loop bug — the retired Rust
+ * adapter replayed prior thinking here; we don't), and must omit `content` (not emit
  * `null`) on tool-call-only assistant turns.
  */
 export function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {

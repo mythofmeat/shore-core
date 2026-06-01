@@ -250,11 +250,10 @@ async fn test_multiple_tool_calls_have_unique_ids() {
     let mut harness = TestHarness::boot().await;
 
     // Enqueue a response with TWO tool_use blocks in the same message.
-    let two_tools_sse = AnthropicStreamBuilder::new()
+    let two_tools = AnthropicStreamBuilder::new()
         .tool_use("toolu_multi_01", "check_time", json!({}))
-        .tool_use("toolu_multi_02", "check_time", json!({}))
-        .build();
-    harness.mock_llm.enqueue_raw_sse(two_tools_sse).await;
+        .tool_use("toolu_multi_02", "check_time", json!({}));
+    harness.mock_llm.enqueue_stream(two_tools).await;
 
     // Follow-up text response after both tools execute.
     harness.mock_llm.enqueue_text("Both tools executed.").await;
@@ -265,7 +264,7 @@ async fn test_multiple_tool_calls_have_unique_ids() {
         .await
         .expect("failed to send message");
 
-    // Collect phase 1 (tool_use SSE) and phase 2 (final text).
+    // Collect phase 1 (tool_use event) and phase 2 (final text).
     let _phase1 = harness.collect_stream().await;
     let phase2 = harness.collect_stream().await;
     phase2.assert_text_contains("Both tools executed");

@@ -1,8 +1,8 @@
 /**
  * Gemini SDK adapter (sidecar contract shape).
  *
- * Ports the Rust `providers/gemini.rs` wire behavior: canonical
- * Anthropic-shape messages become Gemini `contents`, system prompt becomes
+ * Implements the Gemini sidecar wire behavior: canonical Anthropic-shape
+ * messages become Gemini `contents`, system prompt becomes
  * `systemInstruction`, tools become `functionDeclarations`, thinking config is
  * generation-aware, safety filters are set to `OFF`, and function calls are
  * emitted as consolidated `tool_use` events.

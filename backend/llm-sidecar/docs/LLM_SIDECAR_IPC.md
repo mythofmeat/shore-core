@@ -1,10 +1,10 @@
 # LLM Sidecar IPC Contract
 
-Status: implementation in progress (2026-06-02). Goal: move the LLM **wire**
-(provider SDK calls) out of the Rust `shore-llm` crate into a Bun **sidecar**
-that uses official vendor SDKs, while the Rust daemon, prompt assembly, tool
-loop, memory, and SWP server stay byte-for-byte unchanged. Zero user-visible
-behavior change except "OpenAI-compatible providers stop mangling tool loops."
+Status: implemented (2026-06-02). The LLM **wire** (provider SDK calls) lives
+in a Bun **sidecar** that uses official vendor SDKs, while the Rust daemon,
+prompt assembly, tool loop, memory, and SWP server stay byte-for-byte
+unchanged. Zero user-visible behavior change except "OpenAI-compatible
+providers stop mangling tool loops."
 
 ## The seam (why this is small)
 
@@ -22,10 +22,11 @@ lines and never sees raw provider SSE. **That NDJSON `StreamEvent` vocabulary is
 the contract** — it already exists, is serde-stable, and is covered by the
 `stream.rs` test suite.
 
-The cut: replace the body of `providers::stream`/`generate`/`image_generate` so
-that instead of dispatching to `anthropic.rs`/`openai.rs`/`gemini.rs`/`zai.rs`
-(~8k LOC) it POSTs the request to the sidecar and returns a reader over the
-sidecar's response. Everything above `providers::*` is unchanged.
+The Rust `providers::stream`/`generate`/`image_generate` entrypoints now POST to
+the sidecar and return a reader over the sidecar's response. The retired Rust
+chat/image adapters (`anthropic.rs`, OpenAI chat/image, `gemini.rs`, `zai.rs`,
+and their stream helpers) have been removed; embeddings remain in Rust because
+they are still a small OpenAI-compatible HTTP call.
 
 ## Transport
 
@@ -45,7 +46,7 @@ sidecar's response. Everything above `providers::*` is unchanged.
 
 Socket path passed to the sidecar via `--socket <path>` (or `SHORE_LLM_SOCKET`).
 
-The Rust daemon sidecar transport is gated by config and defaults off:
+The Rust daemon sidecar transport is the default chat/generate/image path:
 
 ```toml
 [advanced.llm_sidecar]
@@ -53,6 +54,10 @@ enabled = true
 # optional; default is <runtime_dir>/llm.sock
 socket_path = "/run/user/1000/shore/llm.sock"
 ```
+
+The `enabled` switch remains for config compatibility and emergency diagnostics,
+but the legacy Rust chat/image provider implementations have been removed; with
+`enabled = false`, chat/generate/image calls return a configuration error.
 
 ### Endpoints
 
@@ -182,7 +187,7 @@ are `functionDeclarations`, thinking is `thinkingConfig{thinkingBudget|thinkingL
 which models all three first-class.
 
 **Z.ai** — speaks OpenAI chat-completions for messages/tools, but is NOT a plain
-base_url swap (`providers/zai.rs`):
+base_url swap (`src/llm/providers/zai.ts`):
 - dual base URLs — `api.z.ai/api/paas/v4` vs `…/coding/paas/v4`, toggled by the
   `zai_subscription` provider option;
 - custom thinking control in the request body:
@@ -225,9 +230,8 @@ the `StreamEvent` NDJSON above:
 ## Supervision / packaging
 
 - `bun build --compile` emits `backend/llm-sidecar/dist/shore-llm-sidecar`.
-- When `[advanced.llm_sidecar].enabled = true`, `shore-daemon` configures
-  `shore-llm` to use the configured socket path, defaulting to
-  `<runtime_dir>/llm.sock`.
+- By default, `shore-daemon` configures `shore-llm` to use the configured socket
+  path, defaulting to `<runtime_dir>/llm.sock`.
 - The daemon starts a sidecar supervisor when `shore-llm-sidecar` is found on
   `PATH` or next to the running daemon. It spawns
   `shore-llm-sidecar --socket <path>`, creates the socket directory, polls

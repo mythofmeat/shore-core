@@ -1,8 +1,8 @@
 /**
  * Anthropic adapter parity tests. Pin `buildAnthropicParams` (request shaping)
- * and `anthropicStreamEvents` (event mapping) against the behavior of
- * `backend/llm/src/providers/anthropic.rs` — no network. The cache-placement +
- * per-model thinking assertions are the cache/correctness parity proof.
+ * and `anthropicStreamEvents` (event mapping). The cache-placement +
+ * per-model thinking assertions are the cache/correctness proof for the
+ * sidecar-owned Anthropic wire.
  */
 
 import { describe, expect, test } from "bun:test";

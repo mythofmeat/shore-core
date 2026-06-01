@@ -1,15 +1,8 @@
-pub(crate) mod anthropic;
-pub(crate) mod context;
-pub(crate) mod gemini;
 pub(crate) mod openai;
 pub(crate) mod sidecar;
-pub(crate) mod sse;
-pub(crate) mod stream_helpers;
-pub(crate) mod zai;
 
 use std::{path::Path, time::Duration};
 
-use shore_config::models::Sdk;
 use tracing::{debug, error, warn};
 
 use crate::types::{GenerateResponse, ImageGenerateParams, ImageGenerateResponse, LlmRequest};
@@ -18,14 +11,10 @@ use tokio::io::DuplexStream;
 
 /// Per-request ceiling for non-streaming generate calls.
 ///
-/// Streaming has no whole-request bound (the SSE reader handles
+/// Streaming has no whole-request bound (the sidecar reader handles
 /// inter-event timing on its own), but non-streaming buffers the full
-/// body via `.json()` and so needs *some* deadline — set generously to
-/// accommodate compaction/dreaming on slow reasoning models (Opus 4.6
-/// emitting tens of thousands of output tokens can comfortably exceed
-/// 10 minutes). Without this, the shared client used to apply a 5-minute
-/// ceiling that fired mid-body and surfaced as "error decoding response
-/// body".
+/// body and so needs *some* deadline — set generously to accommodate
+/// compaction/dreaming on slow reasoning models.
 pub(crate) const NON_STREAMING_TIMEOUT: Duration = Duration::from_mins(30);
 
 /// Format a reqwest error with its full source chain so the proximate
@@ -77,12 +66,17 @@ pub(crate) async fn check_response(
     })
 }
 
-/// Dispatch a streaming request to the correct SDK.
+fn missing_sidecar_error() -> LlmError {
+    LlmError::Provider {
+        message: "LLM sidecar socket is not configured; stream/generate/image calls require shore-llm-sidecar".into(),
+    }
+}
+
+/// Dispatch a streaming request through the sidecar.
 ///
 /// Returns the read half of a DuplexStream that yields NDJSON `StreamEvent` lines.
-/// A background task reads SSE from the provider and writes NDJSON to the stream.
 pub async fn stream(
-    client: &reqwest::Client,
+    _client: &reqwest::Client,
     request: &LlmRequest,
     sidecar_socket: Option<&Path>,
 ) -> Result<DuplexStream, LlmError> {
@@ -92,28 +86,24 @@ pub async fn stream(
         max_tokens = request.max_tokens,
         message_count = request.messages.len(),
         has_tools = request.tools.is_some(),
-        "dispatching streaming LLM request"
+        "dispatching streaming LLM request through sidecar"
     );
-    let result = if let Some(socket) = sidecar_socket {
-        sidecar::stream(request, socket).await
-    } else {
-        let ctx = context::build_provider_context(request);
-        match request.sdk {
-            Sdk::Anthropic => anthropic::stream(client, request).await,
-            Sdk::Openai => openai::stream(client, request, &ctx).await,
-            Sdk::Zai => zai::stream(client, request).await,
-            Sdk::Gemini => gemini::stream(client, request).await,
-        }
+    let Some(socket) = sidecar_socket else {
+        let error = missing_sidecar_error();
+        warn!(sdk = ?request.sdk, model = %request.model, error = %error, "streaming request failed");
+        return Err(error);
     };
+
+    let result = sidecar::stream(request, socket).await;
     if let Err(e) = &result {
         warn!(sdk = ?request.sdk, model = %request.model, error = %e, "streaming request failed");
     }
     result
 }
 
-/// Dispatch a non-streaming generate request to the correct SDK.
+/// Dispatch a non-streaming generate request through the sidecar.
 pub async fn generate(
-    client: &reqwest::Client,
+    _client: &reqwest::Client,
     request: &LlmRequest,
     sidecar_socket: Option<&Path>,
 ) -> Result<GenerateResponse, LlmError> {
@@ -122,19 +112,15 @@ pub async fn generate(
         model = %request.model,
         max_tokens = request.max_tokens,
         message_count = request.messages.len(),
-        "dispatching non-streaming LLM request"
+        "dispatching non-streaming LLM request through sidecar"
     );
-    let result = if let Some(socket) = sidecar_socket {
-        sidecar::generate(request, socket).await
-    } else {
-        let ctx = context::build_provider_context(request);
-        match request.sdk {
-            Sdk::Anthropic => anthropic::generate(client, request).await,
-            Sdk::Openai => openai::generate(client, request, &ctx).await,
-            Sdk::Zai => zai::generate(client, request).await,
-            Sdk::Gemini => gemini::generate(client, request).await,
-        }
+    let Some(socket) = sidecar_socket else {
+        let error = missing_sidecar_error();
+        warn!(sdk = ?request.sdk, model = %request.model, error = %error, "non-streaming request failed");
+        return Err(error);
     };
+
+    let result = sidecar::generate(request, socket).await;
     match &result {
         Ok(resp) => debug!(
             model = %resp.model,
@@ -164,17 +150,19 @@ pub async fn embed(
     openai::embed(client, provider, model, api_key, base_url, input).await
 }
 
-/// Dispatch an image generation request.
+/// Dispatch an image generation request through the sidecar.
 pub async fn image_generate(
-    client: &reqwest::Client,
+    _client: &reqwest::Client,
     params: &ImageGenerateParams<'_>,
     sidecar_socket: Option<&Path>,
 ) -> Result<ImageGenerateResponse, LlmError> {
-    debug!(model = %params.model, "dispatching image generation request");
+    debug!(model = %params.model, "dispatching image generation request through sidecar");
     if let Some(socket) = sidecar_socket {
         sidecar::image_generate(params, socket).await
     } else {
-        openai::image_generate(client, params).await
+        let error = missing_sidecar_error();
+        warn!(model = %params.model, error = %error, "image generation request failed");
+        Err(error)
     }
 }
 
@@ -182,6 +170,7 @@ pub async fn image_generate(
 mod tests {
     use super::*;
     use serde_json::json;
+    use shore_config::models::Sdk;
 
     fn make_request(sdk: Sdk) -> LlmRequest {
         LlmRequest {
@@ -189,7 +178,7 @@ mod tests {
             model: "test-model".into(),
             api_key: "sk-test".into(),
             api_key_name: None,
-            base_url: Some("http://127.0.0.1:1".into()), // unreachable
+            base_url: Some("http://127.0.0.1:1".into()),
             messages: vec![json!({"role": "user", "content": "hi"})],
             system: None,
             tools: None,
@@ -207,7 +196,7 @@ mod tests {
     #[test]
     fn body_preview_handles_multibyte_at_boundary() {
         // 199 ASCII bytes + "é" (2 bytes) = 201 bytes total.
-        // Slicing at byte 200 lands inside "é" → must not panic.
+        // Slicing at byte 200 lands inside "é" and must not panic.
         let body = format!("{}{}", "x".repeat(199), "é");
         assert_eq!(body.len(), 201);
         let preview = body_preview(&body, 200);
@@ -216,18 +205,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_all_sdks_dispatch_without_panic() {
+    async fn stream_without_sidecar_returns_clear_error() -> Result<(), String> {
         let client = reqwest::Client::new();
-        // All SDK variants should route to real impls and fail on HTTP
-        // (unreachable base_url), not panic.
-        for sdk in [Sdk::Anthropic, Sdk::Openai, Sdk::Zai, Sdk::Gemini] {
-            let request = make_request(sdk);
-            let result = stream(&client, &request, None).await;
-            // Any error is fine (HTTP, connection) — we just confirm dispatch works.
-            assert!(
-                result.is_err(),
-                "expected connection error for unreachable host"
-            );
-        }
+        let request = make_request(Sdk::Openai);
+        let Err(err) = stream(&client, &request, None).await else {
+            return Err("stream without sidecar unexpectedly succeeded".into());
+        };
+
+        assert!(err.to_string().contains("shore-llm-sidecar"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn generate_without_sidecar_returns_clear_error() -> Result<(), String> {
+        let client = reqwest::Client::new();
+        let request = make_request(Sdk::Anthropic);
+        let Err(err) = generate(&client, &request, None).await else {
+            return Err("generate without sidecar unexpectedly succeeded".into());
+        };
+
+        assert!(err.to_string().contains("shore-llm-sidecar"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn image_generate_without_sidecar_returns_clear_error() -> Result<(), String> {
+        let client = reqwest::Client::new();
+        let params = ImageGenerateParams {
+            provider_key: "openai",
+            model: "gpt-image-1",
+            api_key: "sk-test",
+            base_url: None,
+            prompt: "draw a shore",
+            size: None,
+            quality: None,
+            aspect_ratio: None,
+            image_size: None,
+        };
+        let Err(err) = image_generate(&client, &params, None).await else {
+            return Err("image generation without sidecar unexpectedly succeeded".into());
+        };
+
+        assert!(err.to_string().contains("shore-llm-sidecar"));
+        Ok(())
     }
 }

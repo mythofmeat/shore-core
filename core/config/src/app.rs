@@ -1130,23 +1130,32 @@ pub struct AdvancedConfig {
     #[serde(default = "default_max_image_size")]
     pub max_image_size: u64,
 
-    /// Experimental LLM sidecar transport. Disabled by default; when enabled,
-    /// shore-llm POSTs provider requests to a Bun sidecar over a Unix socket
-    /// instead of calling provider APIs directly from Rust.
+    /// LLM sidecar transport. Enabled by default; shore-llm POSTs provider
+    /// requests to a Bun sidecar over a Unix socket instead of carrying
+    /// provider-specific chat/image wire code in Rust.
     #[serde(default)]
     pub llm_sidecar: LlmSidecarConfig,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LlmSidecarConfig {
     /// Route LLM stream/generate/image calls through the sidecar.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
 
     /// Optional Unix socket path. If unset, the daemon uses
     /// `<runtime_dir>/llm.sock`.
     pub socket_path: Option<PathBuf>,
+}
+
+impl Default for LlmSidecarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            socket_path: None,
+        }
+    }
 }
 
 impl Default for AdvancedConfig {
@@ -1220,7 +1229,7 @@ mod tests {
         assert!(config.advanced.editor.is_none());
         assert!(config.advanced.max_retries.is_none());
         assert!(config.advanced.retry_backoff.is_none());
-        assert!(!config.advanced.llm_sidecar.enabled);
+        assert!(config.advanced.llm_sidecar.enabled);
         assert!(config.advanced.llm_sidecar.socket_path.is_none());
         assert_eq!(config.usage.timezone, "local");
         assert!(config.usage.allow_compaction_over_budget);
@@ -1677,18 +1686,18 @@ cache_forensics = true
     }
 
     #[test]
-    fn llm_sidecar_defaults_off_and_accepts_socket_path() {
+    fn llm_sidecar_defaults_on_and_accepts_socket_path() {
         let config = AppConfig::default();
-        assert!(!config.advanced.llm_sidecar.enabled);
+        assert!(config.advanced.llm_sidecar.enabled);
         assert!(config.advanced.llm_sidecar.socket_path.is_none());
 
         let toml_str = r#"
 [advanced.llm_sidecar]
-enabled = true
+enabled = false
 socket_path = "/tmp/shore-llm.sock"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert!(config.advanced.llm_sidecar.enabled);
+        assert!(!config.advanced.llm_sidecar.enabled);
         assert_eq!(
             config.advanced.llm_sidecar.socket_path.as_deref(),
             Some(std::path::Path::new("/tmp/shore-llm.sock"))

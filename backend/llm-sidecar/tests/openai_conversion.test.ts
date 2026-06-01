@@ -9,10 +9,10 @@
  * converter and assert the wire shape strict OpenAI-compatible backends
  * (deepseek, kimi, glm) actually accept.
  *
- * The Rust adapter (`backend/llm/src/providers/openai.rs::translate_messages`)
- * fails these two ways — replaying prior thinking as deepseek's output-only
- * `reasoning_content`, and emitting `"content": null` on tool-call-only
- * assistant turns. This test pins that the TS converter does NEITHER.
+ * The retired Rust adapter failed these two ways — replaying prior thinking as
+ * deepseek's output-only `reasoning_content`, and emitting `"content": null` on
+ * tool-call-only assistant turns. This test pins that the TS converter does
+ * NEITHER.
  */
 
 import { describe, expect, test } from "bun:test";

@@ -1,6 +1,6 @@
 /**
- * Gemini adapter parity tests. These pin the Rust `providers/gemini.rs`
- * behavior without live network calls: message/tool/system translation,
+ * Gemini adapter parity tests. These pin sidecar Gemini behavior without live
+ * network calls: message/tool/system translation,
  * generation-aware thinkingConfig, safety OFF settings, streaming event
  * mapping, and non-streaming response shaping.
  */

@@ -23,4 +23,6 @@ pub use chaos::CrashedHarness;
 pub use collected::CollectedResponse;
 pub use config::TestConfigBuilder;
 pub use harness::TestHarness;
-pub use mock_llm::{AnthropicStreamBuilder, MockLlmServer};
+pub use mock_llm::AnthropicStreamBuilder;
+#[cfg(unix)]
+pub use mock_llm::MockLlmSidecar;

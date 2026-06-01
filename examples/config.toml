@@ -232,6 +232,10 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 # max_image_size = 2000000          # Resize images above this size (bytes) before LLM upload; 0 = disable
 # Data directory: override via $XDG_DATA_HOME (default: ~/.local/share/shore)
 
+# [advanced.llm_sidecar]
+# enabled = true                    # Default; chat/generate/image require the Bun sidecar
+# socket_path = "/run/user/1000/shore/llm.sock"
+
 # ── Chat models ──────────────────────────────────────────────────────────
 # Provider-level settings cascade into all models under that provider.
 # Model-level values take precedence over provider-level values.

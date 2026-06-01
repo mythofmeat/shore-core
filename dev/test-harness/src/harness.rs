@@ -21,7 +21,7 @@ use tracing::info;
 
 use crate::collected::CollectedResponse;
 use crate::config::TestConfigBuilder;
-use crate::mock_llm::MockLlmServer;
+use crate::mock_llm::MockLlmSidecar;
 
 /// Timeout for collecting a full streamed response.
 const COLLECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -33,7 +33,7 @@ const CMD_TIMEOUT: Duration = Duration::from_secs(5);
 /// a connected SWP client with send/collect helpers.
 pub struct TestHarness {
     pub conn: SWPConnection,
-    pub mock_llm: MockLlmServer,
+    pub mock_llm: MockLlmSidecar,
     pub tmp_dir: tempfile::TempDir,
     pub data_dir: PathBuf,
     pub addr: String,
@@ -63,10 +63,11 @@ impl TestHarness {
     ///
     /// Follows the exact wiring pattern from `backend/daemon/tests/e2e.rs`
     /// (`E2EHarness::start`), but replaces the real LLM service with a
-    /// `MockLlmServer` whose `base_url` is injected into the model catalog.
+    /// `MockLlmSidecar` whose HTTP `base_url` is injected into the model
+    /// catalog for embeddings while chat/generate stream over its Unix socket.
     pub async fn boot_with(builder: TestConfigBuilder) -> Self {
-        // Start mock LLM server (wiremock HTTP).
-        let mock_llm = MockLlmServer::start().await;
+        // Start mock LLM sidecar plus HTTP embedding endpoint.
+        let mock_llm = MockLlmSidecar::start().await;
 
         // Create temp directory tree and build config.
         let tmp_dir = fail_fast(tempfile::tempdir(), "failed to create temp dir");
@@ -102,7 +103,7 @@ impl TestHarness {
     )]
     pub(crate) async fn wire_daemon(
         config: LoadedConfig,
-        mock_llm: MockLlmServer,
+        mock_llm: MockLlmSidecar,
         tmp_dir: tempfile::TempDir,
         data_dir: PathBuf,
         addr: String,
@@ -144,6 +145,7 @@ impl TestHarness {
             std::fs::create_dir_all(&config.dirs.cache).ok();
             raw_llm_client.set_payload_log_dir(config.dirs.cache.clone());
         }
+        raw_llm_client.set_sidecar_socket(mock_llm.socket_path().to_path_buf());
         let llm_client = fail_fast(
             LedgerClient::new(raw_llm_client, &config.dirs.data.join("ledger.db")),
             "failed to create LedgerClient",
