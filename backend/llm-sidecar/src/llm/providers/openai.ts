@@ -1,21 +1,27 @@
 /**
- * OpenAI-compatible adapter.
+ * OpenAI-compatible adapter (the sidecar contract shape).
  *
- * Used for OpenAI itself + every OpenAI-compatible gateway (DeepSeek,
- * xAI, NanoGPT, etc.). Phase 4a only needs the OpenAI target for the
- * `openai/gpt-5.4-mini` test; the deepseek/xai/etc. variants slot in
- * later without changes to the adapter (they're all base-URL swaps).
+ * Fronts OpenAI and every OpenAI-compatible gateway — DeepSeek, Kimi (Moonshot),
+ * xAI, NanoGPT, etc. — which differ only by `base_url`. It consumes a
+ * `SidecarRequest` (canonical Anthropic-shape blocks, as the Rust daemon
+ * assembled them) and emits the `StreamEvent` NDJSON vocabulary the daemon's
+ * `StreamConsumer` parses.
  *
- * We translate Anthropic-style content blocks ↔ OpenAI messages here.
- * For phase 4a we don't try to make caching work on this side — OpenAI
- * does its own automatic prefix caching server-side, no client knobs.
- * The cache regression we're killing is Anthropic-specific.
+ * No client-side cache markers: OpenAI-compatible backends cache server-side.
+ *
+ * **It must never replay prior thinking back into the request** (no
+ * `reasoning_content`/`reasoning` field on outbound assistant messages). That
+ * replay is the Rust adapter's deepseek/kimi tool-loop bug; the conversion
+ * regression test pins that we don't do it. (Inbound reasoning deltas ARE
+ * surfaced as `thinking` events for display/persistence; they're dropped from
+ * the request on the next turn by `turnToOpenAI`.)
  */
 
 import OpenAI from "openai";
 import type {
   ChatCompletionAssistantMessageParam,
   ChatCompletionChunk,
+  ChatCompletionCreateParams,
   ChatCompletionMessageParam,
   ChatCompletionTool,
   ChatCompletionToolMessageParam,
@@ -24,226 +30,240 @@ import type {
 import type { ContentBlock, ImageRef } from "../../engine/types.ts";
 import { resolveImage } from "../images.ts";
 import type {
-  ChatEvent,
-  ChatRequest,
-  GenerateResult,
-  ProviderClient,
-  ToolDef,
+  GenerateResponse,
+  SidecarProvider,
+  SidecarRequest,
+  StreamEvent,
+  SystemContent,
   TurnMessage,
-  UsageStats,
+  Usage,
+  WireMessage,
 } from "../types.ts";
 
-export class OpenAIProvider implements ProviderClient {
-  async *stream(req: ChatRequest): AsyncIterable<ChatEvent> {
+export class OpenAIProvider implements SidecarProvider {
+  stream(req: SidecarRequest, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const { client, params } = buildOpenAICall(req, /*streaming*/ true);
-    const stream = (await client.chat.completions.create(
-      params,
-      req.signal ? { signal: req.signal } : undefined,
-    )) as AsyncIterable<ChatCompletionChunk>;
-
-    // Per-tool-call accumulators, keyed by tool_call index (the SDK
-    // streams a parallel-call array — chunks carry the index slot).
-    const toolCalls = new Map<
-      number,
-      { id: string; name: string; argsJson: string; announced: boolean }
-    >();
-    let textAccum = "";
-    let stopReason = "end_turn";
-    const usage: UsageStats = {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-    };
-
-    for await (const chunk of stream) {
-      const choice = chunk.choices[0];
-      if (choice) {
-        const delta = choice.delta;
-        if (typeof delta.content === "string" && delta.content.length > 0) {
-          textAccum += delta.content;
-          yield { kind: "text_delta", text: delta.content };
-        }
-        if (delta.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            const idx = tc.index;
-            let state = toolCalls.get(idx);
-            if (!state) {
-              state = {
-                id: tc.id ?? `tc_${idx}`,
-                name: tc.function?.name ?? "",
-                argsJson: "",
-                announced: false,
-              };
-              toolCalls.set(idx, state);
-            }
-            if (tc.id && tc.id !== state.id) state.id = tc.id;
-            if (tc.function?.name) state.name = tc.function.name;
-            if (!state.announced && state.name && state.id) {
-              state.announced = true;
-              yield { kind: "tool_use_start", id: state.id, name: state.name };
-            }
-            const argDelta = tc.function?.arguments;
-            if (argDelta) {
-              state.argsJson += argDelta;
-              if (state.announced) {
-                yield {
-                  kind: "tool_use_input_delta",
-                  id: state.id,
-                  partial_json: argDelta,
-                };
-              }
-            }
-          }
-        }
-        if (choice.finish_reason) {
-          stopReason = mapStopReason(choice.finish_reason);
-        }
-      }
-      if (chunk.usage) {
-        usage.inputTokens = chunk.usage.prompt_tokens ?? 0;
-        usage.outputTokens = chunk.usage.completion_tokens ?? 0;
-        const cached = chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
-        usage.cacheReadInputTokens = cached;
-      }
-    }
-
-    for (const tc of toolCalls.values()) {
-      if (tc.announced) yield { kind: "tool_use_done", id: tc.id };
-    }
-
-    const content: ContentBlock[] = [];
-    if (textAccum) content.push({ type: "text", text: textAccum });
-    for (const tc of toolCalls.values()) {
-      let input: unknown;
-      try {
-        input = tc.argsJson.trim() === "" ? {} : JSON.parse(tc.argsJson);
-      } catch {
-        input = {};
-      }
-      content.push({ type: "tool_use", id: tc.id, name: tc.name, input });
-    }
-
-    yield { kind: "done", content, stopReason, usage };
+    const chunks = (async function* () {
+      const stream = (await client.chat.completions.create(
+        params,
+        signal ? { signal } : undefined,
+      )) as AsyncIterable<ChatCompletionChunk>;
+      yield* stream;
+    })();
+    return openAIStreamEvents(req.model, chunks);
   }
 
-  async generate(req: ChatRequest): Promise<GenerateResult> {
+  async generate(req: SidecarRequest, signal?: AbortSignal): Promise<GenerateResponse> {
+    const startedAt = Date.now();
     const { client, params } = buildOpenAICall(req, /*streaming*/ false);
     const completion = await client.chat.completions.create(
       params,
-      req.signal ? { signal: req.signal } : undefined,
+      signal ? { signal } : undefined,
     );
-    // `params.stream` is false; the SDK returns a single ChatCompletion
-    // (the streaming branch returns AsyncIterable). The SDK's discriminated
-    // union doesn't narrow on a runtime boolean, so the cast is safe but
-    // necessary.
-    const c = completion as Awaited<
-      ReturnType<typeof client.chat.completions.create>
-    > & { choices: Array<{ message: { content?: string; tool_calls?: unknown[] }; finish_reason: string | null }>; usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } };
+    // `params.stream` is false → the SDK returns a single ChatCompletion. Its
+    // discriminated union doesn't narrow on a runtime boolean, so we read it
+    // through a structural view.
+    const c = completion as unknown as {
+      choices: Array<{
+        message: {
+          content?: string | null;
+          reasoning_content?: string | null;
+          reasoning?: string | null;
+          tool_calls?: unknown[];
+        };
+        finish_reason: string | null;
+      }>;
+      usage?: RawUsage;
+    };
 
     const choice = c.choices[0];
-    const content: ContentBlock[] = [];
-    if (choice?.message.content) {
-      content.push({ type: "text", text: choice.message.content });
+    const message = choice?.message;
+    const content_blocks: ContentBlock[] = [];
+    const reasoning = message?.reasoning_content ?? message?.reasoning;
+    if (typeof reasoning === "string" && reasoning.length > 0) {
+      content_blocks.push({ type: "thinking", thinking: reasoning });
     }
-    if (Array.isArray(choice?.message.tool_calls)) {
-      for (const tc of choice.message.tool_calls) {
+    const text = typeof message?.content === "string" ? message.content : "";
+    if (text) content_blocks.push({ type: "text", text });
+    if (Array.isArray(message?.tool_calls)) {
+      for (const tc of message.tool_calls) {
         const tool = tc as { id?: string; function?: { name?: string; arguments?: string } };
-        let input: unknown;
-        try {
-          const raw = tool.function?.arguments ?? "";
-          input = raw.trim() === "" ? {} : JSON.parse(raw);
-        } catch {
-          input = {};
-        }
-        content.push({
+        content_blocks.push({
           type: "tool_use",
           id: tool.id ?? "tc_0",
           name: tool.function?.name ?? "",
-          input,
+          input: parseArgs(tool.function?.arguments ?? ""),
         });
       }
     }
 
-    const usage: UsageStats = {
-      inputTokens: c.usage?.prompt_tokens ?? 0,
-      outputTokens: c.usage?.completion_tokens ?? 0,
-      cacheReadInputTokens: c.usage?.prompt_tokens_details?.cached_tokens ?? 0,
-      cacheCreationInputTokens: 0,
-    };
-
+    const total = Date.now() - startedAt;
     return {
-      content,
-      stopReason: choice?.finish_reason
-        ? mapStopReason(choice.finish_reason)
-        : "end_turn",
-      usage,
+      content: text,
+      content_blocks,
+      finish_reason: mapStopReason(choice?.finish_reason ?? "stop"),
+      usage: extractUsage(c.usage),
+      timing: { total_ms: total, time_to_first_token_ms: total },
+      model: req.model,
     };
   }
 }
 
 /**
- * Shared per-call setup for streaming + non-streaming. Returns the
- * configured client and the request params; the caller picks the
- * SDK method and consumes the response shape.
+ * Pure chunk → `StreamEvent` mapping. Separated from the SDK call so it can be
+ * unit-tested with hand-built chunks and a fake clock.
+ *
+ * Emits: `start` (once), incremental `text`/`thinking`, then ONE consolidated
+ * `tool_use` per call (full parsed input — not deltas), then `done`. Tool-call
+ * argument fragments are accumulated internally; the daemon's `StreamConsumer`
+ * expects a single `tool_use` event, not start/delta/stop.
  */
+export async function* openAIStreamEvents(
+  model: string,
+  chunks: AsyncIterable<ChatCompletionChunk>,
+  now: () => number = Date.now,
+): AsyncIterable<StreamEvent> {
+  const startedAt = now();
+  let firstTokenAt = 0;
+  const markFirst = () => {
+    if (firstTokenAt === 0) firstTokenAt = now();
+  };
+
+  yield { type: "start", model };
+
+  const toolCalls = new Map<number, { id: string; name: string; argsJson: string }>();
+  let textAccum = "";
+  let finishReason: string | undefined;
+  let usage: Usage = emptyUsage();
+
+  for await (const chunk of chunks) {
+    const choice = chunk.choices[0];
+    if (choice) {
+      const delta = choice.delta as {
+        content?: string | null;
+        reasoning_content?: string | null;
+        reasoning?: string | null;
+        tool_calls?: ChatCompletionChunk.Choice.Delta.ToolCall[];
+      };
+
+      const reasoningDelta = delta.reasoning_content ?? delta.reasoning;
+      if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
+        markFirst();
+        yield { type: "thinking", text: reasoningDelta };
+      }
+
+      if (typeof delta.content === "string" && delta.content.length > 0) {
+        markFirst();
+        textAccum += delta.content;
+        yield { type: "text", text: delta.content };
+      }
+
+      if (delta.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index;
+          let state = toolCalls.get(idx);
+          if (!state) {
+            state = { id: tc.id ?? `tc_${idx}`, name: tc.function?.name ?? "", argsJson: "" };
+            toolCalls.set(idx, state);
+          }
+          if (tc.id && tc.id !== state.id) state.id = tc.id;
+          if (tc.function?.name) state.name = tc.function.name;
+          if (tc.function?.arguments) state.argsJson += tc.function.arguments;
+        }
+      }
+
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+    }
+    if (chunk.usage) usage = extractUsage(chunk.usage as RawUsage);
+  }
+
+  // One consolidated tool_use event per call, in index order, with full input.
+  for (const tc of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
+    markFirst();
+    yield { type: "tool_use", id: tc[1].id, name: tc[1].name, input: parseArgs(tc[1].argsJson) };
+  }
+
+  const total = now() - startedAt;
+  yield {
+    type: "done",
+    content: textAccum,
+    finish_reason: mapStopReason(finishReason ?? "stop"),
+    usage,
+    timing: {
+      total_ms: total,
+      time_to_first_token_ms: firstTokenAt === 0 ? total : firstTokenAt - startedAt,
+    },
+  };
+}
+
+// ── request construction ──────────────────────────────────────────────────
+
 function buildOpenAICall(
-  req: ChatRequest,
+  req: SidecarRequest,
   streaming: boolean,
-): {
-  client: OpenAI;
-  params: Parameters<typeof OpenAI.prototype.chat.completions.create>[0];
-} {
+): { client: OpenAI; params: ChatCompletionCreateParams } {
   const client = new OpenAI({
-    apiKey: req.apiKey,
-    ...(req.baseUrl ? { baseURL: req.baseUrl } : {}),
+    apiKey: req.api_key,
+    ...(req.base_url ? { baseURL: req.base_url } : {}),
   });
 
   const messages: ChatCompletionMessageParam[] = [];
   const systemText = systemToText(req.system);
-  if (systemText) {
-    messages.push({ role: "system", content: systemText });
-  }
-  for (const turn of req.messages) {
-    messages.push(...turnToOpenAI(turn));
-  }
+  if (systemText) messages.push({ role: "system", content: systemText });
+  for (const turn of req.messages) messages.push(...turnToOpenAI(normalizeTurn(turn)));
 
-  const tools: ChatCompletionTool[] = req.tools.map((t) => ({
-    type: "function",
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: t.inputSchema as Record<string, unknown>,
-    },
-  }));
+  const tools = toOpenAITools(req.tools);
 
-  const params: Parameters<typeof client.chat.completions.create>[0] = {
-    model: req.modelId,
+  const params: ChatCompletionCreateParams = {
+    model: req.model,
     messages,
-    max_tokens: req.maxTokens,
-    ...(streaming
-      ? { stream: true, stream_options: { include_usage: true } }
-      : {}),
+    max_tokens: req.max_tokens,
+    ...(streaming ? { stream: true, stream_options: { include_usage: true } } : {}),
   };
   if (tools.length > 0) params.tools = tools;
   if (req.temperature !== undefined) params.temperature = req.temperature;
-  if (req.topP !== undefined) params.top_p = req.topP;
-  if (req.thinking.enabled && req.thinking.effort) {
-    const effort = mapReasoningEffort(req.thinking.effort);
-    if (effort) {
-      (params as { reasoning_effort?: typeof effort }).reasoning_effort = effort;
-    }
+  if (req.top_p !== undefined) params.top_p = req.top_p;
+
+  // reasoning_effort comes via provider_options (the daemon only sets it for
+  // models that accept it). Map to the OpenAI-valid set; unknown → omit.
+  const effortRaw = req.provider_options?.["reasoning_effort"];
+  if (typeof effortRaw === "string") {
+    const effort = mapReasoningEffort(effortRaw);
+    if (effort) params.reasoning_effort = effort;
   }
 
   return { client, params };
 }
 
-// ── conversion ──────────────────────────────────────────────────────────
+function toOpenAITools(tools: unknown[] | undefined): ChatCompletionTool[] {
+  if (!tools) return [];
+  return tools.map((raw) => {
+    const t = raw as { name?: string; description?: string; input_schema?: unknown };
+    return {
+      type: "function",
+      function: {
+        name: t.name ?? "",
+        description: t.description ?? "",
+        parameters: (t.input_schema ?? {}) as Record<string, unknown>,
+      },
+    };
+  });
+}
 
-function systemToText(system: ChatRequest["system"]): string {
+// ── message conversion ──────────────────────────────────────────────────────
+
+/** Canonical wire turn → the converter's turn shape (string content → block). */
+function normalizeTurn(turn: WireMessage): TurnMessage {
+  if (typeof turn.content === "string") {
+    return { role: turn.role, content: [{ type: "text", text: turn.content }] };
+  }
+  return { role: turn.role, content: turn.content };
+}
+
+function systemToText(system: SystemContent | undefined): string {
+  if (system === undefined) return "";
   if (typeof system === "string") return system;
-  // Preserve section boundaries between system blocks (Anthropic keeps them
-  // as separate structured items; OpenAI gets one string).
+  // Join structured blocks; `_label`/`cache_control` are internal, dropped.
   return system.map((b) => b.text).join("\n\n");
 }
 
@@ -255,17 +275,8 @@ function systemToText(system: ChatRequest["system"]): string {
  * `null`) on tool-call-only assistant turns.
  */
 export function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {
-  // OpenAI splits a tool_result-containing user turn into one `tool`
-  // role message per result, and assistant tool_use becomes `tool_calls`
-  // on the assistant message. Plain text falls through.
   if (turn.role === "system") {
-    // OpenAI accepts mid-history `role:"system"` natively — pass through
-    // verbatim. (The Rust impl defensively wrapped these in
-    // <system_instruction> in case OpenRouter routed to a non-OpenAI
-    // backend that rejects raw system messages. We don't: SDK selection
-    // by upstream is a config concern, not an adapter responsibility.
-    // Catalog auto-routes `anthropic/*` on OpenRouter to the Anthropic
-    // SDK so this adapter only fronts genuine OpenAI-compatible endpoints.)
+    // OpenAI accepts mid-history `role:"system"` natively — pass through.
     const text = turn.content
       .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
       .map((b) => b.text)
@@ -287,18 +298,14 @@ export function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {
       msg.tool_calls = toolUses.map((tu) => ({
         id: tu.id,
         type: "function",
-        function: {
-          name: tu.name,
-          arguments: JSON.stringify(tu.input ?? {}),
-        },
+        function: { name: tu.name, arguments: JSON.stringify(tu.input ?? {}) },
       }));
     }
     return [msg];
   }
 
-  // User turn: split tool_results into role:tool messages; text/etc.
-  // ride on a single user message. Images become image_url parts in the
-  // user message's multipart content array, prepended before text.
+  // User turn: tool_results → one `role:tool` message each; text + images ride
+  // on a single user message (images prepended).
   const out: ChatCompletionMessageParam[] = [];
   const textParts: Array<{ type: "text"; text: string }> = [];
   for (const b of turn.content) {
@@ -339,10 +346,51 @@ function imagesToOpenAIParts(
   return out;
 }
 
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+interface RawUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+  cost?: number;
+}
+
+function emptyUsage(): Usage {
+  return {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+  };
+}
+
+function extractUsage(u: RawUsage | undefined): Usage {
+  const usage: Usage = {
+    input_tokens: u?.prompt_tokens ?? 0,
+    output_tokens: u?.completion_tokens ?? 0,
+    cache_read_tokens: u?.prompt_tokens_details?.cached_tokens ?? 0,
+    cache_creation_tokens: 0,
+  };
+  // OpenRouter reports total spend on `usage.cost`.
+  if (typeof u?.cost === "number") usage.total_cost_usd = u.cost;
+  return usage;
+}
+
+function parseArgs(argsJson: string): unknown {
+  if (argsJson.trim() === "") return {};
+  try {
+    return JSON.parse(argsJson);
+  } catch {
+    return {};
+  }
+}
+
 function mapReasoningEffort(
   effort: string,
 ): "low" | "medium" | "high" | "minimal" | undefined {
   switch (effort) {
+    case "minimal":
+      return "minimal";
     case "low":
       return "low";
     case "medium":

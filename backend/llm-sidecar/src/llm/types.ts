@@ -112,6 +112,16 @@ export interface GenerateResponse {
   model: string;
 }
 
+/**
+ * A reshaped provider adapter: consumes a `SidecarRequest`, streams
+ * `StreamEvent`s (or returns a `GenerateResponse`). `signal` mirrors the
+ * connection-close cancellation the server forwards from the daemon.
+ */
+export interface SidecarProvider {
+  stream(req: SidecarRequest, signal?: AbortSignal): AsyncIterable<StreamEvent>;
+  generate(req: SidecarRequest, signal?: AbortSignal): Promise<GenerateResponse>;
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // LEGACY — pre-migration adapter shapes. Replaced by the CONTRACT types when
 // the adapters are reshaped to consume SidecarRequest / emit StreamEvent.
