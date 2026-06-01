@@ -319,6 +319,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             loaded.dirs.cache.display()
         );
     }
+    if loaded.app.advanced.llm_sidecar.enabled {
+        let socket_path = loaded
+            .app
+            .advanced
+            .llm_sidecar
+            .socket_path
+            .clone()
+            .unwrap_or_else(|| loaded.dirs.runtime.join("llm.sock"));
+        raw_llm_client.set_sidecar_socket(socket_path.clone());
+        info!(
+            socket = %socket_path.display(),
+            "LLM sidecar transport enabled"
+        );
+    }
 
     let cache_forensics_path = loaded.dirs.cache.join("cache_forensics.jsonl");
     if loaded.app.advanced.cache_forensics {

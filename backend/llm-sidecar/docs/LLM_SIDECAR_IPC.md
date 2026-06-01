@@ -45,6 +45,15 @@ sidecar's response. Everything above `providers::*` is unchanged.
 
 Socket path passed to the sidecar via `--socket <path>` (or `SHORE_LLM_SOCKET`).
 
+The Rust daemon sidecar transport is gated by config and defaults off:
+
+```toml
+[advanced.llm_sidecar]
+enabled = true
+# optional; default is <runtime_dir>/llm.sock
+socket_path = "/run/user/1000/shore/llm.sock"
+```
+
 ### Endpoints
 
 | Method | Path           | Request body        | Response                            |

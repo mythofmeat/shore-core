@@ -480,7 +480,7 @@ impl MessageHandler {
         session.generation_handle = Some(tokio::spawn(async move {
             let notify_name = params.char_name.clone();
             let request_rid = params.rid.clone();
-            if let Err(e) = handle_generation(gen_ctx, params).await {
+            if let Err(e) = Box::pin(handle_generation(gen_ctx, params)).await {
                 error!(error = %e, "Error processing engine message");
                 let err_msg = e.to_string();
                 let _ = fanout_tx
@@ -644,6 +644,9 @@ fn restart_required_changes(old: &LoadedConfig, new: &LoadedConfig) -> Vec<&'sta
     }
     if old.app.advanced.cache_forensics != new.app.advanced.cache_forensics {
         changes.push("[advanced].cache_forensics");
+    }
+    if old.app.advanced.llm_sidecar != new.app.advanced.llm_sidecar {
+        changes.push("[advanced].llm_sidecar");
     }
     changes
 }

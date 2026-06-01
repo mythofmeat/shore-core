@@ -2,11 +2,12 @@ pub(crate) mod anthropic;
 pub(crate) mod context;
 pub(crate) mod gemini;
 pub(crate) mod openai;
+pub(crate) mod sidecar;
 pub(crate) mod sse;
 pub(crate) mod stream_helpers;
 pub(crate) mod zai;
 
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use shore_config::models::Sdk;
 use tracing::{debug, error, warn};
@@ -83,6 +84,7 @@ pub(crate) async fn check_response(
 pub async fn stream(
     client: &reqwest::Client,
     request: &LlmRequest,
+    sidecar_socket: Option<&Path>,
 ) -> Result<DuplexStream, LlmError> {
     debug!(
         sdk = ?request.sdk,
@@ -92,12 +94,16 @@ pub async fn stream(
         has_tools = request.tools.is_some(),
         "dispatching streaming LLM request"
     );
-    let ctx = context::build_provider_context(request);
-    let result = match request.sdk {
-        Sdk::Anthropic => anthropic::stream(client, request).await,
-        Sdk::Openai => openai::stream(client, request, &ctx).await,
-        Sdk::Zai => zai::stream(client, request).await,
-        Sdk::Gemini => gemini::stream(client, request).await,
+    let result = if let Some(socket) = sidecar_socket {
+        sidecar::stream(request, socket).await
+    } else {
+        let ctx = context::build_provider_context(request);
+        match request.sdk {
+            Sdk::Anthropic => anthropic::stream(client, request).await,
+            Sdk::Openai => openai::stream(client, request, &ctx).await,
+            Sdk::Zai => zai::stream(client, request).await,
+            Sdk::Gemini => gemini::stream(client, request).await,
+        }
     };
     if let Err(e) = &result {
         warn!(sdk = ?request.sdk, model = %request.model, error = %e, "streaming request failed");
@@ -109,6 +115,7 @@ pub async fn stream(
 pub async fn generate(
     client: &reqwest::Client,
     request: &LlmRequest,
+    sidecar_socket: Option<&Path>,
 ) -> Result<GenerateResponse, LlmError> {
     debug!(
         sdk = ?request.sdk,
@@ -117,12 +124,16 @@ pub async fn generate(
         message_count = request.messages.len(),
         "dispatching non-streaming LLM request"
     );
-    let ctx = context::build_provider_context(request);
-    let result = match request.sdk {
-        Sdk::Anthropic => anthropic::generate(client, request).await,
-        Sdk::Openai => openai::generate(client, request, &ctx).await,
-        Sdk::Zai => zai::generate(client, request).await,
-        Sdk::Gemini => gemini::generate(client, request).await,
+    let result = if let Some(socket) = sidecar_socket {
+        sidecar::generate(request, socket).await
+    } else {
+        let ctx = context::build_provider_context(request);
+        match request.sdk {
+            Sdk::Anthropic => anthropic::generate(client, request).await,
+            Sdk::Openai => openai::generate(client, request, &ctx).await,
+            Sdk::Zai => zai::generate(client, request).await,
+            Sdk::Gemini => gemini::generate(client, request).await,
+        }
     };
     match &result {
         Ok(resp) => debug!(
@@ -157,9 +168,14 @@ pub async fn embed(
 pub async fn image_generate(
     client: &reqwest::Client,
     params: &ImageGenerateParams<'_>,
+    sidecar_socket: Option<&Path>,
 ) -> Result<ImageGenerateResponse, LlmError> {
     debug!(model = %params.model, "dispatching image generation request");
-    openai::image_generate(client, params).await
+    if let Some(socket) = sidecar_socket {
+        sidecar::image_generate(params, socket).await
+    } else {
+        openai::image_generate(client, params).await
+    }
 }
 
 #[cfg(test)]
@@ -206,7 +222,7 @@ mod tests {
         // (unreachable base_url), not panic.
         for sdk in [Sdk::Anthropic, Sdk::Openai, Sdk::Zai, Sdk::Gemini] {
             let request = make_request(sdk);
-            let result = stream(&client, &request).await;
+            let result = stream(&client, &request, None).await;
             // Any error is fine (HTTP, connection) — we just confirm dispatch works.
             assert!(
                 result.is_err(),
