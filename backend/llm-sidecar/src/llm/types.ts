@@ -122,6 +122,26 @@ export interface SidecarProvider {
   generate(req: SidecarRequest, signal?: AbortSignal): Promise<GenerateResponse>;
 }
 
+/** Request for `POST /v1/image` — mirrors Rust `ImageGenerateParams`. */
+export interface ImageRequest {
+  provider_key: string;
+  model: string;
+  api_key: string;
+  base_url?: string;
+  prompt: string;
+  size?: string;
+  quality?: string;
+  aspect_ratio?: string;
+  image_size?: string;
+}
+
+/** Response for `POST /v1/image` — mirrors Rust `ImageGenerateResponse`. */
+export interface ImageResponse {
+  url: string;
+  revised_prompt: string;
+  timing: { total_ms: number };
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // LEGACY — pre-migration adapter shapes. Replaced by the CONTRACT types when
 // the adapters are reshaped to consume SidecarRequest / emit StreamEvent.

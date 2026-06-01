@@ -41,16 +41,13 @@ import type {
 } from "../types.ts";
 
 export class OpenAIProvider implements SidecarProvider {
-  stream(req: SidecarRequest, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+  async *stream(req: SidecarRequest, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const { client, params } = buildOpenAICall(req, /*streaming*/ true);
-    const chunks = (async function* () {
-      const stream = (await client.chat.completions.create(
-        params,
-        signal ? { signal } : undefined,
-      )) as AsyncIterable<ChatCompletionChunk>;
-      yield* stream;
-    })();
-    return openAIStreamEvents(req.model, chunks);
+    const stream = (await client.chat.completions.create(
+      params,
+      signal ? { signal } : undefined,
+    )) as AsyncIterable<ChatCompletionChunk>;
+    yield* openAIStreamEvents(req.model, stream);
   }
 
   async generate(req: SidecarRequest, signal?: AbortSignal): Promise<GenerateResponse> {
@@ -204,6 +201,7 @@ function buildOpenAICall(
 ): { client: OpenAI; params: ChatCompletionCreateParams } {
   const client = new OpenAI({
     apiKey: req.api_key,
+    maxRetries: 0,
     ...(req.base_url ? { baseURL: req.base_url } : {}),
   });
 

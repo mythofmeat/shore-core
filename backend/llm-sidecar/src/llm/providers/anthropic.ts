@@ -29,6 +29,7 @@ import type {
   ContentBlockParam,
   Message,
   MessageCreateParams,
+  MessageCreateParamsStreaming,
   MessageParam,
   RawMessageStreamEvent,
   TextBlockParam,
@@ -49,16 +50,13 @@ import type {
 } from "../types.ts";
 
 export class AnthropicProvider implements SidecarProvider {
-  stream(req: SidecarRequest, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+  async *stream(req: SidecarRequest, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const { client, params } = buildAnthropicCall(req);
-    const events = (async function* () {
-      const s = client.messages.stream(
-        params,
-        signal ? { signal } : undefined,
-      ) as AsyncIterable<RawMessageStreamEvent>;
-      yield* s;
-    })();
-    return anthropicStreamEvents(req.model, events);
+    const stream = (await client.messages.create(
+      { ...params, stream: true } as MessageCreateParamsStreaming,
+      signal ? { signal } : undefined,
+    )) as AsyncIterable<RawMessageStreamEvent>;
+    yield* anthropicStreamEvents(req.model, stream);
   }
 
   async generate(req: SidecarRequest, signal?: AbortSignal): Promise<GenerateResponse> {
@@ -212,6 +210,7 @@ type AnthropicParams = MessageCreateParams & {
 function buildAnthropicCall(req: SidecarRequest): { client: Anthropic; params: AnthropicParams } {
   const client = new Anthropic({
     apiKey: req.api_key,
+    maxRetries: 0,
     ...(req.base_url ? { baseURL: stripTrailingV1(req.base_url) } : {}),
   });
   return { client, params: buildAnthropicParams(req) };
