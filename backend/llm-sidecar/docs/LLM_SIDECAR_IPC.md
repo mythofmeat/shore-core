@@ -63,7 +63,7 @@ consumes:
 
 ```jsonc
 {
-  "sdk": "anthropic" | "openai" | "zai" | "gemini",   // dialect → which SDK
+  "sdk": "anthropic" | "openrouter" | "openai" | "zai" | "gemini",   // dialect → which SDK
   "model": "anthropic/claude-opus-4.8",
   "api_key": "...",                 // bearer; sidecar applies x-api-key vs Authorization
   "base_url": "https://openrouter.ai/api/v1",  // optional override
@@ -157,14 +157,20 @@ single completion.
   `StreamResult`. The sidecar just passes `finish_reason` through faithfully.
   Zero sidecar work, zero daemon change.
 
-## SDK coverage (`Sdk` enum: Anthropic, Openai, Zai, Gemini)
+## SDK coverage (`Sdk` enum: Anthropic, Openrouter, Openai, Zai, Gemini)
 
 | `sdk`     | Sidecar adapter            | Status        |
 |-----------|----------------------------|---------------|
-| anthropic | `@anthropic-ai/sdk`        | exists (`providers/anthropic.ts`) |
-| openai    | `openai` (+ base_url swap) | exists (`providers/openai.ts`) — covers deepseek/kimi/xai/nanogpt |
-| gemini    | `@google/genai`            | **new adapter** — distinct wire (below) |
-| zai       | official Z.ai JS SDK, or `openai` + extra_body | **new adapter** — NOT a base_url swap (below) |
+| anthropic | `@anthropic-ai/sdk`        | `providers/anthropic.ts` — native, incl. Claude-via-OpenRouter (cache/thinking control) |
+| openrouter | `@openrouter/sdk`         | `providers/openrouter.ts` — **the normalized path for all non-Anthropic providers** (deepseek/kimi/glm/minimax/gpt). One typed `reasoningDetails` round-trip; no per-vendor reasoning matrix. |
+| openai    | `openai`                   | `providers/openai.ts` — DIRECT native OpenAI / OpenAI-compatible (when NOT going via OpenRouter) |
+| gemini    | `@google/genai`            | `providers/gemini.ts` — distinct wire (below) |
+| zai       | `openai` + Z.ai thinking body | `providers/zai.ts` — DIRECT Z.ai, incl. coding-subscription base URLs OpenRouter can't bill against (below) |
+
+The daemon's per-provider config picks the dialect: an `openrouter` provider sends
+`sdk:"openrouter"`; a direct OpenAI provider sends `sdk:"openai"`; a Z.ai
+subscription provider sends `sdk:"zai"`. (Rust `Sdk` enum must gain the
+`Openrouter` variant + provider mapping — daemon-side, part of the wiring PR.)
 
 **Gemini** (`generativelanguage.googleapis.com/v1beta/models/{m}:streamGenerateContent?alt=sse`):
 distinct wire — system prompt goes in `systemInstruction` (not a message), tools

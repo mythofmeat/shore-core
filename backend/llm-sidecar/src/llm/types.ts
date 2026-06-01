@@ -23,8 +23,13 @@ import type { ContentBlock, ImageRef } from "../engine/types.ts";
 // CONTRACT — mirrors backend/llm/src/types.rs (the Rust↔sidecar wire)
 // ─────────────────────────────────────────────────────────────────────────
 
-/** Which SDK/dialect to use. Serializes lowercase, matching Rust `Sdk`. */
-export type Sdk = "anthropic" | "openai" | "zai" | "gemini";
+/** Which SDK/dialect to use. Serializes lowercase, matching Rust `Sdk`.
+ *
+ * `openrouter` routes through OpenRouter's first-party SDK (the normalized path
+ * for non-Anthropic providers); `openai`/`zai` are the DIRECT-to-vendor adapters
+ * (native OpenAI, and Z.ai's subscription base URLs) — the daemon's per-provider
+ * config decides which to send. */
+export type Sdk = "anthropic" | "openai" | "zai" | "gemini" | "openrouter";
 
 /** One conversation turn as the daemon stores it: canonical Anthropic-shape
  * blocks (or a bare string for legacy/simple turns). The sidecar's per-SDK
