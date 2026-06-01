@@ -1,10 +1,10 @@
 # LLM Sidecar IPC Contract
 
-Status: design (2026-06-01). Goal: move the LLM **wire** (provider SDK calls) out
-of the Rust `shore-llm` crate into a Bun **sidecar** that uses official vendor
-SDKs, while the Rust daemon, prompt assembly, tool loop, memory, and SWP server
-stay byte-for-byte unchanged. Zero user-visible behavior change except
-"OpenAI-compatible providers stop mangling tool loops."
+Status: implementation in progress (2026-06-02). Goal: move the LLM **wire**
+(provider SDK calls) out of the Rust `shore-llm` crate into a Bun **sidecar**
+that uses official vendor SDKs, while the Rust daemon, prompt assembly, tool
+loop, memory, and SWP server stay byte-for-byte unchanged. Zero user-visible
+behavior change except "OpenAI-compatible providers stop mangling tool loops."
 
 ## The seam (why this is small)
 
@@ -224,10 +224,20 @@ the `StreamEvent` NDJSON above:
 
 ## Supervision / packaging
 
-- `bun build --compile` → single sidecar binary (already in build scripts).
-- Daemon spawns it at startup with `--socket <runtime>/llm.sock`, polls
-  `/healthz`, restarts with backoff on exit, SIGTERMs it on daemon shutdown.
-- Pi `.deb` ships one extra binary.
+- `bun build --compile` emits `backend/llm-sidecar/dist/shore-llm-sidecar`.
+- When `[advanced.llm_sidecar].enabled = true`, `shore-daemon` configures
+  `shore-llm` to use the configured socket path, defaulting to
+  `<runtime_dir>/llm.sock`.
+- The daemon starts a sidecar supervisor when `shore-llm-sidecar` is found on
+  `PATH` or next to the running daemon. It spawns
+  `shore-llm-sidecar --socket <path>`, creates the socket directory, polls
+  `GET /healthz`, restarts with backoff on spawn/health/exit failures, and
+  SIGTERMs the child on daemon shutdown.
+- If the binary is absent, the daemon logs a warning and continues; this keeps
+  manually managed development sidecars possible at the configured socket path.
+- The Arch `shore-daemon` PKGBUILD installs both binaries.
+- The Debian/Pi helper at `contrib/debian/build-shore-daemon-deb.sh` builds a
+  `.deb` that installs both `shore-daemon` and `shore-llm-sidecar`.
 
 ## Retry (resolved — stays Rust-side, unchanged)
 

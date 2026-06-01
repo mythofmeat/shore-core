@@ -118,6 +118,7 @@ Main binaries built here:
 | --- | --- |
 | `shore-daemon` | persistent daemon |
 | `shore` | CLI client |
+| `shore-llm-sidecar` | supervised TypeScript LLM wire process |
 
 Out-of-tree clients and bridges (separate repos, consuming the core libraries
 from crates.io):

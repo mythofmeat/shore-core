@@ -319,14 +319,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             loaded.dirs.cache.display()
         );
     }
-    if loaded.app.advanced.llm_sidecar.enabled {
-        let socket_path = loaded
+    let llm_sidecar_socket = loaded.app.advanced.llm_sidecar.enabled.then(|| {
+        loaded
             .app
             .advanced
             .llm_sidecar
             .socket_path
             .clone()
-            .unwrap_or_else(|| loaded.dirs.runtime.join("llm.sock"));
+            .unwrap_or_else(|| loaded.dirs.runtime.join("llm.sock"))
+    });
+    if let Some(socket_path) = &llm_sidecar_socket {
         raw_llm_client.set_sidecar_socket(socket_path.clone());
         info!(
             socket = %socket_path.display(),
@@ -422,6 +424,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_rx.clone(),
     );
 
+    // ── Spawn LLM sidecar supervisor (if configured) ─────────────────
+    let llm_sidecar_supervisor = llm_sidecar_socket
+        .clone()
+        .and_then(|socket_path| supervisor::spawn_llm_sidecar(socket_path, shutdown_rx.clone()));
+
     // ── Spawn Matrix bridge supervisor (if configured) ───────────────
     let matrix_supervisor = loaded
         .app
@@ -448,6 +455,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Wait for handler and autonomy tasks to finish ─────────────────
     let shutdown_timeout = std::time::Duration::from_secs(10);
+
+    if let Some(sup) = llm_sidecar_supervisor {
+        sup.shutdown(std::time::Duration::from_secs(6)).await;
+    }
 
     if let Some(sup) = matrix_supervisor {
         sup.shutdown(std::time::Duration::from_secs(6)).await;

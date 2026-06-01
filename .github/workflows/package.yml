@@ -17,7 +17,7 @@ jobs:
     uses: mythofmeat/repo-arch/.github/workflows/publish-arch-rust.yml@main
     with:
       pkgbuild_dir: contrib/shore-daemon
-      extra_pacman_packages: "alsa-lib protobuf"
+      extra_pacman_packages: "alsa-lib bun protobuf"
     secrets: inherit
 
   publish-cli:
