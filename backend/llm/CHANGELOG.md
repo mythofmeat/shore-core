@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v6.0.3...shore-llm-v7.0.0) - 2026-05-31
+
+### Breaking
+
+- **RequestLog and ResponseLog now implement Copy**: Both `RequestLog` and `ResponseLog` structs gained Copy trait implementations (copy_impl_added). Adding Copy is typically non-breaking; most code requires no changes. However, this may break in rare edge cases involving:
+  - Explicit negative trait bounds (e.g., `where T: !Copy`)
+  - Generic constraints that require `!Copy` semantics
+
+  **Migration**: Most code needs no changes; no `.clone()` calls are required. If you have explicit `!Copy` bounds or similar generic constraints on these types, remove or relax those bounds:
+
+  ```rust
+  // Before (7.0.0):
+  // fn process<T: !Copy>(log: T) { ... } // breaks if T is RequestLog or ResponseLog
+
+  // After (7.0.0):
+  // Remove or relax the !Copy constraint:
+  fn process<T>(log: T) { ... }
+  // Or, if needed, adjust the constraint to allow Copy types
+  ```
+
+- **LlmClient::new and LlmClient::with_payload_logging now require #[must_use]**: The `inherent_method_must_use_added` lint now applies to `LlmClient::new` and `LlmClient::with_payload_logging`. Callsites that create an `LlmClient` but don't use the return value will now trigger compiler warnings.
+
+  **Migration**: Ensure all callsites use the returned `LlmClient` instance, or explicitly annotate with `let _ =` if the warning is intentional:
+
+  ```rust
+  // Before (7.0.0):
+  // LlmClient::new(config); // warning not emitted
+
+  // After (7.0.0):
+  let client = LlmClient::new(config); // use the client
+  // or
+  let _ = LlmClient::new(config); // explicitly ignore if needed
+  ```
+
+### Other
+
+- [codex] Add correctness ratchet tier 2/3 coverage ([#121](https://github.com/mythofmeat/shore-core/pull/121))
+- Correctness ratchet: strict clippy + panic hygiene + dep checks ([#114](https://github.com/mythofmeat/shore-core/pull/114))
+
 ## [6.0.3](https://github.com/mythofmeat/shore-core/compare/shore-llm-v6.0.2...shore-llm-v6.0.3) - 2026-05-31
 
 ### Other

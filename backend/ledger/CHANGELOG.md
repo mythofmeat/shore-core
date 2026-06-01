@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v2.0.4...shore-ledger-v3.0.0) - 2026-05-31
+
+### Breaking
+
+- **CostRequest and BudgetCallContext now implement Copy**: Both `CostRequest` and `BudgetCallContext` structs gained Copy trait implementations (copy_impl_added). This is a breaking change for code that relied on non-Copy semantics, including:
+  - Mutation or ownership assumptions (e.g., expecting exclusive ownership after a move)
+  - Custom Drop behavior or cleanup logic
+  - Explicit move semantics in pattern matching
+
+  **Migration**: Audit all code that moves or stores these types. If your code relied on move-only semantics:
+  - For mutation after move: Use `.clone()` explicitly or refactor to accommodate copy semantics
+  - For Drop behavior: Implement cleanup through other means (e.g., wrapper types with Drop)
+  - For ownership patterns: Adapt to the fact that these types are now trivially copyable
+
+  ```rust
+  // Before (3.0.0):
+  // let cost_req = CostRequest { /* fields */ };
+  // process(cost_req); // moves cost_req, can't be used again
+
+  // After (3.0.0):
+  let cost_req = CostRequest { /* fields */ };
+  process(cost_req); // copies cost_req
+  // cost_req is still available for use
+  ```
+
+### Other
+
+- Correctness ratchet: strict clippy + panic hygiene + dep checks ([#114](https://github.com/mythofmeat/shore-core/pull/114))
+
 ## [2.0.4](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v2.0.3...shore-ledger-v2.0.4) - 2026-05-31
 
 ### Other
