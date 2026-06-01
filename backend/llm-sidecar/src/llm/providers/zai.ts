@@ -36,7 +36,7 @@ export const ZAI_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
 
 export type ZaiChatCompletionCreateParams = Omit<ChatCompletionCreateParams, "stream"> & {
   stream: boolean;
-  thinking: { type: "enabled"; clear_thinking: boolean };
+  thinking: { type: "enabled"; clear_thinking?: boolean };
 };
 
 export class ZaiProvider implements SidecarProvider {
@@ -81,15 +81,21 @@ export function buildZaiParams(
   req: SidecarRequest,
   streaming: boolean,
 ): ZaiChatCompletionCreateParams {
+  // Z.ai's `thinking` object documents `clear_thinking` (default true) nested
+  // here, NOT as a top-level field. It controls clearing prior-turn
+  // `reasoning_content`; since the sidecar never replays reasoning_content into
+  // history, it's inert for us — so we only send it when the operator
+  // explicitly sets it, otherwise we let Z.ai apply its own default.
+  const thinking: ZaiChatCompletionCreateParams["thinking"] = { type: "enabled" };
+  const clearThinking = req.provider_options?.["zai_clear_thinking"];
+  if (typeof clearThinking === "boolean") thinking.clear_thinking = clearThinking;
+
   const params: ZaiChatCompletionCreateParams = {
     model: req.model,
     messages: buildZaiMessages(req),
     max_tokens: req.max_tokens,
     stream: streaming,
-    thinking: {
-      type: "enabled",
-      clear_thinking: providerBool(req, "zai_clear_thinking"),
-    },
+    thinking,
   };
 
   if (streaming) params.stream_options = { include_usage: true };

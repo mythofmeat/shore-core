@@ -105,6 +105,17 @@ describe("request construction", () => {
     ]);
   });
 
+  test("omits clear_thinking when not explicitly set (lets Z.ai default apply)", () => {
+    const params = buildZaiParams(req({ provider_options: { reasoning_effort: "high" } }), false);
+    expect(params.thinking).toEqual({ type: "enabled" });
+    expect(params.thinking).not.toHaveProperty("clear_thinking");
+  });
+
+  test("sends clear_thinking:false only when operator sets it explicitly", () => {
+    const params = buildZaiParams(req({ provider_options: { zai_clear_thinking: false } }), false);
+    expect(params.thinking).toEqual({ type: "enabled", clear_thinking: false });
+  });
+
   test("does not replay prior thinking as outbound reasoning_content", () => {
     const messages = buildZaiMessages(
       req({
