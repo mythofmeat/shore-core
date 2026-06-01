@@ -915,9 +915,10 @@ fn set_model_setting_sdk_null_clears_override() {
     // Clearing the only set field drops the per-model entry entirely.
     assert!(prefs.model("openrouter", "gpt-4o").is_none());
 
-    // Effective sampler falls back to the catalog SDK.
+    // Effective sampler falls back to the catalog SDK. The `openrouter`
+    // provider's hardcoded default is now the first-party OpenRouter SDK.
     let out = model_settings(&ctx, &json!({})).unwrap();
-    assert_eq!(out["effective_sampler"]["sdk"], "openai");
+    assert_eq!(out["effective_sampler"]["sdk"], "openrouter");
     assert_eq!(out["scopes"]["sdk"], "static_default");
 }
 

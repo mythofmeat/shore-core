@@ -285,6 +285,13 @@ fn build_resolved_from_discovered(
     // `sdk = "anthropic"` would land on `Sdk::Openai` and miss prompt
     // caching. Only fires when the user hasn't pinned an SDK on the
     // provider entry — explicit config still wins.
+    //
+    // The curated hardcoded provider default (e.g. `openrouter → Openrouter`,
+    // `zai → Zai`) is preferred over the discovery feed's `disc.sdk`, because
+    // openai-compatible discovery stamps a blanket `"openai"` for every model
+    // and so carries no real per-model signal. This keeps the discovered path
+    // consistent with the static path, where the hardcoded default fills `sdk`.
+    // A provider with no hardcoded default falls through to `disc.sdk`.
     let sdk = entry
         .sdk
         .clone()
@@ -293,8 +300,8 @@ fn build_resolved_from_discovered(
                 .starts_with("anthropic/")
                 .then_some(Sdk::Anthropic)
         })
-        .or_else(|| Sdk::parse_wire(&disc.sdk))
         .or_else(|| provider_defaults.sdk.clone())
+        .or_else(|| Sdk::parse_wire(&disc.sdk))
         .unwrap_or_else(|| default_sdk(provider_key));
 
     let base_url = entry
@@ -1042,9 +1049,12 @@ base_url = "https://openrouter.ai/api/v1"
     }
 
     #[test]
-    fn discovered_non_anthropic_slug_does_not_auto_promote() {
-        // The slug heuristic must not fire on non-`anthropic/*` ids; the
-        // discovered model's reported sdk ("openai") should win.
+    fn discovered_non_anthropic_openrouter_model_defaults_to_openrouter_sdk() {
+        // The `anthropic/*` slug heuristic must not fire on non-anthropic
+        // ids. Instead of the discovery feed's blanket "openai", a discovered
+        // OpenRouter model lands on the curated provider default `Openrouter`
+        // (the sidecar's normalized non-Anthropic path) — consistent with the
+        // static `[chat.openrouter.<model>]` path. No Anthropic cache_ttl.
         let tmp = tempfile::tempdir().unwrap();
         let loaded = make_loaded(
             &tmp,
@@ -1058,7 +1068,7 @@ base_url = "https://openrouter.ai/api/v1"
         write_cache_for(&tmp, "openrouter", &["openai/gpt-4o"]);
 
         let m = find_effective_model(&loaded, tmp.path(), "openai/gpt-4o", false).unwrap();
-        assert_eq!(m.sdk, Sdk::Openai);
+        assert_eq!(m.sdk, Sdk::Openrouter);
         assert_eq!(m.cache_ttl, None);
     }
 
