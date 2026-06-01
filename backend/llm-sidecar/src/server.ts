@@ -4,6 +4,7 @@ import { generateImage } from "./llm/image_generate.ts";
 import { GeminiProvider } from "./llm/providers/gemini.ts";
 import { AnthropicProvider } from "./llm/providers/anthropic.ts";
 import { OpenAIProvider } from "./llm/providers/openai.ts";
+import { OpenRouterProvider } from "./llm/providers/openrouter.ts";
 import { ZaiProvider } from "./llm/providers/zai.ts";
 import type {
   ImageRequest,
@@ -27,9 +28,15 @@ interface HttpishError {
   message?: string;
 }
 
+// One adapter per dialect; the daemon's per-provider config chooses which.
+// `openrouter` is the normalized path for non-Anthropic providers (DeepSeek,
+// Kimi, GLM, MiniMax, GPT via OpenRouter). `openai`/`zai` are kept for DIRECT
+// vendor access — native OpenAI, and Z.ai's coding-subscription base URLs —
+// which OpenRouter can't serve. Anthropic + Gemini keep their native SDKs.
 const DEFAULT_PROVIDERS: Partial<Record<SidecarRequest["sdk"], SidecarProvider>> = {
   anthropic: new AnthropicProvider(),
   gemini: new GeminiProvider(),
+  openrouter: new OpenRouterProvider(),
   openai: new OpenAIProvider(),
   zai: new ZaiProvider(),
 };
