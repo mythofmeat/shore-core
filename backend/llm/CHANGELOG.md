@@ -11,22 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
-- **RequestLog and ResponseLog now implement Copy**: Both `RequestLog` and `ResponseLog` structs gained Copy trait implementations (copy_impl_added). Code that relied on move-only semantics will break. This affects:
-  - Pattern matching that assumed exclusive ownership after a move
-  - Custom Drop implementations or cleanup logic
-  - Mutation or ownership assumptions
+- **RequestLog and ResponseLog now implement Copy**: Both `RequestLog` and `ResponseLog` structs gained Copy trait implementations (copy_impl_added). Adding Copy is typically non-breaking; most code requires no changes. However, this may break in rare edge cases involving:
+  - Explicit negative trait bounds (e.g., `where T: !Copy`)
+  - Generic constraints that require `!Copy` semantics
 
-  **Migration**: Update code that moves these types to accommodate copy semantics. If you relied on move-only behavior, use explicit `.clone()` calls or refactor ownership patterns:
+  **Migration**: Most code needs no changes; no `.clone()` calls are required. If you have explicit `!Copy` bounds or similar generic constraints on these types, remove or relax those bounds:
 
   ```rust
   // Before (7.0.0):
-  // let log = request_log;
-  // process(log); // moves log, can't be used again
+  // fn process<T: !Copy>(log: T) { ... } // breaks if T is RequestLog or ResponseLog
 
   // After (7.0.0):
-  let log = request_log;
-  process(log); // copies log
-  // request_log is still available
+  // Remove or relax the !Copy constraint:
+  fn process<T>(log: T) { ... }
+  // Or, if needed, adjust the constraint to allow Copy types
   ```
 
 - **LlmClient::new and LlmClient::with_payload_logging now require #[must_use]**: The `inherent_method_must_use_added` lint now applies to `LlmClient::new` and `LlmClient::with_payload_logging`. Callsites that create an `LlmClient` but don't use the return value will now trigger compiler warnings.
