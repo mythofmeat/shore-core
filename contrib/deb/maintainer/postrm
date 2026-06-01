@@ -1,0 +1,22 @@
+#!/bin/sh
+# On purge, remove the dedicated user/group and daemon state. cargo-deb injects
+# the systemd disable/stop snippet at the marker below.
+set -e
+
+#DEBHELPER#
+
+case "$1" in
+  purge)
+    if getent passwd shore >/dev/null; then
+      deluser --system shore >/dev/null 2>&1 || true
+    fi
+    if getent group shore >/dev/null; then
+      delgroup --system shore >/dev/null 2>&1 || true
+    fi
+    # State (incl. character workspaces) and config (incl. keys). Leave
+    # /var/lib/shore on remove; only wipe on explicit purge.
+    rm -rf /var/lib/shore /var/cache/shore /etc/shore
+    ;;
+esac
+
+exit 0

@@ -1,0 +1,69 @@
+# System service for the headless Debian/Raspberry Pi package (.deb).
+#
+# Runs as a dedicated, unprivileged `shore` system user — NOT a human login
+# account — because the daemon hands the model a bash/exec tool. The OS user
+# is the sandbox boundary: it has no sudo, no docker group, no login shell,
+# and (via the directives below) a read-only view of the host with writes
+# confined to its own state dir.
+#
+# Deliberately *absent*: SystemCallFilter, MemoryDenyWriteExecute,
+# RestrictAddressFamilies, RestrictNamespaces. Those would also apply to every
+# child process the bash tool spawns and would break arbitrary legitimate
+# tools the model runs. We confine filesystem + privilege, not syscalls/exec.
+#
+# Installed and managed by the shore-daemon .deb (cargo-deb systemd-units).
+
+[Unit]
+Description=Shore daemon — persistent AI character engine
+Documentation=https://github.com/mythofmeat/shore-core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shore
+Group=shore
+
+ExecStart=/usr/bin/shore-daemon
+Restart=on-failure
+RestartSec=5
+# Don't hammer a misconfigured daemon (e.g. before /etc/shore exists): give up
+# after 5 failures in 5 min, recover with `systemctl reset-failed`.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# systemd creates and chowns these to shore:shore on start. State persists
+# across restarts; runtime/cache are ephemeral. /etc/shore is created by the
+# package's postinst (root:shore 0750) and stays read-only to the daemon.
+StateDirectory=shore
+StateDirectoryMode=0750
+RuntimeDirectory=shore
+CacheDirectory=shore
+
+Environment=SHORE_CONFIG_DIR=/etc/shore
+Environment=SHORE_DATA_DIR=/var/lib/shore
+Environment=SHORE_RUNTIME_DIR=/run/shore
+Environment=SHORE_CACHE_DIR=/var/cache/shore
+Environment=RUST_LOG=warn,shore_daemon=info,shore_llm=info,shore_ledger=info,shore_swp_server=info
+
+# --- Sandbox: confine the host from the AI, without crippling child tools ---
+NoNewPrivileges=yes            # setuid binaries (sudo, etc.) cannot escalate
+ProtectSystem=strict           # entire / read-only except the dirs below
+ProtectHome=yes                # /home, /root, /run/user hidden — AI can't read your keys/home
+ReadWritePaths=/var/lib/shore /var/cache/shore
+PrivateTmp=yes                 # isolated /tmp, not shared with other services
+CapabilityBoundingSet=         # drop ALL capabilities
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+LockPersonality=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

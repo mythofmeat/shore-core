@@ -1,0 +1,72 @@
+name: Build arm64 .deb (Raspberry Pi)
+
+# Personal Debian/arm64 package of shore-daemon for a headless Raspberry Pi.
+# Built inside a debian:bookworm container on a *native* arm64 runner so the
+# binary links glibc 2.36 (Raspberry Pi OS bookworm) — no cross-compile, no
+# glibc mismatch. Fires on the same shore-daemon-v* tags release-plz pushes,
+# plus manual dispatch for one-off rebuilds.
+#
+# The produced .deb is attached to the shore-daemon GitHub Release and then
+# handed to the signed apt repo (mythofmeat/repo-deb) for publishing.
+
+on:
+  push:
+    tags:
+      - 'shore-daemon-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev ca-certificates curl git
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, minimal)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      # cargo-deb runs the release build itself, then packages per the
+      # [package.metadata.deb] config in backend/daemon/Cargo.toml.
+      - name: Build .deb
+        run: cargo deb -p shore-daemon
+
+      - name: Locate artifact
+        id: deb
+        run: echo "path=$(ls target/debian/*.deb | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shore-daemon-arm64-deb
+          path: target/debian/*.deb
+          if-no-files-found: error
+
+      # On a real release tag, attach the .deb to the GitHub Release that
+      # release-plz created. (Skipped on manual workflow_dispatch.) Uses a
+      # node action rather than `gh`, which isn't present in debian:bookworm.
+      - name: Attach .deb to release
+        if: startsWith(github.ref, 'refs/tags/shore-daemon-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: target/debian/*.deb
+
+      # TODO(phase 3): signed apt repo (mythofmeat/repo-deb on GitHub Pages).
+      # Until then, the .deb is available as a release asset above. To wire the
+      # apt repo later, add a step here that hands this .deb to repo-deb (e.g.
+      # repository_dispatch) to regenerate + publish the apt index.

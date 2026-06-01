@@ -1,0 +1,33 @@
+#!/bin/sh
+# Create the dedicated, unprivileged `shore` system user/group and the
+# read-only config dir BEFORE the systemd unit is enabled. cargo-deb injects
+# the generated systemd enable/restart snippet at the marker near the end.
+set -e
+
+case "$1" in
+  configure)
+    if ! getent group shore >/dev/null; then
+      addgroup --system shore
+    fi
+
+    # State dir first, so adduser doesn't warn about a missing home. systemd's
+    # StateDirectory= re-asserts this on start; we create it now for a clean
+    # first start.
+    install -d -g shore -m 0750 /var/lib/shore
+
+    if ! getent passwd shore >/dev/null; then
+      adduser --system --no-create-home --home /var/lib/shore \
+        --ingroup shore --shell /usr/sbin/nologin \
+        --gecos "Shore daemon" shore
+    fi
+    chown shore:shore /var/lib/shore
+
+    # Config dir: root-owned, group shore, NOT writable by the daemon. Holds
+    # provider keys; keep it 0750 so only root/shore can read it.
+    install -d -o root -g shore -m 0750 /etc/shore
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

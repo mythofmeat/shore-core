@@ -49,3 +49,47 @@ async-trait = { workspace = true }
 
 [lints]
 workspace = true
+
+# Debian/Raspberry Pi packaging (`cargo deb -p shore-daemon`). Built in a
+# debian:bookworm arm64 container in CI so the binary links glibc 2.36 to
+# match Raspberry Pi OS. Distribution is the signed apt repo (repo-deb);
+# see .github/workflows/package-deb.yml and contrib/deb/.
+[package.metadata.deb]
+maintainer = "eshen <tenhanfur@gmail.com>"
+copyright = "2026 eshen. MIT OR Apache-2.0."
+license-file = ["../../LICENSE-MIT", "0"]
+extended-description = """\
+Persistent AI character engine daemon — the long-running process behind the \
+Silvershore (SWP) chat protocol. This package ships the daemon plus a headless \
+systemd system service for an always-on host (e.g. a Raspberry Pi)."""
+section = "misc"
+priority = "optional"
+# Pin assets explicitly. The release binary lives in the *workspace* target
+# dir (../../target), not the crate-local one. cargo-deb also auto-detects
+# shared-library dependencies (libssl3, libc) via dpkg-shlibdeps.
+assets = [
+    # cargo-deb maps the literal `target/release/` prefix to the workspace
+    # target dir and builds it; don't use `../../target/...` (not recognized).
+    ["target/release/shore-daemon", "usr/bin/", "755"],
+    ["../../examples/config.toml", "usr/share/doc/shore-daemon/config.toml.example", "644"],
+    ["../../examples/models.toml", "usr/share/doc/shore-daemon/models.toml.example", "644"],
+    ["../../examples/client.toml", "usr/share/doc/shore-daemon/client.toml.example", "644"],
+    ["../../contrib/deb/README.md", "usr/share/doc/shore-daemon/README.Debian", "644"],
+]
+
+# Generate dh_installsystemd-style maintainer scripts for the system unit in
+# contrib/deb/shore-daemon.service: enable on install, try-restart on upgrade
+# (so apt/unattended-upgrades restart it), disable+stop on removal. start =
+# false avoids a restart loop on first install before config exists — start it
+# manually once configured; upgrades thereafter restart it automatically.
+# postinst/postrm create and remove the dedicated `shore` system user and
+# /etc/shore. cargo-deb injects the systemd activation at the #DEBHELPER#
+# marker inside these scripts.
+maintainer-scripts = "../../contrib/deb/maintainer"
+
+[package.metadata.deb.systemd-units]
+unit-name = "shore-daemon"
+unit-scripts = "../../contrib/deb"
+enable = true
+start = false
+restart-after-upgrade = true
