@@ -1,69 +1,37 @@
 /**
- * Anthropic SDK adapter.
+ * Anthropic SDK adapter (sidecar contract shape).
  *
- * This is the load-bearing piece for the cache regression we set out
- * to kill in this rewrite. The Rust impl had its own SSE parser,
- * its own thinking-signature replay, and its own (complex)
- * cache_control placement logic — and accumulated bugs in each.
- * Here we:
+ * Consumes a `SidecarRequest` and emits the `StreamEvent` NDJSON vocabulary.
+ * Ports the wire behavior of the Rust `backend/llm/src/providers/anthropic.rs`
+ * for PARITY — the daemon is unchanged, so this must produce an equivalent
+ * request. The pieces the SDK doesn't do natively (and we therefore keep):
  *
- *   1. Delegate streaming and `thinking`/`tool_use` block consolidation
- *      to the SDK (`client.messages.stream(...)`).
- *   2. Round-trip the SDK's `content` array verbatim across turns. We
- *      never inspect `signature` on thinking blocks or `id` on tool_use
- *      blocks — we just hand the array back unchanged when echoing the
- *      assistant turn.
- *   3. Place up to 3 cache_control breakpoints on a fixed schedule:
- *        a. Last *stable* system block — last block that is NOT
- *           `memory_index`. memory_index churns after every dreaming
- *           pass and every compaction; putting the marker on it would
- *           bust the system prefix on every memory refresh. Anything
- *           before memory_index (system base, tools_guidance,
- *           character, user) is stable across turns, so caching there
- *           lets memory_index land in the uncached tail without
- *           disturbing the cached prefix.
- *        b. Last "stable" turn (last assistant message before the
- *           current pending turn) — caches the entire frozen history.
- *        c. Last message in the current turn (advances as the tool
- *           loop iterates, so each tool_result hop hits and extends
- *           the cache).
+ *   1. cache_control breakpoint placement — default schedule only (last stable
+ *      system block + last-stable-assistant + last message). Mirrors Rust's
+ *      `ts_default_placement`. The `cache_depth_turns`/`cache_pinned_position`
+ *      override + env vars are intentionally NOT ported (advanced tuning,
+ *      unused in practice; default placement is the parity baseline).
+ *   2. per-model thinking-mode selection (`thinking_caps`) — adaptive vs
+ *      enabled+budget; wrong mode is a hard 400.
+ *   3. inline `role:"system"` → `<system_instruction>` user wrap (the API
+ *      rejects role:system in messages[]). Always-wrap today, behind a
+ *      `systemMessageStrategy` seam; opus-4.8 native system messages are a
+ *      tracked post-parity follow-up.
+ *   4. trivial plumbing: strip `_label`, pass `provider_options.openrouter_provider`
+ *      into `body.provider`, strip a trailing `/v1` from base_url.
  *
- * Tools deliberately do NOT carry their own breakpoint. Anthropic
- * evaluates the cache prefix in `tools → system → messages` order, so
- * the system breakpoint already caches the tools as part of its prefix.
- * A separate tools-only breakpoint would only matter for a "tools
- * present, no messages yet" request, which never happens in practice.
- * Skipping it leaves one of Anthropic's 4 breakpoint slots free and
- * keeps the schedule simpler.
- *
- * Why this exact schedule:
- *
- * Anthropic allows up to 4 cache_control breakpoints per request. The
- * cache hash is the message-block prefix up to (and including) the
- * breakpoint. The pathology in the Rust daemon was that the "last
- * message" breakpoint walked over tool_use → tool_result boundaries
- * in ways that invalidated the trailing breakpoint (because the
- * thinking block that introduced the tool_use stayed in the prefix,
- * but its hash neighbors changed shape). The SDK preserves the
- * tool-loop block ordering for us; we only need to anchor the
- * breakpoints in the right slots and the cache reads come back green.
- *
- * cache_control itself does NOT count toward the prefix hash (it's
- * metadata, not content) — see `[[feedback-cache-control-prefix]]`
- * memory. So advancing the last-message breakpoint across iterations
- * doesn't bust the cache for the earlier breakpoints; it just adds new
- * cacheable prefixes layered on top.
+ * The SDK handles everything else: SSE, thinking/signature verbatim round-trip,
+ * tool_use accumulation, retries, errors. Cache-forensics stays Rust-side.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
 import type {
   ContentBlockParam,
   Message,
+  MessageCreateParams,
   MessageParam,
-  OutputConfig,
   RawMessageStreamEvent,
   TextBlockParam,
-  ThinkingConfigParam,
   Tool,
   ToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages";
@@ -71,404 +39,407 @@ import type {
 import type { ContentBlock, ImageRef } from "../../engine/types.ts";
 import { resolveImage } from "../images.ts";
 import type {
-  ChatEvent,
-  ChatRequest,
-  GenerateResult,
-  ProviderClient,
-  SystemPromptBlock,
-  ToolDef,
-  TurnMessage,
-  UsageStats,
+  GenerateResponse,
+  SidecarProvider,
+  SidecarRequest,
+  StreamEvent,
+  SystemContent,
+  Usage,
+  WireMessage,
 } from "../types.ts";
 
-export class AnthropicProvider implements ProviderClient {
-  async *stream(req: ChatRequest): AsyncIterable<ChatEvent> {
+export class AnthropicProvider implements SidecarProvider {
+  stream(req: SidecarRequest, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const { client, params } = buildAnthropicCall(req);
-    const stream = client.messages.stream(
-      params,
-      req.signal ? { signal: req.signal } : undefined,
-    );
-
-    // Per-block accumulators — keyed by block index from the SSE stream.
-    const accum = new Map<number, AccumState>();
-    let stopReason = "end_turn";
-    const usage: UsageStats = {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-    };
-
-    for await (const event of stream as AsyncIterable<RawMessageStreamEvent>) {
-      switch (event.type) {
-        case "message_start": {
-          const u = event.message.usage;
-          usage.inputTokens = u.input_tokens ?? 0;
-          usage.outputTokens = u.output_tokens ?? 0;
-          usage.cacheReadInputTokens = u.cache_read_input_tokens ?? 0;
-          usage.cacheCreationInputTokens = u.cache_creation_input_tokens ?? 0;
-          break;
-        }
-        case "content_block_start": {
-          const blk = event.content_block;
-          const idx = event.index;
-          if (blk.type === "text") {
-            accum.set(idx, { kind: "text", text: blk.text ?? "" });
-          } else if (blk.type === "thinking") {
-            accum.set(idx, {
-              kind: "thinking",
-              text: blk.thinking ?? "",
-              signature: blk.signature ?? "",
-            });
-          } else if (blk.type === "tool_use") {
-            accum.set(idx, {
-              kind: "tool_use",
-              id: blk.id,
-              name: blk.name,
-              partialJson: "",
-            });
-            yield { kind: "tool_use_start", id: blk.id, name: blk.name };
-          } else if (blk.type === "redacted_thinking") {
-            // Keep every redacted_thinking block verbatim — including
-            // OpenRouter's `openrouter.reasoning:`-prefixed ones, which
-            // are how OpenRouter relays signed thinking content back.
-            // The Rust impl filtered them; we don't, because filtering
-            // strips reasoning data the next-turn cache prefix needs
-            // (and the model may need on subsequent turns).
-            accum.set(idx, { kind: "redacted_thinking", data: blk.data });
-          }
-          break;
-        }
-        case "content_block_delta": {
-          const state = accum.get(event.index);
-          if (!state) break;
-          const d = event.delta;
-          if (d.type === "text_delta" && state.kind === "text") {
-            state.text += d.text;
-            yield { kind: "text_delta", text: d.text };
-          } else if (d.type === "thinking_delta" && state.kind === "thinking") {
-            state.text += d.thinking;
-            yield { kind: "thinking_delta", text: d.thinking };
-          } else if (d.type === "signature_delta" && state.kind === "thinking") {
-            state.signature += d.signature;
-          } else if (d.type === "input_json_delta" && state.kind === "tool_use") {
-            state.partialJson += d.partial_json;
-            yield {
-              kind: "tool_use_input_delta",
-              id: state.id,
-              partial_json: d.partial_json,
-            };
-          }
-          break;
-        }
-        case "content_block_stop": {
-          const state = accum.get(event.index);
-          if (state?.kind === "tool_use") {
-            yield { kind: "tool_use_done", id: state.id };
-          }
-          break;
-        }
-        case "message_delta": {
-          if (event.delta.stop_reason) stopReason = event.delta.stop_reason;
-          const u = event.usage;
-          if (u.output_tokens !== undefined && u.output_tokens !== null) {
-            usage.outputTokens = u.output_tokens;
-          }
-          if (u.input_tokens !== undefined && u.input_tokens !== null) {
-            usage.inputTokens = u.input_tokens;
-          }
-          if (u.cache_read_input_tokens !== undefined && u.cache_read_input_tokens !== null) {
-            usage.cacheReadInputTokens = u.cache_read_input_tokens;
-          }
-          if (
-            u.cache_creation_input_tokens !== undefined &&
-            u.cache_creation_input_tokens !== null
-          ) {
-            usage.cacheCreationInputTokens = u.cache_creation_input_tokens;
-          }
-          break;
-        }
-        case "message_stop":
-          // Nothing to do — accumulation closes naturally.
-          break;
-      }
-    }
-
-    yield {
-      kind: "done",
-      content: accumToContentBlocks(accum),
-      stopReason,
-      usage,
-    };
+    const events = (async function* () {
+      const s = client.messages.stream(
+        params,
+        signal ? { signal } : undefined,
+      ) as AsyncIterable<RawMessageStreamEvent>;
+      yield* s;
+    })();
+    return anthropicStreamEvents(req.model, events);
   }
 
-  async generate(req: ChatRequest): Promise<GenerateResult> {
+  async generate(req: SidecarRequest, signal?: AbortSignal): Promise<GenerateResponse> {
+    const startedAt = Date.now();
     const { client, params } = buildAnthropicCall(req);
-    // `client.messages.create` POSTs without `stream: true`; Anthropic
-    // returns a single Message object instead of an SSE stream. The
-    // wire shape differs from `stream()` only by the absence of
-    // `stream: true` in the request body and the JSON-vs-SSE response
-    // — the cache_control hashing, system blocks, tools, etc. are
-    // identical, so cache hits transfer between streaming and
-    // non-streaming requests against the same prefix.
-    //
-    // The SDK overloads `create` by `stream: true|false` literal; our
-    // shared param-builder leaves `stream` unset (we never pass `false`
-    // explicitly because the wire shouldn't carry a redundant `stream:
-    // false` field). The cast is safe — passing no `stream` field
-    // lands on the non-streaming overload at runtime.
     const message = (await client.messages.create(
       params as Parameters<typeof client.messages.create>[0],
-      req.signal ? { signal: req.signal } : undefined,
+      signal ? { signal } : undefined,
     )) as Message;
 
-    const content: ContentBlock[] = [];
+    const content_blocks: ContentBlock[] = [];
+    let textAccum = "";
     for (const block of message.content) {
       if (block.type === "text") {
-        content.push({ type: "text", text: block.text });
+        textAccum += block.text;
+        content_blocks.push({ type: "text", text: block.text });
       } else if (block.type === "thinking") {
-        content.push({
-          type: "thinking",
-          thinking: block.thinking,
-          signature: block.signature,
-        });
+        content_blocks.push({ type: "thinking", thinking: block.thinking, signature: block.signature });
       } else if (block.type === "redacted_thinking") {
-        content.push({ type: "redacted_thinking", data: block.data });
+        content_blocks.push({ type: "redacted_thinking", data: block.data });
       } else if (block.type === "tool_use") {
-        content.push({
-          type: "tool_use",
-          id: block.id,
-          name: block.name,
-          input: block.input,
-        });
+        content_blocks.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
       }
     }
 
-    const usage: UsageStats = {
-      inputTokens: message.usage.input_tokens ?? 0,
-      outputTokens: message.usage.output_tokens ?? 0,
-      cacheReadInputTokens: message.usage.cache_read_input_tokens ?? 0,
-      cacheCreationInputTokens: message.usage.cache_creation_input_tokens ?? 0,
-    };
-
+    const total = Date.now() - startedAt;
     return {
-      content,
-      stopReason: message.stop_reason ?? "end_turn",
-      usage,
+      content: textAccum,
+      content_blocks,
+      finish_reason: message.stop_reason ?? "end_turn",
+      usage: anthropicUsage(message.usage),
+      timing: { total_ms: total, time_to_first_token_ms: total },
+      model: req.model,
     };
   }
 }
 
+// ── streaming event mapping (pure; injectable clock for tests) ──────────────
+
+type AccumState =
+  | { kind: "text" }
+  | { kind: "thinking"; signature: string }
+  | { kind: "redacted_thinking" }
+  | { kind: "tool_use"; id: string; name: string; partialJson: string };
+
 /**
- * Shared per-call setup. The streaming and non-streaming entrypoints
- * use the same client config, the same param shape, and the same
- * cache-breakpoint placement — the only difference is which SDK method
- * gets called and how the response is consumed. Extract here so the
- * two paths can never silently diverge on wire-relevant fields.
+ * Map the SDK's raw stream events to the `StreamEvent` contract. `start` first,
+ * incremental `text`/`thinking`, `thinking_signature` at the close of a
+ * thinking block (after its deltas, before the next block — where
+ * `StreamConsumer` attaches it), `redacted_thinking` verbatim, ONE consolidated
+ * `tool_use` per block, then `done`.
  */
-function buildAnthropicCall(
-  req: ChatRequest,
-): {
-  client: Anthropic;
-  params: Parameters<typeof Anthropic.prototype.messages.stream>[0];
-} {
+export async function* anthropicStreamEvents(
+  model: string,
+  events: AsyncIterable<RawMessageStreamEvent>,
+  now: () => number = Date.now,
+): AsyncIterable<StreamEvent> {
+  const startedAt = now();
+  let firstTokenAt = 0;
+  const markFirst = () => {
+    if (firstTokenAt === 0) firstTokenAt = now();
+  };
+
+  yield { type: "start", model };
+
+  const accum = new Map<number, AccumState>();
+  let textAccum = "";
+  let stopReason = "end_turn";
+  let usage: Usage = emptyUsage();
+
+  for await (const event of events) {
+    switch (event.type) {
+      case "message_start": {
+        usage = anthropicUsage(event.message.usage);
+        break;
+      }
+      case "content_block_start": {
+        const blk = event.content_block;
+        if (blk.type === "text") {
+          accum.set(event.index, { kind: "text" });
+        } else if (blk.type === "thinking") {
+          accum.set(event.index, { kind: "thinking", signature: blk.signature ?? "" });
+        } else if (blk.type === "tool_use") {
+          accum.set(event.index, { kind: "tool_use", id: blk.id, name: blk.name, partialJson: "" });
+        } else if (blk.type === "redacted_thinking") {
+          accum.set(event.index, { kind: "redacted_thinking" });
+          markFirst();
+          yield { type: "redacted_thinking", data: blk.data };
+        }
+        break;
+      }
+      case "content_block_delta": {
+        const state = accum.get(event.index);
+        if (!state) break;
+        const d = event.delta;
+        if (d.type === "text_delta" && state.kind === "text") {
+          markFirst();
+          textAccum += d.text;
+          yield { type: "text", text: d.text };
+        } else if (d.type === "thinking_delta" && state.kind === "thinking") {
+          markFirst();
+          yield { type: "thinking", text: d.thinking };
+        } else if (d.type === "signature_delta" && state.kind === "thinking") {
+          state.signature += d.signature;
+        } else if (d.type === "input_json_delta" && state.kind === "tool_use") {
+          state.partialJson += d.partial_json;
+        }
+        break;
+      }
+      case "content_block_stop": {
+        const state = accum.get(event.index);
+        if (state?.kind === "thinking" && state.signature) {
+          yield { type: "thinking_signature", signature: state.signature };
+        } else if (state?.kind === "tool_use") {
+          markFirst();
+          yield { type: "tool_use", id: state.id, name: state.name, input: parseArgs(state.partialJson) };
+        }
+        break;
+      }
+      case "message_delta": {
+        if (event.delta.stop_reason) stopReason = event.delta.stop_reason;
+        usage = mergeAnthropicUsage(usage, event.usage);
+        break;
+      }
+      case "message_stop":
+        break;
+    }
+  }
+
+  const total = now() - startedAt;
+  yield {
+    type: "done",
+    content: textAccum,
+    finish_reason: stopReason,
+    usage,
+    timing: {
+      total_ms: total,
+      time_to_first_token_ms: firstTokenAt === 0 ? total : firstTokenAt - startedAt,
+    },
+  };
+}
+
+// ── request construction ────────────────────────────────────────────────────
+
+/** The wire params, plus the OpenRouter `provider` routing field the SDK type
+ * doesn't model. (`output_config` IS typed by the SDK as of 0.100.1.) */
+type AnthropicParams = MessageCreateParams & {
+  provider?: unknown;
+};
+
+function buildAnthropicCall(req: SidecarRequest): { client: Anthropic; params: AnthropicParams } {
   const client = new Anthropic({
-    apiKey: req.apiKey,
-    ...(req.baseUrl ? { baseURL: stripTrailingV1(req.baseUrl) } : {}),
+    apiKey: req.api_key,
+    ...(req.base_url ? { baseURL: stripTrailingV1(req.base_url) } : {}),
   });
+  return { client, params: buildAnthropicParams(req) };
+}
 
-  const cacheControl = req.cacheTtl ? makeCacheControl(req.cacheTtl) : undefined;
-  const system = buildSystem(req.system, cacheControl);
+/**
+ * Pure request-body builder. Exported for the parity test, which asserts the
+ * cache-breakpoint placement, thinking config, and provider routing match
+ * `anthropic.rs` without hitting the network.
+ */
+export function buildAnthropicParams(req: SidecarRequest): AnthropicParams {
+  const opts = req.provider_options ?? {};
+  const cacheTtl = typeof opts["cache_ttl"] === "string" ? (opts["cache_ttl"] as string) : "";
+  const cacheEnabled = cacheTtl !== "";
+
+  const converted = convertInlineSystemMessages(req.messages, req.model);
+  const hasExistingMarkers = messagesHaveCacheControl(converted);
+
+  let messages: MessageParam[];
+  let system: TextBlockParam[];
+  if (cacheEnabled && !hasExistingMarkers) {
+    const cc = makeCacheControl(cacheTtl);
+    const msgs = normalizeMessages(converted); // strip cc, string → block array
+    // Keep `_label` through placement (the anchor skips memory_index by label),
+    // then strip it afterward — mirrors Rust's normalize → place → strip order.
+    const sys = systemToLabeledBlocks(req.system);
+    const { msgBp, sysBp } = tsDefaultPlacement(msgs, sys);
+    placeBreakpoints(msgs, sys, cc, msgBp, sysBp);
+    for (const b of sys) delete (b as { _label?: string })._label;
+    messages = msgs;
+    system = sys;
+  } else {
+    messages = converted.map(toMessageParam);
+    system = systemToBlocks(req.system); // strips _label; no cache_control
+  }
+
+  const { thinking, outputConfig } = buildThinkingParams(opts, req.model, req.max_tokens);
   const tools = buildTools(req.tools);
-  const wireTurns = convertInlineSystemMessages(req.messages);
-  const msgBreakpoints = cacheControl === undefined
-    ? []
-    : messageBreakpointIndices(wireTurns);
-  const sysBreakpoints = collectCacheControlIndices(system);
-  const messages = buildMessages(wireTurns, cacheControl, msgBreakpoints);
-  logRequestForensics(
-    req,
-    system,
-    messages,
-    msgBreakpoints,
-    sysBreakpoints,
-    cacheControl !== undefined,
-  );
-  const thinking = buildThinking(req.thinking, req.maxTokens);
 
-  const outputConfig = buildOutputConfig(req.thinking);
-
-  const params: Parameters<typeof client.messages.stream>[0] = {
-    model: req.modelId,
-    max_tokens: req.maxTokens,
+  const params: AnthropicParams = {
+    model: req.model,
+    max_tokens: req.max_tokens,
     messages,
     ...(system.length > 0 ? { system } : {}),
     ...(tools.length > 0 ? { tools } : {}),
-    ...(thinking ? { thinking } : {}),
-    ...(outputConfig ? { output_config: outputConfig } : {}),
   };
+  // apply_common_params parity: temperature/top_p set unconditionally when
+  // present (Rust does NOT gate them on thinking).
+  if (req.temperature !== undefined) params.temperature = req.temperature;
+  if (req.top_p !== undefined) params.top_p = req.top_p;
+  if (thinking) params.thinking = thinking;
+  if (outputConfig) params.output_config = outputConfig;
 
-  if (req.baseUrl && req.baseUrl.includes("openrouter.ai")) {
-    (params as { provider?: unknown }).provider = {
-      order: ["anthropic"],
-      allow_fallbacks: false,
-    };
+  // OpenRouter provider routing comes from config, not a base_url heuristic.
+  const orProvider = opts["openrouter_provider"];
+  if (orProvider && typeof orProvider === "object") {
+    const provider: Record<string, unknown> = { ...(orProvider as Record<string, unknown>) };
+    if ("order" in provider && !("allow_fallbacks" in provider)) {
+      provider["allow_fallbacks"] = false;
+    }
+    params.provider = provider;
   }
 
-  if (!thinking) {
-    if (req.temperature !== undefined) params.temperature = req.temperature;
-    if (req.topP !== undefined) params.top_p = req.topP;
-  }
-
-  return { client, params };
+  return params;
 }
 
-/**
- * The Anthropic SDK always appends `/v1/messages` to the configured
- * `baseURL`. Shore users (and config docs) write OpenRouter's base as
- * `https://openrouter.ai/api/v1`, the same form OpenRouter uses for the
- * OpenAI-compatible endpoint — so we strip the trailing `/v1` before
- * handing it to the SDK to avoid `/v1/v1/messages`. The Rust impl made
- * the same adjustment in build_http_request().
- */
+/** The SDK appends `/v1/messages`; Shore config writes base as `…/api/v1`, so
+ * strip a trailing `/v1` to avoid `/v1/v1/messages`. Mirrors Rust's check. */
 function stripTrailingV1(baseUrl: string): string {
   return baseUrl.replace(/\/v1\/?$/, "");
 }
 
-// ── conversion helpers ──────────────────────────────────────────────────
+// ── cache_control placement (default schedule, mirrors ts_default) ──────────
 
-type AccumState =
-  | { kind: "text"; text: string }
-  | { kind: "thinking"; text: string; signature: string }
-  | { kind: "redacted_thinking"; data: string }
-  | { kind: "tool_use"; id: string; name: string; partialJson: string };
-
-function accumToContentBlocks(accum: Map<number, AccumState>): ContentBlock[] {
-  const indexed = [...accum.entries()].sort((a, b) => a[0] - b[0]);
-  const out: ContentBlock[] = [];
-  for (const [, s] of indexed) {
-    if (s.kind === "text") {
-      out.push({ type: "text", text: s.text });
-    } else if (s.kind === "thinking") {
-      out.push({ type: "thinking", thinking: s.text, signature: s.signature });
-    } else if (s.kind === "redacted_thinking") {
-      out.push({ type: "redacted_thinking", data: s.data });
-    } else if (s.kind === "tool_use") {
-      let input: unknown;
-      try {
-        input = s.partialJson.trim() === "" ? {} : JSON.parse(s.partialJson);
-      } catch {
-        input = {};
-      }
-      out.push({ type: "tool_use", id: s.id, name: s.name, input });
-    }
-  }
-  return out;
-}
-
-type CacheControl = { type: "ephemeral" } | { type: "ephemeral"; ttl: "5m" | "1h" };
+type CacheControl = { type: "ephemeral" } | { type: "ephemeral"; ttl: "1h" };
 
 function makeCacheControl(ttl: string): CacheControl {
-  if (ttl === "" || ttl === "5m") return { type: "ephemeral" };
   if (ttl === "1h") return { type: "ephemeral", ttl };
-  // Unknown TTLs (e.g. user typo) fall back to default. We don't throw
-  // because cache_ttl can come from third-party config and we'd rather
-  // miss the cache than fail the call.
   return { type: "ephemeral" };
 }
 
-function buildSystem(
-  system: ChatRequest["system"],
-  cacheControl: CacheControl | undefined,
-): TextBlockParam[] {
-  if (typeof system === "string") {
-    if (!system) return [];
-    const block: TextBlockParam = { type: "text", text: system };
-    if (cacheControl) block.cache_control = cacheControl;
-    return [block];
+function messagesHaveCacheControl(messages: WireMessage[]): boolean {
+  for (const m of messages) {
+    if (Array.isArray(m.content)) {
+      for (const b of m.content) {
+        if ((b as { cache_control?: unknown }).cache_control !== undefined) return true;
+      }
+    }
   }
-
-  // `_label` is internal metadata and must NOT reach the provider —
-  // Anthropic ignores unknown fields silently, but they pollute the
-  // cache-key hash (cross-daemon cache fragmentation) and have no
-  // upside on the wire. Mirrors Rust's strip step at
-  // `backend/llm/src/providers/anthropic.rs:301-306`. Pinned by
-  // `_label_never_reaches_wire` in this file's test suite.
-  const blocks = system.map((b): TextBlockParam => ({ type: "text", text: b.text }));
-  if (cacheControl) {
-    const bpIdx = lastStableSystemIndex(system);
-    if (bpIdx >= 0) blocks[bpIdx]!.cache_control = cacheControl;
-  }
-  return blocks;
+  return false;
 }
 
-/**
- * Last system block whose label is NOT `memory_index`. See the file
- * docstring for why memory_index is excluded. Returns -1 if there are
- * no stable blocks (only happens if every block is memory_index, which
- * `assemblePrompt` never produces — but the guard is cheap).
- */
-function lastStableSystemIndex(system: SystemPromptBlock[]): number {
+/** Strip pre-existing cache_control and convert string content → block arrays
+ * so the breakpoint can always land on a block. Mirrors the message half of
+ * `normalize_for_caching`. */
+function normalizeMessages(messages: WireMessage[]): MessageParam[] {
+  return messages.map((m): MessageParam => {
+    const blocks =
+      typeof m.content === "string"
+        ? [{ type: "text" as const, text: m.content }]
+        : m.content.map(toContentBlockParam);
+    for (const b of blocks) delete (b as { cache_control?: unknown }).cache_control;
+    return { role: m.role as "user" | "assistant", content: blocks };
+  });
+}
+
+/** System → text blocks PRESERVING `_label` (placement reads it; stripped after). */
+function systemToLabeledBlocks(
+  system: SystemContent | undefined,
+): Array<TextBlockParam & { _label?: string }> {
+  if (system === undefined) return [];
+  if (typeof system === "string") return system ? [{ type: "text", text: system }] : [];
+  return system.map((b) => ({
+    type: "text" as const,
+    text: b.text,
+    ...(b._label !== undefined ? { _label: b._label } : {}),
+  }));
+}
+
+/** Last system block whose `_label` is NOT `"memory_index"` (memory_index
+ * churns on dreaming/compaction). Returns -1 if none. */
+function lastStableSystemIndex(system: Array<{ _label?: string }>): number {
   for (let i = system.length - 1; i >= 0; i--) {
-    if (system[i]!._label !== "memory_index") return i;
+    if (system[i]?._label !== "memory_index") return i;
   }
   return -1;
 }
 
-function buildTools(tools: ToolDef[]): Tool[] {
-  if (tools.length === 0) return [];
-  return tools.map((t) => ({
-    name: t.name,
-    description: t.description,
-    input_schema: t.inputSchema as Tool["input_schema"],
-  }));
-}
-
-function collectCacheControlIndices(blocks: TextBlockParam[]): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < blocks.length; i++) {
-    if ((blocks[i] as { cache_control?: unknown }).cache_control !== undefined) {
-      out.push(i);
+/** `[last_stable_assistant, last_msg]`, deduped, sorted. */
+function tsMessageBreakpoints(messages: MessageParam[]): number[] {
+  if (messages.length === 0) return [];
+  const lastIdx = messages.length - 1;
+  let stableIdx = -1;
+  for (let i = lastIdx - 1; i >= 0; i--) {
+    if (messages[i]?.role === "assistant") {
+      stableIdx = i;
+      break;
     }
   }
-  return out;
+  return [...new Set([stableIdx, lastIdx].filter((i) => i >= 0))].sort((a, b) => a - b);
 }
 
-/** Wrap text in the canonical inline-system sentinel. Single source of
- * truth for the tag spelling — matches Rust `stream_helpers.rs:209`. */
+function tsDefaultPlacement(
+  messages: MessageParam[],
+  system: Array<TextBlockParam & { _label?: string }>,
+): { msgBp: number[]; sysBp: number[] } {
+  const sysIdx = lastStableSystemIndex(system);
+  return {
+    sysBp: sysIdx >= 0 ? [sysIdx] : [],
+    msgBp: tsMessageBreakpoints(messages),
+  };
+}
+
+function placeBreakpoints(
+  messages: MessageParam[],
+  system: TextBlockParam[],
+  cc: CacheControl,
+  msgBp: number[],
+  sysBp: number[],
+): void {
+  for (const idx of sysBp) {
+    const block = system[idx];
+    if (block) block.cache_control = cc;
+  }
+  for (const pos of msgBp) {
+    const msg = messages[pos];
+    if (msg && Array.isArray(msg.content)) applyMessageBreakpoint(msg.content, cc);
+  }
+}
+
+/** Apply the breakpoint to the last text/tool_use/tool_result block (thinking
+ * blocks reject cache_control). */
+function applyMessageBreakpoint(content: ContentBlockParam[], cc: CacheControl): void {
+  for (let i = content.length - 1; i >= 0; i--) {
+    const b = content[i] as ContentBlockParam & { cache_control?: unknown };
+    if (b.type === "text" || b.type === "tool_use" || b.type === "tool_result") {
+      b.cache_control = cc;
+      return;
+    }
+  }
+}
+
+// ── system + inline-system handling ─────────────────────────────────────────
+
+/** Today: always "wrap" (parity with current Rust). The seam lets opus-4.8
+ * native mid-conv system messages slot in later without restructuring. */
+function systemMessageStrategy(_model: string): "wrap" | "native" {
+  return "wrap";
+}
+
 export function wrapInlineSystemInstruction(text: string): string {
   return `<system_instruction>${text}</system_instruction>`;
 }
 
-/** Post-conversion turn — system role has been wrapped away. */
-type WireTurn = {
-  role: "user" | "assistant";
-  content: ContentBlock[] | string;
-  images?: ImageRef[];
-};
+/** Convert system → Anthropic text blocks, dropping internal `_label`. */
+function systemToBlocks(system: SystemContent | undefined): TextBlockParam[] {
+  if (system === undefined) return [];
+  if (typeof system === "string") {
+    return system ? [{ type: "text", text: system }] : [];
+  }
+  return system.map((b) => ({ type: "text", text: b.text }));
+}
 
 /**
- * Convert `role:"system"` turns into wrapped `role:"user"` turns. Anthropic
- * rejects `role:"system"` in the `messages` array, so heartbeat recaps and
- * compaction prompts ride as `<system_instruction>` text blocks. If the
- * previous emitted turn is already a user message, append to it rather
- * than emitting consecutive user turns (the API rejects those too).
- *
- * Mirrors Rust `convert_inline_system_messages` (`providers/anthropic.rs:391`).
+ * Convert `role:"system"` turns into wrapped `role:"user"` turns (the API
+ * rejects role:system in messages[]). Merge into a preceding user turn to avoid
+ * consecutive user roles. Mirrors Rust `convert_inline_system_messages`.
  */
-export function convertInlineSystemMessages(turns: TurnMessage[]): WireTurn[] {
-  const out: WireTurn[] = [];
+export function convertInlineSystemMessages(
+  turns: WireMessage[],
+  model: string,
+): WireMessage[] {
+  if (systemMessageStrategy(model) === "native") return turns; // not reached today
+  if (!turns.some((t) => t.role === "system")) return turns;
+
+  const out: WireMessage[] = [];
   for (const turn of turns) {
     if (turn.role !== "system") {
-      const w: WireTurn = { role: turn.role, content: turn.content.slice() };
-      if (turn.images && turn.images.length > 0) w.images = turn.images.slice();
-      out.push(w);
+      out.push(turn);
       continue;
     }
-    const text = turn.content
-      .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
-      .map((b) => b.text)
-      .join("");
+    const text =
+      typeof turn.content === "string"
+        ? turn.content
+        : turn.content
+            .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+            .map((b) => b.text)
+            .join("");
     const wrapped = wrapInlineSystemInstruction(text);
 
     const prev = out[out.length - 1];
@@ -476,118 +447,54 @@ export function convertInlineSystemMessages(turns: TurnMessage[]): WireTurn[] {
       if (typeof prev.content === "string") {
         prev.content = `${prev.content}\n\n${wrapped}`;
       } else {
-        prev.content.push({ type: "text", text: wrapped });
+        prev.content = [...prev.content, { type: "text", text: wrapped }];
       }
       continue;
     }
-    out.push({
-      role: "user",
-      content: wrapped,
-    });
+    out.push({ role: "user", content: wrapped });
   }
   return out;
 }
 
-function buildMessages(
-  turns: WireTurn[],
-  cacheControl: CacheControl | undefined,
-  msgBreakpoints: number[] = cacheControl === undefined
-    ? []
-    : messageBreakpointIndices(turns),
-): MessageParam[] {
-  // Compute the "last stable" position (last assistant turn before the
-  // pending tail) and the absolute last message position. The Anthropic
-  // recipe is: cache the largest prefix that won't change between
-  // iterations (the stable assistant turn), and cache the current
-  // iteration too (the last tool_result for a tool loop, or the latest
-  // user message for plain chat). Up to two breakpoints in messages,
-  // combined with the two in system/tools, = the 4-breakpoint budget.
-  const breakpoints = new Set(msgBreakpoints);
+// ── message + tool conversion ───────────────────────────────────────────────
 
-  return turns.map((turn, i) => {
-    const imageBlocks = imagesToAnthropicBlocks(turn.images);
-    let content: MessageParam["content"];
-    if (typeof turn.content === "string" && imageBlocks.length === 0) {
-      content = cacheControl
-        ? [{ type: "text", text: turn.content }]
-        : turn.content;
-    } else {
-      const blocks = [
-        ...imageBlocks,
-        ...(typeof turn.content === "string"
-          ? [{ type: "text" as const, text: turn.content }]
-          : turn.content.map((b) => toAnthropicBlockParam(b))),
-      ];
-      content = blocks;
+function toMessageParam(m: WireMessage): MessageParam {
+  const role = m.role as "user" | "assistant";
+  if (typeof m.content === "string") return { role, content: m.content };
+  return { role, content: m.content.map(toContentBlockParam) };
+}
+
+function toContentBlockParam(b: ContentBlock): ContentBlockParam {
+  switch (b.type) {
+    case "text":
+      return { type: "text", text: b.text };
+    case "thinking":
+      return { type: "thinking", thinking: b.thinking, signature: b.signature ?? "" };
+    case "redacted_thinking":
+      return { type: "redacted_thinking", data: b.data };
+    case "tool_use":
+      return { type: "tool_use", id: b.id, name: b.name, input: (b.input ?? {}) as Record<string, unknown> };
+    case "tool_result": {
+      const out: ToolResultBlockParam = { type: "tool_result", tool_use_id: b.tool_use_id, content: b.content };
+      if (b.is_error) out.is_error = true;
+      return out;
     }
-    if (cacheControl && breakpoints.has(i) && Array.isArray(content)) {
-      applyMessageBreakpoint(content, cacheControl);
-    }
-    return { role: turn.role, content };
+  }
+}
+
+function buildTools(tools: unknown[] | undefined): Tool[] {
+  if (!tools) return [];
+  return tools.map((raw) => {
+    const t = raw as { name?: string; description?: string; input_schema?: unknown };
+    return {
+      name: t.name ?? "",
+      description: t.description ?? "",
+      input_schema: (t.input_schema ?? { type: "object" }) as Tool["input_schema"],
+    };
   });
 }
 
-function messageBreakpointIndices(turns: WireTurn[]): number[] {
-  if (turns.length === 0) return [];
-  const lastIdx = turns.length - 1;
-  let stableIdx = -1;
-  for (let i = lastIdx - 1; i >= 0; i--) {
-    if (turns[i]!.role === "assistant") {
-      stableIdx = i;
-      break;
-    }
-  }
-  return [...new Set([stableIdx, lastIdx].filter((idx) => idx >= 0))].sort(
-    (a, b) => a - b,
-  );
-}
-
-function logRequestForensics(
-  req: ChatRequest,
-  system: TextBlockParam[],
-  messages: MessageParam[],
-  msgBreakpoints: number[],
-  sysBreakpoints: number[],
-  cacheEnabled: boolean,
-): void {
-  if (req.cacheForensics === undefined) return;
-  const end = msgBreakpoints.length > 0 ? msgBreakpoints[0]! + 1 : 0;
-  const callId = req.cacheForensics.nextCallId();
-  req.cacheForensics.logRequest({
-    callId,
-    ...(req.forensicCharacter !== undefined
-      ? { character: req.forensicCharacter }
-      : {}),
-    model: req.modelId,
-    msgCount: messages.length,
-    msgBreakpoints,
-    sysBreakpoints,
-    sysBlocks: system.length,
-    prefixHash: hashForensicsPrefix(system, messages.slice(0, end)),
-    hasExistingMarkers: false,
-    cacheEnabled,
-    ...(req.forensicRid !== undefined ? { rid: req.forensicRid } : {}),
-  });
-}
-
-function hashForensicsPrefix(
-  system: TextBlockParam[],
-  messagePrefix: MessageParam[],
-): string {
-  const bytes = new TextEncoder().encode(JSON.stringify({ system, messages: messagePrefix }));
-  let hash = 0xcbf29ce484222325n;
-  const prime = 0x100000001b3n;
-  const mask = 0xffffffffffffffffn;
-  for (const byte of bytes) {
-    hash ^= BigInt(byte);
-    hash = (hash * prime) & mask;
-  }
-  return hash.toString(16).padStart(16, "0");
-}
-
-function imagesToAnthropicBlocks(
-  images: ImageRef[] | undefined,
-): ContentBlockParam[] {
+function imagesToAnthropicBlocks(images: ImageRef[] | undefined): ContentBlockParam[] {
   if (!images || images.length === 0) return [];
   const out: ContentBlockParam[] = [];
   for (const img of images) {
@@ -597,11 +504,7 @@ function imagesToAnthropicBlocks(
       type: "image",
       source: {
         type: "base64",
-        media_type: resolved.mediaType as
-          | "image/png"
-          | "image/jpeg"
-          | "image/webp"
-          | "image/gif",
+        media_type: resolved.mediaType as "image/png" | "image/jpeg" | "image/webp" | "image/gif",
         data: resolved.base64,
       },
     });
@@ -609,109 +512,176 @@ function imagesToAnthropicBlocks(
   return out;
 }
 
-function applyMessageBreakpoint(
-  content: ContentBlockParam[],
-  cacheControl: CacheControl,
-): void {
-  // Apply the breakpoint to the last block that supports it. tool_use,
-  // text, and tool_result all support cache_control; thinking blocks do
-  // NOT (Anthropic rejects cache_control on thinking).
-  for (let i = content.length - 1; i >= 0; i--) {
-    const b = content[i]! as ContentBlockParam & { cache_control?: unknown };
-    if (b.type === "text" || b.type === "tool_use" || b.type === "tool_result") {
-      b.cache_control = cacheControl;
-      return;
-    }
-  }
-}
+// ── thinking params (port of build_thinking_params + thinking_caps) ─────────
 
-function toAnthropicBlockParam(b: ContentBlock): ContentBlockParam {
-  switch (b.type) {
-    case "text":
-      return { type: "text", text: b.text };
-    case "thinking":
-      return {
-        type: "thinking",
-        thinking: b.thinking,
-        signature: b.signature ?? "",
-      };
-    case "redacted_thinking":
-      return { type: "redacted_thinking", data: b.data };
-    case "tool_use":
-      return {
-        type: "tool_use",
-        id: b.id,
-        name: b.name,
-        input: (b.input ?? {}) as Record<string, unknown>,
-      };
-    case "tool_result": {
-      const out: ToolResultBlockParam = {
-        type: "tool_result",
-        tool_use_id: b.tool_use_id,
-        content: b.content,
-      };
-      if (b.is_error) out.is_error = true;
-      return out;
-    }
-  }
-}
-
-/**
- * Effort levels that select the *adaptive* thinking mode and surface
- * the chosen level on the top-level `output_config.effort` field.
- * Matches Rust `anthropic.rs:19` (`ANTHROPIC_EFFORT_VALUES`).
- *
- * The Anthropic API splits two related knobs:
- *
- *   - `thinking.type = "adaptive"` — let Claude allocate the thinking
- *     budget per turn (required on Opus 4.7, recommended on Sonnet 4.6
- *     and Opus 4.6 where manual `enabled` is deprecated).
- *   - `output_config.effort = "high" | ...` — orthogonal top-level
- *     control over overall model processing depth.
- *
- * Both adaptive thinking and a named effort surface from the daemon's
- * single `reasoning_effort` config: a named effort triggers adaptive
- * thinking AND sets `output_config.effort` to that value. The literal
- * string `"adaptive"` triggers adaptive thinking without
- * `output_config`.
- *
- * If the caller wants the older manual budget mode, they set
- * `thinking.budgetTokens` explicitly and leave `effort` unset.
- */
 const NAMED_EFFORT_VALUES = ["max", "xhigh", "high", "medium", "low"] as const;
 type NamedEffort = (typeof NAMED_EFFORT_VALUES)[number];
 
-function isNamedEffort(effort: string | undefined): effort is NamedEffort {
-  return effort !== undefined && (NAMED_EFFORT_VALUES as readonly string[]).includes(effort);
+function isEffortValue(s: string | undefined): s is NamedEffort {
+  return s !== undefined && (NAMED_EFFORT_VALUES as readonly string[]).includes(s);
 }
 
-function buildThinking(
-  cfg: ChatRequest["thinking"],
-  maxTokens: number,
-): ThinkingConfigParam | undefined {
-  if (!cfg.enabled) return undefined;
+interface ThinkingCaps {
+  adaptive: boolean;
+  enabled: boolean;
+}
 
-  // Adaptive thinking: triggered by literal "adaptive" OR any named
-  // effort value. The effort itself (when set) shows up on
-  // output_config, not on the thinking object.
-  if (cfg.effort === "adaptive" || isNamedEffort(cfg.effort)) {
-    return { type: "adaptive" };
+/** Best-effort (family, major, minor) parse. */
+function parseAnthropicModel(model: string): {
+  family: "opus" | "sonnet" | "haiku" | undefined;
+  major: number | undefined;
+  minor: number | undefined;
+} {
+  let m = model.toLowerCase();
+  m = (m.split("/").pop() ?? m).replace(/\./g, "-");
+  const family = m.includes("opus")
+    ? "opus"
+    : m.includes("sonnet")
+      ? "sonnet"
+      : m.includes("haiku")
+        ? "haiku"
+        : undefined;
+  const nums = m.split("-").map((s) => Number.parseInt(s, 10)).filter((n) => !Number.isNaN(n));
+  return { family, major: nums[0], minor: nums[1] };
+}
+
+/** Per-model thinking-mode classification. Mirrors Rust `thinking_caps`. */
+function thinkingCaps(model: string): ThinkingCaps {
+  const m = model.toLowerCase();
+  if (m.includes("mythos")) return { adaptive: true, enabled: false };
+
+  const { family, major, minor } = parseAnthropicModel(model);
+  // Opus 4.7/4.8 (and later 4.x): adaptive-only.
+  if (family === "opus" && major === 4 && minor !== undefined && minor >= 7) {
+    return { adaptive: true, enabled: false };
+  }
+  // Sonnet 4.5 / Opus 4.5 / Haiku (any) / 3.x and earlier: enabled-only.
+  if (
+    ((family === "sonnet" || family === "opus") && major === 4 && minor === 5) ||
+    family === "haiku" ||
+    (major !== undefined && major <= 3)
+  ) {
+    return { adaptive: false, enabled: true };
+  }
+  // Opus 4.6, Sonnet 4.6+, newer/unknown: permissive.
+  return { adaptive: true, enabled: true };
+}
+
+function effortToBudget(effort: string): number {
+  switch (effort) {
+    case "low":
+      return 4096;
+    case "high":
+      return 12288;
+    case "xhigh":
+      return 16384;
+    case "max":
+      return 24576;
+    default:
+      return 8192; // medium / adaptive / anything else
+  }
+}
+
+/** Clamp into `1024 <= budget < max_tokens`; undefined if no valid room. */
+function clampEnabledBudget(requested: number, maxTokens: number): number | undefined {
+  const ceiling = maxTokens - 1;
+  if (ceiling < 1024) return undefined;
+  return Math.min(Math.max(requested, 1024), ceiling);
+}
+
+type ThinkingParam =
+  | { type: "adaptive"; display: "summarized" }
+  | { type: "enabled"; budget_tokens: number };
+
+/** Port of `build_thinking_params`: returns the thinking + output_config the
+ * target model accepts. `display:"summarized"` on adaptive is REQUIRED (Opus
+ * 4.7/4.8 default `omitted`, which returns empty thinking text). */
+export function buildThinkingParams(
+  opts: Record<string, unknown>,
+  model: string,
+  maxTokens: number,
+): { thinking?: ThinkingParam; outputConfig?: { effort: NamedEffort } } {
+  const effort = typeof opts["reasoning_effort"] === "string" ? (opts["reasoning_effort"] as string) : undefined;
+  const namedEffort = isEffortValue(effort) ? effort : undefined;
+  const wantsAdaptive = effort === "adaptive" || namedEffort !== undefined;
+
+  const thinkingFlag = opts["thinking"] === true;
+  const budget = typeof opts["budget_tokens"] === "number" ? (opts["budget_tokens"] as number) : undefined;
+  const wantsEnabled = thinkingFlag || budget !== undefined;
+
+  if (!wantsAdaptive && !wantsEnabled) return {};
+
+  const caps = thinkingCaps(model);
+  const requestedBudget = budget;
+
+  if (wantsAdaptive) {
+    if (caps.adaptive) {
+      return {
+        thinking: { type: "adaptive", display: "summarized" },
+        ...(namedEffort !== undefined ? { outputConfig: { effort: namedEffort } } : {}),
+      };
+    }
+    // adaptive-incapable: map effort → budget.
+    const derived = requestedBudget ?? effortToBudget(effort ?? "medium");
+    const b = clampEnabledBudget(derived, maxTokens);
+    return b !== undefined ? { thinking: { type: "enabled", budget_tokens: b } } : {};
   }
 
-  // Explicit budget escape-hatch: manual extended thinking with a
-  // user-set budget_tokens. This is the deprecated mode on Opus 4.7
-  // (which rejects it outright) and is only kept here for callers who
-  // genuinely want a fixed budget on older models. Budget must be
-  // ≥1024 and strictly less than max_tokens.
-  if (cfg.budgetTokens === undefined) return undefined;
-  let budget = cfg.budgetTokens;
-  if (budget < 1024) budget = 1024;
-  if (budget >= maxTokens) budget = Math.max(1024, maxTokens - 1);
-  return { type: "enabled", budget_tokens: budget };
+  // budget/flag request: prefer enabled, fall back to adaptive.
+  if (caps.enabled) {
+    const b = clampEnabledBudget(requestedBudget ?? 1024, maxTokens);
+    if (b !== undefined) return { thinking: { type: "enabled", budget_tokens: b } };
+  }
+  if (caps.adaptive) return { thinking: { type: "adaptive", display: "summarized" } };
+  return {};
 }
 
-function buildOutputConfig(cfg: ChatRequest["thinking"]): OutputConfig | undefined {
-  if (!cfg.enabled) return undefined;
-  if (!isNamedEffort(cfg.effort)) return undefined;
-  return { effort: cfg.effort };
+// ── usage ────────────────────────────────────────────────────────────────────
+
+function emptyUsage(): Usage {
+  return { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 };
 }
+
+function anthropicUsage(u: {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+}): Usage {
+  return {
+    input_tokens: u.input_tokens ?? 0,
+    output_tokens: u.output_tokens ?? 0,
+    cache_read_tokens: u.cache_read_input_tokens ?? 0,
+    cache_creation_tokens: u.cache_creation_input_tokens ?? 0,
+  };
+}
+
+/** message_delta usage updates only the fields it carries. */
+function mergeAnthropicUsage(
+  prev: Usage,
+  u: {
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+  },
+): Usage {
+  return {
+    input_tokens: u.input_tokens ?? prev.input_tokens,
+    output_tokens: u.output_tokens ?? prev.output_tokens,
+    cache_read_tokens: u.cache_read_input_tokens ?? prev.cache_read_tokens,
+    cache_creation_tokens: u.cache_creation_input_tokens ?? prev.cache_creation_tokens,
+  };
+}
+
+function parseArgs(argsJson: string): unknown {
+  if (argsJson.trim() === "") return {};
+  try {
+    return JSON.parse(argsJson);
+  } catch {
+    return {};
+  }
+}
+
+// Image helper retained for when wire messages carry images.
+export { imagesToAnthropicBlocks };
