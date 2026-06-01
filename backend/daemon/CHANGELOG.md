@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [11.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v10.0.0...shore-daemon-v11.0.0) - 2026-05-31
 
+### Breaking
+
+- **HeartbeatEventKind now implements Copy**: The `HeartbeatEventKind` enum gained Copy semantics (copy_impl_added). Code that relied on implicit move semantics or non-Copy behavior (e.g., mutation after move, Drop implementations) will need to be updated.
+
+  **Migration**: If your code relied on move-only semantics, explicitly use `.clone()` or adapt to copy semantics:
+
+  ```rust
+  // Before (move semantics):
+  // let event = heartbeat_event_kind;
+  // // event is moved, can't be used again
+
+  // After (copy semantics):
+  let event = heartbeat_event_kind; // event is copied
+  // heartbeat_event_kind can still be used
+  ```
+
+- **render_template signature changed**: The `render_template` function now requires one generic type parameter where it previously required zero. All existing callsites must be updated to specify the template type explicitly.
+
+  **Migration**: Update callsites to include the template type parameter:
+
+  ```rust
+  // Before (11.0.0):
+  // render_template(template_data)?
+
+  // After (11.0.0):
+  render_template::<YourTemplateType>(template_data)?
+  ```
+
+  Replace `YourTemplateType` with the appropriate template struct for your use case.
+
 ### Other
 
 - Correctness ratchet: strict clippy + panic hygiene + dep checks ([#114](https://github.com/mythofmeat/shore-core/pull/114))

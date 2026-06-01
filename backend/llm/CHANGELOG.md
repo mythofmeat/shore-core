@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v6.0.3...shore-llm-v7.0.0) - 2026-05-31
 
+### Breaking
+
+- **RequestLog and ResponseLog now implement Copy**: Both `RequestLog` and `ResponseLog` structs gained Copy trait implementations (copy_impl_added). Code that relied on move-only semantics will break. This affects:
+  - Pattern matching that assumed exclusive ownership after a move
+  - Custom Drop implementations or cleanup logic
+  - Mutation or ownership assumptions
+
+  **Migration**: Update code that moves these types to accommodate copy semantics. If you relied on move-only behavior, use explicit `.clone()` calls or refactor ownership patterns:
+
+  ```rust
+  // Before (7.0.0):
+  // let log = request_log;
+  // process(log); // moves log, can't be used again
+
+  // After (7.0.0):
+  let log = request_log;
+  process(log); // copies log
+  // request_log is still available
+  ```
+
+- **LlmClient::new and LlmClient::with_payload_logging now require #[must_use]**: The `inherent_method_must_use_added` lint now applies to `LlmClient::new` and `LlmClient::with_payload_logging`. Callsites that create an `LlmClient` but don't use the return value will now trigger compiler warnings.
+
+  **Migration**: Ensure all callsites use the returned `LlmClient` instance, or explicitly annotate with `let _ =` if the warning is intentional:
+
+  ```rust
+  // Before (7.0.0):
+  // LlmClient::new(config); // warning not emitted
+
+  // After (7.0.0):
+  let client = LlmClient::new(config); // use the client
+  // or
+  let _ = LlmClient::new(config); // explicitly ignore if needed
+  ```
+
 ### Other
 
 - [codex] Add correctness ratchet tier 2/3 coverage ([#121](https://github.com/mythofmeat/shore-core/pull/121))
