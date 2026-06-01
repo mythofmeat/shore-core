@@ -376,7 +376,15 @@ enum SidecarResponseBody {
 }
 
 #[cfg(unix)]
+const STREAM_PATH: &str = "/v1/stream";
+#[cfg(unix)]
+const GENERATE_PATH: &str = "/v1/generate";
+#[cfg(unix)]
+const HEALTHZ_PATH: &str = "/healthz";
+
+#[cfg(unix)]
 struct QueuedSidecarResponse {
+    path: &'static str,
     status: u16,
     reason: &'static str,
     content_type: &'static str,
@@ -385,8 +393,9 @@ struct QueuedSidecarResponse {
 
 #[cfg(unix)]
 impl QueuedSidecarResponse {
-    fn json(body: &Value) -> Self {
+    fn json(path: &'static str, body: &Value) -> Self {
         Self {
+            path,
             status: 200,
             reason: "OK",
             content_type: "application/json",
@@ -394,12 +403,13 @@ impl QueuedSidecarResponse {
         }
     }
 
-    fn ndjson(events: Vec<Value>) -> Self {
+    fn ndjson(path: &'static str, events: Vec<Value>) -> Self {
         let mut body = String::new();
         for event in events {
             let _ = writeln!(body, "{event}");
         }
         Self {
+            path,
             status: 200,
             reason: "OK",
             content_type: "application/x-ndjson",
@@ -407,8 +417,14 @@ impl QueuedSidecarResponse {
         }
     }
 
-    fn text(status: u16, reason: &'static str, body: impl Into<String>) -> Self {
+    fn text(
+        path: &'static str,
+        status: u16,
+        reason: &'static str,
+        body: impl Into<String>,
+    ) -> Self {
         Self {
+            path,
             status,
             reason,
             content_type: "text/plain",
@@ -416,8 +432,9 @@ impl QueuedSidecarResponse {
         }
     }
 
-    fn hanging() -> Self {
+    fn hanging(path: &'static str) -> Self {
         Self {
+            path,
             status: 200,
             reason: "OK",
             content_type: "application/x-ndjson",
@@ -493,6 +510,7 @@ impl MockLlmSidecar {
 
     pub async fn enqueue_raw_ndjson(&self, body: String) {
         self.enqueue(QueuedSidecarResponse {
+            path: STREAM_PATH,
             status: 200,
             reason: "OK",
             content_type: "application/x-ndjson",
@@ -507,16 +525,28 @@ impl MockLlmSidecar {
     }
 
     pub async fn enqueue_error(&self, status: u16, body: &str) {
-        self.enqueue(QueuedSidecarResponse::text(status, "Error", body))
-            .await;
+        self.enqueue(QueuedSidecarResponse::text(
+            STREAM_PATH,
+            status,
+            "Error",
+            body,
+        ))
+        .await;
     }
 
     pub async fn enqueue_error_optional(&self, status: u16, body: &str) {
-        self.enqueue_error(status, body).await;
+        self.enqueue(QueuedSidecarResponse::text(
+            GENERATE_PATH,
+            status,
+            "Error",
+            body,
+        ))
+        .await;
     }
 
     pub async fn enqueue_hanging(&self) {
-        self.enqueue(QueuedSidecarResponse::hanging()).await;
+        self.enqueue(QueuedSidecarResponse::hanging(STREAM_PATH))
+            .await;
     }
 
     pub async fn enqueue_hanging_optional(&self) {
@@ -529,32 +559,41 @@ impl MockLlmSidecar {
             events.push(json!({"type": "text", "text": text}));
         }
         events.push(done_event(text, "end_turn"));
-        self.enqueue(QueuedSidecarResponse::ndjson(events)).await;
+        self.enqueue(QueuedSidecarResponse::ndjson(STREAM_PATH, events))
+            .await;
     }
 
     pub async fn enqueue_stream_tool_use(&self, id: &str, name: &str, input: Value) {
-        self.enqueue(QueuedSidecarResponse::ndjson(vec![
-            json!({"type": "start", "model": "claude-3-5-sonnet-20241022"}),
-            json!({"type": "tool_use", "id": id, "name": name, "input": input}),
-            done_event("", "tool_use"),
-        ]))
+        self.enqueue(QueuedSidecarResponse::ndjson(
+            STREAM_PATH,
+            vec![
+                json!({"type": "start", "model": "claude-3-5-sonnet-20241022"}),
+                json!({"type": "tool_use", "id": id, "name": name, "input": input}),
+                done_event("", "tool_use"),
+            ],
+        ))
         .await;
     }
 
     pub async fn enqueue_json_text(&self, text: &str) {
-        self.enqueue(QueuedSidecarResponse::json(&generate_text_response(text)))
-            .await;
+        self.enqueue(QueuedSidecarResponse::json(
+            GENERATE_PATH,
+            &generate_text_response(text),
+        ))
+        .await;
     }
 
     pub async fn enqueue_json_tool_use(&self, id: &str, name: &str, input: Value) {
-        self.enqueue(QueuedSidecarResponse::json(&generate_tool_use_response(
-            id, name, &input,
-        )))
+        self.enqueue(QueuedSidecarResponse::json(
+            GENERATE_PATH,
+            &generate_tool_use_response(id, name, &input),
+        ))
         .await;
     }
 
     pub async fn enqueue_json(&self, builder: AnthropicJsonBuilder) {
         self.enqueue(QueuedSidecarResponse::json(
+            GENERATE_PATH,
             &builder.build_sidecar_generate(),
         ))
         .await;
@@ -689,19 +728,29 @@ async fn handle_mock_sidecar_connection(
     received: Arc<Mutex<Vec<(String, Value)>>>,
 ) {
     let response = match read_http_request(&mut stream).await {
-        Ok((path, _body)) if path == "/healthz" => QueuedSidecarResponse::text(200, "OK", "ok\n"),
+        Ok((path, _body)) if path == HEALTHZ_PATH => {
+            QueuedSidecarResponse::text(HEALTHZ_PATH, 200, "OK", "ok\n")
+        }
         Ok((path, body)) => {
             let parsed_body = serde_json::from_str(&body).unwrap_or_else(|_| json!(body));
-            received.lock().await.push((path, parsed_body));
-            responses.lock().await.pop_front().unwrap_or_else(|| {
-                QueuedSidecarResponse::text(
-                    500,
-                    "Internal Server Error",
-                    "no queued sidecar response",
-                )
-            })
+            received.lock().await.push((path.clone(), parsed_body));
+            let mut queued = responses.lock().await;
+            let response_index = queued
+                .iter()
+                .position(|response| response.path == path.as_str());
+            response_index
+                .and_then(|index| queued.remove(index))
+                .unwrap_or_else(|| {
+                    QueuedSidecarResponse::text(
+                        "",
+                        500,
+                        "Internal Server Error",
+                        format!("no queued sidecar response for {path}"),
+                    )
+                })
         }
         Err(e) => QueuedSidecarResponse::text(
+            "",
             400,
             "Bad Request",
             format!("invalid mock sidecar request: {e}"),
