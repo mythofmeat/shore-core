@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.5](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.0.4...shore-cli-v2.0.5) - 2026-06-02
+
+### Other
+
+- updated the following local packages: shore-config, shore-swp-client
+
 ## [2.0.4](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.0.3...shore-cli-v2.0.4) - 2026-05-31
 
 ### Other
