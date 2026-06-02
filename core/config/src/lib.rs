@@ -1026,9 +1026,6 @@ roll_dice = false
 [advanced]
 max_retries = 5
 
-[chat.anthropic]
-api_key_env = "MY_KEY"
-
 [chat.anthropic.sonnet]
 model_id = "claude-sonnet-4-6"
 
@@ -1445,17 +1442,15 @@ model_id = "mistralai/mistral-small"
             (
                 "config.toml",
                 r#"
-[chat.anthropic]
-api_key_env = "BASE_KEY"
-
 [chat.anthropic.opus]
 model_id = "claude-opus-4-6"
+api_key_env = "BASE_KEY"
 "#,
             ),
             (
                 "conf.d/override.toml",
                 r#"
-[chat.anthropic]
+[chat.anthropic.opus]
 api_key_env = "OVERRIDE_KEY"
 "#,
             ),
@@ -1484,24 +1479,22 @@ api_key_env = "OVERRIDE_KEY"
                 r#"
 include = ["include.toml"]
 
-[chat.anthropic]
-temperature = 0.1
-
 [chat.anthropic.opus]
 model_id = "claude-opus-4-6"
+temperature = 0.1
 "#,
             ),
             (
                 "include.toml",
                 r"
-[chat.anthropic]
+[chat.anthropic.opus]
 temperature = 0.5
 ",
             ),
             (
                 "conf.d/final.toml",
                 r"
-[chat.anthropic]
+[chat.anthropic.opus]
 temperature = 0.9
 ",
             ),
@@ -2046,18 +2039,16 @@ env = "B"
     }
 
     #[test]
-    fn legacy_chat_provider_api_key_env_unchanged() {
-        // Existing single-key behavior under [chat.<provider>] must still
-        // cascade into ResolvedModel.api_key_env. Phase 1 does not touch
-        // this code path.
+    fn per_model_api_key_env_cascades_into_resolved_model() {
+        // A per-model `api_key_env` under [chat.<provider>.<model>] cascades
+        // into ResolvedModel.api_key_env. (Provider-level scalars under
+        // [chat.<provider>] were retired in favor of [providers.*] in #137.)
         let tmp = setup_config_dir(&[(
             "config.toml",
             r#"
-[chat.anthropic]
-api_key_env = "MY_LEGACY_KEY"
-
 [chat.anthropic.opus]
 model_id = "claude-opus-4-6"
+api_key_env = "MY_LEGACY_KEY"
 "#,
         )]);
         let loaded = load_config(Some(&tmp.path().join("config.toml"))).unwrap();

@@ -282,15 +282,15 @@ impl TestConfigBuilder {
         let model_alias = &self.model_alias;
         let model_id = &self.model_id;
         let max_output_tokens = self.max_output_tokens;
+        // Transport (base_url/sdk/api_key_env) lives on each model sub-table —
+        // provider-level scalars under `[chat.<provider>]` were retired (#137).
         let mut models_toml = format!(
             r#"
-[openrouter]
+[openrouter.{model_alias}]
+model_id = "{model_id}"
 base_url = "{mock_base_url}"
 sdk = "anthropic"
 api_key_env = "SHORE_TEST_API_KEY"
-
-[openrouter.{model_alias}]
-model_id = "{model_id}"
 max_output_tokens = {max_output_tokens}
 temperature = 0.0
 "#,
@@ -299,7 +299,7 @@ temperature = 0.0
         for (extra_alias, extra_model_id) in &self.extra_chat_aliases {
             let _ignored = write!(
                 models_toml,
-                "\n[openrouter.{extra_alias}]\nmodel_id = \"{extra_model_id}\"\nmax_output_tokens = {max_output_tokens}\ntemperature = 0.0\n",
+                "\n[openrouter.{extra_alias}]\nmodel_id = \"{extra_model_id}\"\nbase_url = \"{mock_base_url}\"\nsdk = \"anthropic\"\napi_key_env = \"SHORE_TEST_API_KEY\"\nmax_output_tokens = {max_output_tokens}\ntemperature = 0.0\n",
             );
             push_cache_ttl(&mut models_toml, self.cache_ttl.as_deref());
         }
