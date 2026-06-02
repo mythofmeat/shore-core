@@ -88,8 +88,8 @@ impl CompactionManager {
             return messages.len();
         }
         let mut turns_seen = 0usize;
-        for i in (0..messages.len()).rev() {
-            if messages[i].role == "user" && !Self::is_tool_loop_message(&messages[i]) {
+        for (i, msg) in messages.iter().enumerate().rev() {
+            if msg.role == "user" && !Self::is_tool_loop_message(msg) {
                 turns_seen += 1;
                 if turns_seen >= keep_turns {
                     return i;
@@ -320,7 +320,7 @@ impl CompactionManager {
         if split_at == 0 {
             return Err(CompactionError::InsufficientMessages);
         }
-        let compacted_part = &messages[..split_at];
+        let compacted_part = messages.get(..split_at).unwrap_or(messages);
         debug!(
             compacted = split_at,
             retained = messages.len() - split_at,
@@ -361,7 +361,7 @@ impl CompactionManager {
         };
 
         let compacted_turns = Self::count_turns(compacted_part);
-        let retained_turns = Self::count_turns(&messages[split_at..]);
+        let retained_turns = Self::count_turns(messages.get(split_at..).unwrap_or(&[]));
 
         // Drive the tool loop. Tracks: real writes (for archive + rollback),
         // rejected writes (for NoMemoryWrites diagnostics), all tools called

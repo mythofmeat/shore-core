@@ -286,9 +286,12 @@ impl ActivityTracker {
         let mut current_session = vec![0usize];
 
         for i in 1..self.timestamps.len() {
-            let gap = (self.timestamps[i].wall_clock - self.timestamps[i - 1].wall_clock)
-                .num_seconds()
-                .unsigned_abs();
+            let gap = match (self.timestamps.get(i), self.timestamps.get(i - 1)) {
+                (Some(cur), Some(prev)) => (cur.wall_clock - prev.wall_clock)
+                    .num_seconds()
+                    .unsigned_abs(),
+                _ => continue,
+            };
             if gap >= SESSION_GAP {
                 sessions.push(std::mem::take(&mut current_session));
             }
@@ -313,13 +316,22 @@ impl ActivityTracker {
 
         let mut gaps = Vec::with_capacity(sessions.len() - 1);
         for pair in sessions.windows(2) {
-            let Some(&last_of_prev) = pair[0].last() else {
+            let [prev_session, next_session] = pair else {
                 continue;
             };
-            let first_of_next = pair[1][0];
+            let (Some(&last_of_prev), Some(&first_of_next)) =
+                (prev_session.last(), next_session.first())
+            else {
+                continue;
+            };
+            let (Some(next_ts), Some(prev_ts)) = (
+                self.timestamps.get(first_of_next),
+                self.timestamps.get(last_of_prev),
+            ) else {
+                continue;
+            };
             let gap = u64_to_f64(
-                (self.timestamps[first_of_next].wall_clock
-                    - self.timestamps[last_of_prev].wall_clock)
+                (next_ts.wall_clock - prev_ts.wall_clock)
                     .num_seconds()
                     .unsigned_abs(),
             );
@@ -334,8 +346,15 @@ impl ActivityTracker {
         let mut all_gaps = Vec::new();
         for session in sessions {
             for pair in session.windows(2) {
+                let [a, b] = pair else {
+                    continue;
+                };
+                let (Some(ts_b), Some(ts_a)) = (self.timestamps.get(*b), self.timestamps.get(*a))
+                else {
+                    continue;
+                };
                 let gap = u64_to_f64(
-                    (self.timestamps[pair[1]].wall_clock - self.timestamps[pair[0]].wall_clock)
+                    (ts_b.wall_clock - ts_a.wall_clock)
                         .num_seconds()
                         .unsigned_abs(),
                 );
@@ -373,7 +392,9 @@ impl ActivityTracker {
         let mut histogram = [0.0f64; 24];
         for hour in &source {
             let hour = usize::try_from(*hour).unwrap_or(0);
-            histogram[hour] += 1.0;
+            if let Some(slot) = histogram.get_mut(hour) {
+                *slot += 1.0;
+            }
         }
 
         // Normalize to density (fraction of total).
@@ -440,11 +461,11 @@ pub fn classify_hours(histogram: &[f64; 24]) -> [HourClassification; 24] {
         return result;
     }
 
-    for (i, &density) in histogram.iter().enumerate() {
+    for (slot, &density) in result.iter_mut().zip(histogram.iter()) {
         if density > avg * PEAK_HOUR_THRESHOLD {
-            result[i] = HourClassification::Peak;
+            *slot = HourClassification::Peak;
         } else if density < avg * TROUGH_HOUR_THRESHOLD {
-            result[i] = HourClassification::Trough;
+            *slot = HourClassification::Trough;
         }
     }
     result
@@ -459,9 +480,12 @@ fn median(values: &[f64]) -> Option<f64> {
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = sorted.len() / 2;
     if sorted.len().is_multiple_of(2) {
-        Some(sorted[mid - 1].midpoint(sorted[mid]))
+        let (Some(lo), Some(hi)) = (sorted.get(mid - 1), sorted.get(mid)) else {
+            return None;
+        };
+        Some(lo.midpoint(*hi))
     } else {
-        Some(sorted[mid])
+        sorted.get(mid).copied()
     }
 }
 

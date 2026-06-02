@@ -132,7 +132,10 @@ impl CharacterRegistry {
                 .insert(name.to_string(), Arc::new(Mutex::new(engine)));
         }
 
-        Ok(Arc::clone(&self.engines[name]))
+        self.engines
+            .get(name)
+            .map(Arc::clone)
+            .ok_or_else(|| EngineError::CharacterNotFound(name.to_string()))
     }
 
     /// Load the character definition (system prompt) for a given character.
@@ -266,9 +269,9 @@ impl CharacterRegistry {
                     })
                 }
             }
-            None => match self.available.len() {
-                0 => Err(CharacterError::NoneAvailable),
-                1 => Ok(self.available[0].clone()),
+            None => match self.available.as_slice() {
+                [] => Err(CharacterError::NoneAvailable),
+                [only] => Ok(only.clone()),
                 _ => Err(CharacterError::AmbiguousSelection {
                     available: self.available.clone(),
                 }),

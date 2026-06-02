@@ -22,10 +22,21 @@
     clippy::mem_forget,
     clippy::match_wildcard_for_single_variants,
     clippy::wildcard_enum_match_arm,
+    clippy::indexing_slicing,
     clippy::undocumented_unsafe_blocks,
     unsafe_code,
     elided_lifetimes_in_paths,
     unused_qualifications
+)]
+// Tests index into fixtures freely: an out-of-bounds panic in a test is just an
+// assertion failure (same rationale as the `allow-*-in-tests` clippy.toml
+// settings). Production code stays locked by the `#![deny(...)]` above.
+#![cfg_attr(
+    test,
+    expect(
+        clippy::indexing_slicing,
+        reason = "out-of-bounds indexing in tests is an assertion failure, not a service panic"
+    )
 )]
 
 use std::path::{Path, PathBuf};

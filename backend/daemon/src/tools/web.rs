@@ -127,7 +127,9 @@ pub async fn handle_web_search(input: Value, ctx: &dyn ToolContext) -> Result<Va
     });
 
     if let Some(answer) = tavily_resp.get("answer").and_then(|v| v.as_str()) {
-        result["answer"] = json!(answer);
+        if let Some(obj) = result.as_object_mut() {
+            let _ignored = obj.insert("answer".into(), json!(answer));
+        }
     }
 
     Ok(result)
@@ -209,7 +211,7 @@ fn strip_html(html: &str) -> String {
     let mut i = 0;
 
     while i < html.len() {
-        if bytes[i] == b'<' {
+        if bytes.get(i) == Some(&b'<') {
             // Check for blocks we want to skip entirely.
             // Compare case-insensitively against the original html slice.
             let remaining_lower = html[i..].to_ascii_lowercase();

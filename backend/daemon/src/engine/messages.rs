@@ -119,7 +119,7 @@ impl MessageStore {
     /// assistant response currently being regenerated.
     pub fn messages_through_last_user_turn(&self) -> Vec<Message> {
         let keep = self.last_real_user_turn_keep_index();
-        self.messages[..keep].to_vec()
+        self.messages.get(..keep).unwrap_or(&self.messages).to_vec()
     }
 
     /// The file path this store persists to.
@@ -270,7 +270,7 @@ impl MessageStore {
     /// regeneration is about to replace.
     pub fn pending_regen_alt(&self) -> Option<PendingAlt> {
         let keep = self.last_real_user_turn_keep_index();
-        let tail = &self.messages[keep..];
+        let tail = self.messages.get(keep..).unwrap_or(&[]);
         let merged = shore_protocol::merge::merge_tool_loop_messages(tail);
         let active = merged.iter().rev().find(|m| m.role == Role::Assistant)?;
 
@@ -282,7 +282,9 @@ impl MessageStore {
             let last_alt = usize_to_u32(alternatives.len().saturating_sub(1));
             let idx = usize::try_from(active.alt_index.unwrap_or(last_alt).min(last_alt))
                 .unwrap_or(usize::MAX);
-            alternatives[idx] = current;
+            if let Some(slot) = alternatives.get_mut(idx) {
+                *slot = current;
+            }
         }
 
         Some(PendingAlt { alternatives })
@@ -343,9 +345,17 @@ impl MessageStore {
             });
         }
 
-        let selected = message_from_alternative(target, index);
+        let selected = message_from_alternative(target, index).ok_or_else(|| {
+            EngineError::InvalidAlt(format!(
+                "alternate index {} out of range (message has {} alternate response(s))",
+                index + 1,
+                alt_count
+            ))
+        })?;
         let keep = self.last_real_user_turn_keep_index();
-        let tail_merged = shore_protocol::merge::merge_tool_loop_messages(&self.messages[keep..]);
+        let tail_merged = shore_protocol::merge::merge_tool_loop_messages(
+            self.messages.get(keep..).unwrap_or(&[]),
+        );
         let is_current_tail = tail_merged
             .iter()
             .rev()
@@ -432,9 +442,9 @@ fn alternative_from_message(msg: &Message) -> MessageAlternative {
     }
 }
 
-fn message_from_alternative(template: &Message, index: u32) -> Message {
+fn message_from_alternative(template: &Message, index: u32) -> Option<Message> {
     let alt_pos = usize::try_from(index).unwrap_or(usize::MAX);
-    let alt = template.alternatives[alt_pos].clone();
+    let alt = template.alternatives.get(alt_pos)?.clone();
     let mut msg = Message {
         msg_id: template.msg_id.clone(),
         role: Role::Assistant,
@@ -452,7 +462,7 @@ fn message_from_alternative(template: &Message, index: u32) -> Message {
         },
     };
     msg.normalize();
-    msg
+    Some(msg)
 }
 
 #[cfg(test)]

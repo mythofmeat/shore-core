@@ -64,8 +64,8 @@ pub fn excerpt_for_query(text: &str, query: &str, limit: usize) -> String {
         .collect::<Vec<_>>();
     let lines = text.lines().collect::<Vec<_>>();
 
-    for idx in 0..lines.len() {
-        let line = lines[idx].trim();
+    for (idx, raw_line) in lines.iter().enumerate() {
+        let line = raw_line.trim();
         if line.is_empty() {
             continue;
         }
@@ -79,7 +79,9 @@ pub fn excerpt_for_query(text: &str, query: &str, limit: usize) -> String {
 
         let start = idx.saturating_sub(1);
         let end = (idx + 2).min(lines.len());
-        let window = lines[start..end]
+        let window = lines
+            .get(start..end)
+            .unwrap_or(&[])
             .iter()
             .map(|line| line.trim())
             .filter(|line| !line.is_empty())
