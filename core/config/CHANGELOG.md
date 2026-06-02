@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.8.1...shore-config-v0.9.0) - 2026-06-02
 
-### Other
+### Breaking
 
-- LLM sidecar migration ([#123](https://github.com/mythofmeat/shore-core/pull/123)) — consolidated + OpenRouter SDK ([#128](https://github.com/mythofmeat/shore-core/pull/128))
+- shore-config (0.9.0) — breaking changes to API types and enum discriminants due to LLM sidecar migration ([#123](https://github.com/mythofmeat/shore-core/pull/123)) and OpenRouter SDK consolidation ([#128](https://github.com/mythofmeat/shore-core/pull/128)); consumers must update usages accordingly
 
 ## [0.8.1](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.8.0...shore-config-v0.8.1) - 2026-05-31
 
