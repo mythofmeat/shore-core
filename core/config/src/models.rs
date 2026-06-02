@@ -368,13 +368,6 @@ pub struct ModelCatalog {
     pub embedding: BTreeMap<String, toml::Value>,
     /// Image generation profiles as raw TOML (consumers not yet implemented).
     pub image_generation: BTreeMap<String, toml::Value>,
-    /// Explicit `[chat.<provider>]` provider-level config fields, keyed by
-    /// provider. Static `[chat.<provider>.<model>]` entries already fold these
-    /// in at parse time; this map is retained so the *discovered* model path
-    /// (`effective_catalog::build_resolved_from_discovered`) can apply the same
-    /// provider-level defaults (routing, cache_ttl, sampler knobs) that static
-    /// models inherit. Only providers with at least one explicit field appear.
-    pub chat_provider_defaults: BTreeMap<String, ModelConfigFields>,
 }
 
 /// Errors from model catalog parsing.
@@ -402,7 +395,21 @@ pub enum CatalogError {
          was removed; drop this section from your config"
     )]
     RemovedProvider { category: String },
+    #[error(
+        "[{category}.{provider}] no longer accepts provider-level scalar `{key}`; \
+         move it to {target}"
+    )]
+    ProviderScalarRetired {
+        category: String,
+        provider: String,
+        key: String,
+        target: &'static str,
+    },
 }
+
+/// Transport keys that belong on the `[providers.<name>]` entry itself rather
+/// than its `[.defaults]` behavioral bag.
+const TRANSPORT_SCALAR_KEYS: &[&str] = &["sdk", "api_key_env", "base_url", "keys"];
 
 /// Dict-valued TOML keys at the provider level that are config fields,
 /// NOT model sub-tables.  Mirrors V1's `_RESERVED_DICT_KEYS`.
@@ -440,15 +447,13 @@ impl ModelCatalog {
         image_generation: Option<&toml::Table>,
         providers: Option<&crate::providers::ProviderRegistry>,
     ) -> Result<Self, CatalogError> {
-        let (chat_models, chat_provider_defaults) = match chat {
+        let chat_models = match chat {
             Some(t) => parse_category("chat", t, providers)?,
-            None => (BTreeMap::new(), BTreeMap::new()),
+            None => BTreeMap::new(),
         };
-        // Discovered models are chat-only, so tool-level provider defaults are
-        // never consulted; discard them.
-        let (tool_models, _) = match tools {
+        let tool_models = match tools {
             Some(t) => parse_category("tools", t, providers)?,
-            None => (BTreeMap::new(), BTreeMap::new()),
+            None => BTreeMap::new(),
         };
 
         // Embedding and image_generation are stored as raw TOML for now.
@@ -466,7 +471,6 @@ impl ModelCatalog {
             tools: tool_models,
             embedding: embedding_profiles,
             image_generation: image_gen_profiles,
-            chat_provider_defaults,
         };
         info!(
             chat_models = catalog.chat.len(),
@@ -557,28 +561,18 @@ impl ModelCatalog {
 
 /// Parse a category section (`[chat]` or `[tools]`) from raw TOML.
 ///
-/// For each provider table, separates scalar keys (provider defaults) from
-/// sub-table keys (model entries).  `openrouter_provider` is a reserved
-/// dict key treated as a provider scalar.
+/// Parses the `[<category>.<provider>.<model>]` static model sub-tables for a
+/// category, returning the resolved models keyed by qualified name.
 ///
-/// Returns `(models, provider_defaults)` where `provider_defaults` carries the
-/// explicit `[<category>.<provider>]` scalar fields per provider (only entries
-/// with at least one set field). Static models already fold these in, but the
-/// discovered-model path reuses them so discovery inherits the same defaults.
-/// `(models, provider_defaults)` — the resolved models for a category plus the
-/// explicit `[<category>.<provider>]` scalar fields, keyed by provider.
-type ParsedCategory = (
-    BTreeMap<String, ResolvedModel>,
-    BTreeMap<String, ModelConfigFields>,
-);
-
+/// Provider-level defaults no longer live here — they were rehomed onto
+/// `[providers.<provider>.defaults]` (#137). Scalar keys directly under
+/// `[<category>.<provider>]` are therefore rejected with a migration error.
 fn parse_category(
     category: &str,
     section: &toml::Table,
     providers: Option<&crate::providers::ProviderRegistry>,
-) -> Result<ParsedCategory, CatalogError> {
+) -> Result<BTreeMap<String, ResolvedModel>, CatalogError> {
     let mut models = BTreeMap::new();
-    let mut provider_defaults: BTreeMap<String, ModelConfigFields> = BTreeMap::new();
     debug!(
         category,
         providers = section.len(),
@@ -605,24 +599,30 @@ fn parse_category(
             continue;
         };
 
-        // ── Extract provider-level scalars ───────────────────────────
-        // Build a TOML table containing only the scalar keys (and reserved
-        // dict keys), then deserialize into ProviderConfig.
-        let mut provider_scalars = toml::Table::new();
+        // Provider-level scalars under `[<category>.<provider>]` were retired in
+        // favor of `[providers.<provider>.defaults]`. Reject any leftover so a
+        // stale config fails loudly instead of silently dropping (e.g.) routing.
         for (k, v) in provider_table {
             if !v.is_table() || RESERVED_DICT_KEYS.contains(&k.as_str()) {
-                provider_scalars.insert(k.clone(), v.clone());
+                let target = if TRANSPORT_SCALAR_KEYS.contains(&k.as_str()) {
+                    "the matching [providers.<name>] entry"
+                } else {
+                    "[providers.<name>.defaults]"
+                };
+                return Err(CatalogError::ProviderScalarRetired {
+                    category: category.to_string(),
+                    provider: provider_key.clone(),
+                    key: k.clone(),
+                    target,
+                });
             }
         }
 
         // Cascade order (lowest → highest precedence):
         //   1. hardcoded provider defaults
         //   2. `[providers.<provider>]` registry transport (sdk + base_url)
-        //      — lets custom OpenAI-compatible providers configured only
-        //      under `[providers]` route static aliases through the
-        //      right transport without duplicating fields under `[chat]`
-        //   3. `[chat.<provider>]` scalar fields
-        //   4. `[chat.<provider>.<model>]` per-model fields (applied below)
+        //   3. `[providers.<provider>.defaults]` behavioral/vendor defaults
+        //   4. `[<category>.<provider>.<model>]` per-model fields (below)
         //
         // Credentials (`api_key_env` and the named-key list) intentionally
         // do NOT cascade through this path; the registry's compact
@@ -640,24 +640,14 @@ fn parse_category(
                     ..ModelConfigFields::default()
                 };
                 provider_config.fields.merge_from(&registry_overlay);
-            }
-        }
-
-        // Overlay explicit TOML scalars. Also retain them per-provider so the
-        // discovered-model path can apply the same `[<category>.<provider>]`
-        // defaults; only the user's explicit fields are kept (not the merged
-        // hardcoded/registry baseline), so discovery's own lower-precedence
-        // cascade stays intact.
-        if let Ok(explicit) = toml::Value::Table(provider_scalars).try_into::<ProviderConfig>() {
-            provider_config.fields.merge_from(&explicit.fields);
-            if explicit.fields != ModelConfigFields::default() {
-                provider_defaults.insert(provider_key.clone(), explicit.fields);
+                provider_config.fields.merge_from(&entry.defaults);
             }
         }
 
         // ── Extract model sub-tables ────────────────────────────────
         for (model_name, model_value) in provider_table {
-            // Skip scalars and reserved dict keys — those are provider config.
+            // Scalars and reserved dict keys are rejected above; only model
+            // sub-tables remain here.
             if !model_value.is_table() || RESERVED_DICT_KEYS.contains(&model_name.as_str()) {
                 continue;
             }
@@ -703,7 +693,7 @@ fn parse_category(
     }
 
     debug!(category, models = models.len(), "Category parsing complete");
-    Ok((models, provider_defaults))
+    Ok(models)
 }
 
 // ── Provider defaults ───────────────────────────────────────────────────
@@ -721,8 +711,8 @@ fn base_provider_defaults() -> ModelConfigFields {
 /// Hardcoded provider defaults (ported from V1 `PROVIDER_DEFAULTS`).
 ///
 /// Public so the effective-catalog merger (Phase 7) can synthesize
-/// `ResolvedModel` records for discovered models that have no TOML
-/// scalars under `[chat.<provider>]`.
+/// `ResolvedModel` records for discovered and trusted models as the lowest
+/// (code-level) tier, below `[providers.<provider>.defaults]`.
 pub fn hardcoded_provider_defaults(provider_key: &str) -> ProviderConfig {
     hardcoded_defaults(provider_key)
 }
@@ -818,15 +808,13 @@ mod tests {
     fn parse_single_provider_single_model() {
         let table = parse_table(
             r#"
-[anthropic]
-sdk = "anthropic"
-api_key_env = "MY_KEY"
-
 [anthropic.opus]
 model_id = "claude-opus-4-6"
+sdk = "anthropic"
+api_key_env = "MY_KEY"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         assert_eq!(models.len(), 1);
 
         let opus = &models["chat.anthropic.opus"];
@@ -843,9 +831,6 @@ model_id = "claude-opus-4-6"
     fn openrouter_provider_defaults_to_openrouter_sdk() {
         let table = parse_table(
             r#"
-[openrouter]
-api_key_env = "OPENROUTER_API_KEY"
-
 [openrouter.deepseek]
 model_id = "deepseek/deepseek-v4"
 
@@ -854,7 +839,7 @@ model_id = "z-ai/glm-5.1"
 sdk = "zai"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
 
         // Non-Anthropic OpenRouter model → first-party OpenRouter SDK by default.
         assert_eq!(models["chat.openrouter.deepseek"].sdk, Sdk::Openrouter);
@@ -874,7 +859,7 @@ model_id = "anthropic/claude-sonnet-4-6"
 api_key_env = "MY_KEY"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         assert_eq!(models["chat.myrouter.claude"].sdk, Sdk::Anthropic);
     }
 
@@ -887,13 +872,24 @@ api_key_env = "MY_KEY"
 
     #[test]
     fn provider_defaults_cascade_into_models() {
-        let table = parse_table(
-            r#"
-[anthropic]
-api_key_env = "SHARED_KEY"
+        // `[providers.<provider>.defaults]` behavioral defaults cascade into
+        // static models, and a per-model field still overrides them (#137).
+        use crate::providers::ProviderRegistry;
+
+        let providers_table: toml::Table = r#"
+[providers.anthropic.defaults]
 max_context_tokens = 65536
 cache_ttl = "1h"
+"#
+        .parse()
+        .unwrap();
+        let registry = ProviderRegistry::from_section(
+            providers_table.get("providers").and_then(|v| v.as_table()),
+        )
+        .unwrap();
 
+        let table = parse_table(
+            r#"
 [anthropic.opus]
 model_id = "claude-opus-4-6"
 
@@ -902,17 +898,16 @@ model_id = "claude-sonnet-4-6"
 cache_ttl = "5m"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, Some(&registry)).unwrap();
 
-        // opus inherits provider defaults
+        // opus inherits the provider defaults
         let opus = &models["chat.anthropic.opus"];
-        assert_eq!(opus.api_key_env.as_deref(), Some("SHARED_KEY"));
         assert_eq!(opus.max_context_tokens, Some(65536));
         assert_eq!(opus.cache_ttl.as_deref(), Some("1h"));
 
-        // sonnet overrides cache_ttl
+        // sonnet overrides cache_ttl but still inherits max_context_tokens
         let sonnet = &models["chat.anthropic.sonnet"];
-        assert_eq!(sonnet.api_key_env.as_deref(), Some("SHARED_KEY"));
+        assert_eq!(sonnet.max_context_tokens, Some(65536));
         assert_eq!(sonnet.cache_ttl.as_deref(), Some("5m"));
     }
 
@@ -924,7 +919,7 @@ cache_ttl = "5m"
 model_id = "claude-opus-4-6"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus"];
 
         // Should get hardcoded anthropic defaults.
@@ -944,15 +939,13 @@ model_id = "claude-opus-4-6"
         // pins that the default fires off the resolved SDK, not the key.
         let table = parse_table(
             r#"
-[my_anthropic_proxy]
-sdk = "anthropic"
-api_key_env = "MY_KEY"
-
 [my_anthropic_proxy.opus]
 model_id = "claude-opus-4-6"
+sdk = "anthropic"
+api_key_env = "MY_KEY"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.my_anthropic_proxy.opus"];
         assert_eq!(opus.sdk, Sdk::Anthropic);
         assert_eq!(opus.cache_ttl.as_deref(), Some("1h"));
@@ -966,7 +959,7 @@ model_id = "claude-opus-4-6"
 model_id = "anthropic/claude-opus-4.6"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         let foo = &models["chat.openrouter.foo"];
         // openrouter -> Sdk::Openrouter via hardcoded_defaults (non-Anthropic),
         // so it still gets no automatic "1h" cache_ttl.
@@ -983,7 +976,7 @@ model_id = "claude-opus-4-6"
 cache_ttl = ""
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus"];
         // Explicit empty string survives — the runtime treats it as disabled.
         assert_eq!(opus.cache_ttl.as_deref(), Some(""));
@@ -998,7 +991,7 @@ model_id = "claude-opus-4-6"
 cache_ttl = "5m"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus"];
         assert_eq!(opus.cache_ttl.as_deref(), Some("5m"));
     }
@@ -1032,7 +1025,7 @@ base_url = "https://acme.example.com/v1"
 model_id = "acme/fast"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, Some(&registry)).unwrap();
+        let models = parse_category("chat", &table, Some(&registry)).unwrap();
 
         let fast = &models["chat.acme.fast"];
         assert_eq!(fast.sdk, Sdk::Openai);
@@ -1069,7 +1062,7 @@ api_key_env = "ACME_KEY"
 model_id = "acme/fast"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, Some(&registry)).unwrap();
+        let models = parse_category("chat", &table, Some(&registry)).unwrap();
 
         let fast = &models["chat.acme.fast"];
         // sdk and base_url cascade.
@@ -1084,17 +1077,15 @@ model_id = "acme/fast"
     }
 
     #[test]
-    fn chat_section_scalars_win_over_provider_registry() {
-        // Cascade ordering: explicit `[chat.<provider>]` scalars must
-        // override the registry's defaults, just as model-level fields
-        // override `[chat.<provider>]` scalars.
+    fn provider_defaults_override_hardcoded_defaults() {
+        // `[providers.<provider>.defaults]` behavioral scalars win over the
+        // hardcoded provider baseline, and unset fields fall through to it.
         use crate::providers::ProviderRegistry;
 
-        let providers_table: toml::Table = r#"
-[providers.acme]
-sdk = "openai"
-base_url = "https://acme.example.com/v1"
-"#
+        let providers_table: toml::Table = r"
+[providers.anthropic.defaults]
+temperature = 0.5
+"
         .parse()
         .unwrap();
         let registry = ProviderRegistry::from_section(
@@ -1104,48 +1095,23 @@ base_url = "https://acme.example.com/v1"
 
         let table = parse_table(
             r#"
-[acme]
-base_url = "https://override.example.com/v2"
-
-[acme.fast]
-model_id = "acme/fast"
-"#,
-        );
-        let (models, _) = parse_category("chat", &table, Some(&registry)).unwrap();
-
-        let fast = &models["chat.acme.fast"];
-        // sdk still inherited from the registry (chat section did not set it)
-        assert_eq!(fast.sdk, Sdk::Openai);
-        // base_url from the chat section wins over the registry
-        assert_eq!(
-            fast.base_url.as_deref(),
-            Some("https://override.example.com/v2")
-        );
-    }
-
-    #[test]
-    fn toml_scalars_override_hardcoded_defaults() {
-        let table = parse_table(
-            r#"
-[anthropic]
-api_key_env = "CUSTOM_KEY"
-temperature = 0.5
-
 [anthropic.opus]
 model_id = "claude-opus-4-6"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, Some(&registry)).unwrap();
         let opus = &models["chat.anthropic.opus"];
 
-        assert_eq!(opus.api_key_env.as_deref(), Some("CUSTOM_KEY"));
         assert_eq!(opus.temperature, Some(0.5));
-        // max_output_tokens still from hardcoded defaults.
+        // max_output_tokens still from the hardcoded baseline.
         assert_eq!(opus.max_output_tokens, Some(8192));
     }
 
     #[test]
-    fn reserved_dict_key_not_treated_as_model() {
+    fn provider_level_scalar_under_chat_is_rejected() {
+        // Provider-level scalars under `[chat.<provider>]` were retired in
+        // favor of `[providers.<provider>.defaults]` (#137); a leftover one
+        // fails loudly. Reserved dict keys (e.g. `openrouter_provider`) count.
         let table = parse_table(
             r#"
 [anthropic]
@@ -1155,15 +1121,20 @@ openrouter_provider = {order = ["Vertex AI"]}
 model_id = "claude-opus-4-6"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
-
-        // Should only have "opus", not "openrouter_provider".
-        assert_eq!(models.len(), 1);
-        assert!(models.contains_key("chat.anthropic.opus"));
-
-        // And the provider-level openrouter_provider should cascade.
-        let opus = &models["chat.anthropic.opus"];
-        assert!(opus.openrouter_provider.is_some());
+        let err = parse_category("chat", &table, None).unwrap_err();
+        match err {
+            CatalogError::ProviderScalarRetired {
+                category,
+                provider,
+                key,
+                ..
+            } => {
+                assert_eq!(category, "chat");
+                assert_eq!(provider, "anthropic");
+                assert_eq!(key, "openrouter_provider");
+            }
+            other => panic!("expected ProviderScalarRetired, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1204,7 +1175,7 @@ model_id = "claude-opus-4-6"
 model_id = "google/gemini-3.1-pro-preview"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         assert_eq!(models.len(), 2);
         assert_eq!(models["chat.anthropic.opus"].sdk, Sdk::Anthropic);
         assert_eq!(models["chat.openrouter.gemini-pro"].sdk, Sdk::Openrouter); // openrouter default
@@ -1555,7 +1526,7 @@ model_id = "anthropic/claude-opus-4.6"
 sdk = "anthropic"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.openrouter.claude-opus"];
 
         // SDK should be overridden to Anthropic
@@ -1578,10 +1549,6 @@ sdk = "anthropic"
         // to Sdk::Anthropic so cache_control markers reach the wire.
         let table = parse_table(
             r#"
-[openrouter-anthropic]
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
 [openrouter-anthropic.opus]
 model_id = "anthropic/claude-opus-4.6"
 
@@ -1589,7 +1556,7 @@ model_id = "anthropic/claude-opus-4.6"
 model_id = "openai/gpt-5"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
 
         let opus = &models["chat.openrouter-anthropic.opus"];
         assert_eq!(opus.sdk, Sdk::Anthropic);
@@ -1608,16 +1575,12 @@ model_id = "openai/gpt-5"
         // respected (e.g. for testing the chat-completions path).
         let table = parse_table(
             r#"
-[openrouter-anthropic]
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
 [openrouter-anthropic.opus-via-openai]
 model_id = "anthropic/claude-opus-4.6"
 sdk = "openai"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.openrouter-anthropic.opus-via-openai"];
         assert_eq!(opus.sdk, Sdk::Openai);
     }
@@ -1633,7 +1596,7 @@ base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 "#,
         );
-        let (models, _) = parse_category("chat", &table, None).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus-via-or"];
 
         assert_eq!(opus.sdk, Sdk::Anthropic);

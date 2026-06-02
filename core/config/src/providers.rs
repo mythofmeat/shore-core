@@ -43,7 +43,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::Sdk;
+use crate::models::{ModelConfigFields, Sdk};
 
 // ── Errors ──────────────────────────────────────────────────────────────
 
@@ -79,6 +79,15 @@ pub enum ProviderRegistryError {
          was removed; drop this section from your config"
     )]
     RemovedProvider,
+
+    #[error(
+        "[providers.{provider}.defaults] may not set transport key `{field}`; \
+         set it on [providers.{provider}] directly"
+    )]
+    TransportInDefaults {
+        provider: String,
+        field: &'static str,
+    },
 }
 
 // ── Discovery ───────────────────────────────────────────────────────────
@@ -230,6 +239,16 @@ pub struct ProviderEntry {
 
     #[serde(default)]
     pub discovery: ProviderDiscovery,
+
+    /// `[providers.<name>.defaults]` — provider-wide behavioral and vendor
+    /// defaults (e.g. `max_output_tokens`, `cache_ttl`, `openrouter_provider`,
+    /// `vertex_*`, `gemini_*`, `zai_*`). This is the same field bag as the
+    /// per-model overlay (`[models."provider:model_id"]`), applied provider-wide
+    /// as the lowest user-config tier. Transport (`sdk`/`base_url`/credentials)
+    /// belongs on the provider entry itself, not here — those keys are rejected
+    /// (see `parse_entry`). Replaces the retired `[chat.<provider>]` scalars.
+    #[serde(default)]
+    pub defaults: ModelConfigFields,
 }
 
 impl Default for ProviderEntry {
@@ -241,6 +260,7 @@ impl Default for ProviderEntry {
             api_key_env: None,
             keys: Vec::new(),
             discovery: ProviderDiscovery::default(),
+            defaults: ModelConfigFields::default(),
         }
     }
 }
@@ -322,6 +342,16 @@ fn parse_entry(provider: &str, value: toml::Value) -> Result<ProviderEntry, Prov
                 source: Box::new(e),
             })?;
 
+    // Transport lives on the provider entry itself, not under `[.defaults]`.
+    // Reject it there so there is exactly one home for sdk/base_url/credentials
+    // (and no silent second source once `[chat.*]` is gone).
+    if let Some(field) = transport_field_in_defaults(&entry.defaults) {
+        return Err(ProviderRegistryError::TransportInDefaults {
+            provider: provider.to_string(),
+            field,
+        });
+    }
+
     // Reject the "both forms" case explicitly — silent precedence between
     // compact and named-key forms invites surprise. Pick one per provider.
     if entry.api_key_env.is_some() && !entry.keys.is_empty() {
@@ -368,6 +398,21 @@ fn parse_entry(provider: &str, value: toml::Value) -> Result<ProviderEntry, Prov
     }
 
     Ok(entry)
+}
+
+/// Returns the name of the first transport field set in a `[.defaults]` block,
+/// if any. Transport (`sdk`/`base_url`/`api_key_env`) belongs on the provider
+/// entry, not in its behavioral-defaults bag.
+fn transport_field_in_defaults(defaults: &ModelConfigFields) -> Option<&'static str> {
+    if defaults.sdk.is_some() {
+        Some("sdk")
+    } else if defaults.base_url.is_some() {
+        Some("base_url")
+    } else if defaults.api_key_env.is_some() {
+        Some("api_key_env")
+    } else {
+        None
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -570,6 +615,47 @@ env = "OTHER"
             err,
             ProviderRegistryError::ConflictingKeyForms { ref provider }
                 if provider == "openrouter"
+        ));
+    }
+
+    #[test]
+    fn parses_provider_defaults_block() {
+        let table = parse_table(
+            r#"
+[providers.or-anthropic]
+sdk = "anthropic"
+api_key_env = "OR_KEY"
+
+[providers.or-anthropic.defaults]
+max_output_tokens = 8192
+openrouter_provider = { order = ["Anthropic"] }
+"#,
+        );
+        let providers = table.get("providers").and_then(|v| v.as_table());
+        let registry = ProviderRegistry::from_section(providers).unwrap();
+        let entry = registry.get("or-anthropic").unwrap();
+        assert_eq!(entry.defaults.max_output_tokens, Some(8192));
+        assert!(entry.defaults.openrouter_provider.is_some());
+        // Transport stays on the entry, not in defaults.
+        assert_eq!(entry.sdk, Some(Sdk::Anthropic));
+        assert!(entry.defaults.sdk.is_none());
+    }
+
+    #[test]
+    fn rejects_transport_in_defaults() {
+        let table = parse_table(
+            r#"
+[providers.acme]
+[providers.acme.defaults]
+base_url = "https://nope.example.com/v1"
+"#,
+        );
+        let providers = table.get("providers").and_then(|v| v.as_table());
+        let err = ProviderRegistry::from_section(providers).unwrap_err();
+        assert!(matches!(
+            err,
+            ProviderRegistryError::TransportInDefaults { ref provider, field }
+                if provider == "acme" && field == "base_url"
         ));
     }
 
