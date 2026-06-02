@@ -83,11 +83,11 @@ export class OpenAIProvider implements SidecarProvider {
     const text = typeof message?.content === "string" ? message.content : "";
     if (text) content_blocks.push({ type: "text", text });
     if (Array.isArray(message?.tool_calls)) {
-      for (const tc of message.tool_calls) {
+      for (const [index, tc] of message.tool_calls.entries()) {
         const tool = tc as { id?: string; function?: { name?: string; arguments?: string } };
         content_blocks.push({
           type: "tool_use",
-          id: tool.id ?? "tc_0",
+          id: tool.id ?? `tc_${index}`,
           name: tool.function?.name ?? "",
           input: parseArgs(tool.function?.arguments ?? ""),
         });
@@ -156,6 +156,7 @@ export async function* openAIStreamEvents(
       }
 
       if (delta.tool_calls) {
+        markFirst();
         for (const tc of delta.tool_calls) {
           const idx = tc.index;
           let state = toolCalls.get(idx);
@@ -176,7 +177,6 @@ export async function* openAIStreamEvents(
 
   // One consolidated tool_use event per call, in index order, with full input.
   for (const tc of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
-    markFirst();
     yield { type: "tool_use", id: tc[1].id, name: tc[1].name, input: parseArgs(tc[1].argsJson) };
   }
 

@@ -78,7 +78,12 @@ pub(crate) async fn generate(
         .await?;
     let response = check_response(response).await?;
     let body = response.text().await?;
-    serde_json::from_str(&body).map_err(LlmError::Deserialize)
+    serde_json::from_str(&body).map_err(|e| LlmError::Provider {
+        message: format!(
+            "sidecar /v1/generate response was not valid JSON: {e}; body preview: {}",
+            super::body_preview(&body, 200)
+        ),
+    })
 }
 
 pub(crate) async fn image_generate(
@@ -95,7 +100,12 @@ pub(crate) async fn image_generate(
         .await?;
     let response = check_response(response).await?;
     let body = response.text().await?;
-    serde_json::from_str(&body).map_err(LlmError::Deserialize)
+    serde_json::from_str(&body).map_err(|e| LlmError::Provider {
+        message: format!(
+            "sidecar /v1/image response was not valid JSON: {e}; body preview: {}",
+            super::body_preview(&body, 200)
+        ),
+    })
 }
 
 #[derive(Serialize)]

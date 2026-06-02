@@ -236,7 +236,7 @@ test("maps non-streaming Gemini response to GenerateResponse", () => {
     content_blocks: [
       { type: "thinking", thinking: "think", signature: "sig_2" },
       { type: "text", text: "hello" },
-      { type: "tool_use", id: "gemini_lookup", name: "lookup", input: { id: 7 } },
+      { type: "tool_use", id: "gemini_call_0", name: "lookup", input: { id: 7 } },
     ],
     finish_reason: "max_tokens",
     usage: {

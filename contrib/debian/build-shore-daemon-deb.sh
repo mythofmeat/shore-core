@@ -64,7 +64,10 @@ else
     esac
 fi
 
-DEB_DEPENDS=${DEB_DEPENDS:-"ca-certificates, libssl3"}
+# `bun` is a runtime dependency: the sidecar ships as a Bun-script bundle with a
+# `#!/usr/bin/env bun` shebang (not a self-contained binary), so the target must
+# provide `/usr/bin/bun`. Matches the Arch PKGBUILD's `depends=('bun')`.
+DEB_DEPENDS=${DEB_DEPENDS:-"ca-certificates, libssl3, bun"}
 OUT_DIR=${OUT_DIR:-"$REPO_ROOT/target/debian"}
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-target}
 export CARGO_TARGET_DIR
@@ -88,8 +91,11 @@ cargo build --release --frozen -p shore-daemon
 
 install -Dm755 "$CARGO_TARGET_DIR/release/shore-daemon" \
     "$PKG_ROOT/usr/bin/shore-daemon"
+# Kept out of /usr/bin on purpose: the daemon supervises this directly and
+# resolves it via SHORE_LLM_SIDECAR_BIN=/usr/lib/shore/shore-llm-sidecar (see
+# contrib/shore-daemon.service), so it must not be runnable by name off $PATH.
 install -Dm755 backend/llm-sidecar/dist/shore-llm-sidecar \
-    "$PKG_ROOT/usr/bin/shore-llm-sidecar"
+    "$PKG_ROOT/usr/lib/shore/shore-llm-sidecar"
 
 install -Dm644 contrib/shore-daemon.service \
     "$PKG_ROOT/usr/lib/systemd/user/shore-daemon.service"

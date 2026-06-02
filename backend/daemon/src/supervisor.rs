@@ -336,9 +336,32 @@ fn spawn_llm_sidecar_child(
         socket = %socket_path.display(),
         "spawning LLM sidecar"
     );
+    // A crash or SIGKILL can leave the old socket file behind, and the next
+    // bind would fail until the supervisor exhausts its retry budget. Unlink
+    // it first, but only when it is actually a socket so we never delete an
+    // unrelated file a user placed at that path.
+    #[cfg(unix)]
+    remove_stale_llm_sidecar_socket(socket_path)?;
     let mut command = Command::new(binary);
     command.kill_on_drop(true).arg("--socket").arg(socket_path);
     command.spawn()
+}
+
+#[cfg(unix)]
+fn remove_stale_llm_sidecar_socket(socket_path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+
+    let meta = match std::fs::symlink_metadata(socket_path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+
+    if meta.file_type().is_socket() {
+        std::fs::remove_file(socket_path)?;
+    }
+
+    Ok(())
 }
 
 async fn handle_llm_sidecar_spawn_error(

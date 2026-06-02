@@ -3,7 +3,8 @@
 Build a local `.deb` containing:
 
 - `/usr/bin/shore-daemon`
-- `/usr/bin/shore-llm-sidecar`
+- `/usr/lib/shore/shore-llm-sidecar` (off `$PATH`; the daemon resolves it via
+  `SHORE_LLM_SIDECAR_BIN`)
 - `shore-daemon.service`
 - example config files under `/usr/share/doc/shore/`
 
@@ -20,6 +21,6 @@ Useful overrides:
 
 ```sh
 DEB_ARCH=arm64 bash contrib/debian/build-shore-daemon-deb.sh
-DEB_DEPENDS='ca-certificates, libssl3' bash contrib/debian/build-shore-daemon-deb.sh
+DEB_DEPENDS='ca-certificates, libssl3, bun' bash contrib/debian/build-shore-daemon-deb.sh
 OUT_DIR=/tmp/shore-debs bash contrib/debian/build-shore-daemon-deb.sh
 ```

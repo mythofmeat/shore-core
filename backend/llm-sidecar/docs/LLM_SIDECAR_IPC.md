@@ -235,7 +235,10 @@ the `StreamEvent` NDJSON above:
 
 ## Supervision / packaging
 
-- `bun build --compile` emits `backend/llm-sidecar/dist/shore-llm-sidecar`.
+- `bun build … --banner='#!/usr/bin/env bun'` emits
+  `backend/llm-sidecar/dist/shore-llm-sidecar` as an executable Bun-script bundle
+  (a single minified script with a shebang, ~1.4MB) — not a `--compile` binary.
+  Packagers should treat it as an executable Bun script and depend on `bun`.
 - By default, `shore-daemon` configures `shore-llm` to use the configured socket
   path, defaulting to `<runtime_dir>/llm.sock`.
 - The daemon starts a sidecar supervisor when `shore-llm-sidecar` is found on
@@ -272,10 +275,7 @@ Response (`ImageGenerateResponse`): `{url, revised_prompt, timing:{total_ms}}`.
 
 ## Open items before cutover
 
-All five design open-items are resolved above. Remaining build tasks:
-1. Confirm a maintained official **Z.ai JS SDK** exists; else use `openai` +
-   extra_body.
-2. Build the **Gemini** adapter on `@google/genai`.
-3. Add **`thinking_signature`** + **`redacted_thinking`** emission to
-   `anthropic.ts` (the one real correctness gap).
+All design open-items and build tasks are resolved: Z.ai runs on `openai` +
+extra_body, the **Gemini** adapter is built on `@google/genai`, and `anthropic.ts`
+emits `thinking_signature` + `redacted_thinking`. No remaining build tasks.
 ```

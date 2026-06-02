@@ -63,6 +63,7 @@ fn arb_sdk() -> impl Strategy<Value = Sdk> {
     prop_oneof![
         Just(Sdk::Anthropic),
         Just(Sdk::Openai),
+        Just(Sdk::Openrouter),
         Just(Sdk::Gemini),
         Just(Sdk::Zai),
     ]

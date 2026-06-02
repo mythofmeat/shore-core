@@ -50,23 +50,36 @@ export function resolveImage(
   }
 
   if (ref.data !== undefined && ref.data.length > 0) {
+    // Estimate decoded size from the base64 length so a giant inline image is
+    // dropped before we hand it to an adapter (4 base64 chars ≈ 3 bytes).
+    const normalized = ref.data.replace(/\s+/g, "");
+    const padding = normalized.endsWith("==") ? 2 : normalized.endsWith("=") ? 1 : 0;
+    const inlineBytes = Math.floor((normalized.length * 3) / 4) - padding;
+    if (inlineBytes > maxBytes) {
+      console.warn(
+        `[image] inline image ${ref.path} is ${inlineBytes} bytes; exceeds cap ${maxBytes}; skipping`,
+      );
+      return undefined;
+    }
     return { mediaType, base64: ref.data };
   }
 
-  let bytes: Buffer;
   try {
-    bytes = fs.readFileSync(ref.path);
+    // Check the on-disk size before reading so an oversized file never gets
+    // loaded into memory in full.
+    const size = fs.statSync(ref.path).size;
+    if (size > maxBytes) {
+      console.warn(
+        `[image] ${ref.path} is ${size} bytes; exceeds cap ${maxBytes}; skipping`,
+      );
+      return undefined;
+    }
+    const bytes = fs.readFileSync(ref.path);
+    return { mediaType, base64: bytes.toString("base64") };
   } catch (e) {
     console.warn(`[image] could not read ${ref.path}: ${(e as Error).message}`);
     return undefined;
   }
-  if (bytes.length > maxBytes) {
-    console.warn(
-      `[image] ${ref.path} is ${bytes.length} bytes; exceeds cap ${maxBytes}; skipping`,
-    );
-    return undefined;
-  }
-  return { mediaType, base64: bytes.toString("base64") };
 }
 
 /**

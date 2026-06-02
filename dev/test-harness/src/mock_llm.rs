@@ -549,6 +549,12 @@ impl MockLlmSidecar {
             .await;
     }
 
+    // NB: this hangs the STREAM endpoint, not generate, despite the `_optional`
+    // suffix the error/text helpers use for `/v1/generate`. Every caller sends
+    // an interactive streaming message (`send_message(..., true)` → `/v1/stream`),
+    // so the hang must land on STREAM_PATH; pointing it at GENERATE_PATH makes
+    // those streaming requests 500 ("no queued response"), which the retry
+    // policy then retries and steals later stream responses.
     pub async fn enqueue_hanging_optional(&self) {
         self.enqueue_hanging().await;
     }

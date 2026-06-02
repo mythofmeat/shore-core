@@ -189,6 +189,7 @@ export function geminiGenerateResponse(
   const candidate = response.candidates?.[0];
   let textAccum = "";
   const content_blocks: ContentBlock[] = [];
+  let toolCallIdx = 0;
 
   for (const part of candidate?.content?.parts ?? []) {
     if (typeof part.text === "string" && part.text.length > 0) {
@@ -206,7 +207,7 @@ export function geminiGenerateResponse(
       const name = part.functionCall.name ?? "";
       content_blocks.push({
         type: "tool_use",
-        id: `gemini_${name}`,
+        id: `gemini_call_${toolCallIdx++}`,
         name,
         input: part.functionCall.args ?? {},
       });
@@ -295,10 +296,15 @@ export function mergeConsecutiveRoles(contents: Content[]): void {
         continue;
       }
 
-      const idx = lastPlainTextIndex(prev.parts);
-      if (idx >= 0) {
-        const old = prev.parts[idx]?.text ?? "";
-        prev.parts[idx] = { ...prev.parts[idx], text: `${old}\n\n${part.text ?? ""}` };
+      // Only merge into the immediately preceding part when it is itself plain
+      // text. Walking back past a functionCall/functionResponse would reorder
+      // the turn and corrupt tool-loop sequencing.
+      const last = prev.parts[prev.parts.length - 1];
+      if (last?.text !== undefined && last.thought !== true) {
+        prev.parts[prev.parts.length - 1] = {
+          ...last,
+          text: `${last.text ?? ""}\n\n${part.text ?? ""}`,
+        };
       } else {
         prev.parts.push(part);
       }
@@ -306,13 +312,6 @@ export function mergeConsecutiveRoles(contents: Content[]): void {
   }
 
   contents.splice(0, contents.length, ...merged);
-}
-
-function lastPlainTextIndex(parts: Part[]): number {
-  for (let i = parts.length - 1; i >= 0; i--) {
-    if (parts[i]?.text !== undefined && parts[i]?.thought !== true) return i;
-  }
-  return -1;
 }
 
 function translateSystem(system: SystemContent | undefined): Content | undefined {

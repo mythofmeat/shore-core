@@ -2,7 +2,6 @@ use shore_config::{
     character_active_jsonl, character_compaction_manifest, character_data_dir,
     character_segments_dir,
 };
-use shore_daemon::memory::compaction_impls::COMPACTION_TAIL_ENTRY_COUNT;
 use shore_test_harness::{TestConfigBuilder, TestHarness};
 
 use crate::helpers::wait_for_persisted_messages;
@@ -293,19 +292,20 @@ async fn test_compaction_cached_path_appends_exactly_one_tail() {
 
     // The cached request carried `cached_prefix_len` messages at the
     // moment `trigger_compaction_now` snapshotted it. `append_compaction_tail`
-    // adds COMPACTION_TAIL_ENTRY_COUNT = 2 entries (one user, one pinned
-    // inline `role:"system"`), and the daemon sends that canonical shape to
-    // the sidecar.
+    // adds exactly 2 entries (one user, one pinned inline `role:"system"`),
+    // and the daemon sends that canonical shape to the sidecar. The `+ 2` is
+    // hardcoded on purpose: pinning the wire shape against a literal keeps this
+    // regression test from silently tracking an accidental change to
+    // `COMPACTION_TAIL_ENTRY_COUNT`.
     assert_eq!(
         compaction_msgs.len(),
-        cached_prefix_len + COMPACTION_TAIL_ENTRY_COUNT,
-        "cached compaction sidecar shape must be `cached_prefix_len + \
-         COMPACTION_TAIL_ENTRY_COUNT`; got {} vs expected {} = {} + {}.\n\
+        cached_prefix_len + 2,
+        "cached compaction sidecar shape must be `cached_prefix_len + 2`; \
+         got {} vs expected {} = {} + 2.\n\
          If this fails, check `append_compaction_tail` and `build_compaction_request`.",
         compaction_msgs.len(),
-        cached_prefix_len + COMPACTION_TAIL_ENTRY_COUNT,
+        cached_prefix_len + 2,
         cached_prefix_len,
-        COMPACTION_TAIL_ENTRY_COUNT,
     );
 
     // And the appended tail must be compact-now user followed by pinned inline

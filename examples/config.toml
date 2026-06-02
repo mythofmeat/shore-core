@@ -234,7 +234,7 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 
 # [advanced.llm_sidecar]
 # enabled = true                    # Default; chat/generate/image require the Bun sidecar
-# socket_path = "/run/user/1000/shore/llm.sock"
+# socket_path = "/path/to/llm.sock" # Override; defaults to <runtime_dir>/llm.sock when unset
 
 # ── Chat models ──────────────────────────────────────────────────────────
 # Provider-level settings cascade into all models under that provider.
