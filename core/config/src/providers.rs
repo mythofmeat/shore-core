@@ -134,25 +134,49 @@ impl ProviderDiscovery {
 /// for `meta-llama/*`, `*/free`, `anthropic/claude-3.5-*`, etc.
 fn glob_matches(pattern: &str, s: &str) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.len() == 1 {
-        return parts[0] == s;
+    if let [only] = parts.as_slice() {
+        return *only == s;
     }
-    let first = parts[0];
-    let last = parts[parts.len() - 1];
+    let Some(first) = parts.first() else {
+        return s.is_empty();
+    };
+    let Some(last) = parts.last() else {
+        return s.is_empty();
+    };
     if !s.starts_with(first) || !s.ends_with(last) {
         return false;
     }
-    if first.len() + last.len() > s.len() {
+    let Some(edge_len) = first.len().checked_add(last.len()) else {
+        return false;
+    };
+    if edge_len > s.len() {
         return false;
     }
     let mut cursor = first.len();
-    let end = s.len() - last.len();
-    for middle in &parts[1..parts.len() - 1] {
+    let Some(end) = s.len().checked_sub(last.len()) else {
+        return false;
+    };
+    let middle_end = parts.len().saturating_sub(1);
+    let Some(middles) = parts.get(1..middle_end) else {
+        return false;
+    };
+    for middle in middles {
         if middle.is_empty() {
             continue;
         }
-        match s[cursor..end].find(middle) {
-            Some(idx) => cursor += idx + middle.len(),
+        let Some(haystack) = s.get(cursor..end) else {
+            return false;
+        };
+        match haystack.find(middle) {
+            Some(idx) => {
+                let Some(advance) = idx.checked_add(middle.len()) else {
+                    return false;
+                };
+                let Some(next_cursor) = cursor.checked_add(advance) else {
+                    return false;
+                };
+                cursor = next_cursor;
+            }
             None => return false,
         }
     }
@@ -283,7 +307,7 @@ impl ProviderRegistry {
                 return Err(ProviderRegistryError::RemovedProvider);
             }
             let entry = parse_entry(name, value.clone())?;
-            providers.insert(name.clone(), entry);
+            let _ignored = providers.insert(name.clone(), entry);
         }
         Ok(Self { providers })
     }
@@ -386,6 +410,10 @@ mod tests {
         ProviderRegistry::from_section(providers).unwrap()
     }
 
+    fn key(keys: &[ProviderKeyEntry], index: usize) -> &ProviderKeyEntry {
+        keys.get(index).expect("provider key should be present")
+    }
+
     #[test]
     fn empty_section_yields_empty_registry() {
         let r = ProviderRegistry::from_section(None).unwrap();
@@ -422,13 +450,15 @@ enabled = true
         assert_eq!(or.base_url.as_deref(), Some("https://openrouter.ai/api/v1"));
         assert!(or.api_key_env.is_none(), "compact form folded");
         assert_eq!(or.keys.len(), 2);
-        assert_eq!(or.keys[0].name, "budget");
-        assert_eq!(or.keys[0].env, "OPENROUTER_API_KEY_BUDGET");
-        assert!(or.keys[0].enabled);
-        assert!(or.keys[0].warn_on_fallback);
-        assert_eq!(or.keys[1].name, "overflow");
-        assert_eq!(or.keys[1].env, "OPENROUTER_API_KEY_OVERFLOW");
-        assert!(!or.keys[1].warn_on_fallback);
+        let budget = key(&or.keys, 0);
+        assert_eq!(budget.name, "budget");
+        assert_eq!(budget.env, "OPENROUTER_API_KEY_BUDGET");
+        assert!(budget.enabled);
+        assert!(budget.warn_on_fallback);
+        let overflow = key(&or.keys, 1);
+        assert_eq!(overflow.name, "overflow");
+        assert_eq!(overflow.env, "OPENROUTER_API_KEY_OVERFLOW");
+        assert!(!overflow.warn_on_fallback);
         assert!(or.discovery.enabled);
     }
 
@@ -471,10 +501,11 @@ api_key_env = "OPENAI_API_KEY"
         assert!(p.enabled, "default enabled");
         assert!(p.api_key_env.is_none(), "compact form folded into keys[]");
         assert_eq!(p.keys.len(), 1);
-        assert_eq!(p.keys[0].name, "default");
-        assert_eq!(p.keys[0].env, "OPENAI_API_KEY");
-        assert!(p.keys[0].enabled);
-        assert!(!p.keys[0].warn_on_fallback);
+        let default = key(&p.keys, 0);
+        assert_eq!(default.name, "default");
+        assert_eq!(default.env, "OPENAI_API_KEY");
+        assert!(default.enabled);
+        assert!(!default.warn_on_fallback);
     }
 
     #[test]
@@ -538,7 +569,8 @@ name = "k"
 env = "E"
 "#,
         );
-        assert!(!r.get("openrouter").unwrap().keys[0].warn_on_fallback);
+        let openrouter = r.get("openrouter").unwrap();
+        assert!(!key(&openrouter.keys, 0).warn_on_fallback);
     }
 
     #[test]
@@ -625,15 +657,13 @@ typo_field = true
         );
         let providers = table.get("providers").and_then(|v| v.as_table());
         let err = ProviderRegistry::from_section(providers).unwrap_err();
-        match err {
-            ProviderRegistryError::ParseEntry { source, .. } => {
-                assert!(
-                    source.to_string().contains("unknown field"),
-                    "expected unknown-field error, got: {source}"
-                );
-            }
-            other => panic!("expected ParseEntry, got {other:?}"),
-        }
+        let ProviderRegistryError::ParseEntry { source, .. } = err else {
+            panic!("expected ParseEntry");
+        };
+        assert!(
+            source.to_string().contains("unknown field"),
+            "expected unknown-field error, got: {source}"
+        );
     }
 
     #[test]
@@ -648,12 +678,10 @@ typo = "bad"
         );
         let providers = table.get("providers").and_then(|v| v.as_table());
         let err = ProviderRegistry::from_section(providers).unwrap_err();
-        match err {
-            ProviderRegistryError::ParseEntry { source, .. } => {
-                assert!(source.to_string().contains("unknown field"));
-            }
-            other => panic!("expected ParseEntry, got {other:?}"),
-        }
+        let ProviderRegistryError::ParseEntry { source, .. } = err else {
+            panic!("expected ParseEntry");
+        };
+        assert!(source.to_string().contains("unknown field"));
     }
 
     #[test]
@@ -670,12 +698,10 @@ typo_field = "oops"
         );
         let providers = table.get("providers").and_then(|v| v.as_table());
         let err = ProviderRegistry::from_section(providers).unwrap_err();
-        match err {
-            ProviderRegistryError::ParseEntry { source, .. } => {
-                assert!(source.to_string().contains("unknown field"));
-            }
-            other => panic!("expected ParseEntry, got {other:?}"),
-        }
+        let ProviderRegistryError::ParseEntry { source, .. } = err else {
+            panic!("expected ParseEntry");
+        };
+        assert!(source.to_string().contains("unknown field"));
     }
 
     #[test]

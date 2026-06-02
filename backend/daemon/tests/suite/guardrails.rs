@@ -14,7 +14,7 @@ async fn streaming_is_direct_to_requesting_client() {
 
     harness.mock_llm.enqueue_text("direct hello").await;
 
-    harness
+    let _ignored = harness
         .conn
         .send_message("Hi there", true)
         .await
@@ -82,7 +82,7 @@ async fn tool_events_are_direct_to_requesting_client() {
         .enqueue_text("Time checked for one client.")
         .await;
 
-    harness
+    let _ignored = harness
         .conn
         .send_message("What time is it?", true)
         .await
@@ -134,7 +134,7 @@ async fn cancel_is_direct_to_requesting_client() {
 
     harness.mock_llm.enqueue_hanging_optional().await;
 
-    harness
+    let _ignored = harness
         .conn
         .send_message("please hang", true)
         .await

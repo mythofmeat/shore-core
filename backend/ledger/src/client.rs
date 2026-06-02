@@ -257,7 +257,7 @@ pub(crate) fn record_call(
 
 // ── LedgerClient ────────────────────────────────────────────────────────────
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LedgerClient {
     inner: LlmClient,
     ledger: Arc<Ledger>,
@@ -270,7 +270,7 @@ impl LedgerClient {
     /// Create a new LedgerClient backed by a file database at `db_path`.
     pub fn new(client: LlmClient, db_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let ledger = Arc::new(Ledger::open(db_path)?);
-        let pricing = Arc::new(PricingEngine::new(ledger.clone()));
+        let pricing = Arc::new(PricingEngine::new(Arc::clone(&ledger)));
         Ok(Self {
             inner: client,
             ledger,
@@ -284,7 +284,7 @@ impl LedgerClient {
     #[cfg(test)]
     pub fn new_in_memory(client: LlmClient) -> Self {
         let ledger = Arc::new(Ledger::open_in_memory().unwrap());
-        let pricing = Arc::new(PricingEngine::new(ledger.clone()));
+        let pricing = Arc::new(PricingEngine::new(Arc::clone(&ledger)));
         Self {
             inner: client,
             ledger,
@@ -390,7 +390,7 @@ impl LedgerClient {
     /// Passthrough to `LlmClient::build_request_with_provider_keys`.
     pub fn build_request_with_provider_keys(
         model: &ResolvedModel,
-        registry: &shore_config::providers::ProviderRegistry,
+        registry: &ProviderRegistry,
         messages: Vec<serde_json::Value>,
         system: Option<serde_json::Value>,
         tools: Option<Vec<serde_json::Value>>,
@@ -435,7 +435,8 @@ impl LedgerClient {
             character,
             "generate: sending request"
         );
-        self.pricing
+        let _ignored = self
+            .pricing
             .get_or_fetch(provider_key, &request.model)
             .await;
 
@@ -526,7 +527,7 @@ impl LedgerClient {
         let mut last_err: Option<LlmError> = None;
 
         for (i, cand) in candidates.iter().enumerate() {
-            let next_cand = candidates.get(i + 1);
+            let next_cand = i.checked_add(1).and_then(|index| candidates.get(index));
 
             let Some(api_key) = read_candidate_env(cand) else {
                 let kind = CredentialFailureKind::MissingKey;
@@ -569,7 +570,13 @@ impl LedgerClient {
 
                     let status = match &e {
                         LlmError::HttpStatus { status, .. } => Some(*status),
-                        _ => None,
+                        LlmError::Request(_)
+                        | LlmError::Serialize(_)
+                        | LlmError::Deserialize(_)
+                        | LlmError::IncompleteStream
+                        | LlmError::MissingApiKey { .. }
+                        | LlmError::Provider { .. }
+                        | LlmError::Refusal => None,
                     };
                     let reason = sanitize_fallback_reason(&e);
                     events.push(record_generate_fallback_event(
@@ -675,7 +682,8 @@ impl LedgerClient {
             character,
             "stream_raw: opening stream"
         );
-        self.pricing
+        let _ignored = self
+            .pricing
             .get_or_fetch(provider_key, &request.model)
             .await;
 
@@ -711,9 +719,9 @@ impl LedgerClient {
                 thinking_enabled,
                 cache_ttl,
             },
-            self.ledger.clone(),
-            self.pricing.clone(),
-            self.cache_trackers.clone(),
+            Arc::clone(&self.ledger),
+            Arc::clone(&self.pricing),
+            Arc::clone(&self.cache_trackers),
         ))
     }
 
@@ -743,7 +751,7 @@ impl LedgerClient {
                     row.cache_read_tokens,
                     ttl_secs,
                 );
-                lock_or_recover("ledger cache tracker map", &self.cache_trackers)
+                let _ignored = lock_or_recover("ledger cache tracker map", &self.cache_trackers)
                     .insert(character.to_string(), tracker);
             }
             Ok(None) => {} // No prior call — start cold
@@ -856,9 +864,13 @@ mod tests {
 
     fn test_parts() -> TestParts {
         let ledger = Arc::new(Ledger::open_in_memory().unwrap());
-        let pricing = Arc::new(PricingEngine::new(ledger.clone()));
+        let pricing = Arc::new(PricingEngine::new(Arc::clone(&ledger)));
         let trackers = Arc::new(Mutex::new(HashMap::new()));
         (ledger, pricing, trackers)
+    }
+
+    fn first_item<T>(items: &[T]) -> &T {
+        items.first().expect("expected at least one item")
     }
 
     #[test]
@@ -892,8 +904,9 @@ mod tests {
         );
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].character, "aria");
-        assert_eq!(rows[0].call_type, "message");
+        let row = first_item(&rows);
+        assert_eq!(row.character, "aria");
+        assert_eq!(row.call_type, "message");
     }
 
     #[test]
@@ -926,12 +939,13 @@ mod tests {
             },
         );
         let rows = ledger.recent(1).unwrap();
-        assert_eq!(rows[0].total_cost, Some(0.0042));
-        assert_eq!(rows[0].cost_source.as_deref(), Some("provider_reported"));
-        assert!(rows[0].input_cost.is_none());
-        assert!(rows[0].output_cost.is_none());
-        assert!(rows[0].cache_read_cost.is_none());
-        assert!(rows[0].cache_write_cost.is_none());
+        let row = first_item(&rows);
+        assert_eq!(row.total_cost, Some(0.0042));
+        assert_eq!(row.cost_source.as_deref(), Some("provider_reported"));
+        assert!(row.input_cost.is_none());
+        assert!(row.output_cost.is_none());
+        assert!(row.cache_read_cost.is_none());
+        assert!(row.cache_write_cost.is_none());
     }
 
     #[test]
@@ -965,7 +979,7 @@ mod tests {
         );
         let map = trackers.lock().unwrap();
         let tracker = map.get("aria").unwrap();
-        assert_eq!(tracker.state(), crate::cache_tracker::CacheState::Warm);
+        assert_eq!(tracker.state(), CacheState::Warm);
     }
 
     #[test]
@@ -1026,12 +1040,13 @@ mod tests {
 
         let map = trackers.lock().unwrap();
         let tracker = map.get("aria").unwrap();
-        assert_eq!(tracker.state(), crate::cache_tracker::CacheState::Warm);
+        assert_eq!(tracker.state(), CacheState::Warm);
         assert_eq!(tracker.last_cache_read(), 400);
         let rows = ledger.recent(2).unwrap();
-        assert_eq!(rows[0].call_type, "dreaming");
-        assert!(rows[0].cache_state.is_none());
-        assert!(rows[0].cache_anomaly.is_none());
+        let row = first_item(&rows);
+        assert_eq!(row.call_type, "dreaming");
+        assert!(row.cache_state.is_none());
+        assert!(row.cache_anomaly.is_none());
     }
 
     #[test]
@@ -1064,7 +1079,8 @@ mod tests {
             },
         );
         let rows = ledger.recent(1).unwrap();
-        assert!(rows[0].cache_state.is_none());
+        let row = first_item(&rows);
+        assert!(row.cache_state.is_none());
         assert!(!trackers.lock().unwrap().contains_key("aria"));
     }
 
@@ -1110,8 +1126,9 @@ mod tests {
             },
         );
         let rows = ledger.recent(1).unwrap();
-        assert_eq!(rows[0].cache_write_tokens, 200);
-        assert_eq!(rows[0].cache_read_tokens, 80);
+        let row = first_item(&rows);
+        assert_eq!(row.cache_write_tokens, 200);
+        assert_eq!(row.cache_read_tokens, 80);
     }
 
     #[test]
@@ -1145,6 +1162,6 @@ mod tests {
         );
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].cache_ttl, Some("5m".to_string()));
+        assert_eq!(first_item(&rows).cache_ttl, Some("5m".to_string()));
     }
 }

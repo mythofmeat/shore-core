@@ -59,7 +59,7 @@ fn normalize_workspace_path(path: &str) -> String {
     loop {
         let before = normalized.len();
         while normalized.starts_with('/') {
-            normalized.remove(0);
+            let _ignored = normalized.remove(0);
         }
         while let Some(rest) = normalized.strip_prefix("./") {
             normalized = rest.to_string();
@@ -168,7 +168,7 @@ fn copy_prompt_visible_file(
     }
 
     if src.exists() {
-        fs::copy(src, dst)?;
+        let _ignored = fs::copy(src, dst)?;
     } else if !seed_only && dst.exists() {
         fs::remove_file(dst)?;
     }
@@ -225,7 +225,7 @@ pub fn pending_deferred_edit_paths(character_data_dir: &Path) -> io::Result<Vec<
             .and_then(|v| v.as_str())
             .and_then(normalize_prompt_visible_path)
         {
-            paths.insert(path);
+            let _ignored = paths.insert(path);
         }
     }
     Ok(paths.into_iter().collect())
@@ -300,7 +300,7 @@ pub fn ensure_character_workspace(
     let global_user = config_dir.join("user.md");
     let workspace_user = workspace_dir.join(USER_FILE);
     if global_user.exists() && !workspace_user.exists() {
-        fs::copy(global_user, workspace_user)?;
+        let _ignored = fs::copy(global_user, workspace_user)?;
     }
 
     write_default_if_missing(workspace_dir.join(TOOLS_FILE), DEFAULT_TOOLS_GUIDANCE)?;
@@ -376,7 +376,7 @@ fn migrate_legacy_file(src: PathBuf, dst: PathBuf) -> io::Result<()> {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::copy(src, dst)?;
+        let _ignored = fs::copy(src, dst)?;
     }
     Ok(())
 }
@@ -397,7 +397,7 @@ fn copy_tree_if_missing(src: &Path, dst: &Path) -> io::Result<()> {
             if let Some(parent) = dst.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::copy(src, dst)?;
+            let _ignored = fs::copy(src, dst)?;
         }
         return Ok(());
     }
@@ -410,7 +410,7 @@ fn copy_tree_if_missing(src: &Path, dst: &Path) -> io::Result<()> {
         if src_path.is_dir() {
             copy_tree_if_missing(&src_path, &dst_path)?;
         } else if !dst_path.exists() {
-            fs::copy(src_path, dst_path)?;
+            let _ignored = fs::copy(src_path, dst_path)?;
         }
     }
     Ok(())

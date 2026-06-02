@@ -1,3 +1,4 @@
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -27,17 +28,29 @@ pub fn load_client_config() -> Option<ClientConfig> {
     let path = client_config_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
         Err(e) => {
-            eprintln!("shore: warning: cannot read {}: {e}", path.display());
+            warn_stderr(format_args!(
+                "shore: warning: cannot read {}: {e}",
+                path.display()
+            ));
             return None;
         }
     };
     match toml::from_str::<ClientConfig>(&content) {
         Ok(cfg) => Some(cfg),
         Err(e) => {
-            eprintln!("shore: warning: invalid {}: {e}", path.display());
+            warn_stderr(format_args!(
+                "shore: warning: invalid {}: {e}",
+                path.display()
+            ));
             None
         }
     }
+}
+
+fn warn_stderr(args: std::fmt::Arguments<'_>) {
+    let stderr = io::stderr();
+    let mut out = stderr.lock();
+    let _ignored = writeln!(out, "{args}");
 }

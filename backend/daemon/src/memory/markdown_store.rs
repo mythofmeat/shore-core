@@ -59,6 +59,7 @@ pub struct MarkdownEntry {
 // Store
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct MarkdownMemoryStore {
     base_dir: PathBuf,
 }
@@ -154,7 +155,7 @@ impl MarkdownMemoryStore {
         // Try to clean up empty parent directories.
         if let Some(parent) = path.parent() {
             if parent != self.base_dir {
-                let _ = fs::remove_dir(parent).await;
+                let _ignored = fs::remove_dir(parent).await;
             }
         }
         Ok(())
@@ -268,7 +269,7 @@ impl MarkdownMemoryStore {
                         "absolute paths not allowed".into(),
                     ));
                 }
-                _ => {}
+                std::path::Component::CurDir | std::path::Component::Normal(_) => {}
             }
         }
         let resolved = self.base_dir.join(rel);

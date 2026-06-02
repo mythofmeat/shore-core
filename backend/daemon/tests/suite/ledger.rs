@@ -90,7 +90,7 @@ async fn test_tool_loop_records_multiple_calls() {
         .enqueue_text("Time checked and ledger updated.")
         .await;
 
-    harness
+    let _ignored = harness
         .conn
         .send_message("What time is it?", true)
         .await

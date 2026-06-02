@@ -232,7 +232,7 @@ pub(crate) fn resolve_path(workspace_dir: &str, relative: &str) -> Result<PathBu
                     "absolute paths are not allowed".into(),
                 ));
             }
-            _ => {}
+            std::path::Component::CurDir | std::path::Component::Normal(_) => {}
         }
     }
 
@@ -339,7 +339,7 @@ fn find_case_insensitive_match(line: &str, query_lower: &str) -> Option<(usize, 
         let char_folded_end = folded_pos;
 
         if char_folded_end > folded_start && char_folded_start < folded_end {
-            original_start.get_or_insert(original_idx);
+            let _ignored = original_start.get_or_insert(original_idx);
             original_end = Some(original_next);
             if char_folded_end >= folded_end {
                 break;
@@ -660,13 +660,13 @@ pub async fn handle_search(
     {
         let mode = match requested_mode {
             RequestedMode::Vector => HybridMode::Vector,
-            _ => HybridMode::Hybrid,
+            RequestedMode::Hybrid | RequestedMode::Lexical => HybridMode::Hybrid,
         };
         let scope = match path_str {
             Some(raw) if !raw.is_empty() && raw != "." => {
                 Some(scope_prefix_for(workspace_dir, raw)?)
             }
-            _ => None,
+            Some(_) | None => None,
         };
         return handle_search_hybrid(
             input,
@@ -682,9 +682,9 @@ pub async fn handle_search(
 
     let mut response = handle_search_lexical(input, workspace_dir, &retrieval_config).await?;
     if let Some(obj) = response.as_object_mut() {
-        obj.insert("mode".into(), json!("lexical"));
+        let _ignored = obj.insert("mode".into(), json!("lexical"));
         if requested_hybrid {
-            obj.insert(
+            let _ignored = obj.insert(
                 "semantic_unavailable".into(),
                 json!("embedder not configured"),
             );
@@ -893,8 +893,8 @@ async fn handle_search_hybrid(
             tracing::warn!(error = %e, "hybrid search failed; falling back to lexical");
             let mut lex = handle_search_lexical(input, workspace_dir, retrieval_config).await?;
             if let Some(obj) = lex.as_object_mut() {
-                obj.insert("mode".into(), json!("lexical"));
-                obj.insert("semantic_unavailable".into(), json!(e.to_string()));
+                let _ignored = obj.insert("mode".into(), json!("lexical"));
+                let _ignored = obj.insert("semantic_unavailable".into(), json!(e.to_string()));
             }
             return Ok(lex);
         }
@@ -1101,7 +1101,7 @@ pub async fn handle_delete(
 
     if let Err(rename_err) = tokio::fs::rename(&path, &trash_target).await {
         // Cross-device rename can fail with EXDEV. Fall back to copy + remove.
-        tokio::fs::copy(&path, &trash_target).await.map_err(|e| {
+        let _ignored = tokio::fs::copy(&path, &trash_target).await.map_err(|e| {
             ToolError::Io(format!(
                 "could not move file to trash (rename: {rename_err}, copy fallback: {e})"
             ))
@@ -1221,7 +1221,7 @@ fn validate_exec_path_arg(workspace_dir: &str, arg: &str) -> Result<(), ToolErro
                     "exec argument uses an absolute path: {arg}"
                 )));
             }
-            _ => {}
+            std::path::Component::CurDir | std::path::Component::Normal(_) => {}
         }
     }
 
@@ -1305,12 +1305,12 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
         .transpose()?;
 
     let mut cmd = tokio::process::Command::new(&argv[0]);
-    cmd.args(&argv[1..]);
+    let _ignored = cmd.args(&argv[1..]);
 
     if let Some(dir) = workdir {
-        cmd.current_dir(dir);
+        let _ignored = cmd.current_dir(dir);
     } else if !workspace_dir.is_empty() {
-        cmd.current_dir(workspace_dir);
+        let _ignored = cmd.current_dir(workspace_dir);
     }
 
     let output = cmd
@@ -1395,7 +1395,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "test.txt", "content": "hello world\nfoo bar\n"}),
             &ws_str,
         )
@@ -1427,7 +1427,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "test.txt", "content": "foo foo foo"}),
             &ws_str,
         )
@@ -1459,7 +1459,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "test.txt", "content": "hello world"}),
             &ws_str,
         )
@@ -1485,7 +1485,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "test.txt", "content": "🙂".repeat(900)}),
             &ws_str,
         )
@@ -1511,7 +1511,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "deep/nested/file.txt", "content": "nested"}),
             &ws_str,
         )
@@ -1531,7 +1531,7 @@ mod tests {
         let ws_str = ws.to_string_lossy().to_string();
 
         let content = "line1\nline2\nline3\nline4\nline5";
-        handle_write(json!({"path": "test.txt", "content": content}), &ws_str)
+        let _ignored = handle_write(json!({"path": "test.txt", "content": content}), &ws_str)
             .await
             .unwrap();
 
@@ -1551,7 +1551,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "memory/people/ren.md", "content": "# Ren\n\nLikes tea."}),
             &ws_str,
         )
@@ -1611,13 +1611,13 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "notes/ideas.md", "content": "Tea in the garden\nCoffee later"}),
             &ws_str,
         )
         .await
         .unwrap();
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "memory/people/ren.md", "content": "Ren likes tea."}),
             &ws_str,
         )
@@ -1642,7 +1642,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "older.md", "content": "tea in the garden"}),
             &ws_str,
         )
@@ -1652,7 +1652,7 @@ mod tests {
         // mtime resolution can be coarse (e.g. 1s on some filesystems), so
         // bump the older file backwards in time rather than relying on the
         // write order alone.
-        let past = std::time::SystemTime::now() - std::time::Duration::from_mins(1);
+        let past = SystemTime::now() - std::time::Duration::from_mins(1);
         std::fs::File::options()
             .write(true)
             .open(ws.join("older.md"))
@@ -1660,7 +1660,7 @@ mod tests {
             .set_modified(past)
             .unwrap();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "newer.md", "content": "tea on the porch"}),
             &ws_str,
         )
@@ -1689,7 +1689,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "notes.md", "content": "nothing relevant"}),
             &ws_str,
         )
@@ -1714,7 +1714,7 @@ mod tests {
             r#"{{"metadata":"{metadata}","message":"spotted a German Shepherd near the gate"}}"#
         );
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "archive/chat.jsonl", "content": line}),
             &ws_str,
         )
@@ -1747,7 +1747,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "notes.md", "content": "no match here"}),
             &ws_str,
         )
@@ -1776,7 +1776,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(json!({"path": "notes.md", "content": "tea time"}), &ws_str)
+        let _ignored = handle_write(json!({"path": "notes.md", "content": "tea time"}), &ws_str)
             .await
             .unwrap();
 
@@ -1802,7 +1802,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(json!({"path": "notes.md", "content": "tea time"}), &ws_str)
+        let _ignored = handle_write(json!({"path": "notes.md", "content": "tea time"}), &ws_str)
             .await
             .unwrap();
 
@@ -1844,13 +1844,13 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "notes/a.md", "content": "tea time"}),
             &ws_str,
         )
         .await
         .unwrap();
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "other/b.md", "content": "tea ceremony"}),
             &ws_str,
         )
@@ -1883,7 +1883,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(json!({"path": "notes.md", "content": "tea time"}), &ws_str)
+        let _ignored = handle_write(json!({"path": "notes.md", "content": "tea time"}), &ws_str)
             .await
             .unwrap();
 
@@ -2048,7 +2048,7 @@ mod tests {
         let data_dir = tmp.path().join("data");
         let data_str = data_dir.to_string_lossy().to_string();
 
-        handle_write(json!({"path": "notes/old.md", "content": "stale"}), &ws_str)
+        let _ignored = handle_write(json!({"path": "notes/old.md", "content": "stale"}), &ws_str)
             .await
             .unwrap();
 
@@ -2083,14 +2083,14 @@ mod tests {
         let data_dir = tmp.path().join("data");
         let data_str = data_dir.to_string_lossy().to_string();
 
-        handle_write(
+        let _ignored = handle_write(
             json!({"path": "memory/people/ren.md", "content": "Ren"}),
             &ws_str,
         )
         .await
         .unwrap();
 
-        handle_delete(json!({"path": "memory/people/ren.md"}), &ws_str, &data_str)
+        let _ignored = handle_delete(json!({"path": "memory/people/ren.md"}), &ws_str, &data_str)
             .await
             .unwrap();
 
@@ -2115,10 +2115,10 @@ mod tests {
         let data_dir = tmp.path().join("data");
         let data_str = data_dir.to_string_lossy().to_string();
 
-        handle_write(json!({"path": "SOUL.md", "content": "soul"}), &ws_str)
+        let _ignored = handle_write(json!({"path": "SOUL.md", "content": "soul"}), &ws_str)
             .await
             .unwrap();
-        handle_write(json!({"path": "MEMORY.md", "content": "idx"}), &ws_str)
+        let _ignored = handle_write(json!({"path": "MEMORY.md", "content": "idx"}), &ws_str)
             .await
             .unwrap();
 
@@ -2181,7 +2181,7 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(json!({"path": "foo.md", "content": "x"}), &ws_str)
+        let _ignored = handle_write(json!({"path": "foo.md", "content": "x"}), &ws_str)
             .await
             .unwrap();
 

@@ -60,14 +60,14 @@ async fn spawned_daemon_registers_resolved_port_when_bound_to_zero() {
             }
         }
         if std::time::Instant::now() >= deadline {
-            let _ = child.kill().await;
+            let _ignored = child.kill().await;
             panic!("daemon never registered instance `{instance_id}` in {registry_path:?}");
         }
         sleep(Duration::from_millis(100)).await;
     };
 
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+    let _ignored = child.kill().await;
+    let _ignored = child.wait().await;
 
     assert!(
         !resolved.ends_with(":0"),

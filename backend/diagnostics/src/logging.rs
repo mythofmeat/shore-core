@@ -165,7 +165,7 @@ mod tests {
         let output = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::fmt()
             .event_format(HumanLogFormat)
-            .with_writer(BufferWriter(output.clone()))
+            .with_writer(BufferWriter(Arc::clone(&output)))
             .finish();
 
         tracing::subscriber::with_default(subscriber, || {
@@ -202,7 +202,7 @@ mod tests {
         let mut chars = s.chars();
         while let Some(c) = chars.next() {
             if c == '\x1b' && chars.as_str().starts_with('[') {
-                chars.next();
+                let _ignored = chars.next();
                 for inner in chars.by_ref() {
                     if inner.is_ascii_alphabetic() {
                         break;
@@ -222,7 +222,7 @@ mod tests {
         type Writer = Buffer;
 
         fn make_writer(&'a self) -> Self::Writer {
-            Buffer(self.0.clone())
+            Buffer(Arc::clone(&self.0))
         }
     }
 
@@ -230,7 +230,10 @@ mod tests {
 
     impl io::Write for Buffer {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
+            self.0
+                .lock()
+                .map_err(|_| io::Error::other("log buffer mutex poisoned"))?
+                .extend_from_slice(buf);
             Ok(buf.len())
         }
 

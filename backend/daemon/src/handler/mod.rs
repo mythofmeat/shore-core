@@ -102,7 +102,7 @@ impl ToolContext for HandlerToolContext {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct GenContext {
     registry: Arc<Mutex<CharacterRegistry>>,
     llm_client: LedgerClient,
@@ -136,7 +136,7 @@ struct GenerationParams {
     sampler_overlay: crate::preferences::SamplerSettings,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct SessionState {
     active_model: Option<String>,
     session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
@@ -147,7 +147,7 @@ struct SessionState {
 /// `Message` (not Regen / Cancel / Command). Used to fan out streaming
 /// generation output to that client even when generation is triggered by a
 /// different session, so frontends stay in sync.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct LastUserLease {
     session_id: SessionId,
     expires_at: Instant,
@@ -171,6 +171,7 @@ pub(super) enum RuntimeReloadSource {
 ///
 /// Routes commands inline (fast path) and spawns tokio tasks for generation
 /// (Message/Regen), so the handler loop is never blocked by LLM streaming.
+#[derive(Debug)]
 pub struct MessageHandler {
     pub registry: Arc<Mutex<CharacterRegistry>>,
     pub cmd_ctx: CommandContext,
@@ -184,6 +185,7 @@ pub struct MessageHandler {
     last_user_session: HashMap<String, LastUserLease>,
 }
 
+#[derive(Debug)]
 pub struct MessageHandlerDeps {
     pub registry: Arc<Mutex<CharacterRegistry>>,
     pub cmd_ctx: CommandContext,
@@ -228,11 +230,11 @@ impl MessageHandler {
             return None;
         }
         if Instant::now() >= lease.expires_at {
-            self.last_user_session.remove(char_name);
+            let _ignored = self.last_user_session.remove(char_name);
             return None;
         }
         let Some(tx) = self.session_router.sender_for(lease.session_id).await else {
-            self.last_user_session.remove(char_name);
+            let _ignored = self.last_user_session.remove(char_name);
             return None;
         };
         Some(tx)
@@ -250,12 +252,12 @@ impl MessageHandler {
     ) -> mpsc::Sender<ServerMessage> {
         let lease_tx = self.resolve_lease_tx(issuer_session, char_name).await;
         let (fan_tx, mut fan_rx) = mpsc::channel::<ServerMessage>(256);
-        tokio::spawn(async move {
+        let _ignored = tokio::spawn(async move {
             while let Some(msg) = fan_rx.recv().await {
                 if let Some(ref lease) = lease_tx {
-                    let _ = lease.send(msg.clone()).await;
+                    let _ignored = lease.send(msg.clone()).await;
                 }
-                let _ = issuer_tx.send(msg).await;
+                let _ignored = issuer_tx.send(msg).await;
             }
         });
         fan_tx
@@ -266,7 +268,7 @@ impl MessageHandler {
     /// Commands are processed inline (no LLM I/O, always fast).
     /// Engine messages (Message/Regen) are spawned as independent tokio tasks,
     /// so this loop never blocks on LLM streaming.
-    pub async fn run(&mut self, route_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<RoutedMessage>>>) {
+    pub async fn run(&mut self, route_rx: Arc<Mutex<mpsc::Receiver<RoutedMessage>>>) {
         info!("message handler started");
         let mut rx = route_rx.lock().await;
         let mut control_open = true;
@@ -301,7 +303,7 @@ impl MessageHandler {
                     "handling command"
                 );
                 let result = self.dispatch_command(&cmd, &meta).await;
-                let _ = self
+                let _ignored = self
                     .session_router
                     .send_to_session(meta.session.session_id, result)
                     .await;
@@ -329,7 +331,7 @@ impl MessageHandler {
             ClientMessage::Message(_) => "message",
             ClientMessage::Regen(_) => "regen",
             ClientMessage::Cancel(_) => "cancel",
-            _ => "other",
+            ClientMessage::Hello(_) | ClientMessage::Command(_) => "other",
         };
         debug!(
             client_id = meta.session.client_id.0,
@@ -359,7 +361,7 @@ impl MessageHandler {
                 match registry.resolve_character(meta.session.selected_character.as_deref()) {
                     Ok(name) => name,
                     Err(e) => {
-                        let _ = self
+                        let _ignored = self
                             .session_router
                             .send_to_session(
                                 meta.session.session_id,
@@ -392,11 +394,13 @@ impl MessageHandler {
                 };
                 (body, true)
             }
-            _ => return,
+            ClientMessage::Hello(_) | ClientMessage::Command(_) | ClientMessage::Cancel(_) => {
+                return;
+            }
         };
 
         if !regen {
-            self.last_user_session.insert(
+            let _ignored = self.last_user_session.insert(
                 char_name.clone(),
                 LastUserLease {
                     session_id: meta.session.session_id,
@@ -483,7 +487,7 @@ impl MessageHandler {
             if let Err(e) = Box::pin(handle_generation(gen_ctx, params)).await {
                 error!(error = %e, "Error processing engine message");
                 let err_msg = e.to_string();
-                let _ = fanout_tx
+                let _ignored = fanout_tx
                     .send(
                         ServerMessage::Error(SwpError {
                             rid: None,
@@ -590,7 +594,7 @@ impl MessageHandler {
         let sessions = self.session_router.sessions().await;
         for (session_id, selected_character) in sessions {
             let snapshot = crate::handshake::build_session_history_snapshot(
-                self.registry.clone(),
+                Arc::clone(&self.registry),
                 selected_character.clone(),
                 None,
             )
@@ -601,13 +605,13 @@ impl MessageHandler {
             // route with a stale name (e.g. switch_character would otherwise
             // fail to resolve the dead selection).
             if snapshot.selected_character != selected_character {
-                let _ = self
+                let _ignored = self
                     .session_router
                     .set_selected_character(session_id, snapshot.selected_character.clone())
                     .await;
             }
 
-            let _ = self
+            let _ignored = self
                 .session_router
                 .send_to_session(
                     session_id,

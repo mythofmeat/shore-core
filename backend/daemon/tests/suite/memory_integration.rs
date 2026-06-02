@@ -280,9 +280,8 @@ async fn test_markdown_memory_compaction_end_to_end() {
         .await
         .unwrap();
 
-    let result = match outcome {
-        CompactionOutcome::Compacted(result) => result,
-        other => panic!("expected Compacted, got {other:?}"),
+    let CompactionOutcome::Compacted(result) = outcome else {
+        panic!("expected Compacted");
     };
 
     assert_eq!(result.memory_files_written.len(), 2);

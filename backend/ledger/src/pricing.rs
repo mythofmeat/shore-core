@@ -47,6 +47,7 @@ pub struct CostRequest<'a> {
 
 // ── PricingEngine ────────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct PricingEngine {
     ledger: Arc<Ledger>,
     memory_cache: Mutex<HashMap<String, ModelPricing>>,
@@ -68,7 +69,7 @@ impl PricingEngine {
     ) -> Result<(), rusqlite::Error> {
         let started = std::time::Instant::now();
         self.ledger.with_conn(|conn| {
-            conn.execute(
+            let _ignored = conn.execute(
                 r"INSERT OR REPLACE INTO pricing
                     (model_id, input_per_token, output_per_token,
                      cache_read_per_token, cache_write_per_token, fetched_at)
@@ -86,7 +87,7 @@ impl PricingEngine {
         })?;
 
         self.with_memory_cache_mut(|cache| {
-            cache.insert(model_id.to_string(), pricing.clone());
+            let _ignored = cache.insert(model_id.to_string(), pricing.clone());
         });
         debug!(model_id, elapsed = ?started.elapsed(), "pricing stored");
         Ok(())
@@ -139,7 +140,7 @@ impl PricingEngine {
         // Populate memory cache on DB hit
         if let Some(ref p) = result {
             self.with_memory_cache_mut(|cache| {
-                cache.insert(model_id.to_string(), p.clone());
+                let _ignored = cache.insert(model_id.to_string(), p.clone());
             });
         }
 
@@ -294,10 +295,10 @@ impl PricingEngine {
     /// Delete all rows from pricing table and clear memory cache.
     pub fn clear_cache(&self) -> Result<(), rusqlite::Error> {
         self.ledger.with_conn(|conn| {
-            conn.execute("DELETE FROM pricing", [])?;
+            let _ignored = conn.execute("DELETE FROM pricing", [])?;
             Ok(())
         })?;
-        self.with_memory_cache_mut(std::collections::HashMap::clear);
+        self.with_memory_cache_mut(HashMap::clear);
         Ok(())
     }
 
@@ -345,13 +346,17 @@ pub fn is_anthropic_pricing(provider: &str, model: &str) -> bool {
 
 fn normalize_anthropic_model(model: &str) -> String {
     let mut chars: Vec<char> = model.chars().collect();
-    for i in (1..chars.len()).rev() {
-        if chars[i] == '-'
-            && i + 1 < chars.len()
-            && chars[i - 1].is_ascii_digit()
-            && chars[i + 1].is_ascii_digit()
-        {
-            chars[i] = '.';
+    for (offset, window) in chars.windows(3).enumerate().rev() {
+        let [before, separator, after] = window else {
+            continue;
+        };
+        if *separator == '-' && before.is_ascii_digit() && after.is_ascii_digit() {
+            let Some(separator_index) = offset.checked_add(1) else {
+                break;
+            };
+            if let Some(ch) = chars.get_mut(separator_index) {
+                *ch = '.';
+            }
             break;
         }
     }
@@ -380,7 +385,7 @@ mod tests {
     use std::sync::Arc;
 
     fn test_engine() -> PricingEngine {
-        let ledger = Arc::new(crate::ledger::Ledger::open_in_memory().unwrap());
+        let ledger = Arc::new(Ledger::open_in_memory().unwrap());
         PricingEngine::new(ledger)
     }
 

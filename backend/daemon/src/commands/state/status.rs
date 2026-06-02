@@ -83,7 +83,7 @@ pub fn heartbeat_log(
 ) -> CommandResult {
     let limit = count_arg(args, 20);
     let events = ctx.autonomy.heartbeat_log(engine.character_name(), limit);
-    let events_json: Vec<serde_json::Value> = events
+    let events_json: Vec<Value> = events
         .iter()
         .map(|e| {
             json!({

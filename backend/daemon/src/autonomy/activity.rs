@@ -83,6 +83,7 @@ pub struct ActivityStats {
 // ActivityTracker
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct ActivityTracker {
     timestamps: Vec<MessageTimestamp>,
     cached_stats: Option<ActivityStats>,
@@ -130,8 +131,9 @@ impl ActivityTracker {
         let monotonic_base = Instant::now();
         for (i, wall_clock) in wall_clocks.iter().enumerate() {
             let weekday = wall_clock.weekday();
+            let offset = u64::try_from(i).unwrap_or(u64::MAX);
             self.timestamps.push(MessageTimestamp {
-                monotonic: monotonic_base + std::time::Duration::from_nanos(i as u64),
+                monotonic: monotonic_base + std::time::Duration::from_nanos(offset),
                 wall_clock: *wall_clock,
                 weekday,
             });
@@ -296,7 +298,7 @@ impl ActivityTracker {
 
         // Limit to last SESSION_MEDIANS_WINDOW sessions.
         if sessions.len() > SESSION_MEDIANS_WINDOW {
-            sessions.drain(..sessions.len() - SESSION_MEDIANS_WINDOW);
+            let _ignored = sessions.drain(..sessions.len() - SESSION_MEDIANS_WINDOW);
         }
 
         sessions
@@ -342,7 +344,7 @@ impl ActivityTracker {
         }
         // Keep only the last SESSION_TEMPO_WINDOW gaps.
         if all_gaps.len() > SESSION_TEMPO_WINDOW {
-            all_gaps.drain(..all_gaps.len() - SESSION_TEMPO_WINDOW);
+            let _ignored = all_gaps.drain(..all_gaps.len() - SESSION_TEMPO_WINDOW);
         }
         all_gaps
     }
@@ -370,7 +372,8 @@ impl ActivityTracker {
 
         let mut histogram = [0.0f64; 24];
         for hour in &source {
-            histogram[*hour as usize] += 1.0;
+            let hour = usize::try_from(*hour).unwrap_or(0);
+            histogram[hour] += 1.0;
         }
 
         // Normalize to density (fraction of total).
@@ -486,7 +489,8 @@ mod tests {
         let mut tracker = ActivityTracker::new();
         let base = Instant::now();
         for (i, wall) in times.iter().enumerate() {
-            let mono = base + Duration::from_secs(i as u64);
+            let offset = u64::try_from(i).unwrap_or(u64::MAX);
+            let mono = base + Duration::from_secs(offset);
             tracker.record_message_at(mono, *wall);
         }
         tracker
@@ -744,7 +748,7 @@ mod tests {
         let mut tracker = build_tracker_with_timestamps(&times);
 
         // Compute stats once.
-        let _ = tracker.recompute_stats();
+        let _ignored = tracker.recompute_stats();
         assert!(tracker.cached_stats.is_some());
 
         // Recording a new message invalidates the cache.

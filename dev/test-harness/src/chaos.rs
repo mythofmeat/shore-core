@@ -9,6 +9,7 @@ use crate::mock_llm::MockLlmSidecar;
 ///
 /// Obtained by calling [`TestHarness::crash`]. The daemon tasks have been
 /// aborted; the on-disk data in `tmp_dir` is intact for recovery testing.
+#[derive(Debug)]
 pub struct CrashedHarness {
     pub tmp_dir: tempfile::TempDir,
     pub mock_llm: MockLlmSidecar,

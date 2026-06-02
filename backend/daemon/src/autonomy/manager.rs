@@ -98,7 +98,7 @@ impl ToolContext for HeartbeatToolContext {
     fn embedder(&self) -> Option<&dyn shore_llm::embed::Embedder> {
         self.inner.embedder()
     }
-    fn memory_index_path(&self) -> Option<&std::path::Path> {
+    fn memory_index_path(&self) -> Option<&Path> {
         self.inner.memory_index_path()
     }
     fn config_dir(&self) -> &str {
@@ -114,6 +114,7 @@ impl ToolContext for HeartbeatToolContext {
 // ---------------------------------------------------------------------------
 
 /// All autonomy state for a single character.
+#[derive(Debug)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "autonomy state tracks independent persisted and runtime flags"
@@ -247,7 +248,7 @@ fn save_state(data_dir: &Path, character: &str, state: &mut AutonomyState) {
 
     let path = state_path(data_dir, character);
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        let _ignored = std::fs::create_dir_all(parent);
     }
 
     match serde_json::to_string_pretty(&persisted) {
@@ -347,7 +348,7 @@ fn sanitize_compaction_config(mut compaction: CompactionConfig) -> CompactionCon
 ///
 /// Cheap to clone (wraps `Arc`s). The message handler, command context, and
 /// per-character tick tasks all hold clones.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AutonomyManager {
     states: Arc<DashMap<String, Arc<Mutex<AutonomyState>>>>,
     handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
@@ -439,7 +440,7 @@ impl AutonomyManager {
     pub fn ensure_state_with_config(
         &self,
         character: &str,
-        cache_ttl_secs: Option<u64>,
+        _cache_ttl_secs: Option<u64>,
         effective_config: Option<&LoadedConfig>,
     ) -> bool {
         if self.states.contains_key(character) {
@@ -448,15 +449,12 @@ impl AutonomyManager {
 
         // Use per-character autonomy config if available, otherwise global.
         let autonomy_cfg = effective_config.map_or_else(
-            || self.config.clone(),
+            || Arc::clone(&self.config),
             |c| Arc::new(c.app.behavior.autonomy.clone()),
         );
 
         // Create heartbeat clock with config values.
         let mut heartbeat = HeartbeatClock::with_config(&autonomy_cfg.heartbeat);
-        // cache_ttl_secs is no longer consumed here — CacheKeepalive handles
-        // keepalive pings independently (added in Phase 3).
-        let _ = cache_ttl_secs;
 
         // Restore persisted state if available.
         if let Some(persisted) = load_state(&self.data_dir, character) {
@@ -497,12 +495,14 @@ impl AutonomyManager {
             dream_failure_count: 0,
         }));
 
-        self.states.insert(character.to_string(), state.clone());
+        let _ignored = self
+            .states
+            .insert(character.to_string(), Arc::clone(&state));
 
         // Spawn per-character tick task.
         let name = character.to_string();
         let config = autonomy_cfg;
-        let compaction = self.compaction.clone();
+        let compaction = Arc::clone(&self.compaction);
         let data_dir = self.data_dir.clone();
         let shutdown_rx = self.shutdown_rx.clone();
         let llm_client = self.llm_client.clone();
@@ -551,7 +551,7 @@ impl AutonomyManager {
 
     /// Call after a user message is appended.
     pub fn notify_user_message(&self, character: &str, message_count: usize) {
-        self.with_state(character, |s| {
+        let _ignored = self.with_state(character, |s| {
             let was_idle = s.heartbeat.ticks_without_user() > 0;
             let now = Instant::now();
             s.heartbeat.on_user_message(now);
@@ -579,7 +579,7 @@ impl AutonomyManager {
 
     /// Call after an assistant message is appended.
     pub fn notify_assistant_message(&self, character: &str, message_count: usize) {
-        self.with_state(character, |s| {
+        let _ignored = self.with_state(character, |s| {
             s.last_compaction_activity = Instant::now();
             s.active_turn_count = message_count;
             debug!(character, message_count, "Assistant message notified");
@@ -601,7 +601,7 @@ impl AutonomyManager {
             .iter()
             .max()
             .and_then(|n| naive_local_to_instant(*n));
-        self.with_state(character, |s| {
+        let _ignored = self.with_state(character, |s| {
             s.activity.backfill(timestamps);
             if let Some(at) = latest_user {
                 s.heartbeat.seed_last_user_at_if_unset(at);
@@ -612,7 +612,7 @@ impl AutonomyManager {
 
     /// Cache the last LLM request for heartbeat tick reuse.
     pub fn notify_last_request(&self, character: &str, request: LlmRequest) {
-        self.with_state(character, |s| {
+        let _ignored = self.with_state(character, |s| {
             cache_last_request(s, character, request);
         });
     }
@@ -630,7 +630,7 @@ impl AutonomyManager {
     /// The handler calls this inline after running compaction and reloading the
     /// engine — no deferred reload flag is needed.
     pub fn notify_compaction_complete(&self, character: &str, new_turn_count: usize) {
-        self.with_state(character, |s| {
+        let _ignored = self.with_state(character, |s| {
             s.active_turn_count = new_turn_count;
             // Invalidate the cached request — it contains the pre-compaction
             // conversation. The next heartbeat/keepalive call can rebuild from
@@ -654,7 +654,7 @@ impl AutonomyManager {
     /// Call after compaction fails. Resets the trigger so it can retry.
     pub fn notify_compaction_failed(&self, character: &str) {
         warn!(character, "Compaction failed — resetting trigger for retry");
-        self.with_state(character, |s| {
+        let _ignored = self.with_state(character, |s| {
             s.compaction_triggered = false;
             s.last_compaction_activity = Instant::now();
             s.mark_dirty();
@@ -685,7 +685,7 @@ impl AutonomyManager {
             && turn_count >= compaction.min_turns
         {
             // Mark compaction_triggered so the tick doesn't also fire.
-            self.with_state(character, |s| {
+            let _ignored = self.with_state(character, |s| {
                 s.compaction_triggered = true;
                 s.mark_dirty();
             });
@@ -698,7 +698,7 @@ impl AutonomyManager {
             && context_tokens >= compaction.max_context_tokens
             && turn_count >= compaction.min_turns
         {
-            self.with_state(character, |s| {
+            let _ignored = self.with_state(character, |s| {
                 s.compaction_triggered = true;
                 s.mark_dirty();
             });
@@ -845,7 +845,7 @@ impl AutonomyManager {
         let count = handles.len();
         info!(task_count = count, "Autonomy manager shutting down");
         for handle in handles {
-            let _ = handle.await;
+            let _ignored = handle.await;
         }
         info!("Autonomy manager shutdown complete");
     }
@@ -1807,7 +1807,7 @@ async fn execute_heartbeat_tick(
 
     let Some(lc) = loaded_config else { return };
 
-    apply_heartbeat_model_override(&mut request, lc, character);
+    let _ignored = apply_heartbeat_model_override(&mut request, lc, character);
 
     // Build the dynamic heartbeat prompt.
     let character_data_dir = character_data_dir(data_dir, character);
@@ -1867,7 +1867,7 @@ async fn execute_heartbeat_tick(
     let tool_ctx = build_tool_context(character, data_dir, client, lc);
     let tool_ctx = Arc::new(HeartbeatToolContext {
         inner: tool_ctx,
-        state: state.clone(),
+        state: Arc::clone(state),
     });
     let max_normal_iterations = lc.app.behavior.autonomy.heartbeat.max_tool_rounds;
     let wrap_up_grace = lc.app.behavior.autonomy.heartbeat.wrap_up_grace_rounds;
@@ -1983,7 +1983,7 @@ async fn execute_heartbeat_tick(
         //
         // Uses content_block_to_api_json (Anthropic path) — heartbeat always
         // uses Anthropic models. ZAI would need content_block_to_json.
-        let assistant_content: Vec<serde_json::Value> = resp
+        let assistant_content: Vec<Value> = resp
             .content_blocks
             .iter()
             .filter_map(crate::content_util::content_block_to_api_json)
@@ -2004,7 +2004,7 @@ async fn execute_heartbeat_tick(
         }
 
         // Dispatch each tool, collect results.
-        let mut tool_results: Vec<serde_json::Value> = Vec::new();
+        let mut tool_results: Vec<Value> = Vec::new();
 
         for (id, name, input) in &tool_uses {
             let input_str = serde_json::to_string(input).unwrap_or_default();
@@ -2107,7 +2107,7 @@ async fn execute_heartbeat_tick(
                     if let Err(e) = engine.append_message(msg.clone()) {
                         error!(character, error = %e, "Failed to persist autonomous message via engine");
                     } else if let Some(tx) = push_tx {
-                        let _ = tx.send(ServerMessage::NewMessage(
+                        let _ignored = tx.send(ServerMessage::NewMessage(
                             shore_protocol::server_msg::NewMessage {
                                 revision: engine.current_revision(),
                                 character: Some(character.to_string()),
@@ -2252,11 +2252,11 @@ fn append_wrap_up_nudge(request: &mut LlmRequest) {
     if let Some(last) = request.messages.last_mut() {
         if last.get("role").and_then(|r| r.as_str()) == Some("user") {
             match last.get_mut("content") {
-                Some(serde_json::Value::Array(arr)) => {
+                Some(Value::Array(arr)) => {
                     arr.push(block);
                     return;
                 }
-                Some(serde_json::Value::String(existing)) => {
+                Some(Value::String(existing)) => {
                     let combined = format!("{existing}\n\n{WRAP_UP_NUDGE_TEXT}");
                     last["content"] = json!(combined);
                     return;
@@ -2543,7 +2543,7 @@ mod tests {
         let mgr = rt.block_on(async { test_manager(tmp.path()) });
 
         rt.block_on(async {
-            mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice", None);
             assert!(mgr.states.contains_key("alice"));
         });
     }
@@ -2558,8 +2558,8 @@ mod tests {
         let mgr = rt.block_on(async { test_manager(tmp.path()) });
 
         rt.block_on(async {
-            mgr.ensure_state("alice", None);
-            mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice", None);
             assert_eq!(mgr.states.len(), 1);
         });
     }
@@ -2638,7 +2638,7 @@ mod tests {
 
         rt.block_on(async {
             let mgr = test_manager(tmp.path());
-            mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice", None);
             let status = mgr.status("alice").unwrap();
             assert_eq!(status.heartbeat_state, "Active");
             assert_eq!(status.ticks_without_user, 0);
@@ -2655,7 +2655,7 @@ mod tests {
 
         rt.block_on(async {
             let mgr = test_manager(tmp.path());
-            mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice", None);
             assert!(mgr.heartbeat_set_dormant("alice"));
 
             let status = mgr.status("alice").unwrap();
@@ -2673,8 +2673,8 @@ mod tests {
 
         rt.block_on(async {
             let mgr = test_manager(tmp.path());
-            mgr.ensure_state("alice", None);
-            mgr.with_state("alice", |s| {
+            let _ignored = mgr.ensure_state("alice", None);
+            let _ignored = mgr.with_state("alice", |s| {
                 let now = Instant::now();
                 s.heartbeat.on_user_message(now - Duration::from_hours(72));
             });
@@ -2711,7 +2711,7 @@ mod tests {
         let mgr = rt.block_on(async { test_manager(tmp.path()) });
 
         rt.block_on(async {
-            mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice", None);
 
             let timestamps = vec![
                 chrono::NaiveDate::from_ymd_opt(2026, 3, 20)
@@ -2744,9 +2744,10 @@ mod tests {
         let mgr = rt.block_on(async { test_manager(tmp.path()) });
 
         rt.block_on(async {
-            mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice", None);
             // Heartbeat starts with no user activity.
-            mgr.with_state("alice", |s| assert!(s.heartbeat.last_user_at().is_none()));
+            let _ignored =
+                mgr.with_state("alice", |s| assert!(s.heartbeat.last_user_at().is_none()));
 
             // Most recent backfilled user turn is ~2 minutes ago.
             let now_local = chrono::Local::now().naive_local();
@@ -2758,7 +2759,7 @@ mod tests {
 
             // last_user_at is now seeded and reflects the recent (~2min) turn,
             // so a short inactivity window would NOT be satisfied.
-            mgr.with_state("alice", |s| {
+            let _ignored = mgr.with_state("alice", |s| {
                 let last = s.heartbeat.last_user_at().expect("seeded");
                 let elapsed = Instant::now().duration_since(last);
                 assert!(elapsed < Duration::from_mins(5));
@@ -3028,7 +3029,7 @@ mod tests {
             dream_failure_count: 0,
         }));
 
-        let ctx = tick_ctx_no_llm(state.clone(), tmp.path());
+        let ctx = tick_ctx_no_llm(Arc::clone(&state), tmp.path());
         tick_character("test", &ctx).await;
 
         // After the tick: the keepalive should not fire immediately, but
@@ -3077,10 +3078,10 @@ mod tests {
     async fn compaction_keeps_keepalive_deadline() {
         let tmp = tempfile::tempdir().unwrap();
         let mgr = test_manager(tmp.path());
-        mgr.ensure_state("alice", None);
+        let _ignored = mgr.ensure_state("alice", None);
 
         let now = Instant::now();
-        mgr.with_state("alice", |s| {
+        let _ignored = mgr.with_state("alice", |s| {
             s.cache_keepalive
                 .on_cache_warmed(now - Duration::from_hours(1));
             s.cache_keepalive
@@ -3158,7 +3159,7 @@ mod tests {
 
         let mgr = rt.block_on(async { test_manager(data_dir) });
         rt.block_on(async {
-            mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice", None);
         });
 
         // The keepalive should be primed: after 55 minutes, tick should
@@ -3188,7 +3189,7 @@ mod tests {
     fn heartbeat_must_not_mutate_tools_array() {
         // Simulate what execute_heartbeat_tick does: clone last_request,
         // then check if tools are modified.
-        let original_tools: Vec<serde_json::Value> = vec![
+        let original_tools: Vec<Value> = vec![
             json!({"name": "check_time", "input_schema": {}}),
             json!({"name": "search_history", "input_schema": {}}),
         ];
@@ -3280,7 +3281,7 @@ api_key_env = "{api_key_env}"
         let mut app = shore_config::app::AppConfig::default();
         app.behavior.tool_use.enabled = false;
         app.memory.thinking.preserve_prior_turns = false;
-        let config = shore_config::LoadedConfig::new_for_test(
+        let config = LoadedConfig::new_for_test(
             app,
             catalog,
             shore_config::ShoreDirs {
@@ -3295,23 +3296,23 @@ api_key_env = "{api_key_env}"
         let assistant = request
             .messages
             .iter()
-            .find(|msg| msg.get("role").and_then(serde_json::Value::as_str) == Some("assistant"))
+            .find(|msg| msg.get("role").and_then(Value::as_str) == Some("assistant"))
             .expect("rebuilt request should include assistant history");
         let blocks = assistant
             .get("content")
-            .and_then(serde_json::Value::as_array)
+            .and_then(Value::as_array)
             .expect("assistant content should be structured");
 
         assert!(
-            blocks.iter().all(
-                |block| block.get("type").and_then(serde_json::Value::as_str) != Some("thinking")
-            ),
+            blocks
+                .iter()
+                .all(|block| block.get("type").and_then(Value::as_str) != Some("thinking")),
             "heartbeat rebuild must honor preserve_prior_turns=false"
         );
         assert!(
             blocks
                 .iter()
-                .any(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("text")),
+                .any(|block| block.get("type").and_then(Value::as_str) == Some("text")),
             "non-thinking assistant content must remain"
         );
 
@@ -3345,7 +3346,7 @@ api_key_env = "{api_key_env}"
         heartbeat: Option<&str>,
         chat_env: &str,
         heartbeat_env: &str,
-    ) -> shore_config::LoadedConfig {
+    ) -> LoadedConfig {
         let chat_toml = format!(
             r#"
 [anthropic.sonnet]
@@ -3366,7 +3367,7 @@ api_key_env = "{heartbeat_env}"
         app.defaults.background.heartbeat = heartbeat.map(str::to_string);
 
         let tmp = tempfile::tempdir().unwrap();
-        shore_config::LoadedConfig::new_for_test(
+        LoadedConfig::new_for_test(
             app,
             catalog,
             shore_config::ShoreDirs {
@@ -3535,7 +3536,7 @@ api_key_env = "{heartbeat_env}"
             .enable_all()
             .build()
             .unwrap();
-        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Below max_turns: should not compact.
         assert!(!mgr.should_compact_now("alice", 15, 0));
@@ -3571,13 +3572,13 @@ api_key_env = "{heartbeat_env}"
             .enable_all()
             .build()
             .unwrap();
-        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Below max_turns and no pending flag: should not compact.
         assert!(!mgr.should_compact_now("alice", 20, 0));
 
         // Simulate idle trigger setting the pending flag.
-        mgr.with_state("alice", |s| {
+        let _ignored = mgr.with_state("alice", |s| {
             s.compaction_pending = true;
         });
 
@@ -3610,7 +3611,7 @@ api_key_env = "{heartbeat_env}"
             .enable_all()
             .build()
             .unwrap();
-        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Even above max_turns, disabled config means no compaction.
         assert!(!mgr.should_compact_now("alice", 100, 0));
@@ -3640,7 +3641,7 @@ api_key_env = "{heartbeat_env}"
             .enable_all()
             .build()
             .unwrap();
-        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Below threshold: no trigger.
         assert!(!mgr.should_compact_now("alice", 10, 29_999));
@@ -3676,7 +3677,7 @@ api_key_env = "{heartbeat_env}"
             .enable_all()
             .build()
             .unwrap();
-        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Huge context, past min_turns — must not trigger when disabled.
         assert!(!mgr.should_compact_now("alice", 100, 1_000_000));
@@ -3704,7 +3705,7 @@ api_key_env = "{heartbeat_env}"
             .enable_all()
             .build()
             .unwrap();
-        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Trigger compaction.
         assert!(mgr.should_compact_now("alice", 16, 0));
@@ -3770,7 +3771,7 @@ api_key_env = "{heartbeat_env}"
         }));
 
         let tick_ctx = TickContext {
-            state: state.clone(),
+            state: Arc::clone(&state),
             config: Arc::new(config),
             compaction: Arc::new(compaction),
             data_dir: tmp.path().to_path_buf(),

@@ -32,34 +32,34 @@ fn build_where(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::types::To
     let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     if let Some(ref v) = filter.since {
-        clauses.push(format!("ts >= ?{}", values.len() + 1));
+        clauses.push(format!("ts >= ?{}", next_param_index(&values)));
         values.push(Box::new(v.clone()));
     }
     if let Some(ref v) = filter.until {
-        clauses.push(format!("ts <= ?{}", values.len() + 1));
+        clauses.push(format!("ts <= ?{}", next_param_index(&values)));
         values.push(Box::new(v.clone()));
     }
     if let Some(ref v) = filter.character {
-        clauses.push(format!("character = ?{}", values.len() + 1));
+        clauses.push(format!("character = ?{}", next_param_index(&values)));
         values.push(Box::new(v.clone()));
     }
     if let Some(ref v) = filter.provider {
-        clauses.push(format!("provider = ?{}", values.len() + 1));
+        clauses.push(format!("provider = ?{}", next_param_index(&values)));
         values.push(Box::new(v.clone()));
     }
     if let Some(ref v) = filter.api_key_name {
         clauses.push(format!(
             "COALESCE(api_key_name, 'unknown') = ?{}",
-            values.len() + 1
+            next_param_index(&values)
         ));
         values.push(Box::new(v.clone()));
     }
     if let Some(ref v) = filter.model {
-        clauses.push(format!("model = ?{}", values.len() + 1));
+        clauses.push(format!("model = ?{}", next_param_index(&values)));
         values.push(Box::new(v.clone()));
     }
     if let Some(ref v) = filter.call_type {
-        clauses.push(format!("call_type = ?{}", values.len() + 1));
+        clauses.push(format!("call_type = ?{}", next_param_index(&values)));
         values.push(Box::new(v.clone()));
     }
     if !filter.usage_kinds.is_empty() {
@@ -83,6 +83,10 @@ fn build_where(filter: &QueryFilter) -> (String, Vec<Box<dyn rusqlite::types::To
         format!(" WHERE {}", clauses.join(" AND "))
     };
     (sql, values)
+}
+
+fn next_param_index(values: &[Box<dyn rusqlite::types::ToSql>]) -> usize {
+    values.len().saturating_add(1)
 }
 
 // ── Summary ──────────────────────────────────────────────────────────────────
@@ -486,7 +490,7 @@ pub fn warm_streak(ledger: &Ledger, character: &str) -> Result<u32, rusqlite::Er
         let mut count = 0u32;
         while let Some(Ok(state)) = rows.next() {
             if state.as_deref() == Some("warm") {
-                count += 1;
+                count = count.saturating_add(1);
             } else {
                 break;
             }
@@ -498,6 +502,7 @@ pub fn warm_streak(ledger: &Ledger, character: &str) -> Result<u32, rusqlite::Er
 // ── Recalculate ─────────────────────────────────────────────────────────────
 
 /// Row with NULL costs that needs recalculation.
+#[derive(Debug)]
 pub struct CostRow {
     pub id: i64,
     pub provider: String,
@@ -560,7 +565,7 @@ pub fn update_costs(
     cost: &crate::pricing::CostBreakdown,
 ) -> Result<(), rusqlite::Error> {
     ledger.with_conn(|conn| {
-        conn.execute(
+        let _ignored = conn.execute(
             "UPDATE calls SET input_cost=?1, output_cost=?2, cache_read_cost=?3, cache_write_cost=?4, cost_source='pricing_catalog', total_cost=?5 WHERE id=?6",
             rusqlite::params![cost.input, cost.output, cost.cache_read, cost.cache_write, cost.total, id],
         )?;
@@ -574,6 +579,10 @@ pub fn update_costs(
 mod tests {
     use super::*;
     use crate::ledger::{CallRow, Ledger};
+
+    fn first_item<T>(items: &[T]) -> &T {
+        items.first().expect("expected at least one item")
+    }
 
     fn populated_ledger() -> Ledger {
         let ledger = Ledger::open_in_memory().unwrap();
@@ -602,7 +611,7 @@ mod tests {
             cost_source: Some("pricing_catalog".into()),
             total_cost: Some(0.005_745),
         };
-        ledger.insert(&base).unwrap();
+        let _ignored = ledger.insert(&base).unwrap();
 
         let mut row2 = base.clone();
         row2.ts = "2026-04-05T10:01:00Z".into();
@@ -610,7 +619,7 @@ mod tests {
         row2.api_key_name = Some("overflow".into());
         row2.input_tokens = 200;
         row2.total_cost = Some(0.01);
-        ledger.insert(&row2).unwrap();
+        let _ignored = ledger.insert(&row2).unwrap();
 
         let mut row3 = base.clone();
         row3.ts = "2026-04-05T10:02:00Z".into();
@@ -621,7 +630,7 @@ mod tests {
         row3.cache_state = None;
         row3.finish_reason = "end_turn".into();
         row3.total_cost = Some(0.002);
-        ledger.insert(&row3).unwrap();
+        let _ignored = ledger.insert(&row3).unwrap();
 
         ledger
     }
@@ -693,7 +702,7 @@ mod tests {
         };
         let summary = usage_summary(&ledger, &filter).unwrap();
         assert_eq!(summary.len(), 1);
-        assert_eq!(summary[0].call_count, 2);
+        assert_eq!(first_item(&summary).call_count, 2);
     }
 
     #[test]
@@ -705,8 +714,9 @@ mod tests {
         };
         let summary = usage_summary(&ledger, &filter).unwrap();
         assert_eq!(summary.len(), 1);
-        assert_eq!(summary[0].call_count, 1);
-        assert_eq!(summary[0].total_input, 200);
+        let summary = first_item(&summary);
+        assert_eq!(summary.call_count, 1);
+        assert_eq!(summary.total_input, 200);
     }
 
     #[test]
@@ -737,9 +747,9 @@ mod tests {
             cost_source: Some("pricing_catalog".into()),
             total_cost: None,
         };
-        ledger.insert(&row).unwrap();
+        let _ignored = ledger.insert(&row).unwrap();
         row.cache_anomaly = None;
-        ledger.insert(&row).unwrap();
+        let _ignored = ledger.insert(&row).unwrap();
         let anomalies = query_anomalies(&ledger, &QueryFilter::default()).unwrap();
         assert_eq!(anomalies.len(), 1);
     }
@@ -749,8 +759,9 @@ mod tests {
         let ledger = populated_ledger();
         let tsv = export_tsv(&ledger, &QueryFilter::default()).unwrap();
         let lines: Vec<&str> = tsv.lines().collect();
-        assert!(lines[0].contains("ts\t")); // header
-        assert!(lines[0].contains("\tcost_source\t"));
+        let header = first_item(&lines);
+        assert!(header.contains("ts\t"));
+        assert!(header.contains("\tcost_source\t"));
         assert_eq!(lines.len(), 4); // header + 3 rows
     }
 
@@ -765,7 +776,7 @@ mod tests {
         provider_reported.cache_write_cost = None;
         provider_reported.cost_source = Some("provider_reported".into());
         provider_reported.total_cost = Some(0.1234);
-        ledger.insert(&provider_reported).unwrap();
+        let _ignored = ledger.insert(&provider_reported).unwrap();
 
         let rows = all_cost_rows(&ledger).unwrap();
         assert_eq!(rows.len(), 3);
@@ -803,21 +814,21 @@ mod tests {
             cost_source: Some("pricing_catalog".into()),
             total_cost: None,
         };
-        ledger.insert(&base).unwrap();
+        let _ignored = ledger.insert(&base).unwrap();
 
         let mut routed = base.clone();
         routed.ts = "2026-04-05T10:01:00Z".into();
         routed.character = "kai".into();
         routed.provider = "openrouter-anthropic".into();
         routed.model = "anthropic/claude-opus-4.6".into();
-        ledger.insert(&routed).unwrap();
+        let _ignored = ledger.insert(&routed).unwrap();
 
         let mut other = base.clone();
         other.ts = "2026-04-05T10:02:00Z".into();
         other.character = "leo".into();
         other.provider = "openai".into();
         other.model = "gpt-4o".into();
-        ledger.insert(&other).unwrap();
+        let _ignored = ledger.insert(&other).unwrap();
 
         let result = active_anthropic_characters(&ledger, &QueryFilter::default()).unwrap();
         let chars: std::collections::HashSet<_> = result.iter().map(|(c, _)| c.clone()).collect();
@@ -854,15 +865,15 @@ mod tests {
             cost_source: Some("pricing_catalog".into()),
             total_cost: None,
         };
-        ledger.insert(&base).unwrap();
+        let _ignored = ledger.insert(&base).unwrap();
         let mut warm = base.clone();
         warm.cache_state = Some("warm".into());
         warm.ts = "2026-04-05T10:01:00Z".into();
-        ledger.insert(&warm).unwrap();
+        let _ignored = ledger.insert(&warm).unwrap();
         warm.ts = "2026-04-05T10:02:00Z".into();
-        ledger.insert(&warm).unwrap();
+        let _ignored = ledger.insert(&warm).unwrap();
         warm.ts = "2026-04-05T10:03:00Z".into();
-        ledger.insert(&warm).unwrap();
+        let _ignored = ledger.insert(&warm).unwrap();
         assert_eq!(warm_streak(&ledger, "aria").unwrap(), 3);
     }
 }

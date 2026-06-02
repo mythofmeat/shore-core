@@ -13,7 +13,7 @@ use shore_test_harness::{TestConfigBuilder, TestHarness};
 const CHARACTER: &str = "TestChar";
 
 fn init_tracing() {
-    let _ = tracing_subscriber::fmt()
+    let _ignored = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
@@ -30,7 +30,7 @@ async fn primed_harness(max_tool_rounds: u32) -> TestHarness {
     )
     .await;
     harness.mock_llm.enqueue_text("ack").await;
-    let _ = harness.send_and_collect("hello").await;
+    let _ignored = harness.send_and_collect("hello").await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     harness
 }
@@ -96,7 +96,7 @@ async fn send_message_is_delivered_without_recap() {
     // immediately — the tick spawns the persistence write, which lags the tick
     // return on a loaded runner.
     let active_path = harness.data_dir.join(CHARACTER).join("active.jsonl");
-    wait_for_file_contents(&active_path, body).await;
+    let _ignored = wait_for_file_contents(&active_path, body).await;
     let memory_dir = shore_config::character_memory_dir(&harness.config.dirs.config, CHARACTER);
     assert!(
         !memory_dir.join("daily").exists(),
@@ -121,7 +121,7 @@ async fn set_next_wake_still_schedules_from_tool_use() {
         .await;
     fire_tick(&harness).await;
 
-    wait_for_heartbeat_detail(&harness, CHARACTER, "set_next_wake: 2.0h").await;
+    let _ignored = wait_for_heartbeat_detail(&harness, CHARACTER, "set_next_wake: 2.0h").await;
 
     harness.shutdown().await;
 }
@@ -173,9 +173,9 @@ async fn heartbeat_log_survives_crash_and_reboot() {
     // Sanity-check the pre-crash log shape so the post-reboot assertion is
     // meaningful — without these the test would silently pass if the tick
     // produced no events at all.
-    wait_for_heartbeat_detail(&harness, CHARACTER, "before crash").await;
+    let _ignored = wait_for_heartbeat_detail(&harness, CHARACTER, "before crash").await;
     let log_path = harness.data_dir.join(CHARACTER).join("heartbeat.jsonl");
-    wait_for_file_contents(&log_path, "before crash").await;
+    let _ignored = wait_for_file_contents(&log_path, "before crash").await;
 
     let crashed = harness.crash().await;
     let mut harness = crashed.reboot().await;
@@ -183,7 +183,7 @@ async fn heartbeat_log_survives_crash_and_reboot() {
     // ensure_state runs lazily on first character access. Sending a message
     // primes it the same way the original boot sequence did.
     harness.mock_llm.enqueue_text("ack").await;
-    let _ = harness.send_and_collect("hello again").await;
+    let _ignored = harness.send_and_collect("hello again").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let events = wait_for_heartbeat_detail(&harness, CHARACTER, "before crash").await;

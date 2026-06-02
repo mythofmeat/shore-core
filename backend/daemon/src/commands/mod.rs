@@ -29,6 +29,7 @@ pub struct SessionTokens {
 }
 
 /// Shared state for command handlers (does not own the engine).
+#[derive(Debug)]
 pub struct CommandContext {
     /// Loaded configuration.
     pub config: LoadedConfig,
@@ -170,7 +171,9 @@ pub fn engine_err(e: EngineError) -> (ErrorCode, String) {
             format!("character not found: {character}"),
         ),
         EngineError::InvalidAlt(message) => (ErrorCode::InvalidRequest, message),
-        other => (ErrorCode::InternalError, other.to_string()),
+        other @ (EngineError::Io { .. }
+        | EngineError::JsonParse { .. }
+        | EngineError::JsonSerialize { .. }) => (ErrorCode::InternalError, other.to_string()),
     }
 }
 
@@ -179,6 +182,15 @@ mod tests {
     use super::*;
     use shore_config::app::{AutonomyConfig, CompactionConfig};
     use shore_protocol::client_msg::Command;
+
+    macro_rules! assert_variant {
+        ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+            let $pattern = $value else {
+                panic!("expected enum variant did not match");
+            };
+            $body
+        }};
+    }
 
     fn make_ctx(
         tmp: &tempfile::TempDir,
@@ -193,7 +205,7 @@ mod tests {
             ConversationEngine::new("TestChar".to_string(), data_dir.clone(), push_tx.clone())
                 .unwrap();
 
-        let config = shore_config::LoadedConfig::new_for_test(
+        let config = LoadedConfig::new_for_test(
             shore_config::app::AppConfig::default(),
             shore_config::models::ModelCatalog::default(),
             shore_config::ShoreDirs {
@@ -242,13 +254,13 @@ mod tests {
         };
 
         let result = dispatch(engine_arc, &mut ctx, &cmd).await;
-        match result {
+        assert_variant!(
+            result,
             ServerMessage::Error(e) => {
                 assert_eq!(e.code, ErrorCode::InvalidRequest);
                 assert!(e.message.contains("bogus_command"));
             }
-            other => panic!("Expected Error, got {other:?}"),
-        }
+        );
     }
 
     #[tokio::test]
@@ -264,13 +276,15 @@ mod tests {
         };
 
         let result = dispatch(engine_arc, &mut ctx, &cmd).await;
-        match result {
+        assert_variant!(
+
+            result,
             ServerMessage::CommandOutput(output) => {
                 assert_eq!(output.name, "status");
                 assert!(output.data.is_object());
             }
-            other => panic!("Expected CommandOutput, got {other:?}"),
-        }
+
+        );
     }
 
     // ── dispatch_characterless ───────────────────────────────────────────

@@ -1,3 +1,8 @@
+#![expect(
+    unused_results,
+    reason = "test module: command helpers return a JSON Value that assertions ignore"
+)]
+
 use super::*;
 use crate::commands::CommandContext;
 use crate::engine::ConversationEngine;

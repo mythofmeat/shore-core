@@ -267,7 +267,10 @@ impl GenerateResponse {
                 .iter()
                 .filter_map(|b| match b {
                     ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
+                    ContentBlock::Thinking { .. }
+                    | ContentBlock::ToolUse { .. }
+                    | ContentBlock::RedactedThinking { .. }
+                    | ContentBlock::ToolResult { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join("")
@@ -278,6 +281,23 @@ impl GenerateResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    macro_rules! assert_variant {
+        ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+            let $pattern = $value else {
+                panic!("expected enum variant did not match");
+            };
+            $body
+        }};
+    }
+
+    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+        value.get(key).expect("expected JSON field")
+    }
+
+    fn item<T>(items: &[T], index: usize) -> &T {
+        items.get(index).expect("expected item")
+    }
 
     #[test]
     fn serialize_request_omits_none_fields() {
@@ -305,8 +325,8 @@ mod tests {
         assert!(!json.as_object().unwrap().contains_key("tools"));
         assert!(!json.as_object().unwrap().contains_key("top_p"));
         assert!(!json.as_object().unwrap().contains_key("provider_options"));
-        assert_eq!(json["temperature"], 0.7);
-        assert_eq!(json["max_tokens"], 4096);
+        assert_eq!(field(&json, "temperature"), 0.7);
+        assert_eq!(field(&json, "max_tokens"), 4096);
     }
 
     #[test]
@@ -338,54 +358,63 @@ mod tests {
         // The prefix is byte-preserved; the system entry lands at a fixed
         // index after it. This is the invariant that keeps Anthropic's
         // content-addressed prefix cache valid across tool-loop rounds.
-        assert_eq!(&req.messages[..prefix.len()], prefix.as_slice());
-        assert_eq!(req.messages.len(), prefix.len() + 1);
-        assert_eq!(req.messages.last().unwrap()["role"], "system");
-        assert_eq!(req.messages.last().unwrap()["content"], "be brief");
+        assert_eq!(req.messages.get(..prefix.len()), Some(prefix.as_slice()));
+        assert_eq!(req.messages.len(), prefix.len().saturating_add(1));
+        let last = req.messages.last().unwrap();
+        assert_eq!(field(last, "role"), "system");
+        assert_eq!(field(last, "content"), "be brief");
     }
 
     #[test]
     fn deserialize_stream_start() {
         let json = r#"{"type":"start","model":"claude-sonnet-4-6"}"#;
         let event: StreamEvent = serde_json::from_str(json).unwrap();
-        match event {
+        assert_variant!(
+
+            event,
             StreamEvent::Start { model } => assert_eq!(model, "claude-sonnet-4-6"),
-            other => panic!("Expected Start, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]
     fn deserialize_stream_text() {
         let json = r#"{"type":"text","text":"Hello world"}"#;
         let event: StreamEvent = serde_json::from_str(json).unwrap();
-        match event {
+        assert_variant!(
+
+            event,
             StreamEvent::Text { text } => assert_eq!(text, "Hello world"),
-            other => panic!("Expected Text, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]
     fn deserialize_stream_thinking() {
         let json = r#"{"type":"thinking","text":"Let me consider..."}"#;
         let event: StreamEvent = serde_json::from_str(json).unwrap();
-        match event {
+        assert_variant!(
+
+            event,
             StreamEvent::Thinking { text } => assert_eq!(text, "Let me consider..."),
-            other => panic!("Expected Thinking, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]
     fn deserialize_stream_tool_use() {
         let json = r#"{"type":"tool_use","id":"tool_01","name":"memory","input":{"q":"test"}}"#;
         let event: StreamEvent = serde_json::from_str(json).unwrap();
-        match event {
+        assert_variant!(
+
+            event,
             StreamEvent::ToolUse { id, name, input } => {
                 assert_eq!(id, "tool_01");
                 assert_eq!(name, "memory");
-                assert_eq!(input["q"], "test");
+                assert_eq!(field(&input, "q"), "test");
             }
-            other => panic!("Expected ToolUse, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]
@@ -406,7 +435,9 @@ mod tests {
             }
         }"#;
         let event: StreamEvent = serde_json::from_str(json).unwrap();
-        match event {
+        assert_variant!(
+
+            event,
             StreamEvent::Done {
                 content,
                 finish_reason,
@@ -422,8 +453,8 @@ mod tests {
                 assert_eq!(timing.total_ms, 1500);
                 assert_eq!(timing.time_to_first_token_ms, 200);
             }
-            other => panic!("Expected Done, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]
@@ -436,14 +467,16 @@ mod tests {
             "timing": {"total_ms": 100}
         }"#;
         let event: StreamEvent = serde_json::from_str(json).unwrap();
-        match event {
+        assert_variant!(
+
+            event,
             StreamEvent::Done { usage, timing, .. } => {
                 assert_eq!(usage.cache_read_tokens, 0);
                 assert_eq!(usage.cache_creation_tokens, 0);
                 assert_eq!(timing.time_to_first_token_ms, 0);
             }
-            other => panic!("Expected Done, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]
@@ -479,18 +512,22 @@ mod tests {
         let resp: GenerateResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.finish_reason, "tool_use");
         assert_eq!(resp.content_blocks.len(), 2);
-        match &resp.content_blocks[0] {
+        assert_variant!(
+
+            item(&resp.content_blocks, 0),
             ContentBlock::Text { text } => assert_eq!(text, "I'll check the weather."),
-            other => panic!("Expected Text, got {other:?}"),
-        }
-        match &resp.content_blocks[1] {
+
+        );
+        assert_variant!(
+
+            item(&resp.content_blocks, 1),
             ContentBlock::ToolUse { id, name, input } => {
                 assert_eq!(id, "toolu_01");
                 assert_eq!(name, "get_weather");
-                assert_eq!(input["city"], "NYC");
+                assert_eq!(field(input, "city"), "NYC");
             }
-            other => panic!("Expected ToolUse, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]
@@ -508,7 +545,9 @@ mod tests {
         }"#;
         let resp: GenerateResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.content_blocks.len(), 2);
-        match &resp.content_blocks[0] {
+        assert_variant!(
+
+            item(&resp.content_blocks, 0),
             ContentBlock::Thinking {
                 thinking,
                 signature,
@@ -516,31 +555,35 @@ mod tests {
                 assert_eq!(thinking, "Let me think...");
                 assert!(signature.is_none());
             }
-            other => panic!("Expected Thinking, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]
     fn deserialize_stream_thinking_signature() {
         let json = r#"{"type":"thinking_signature","signature":"sig_abc123"}"#;
         let event: StreamEvent = serde_json::from_str(json).unwrap();
-        match event {
+        assert_variant!(
+
+            event,
             StreamEvent::ThinkingSignature { signature } => {
                 assert_eq!(signature, "sig_abc123");
             }
-            other => panic!("Expected ThinkingSignature, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]
     fn deserialize_stream_redacted_thinking() {
         let json = r#"{"type":"redacted_thinking","data":"opaque_encrypted_data"}"#;
         let event: StreamEvent = serde_json::from_str(json).unwrap();
-        match event {
+        assert_variant!(
+
+            event,
             StreamEvent::RedactedThinking { data } => {
                 assert_eq!(data, "opaque_encrypted_data");
             }
-            other => panic!("Expected RedactedThinking, got {other:?}"),
-        }
+
+        );
     }
 }

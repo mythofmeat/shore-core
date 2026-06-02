@@ -70,7 +70,7 @@ impl ToolContext for SharedToolContext {
     fn embedder(&self) -> Option<&dyn Embedder> {
         self.embedder.as_deref()
     }
-    fn memory_index_path(&self) -> Option<&std::path::Path> {
+    fn memory_index_path(&self) -> Option<&Path> {
         Some(&self.memory_index_path)
     }
     fn config_dir(&self) -> &str {

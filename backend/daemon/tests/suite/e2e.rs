@@ -14,6 +14,7 @@
 //! Run with: `cargo test --test e2e -- --ignored`
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
@@ -36,6 +37,30 @@ const RECV_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Timeout for command responses (local, no API call).
 const CMD_TIMEOUT: Duration = Duration::from_secs(5);
+
+macro_rules! test_err {
+    () => {
+        write_stderr_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        write_stderr_line(format_args!($($arg)*))
+    };
+}
+
+macro_rules! assert_variant {
+    ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+        let $pattern = $value else {
+            panic!("expected enum variant did not match");
+        };
+        $body
+    }};
+}
+
+fn write_stderr_line(args: std::fmt::Arguments<'_>) {
+    let stderr = std::io::stderr();
+    let mut out = stderr.lock();
+    let _ignored = std::io::Write::write_fmt(&mut out, format_args!("{args}\n"));
+}
 
 /// Helper: receive next ServerMessage with a timeout.
 async fn recv_timeout(conn: &mut SWPConnection, dur: Duration) -> ServerMessage {
@@ -173,13 +198,13 @@ async fn e2e_conversation_milestone() {
     let route_rx = server.take_route_rx();
 
     // Create character registry.
-    let char_registry = std::sync::Arc::new(tokio::sync::Mutex::new(CharacterRegistry::new(
+    let char_registry = Arc::new(tokio::sync::Mutex::new(CharacterRegistry::new(
         loaded.dirs.config.clone(),
         loaded.dirs.data.clone(),
         push_tx.clone(),
         loaded.clone(),
     )));
-    server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
+    server.set_handshake_provider(build_handshake_provider(Arc::clone(&char_registry)));
 
     let autonomy = shore_daemon::autonomy::manager::AutonomyManager::new(
         AutonomyConfig::default(),
@@ -199,10 +224,10 @@ async fn e2e_conversation_milestone() {
         character_name: None,
         active_model: loaded.app.defaults.model.clone(),
         active_resolved_model: None,
-        session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
+        session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
-        diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
+        diagnostics: Arc::new(std::sync::Mutex::new(
             shore_diagnostics::Diagnostics::default(),
         )),
     };
@@ -236,7 +261,7 @@ async fn e2e_conversation_milestone() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // ── AC 1: Connect and verify SWP handshake ────────────────────────
-    eprintln!("=== AC 1: SWP Handshake ===");
+    test_err!("=== AC 1: SWP Handshake ===");
     let (mut conn, server_hello, history) =
         SWPConnection::connect(&ServerAddr(addr.clone()), "test", "e2e-test", None)
             .await
@@ -258,36 +283,34 @@ async fn e2e_conversation_milestone() {
     assert_eq!(history.config["active_model"], "chat.openrouter.haiku");
     assert_eq!(history.config["private"], false);
     assert_eq!(history.revision, 0);
-    eprintln!(
+    test_err!(
         "  Handshake OK: v={}, server={}",
-        server_hello.v, server_hello.server_name
+        server_hello.v,
+        server_hello.server_name
     );
 
     // ── AC 3: Send commands (status, list_characters, new_chat) ───────
-    eprintln!("=== AC 3: Commands ===");
+    test_err!("=== AC 3: Commands ===");
 
     // status
-    conn.send_command("status", json!({})).await.unwrap();
+    let _ignored = conn.send_command("status", json!({})).await.unwrap();
     let status_msg = recv_until(
         &mut conn,
         CMD_TIMEOUT,
         |m| matches!(m, ServerMessage::CommandOutput(o) if o.name == "status"),
     )
     .await;
-    match &status_msg {
-        ServerMessage::CommandOutput(o) => {
-            assert!(o.data.is_object());
-            assert!(
-                o.data.get("tokens").is_some(),
-                "status should include token counts"
-            );
-            eprintln!("  status OK: {:?}", o.data);
-        }
-        _ => panic!("Expected CommandOutput"),
-    }
+    let o = assert_variant!(&status_msg, ServerMessage::CommandOutput(o) => o);
+    assert!(o.data.is_object());
+    assert!(
+        o.data.get("tokens").is_some(),
+        "status should include token counts"
+    );
+    test_err!("  status OK: {:?}", o.data);
 
     // list_characters
-    conn.send_command("list_characters", json!({}))
+    let _ignored = conn
+        .send_command("list_characters", json!({}))
         .await
         .unwrap();
     let chars_msg = recv_until(
@@ -296,18 +319,14 @@ async fn e2e_conversation_milestone() {
         |m| matches!(m, ServerMessage::CommandOutput(o) if o.name == "list_characters"),
     )
     .await;
-    match &chars_msg {
-        ServerMessage::CommandOutput(o) => {
-            eprintln!("  list_characters OK: {:?}", o.data);
-        }
-        _ => panic!("Expected CommandOutput"),
-    }
+    let o = assert_variant!(&chars_msg, ServerMessage::CommandOutput(o) => o);
+    test_err!("  list_characters OK: {:?}", o.data);
 
     // new_chat — not yet implemented in command dispatcher, skip for now.
 
     // ── AC 2: Send "Hello" with stream:true ───────────────────────────
-    eprintln!("=== AC 2: Streaming Hello ===");
-    conn.send_message("Hello", true).await.unwrap();
+    test_err!("=== AC 2: Streaming Hello ===");
+    let _ignored = conn.send_message("Hello", true).await.unwrap();
 
     // Expect: History (from engine append) -> StreamStart -> StreamChunk(s) -> StreamEnd.
     let mut got_stream_start = false;
@@ -325,17 +344,17 @@ async fn e2e_conversation_milestone() {
         match &msg {
             ServerMessage::StreamStart(_) => {
                 got_stream_start = true;
-                eprintln!("  StreamStart received");
+                test_err!("  StreamStart received");
             }
             ServerMessage::StreamChunk(chunk) => {
                 got_stream_chunks += 1;
                 if got_stream_chunks <= 3 {
-                    eprintln!("  StreamChunk: {:?}", chunk.text);
+                    test_err!("  StreamChunk: {:?}", chunk.text);
                 }
             }
             ServerMessage::StreamEnd(end) => {
                 stream_end_content = end.content.clone();
-                eprintln!(
+                test_err!(
                     "  StreamEnd: content_len={}, model={}, tokens=in:{}/out:{}",
                     end.content.len(),
                     end.metadata.model,
@@ -347,8 +366,20 @@ async fn e2e_conversation_milestone() {
             ServerMessage::History(_) => {
                 // Expected — engine broadcasts after append.
             }
-            other => {
-                eprintln!("  (other message: {:?})", std::mem::discriminant(other));
+            other @ (ServerMessage::Hello(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Error(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::ToolCall(_)
+            | ServerMessage::ToolResult(_)
+            | ServerMessage::SendImage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_)) => {
+                test_err!("  (other message: {:?})", std::mem::discriminant(other));
             }
         }
     }
@@ -364,13 +395,14 @@ async fn e2e_conversation_milestone() {
     );
 
     // ── AC 4: Tool use — "What time is it?" triggers check_time ───────
-    eprintln!("=== AC 4: Tool Use (check_time) ===");
-    conn.send_message(
-        "Use the check_time tool right now and tell me the exact time.",
-        true,
-    )
-    .await
-    .unwrap();
+    test_err!("=== AC 4: Tool Use (check_time) ===");
+    let _ignored = conn
+        .send_message(
+            "Use the check_time tool right now and tell me the exact time.",
+            true,
+        )
+        .await
+        .unwrap();
 
     let mut got_tool_call = false;
     let mut got_tool_result = false;
@@ -382,25 +414,27 @@ async fn e2e_conversation_milestone() {
         if remaining.is_zero() {
             // Tool use is non-deterministic with LLMs — if it didn't trigger,
             // the test still passes the streaming check.
-            eprintln!("  WARN: Tool use not triggered within timeout (non-deterministic)");
+            test_err!("  WARN: Tool use not triggered within timeout (non-deterministic)");
             break;
         }
         let msg = recv_timeout(&mut conn, remaining).await;
         match &msg {
             ServerMessage::ToolCall(tc) => {
                 got_tool_call = true;
-                eprintln!("  ToolCall: name={}, id={}", tc.tool_name, tc.tool_id);
+                test_err!("  ToolCall: name={}, id={}", tc.tool_name, tc.tool_id);
             }
             ServerMessage::ToolResult(tr) => {
                 got_tool_result = true;
                 tool_result_output = tr.output.clone();
-                eprintln!(
+                test_err!(
                     "  ToolResult: name={}, output={}, is_error={}",
-                    tr.tool_name, tr.output, tr.is_error
+                    tr.tool_name,
+                    tr.output,
+                    tr.is_error
                 );
             }
             ServerMessage::StreamEnd(end) => {
-                eprintln!(
+                test_err!(
                     "  StreamEnd: content_len={}, is_final={}, tokens=in:{}/out:{}",
                     end.content.len(),
                     end.is_final,
@@ -416,8 +450,18 @@ async fn e2e_conversation_milestone() {
             | ServerMessage::History(_) => {
                 // Expected during streaming and history broadcasts.
             }
-            other => {
-                eprintln!("  (other: {:?})", std::mem::discriminant(other));
+            other @ (ServerMessage::Hello(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Error(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::SendImage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_)) => {
+                test_err!("  (other: {:?})", std::mem::discriminant(other));
             }
         }
     }
@@ -432,11 +476,11 @@ async fn e2e_conversation_milestone() {
             tool_result_output.contains('T'),
             "check_time output should be RFC 3339: {tool_result_output}"
         );
-        eprintln!("  Tool use verified successfully");
+        test_err!("  Tool use verified successfully");
     }
 
     // ── AC 5: Verify JSONL persistence with msg_id fields ─────────────
-    eprintln!("=== AC 5: JSONL Persistence ===");
+    test_err!("=== AC 5: JSONL Persistence ===");
     let char_data_dir = tmp.path().join("data").join("TestChar");
     let jsonl_path = char_data_dir.join("active.jsonl");
     assert!(
@@ -446,7 +490,7 @@ async fn e2e_conversation_milestone() {
     );
     let jsonl_content = std::fs::read_to_string(&jsonl_path).unwrap();
     let lines: Vec<&str> = jsonl_content.lines().filter(|l| !l.is_empty()).collect();
-    eprintln!(
+    test_err!(
         "  JSONL file: {}, lines: {}",
         jsonl_path.display(),
         lines.len()
@@ -473,13 +517,13 @@ async fn e2e_conversation_milestone() {
             "msg_id should start with 'm_': {msg_id}"
         );
         let role = parsed["role"].as_str().unwrap();
-        eprintln!("  Line {i}: role={role}, msg_id={msg_id}");
+        test_err!("  Line {i}: role={role}, msg_id={msg_id}");
     }
 
-    eprintln!("  Persistence OK");
+    test_err!("  Persistence OK");
 
     // ── AC 7: Verify content_blocks persisted for tool use ───────────
-    eprintln!("=== AC 7: Content Blocks Persistence ===");
+    test_err!("=== AC 7: Content Blocks Persistence ===");
     if got_tool_call {
         // Re-read JSONL after tool use exchange.
         let jsonl_content = std::fs::read_to_string(&jsonl_path).unwrap();
@@ -526,7 +570,7 @@ async fn e2e_conversation_milestone() {
                                 "tool_use block should have input"
                             );
                             found_tool_use_blocks = true;
-                            eprintln!(
+                            test_err!(
                                 "  Line {i}: assistant tool_use block: name={}",
                                 block["name"].as_str().unwrap_or("?")
                             );
@@ -542,25 +586,25 @@ async fn e2e_conversation_milestone() {
                                 "tool_result block should have content"
                             );
                             found_tool_result_blocks = true;
-                            eprintln!(
+                            test_err!(
                                 "  Line {i}: user tool_result block: tool_use_id={}",
                                 block["tool_use_id"].as_str().unwrap_or("?")
                             );
                         }
                         "text" => {
-                            eprintln!(
+                            test_err!(
                                 "  Line {i}: {role} text block: len={}",
                                 block["text"].as_str().map_or(0, str::len)
                             );
                         }
                         "thinking" => {
-                            eprintln!(
+                            test_err!(
                                 "  Line {i}: {role} thinking block: len={}",
                                 block["thinking"].as_str().map_or(0, str::len)
                             );
                         }
                         _ => {
-                            eprintln!("  Line {i}: {role} unknown block type: {block_type}");
+                            test_err!("  Line {i}: {role} unknown block type: {block_type}");
                         }
                     }
                 }
@@ -575,38 +619,34 @@ async fn e2e_conversation_milestone() {
             found_tool_result_blocks,
             "Should find at least one user message with tool_result content_blocks"
         );
-        eprintln!("  Content blocks persistence verified");
+        test_err!("  Content blocks persistence verified");
     } else {
-        eprintln!("  SKIP: Tool use was not triggered, cannot verify content_blocks");
+        test_err!("  SKIP: Tool use was not triggered, cannot verify content_blocks");
     }
 
     // ── AC 6: Verify status shows token counts after API usage ────────
-    eprintln!("=== AC 6: Token counts in status ===");
-    conn.send_command("status", json!({})).await.unwrap();
+    test_err!("=== AC 6: Token counts in status ===");
+    let _ignored = conn.send_command("status", json!({})).await.unwrap();
     let final_status = recv_until(
         &mut conn,
         CMD_TIMEOUT,
         |m| matches!(m, ServerMessage::CommandOutput(o) if o.name == "status"),
     )
     .await;
-    match &final_status {
-        ServerMessage::CommandOutput(o) => {
-            let tokens = &o.data["tokens"];
-            let input = tokens["input"].as_u64().unwrap_or(0);
-            let output = tokens["output"].as_u64().unwrap_or(0);
-            assert!(input > 0, "Input tokens should be > 0 after API calls");
-            assert!(output > 0, "Output tokens should be > 0 after API calls");
-            eprintln!("  Token counts: input={input}, output={output}");
-        }
-        _ => panic!("Expected CommandOutput"),
-    }
+    let o = assert_variant!(&final_status, ServerMessage::CommandOutput(o) => o);
+    let tokens = &o.data["tokens"];
+    let input = tokens["input"].as_u64().unwrap_or(0);
+    let output = tokens["output"].as_u64().unwrap_or(0);
+    assert!(input > 0, "Input tokens should be > 0 after API calls");
+    assert!(output > 0, "Output tokens should be > 0 after API calls");
+    test_err!("  Token counts: input={input}, output={output}");
 
     // ── Cleanup ────────────────────────────────────────────────────────
-    eprintln!("=== Cleanup ===");
-    let _ = shutdown_tx.send(());
-    let _ = server_handle.await;
-    let _ = handler_handle.await;
-    eprintln!("=== E2E test passed ===");
+    test_err!("=== Cleanup ===");
+    let _ignored = shutdown_tx.send(());
+    let _ignored = server_handle.await;
+    let _ignored = handler_handle.await;
+    test_err!("=== E2E test passed ===");
 }
 
 // ── Image generation E2E test ─────────────────────────────────────────────
@@ -657,13 +697,13 @@ impl E2EHarness {
 
         let data_dir = loaded.dirs.data.clone();
 
-        let char_registry = std::sync::Arc::new(tokio::sync::Mutex::new(CharacterRegistry::new(
+        let char_registry = Arc::new(tokio::sync::Mutex::new(CharacterRegistry::new(
             loaded.dirs.config.clone(),
             loaded.dirs.data.clone(),
             push_tx.clone(),
             loaded.clone(),
         )));
-        server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
+        server.set_handshake_provider(build_handshake_provider(Arc::clone(&char_registry)));
 
         let autonomy = shore_daemon::autonomy::manager::AutonomyManager::new(
             AutonomyConfig::default(),
@@ -683,10 +723,10 @@ impl E2EHarness {
             character_name: None,
             active_model: loaded.app.defaults.model.clone(),
             active_resolved_model: None,
-            session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
+            session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy: autonomy.clone(),
             llm_client: llm_client.clone(),
-            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
+            diagnostics: Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),
         };
@@ -734,9 +774,9 @@ impl E2EHarness {
     }
 
     async fn shutdown(self) {
-        let _ = self.shutdown_tx.send(());
-        let _ = self.server_handle.await;
-        let _ = self.handler_handle.await;
+        let _ignored = self.shutdown_tx.send(());
+        let _ignored = self.server_handle.await;
+        let _ignored = self.handler_handle.await;
     }
 }
 
@@ -754,8 +794,8 @@ async fn e2e_generate_image() {
     let mut harness = E2EHarness::start(loaded, tmp).await;
 
     // ── Send a message that should trigger generate_image ─────────────
-    eprintln!("=== Image Gen: Sending generate_image request ===");
-    harness
+    test_err!("=== Image Gen: Sending generate_image request ===");
+    let _ignored = harness
         .conn
         .send_message(
             "Use the generate_image tool to generate an image of a red circle on a white background. \
@@ -783,18 +823,20 @@ async fn e2e_generate_image() {
             ServerMessage::ToolCall(tc) => {
                 got_tool_call = true;
                 tool_call_name = tc.tool_name.clone();
-                eprintln!("  ToolCall: name={}, id={}", tc.tool_name, tc.tool_id);
+                test_err!("  ToolCall: name={}, id={}", tc.tool_name, tc.tool_id);
             }
             ServerMessage::ToolResult(tr) => {
                 got_tool_result = true;
                 tool_result_output = tr.output.clone();
-                eprintln!(
+                test_err!(
                     "  ToolResult: name={}, is_error={}, output={}",
-                    tr.tool_name, tr.is_error, tr.output
+                    tr.tool_name,
+                    tr.is_error,
+                    tr.output
                 );
             }
             ServerMessage::StreamEnd(end) => {
-                eprintln!(
+                test_err!(
                     "  StreamEnd: content_len={}, is_final={}, tokens=in:{}/out:{}",
                     end.content.len(),
                     end.is_final,
@@ -814,8 +856,17 @@ async fn e2e_generate_image() {
             ServerMessage::Error(e) => {
                 panic!("Received error from daemon: {} ({:?})", e.message, e.code);
             }
-            other => {
-                eprintln!("  (other: {:?})", std::mem::discriminant(other));
+            other @ (ServerMessage::Hello(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::SendImage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_)) => {
+                test_err!("  (other: {:?})", std::mem::discriminant(other));
             }
         }
     }
@@ -836,7 +887,7 @@ async fn e2e_generate_image() {
     let image_path = result_json["path"]
         .as_str()
         .expect("Tool result should contain 'path' field");
-    eprintln!("  Image saved to: {image_path}");
+    test_err!("  Image saved to: {image_path}");
 
     // Verify the file actually exists on disk.
     let generated_dir = harness
@@ -866,10 +917,10 @@ async fn e2e_generate_image() {
     );
     let file_size = std::fs::metadata(&full_path).unwrap().len();
     assert!(file_size > 0, "Generated image should not be empty");
-    eprintln!("  Image file verified: {file_size} bytes");
+    test_err!("  Image file verified: {file_size} bytes");
 
     // ── Cleanup ───────────────────────────────────────────────────────
-    eprintln!("=== Image Gen E2E test passed ===");
+    test_err!("=== Image Gen E2E test passed ===");
     harness.shutdown().await;
 }
 
@@ -892,8 +943,8 @@ async fn e2e_web_search() {
     let mut harness = E2EHarness::start(loaded, tmp).await;
 
     // ── Send a message that should trigger web_search ─────────────────
-    eprintln!("=== Web Search: Sending search request ===");
-    harness
+    test_err!("=== Web Search: Sending search request ===");
+    let _ignored = harness
         .conn
         .send_message(
             "Use the web_search tool to search for 'Rust programming language 2024'. \
@@ -921,12 +972,12 @@ async fn e2e_web_search() {
             ServerMessage::ToolCall(tc) => {
                 got_tool_call = true;
                 tool_call_name = tc.tool_name.clone();
-                eprintln!("  ToolCall: name={}, id={}", tc.tool_name, tc.tool_id);
+                test_err!("  ToolCall: name={}, id={}", tc.tool_name, tc.tool_id);
             }
             ServerMessage::ToolResult(tr) => {
                 got_tool_result = true;
                 tool_result_output = tr.output.clone();
-                eprintln!(
+                test_err!(
                     "  ToolResult: name={}, is_error={}, output_len={}",
                     tr.tool_name,
                     tr.is_error,
@@ -934,7 +985,7 @@ async fn e2e_web_search() {
                 );
             }
             ServerMessage::StreamEnd(end) => {
-                eprintln!(
+                test_err!(
                     "  StreamEnd: content_len={}, is_final={}, tokens=in:{}/out:{}",
                     end.content.len(),
                     end.is_final,
@@ -954,8 +1005,17 @@ async fn e2e_web_search() {
             ServerMessage::Error(e) => {
                 panic!("Received error from daemon: {} ({:?})", e.message, e.code);
             }
-            other => {
-                eprintln!("  (other: {:?})", std::mem::discriminant(other));
+            other @ (ServerMessage::Hello(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::SendImage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_)) => {
+                test_err!("  (other: {:?})", std::mem::discriminant(other));
             }
         }
     };
@@ -990,16 +1050,16 @@ async fn e2e_web_search() {
             "Result should have content"
         );
     }
-    eprintln!("  Search returned {} results", results.len());
+    test_err!("  Search returned {} results", results.len());
 
     // The LLM should have produced a final response incorporating the search results.
     assert!(
         !final_content.is_empty(),
         "LLM should have produced a final response after web search"
     );
-    eprintln!("  Final response length: {} chars", final_content.len());
+    test_err!("  Final response length: {} chars", final_content.len());
 
     // ── Cleanup ───────────────────────────────────────────────────────
-    eprintln!("=== Web Search E2E test passed ===");
+    test_err!("=== Web Search E2E test passed ===");
     harness.shutdown().await;
 }

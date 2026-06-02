@@ -23,7 +23,7 @@ async fn test_multi_turn_tool_conversation_valid() {
         .enqueue_tool_use("toolu_r2_01", "check_time", json!({}))
         .await;
     harness.mock_llm.enqueue_text("The time is noon.").await;
-    harness
+    let _ignored = harness
         .conn
         .send_message("What time is it?", true)
         .await
@@ -38,7 +38,7 @@ async fn test_multi_turn_tool_conversation_valid() {
         .enqueue_tool_use("toolu_r3_01", "check_time", json!({}))
         .await;
     harness.mock_llm.enqueue_text("Time checked again.").await;
-    harness
+    let _ignored = harness
         .conn
         .send_message("And now what time is it?", true)
         .await
@@ -198,7 +198,7 @@ async fn test_system_prompt_always_array_format() {
         .enqueue_tool_use("toolu_sys_01", "check_time", json!({}))
         .await;
     harness.mock_llm.enqueue_text("It is noon.").await;
-    harness
+    let _ignored = harness
         .conn
         .send_message("What time?", true)
         .await
@@ -258,7 +258,7 @@ async fn test_multiple_tool_calls_have_unique_ids() {
     // Follow-up text response after both tools execute.
     harness.mock_llm.enqueue_text("Both tools executed.").await;
 
-    harness
+    let _ignored = harness
         .conn
         .send_message("Run two tools please", true)
         .await

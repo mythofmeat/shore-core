@@ -7,12 +7,29 @@
 //! full dispatch path (SWP -> tool dispatch -> SegmentReader/MessageStore ->
 //! ranking -> serialization) through the booted daemon.
 
+#![deny(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+
 use serde_json::{json, Value};
 use shore_config::{character_data_dir, COMPACTION_MANIFEST_FILE, SEGMENTS_DIR};
 use shore_protocol::types::{ContentBlock, Message, Role};
 use shore_test_harness::TestHarness;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+macro_rules! test_out {
+    () => {
+        write_stdout_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        write_stdout_line(format_args!($($arg)*))
+    };
+}
+
+fn write_stdout_line(args: std::fmt::Arguments<'_>) {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let _ignored = std::io::Write::write_fmt(&mut out, format_args!("{args}\n"));
+}
 
 fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
     std::io::Error::other(message.into()).into()
@@ -79,14 +96,17 @@ fn results_array<'a>(result: &'a Value, label: &str) -> TestResult<&'a [Value]> 
 
 fn print_result(label: &str, result: &Value) -> TestResult {
     let results = results_array(result, label)?;
-    println!("\n=== {label} ===");
-    println!("query            : {}", result["query"]);
-    println!("count            : {}", result["count"]);
-    println!("searched_messages: {}", result["searched_messages"]);
+    test_out!("\n=== {label} ===");
+    test_out!("query            : {}", result["query"]);
+    test_out!("count            : {}", result["count"]);
+    test_out!("searched_messages: {}", result["searched_messages"]);
     for (i, hit) in results.iter().enumerate() {
-        println!(
+        test_out!(
             "  [{i}] {}  {}  {}\n      {}",
-            hit["msg_id"], hit["timestamp"], hit["source"], hit["excerpt"]
+            hit["msg_id"],
+            hit["timestamp"],
+            hit["source"],
+            hit["excerpt"]
         );
     }
     Ok(())
@@ -98,7 +118,7 @@ async fn run_search(harness: &mut TestHarness, id: &str, input: Value) -> TestRe
         .enqueue_tool_use(id, "search_history", input)
         .await;
     harness.mock_llm.enqueue_text("done").await;
-    harness
+    let _ignored = harness
         .conn
         .send_message("please search the history", true)
         .await?;
@@ -209,10 +229,9 @@ async fn search_history_runtime_smoke() -> TestResult {
     // --- assertions the verdict rests on (evidence is the printed output) ---
 
     // #1: multi-word query returns matches (was 0 before the fix).
-    assert!(
-        !results_array(&multi, "multi-word query")?.is_empty(),
-        "multi-word query must return matches"
-    );
+    if results_array(&multi, "multi-word query")?.is_empty() {
+        return Err(test_error("multi-word query must return matches"));
+    }
 
     // #2: among the seeded corpus, the 2026 hits rank above the 2025 hits.
     let seeded = results_array(&cache, "cache query")?
@@ -228,26 +247,34 @@ async fn search_history_runtime_smoke() -> TestResult {
                 .ok_or_else(|| test_error(format!("seeded hit missing timestamp: {h}")))
         })
         .collect::<TestResult<Vec<_>>>()?;
-    assert_eq!(
-        seeded,
-        vec![
-            "2026-05-28T09:00:00Z",
-            "2026-05-27T09:00:00Z",
-            "2025-06-11T09:00:00Z",
-            "2025-06-10T09:00:00Z",
-        ],
-        "recent matches must rank above older ones"
-    );
+    let expected_seeded = vec![
+        "2026-05-28T09:00:00Z",
+        "2026-05-27T09:00:00Z",
+        "2025-06-11T09:00:00Z",
+        "2025-06-10T09:00:00Z",
+    ];
+    if seeded != expected_seeded {
+        return Err(test_error(format!(
+            "recent matches must rank above older ones; got {seeded:?}"
+        )));
+    }
 
     // #3: cap limits returned results but not the corpus scanned.
-    assert_eq!(capped["count"], 2, "max_results cap must be honored");
-    let searched_messages = capped["searched_messages"]
-        .as_u64()
+    let capped_count = capped.get("count").cloned().unwrap_or(Value::Null);
+    if capped_count != json!(2) {
+        return Err(test_error(format!(
+            "max_results cap must be honored; got {capped_count}"
+        )));
+    }
+    let searched_messages = capped
+        .get("searched_messages")
+        .and_then(Value::as_u64)
         .ok_or_else(|| test_error("capped result missing searched_messages"))?;
-    assert!(
-        searched_messages >= 5,
-        "searched_messages must report the full corpus, not just the cap"
-    );
+    if searched_messages < 5 {
+        return Err(test_error(format!(
+            "searched_messages must report the full corpus, not just the cap; got {searched_messages}"
+        )));
+    }
 
     harness.shutdown().await;
     Ok(())

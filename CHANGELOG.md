@@ -67,6 +67,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   entry with an API key.
 
 ### Changed
+- Expanded the correctness ratchet with Tier 2 lint locks: bare `#[allow]`
+  suppressions now fail in favor of reasoned `#[expect(...)]`, panics/unwraps
+  inside `Result`-returning functions are denied, and ignored return values
+  must be made explicit. Unchecked `as` conversions are now denied
+  workspace-wide. The ratchet also now locks low-noise restriction and rustc
+  paranoia lints covering `Arc`/`Rc` clone style, `dbg!`, single-variant
+  wildcard matches, stdout/stderr print macros, `std::process::exit`,
+  `mem::forget`, unsafe blocks, elided path lifetimes, unused qualifications,
+  missing `Debug` implementations, and unreachable `pub` items.
 - Compaction no longer inlines a snapshot of every markdown memory file into
   the "compact now" user turn. That dump sat past the cached chat prefix, so
   Anthropic wrote it fresh (~11–20k tokens, growing with the character's memory

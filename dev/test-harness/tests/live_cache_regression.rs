@@ -22,7 +22,11 @@
 //! The test holds an `ENV_LOCK` `std::sync::Mutex` across its `.await`s
 //! to pin `SHORE_CACHE_PINNED_POSITION` for the entire request lifecycle;
 //! the lint correctly notices, but the pattern is load-bearing here.
-#![allow(clippy::await_holding_lock)]
+#![expect(
+    clippy::await_holding_lock,
+    reason = "live cache probe holds an env mutex across provider awaits to pin process-global cache settings"
+)]
+#![deny(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
 use std::env;
 use std::fs;
@@ -42,6 +46,27 @@ const LCG_INCREMENT: u64 = 1_442_695_040_888_963_407;
 /// override cache-breakpoint defaults. This test sets it, so it must not
 /// race with any other test in the same binary that also mutates env.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+macro_rules! test_out {
+    () => {
+        write_stdout_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        write_stdout_line(format_args!($($arg)*))
+    };
+}
+
+fn write_stdout_line(args: std::fmt::Arguments<'_>) {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let _ignored = std::io::Write::write_fmt(&mut out, format_args!("{args}\n"));
+}
+
+fn insert_json_field(value: &mut Value, key: &str, field: Value) {
+    if let Some(object) = value.as_object_mut() {
+        let _previous = object.insert(key.to_string(), field);
+    }
+}
 
 fn load_env_file() {
     let path = env::var("SHORE_ENV_FILE").map_or_else(
@@ -165,11 +190,15 @@ fn fake_roll(input: &Value) -> String {
         seed = seed
             .wrapping_mul(LCG_MULTIPLIER)
             .wrapping_add(LCG_INCREMENT);
-        let r = (u32::try_from(seed >> 33).unwrap_or(0) % sides) + 1;
+        let base = u32::try_from(seed >> 33)
+            .unwrap_or(0)
+            .checked_rem(sides)
+            .unwrap_or(0);
+        let r = base.saturating_add(1);
         rolls.push(r);
-        total += r;
+        total = total.saturating_add(r);
     }
-    let parts: Vec<String> = rolls.iter().map(std::string::ToString::to_string).collect();
+    let parts: Vec<String> = rolls.iter().map(ToString::to_string).collect();
     format!("Rolled {count}d{sides}: [{}] = {total}", parts.join(", "))
 }
 
@@ -184,7 +213,7 @@ fn content_blocks_to_wire(blocks: &[ContentBlock]) -> Vec<Value> {
             } => {
                 let mut v = json!({"type": "thinking", "thinking": thinking});
                 if let Some(sig) = signature {
-                    v["signature"] = json!(sig);
+                    insert_json_field(&mut v, "signature", json!(sig));
                 }
                 v
             }
@@ -208,7 +237,7 @@ fn content_blocks_to_wire(blocks: &[ContentBlock]) -> Vec<Value> {
                     "content": content,
                 });
                 if *is_error {
-                    v["is_error"] = json!(true);
+                    insert_json_field(&mut v, "is_error", json!(true));
                 }
                 v
             }
@@ -266,21 +295,32 @@ fn record(stats: &mut Vec<CallStat>, label: &str, usage: &Usage) {
 }
 
 fn print_stats(stats: &[CallStat]) {
-    println!();
-    println!(
+    test_out!();
+    test_out!(
         "  {:<28} {:>8} {:>8} {:>10} {:>10}",
-        "call", "input", "output", "cache_r", "cache_w"
+        "call",
+        "input",
+        "output",
+        "cache_r",
+        "cache_w"
     );
-    println!("  {}", "─".repeat(68));
+    test_out!("  {}", "─".repeat(68));
     for s in stats {
-        println!(
+        test_out!(
             "  {:<28} {:>8} {:>8} {:>10} {:>10}",
-            s.label, s.input, s.output, s.cache_r, s.cache_w
+            s.label,
+            s.input,
+            s.output,
+            s.cache_r,
+            s.cache_w
         );
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "live regression helper keeps request state explicit for cache-forensics readability"
+)]
 async fn run_tool_loop(
     client: &LlmClient,
     api_key: &str,
@@ -294,7 +334,7 @@ async fn run_tool_loop(
 ) -> Result<(), String> {
     let mut iter = 0usize;
     loop {
-        iter += 1;
+        iter = iter.saturating_add(1);
         let rid = format!("{rid_prefix}-iter-{iter}");
         let req = build_request(api_key, model, system, messages, &rid);
         let resp: GenerateResponse = client
@@ -307,9 +347,13 @@ async fn run_tool_loop(
         let Some(stat) = stats.last() else {
             return Err(format!("no stats recorded for {label}"));
         };
-        println!(
+        test_out!(
             "  {:<28} input={:<6} output={:<5} cache_r={:<7} cache_w={}",
-            stat.label, stat.input, stat.output, stat.cache_r, stat.cache_w
+            stat.label,
+            stat.input,
+            stat.output,
+            stat.cache_r,
+            stat.cache_w
         );
 
         if cold_write_out.is_none() {
@@ -346,7 +390,10 @@ async fn run_tool_loop(
             .iter()
             .filter_map(|b| match b {
                 ContentBlock::ToolUse { id, input, .. } => Some((id.clone(), input.clone())),
-                _ => None,
+                ContentBlock::Text { .. }
+                | ContentBlock::Thinking { .. }
+                | ContentBlock::RedactedThinking { .. }
+                | ContentBlock::ToolResult { .. } => None,
             })
             .collect();
 
@@ -413,9 +460,9 @@ async fn cache_holds_through_adaptive_tool_loop_and_followup() {
     );
 
     let system = make_system(&nonce);
-    println!("model:  {model}");
-    println!("nonce:  {nonce}");
-    println!(
+    test_out!("model:  {model}");
+    test_out!("nonce:  {nonce}");
+    test_out!(
         "system: {} chars (~{} tokens)",
         system.len(),
         system.len() / 4
@@ -440,7 +487,7 @@ async fn cache_holds_through_adaptive_tool_loop_and_followup() {
                 After all three, narrate briefly in-character."
         }]
     })];
-    println!("\n── turn 1: tool loop ──");
+    test_out!("\n── turn 1: tool loop ──");
     if let Err(e) = run_tool_loop(
         &client,
         &api_key,
@@ -466,7 +513,7 @@ async fn cache_holds_through_adaptive_tool_loop_and_followup() {
             "text": "Good. Now narrate the closing beat without rolling."
         }]
     }));
-    println!("\n── turn 2: follow-up ──");
+    test_out!("\n── turn 2: follow-up ──");
     if let Err(e) = run_tool_loop(
         &client,
         &api_key,
@@ -488,7 +535,7 @@ async fn cache_holds_through_adaptive_tool_loop_and_followup() {
 
     let cold = stats.first().expect("at least one call");
     let cold_write = cold.cache_w;
-    println!("\ncold cache_w: {cold_write}");
+    test_out!("\ncold cache_w: {cold_write}");
     assert!(
         cold_write > 0,
         "cold cache_creation = 0 — prompt below cache threshold; assertions are vacuous"
@@ -510,5 +557,5 @@ async fn cache_holds_through_adaptive_tool_loop_and_followup() {
         );
     }
 
-    println!("\nPASS — cache reads engage on every call after the first; no re-cache");
+    test_out!("\nPASS — cache reads engage on every call after the first; no re-cache");
 }

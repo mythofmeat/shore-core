@@ -102,7 +102,7 @@ async fn test_tool_use_roundtrip() {
 
     // Send the user message. The daemon will:
     //   call LLM → get tool_use → execute check_time → call LLM again → get text
-    harness
+    let _ignored = harness
         .conn
         .send_message("What time is it right now?", true)
         .await
@@ -193,7 +193,7 @@ async fn test_tool_result_persisted_in_jsonl() {
         .await;
     harness.mock_llm.enqueue_text("Time check complete.").await;
 
-    harness
+    let _ignored = harness
         .conn
         .send_message("Check the time please.", true)
         .await
@@ -216,7 +216,7 @@ async fn test_tool_result_persisted_in_jsonl() {
     // The JSONL must contain either a "tool_use" type block or the "check_time" name.
     let raw_jsonl: String = messages
         .iter()
-        .map(std::string::ToString::to_string)
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
 

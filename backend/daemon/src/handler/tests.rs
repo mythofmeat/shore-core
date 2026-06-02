@@ -1,3 +1,13 @@
+#![expect(
+    unused_qualifications,
+    unused_results,
+    clippy::wildcard_enum_match_arm,
+    clippy::clone_on_ref_ptr,
+    clippy::unreachable,
+    clippy::let_underscore_must_use,
+    reason = "test module: fully-qualified paths, ignored JSON/Option results, exhaustive-by-panic match arms, Arc clones, and unreachable! assertions are idiomatic test scaffolding (mirrors clippy.toml's allow-unwrap/expect/panic-in-tests)"
+)]
+
 use super::*;
 use images::media_type_for_path;
 use shore_config::app::{AutonomyConfig, CompactionConfig, NotificationsConfig};

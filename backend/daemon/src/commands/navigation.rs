@@ -178,10 +178,25 @@ pub fn switch_character(
 mod tests {
     use super::*;
     use crate::commands::SessionTokens;
+    use serde_json::Value;
     use shore_config::app::{AutonomyConfig, CompactionConfig};
     use shore_protocol::server_msg::ServerMessage;
     use tempfile::TempDir;
     use tokio::sync::broadcast;
+
+    fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
+        value
+            .get(key)
+            .unwrap_or_else(|| panic!("missing field {key}"))
+    }
+
+    fn array_field<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+        field(value, key).as_array().expect("array field")
+    }
+
+    fn item<T>(values: &[T], index: usize) -> &T {
+        values.get(index).expect("value item")
+    }
 
     fn make_ctx(
         tmp: &TempDir,
@@ -243,9 +258,9 @@ mod tests {
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
         let result = list_characters(&engine, &ctx).unwrap();
-        let chars = result["characters"].as_array().unwrap();
+        let chars = array_field(&result, "characters");
         assert_eq!(chars.len(), 1);
-        assert_eq!(chars[0]["name"], "TestChar");
+        assert_eq!(field(item(chars, 0), "name"), "TestChar");
     }
 
     #[test]
@@ -276,10 +291,13 @@ mod tests {
         .unwrap();
 
         let result = list_characters(&engine, &ctx).unwrap();
-        let chars = result["characters"].as_array().unwrap();
+        let chars = array_field(&result, "characters");
         // TestChar + Alice + Bob (TestChar not duplicated).
         assert_eq!(chars.len(), 3);
-        let names: Vec<&str> = chars.iter().map(|c| c["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = chars
+            .iter()
+            .map(|c| field(c, "name").as_str().unwrap())
+            .collect();
         assert!(names.contains(&"TestChar"));
         assert!(names.contains(&"Alice"));
         assert!(names.contains(&"Bob"));
@@ -304,11 +322,9 @@ mod tests {
         }
 
         let result = list_characters_standalone(&ctx).unwrap();
-        let names: Vec<&str> = result["characters"]
-            .as_array()
-            .unwrap()
+        let names: Vec<&str> = array_field(&result, "characters")
             .iter()
-            .map(|c| c["name"].as_str().unwrap())
+            .map(|c| field(c, "name").as_str().unwrap())
             .collect();
         assert_eq!(names, vec!["qifei"]);
     }
@@ -332,7 +348,7 @@ mod tests {
         let (engine, mut ctx, _rx) = make_ctx(&tmp);
 
         let result = switch_character(&engine, &mut ctx, &json!({"name": "TestChar"})).unwrap();
-        assert_eq!(result["changed"], false);
+        assert_eq!(field(&result, "changed"), false);
     }
 
     #[test]
@@ -363,9 +379,9 @@ mod tests {
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
         let result = character_info(&engine, &ctx, &json!({})).unwrap();
-        assert_eq!(result["name"], "TestChar");
-        assert_eq!(result["active"], true);
-        assert!(!result["has_definition"].as_bool().unwrap());
+        assert_eq!(field(&result, "name"), "TestChar");
+        assert_eq!(field(&result, "active"), true);
+        assert!(!field(&result, "has_definition").as_bool().unwrap());
     }
 
     #[test]
@@ -386,13 +402,11 @@ mod tests {
         std::fs::write(workspace_dir.join("USER.md"), "The user likes tests.").unwrap();
 
         let result = character_info(&engine, &ctx, &json!({})).unwrap();
-        assert!(result["has_definition"].as_bool().unwrap());
-        assert!(result["bootstrap_files"]
-            .as_array()
-            .unwrap()
+        assert!(field(&result, "has_definition").as_bool().unwrap());
+        assert!(array_field(&result, "bootstrap_files")
             .iter()
             .any(|v| v == "USER.md"));
-        assert!(result["definition_preview"]
+        assert!(field(&result, "definition_preview")
             .as_str()
             .unwrap()
             .contains("test character"));
@@ -424,7 +438,7 @@ mod tests {
         std::fs::write(workspace_dir.join("AGENTS.md"), "override").unwrap();
 
         let result = character_info(&engine, &ctx, &json!({})).unwrap();
-        let bootstrap_files = result["bootstrap_files"].as_array().unwrap();
+        let bootstrap_files = array_field(&result, "bootstrap_files");
         assert!(bootstrap_files.iter().any(|v| v == "AGENTS.md"));
     }
 }

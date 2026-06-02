@@ -120,6 +120,27 @@ pub struct TestToolContext {
     pub character_data_dir_val: String,
 }
 
+impl std::fmt::Debug for TestToolContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestToolContext")
+            .field("model", &self.model)
+            .field("image_dir_val", &self.image_dir_val)
+            .field("search_config_val", &self.search_config_val)
+            .field("autonomy_mgr", &self.autonomy_mgr)
+            .field("character_name_val", &self.character_name_val)
+            .field("markdown_store_val", &self.markdown_store_val)
+            .field("retrieval_config_val", &self.retrieval_config_val)
+            .field(
+                "embedder_val",
+                &self.embedder_val.as_ref().map(|_| "<embedder>"),
+            )
+            .field("memory_index_path_val", &self.memory_index_path_val)
+            .field("workspace_dir_val", &self.workspace_dir_val)
+            .field("character_data_dir_val", &self.character_data_dir_val)
+            .finish()
+    }
+}
+
 impl TestToolContext {
     /// Create a default test context.
     pub fn new() -> Self {

@@ -91,6 +91,7 @@ pub struct ScoredFile {
 
 /// Outcome of a hybrid query, including stats useful for telling the model
 /// what was searched.
+#[derive(Debug)]
 pub struct HybridSearchResult {
     pub files: Vec<ScoredFile>,
     pub searched_files: usize,
@@ -195,7 +196,7 @@ pub async fn hybrid_search(
     for file in &mut candidates {
         if file.skip_reason.as_deref() == Some("oversize") {
             skipped_binary_or_large += 1;
-            index.entries.insert(
+            let _ignored = index.entries.insert(
                 file.display_path.clone(),
                 IndexedEntry {
                     hash: skip_tag(file.size, file.modified_at_secs),
@@ -245,7 +246,7 @@ pub async fn hybrid_search(
                 RetrievalBinaryMode::TryEmbed => "binary-embedding-unsupported",
             };
             file.skip_reason = Some(reason.into());
-            index.entries.insert(
+            let _ignored = index.entries.insert(
                 file.display_path.clone(),
                 IndexedEntry {
                     hash: skip_tag(file.size, file.modified_at_secs),
@@ -279,7 +280,7 @@ pub async fn hybrid_search(
             });
         }
         for ((path, size, mtime), embedding) in stale.into_iter().zip(vectors) {
-            index.entries.insert(
+            let _ignored = index.entries.insert(
                 path,
                 IndexedEntry {
                     hash: skip_tag(size, mtime),
@@ -391,11 +392,11 @@ async fn enumerate_files(
 
     while let Some(path) = pending.pop() {
         if out.len() >= retrieval_config.max_indexed_files {
-            cap_hit.get_or_insert("file count");
+            let _ignored = cap_hit.get_or_insert("file count");
             break;
         }
         if total_bytes >= retrieval_config.max_total_indexed_bytes {
-            cap_hit.get_or_insert("byte total");
+            let _ignored = cap_hit.get_or_insert("byte total");
             break;
         }
 
@@ -666,8 +667,8 @@ mod tests {
     #[async_trait]
     impl Embedder for TopicEmbedder {
         async fn embed(&self, inputs: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
-            self.call_count.fetch_add(1, Ordering::SeqCst);
-            self.input_count.fetch_add(inputs.len(), Ordering::SeqCst);
+            let _ignored = self.call_count.fetch_add(1, Ordering::SeqCst);
+            let _ignored = self.input_count.fetch_add(inputs.len(), Ordering::SeqCst);
             Ok(inputs.iter().map(|s| self.vector_for(s)).collect())
         }
         fn model_id(&self) -> &'static str {
@@ -775,7 +776,7 @@ mod tests {
         write_file(&ws, "b.md", "rust is fun").await;
 
         let embedder = TopicEmbedder::new(&["tea", "rust"]);
-        let _ = hybrid_search(
+        let _ignored = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",
@@ -794,7 +795,7 @@ mod tests {
 
         // Modify only b.md.
         write_file(&ws, "b.md", "rust and tokio are fun").await;
-        let _ = hybrid_search(
+        let _ignored = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",
@@ -827,7 +828,7 @@ mod tests {
             max_embed_chars_per_file: 5,
             ..RetrievalConfig::default()
         };
-        let _ = hybrid_search(
+        let _ignored = hybrid_search(
             &ws_str,
             &retrieval_config,
             "tea",
@@ -842,7 +843,7 @@ mod tests {
         assert_eq!(inputs_first, 2);
 
         retrieval_config.max_embed_chars_per_file = 100;
-        let _ = hybrid_search(
+        let _ignored = hybrid_search(
             &ws_str,
             &retrieval_config,
             "tea",
@@ -872,7 +873,7 @@ mod tests {
         }
 
         let embedder = TopicEmbedder::new(&["tea"]);
-        let _ = hybrid_search(
+        let _ignored = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",
@@ -905,7 +906,7 @@ mod tests {
             .unwrap();
 
         let embedder = TopicEmbedder::new(&["tea"]);
-        let _ = hybrid_search(
+        let _ignored = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",
@@ -921,7 +922,7 @@ mod tests {
         assert_eq!(inputs_first, 2);
 
         // Re-run; the binary file should not trigger another embedding.
-        let _ = hybrid_search(
+        let _ignored = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",
@@ -996,7 +997,7 @@ mod tests {
 
         // Make the file unreadable.
         let perms = std::fs::Permissions::from_mode(0o000);
-        tokio::fs::set_permissions(ws.join("secret.md"), perms)
+        fs::set_permissions(ws.join("secret.md"), perms)
             .await
             .unwrap();
 
@@ -1030,7 +1031,7 @@ mod tests {
         fs::write(ws.join("huge.md"), &big).await.unwrap();
 
         let embedder = TopicEmbedder::new(&["tea"]);
-        let _ = hybrid_search(
+        let _ignored = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",
@@ -1057,7 +1058,7 @@ mod tests {
         assert_eq!(entry.reason.as_deref(), Some("oversize"));
 
         // Second call: only the query should embed.
-        let _ = hybrid_search(
+        let _ignored = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",
@@ -1136,7 +1137,7 @@ mod tests {
         .await;
 
         // Restore perms so TempDir can clean up regardless of outcome.
-        let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700));
+        let _ignored = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700));
 
         let result = result.expect("hybrid search returns despite unwritable index path");
         assert_eq!(result.files.len(), 1);
@@ -1152,7 +1153,7 @@ mod tests {
         write_file(&ws, "b.md", "rust is fun").await;
 
         let embedder = TopicEmbedder::new(&["tea", "rust"]);
-        let _ = hybrid_search(
+        let _ignored = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",
@@ -1166,7 +1167,7 @@ mod tests {
 
         // Delete b.md and re-run; the on-disk index must lose b.md.
         fs::remove_file(ws.join("b.md")).await.unwrap();
-        let _ = hybrid_search(
+        let _ignored = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",

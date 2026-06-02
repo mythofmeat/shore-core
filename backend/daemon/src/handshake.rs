@@ -14,9 +14,9 @@ use crate::runtime_state::load_active_model;
 pub fn build_handshake_provider(registry: Arc<Mutex<CharacterRegistry>>) -> HandshakeProvider {
     HandshakeProvider {
         hello: {
-            let registry = registry.clone();
+            let registry = Arc::clone(&registry);
             Arc::new(move || {
-                let registry = registry.clone();
+                let registry = Arc::clone(&registry);
                 Box::pin(async move {
                     let registry = registry.lock().await;
                     let config_dir = registry.global_config().dirs.config.clone();
@@ -32,7 +32,7 @@ pub fn build_handshake_provider(registry: Arc<Mutex<CharacterRegistry>>) -> Hand
         },
         history: {
             Arc::new(move |selected_character| {
-                let registry = registry.clone();
+                let registry = Arc::clone(&registry);
                 Box::pin(async move {
                     build_session_history_snapshot(registry, selected_character, None).await
                 })

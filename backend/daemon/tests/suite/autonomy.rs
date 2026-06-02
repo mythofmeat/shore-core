@@ -233,7 +233,8 @@ async fn test_failed_ping_retries() {
         "Expected at least one request attempt (even if it failed). \
          Baseline: {baseline}, After error: {after_error}"
     );
-    wait_for_heartbeat_detail(&harness, "TestChar", "Cache keepalive ping failed").await;
+    let _ignored =
+        wait_for_heartbeat_detail(&harness, "TestChar", "Cache keepalive ping failed").await;
 
     // Enqueue a success response for the retry.
     harness
@@ -297,7 +298,7 @@ async fn test_keepalive_rotates_provider_key_on_budget_error() {
          Baseline: {baseline}, After: {after}"
     );
 
-    wait_for_heartbeat_detail(
+    let _ignored = wait_for_heartbeat_detail(
         &harness,
         "TestChar",
         "Provider key fallback: budget -> overflow",

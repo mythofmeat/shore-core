@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{self, Write};
 
 use base64::Engine;
-pub use shore_swp_client::image_protocol::{detect_protocol, ImageProtocol};
+pub(crate) use shore_swp_client::image_protocol::{detect_protocol, ImageProtocol};
 use tracing::{debug, warn};
 
 /// Render an image inline using the detected protocol, or fall back to text.
@@ -12,7 +12,7 @@ use tracing::{debug, warn};
 /// `caption` is an optional human-readable name.
 /// `data` is base64-encoded image bytes from the daemon, used when the CLI is
 /// connected to a remote daemon and the file path doesn't exist locally.
-pub fn render_image(path: &str, caption: Option<&str>, data: Option<&str>) {
+pub(crate) fn render_image(path: &str, caption: Option<&str>, data: Option<&str>) {
     let label = caption.unwrap_or(path);
 
     let Some(bytes) = resolve_bytes(path, data) else {
@@ -20,7 +20,7 @@ pub fn render_image(path: &str, caption: Option<&str>, data: Option<&str>) {
             path,
             "No local file and no embedded data, displaying as text"
         );
-        println!("[img: {label}]");
+        cli_out!("[img: {label}]");
         return;
     };
 
@@ -28,18 +28,18 @@ pub fn render_image(path: &str, caption: Option<&str>, data: Option<&str>) {
         Some(ImageProtocol::Kitty) => {
             if let Err(e) = render_kitty(&bytes) {
                 warn!(path, error = %e, "Kitty image render failed");
-                eprintln!("[img: {label}] (kitty render failed: {e})");
+                cli_err!("[img: {label}] (kitty render failed: {e})");
             }
         }
         Some(ImageProtocol::Iterm2) => {
             if let Err(e) = render_iterm2(&bytes, label) {
                 warn!(path, error = %e, "iTerm2 image render failed");
-                eprintln!("[img: {label}] (iterm2 render failed: {e})");
+                cli_err!("[img: {label}] (iterm2 render failed: {e})");
             }
         }
         None => {
             debug!(path, "No image protocol detected, displaying as text");
-            println!("[img: {label}]");
+            cli_out!("[img: {label}]");
         }
     }
 }
@@ -76,7 +76,7 @@ fn render_kitty(data: &[u8]) -> io::Result<()> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     for (i, chunk) in chunks.iter().enumerate() {
-        let is_last = i == chunks.len() - 1;
+        let is_last = i.checked_add(1) == Some(chunks.len());
         if i == 0 {
             // First chunk: action=transmit+display, format=100 (PNG/auto)
             write!(
@@ -239,7 +239,7 @@ mod tests {
     fn resolve_bytes_falls_back_to_path_when_data_absent() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("local.png");
-        std::fs::write(&path, b"local-fs").unwrap();
+        fs::write(&path, b"local-fs").unwrap();
         let resolved = resolve_bytes(path.to_str().unwrap(), None);
         assert_eq!(resolved.as_deref(), Some(b"local-fs".as_slice()));
     }
@@ -254,7 +254,7 @@ mod tests {
     fn resolve_bytes_falls_back_to_path_on_bad_base64() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("backup.png");
-        std::fs::write(&path, b"backup").unwrap();
+        fs::write(&path, b"backup").unwrap();
         let resolved = resolve_bytes(path.to_str().unwrap(), Some("not!valid!base64!"));
         assert_eq!(resolved.as_deref(), Some(b"backup".as_slice()));
     }

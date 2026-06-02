@@ -7,9 +7,9 @@ use chrono::{
 use rusqlite::params;
 use serde::Serialize;
 use serde_json::json;
-#[cfg(test)]
-use shore_config::app::BudgetWeekday;
-use shore_config::app::{UsageBudgetAction, UsageBudgetConfig, UsageBudgetPeriod, UsageConfig};
+use shore_config::app::{
+    BudgetWeekday, UsageBudgetAction, UsageBudgetConfig, UsageBudgetPeriod, UsageConfig,
+};
 use tracing::warn;
 
 use crate::client::CallType;
@@ -174,12 +174,11 @@ pub fn spike_warnings(
     }
 
     let current = period_window(now, spike.period, &config.timezone, None);
-    let previous = period_window(
-        current.start - Duration::seconds(1),
-        spike.period,
-        &config.timezone,
-        None,
-    );
+    let previous_anchor = current
+        .start
+        .checked_sub_signed(Duration::seconds(1))
+        .unwrap_or(current.start);
+    let previous = period_window(previous_anchor, spike.period, &config.timezone, None);
 
     let current_cost = usage_totals(
         ledger,
@@ -397,7 +396,8 @@ fn filter_for_budget(budget: &UsageBudgetConfig, window: &PeriodWindow) -> Query
 fn budget_name(budget: &UsageBudgetConfig, idx: usize) -> String {
     let name = budget.name.trim();
     if name.is_empty() {
-        format!("budget {}", idx + 1)
+        let display_index = idx.saturating_add(1);
+        format!("budget {display_index}")
     } else {
         name.to_string()
     }
@@ -529,7 +529,7 @@ impl BudgetAnchors {
             hour: budget.reset_hour.unwrap_or(0),
             day_of_week: budget
                 .reset_day_of_week
-                .map_or(0, shore_config::app::BudgetWeekday::num_days_from_monday),
+                .map_or(0, BudgetWeekday::num_days_from_monday),
             day_of_month: budget.reset_day_of_month.unwrap_or(1),
         }
     }
@@ -598,13 +598,22 @@ fn period_start_naive(
         }
         UsageBudgetPeriod::Week => {
             let today_dow = date.weekday().num_days_from_monday();
-            let days_back = (today_dow + 7 - anchors.day_of_week) % 7;
-            let candidate_date = date - Duration::days(i64::from(days_back));
+            let days_back = today_dow
+                .saturating_add(7)
+                .saturating_sub(anchors.day_of_week)
+                .checked_rem(7)
+                .unwrap_or(0);
+            let candidate_date = date
+                .checked_sub_signed(Duration::days(i64::from(days_back)))
+                .unwrap_or(date);
             let candidate = at_hour(candidate_date, anchors.hour);
             if now >= candidate {
                 candidate
             } else {
-                at_hour(candidate_date - Duration::days(7), anchors.hour)
+                let previous_week = candidate_date
+                    .checked_sub_signed(Duration::days(7))
+                    .unwrap_or(candidate_date);
+                at_hour(previous_week, anchors.hour)
             }
         }
         UsageBudgetPeriod::Month => {
@@ -613,9 +622,9 @@ fn period_start_naive(
                 this_month
             } else {
                 let (prev_year, prev_month) = if date.month() == 1 {
-                    (date.year() - 1, 12)
+                    (date.year().saturating_sub(1), 12)
                 } else {
-                    (date.year(), date.month() - 1)
+                    (date.year(), date.month().saturating_sub(1))
                 };
                 month_anchor_naive(prev_year, prev_month, &anchors)
             }
@@ -630,14 +639,16 @@ fn period_end_naive(
 ) -> NaiveDateTime {
     let anchors = anchors.copied().unwrap_or_default();
     match period {
-        UsageBudgetPeriod::Hour => start + Duration::hours(1),
-        UsageBudgetPeriod::Day => start + Duration::days(1),
-        UsageBudgetPeriod::Week => start + Duration::days(7),
+        UsageBudgetPeriod::Hour => start
+            .checked_add_signed(Duration::hours(1))
+            .unwrap_or(start),
+        UsageBudgetPeriod::Day => start.checked_add_signed(Duration::days(1)).unwrap_or(start),
+        UsageBudgetPeriod::Week => start.checked_add_signed(Duration::days(7)).unwrap_or(start),
         UsageBudgetPeriod::Month => {
             let (next_year, next_month) = if start.month() == 12 {
-                (start.year() + 1, 1)
+                (start.year().saturating_add(1), 1)
             } else {
-                (start.year(), start.month() + 1)
+                (start.year(), start.month().saturating_add(1))
             };
             month_anchor_naive(next_year, next_month, &anchors)
         }
@@ -665,9 +676,9 @@ fn at_hour(date: NaiveDate, hour: u32) -> NaiveDateTime {
 
 fn days_in_month(year: i32, month: u32) -> u32 {
     let (next_year, next_month) = if month == 12 {
-        (year + 1, 1)
+        (year.saturating_add(1), 1)
     } else {
-        (year, month + 1)
+        (year, month.saturating_add(1))
     };
     NaiveDate::from_ymd_opt(next_year, next_month, 1)
         .and_then(|d| d.pred_opt())
@@ -679,7 +690,11 @@ fn resolve_local(naive: NaiveDateTime) -> DateTime<Local> {
         LocalResult::Single(dt) => dt,
         LocalResult::Ambiguous(early, _) => early,
         LocalResult::None => Local
-            .from_local_datetime(&(naive + Duration::hours(1)))
+            .from_local_datetime(
+                &naive
+                    .checked_add_signed(Duration::hours(1))
+                    .unwrap_or(naive),
+            )
             .earliest()
             .unwrap_or_else(|| Utc.from_utc_datetime(&naive).with_timezone(&Local)),
     }
@@ -691,8 +706,12 @@ mod tests {
     use crate::ledger::{CallRow, Ledger};
     use shore_llm::types::Timing;
 
+    fn first_item<T>(items: &[T]) -> &T {
+        items.first().expect("expected at least one item")
+    }
+
     fn insert_call(ledger: &Ledger, ts: &str, cost: f64, call_type: &str) {
-        ledger
+        let _ignored = ledger
             .insert(&CallRow {
                 ts: ts.into(),
                 character: "Alice".into(),
@@ -742,11 +761,12 @@ mod tests {
             "2026-05-18T12:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
+        let status = first_item(&statuses);
         #[expect(clippy::float_cmp, reason = "sum of four $1.00 rows is exact in f64")]
         {
-            assert_eq!(statuses[0].current_cost, 4.0);
+            assert_eq!(status.current_cost, 4.0);
         }
-        assert_eq!(statuses[0].status, "ok");
+        assert_eq!(status.status, "ok");
     }
 
     #[test]
@@ -832,9 +852,10 @@ mod tests {
             "2026-05-18T12:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
+        let status = first_item(&statuses);
         #[expect(clippy::float_cmp, reason = "sum of three $1.00 rows is exact in f64")]
         {
-            assert_eq!(statuses[0].current_cost, 3.0);
+            assert_eq!(status.current_cost, 3.0);
         }
     }
 
@@ -860,8 +881,9 @@ mod tests {
             "2026-05-20T03:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
-        assert_eq!(before[0].period_start, "2026-05-19T06:00:00+00:00");
-        assert_eq!(before[0].reset_at, "2026-05-20T06:00:00+00:00");
+        let before_status = first_item(&before);
+        assert_eq!(before_status.period_start, "2026-05-19T06:00:00+00:00");
+        assert_eq!(before_status.reset_at, "2026-05-20T06:00:00+00:00");
 
         let after = budget_statuses(
             &ledger,
@@ -869,8 +891,9 @@ mod tests {
             "2026-05-20T09:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
-        assert_eq!(after[0].period_start, "2026-05-20T06:00:00+00:00");
-        assert_eq!(after[0].reset_at, "2026-05-21T06:00:00+00:00");
+        let after_status = first_item(&after);
+        assert_eq!(after_status.period_start, "2026-05-20T06:00:00+00:00");
+        assert_eq!(after_status.reset_at, "2026-05-21T06:00:00+00:00");
     }
 
     #[test]
@@ -897,8 +920,9 @@ mod tests {
             "2026-05-20T14:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
-        assert_eq!(statuses[0].period_start, "2026-05-14T03:00:00+00:00");
-        assert_eq!(statuses[0].reset_at, "2026-05-21T03:00:00+00:00");
+        let status = first_item(&statuses);
+        assert_eq!(status.period_start, "2026-05-14T03:00:00+00:00");
+        assert_eq!(status.reset_at, "2026-05-21T03:00:00+00:00");
     }
 
     #[test]
@@ -924,8 +948,9 @@ mod tests {
             "2026-05-21T10:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
-        assert_eq!(statuses[0].period_start, "2026-05-21T03:00:00+00:00");
-        assert_eq!(statuses[0].reset_at, "2026-05-28T03:00:00+00:00");
+        let status = first_item(&statuses);
+        assert_eq!(status.period_start, "2026-05-21T03:00:00+00:00");
+        assert_eq!(status.reset_at, "2026-05-28T03:00:00+00:00");
     }
 
     #[test]
@@ -950,8 +975,9 @@ mod tests {
             "2026-05-10T12:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
-        assert_eq!(before[0].period_start, "2026-04-15T00:00:00+00:00");
-        assert_eq!(before[0].reset_at, "2026-05-15T00:00:00+00:00");
+        let before_status = first_item(&before);
+        assert_eq!(before_status.period_start, "2026-04-15T00:00:00+00:00");
+        assert_eq!(before_status.reset_at, "2026-05-15T00:00:00+00:00");
 
         // After the 15th: window started this month.
         let after = budget_statuses(
@@ -960,8 +986,9 @@ mod tests {
             "2026-05-20T12:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
-        assert_eq!(after[0].period_start, "2026-05-15T00:00:00+00:00");
-        assert_eq!(after[0].reset_at, "2026-06-15T00:00:00+00:00");
+        let after_status = first_item(&after);
+        assert_eq!(after_status.period_start, "2026-05-15T00:00:00+00:00");
+        assert_eq!(after_status.reset_at, "2026-06-15T00:00:00+00:00");
     }
 
     #[test]
@@ -987,8 +1014,9 @@ mod tests {
             "2026-02-15T12:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
-        assert_eq!(mid_feb[0].period_start, "2026-01-31T00:00:00+00:00");
-        assert_eq!(mid_feb[0].reset_at, "2026-02-28T00:00:00+00:00");
+        let mid_feb_status = first_item(&mid_feb);
+        assert_eq!(mid_feb_status.period_start, "2026-01-31T00:00:00+00:00");
+        assert_eq!(mid_feb_status.reset_at, "2026-02-28T00:00:00+00:00");
 
         // Past the clamped Feb anchor: window starts on Feb 28.
         let late_feb = budget_statuses(
@@ -997,8 +1025,9 @@ mod tests {
             "2026-02-28T12:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
-        assert_eq!(late_feb[0].period_start, "2026-02-28T00:00:00+00:00");
-        assert_eq!(late_feb[0].reset_at, "2026-03-31T00:00:00+00:00");
+        let late_feb_status = first_item(&late_feb);
+        assert_eq!(late_feb_status.period_start, "2026-02-28T00:00:00+00:00");
+        assert_eq!(late_feb_status.reset_at, "2026-03-31T00:00:00+00:00");
     }
 
     #[test]
@@ -1023,8 +1052,9 @@ mod tests {
             "2026-01-10T12:00:00+00:00".parse().unwrap(),
         )
         .unwrap();
-        assert_eq!(statuses[0].period_start, "2025-12-31T00:00:00+00:00");
-        assert_eq!(statuses[0].reset_at, "2026-01-31T00:00:00+00:00");
+        let status = first_item(&statuses);
+        assert_eq!(status.period_start, "2025-12-31T00:00:00+00:00");
+        assert_eq!(status.reset_at, "2026-01-31T00:00:00+00:00");
     }
 
     #[test]
@@ -1049,8 +1079,9 @@ mod tests {
             "2026-05-20T15:30:00+00:00".parse().unwrap(),
         )
         .unwrap();
-        assert_eq!(statuses[0].period_start, "2026-05-20T00:00:00+00:00");
-        assert_eq!(statuses[0].reset_at, "2026-05-21T00:00:00+00:00");
+        let status = first_item(&statuses);
+        assert_eq!(status.period_start, "2026-05-20T00:00:00+00:00");
+        assert_eq!(status.reset_at, "2026-05-21T00:00:00+00:00");
     }
 
     #[test]
@@ -1071,7 +1102,7 @@ mod tests {
 
         let first = newly_crossed_budget_warnings(&ledger, &config, now).unwrap();
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].crossed_warn_at, vec![0.5, 0.8]);
+        assert_eq!(first_item(&first).crossed_warn_at, vec![0.5, 0.8]);
 
         let second = newly_crossed_budget_warnings(&ledger, &config, now).unwrap();
         assert!(second.is_empty());
@@ -1097,17 +1128,18 @@ mod tests {
         assert_eq!(first.len(), 1);
         // First call records 0.5 and 0.8 as newly crossed; over_limit doesn't
         // need to synthesize anything yet.
-        assert_eq!(first[0].crossed_warn_at, vec![0.5, 0.8]);
+        assert_eq!(first_item(&first).crossed_warn_at, vec![0.5, 0.8]);
 
         let second = newly_crossed_budget_warnings(&ledger, &config, now).unwrap();
         assert_eq!(second.len(), 1, "over-limit warning should re-fire");
-        assert_eq!(second[0].crossed_warn_at, vec![1.0]);
-        assert!(second[0].current_cost >= second[0].cost_limit);
+        let second_warning = first_item(&second);
+        assert_eq!(second_warning.crossed_warn_at, vec![1.0]);
+        assert!(second_warning.current_cost >= second_warning.cost_limit);
 
         // And again — every subsequent call while over budget.
         let third = newly_crossed_budget_warnings(&ledger, &config, now).unwrap();
         assert_eq!(third.len(), 1);
-        assert_eq!(third[0].crossed_warn_at, vec![1.0]);
+        assert_eq!(first_item(&third).crossed_warn_at, vec![1.0]);
     }
 
     fn usage_budget() -> UsageBudgetConfig {

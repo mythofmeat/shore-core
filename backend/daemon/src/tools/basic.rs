@@ -177,9 +177,9 @@ pub fn parse_dice_notation(notation: &str) -> Result<DiceNotation, String> {
 
 /// Roll dice according to parsed notation. Returns (individual rolls, total).
 pub fn execute_dice_roll(notation: &DiceNotation) -> (Vec<u32>, i32) {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let rolls: Vec<u32> = (0..notation.count)
-        .map(|_| rng.gen_range(1..=notation.sides))
+        .map(|_| rng.random_range(1..=notation.sides))
         .collect();
     let sum = rolls
         .iter()

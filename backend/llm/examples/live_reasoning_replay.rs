@@ -16,11 +16,42 @@
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use serde_json::json;
 use shore_config::models::Sdk;
 use shore_llm::types::LlmRequest;
 use shore_llm::LlmClient;
+
+macro_rules! example_out {
+    () => {
+        write_stdout_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        write_stdout_line(format_args!($($arg)*))
+    };
+}
+
+macro_rules! example_err {
+    () => {
+        write_stderr_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        write_stderr_line(format_args!($($arg)*))
+    };
+}
+
+fn write_stdout_line(args: std::fmt::Arguments<'_>) {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let _ignored = std::io::Write::write_fmt(&mut out, format_args!("{args}\n"));
+}
+
+fn write_stderr_line(args: std::fmt::Arguments<'_>) {
+    let stderr = std::io::stderr();
+    let mut out = stderr.lock();
+    let _ignored = std::io::Write::write_fmt(&mut out, format_args!("{args}\n"));
+}
 
 struct Target {
     provider_key: &'static str,
@@ -152,31 +183,32 @@ fn replay_messages() -> Vec<serde_json::Value> {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     load_env_file();
 
-    let name = env::args().nth(1).unwrap_or_else(|| {
-        eprintln!(
+    let Some(name) = env::args().nth(1) else {
+        example_err!(
             "usage: live_reasoning_replay <deepseek|opencode-kimi|openrouter-kimi|nanogpt-deepseek>"
         );
-        std::process::exit(2);
-    });
+        return ExitCode::from(2);
+    };
     let Some(target) = target(&name) else {
-        eprintln!("unknown target: {name}");
-        std::process::exit(2);
+        example_err!("unknown target: {name}");
+        return ExitCode::from(2);
     };
 
-    let api_key = env::var(target.api_key_env)
+    let Some(api_key) = env::var(target.api_key_env)
         .ok()
         .or_else(|| opencode_auth_key(target.auth_provider))
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| {
-            eprintln!(
-                "{} is not set and opencode auth has no {} key",
-                target.api_key_env, target.auth_provider
-            );
-            std::process::exit(2);
-        });
+    else {
+        example_err!(
+            "{} is not set and opencode auth has no {} key",
+            target.api_key_env,
+            target.auth_provider
+        );
+        return ExitCode::from(2);
+    };
 
     let provider_options = target.reasoning_effort.map(|effort| {
         json!({
@@ -217,7 +249,7 @@ async fn main() {
     match client.generate(&request).await {
         Ok(resp) => {
             let text = resp.extract_text();
-            println!(
+            example_out!(
                 "PASS target={name} model={} finish_reason={} input_tokens={} output_tokens={} text={}",
                 resp.model,
                 resp.finish_reason,
@@ -225,10 +257,11 @@ async fn main() {
                 resp.usage.output_tokens,
                 text.trim().replace('\n', " ")
             );
+            ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("FAIL target={name} error={err}");
-            std::process::exit(1);
+            example_err!("FAIL target={name} error={err}");
+            ExitCode::from(1)
         }
     }
 }

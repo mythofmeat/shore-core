@@ -31,10 +31,21 @@ fn resolve_ref(messages: &[Message], reference: &str) -> Result<String, (ErrorCo
 
         let idx = if n < 0 {
             // -1 = last, -2 = second-to-last, etc.
-            i64::try_from(messages.len()).unwrap_or(i64::MAX) + n
+            i64::try_from(messages.len())
+                .unwrap_or(i64::MAX)
+                .checked_add(n)
         } else {
             // 1-based positive index
-            n - 1
+            n.checked_sub(1)
+        };
+        let Some(idx) = idx else {
+            return Err((
+                ErrorCode::NotFound,
+                format!(
+                    "Message index {reference} out of range (conversation has {} messages)",
+                    messages.len()
+                ),
+            ));
         };
 
         let idx = match usize::try_from(idx) {
@@ -50,7 +61,18 @@ fn resolve_ref(messages: &[Message], reference: &str) -> Result<String, (ErrorCo
             }
         };
 
-        return Ok(messages[idx].msg_id.clone());
+        return messages
+            .get(idx)
+            .map(|msg| msg.msg_id.clone())
+            .ok_or_else(|| {
+                (
+                    ErrorCode::NotFound,
+                    format!(
+                        "Message index {reference} out of range (conversation has {} messages)",
+                        messages.len()
+                    ),
+                )
+            });
     }
 
     // Literal msg_id passthrough
@@ -98,8 +120,8 @@ fn page_start_by_turns(messages: &[Message], end: usize, turns: usize) -> usize 
 
     let mut seen = 0usize;
     for idx in (0..end).rev() {
-        if messages[idx].role == Role::User {
-            seen += 1;
+        if messages.get(idx).is_some_and(|msg| msg.role == Role::User) {
+            seen = seen.saturating_add(1);
             if seen >= turns {
                 return idx;
             }
@@ -176,13 +198,15 @@ fn history_page_payload(
 ) -> serde_json::Value {
     let start = start.min(messages.len());
     let end = end.min(messages.len()).max(start);
-    let mut page: Vec<Message> = messages[start..end]
+    let messages_page = messages.get(start..end).unwrap_or(&[]);
+    let mut page: Vec<Message> = messages_page
         .iter()
         .filter(|msg| matches_role(msg, role))
         .cloned()
         .collect();
     let archived_end = global_active_start.min(end).max(start);
-    let active_page_start = messages[start..archived_end]
+    let archived_page = messages.get(start..archived_end).unwrap_or(&[]);
+    let active_page_start = archived_page
         .iter()
         .filter(|msg| matches_role(msg, role))
         .count();
@@ -190,8 +214,8 @@ fn history_page_payload(
 
     // Keep archived scrollback lightweight. Active-tail messages may still
     // embed image bytes for remote clients; archived image refs remain labels.
-    if active_page_start < page.len() {
-        crate::handler::embed_messages_image_data(&mut page[active_page_start..]);
+    if let Some(active_tail) = page.get_mut(active_page_start..) {
+        crate::handler::embed_messages_image_data(active_tail);
     }
 
     json!({
@@ -396,7 +420,7 @@ pub fn list_alternatives(
             crate::handler::embed_image_data(&mut images);
             json!({
                 "index": idx,
-                "position": idx + 1,
+                "position": idx.saturating_add(1),
                 "active": idx == current,
                 "content": alt.content.clone(),
                 "images": images,
@@ -408,7 +432,7 @@ pub fn list_alternatives(
     Ok(json!({
         "ref": msg_id,
         "alt_index": msg.alt_index,
-        "position": msg.alt_index.map(|i| i + 1),
+        "position": msg.alt_index.map(|i| i.saturating_add(1)),
         "alt_count": alt_count,
         "alternatives": alternatives,
     }))
@@ -454,7 +478,7 @@ pub fn alt(
     Ok(json!({
         "ref": selection.msg_id,
         "alt_index": selection.alt_index,
-        "position": selection.alt_index + 1,
+        "position": selection.alt_index.saturating_add(1),
         "alt_count": selection.alt_count,
         "content": selection.content,
     }))
@@ -489,7 +513,9 @@ fn resolve_alt_target(
                 ),
             ));
         }
-        return Ok(u32::try_from(position).unwrap_or(u32::MAX) - 1);
+        return Ok(u32::try_from(position)
+            .unwrap_or(u32::MAX)
+            .saturating_sub(1));
     }
 
     match args
@@ -498,7 +524,7 @@ fn resolve_alt_target(
         .unwrap_or("next")
     {
         "prev" | "previous" => Ok(current.saturating_sub(1)),
-        "next" => Ok((current + 1).min(count.saturating_sub(1))),
+        "next" => Ok(current.saturating_add(1).min(count.saturating_sub(1))),
         "first" => Ok(0),
         "last" => Ok(count.saturating_sub(1)),
         other => Err((
@@ -552,6 +578,7 @@ pub fn inject_system(
 mod tests {
     use super::*;
     use crate::commands::{CommandContext, SessionTokens};
+    use serde_json::Value;
     use shore_protocol::server_msg::ServerMessage;
     use shore_protocol::types::{Message, Role};
     use tempfile::TempDir;
@@ -628,6 +655,20 @@ mod tests {
 
     use crate::test_support::write_segmented_fixture;
 
+    fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
+        value
+            .get(key)
+            .unwrap_or_else(|| panic!("missing field {key}"))
+    }
+
+    fn array_field<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+        field(value, key).as_array().expect("array field")
+    }
+
+    fn item<T>(values: &[T], index: usize) -> &T {
+        values.get(index).expect("value item")
+    }
+
     fn write_segmented_history(tmp: &TempDir) {
         let character_dir = tmp.path().join("TestChar");
         let archived = vec![
@@ -656,7 +697,7 @@ mod tests {
             .unwrap();
 
         let result = log(&engine, &ctx, &json!({})).unwrap();
-        let msgs = result["messages"].as_array().unwrap();
+        let msgs = array_field(&result, "messages");
         assert_eq!(msgs.len(), 3);
     }
 
@@ -675,11 +716,11 @@ mod tests {
             .unwrap();
 
         let result = log(&engine, &ctx, &json!({"count": 2})).unwrap();
-        let msgs = result["messages"].as_array().unwrap();
+        let msgs = array_field(&result, "messages");
         assert_eq!(msgs.len(), 2);
         // Should be the last 2 messages.
-        assert_eq!(msgs[0]["msg_id"], "m2");
-        assert_eq!(msgs[1]["msg_id"], "m3");
+        assert_eq!(field(item(msgs, 0), "msg_id"), "m2");
+        assert_eq!(field(item(msgs, 1), "msg_id"), "m3");
     }
 
     #[test]
@@ -689,12 +730,12 @@ mod tests {
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
         let result = log(&engine, &ctx, &json!({"count": 3})).unwrap();
-        let msgs = result["messages"].as_array().unwrap();
+        let msgs = array_field(&result, "messages");
         assert_eq!(msgs.len(), 3);
-        assert_eq!(msgs[0]["msg_id"], "m2");
-        assert_eq!(msgs[1]["msg_id"], "m3");
-        assert_eq!(msgs[2]["msg_id"], "m4");
-        assert_eq!(result["active_start"], 1);
+        assert_eq!(field(item(msgs, 0), "msg_id"), "m2");
+        assert_eq!(field(item(msgs, 1), "msg_id"), "m3");
+        assert_eq!(field(item(msgs, 2), "msg_id"), "m4");
+        assert_eq!(field(&result, "active_start"), 1);
     }
 
     #[test]
@@ -704,11 +745,11 @@ mod tests {
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
         let result = log(&engine, &ctx, &json!({"count": 3, "role": "assistant"})).unwrap();
-        let msgs = result["messages"].as_array().unwrap();
+        let msgs = array_field(&result, "messages");
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0]["msg_id"], "m2");
-        assert_eq!(msgs[1]["msg_id"], "m4");
-        assert_eq!(result["active_start"], 1);
+        assert_eq!(field(item(msgs, 0), "msg_id"), "m2");
+        assert_eq!(field(item(msgs, 1), "msg_id"), "m4");
+        assert_eq!(field(&result, "active_start"), 1);
     }
 
     #[test]
@@ -752,11 +793,13 @@ mod tests {
 
         let (engine, ctx, _rx) = make_ctx(&tmp);
         let result = log(&engine, &ctx, &json!({"count": 2})).unwrap();
-        let msgs = result["messages"].as_array().unwrap();
+        let msgs = array_field(&result, "messages");
         assert_eq!(msgs.len(), 2);
-        assert!(msgs[0]["images"][0].get("data").is_none());
-        assert!(msgs[1]["images"][0]["data"].as_str().is_some());
-        assert_eq!(result["active_start"], 1);
+        let archived_images = array_field(item(msgs, 0), "images");
+        let active_images = array_field(item(msgs, 1), "images");
+        assert!(item(archived_images, 0).get("data").is_none());
+        assert!(field(item(active_images, 0), "data").as_str().is_some());
+        assert_eq!(field(&result, "active_start"), 1);
     }
 
     #[test]
@@ -766,13 +809,13 @@ mod tests {
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
         let result = history_page(&engine, &ctx, &json!({"before": "active", "turns": 1})).unwrap();
-        let msgs = result["messages"].as_array().unwrap();
+        let msgs = array_field(&result, "messages");
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0]["msg_id"], "m1");
-        assert_eq!(msgs[1]["msg_id"], "m2");
-        assert_eq!(result["active_start"], 2);
-        assert_eq!(result["cursor"], 0);
-        assert_eq!(result["has_more_before"], false);
+        assert_eq!(field(item(msgs, 0), "msg_id"), "m1");
+        assert_eq!(field(item(msgs, 1), "msg_id"), "m2");
+        assert_eq!(field(&result, "active_start"), 2);
+        assert_eq!(field(&result, "cursor"), 0);
+        assert_eq!(field(&result, "has_more_before"), false);
     }
 
     #[test]
@@ -781,7 +824,7 @@ mod tests {
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
         let result = log(&engine, &ctx, &json!({})).unwrap();
-        let msgs = result["messages"].as_array().unwrap();
+        let msgs = array_field(&result, "messages");
         assert!(msgs.is_empty());
     }
 
@@ -803,8 +846,8 @@ mod tests {
             .unwrap();
 
         let result = get(&engine, &ctx, &json!({"ref": "last", "role": "user"})).unwrap();
-        assert_eq!(result["msg_id"], "m3");
-        assert_eq!(result["content"], "last user");
+        assert_eq!(field(&result, "msg_id"), "m3");
+        assert_eq!(field(&result, "content"), "last user");
     }
 
     #[test]
@@ -821,9 +864,9 @@ mod tests {
             &json!({"ref": "m1", "content": "Edited"}),
         )
         .unwrap();
-        assert_eq!(result["ref"], "m1");
-        assert_eq!(result["edited"], true);
-        assert_eq!(engine.messages()[0].content, "Edited");
+        assert_eq!(field(&result, "ref"), "m1");
+        assert_eq!(field(&result, "edited"), true);
+        assert_eq!(item(engine.messages(), 0).content, "Edited");
     }
 
     #[test]
@@ -872,7 +915,7 @@ mod tests {
             .unwrap();
         while rx.try_recv().is_ok() {}
 
-        edit(
+        let _ignored = edit(
             &mut engine,
             &mut ctx,
             &json!({"ref": "m1", "content": "Edited"}),
@@ -895,9 +938,9 @@ mod tests {
             .unwrap();
 
         let result = delete(&mut engine, &mut ctx, &json!({"refs": ["m1"]})).unwrap();
-        assert_eq!(result["deleted"].as_array().unwrap().len(), 1);
+        assert_eq!(array_field(&result, "deleted").len(), 1);
         assert_eq!(engine.messages().len(), 1);
-        assert_eq!(engine.messages()[0].msg_id, "m2");
+        assert_eq!(item(engine.messages(), 0).msg_id, "m2");
     }
 
     #[test]
@@ -909,7 +952,7 @@ mod tests {
             .unwrap();
 
         let result = delete(&mut engine, &mut ctx, &json!({"refs": "m1"})).unwrap();
-        assert_eq!(result["deleted"].as_array().unwrap().len(), 1);
+        assert_eq!(array_field(&result, "deleted").len(), 1);
         assert!(engine.messages().is_empty());
     }
 
@@ -944,7 +987,7 @@ mod tests {
             .unwrap();
         while rx.try_recv().is_ok() {}
 
-        delete(&mut engine, &mut ctx, &json!({"refs": ["m1"]})).unwrap();
+        let _ignored = delete(&mut engine, &mut ctx, &json!({"refs": ["m1"]})).unwrap();
 
         let msg = rx.try_recv().unwrap();
         assert!(matches!(msg, ServerMessage::History(_)));
@@ -985,10 +1028,10 @@ mod tests {
         engine.append_message(msg).unwrap();
 
         let result = alt(&mut engine, &mut ctx, &json!({"direction": "prev"})).unwrap();
-        assert_eq!(result["position"], 1);
-        assert_eq!(result["alt_count"], 2);
-        assert_eq!(engine.messages()[1].content, "First answer");
-        assert_eq!(engine.messages()[1].alt_index, Some(0));
+        assert_eq!(field(&result, "position"), 1);
+        assert_eq!(field(&result, "alt_count"), 2);
+        assert_eq!(item(engine.messages(), 1).content, "First answer");
+        assert_eq!(item(engine.messages(), 1).alt_index, Some(0));
     }
 
     #[test]
@@ -1023,12 +1066,13 @@ mod tests {
         engine.append_message(msg).unwrap();
 
         let result = list_alternatives(&engine, &ctx, &json!({})).unwrap();
-        assert_eq!(result["ref"], "a2");
-        assert_eq!(result["alt_count"], 2);
-        assert_eq!(result["alternatives"][0]["position"], 1);
-        assert_eq!(result["alternatives"][0]["active"], false);
-        assert_eq!(result["alternatives"][1]["content"], "Second answer");
-        assert_eq!(result["alternatives"][1]["active"], true);
+        assert_eq!(field(&result, "ref"), "a2");
+        assert_eq!(field(&result, "alt_count"), 2);
+        let alternatives = array_field(&result, "alternatives");
+        assert_eq!(field(item(alternatives, 0), "position"), 1);
+        assert_eq!(field(item(alternatives, 0), "active"), false);
+        assert_eq!(field(item(alternatives, 1), "content"), "Second answer");
+        assert_eq!(field(item(alternatives, 1), "active"), true);
     }
 
     // ── resolve_ref tests ───────────────────────────────────────────
@@ -1115,8 +1159,8 @@ mod tests {
             &json!({"ref": "last", "content": "Edited"}),
         )
         .unwrap();
-        assert_eq!(result["ref"], "m2");
-        assert_eq!(engine.messages()[1].content, "Edited");
+        assert_eq!(field(&result, "ref"), "m2");
+        assert_eq!(item(engine.messages(), 1).content, "Edited");
     }
 
     #[test]
@@ -1136,8 +1180,8 @@ mod tests {
             &json!({"ref": "-1", "content": "Edited"}),
         )
         .unwrap();
-        assert_eq!(result["ref"], "m2");
-        assert_eq!(engine.messages()[1].content, "Edited");
+        assert_eq!(field(&result, "ref"), "m2");
+        assert_eq!(item(engine.messages(), 1).content, "Edited");
     }
 
     #[test]
@@ -1157,8 +1201,8 @@ mod tests {
             &json!({"ref": "1", "content": "Edited"}),
         )
         .unwrap();
-        assert_eq!(result["ref"], "m1");
-        assert_eq!(engine.messages()[0].content, "Edited");
+        assert_eq!(field(&result, "ref"), "m1");
+        assert_eq!(item(engine.messages(), 0).content, "Edited");
     }
 
     #[test]
@@ -1173,9 +1217,9 @@ mod tests {
             .unwrap();
 
         let result = delete(&mut engine, &mut ctx, &json!({"refs": "last"})).unwrap();
-        assert_eq!(result["deleted"].as_array().unwrap()[0], "m2");
+        assert_eq!(item(array_field(&result, "deleted"), 0), "m2");
         assert_eq!(engine.messages().len(), 1);
-        assert_eq!(engine.messages()[0].msg_id, "m1");
+        assert_eq!(item(engine.messages(), 0).msg_id, "m1");
     }
 
     #[test]
@@ -1189,10 +1233,10 @@ mod tests {
             &json!({"text": "Stop using actions"}),
         )
         .unwrap();
-        assert_eq!(result["injected"], true);
+        assert_eq!(field(&result, "injected"), true);
 
         assert_eq!(engine.messages().len(), 1);
-        let msg = &engine.messages()[0];
+        let msg = item(engine.messages(), 0);
         assert_eq!(msg.role, Role::System);
         assert_eq!(msg.content, "Stop using actions");
         assert!(msg.msg_id.starts_with("m_"));

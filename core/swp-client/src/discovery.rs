@@ -86,12 +86,18 @@ enum ProcessState {
 }
 
 #[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "process liveness probe uses libc::kill(pid, 0), which has no safe std wrapper"
+)]
 fn pid_state(pid: u32) -> ProcessState {
     // The kernel's pid_t is i32; real PIDs fit far below i32::MAX. A value that
     // doesn't fit can't name a live process, so treat it as dead.
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return ProcessState::Dead;
     };
+    // SAFETY: signal 0 performs permission/existence checking only. `pid`
+    // was range-checked for this platform's pid_t above.
     let rc = unsafe { libc::kill(pid, 0) };
     if rc == 0 {
         return ProcessState::Alive;
@@ -274,11 +280,12 @@ mod tests {
         }]"#;
         let entries: Vec<InstanceEntry> = serde_json::from_str(json).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id.as_deref(), Some("default"));
-        assert_eq!(entries[0].addr, "127.0.0.1:7320");
-        assert_eq!(entries[0].pid, Some(12345));
-        assert_eq!(entries[0].data_dir.as_deref(), Some("/home/user/data"));
-        assert_eq!(entries[0].config_dir.as_deref(), Some("/home/user/config"));
+        let entry = entries.first().expect("entry should be present");
+        assert_eq!(entry.id.as_deref(), Some("default"));
+        assert_eq!(entry.addr, "127.0.0.1:7320");
+        assert_eq!(entry.pid, Some(12345));
+        assert_eq!(entry.data_dir.as_deref(), Some("/home/user/data"));
+        assert_eq!(entry.config_dir.as_deref(), Some("/home/user/config"));
     }
 
     #[test]
@@ -286,9 +293,10 @@ mod tests {
         let json = r#"[{"addr": "127.0.0.1:7320"}]"#;
         let entries: Vec<InstanceEntry> = serde_json::from_str(json).unwrap();
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].id.is_none());
-        assert!(entries[0].pid.is_none());
-        assert_eq!(entries[0].addr, "127.0.0.1:7320");
+        let entry = entries.first().expect("entry should be present");
+        assert!(entry.id.is_none());
+        assert!(entry.pid.is_none());
+        assert_eq!(entry.addr, "127.0.0.1:7320");
     }
 
     #[test]

@@ -73,7 +73,7 @@ impl CacheKeepalive {
     /// assistant response, heartbeat tick, or keepalive ping itself.
     /// Resets the internal ping deadline.
     pub fn on_cache_warmed(&mut self, now: Instant) {
-        self.next_ping_at = Some(now + ping_interval());
+        self.next_ping_at = now.checked_add(ping_interval());
         self.failure_count = 0;
     }
 
@@ -136,7 +136,7 @@ impl CacheKeepalive {
     /// the account every scheduler tick.
     pub fn on_ping_failed(&mut self, now: Instant) {
         self.failure_count = self.failure_count.saturating_add(1);
-        self.next_ping_at = Some(now + retry_delay(self.failure_count));
+        self.next_ping_at = now.checked_add(retry_delay(self.failure_count));
     }
 }
 
@@ -151,11 +151,11 @@ mod tests {
     use super::*;
 
     fn hours(h: u64) -> Duration {
-        Duration::from_secs(h * 3600)
+        Duration::from_secs(h.saturating_mul(3600))
     }
 
     fn minutes(m: u64) -> Duration {
-        Duration::from_secs(m * 60)
+        Duration::from_secs(m.saturating_mul(60))
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::LlmError;
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
 /// Generate embeddings via an OpenAI-compatible embeddings API.
-pub async fn embed(
+pub(crate) async fn embed(
     client: &reqwest::Client,
     _provider: &str,
     model: &str,
@@ -80,6 +80,7 @@ fn parse_embedding_response(
                 .map(|(num_idx, n)| {
                     #[expect(
                         clippy::cast_possible_truncation,
+                        clippy::as_conversions,
                         reason = "embeddings are downcast to f32 for storage; precision loss is acceptable"
                     )]
                     let value = n.as_f64().map(|f| f as f32);
@@ -95,6 +96,10 @@ fn parse_embedding_response(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "asserts in `?`-returning tests; the test-exemption equivalent of clippy.toml's allow-panic-in-tests"
+)]
 mod tests {
     use super::*;
 

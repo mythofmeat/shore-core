@@ -429,7 +429,7 @@ pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResul
     // If the entry's sampler is now fully empty, drop it to keep the
     // file tidy.
     if entry.sampler == SamplerSettings::default() {
-        prefs
+        let _ignored = prefs
             .models
             .remove(&preferences::preference_key(&provider, &model_id));
     }

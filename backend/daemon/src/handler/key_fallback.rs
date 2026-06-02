@@ -132,10 +132,7 @@ pub(super) async fn stream_with_credential_fallback(
                     // 4xx/refusal/etc. that key rotation cannot help.
                     return Err(e);
                 }
-                let status = match &e {
-                    LlmError::HttpStatus { status, .. } => Some(*status),
-                    _ => None,
-                };
+                let status = llm_http_status(&e);
                 let reason = sanitize_reason(&e);
                 record_fallback(
                     ctx,
@@ -171,6 +168,19 @@ pub(super) async fn stream_with_credential_fallback(
         "stream_with_credential_fallback exhausted all keys"
     );
     Err(final_err)
+}
+
+fn llm_http_status(error: &LlmError) -> Option<u16> {
+    match error {
+        LlmError::HttpStatus { status, .. } => Some(*status),
+        LlmError::Request(_)
+        | LlmError::Serialize(_)
+        | LlmError::Deserialize(_)
+        | LlmError::IncompleteStream
+        | LlmError::MissingApiKey { .. }
+        | LlmError::Provider { .. }
+        | LlmError::Refusal => None,
+    }
 }
 
 /// Record one fallback event: diagnostics + (optionally) a SWP warning.
@@ -465,7 +475,7 @@ mod tests {
     // referencing fields the dispatch actually uses.
     #[test]
     fn provider_key_field_is_used() {
-        let m = shore_config::models::ResolvedModel {
+        let m = ResolvedModel {
             name: "m".into(),
             qualified_name: "chat.x.m".into(),
             category: "chat".into(),

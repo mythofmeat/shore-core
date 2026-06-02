@@ -21,12 +21,9 @@
 /// "editor added a final newline" case so our cache-key bytes match the
 /// pre-extraction inline literals.
 pub const fn trim_trailing_newline(s: &'static str) -> &'static str {
-    let bytes = s.as_bytes();
-    let len = bytes.len();
-    if len > 0 && bytes[len - 1] == b'\n' {
-        s.split_at(len - 1).0
-    } else {
-        s
+    match s.as_bytes() {
+        [prefix @ .., b'\n'] => s.split_at(prefix.len()).0,
+        _ => s,
     }
 }
 

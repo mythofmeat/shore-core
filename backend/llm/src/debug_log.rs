@@ -48,14 +48,14 @@ static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Handle returned by `log_request`, carrying enough state to write the paired
 /// response/error file. Opaque to callers.
+#[derive(Debug)]
 pub struct CallHandle {
-    call_id: String,
     response_path: PathBuf,
     started: std::time::Instant,
     envelope: Envelope,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct Envelope {
     ts: String,
     call_id: String,
@@ -90,7 +90,7 @@ fn redact_request(body: &str) -> String {
         Ok(mut v) => {
             if let Some(obj) = v.as_object_mut() {
                 if obj.contains_key("api_key") {
-                    obj.insert("api_key".into(), serde_json::json!("[REDACTED]"));
+                    let _ignored = obj.insert("api_key".into(), serde_json::json!("[REDACTED]"));
                 }
             }
             serde_json::to_string(&v).unwrap_or_else(|_| body.to_string())
@@ -147,7 +147,6 @@ pub fn log_request(
     }
 
     Some(CallHandle {
-        call_id,
         response_path,
         started: std::time::Instant::now(),
         envelope,
@@ -233,6 +232,15 @@ pub struct TeeReader<R> {
     file: Option<std::fs::File>,
 }
 
+impl<R: std::fmt::Debug> std::fmt::Debug for TeeReader<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TeeReader")
+            .field("inner", &self.inner)
+            .field("file", &self.file)
+            .finish()
+    }
+}
+
 impl<R> TeeReader<R> {
     pub fn new(inner: R, handle: &CallHandle) -> Self {
         let file = std::fs::OpenOptions::new()
@@ -261,11 +269,8 @@ impl<R> TeeReader<R> {
                 "character": handle.envelope.character,
                 "rid": handle.envelope.rid,
             });
-            let _ = writeln!(f, "{header}");
+            let _ignored = writeln!(f, "{header}");
         }
-        // call_id field kept for future use (e.g. logging); silence unused.
-        let _ = handle.call_id;
-        let _ = handle.started;
         Self { inner, file }
     }
 }
@@ -282,9 +287,10 @@ impl<R: AsyncRead + Unpin> AsyncRead for TeeReader<R> {
             let after = buf.filled().len();
             if after > before {
                 if let Some(f) = self.file.as_mut() {
-                    let new_bytes = &buf.filled()[before..after];
-                    if let Err(e) = f.write_all(new_bytes) {
-                        warn!(error = %e, "Failed to write stream tee chunk");
+                    if let Some(new_bytes) = buf.filled().get(before..after) {
+                        if let Err(e) = f.write_all(new_bytes) {
+                            warn!(error = %e, "Failed to write stream tee chunk");
+                        }
                     }
                 }
             }

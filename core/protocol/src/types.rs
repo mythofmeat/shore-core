@@ -175,12 +175,12 @@ impl Message {
     pub fn serialize_for_storage(&self) -> Result<String, serde_json::Error> {
         let mut val = serde_json::to_value(self)?;
         if let Some(obj) = val.as_object_mut() {
-            obj.remove("content");
+            let _ignored = obj.remove("content");
             // Strip inline image data — storage uses paths, not embedded bytes.
             if let Some(images) = obj.get_mut("images").and_then(|v| v.as_array_mut()) {
                 for img in images {
                     if let Some(obj) = img.as_object_mut() {
-                        obj.remove("data");
+                        let _ignored = obj.remove("data");
                     }
                 }
             }
@@ -242,7 +242,10 @@ pub fn derive_content_from_blocks_with(
                     parts.push(trimmed);
                 }
             }
-            _ => {}
+            ContentBlock::Thinking { .. }
+            | ContentBlock::ToolUse { .. }
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolResult { .. } => {}
         }
     }
 
@@ -282,6 +285,14 @@ impl CharacterInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+        value.get(key).expect("expected JSON field")
+    }
+
+    fn item<T>(items: &[T], index: usize) -> &T {
+        items.get(index).expect("expected item")
+    }
 
     #[test]
     fn derive_content_empty_blocks() {
@@ -372,7 +383,7 @@ mod tests {
         msg.normalize();
         assert_eq!(msg.content_blocks.len(), 1);
         assert!(
-            matches!(&msg.content_blocks[0], ContentBlock::Text { text } if text == "hello world")
+            matches!(item(&msg.content_blocks, 0), ContentBlock::Text { text } if text == "hello world")
         );
         assert_eq!(msg.content, "hello world");
     }
@@ -427,9 +438,9 @@ mod tests {
         );
         let json_str = msg.serialize_for_storage().unwrap();
         let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(val["msg_id"], "m1");
-        assert_eq!(val["role"], "user");
-        assert_eq!(val["timestamp"], "2026-01-01T00:00:00Z");
+        assert_eq!(field(&val, "msg_id"), "m1");
+        assert_eq!(field(&val, "role"), "user");
+        assert_eq!(field(&val, "timestamp"), "2026-01-01T00:00:00Z");
     }
 
     // ── derive_content_from_blocks_with ─────────────────────────────

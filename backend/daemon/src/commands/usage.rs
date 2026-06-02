@@ -21,15 +21,18 @@ fn parse_last_period_at(
         "all" => None,
         s if s.ends_with('h') => {
             let hours: i64 = s.trim_end_matches('h').parse().ok()?;
-            Some((now - chrono::Duration::hours(hours)).to_rfc3339())
+            now.checked_sub_signed(chrono::Duration::hours(hours))
+                .map(|dt| dt.to_rfc3339())
         }
         s if s.ends_with('d') => {
             let days: i64 = s.trim_end_matches('d').parse().ok()?;
-            Some((now - chrono::Duration::days(days)).to_rfc3339())
+            now.checked_sub_signed(chrono::Duration::days(days))
+                .map(|dt| dt.to_rfc3339())
         }
         s if s.ends_with('w') => {
             let weeks: i64 = s.trim_end_matches('w').parse().ok()?;
-            Some((now - chrono::Duration::weeks(weeks)).to_rfc3339())
+            now.checked_sub_signed(chrono::Duration::weeks(weeks))
+                .map(|dt| dt.to_rfc3339())
         }
         _ => None,
     }
@@ -46,10 +49,14 @@ fn calendar_start_naive(date: chrono::NaiveDate, window: CalendarWindow) -> chro
     use chrono::Datelike;
     let start_date = match window {
         CalendarWindow::Day => date,
-        CalendarWindow::Week => {
-            date - chrono::Duration::days(i64::from(date.weekday().num_days_from_monday()))
-        }
-        CalendarWindow::Month => date - chrono::Duration::days(i64::from(date.day0())),
+        CalendarWindow::Week => date
+            .checked_sub_signed(chrono::Duration::days(i64::from(
+                date.weekday().num_days_from_monday(),
+            )))
+            .unwrap_or(date),
+        CalendarWindow::Month => date
+            .checked_sub_signed(chrono::Duration::days(i64::from(date.day0())))
+            .unwrap_or(date),
     };
     start_date.and_time(chrono::NaiveTime::MIN)
 }
@@ -72,13 +79,18 @@ fn calendar_start(
     match chrono::Local.from_local_datetime(&start) {
         chrono::LocalResult::Single(dt) => dt.with_timezone(&chrono::Utc),
         chrono::LocalResult::Ambiguous(early, _) => early.with_timezone(&chrono::Utc),
-        chrono::LocalResult::None => chrono::Local
-            .from_local_datetime(&(start + chrono::Duration::hours(1)))
-            .earliest()
-            .map_or_else(
-                || chrono::Utc.from_utc_datetime(&start),
-                |dt| dt.with_timezone(&chrono::Utc),
-            ),
+        chrono::LocalResult::None => {
+            let adjusted = start
+                .checked_add_signed(chrono::Duration::hours(1))
+                .unwrap_or(start);
+            chrono::Local
+                .from_local_datetime(&adjusted)
+                .earliest()
+                .map_or_else(
+                    || chrono::Utc.from_utc_datetime(&start),
+                    |dt| dt.with_timezone(&chrono::Utc),
+                )
+        }
     }
 }
 
@@ -321,10 +333,11 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
                     .await
                     .is_some()
                 {
-                    fetch_results.insert(key, None);
+                    let _ignored = fetch_results.insert(key, None);
                 } else {
                     tracing::warn!(model_id, "Pricing fetch returned no data for model");
-                    fetch_results.insert(key, Some(format!("no pricing data for {model_id}")));
+                    let _ignored =
+                        fetch_results.insert(key, Some(format!("no pricing data for {model_id}")));
                 }
             }
         }
@@ -341,7 +354,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
                 cache_ttl: row.cache_ttl.as_deref(),
             }) {
                 if shore_ledger::query::update_costs(ledger, row.id, &cost).is_ok() {
-                    updated += 1;
+                    updated = updated.saturating_add(1);
                 }
             }
         }

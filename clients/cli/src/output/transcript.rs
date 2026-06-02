@@ -35,7 +35,9 @@ pub(crate) fn character_color(name: &str) -> Color {
     let hash = name.bytes().fold(0u32, |acc, b| {
         acc.wrapping_mul(31).wrapping_add(u32::from(b))
     });
-    CHARACTER_PALETTE[(hash as usize) % CHARACTER_PALETTE.len()]
+    let hash = usize::try_from(hash).unwrap_or(usize::MAX);
+    let idx = hash.checked_rem(CHARACTER_PALETTE.len()).unwrap_or(0);
+    CHARACTER_PALETTE.get(idx).copied().unwrap_or(Color::White)
 }
 
 /// Format a timestamp for display. Uses "HH:MM" normally,
@@ -65,13 +67,13 @@ pub(crate) fn write_header(
     let rule: String = "\u{2500}".repeat(trail);
 
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(color));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(color));
     }
-    let _ = write!(out, "{prefix}{rule}");
+    let _ignored = write!(out, "{prefix}{rule}");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
-    let _ = writeln!(out);
+    let _ignored = writeln!(out);
 }
 
 fn write_archive_boundary(out: &mut impl Write, width: usize, archived_turns: usize) {
@@ -82,21 +84,21 @@ fn write_archive_boundary(out: &mut impl Write, width: usize, archived_turns: us
     };
     let label_width = label.chars().count();
     let line = if width > label_width {
-        let left = (width - label_width) / 2;
-        let right = width.saturating_sub(label_width + left);
+        let left = width.saturating_sub(label_width) / 2;
+        let right = width.saturating_sub(label_width.saturating_add(left));
         format!("{}{}{}", "─".repeat(left), label, "─".repeat(right))
     } else {
         label.trim().to_string()
     };
 
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ = writeln!(out, "{line}");
+    let _ignored = writeln!(out, "{line}");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
-    let _ = writeln!(out);
+    let _ignored = writeln!(out);
 }
 
 fn is_tool_result_only_value(msg: &serde_json::Value) -> bool {
@@ -137,7 +139,7 @@ fn render_message_content(
         if blocks.is_empty() {
             // Empty content_blocks -- fall back to content string.
             if !content.is_empty() {
-                let _ = writeln!(out, "{content}");
+                let _ignored = writeln!(out, "{content}");
             }
         } else {
             // Speech (text) is the primary, flush-left voice; thinking, tool
@@ -164,7 +166,7 @@ fn render_message_content(
                     if prev && is_process {
                         write_channel_rule(out); // keep the gutter unbroken
                     } else if prev || is_process {
-                        let _ = writeln!(out); // channel ↔ speech boundary
+                        let _ignored = writeln!(out); // channel ↔ speech boundary
                     }
                 }
                 prev_process = Some(is_process);
@@ -172,7 +174,7 @@ fn render_message_content(
                     "text" => {
                         let text = block["text"].as_str().unwrap_or("");
                         if !text.is_empty() {
-                            let _ = writeln!(out, "{text}");
+                            let _ignored = writeln!(out, "{text}");
                         }
                     }
                     "thinking" => {
@@ -212,7 +214,7 @@ fn render_message_content(
     } else {
         // No content_blocks field -- legacy message, show content string.
         if !content.is_empty() || !is_tool_result_msg {
-            let _ = writeln!(out, "{content}");
+            let _ignored = writeln!(out, "{content}");
         }
     }
 }
@@ -221,12 +223,12 @@ fn render_message_content(
 ///
 /// `character_name` is used for assistant messages; pass the active character
 /// name or a fallback like "Assistant".
-pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
+pub(crate) fn print_log(messages: &[serde_json::Value], character_name: &str) {
     print_log_with_boundary(messages, 0, character_name);
 }
 
 /// Print the conversation log with an optional archive/current-context boundary.
-pub fn print_log_with_boundary(
+pub(crate) fn print_log_with_boundary(
     messages: &[serde_json::Value],
     active_start: usize,
     character_name: &str,
@@ -249,7 +251,8 @@ fn write_log_with_boundary(
     let mut prev_date: Option<String> = None;
 
     let active_start = active_start.min(messages.len());
-    let archived_turns = count_user_turn_values(&messages[..active_start]);
+    let archived = messages.get(..active_start).unwrap_or(messages);
+    let archived_turns = count_user_turn_values(archived);
     for (index, msg) in messages.iter().enumerate() {
         if active_start > 0 && index == active_start {
             write_archive_boundary(out, width, archived_turns);
@@ -288,13 +291,14 @@ fn write_log_with_boundary(
                 "assistant" => write_header(out, character_name, &time_str, char_color, width),
                 "system" => {
                     if use_color() {
-                        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                        let _ignored =
+                            crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
                     }
                     let prefix = format!("\u{2500}\u{2500} system \u{00b7} {time_str} ");
                     let prefix_len = prefix.chars().count();
                     let trail = width.saturating_sub(prefix_len);
-                    let _ = write!(out, "{prefix}{}", "\u{2500}".repeat(trail));
-                    let _ = writeln!(out);
+                    let _ignored = write!(out, "{prefix}{}", "\u{2500}".repeat(trail));
+                    let _ignored = writeln!(out);
                 }
                 _ => {}
             }
@@ -304,7 +308,7 @@ fn write_log_with_boundary(
 
         // System messages: close dimming.
         if role_str == "system" && use_color() {
-            let _ = crossterm::execute!(out, ResetColor);
+            let _ignored = crossterm::execute!(out, ResetColor);
         }
 
         // Images
@@ -317,18 +321,18 @@ fn write_log_with_boundary(
                     .unwrap_or("image");
 
                 if use_color() {
-                    let _ = crossterm::execute!(out, SetForegroundColor(Color::Yellow));
+                    let _ignored = crossterm::execute!(out, SetForegroundColor(Color::Yellow));
                 }
-                let _ = write!(out, "  \u{1f4ce} {label}");
+                let _ignored = write!(out, "  \u{1f4ce} {label}");
                 if use_color() {
-                    let _ = crossterm::execute!(out, ResetColor);
+                    let _ignored = crossterm::execute!(out, ResetColor);
                 }
-                let _ = writeln!(out);
+                let _ignored = writeln!(out);
             }
         }
 
         // Blank line between messages
-        let _ = writeln!(out);
+        let _ignored = writeln!(out);
     }
 
     if active_start > 0 && active_start == messages.len() {
@@ -337,7 +341,7 @@ fn write_log_with_boundary(
 }
 
 /// Print only the text content of a single message — no role, no timestamp, no decoration.
-pub fn print_message_content(data: &serde_json::Value) {
+pub(crate) fn print_message_content(data: &serde_json::Value) {
     let content = data["content"].as_str().unwrap_or("");
     let content_blocks = data["content_blocks"].as_array();
 
@@ -347,7 +351,7 @@ pub fn print_message_content(data: &serde_json::Value) {
                 if block["type"].as_str() == Some("text") {
                     let text = block["text"].as_str().unwrap_or("");
                     if !text.is_empty() {
-                        println!("{text}");
+                        cli_out!("{text}");
                     }
                 }
             }
@@ -355,18 +359,18 @@ pub fn print_message_content(data: &serde_json::Value) {
         }
     }
     if !content.is_empty() {
-        println!("{content}");
+        cli_out!("{content}");
     }
 }
 
 /// Print the conversation log as plain text — no colors, no box-drawing.
 /// Format: `role [HH:MM]: content` with blank lines between messages.
-pub fn print_log_plain(messages: &[serde_json::Value], character_name: &str) {
+pub(crate) fn print_log_plain(messages: &[serde_json::Value], character_name: &str) {
     print_log_plain_with_boundary(messages, 0, character_name);
 }
 
 /// Plain-text transcript with an optional archive/current-context boundary.
-pub fn print_log_plain_with_boundary(
+pub(crate) fn print_log_plain_with_boundary(
     messages: &[serde_json::Value],
     active_start: usize,
     character_name: &str,
@@ -383,10 +387,11 @@ fn write_log_plain_with_boundary(
     character_name: &str,
 ) {
     let active_start = active_start.min(messages.len());
-    let archived_turns = count_user_turn_values(&messages[..active_start]);
+    let archived = messages.get(..active_start).unwrap_or(messages);
+    let archived_turns = count_user_turn_values(archived);
     for (index, msg) in messages.iter().enumerate() {
         if active_start > 0 && index == active_start {
-            let _ = writeln!(
+            let _ignored = writeln!(
                 out,
                 "--- {archived_turns} archived turn(s) above; outside current context ---\n"
             );
@@ -407,7 +412,7 @@ fn write_log_plain_with_boundary(
             .map(|dt| dt.format("%H:%M").to_string())
             .unwrap_or_default();
 
-        let _ = writeln!(out, "{name} [{time_str}]:");
+        let _ignored = writeln!(out, "{name} [{time_str}]:");
 
         if let Some(blocks) = content_blocks {
             if !blocks.is_empty() {
@@ -416,19 +421,19 @@ fn write_log_plain_with_boundary(
                         "text" => {
                             let text = block["text"].as_str().unwrap_or("");
                             if !text.is_empty() {
-                                let _ = writeln!(out, "{text}");
+                                let _ignored = writeln!(out, "{text}");
                             }
                         }
                         "thinking" => {
                             let t = block["thinking"].as_str().unwrap_or("");
                             if !t.is_empty() {
-                                let _ = writeln!(out, "[thinking] {t}");
+                                let _ignored = writeln!(out, "[thinking] {t}");
                             }
                         }
                         // redacted_thinking is a content-free placeholder — hide it.
                         "tool_use" => {
                             let name = block["name"].as_str().unwrap_or("?");
-                            let _ = writeln!(out, "[tool: {name}]");
+                            let _ignored = writeln!(out, "[tool: {name}]");
                             if let Some(input_str) = format_tool_input(&block["input"]) {
                                 write_tool_body_plain(out, &input_str);
                             }
@@ -437,7 +442,7 @@ fn write_log_plain_with_boundary(
                             let output = block["content"].as_str().unwrap_or("");
                             let is_error = block["is_error"].as_bool().unwrap_or(false);
                             let label = if is_error { "error" } else { "result" };
-                            let _ = writeln!(out, "[{label}]");
+                            let _ignored = writeln!(out, "[{label}]");
                             let output = format_tool_output(output);
                             write_tool_body_plain(out, &output);
                         }
@@ -445,17 +450,17 @@ fn write_log_plain_with_boundary(
                     }
                 }
             } else if !content.is_empty() {
-                let _ = writeln!(out, "{content}");
+                let _ignored = writeln!(out, "{content}");
             }
         } else if !content.is_empty() {
-            let _ = writeln!(out, "{content}");
+            let _ignored = writeln!(out, "{content}");
         }
 
-        let _ = writeln!(out);
+        let _ignored = writeln!(out);
     }
 
     if active_start > 0 && active_start == messages.len() {
-        let _ = writeln!(
+        let _ignored = writeln!(
             out,
             "--- {archived_turns} archived turn(s) above; outside current context ---\n"
         );
@@ -463,7 +468,7 @@ fn write_log_plain_with_boundary(
 }
 
 /// Print a push NewMessage in the transcript format (used in follow mode).
-pub fn print_new_message(msg: &NewMessage, character_name: &str) {
+pub(crate) fn print_new_message(msg: &NewMessage, character_name: &str) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let width = term_width();
@@ -479,30 +484,30 @@ pub fn print_new_message(msg: &NewMessage, character_name: &str) {
     };
 
     write_header(&mut out, name, &time_str, color, width);
-    let _ = writeln!(out, "{}", msg.message.content);
-    let _ = writeln!(out);
+    let _ignored = writeln!(out, "{}", msg.message.content);
+    let _ignored = writeln!(out);
 
     // Render any attached images.
     print_image_refs(&msg.message.images);
 }
 
 /// Print a transcript header for the assistant before streaming begins.
-pub fn print_follow_stream_start(character_name: &str) {
+pub(crate) fn print_follow_stream_start(character_name: &str) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let width = term_width();
-    let time_str = chrono::Local::now().format("%H:%M").to_string();
+    let time_str = Local::now().format("%H:%M").to_string();
     let color = character_color(character_name);
     write_header(&mut out, character_name, &time_str, color, width);
 }
 
 /// Print a single message in the same transcript format as print_log.
-pub fn print_single_message(data: &serde_json::Value, character_name: &str) {
+pub(crate) fn print_single_message(data: &serde_json::Value, character_name: &str) {
     print_log(std::slice::from_ref(data), character_name);
 }
 
 /// Print heartbeat event log returned by `shore log --heartbeat`.
-pub fn print_heartbeat_log(data: &serde_json::Value) {
+pub(crate) fn print_heartbeat_log(data: &serde_json::Value) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let width = term_width();
@@ -551,19 +556,19 @@ pub fn print_heartbeat_log(data: &serde_json::Value) {
         };
 
         if use_color() {
-            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+            let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
         }
-        let _ = write!(out, "  {time_str:<14}");
+        let _ignored = write!(out, "  {time_str:<14}");
         if use_color() {
-            let _ = crossterm::execute!(out, SetForegroundColor(kind_color));
+            let _ignored = crossterm::execute!(out, SetForegroundColor(kind_color));
         }
-        let _ = write!(out, "{kind:<18}");
+        let _ignored = write!(out, "{kind:<18}");
         if use_color() {
-            let _ = crossterm::execute!(out, ResetColor);
+            let _ignored = crossterm::execute!(out, ResetColor);
         }
-        let _ = writeln!(out, "{detail}");
+        let _ignored = writeln!(out, "{detail}");
     }
-    let _ = writeln!(out);
+    let _ignored = writeln!(out);
 }
 
 #[cfg(test)]
@@ -598,10 +603,10 @@ mod tests {
         render_message_content(&mut buf, Some(&blocks), "", false);
         set_color_enabled(false);
         let mut stdout = io::stdout();
-        let _ = stdout.write_all(b"\n----- LOG RENDER (shore log / shore get) -----\n");
-        let _ = stdout.write_all(&buf);
-        let _ = stdout.write_all(b"----- end -----\n");
-        let _ = stdout.flush();
+        let _ignored = stdout.write_all(b"\n----- LOG RENDER (shore log / shore get) -----\n");
+        let _ignored = stdout.write_all(&buf);
+        let _ignored = stdout.write_all(b"----- end -----\n");
+        let _ignored = stdout.flush();
     }
 
     fn transcript_snapshot_messages() -> Vec<serde_json::Value> {
@@ -798,7 +803,7 @@ mod tests {
 
     #[test]
     fn format_time_same_day_shows_hhmm() {
-        let dt = chrono::Local::now();
+        let dt = Local::now();
         let date = dt.format("%Y-%m-%d").to_string();
         let result = format_time(&dt, Some(&date));
         // Should be just HH:MM
@@ -807,14 +812,14 @@ mod tests {
 
     #[test]
     fn format_time_first_message_shows_hhmm() {
-        let dt = chrono::Local::now();
+        let dt = Local::now();
         let result = format_time(&dt, None);
         assert!(result.len() <= 5, "expected HH:MM, got: {result}");
     }
 
     #[test]
     fn format_time_different_day_shows_date() {
-        let dt = chrono::Local::now();
+        let dt = Local::now();
         let result = format_time(&dt, Some("1999-01-01"));
         // Should contain month abbreviation
         assert!(result.len() > 5, "expected date + time, got: {result}");
@@ -871,7 +876,7 @@ mod tests {
     #[test]
     fn format_time_date_boundary() {
         // When prev_date differs, should include month abbreviation.
-        let dt = chrono::Local::now();
+        let dt = Local::now();
         let result = format_time(&dt, Some("2020-01-01"));
         // Should contain something like "Apr 04" (month day).
         assert!(

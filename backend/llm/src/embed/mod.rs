@@ -37,6 +37,18 @@ pub struct OpenAIEmbedder {
     dimensions: usize,
 }
 
+impl std::fmt::Debug for OpenAIEmbedder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAIEmbedder")
+            .field("http_client", &self.http_client)
+            .field("model", &self.model)
+            .field("api_key", &"<redacted>")
+            .field("base_url", &self.base_url)
+            .field("dimensions", &self.dimensions)
+            .finish()
+    }
+}
+
 impl OpenAIEmbedder {
     pub fn new(
         http_client: reqwest::Client,
@@ -99,7 +111,7 @@ where
         return Ok(Arc::clone(e.value()));
     }
     let new = build()?;
-    embedder_cache().insert(key.to_string(), Arc::clone(&new));
+    let _ignored = embedder_cache().insert(key.to_string(), Arc::clone(&new));
     Ok(new)
 }
 
@@ -120,7 +132,12 @@ mod tests {
                     let mut v = vec![0.0_f32; self.dim];
                     if !s.is_empty() {
                         let h = s.bytes().fold(0u32, |a, b| a.wrapping_add(u32::from(b)));
-                        v[(h as usize) % self.dim] = 1.0;
+                        let h = usize::try_from(h).unwrap_or(usize::MAX);
+                        if let Some(idx) = h.checked_rem(self.dim) {
+                            if let Some(slot) = v.get_mut(idx) {
+                                *slot = 1.0;
+                            }
+                        }
                     }
                     v
                 })
@@ -139,7 +156,7 @@ mod tests {
         let e: Box<dyn Embedder> = Box::new(FakeEmbedder { dim: 4 });
         let out = e.embed(&["a", "b"]).await.unwrap();
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].len(), 4);
+        assert_eq!(out.first().expect("embedding output").len(), 4);
         assert_eq!(e.model_id(), "fake");
         assert_eq!(e.dimensions(), 4);
     }

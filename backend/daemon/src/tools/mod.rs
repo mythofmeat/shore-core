@@ -172,9 +172,9 @@ pub fn render_tool_defs(
 ) -> Vec<Value> {
     use std::collections::HashMap;
     let mut vars: HashMap<String, String> = HashMap::new();
-    vars.insert("char".into(), char_name.to_string());
-    vars.insert("character_name".into(), char_name.to_string());
-    vars.insert("user".into(), user_name.to_string());
+    let _ignored = vars.insert("char".into(), char_name.to_string());
+    let _ignored = vars.insert("character_name".into(), char_name.to_string());
+    let _ignored = vars.insert("user".into(), user_name.to_string());
     available_tools(is_private, toggles)
         .iter()
         .map(|t| {
@@ -223,7 +223,7 @@ fn apply_default_search_mode(input: &mut Value, ctx: &dyn ToolContext, index_pat
         return;
     }
     if let Some(obj) = input.as_object_mut() {
-        obj.insert(
+        let _ignored = obj.insert(
             "mode".into(),
             serde_json::json!(default_search_mode(ctx, index_path_available)),
         );
@@ -527,8 +527,8 @@ mod tests {
         let ws_str = ws.to_string_lossy().to_string();
         let ctx = TestToolContext::new()
             .with_workspace_dir(&ws_str)
-            .with_retrieval_config(shore_config::app::RetrievalConfig {
-                mode: shore_config::app::RetrievalMode::Lexical,
+            .with_retrieval_config(RetrievalConfig {
+                mode: RetrievalMode::Lexical,
                 ..Default::default()
             });
 

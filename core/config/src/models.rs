@@ -511,20 +511,20 @@ impl ModelCatalog {
         // a miss is expected and not worth a warning. Terminal callers that
         // treat a miss as a real misconfiguration log it themselves with
         // context (see `resolve_background_model`, `apply_heartbeat_model_override`).
-        match matches.len() {
-            0 => {
+        match matches.as_slice() {
+            [] => {
                 debug!(name, "Model not found in static catalog");
                 Err(CatalogError::NotFound {
                     name: name.to_string(),
                 })
             }
-            1 => {
+            [only] => {
                 debug!(
                     name,
-                    qualified_name = matches[0].qualified_name,
+                    qualified_name = only.qualified_name,
                     "Model resolved by short name"
                 );
-                Ok(matches[0])
+                Ok(*only)
             }
             _ => {
                 let locations: Vec<&str> =
@@ -549,7 +549,7 @@ impl ModelCatalog {
 
     /// Iterate all chat model qualified names (e.g. `"chat.anthropic.opus"`).
     pub fn chat_model_names(&self) -> impl Iterator<Item = &str> {
-        self.chat.keys().map(std::string::String::as_str)
+        self.chat.keys().map(String::as_str)
     }
 }
 
@@ -611,7 +611,7 @@ fn parse_category(
         let mut provider_scalars = toml::Table::new();
         for (k, v) in provider_table {
             if !v.is_table() || RESERVED_DICT_KEYS.contains(&k.as_str()) {
-                provider_scalars.insert(k.clone(), v.clone());
+                let _ignored = provider_scalars.insert(k.clone(), v.clone());
             }
         }
 
@@ -651,7 +651,7 @@ fn parse_category(
         if let Ok(explicit) = toml::Value::Table(provider_scalars).try_into::<ProviderConfig>() {
             provider_config.fields.merge_from(&explicit.fields);
             if explicit.fields != ModelConfigFields::default() {
-                provider_defaults.insert(provider_key.clone(), explicit.fields);
+                let _ignored = provider_defaults.insert(provider_key.clone(), explicit.fields);
             }
         }
 
@@ -698,7 +698,7 @@ fn parse_category(
                 qualified,
                 "Resolved model entry"
             );
-            models.insert(qualified, resolved);
+            let _ignored = models.insert(qualified, resolved);
         }
     }
 
@@ -804,6 +804,10 @@ pub fn default_sdk(provider_key: &str) -> Sdk {
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "tests index catalog maps by keys they just inserted; a missing key should fail the test loudly"
+)]
 mod tests {
     use super::*;
 
@@ -1175,10 +1179,10 @@ model_id = "claude-opus-4-6"
 "#,
         );
         let err = parse_category("chat", &table, None).unwrap_err();
-        match err {
-            CatalogError::RemovedProvider { category } => assert_eq!(category, "chat"),
-            other => panic!("expected RemovedProvider, got {other:?}"),
-        }
+        let CatalogError::RemovedProvider { category } = err else {
+            panic!("expected RemovedProvider, got {err:?}");
+        };
+        assert_eq!(category, "chat");
     }
 
     #[test]

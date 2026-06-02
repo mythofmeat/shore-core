@@ -9,8 +9,27 @@
     clippy::unimplemented,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    clippy::as_conversions,
+    clippy::allow_attributes,
+    clippy::allow_attributes_without_reason,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn,
+    clippy::let_underscore_must_use,
+    clippy::clone_on_ref_ptr,
+    clippy::dbg_macro,
+    clippy::exit,
+    clippy::mem_forget,
+    clippy::match_wildcard_for_single_variants,
+    clippy::wildcard_enum_match_arm,
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::undocumented_unsafe_blocks,
+    unsafe_code,
+    elided_lifetimes_in_paths,
+    unused_qualifications
 )]
+#![deny(clippy::print_stdout, clippy::print_stderr, unreachable_pub)]
 
 pub mod registry;
 
@@ -134,7 +153,7 @@ pub struct RequestMeta {
 }
 
 /// Per-session direct-message router and session metadata mutator.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct SessionRouter {
     clients: Arc<RwLock<HashMap<u64, ClientInfo>>>,
     direct_txs: Arc<RwLock<HashMap<u64, mpsc::Sender<ServerMessage>>>>,
@@ -148,14 +167,14 @@ impl SessionRouter {
         direct_tx: mpsc::Sender<ServerMessage>,
     ) {
         let id = client.id;
-        self.clients.write().await.insert(id, client);
-        self.direct_txs.write().await.insert(id, direct_tx);
+        let _ignored = self.clients.write().await.insert(id, client);
+        let _ignored = self.direct_txs.write().await.insert(id, direct_tx);
     }
 
     /// Unregister a disconnected session.
     pub async fn unregister_session(&self, session_id: SessionId) {
-        self.clients.write().await.remove(&session_id.0);
-        self.direct_txs.write().await.remove(&session_id.0);
+        let _ignored = self.clients.write().await.remove(&session_id.0);
+        let _ignored = self.direct_txs.write().await.remove(&session_id.0);
     }
 
     /// Look up the direct sender for a session.
@@ -231,6 +250,7 @@ pub struct ServerConfig {
 /// Listens on TCP. Accepts concurrent client connections, performs the SWP
 /// handshake, routes incoming messages, and broadcasts push messages to all
 /// connected clients.
+#[derive(Debug)]
 pub struct Server {
     config: ServerConfig,
     clients: Arc<RwLock<HashMap<u64, ClientInfo>>>,
@@ -238,15 +258,15 @@ pub struct Server {
     next_id: Arc<std::sync::atomic::AtomicU64>,
     event_tx: broadcast::Sender<ServerMessage>,
     /// Receiver for routed messages (engine / command dispatcher consumes these).
-    route_rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<RoutedMessage>>>,
-    route_tx: tokio::sync::mpsc::Sender<RoutedMessage>,
+    route_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<RoutedMessage>>>,
+    route_tx: mpsc::Sender<RoutedMessage>,
 }
 
 impl Server {
     /// Create a new server with the given config and broadcast capacity.
     pub fn new(config: ServerConfig) -> Self {
         let (event_tx, _) = broadcast::channel(256);
-        let (route_tx, route_rx) = tokio::sync::mpsc::channel(256);
+        let (route_tx, route_rx) = mpsc::channel(256);
         Self {
             config,
             clients: Arc::new(RwLock::new(HashMap::new())),
@@ -270,21 +290,19 @@ impl Server {
     /// Returns the session router used for direct responses and session updates.
     pub fn session_router(&self) -> SessionRouter {
         SessionRouter {
-            clients: self.clients.clone(),
-            direct_txs: self.direct_txs.clone(),
+            clients: Arc::clone(&self.clients),
+            direct_txs: Arc::clone(&self.direct_txs),
         }
     }
 
     /// Returns the routed-message receiver (engine / command dispatcher).
-    pub fn take_route_rx(
-        &self,
-    ) -> Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<RoutedMessage>>> {
-        self.route_rx.clone()
+    pub fn take_route_rx(&self) -> Arc<tokio::sync::Mutex<mpsc::Receiver<RoutedMessage>>> {
+        Arc::clone(&self.route_rx)
     }
 
     /// Returns a read-only handle to the connected-clients map.
     pub fn clients(&self) -> Arc<RwLock<HashMap<u64, ClientInfo>>> {
-        self.clients.clone()
+        Arc::clone(&self.clients)
     }
 
     /// Bind a TCP listener using `self.config.addr`. Exposed so callers that
@@ -361,7 +379,7 @@ impl Server {
     /// Broadcast an unsolicited event to all connected clients.
     pub fn broadcast(&self, msg: ServerMessage) {
         // Ignore send errors — they just mean no receivers are listening.
-        let _ = self.event_tx.send(msg);
+        let _ignored = self.event_tx.send(msg);
     }
 
     /// Spawn a tokio task to handle one client connection.
@@ -373,15 +391,15 @@ impl Server {
         let client_id = self
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let clients = self.clients.clone();
-        let direct_txs = self.direct_txs.clone();
+        let clients = Arc::clone(&self.clients);
+        let direct_txs = Arc::clone(&self.direct_txs);
         let event_rx = self.event_tx.subscribe();
         let route_tx = self.route_tx.clone();
         let server_name = self.config.server_name.clone();
         let handshake = self.config.handshake.clone();
         let (direct_tx, direct_rx) = mpsc::channel(256);
 
-        tokio::spawn(async move {
+        let _ignored = tokio::spawn(async move {
             let ctx = ClientCtx {
                 client_id,
                 clients,
@@ -409,7 +427,7 @@ struct ClientCtx {
     event_rx: broadcast::Receiver<ServerMessage>,
     direct_rx: mpsc::Receiver<ServerMessage>,
     direct_tx: mpsc::Sender<ServerMessage>,
-    route_tx: tokio::sync::mpsc::Sender<RoutedMessage>,
+    route_tx: mpsc::Sender<RoutedMessage>,
     server_name: String,
     handshake: Option<HandshakeProvider>,
     shutdown: tokio::sync::watch::Receiver<()>,
@@ -482,8 +500,9 @@ where
     let session = client_info.session_meta();
 
     // Register client.
-    ctx.clients.write().await.insert(client_id, client_info);
-    ctx.direct_txs
+    let _ignored = ctx.clients.write().await.insert(client_id, client_info);
+    let _ignored = ctx
+        .direct_txs
         .write()
         .await
         .insert(client_id, ctx.direct_tx.clone());
@@ -515,13 +534,13 @@ where
     // disconnects from both seeing is_empty() == true (double-fire).
     let all_gone = {
         let mut clients = ctx.clients.write().await;
-        clients.remove(&client_id);
+        let _ignored = clients.remove(&client_id);
         info!(client_id, "Client disconnected");
         clients.is_empty()
     };
-    ctx.direct_txs.write().await.remove(&client_id);
+    let _ignored = ctx.direct_txs.write().await.remove(&client_id);
     if all_gone {
-        let _ = ctx
+        let _ignored = ctx
             .route_tx
             .send(RoutedMessage::AllClientsDisconnected)
             .await;
@@ -536,7 +555,7 @@ struct MessageLoopContext<'a> {
     clients: &'a Arc<RwLock<HashMap<u64, ClientInfo>>>,
     event_rx: &'a mut broadcast::Receiver<ServerMessage>,
     direct_rx: &'a mut mpsc::Receiver<ServerMessage>,
-    route_tx: &'a tokio::sync::mpsc::Sender<RoutedMessage>,
+    route_tx: &'a mpsc::Sender<RoutedMessage>,
     session: &'a SessionMeta,
     shutdown: &'a mut tokio::sync::watch::Receiver<()>,
 }
@@ -554,7 +573,7 @@ where
     let mut consecutive_lags: u32 = 0;
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    ping_interval.tick().await;
+    let _ignored = ping_interval.tick().await;
 
     loop {
         tokio::select! {
@@ -603,7 +622,7 @@ where
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        consecutive_lags += 1;
+                        consecutive_lags = consecutive_lags.saturating_add(1);
                         warn!(client_id = ctx.client_id, skipped = n, consecutive = consecutive_lags,
                               "Client lagged on broadcast");
                         if consecutive_lags >= MAX_CONSECUTIVE_LAGS {
@@ -661,7 +680,7 @@ fn resolve_handshake_character(
             warn!(requested = %name, "Ignoring unknown connect-time character selection");
             None
         }
-        None if characters.len() == 1 => Some(characters[0].name.clone()),
+        None if characters.len() == 1 => characters.first().map(|character| character.name.clone()),
         None => None,
     }
 }
@@ -670,7 +689,7 @@ fn resolve_handshake_character(
 async fn route_client_message<W>(
     client_id: u64,
     msg: ClientMessage,
-    route_tx: &tokio::sync::mpsc::Sender<RoutedMessage>,
+    route_tx: &mpsc::Sender<RoutedMessage>,
     writer: &mut W,
     clients: &Arc<RwLock<HashMap<u64, ClientInfo>>>,
     session: &SessionMeta,
@@ -694,21 +713,47 @@ where
             });
             write_message(writer, &err).await?;
         }
-        ClientMessage::Message(_) | ClientMessage::Regen(_) | ClientMessage::Cancel(_) => {
-            info!(client_id, msg_type = %msg_type_name(&msg), "Routing to engine");
-            let (rid, kind) = match &msg {
-                ClientMessage::Message(body) => (body.rid.clone(), RequestKind::Message),
-                ClientMessage::Regen(regen) => (regen.rid.clone(), RequestKind::Regen),
-                // This outer arm only routes Message/Regen/Cancel; Cancel is
-                // the sole remaining case.
-                _ => (None, RequestKind::Cancel),
-            };
+        ClientMessage::Message(body) => {
+            info!(client_id, msg_type = "message", "Routing to engine");
             let meta = RequestMeta {
                 session: session.with_selected_character(character),
-                rid,
-                kind,
+                rid: body.rid.clone(),
+                kind: RequestKind::Message,
             };
-            route_tx.send(RoutedMessage::Engine { msg, meta }).await?;
+            route_tx
+                .send(RoutedMessage::Engine {
+                    msg: ClientMessage::Message(body),
+                    meta,
+                })
+                .await?;
+        }
+        ClientMessage::Regen(regen) => {
+            info!(client_id, msg_type = "regen", "Routing to engine");
+            let meta = RequestMeta {
+                session: session.with_selected_character(character),
+                rid: regen.rid.clone(),
+                kind: RequestKind::Regen,
+            };
+            route_tx
+                .send(RoutedMessage::Engine {
+                    msg: ClientMessage::Regen(regen),
+                    meta,
+                })
+                .await?;
+        }
+        ClientMessage::Cancel(cancel) => {
+            info!(client_id, msg_type = "cancel", "Routing to engine");
+            let meta = RequestMeta {
+                session: session.with_selected_character(character),
+                rid: None,
+                kind: RequestKind::Cancel,
+            };
+            route_tx
+                .send(RoutedMessage::Engine {
+                    msg: ClientMessage::Cancel(cancel),
+                    meta,
+                })
+                .await?;
         }
         ClientMessage::Command(cmd) => {
             info!(client_id, command = %cmd.name, "Routing to command dispatcher");
@@ -785,14 +830,23 @@ where
         }
         // Find newline in the buffer.
         let (consume, done) = match buf.iter().position(|&b| b == b'\n') {
-            Some(pos) => (pos + 1, true),
+            Some(pos) => match pos.checked_add(1) {
+                Some(consume) => (consume, true),
+                None => return Err("Message length exceeds addressable memory".into()),
+            },
             None => (buf.len(), false),
         };
         // Check size limit BEFORE allocating.
-        if bytes.len() + consume > MAX_WIRE_MESSAGE_SIZE {
+        let Some(total_len) = bytes.len().checked_add(consume) else {
+            return Err("Message exceeds maximum size".into());
+        };
+        if total_len > MAX_WIRE_MESSAGE_SIZE {
             return Err("Message exceeds maximum size".into());
         }
-        bytes.extend_from_slice(&buf[..consume]);
+        let Some(chunk) = buf.get(..consume) else {
+            return Err("Read buffer range exceeded".into());
+        };
+        bytes.extend_from_slice(chunk);
         reader.consume(consume);
         if done {
             break;
@@ -823,6 +877,15 @@ mod tests {
     use shore_protocol::types::{Message, Role};
     use tokio::io::{duplex, AsyncWriteExt, BufReader};
 
+    macro_rules! assert_variant {
+        ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+            let $pattern = $value else {
+                panic!("expected enum variant did not match");
+            };
+            $body
+        }};
+    }
+
     /// Helper: write a ClientMessage as JSON line into the writer half.
     async fn send_client_msg(
         writer: &mut tokio::io::DuplexStream,
@@ -837,7 +900,7 @@ mod tests {
     /// Helper: read one ServerMessage from the reader half.
     async fn recv_server_msg(reader: &mut BufReader<tokio::io::DuplexStream>) -> ServerMessage {
         let mut line = String::new();
-        reader.read_line(&mut line).await.unwrap();
+        let _ignored = reader.read_line(&mut line).await.unwrap();
         serde_json::from_str(line.trim()).unwrap()
     }
 
@@ -886,7 +949,7 @@ mod tests {
         client_writer: tokio::io::DuplexStream,
         clients: Arc<RwLock<HashMap<u64, ClientInfo>>>,
         push_tx: broadcast::Sender<ServerMessage>,
-        route_rx: tokio::sync::mpsc::Receiver<RoutedMessage>,
+        route_rx: mpsc::Receiver<RoutedMessage>,
         _shutdown_tx: tokio::sync::watch::Sender<()>,
     }
 
@@ -900,11 +963,11 @@ mod tests {
         let (push_tx, _) = broadcast::channel(16);
         let event_rx = push_tx.subscribe();
         let (direct_tx, direct_rx) = mpsc::channel(16);
-        let (route_tx, route_rx) = tokio::sync::mpsc::channel(16);
+        let (route_tx, route_rx) = mpsc::channel(16);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
-        let clients_clone = clients.clone();
-        let direct_txs_clone = direct_txs.clone();
+        let clients_clone = Arc::clone(&clients);
+        let direct_txs_clone = Arc::clone(&direct_txs);
         let handle = tokio::spawn(async move {
             let ctx = ClientCtx {
                 client_id: 1,
@@ -966,10 +1029,7 @@ mod tests {
         assert_eq!(meta.session_id, SessionId(client_id));
         assert_eq!(meta.client_type, client_type);
         assert_eq!(meta.client_name, client_name);
-        let expected_caps: Vec<String> = capabilities
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect();
+        let expected_caps: Vec<String> = capabilities.iter().map(ToString::to_string).collect();
         assert_eq!(meta.capabilities, expected_caps);
         assert_eq!(meta.selected_character.as_deref(), selected_character);
     }
@@ -979,16 +1039,18 @@ mod tests {
         let mut h = spawn_handler();
 
         let server_hello = recv_server_msg(&mut h.client_reader).await;
-        match server_hello {
+        assert_variant!(
+
+            server_hello,
             ServerMessage::Hello(hello) => {
                 assert_eq!(hello.v, SWP_V1);
                 assert_eq!(hello.server_name, "test-server");
                 assert_eq!(hello.characters.len(), 2);
-                assert_eq!(hello.characters[0].name, "alice");
-                assert_eq!(hello.characters[1].name, "bob");
+                assert_eq!(hello.characters.first().map(|character| character.name.as_str()), Some("alice"));
+                assert_eq!(hello.characters.get(1).map(|character| character.name.as_str()), Some("bob"));
             }
-            other => panic!("Expected Hello, got {other:?}"),
-        }
+
+        );
 
         send_client_msg(
             &mut h.client_writer,
@@ -1003,14 +1065,16 @@ mod tests {
         .unwrap();
 
         let history = recv_server_msg(&mut h.client_reader).await;
-        match history {
+        assert_variant!(
+
+            history,
             ServerMessage::History(hist) => {
                 assert!(hist.messages.is_empty());
                 assert!(hist.selected_character.is_none());
                 assert_eq!(hist.revision, 1);
             }
-            other => panic!("Expected History, got {other:?}"),
-        }
+
+        );
 
         // Verify client is registered.
         {
@@ -1055,7 +1119,9 @@ mod tests {
         .unwrap();
 
         let routed = h.route_rx.recv().await.unwrap();
-        match routed {
+        assert_variant!(
+
+            routed,
             RoutedMessage::Engine {
                 msg: ClientMessage::Message(body),
                 meta,
@@ -1066,8 +1132,8 @@ mod tests {
                 assert_eq!(meta.rid.as_deref(), Some("msg_01"));
                 assert_session_meta(&meta.session, 1, "cli", "test", &[], None);
             }
-            other => panic!("Expected Engine(Message), got {other:?}"),
-        }
+
+        );
 
         send_client_msg(
             &mut h.client_writer,
@@ -1081,7 +1147,9 @@ mod tests {
         .unwrap();
 
         let routed = h.route_rx.recv().await.unwrap();
-        match routed {
+        assert_variant!(
+
+            routed,
             RoutedMessage::Engine {
                 msg: ClientMessage::Regen(r),
                 meta,
@@ -1091,8 +1159,8 @@ mod tests {
                 assert_eq!(meta.rid.as_deref(), Some("regen_01"));
                 assert_session_meta(&meta.session, 1, "cli", "test", &[], None);
             }
-            other => panic!("Expected Engine(Regen), got {other:?}"),
-        }
+
+        );
 
         drop(h.client_writer);
         h.handle.await.unwrap().unwrap();
@@ -1116,15 +1184,20 @@ mod tests {
         .unwrap();
 
         let history = recv_server_msg(&mut h.client_reader).await;
-        match history {
+        assert_variant!(
+
+            history,
             ServerMessage::History(hist) => {
                 assert_eq!(hist.selected_character.as_deref(), Some("alice"));
                 assert_eq!(hist.messages.len(), 1);
-                assert_eq!(hist.messages[0].content, "hello from alice");
+                assert_eq!(
+                    hist.messages.first().map(|message| message.content.as_str()),
+                    Some("hello from alice")
+                );
                 assert_eq!(hist.revision, 1);
             }
-            other => panic!("Expected History, got {other:?}"),
-        }
+
+        );
 
         {
             let map = h.clients.read().await;
@@ -1153,7 +1226,9 @@ mod tests {
         .unwrap();
 
         let routed = h.route_rx.recv().await.unwrap();
-        match routed {
+        assert_variant!(
+
+            routed,
             RoutedMessage::Command { cmd, meta } => {
                 assert_eq!(cmd.name, "status");
                 assert_eq!(cmd.rid, Some("cmd_01".into()));
@@ -1161,8 +1236,8 @@ mod tests {
                 assert_eq!(meta.rid.as_deref(), Some("cmd_01"));
                 assert_session_meta(&meta.session, 1, "cli", "test", &[], None);
             }
-            other => panic!("Expected Command, got {other:?}"),
-        }
+
+        );
 
         drop(h.client_writer);
         h.handle.await.unwrap().unwrap();
@@ -1191,15 +1266,17 @@ mod tests {
         .unwrap();
 
         let routed = h.route_rx.recv().await.unwrap();
-        match routed {
+        assert_variant!(
+
+            routed,
             RoutedMessage::Command { cmd, meta } => {
                 assert_eq!(cmd.name, "switch_character");
                 assert_eq!(meta.kind, RequestKind::Command);
                 assert_eq!(meta.rid.as_deref(), Some("cmd_switch"));
                 assert_session_meta(&meta.session, 1, "tui", "test", &[], Some("alice"));
             }
-            other => panic!("Expected Command, got {other:?}"),
-        }
+
+        );
 
         {
             let mut clients = h.clients.write().await;
@@ -1218,15 +1295,17 @@ mod tests {
         .unwrap();
 
         let routed = h.route_rx.recv().await.unwrap();
-        match routed {
+        assert_variant!(
+
+            routed,
             RoutedMessage::Command { cmd, meta } => {
                 assert_eq!(cmd.name, "status");
                 assert_eq!(meta.kind, RequestKind::Command);
                 assert_eq!(meta.rid.as_deref(), Some("cmd_status"));
                 assert_session_meta(&meta.session, 1, "tui", "test", &[], Some("Alice"));
             }
-            other => panic!("Expected Command, got {other:?}"),
-        }
+
+        );
 
         drop(h.client_writer);
         h.handle.await.unwrap().unwrap();
@@ -1258,7 +1337,7 @@ mod tests {
                 origin: None,
                 message: Message {
                     msg_id: "m1".into(),
-                    role: shore_protocol::types::Role::Assistant,
+                    role: Role::Assistant,
                     content: "auto msg".into(),
                     images: vec![],
                     content_blocks: vec![],
@@ -1295,7 +1374,7 @@ mod tests {
         ];
 
         for msg in &push_msgs {
-            h.push_tx.send(msg.clone()).unwrap();
+            let _ignored = h.push_tx.send(msg.clone()).unwrap();
         }
 
         for expected in &push_msgs {
@@ -1346,12 +1425,14 @@ mod tests {
         .unwrap();
 
         let err = recv_server_msg(&mut h.client_reader).await;
-        match err {
+        assert_variant!(
+
+            err,
             ServerMessage::Error(e) => {
                 assert_eq!(e.code, ErrorCode::ProtocolError);
             }
-            other => panic!("Expected Error, got {other:?}"),
-        }
+
+        );
 
         assert!(h.handle.await.unwrap().is_err());
     }
@@ -1374,13 +1455,15 @@ mod tests {
         .unwrap();
 
         let err = recv_server_msg(&mut h.client_reader).await;
-        match err {
+        assert_variant!(
+
+            err,
             ServerMessage::Error(e) => {
                 assert_eq!(e.code, ErrorCode::ProtocolError);
                 assert!(e.message.contains("Duplicate hello"));
             }
-            other => panic!("Expected Error, got {other:?}"),
-        }
+
+        );
 
         drop(h.client_writer);
         h.handle.await.unwrap().unwrap();
@@ -1395,7 +1478,7 @@ mod tests {
         let direct_txs: Arc<RwLock<HashMap<u64, mpsc::Sender<ServerMessage>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let (push_tx, _) = broadcast::channel::<ServerMessage>(16);
-        let (route_tx, _route_rx) = tokio::sync::mpsc::channel::<RoutedMessage>(16);
+        let (route_tx, _route_rx) = mpsc::channel::<RoutedMessage>(16);
         let (shutdown_tx, _) = tokio::sync::watch::channel(());
 
         // Spawn client 1.
@@ -1405,8 +1488,8 @@ mod tests {
             let (direct_tx, direct_rx) = mpsc::channel(16);
             let ctx = ClientCtx {
                 client_id: 1,
-                clients: clients.clone(),
-                direct_txs: direct_txs.clone(),
+                clients: Arc::clone(&clients),
+                direct_txs: Arc::clone(&direct_txs),
                 event_rx: push_tx.subscribe(),
                 direct_rx,
                 direct_tx,
@@ -1427,8 +1510,8 @@ mod tests {
             let (direct_tx, direct_rx) = mpsc::channel(16);
             let ctx = ClientCtx {
                 client_id: 2,
-                clients: clients.clone(),
-                direct_txs: direct_txs.clone(),
+                clients: Arc::clone(&clients),
+                direct_txs: Arc::clone(&direct_txs),
                 event_rx: push_tx.subscribe(),
                 direct_rx,
                 direct_tx,
@@ -1455,7 +1538,7 @@ mod tests {
             text: "hello both".into(),
             content_type: "text".into(),
         });
-        push_tx.send(chunk.clone()).unwrap();
+        let _ignored = push_tx.send(chunk.clone()).unwrap();
 
         // Both clients should receive it.
         let got1 = recv_server_msg(&mut r1).await;
@@ -1530,7 +1613,7 @@ mod tests {
             serde_json::to_value(&direct).unwrap()
         );
 
-        match tokio::time::timeout(std::time::Duration::from_millis(100), rx2.recv()).await {
+        match tokio::time::timeout(Duration::from_millis(100), rx2.recv()).await {
             Err(_) | Ok(None) => {}
             Ok(Some(other)) => panic!("unexpected direct delivery to other session: {other:?}"),
         }
@@ -1627,7 +1710,7 @@ mod tests {
             "Empty allowed_hosts should allow all"
         );
 
-        let _ = shutdown_tx.send(());
+        let _ignored = shutdown_tx.send(());
     }
 
     #[tokio::test]
@@ -1640,7 +1723,7 @@ mod tests {
             "Matching IP should be allowed"
         );
 
-        let _ = shutdown_tx.send(());
+        let _ignored = shutdown_tx.send(());
     }
 
     /// `read_message` must reject messages exceeding MAX_WIRE_MESSAGE_SIZE.
@@ -1678,6 +1761,6 @@ mod tests {
             "Non-matching IP should be rejected"
         );
 
-        let _ = shutdown_tx.send(());
+        let _ignored = shutdown_tx.send(());
     }
 }

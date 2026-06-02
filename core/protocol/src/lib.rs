@@ -9,7 +9,31 @@
     clippy::unimplemented,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    clippy::as_conversions,
+    clippy::arithmetic_side_effects,
+    clippy::allow_attributes,
+    clippy::allow_attributes_without_reason,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn,
+    clippy::let_underscore_must_use,
+    clippy::clone_on_ref_ptr,
+    clippy::dbg_macro,
+    clippy::exit,
+    clippy::indexing_slicing,
+    clippy::mem_forget,
+    clippy::match_wildcard_for_single_variants,
+    clippy::wildcard_enum_match_arm,
+    clippy::undocumented_unsafe_blocks,
+    unsafe_code,
+    elided_lifetimes_in_paths,
+    unused_qualifications
+)]
+#![deny(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    missing_debug_implementations,
+    unreachable_pub
 )]
 
 pub mod client_msg;
@@ -52,6 +76,14 @@ mod tests {
         (json, back)
     }
 
+    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+        value.get(key).expect("expected JSON field")
+    }
+
+    fn item<T>(items: &[T], index: usize) -> &T {
+        items.get(index).expect("expected item")
+    }
+
     // ── Protocol version ──────────────────────────────────────────────
 
     #[test]
@@ -75,8 +107,8 @@ mod tests {
             character: None,
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "hello");
-        assert_eq!(json["client_type"], "tui");
+        assert_eq!(field(&json, "type"), "hello");
+        assert_eq!(field(&json, "client_type"), "tui");
     }
 
     #[test]
@@ -91,9 +123,9 @@ mod tests {
             overrides: None,
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "message");
-        assert_eq!(json["text"], "Hello world");
-        assert_eq!(json["stream"], true);
+        assert_eq!(field(&json, "type"), "message");
+        assert_eq!(field(&json, "text"), "Hello world");
+        assert_eq!(field(&json, "stream"), true);
     }
 
     #[test]
@@ -104,7 +136,7 @@ mod tests {
             guidance: None,
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "regen");
+        assert_eq!(field(&json, "type"), "regen");
     }
 
     #[test]
@@ -115,9 +147,9 @@ mod tests {
             args: json!({"name": "alice"}),
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "command");
-        assert_eq!(json["name"], "switch_character");
-        assert_eq!(json["args"]["name"], "alice");
+        assert_eq!(field(&json, "type"), "command");
+        assert_eq!(field(&json, "name"), "switch_character");
+        assert_eq!(field(field(&json, "args"), "name"), "alice");
     }
 
     // ── Server messages ───────────────────────────────────────────────
@@ -130,8 +162,8 @@ mod tests {
             characters: vec![CharacterInfo::new("alice")],
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "hello");
-        assert_eq!(json["v"], 1);
+        assert_eq!(field(&json, "type"), "hello");
+        assert_eq!(field(&json, "v"), 1);
     }
 
     #[test]
@@ -156,10 +188,11 @@ mod tests {
             revision: 7,
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "history");
-        assert_eq!(json["messages"][0]["role"], "user");
-        assert_eq!(json["selected_character"], "alice");
-        assert_eq!(json["revision"], 7);
+        assert_eq!(field(&json, "type"), "history");
+        let messages = field(&json, "messages").as_array().expect("messages array");
+        assert_eq!(field(item(messages, 0), "role"), "user");
+        assert_eq!(field(&json, "selected_character"), "alice");
+        assert_eq!(field(&json, "revision"), 7);
     }
 
     #[test]
@@ -173,23 +206,23 @@ mod tests {
             revision: 8,
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "history");
-        assert_eq!(json["rid"], "cmd_switch_01");
-        assert_eq!(json["revision"], 8);
+        assert_eq!(field(&json, "type"), "history");
+        assert_eq!(field(&json, "rid"), "cmd_switch_01");
+        assert_eq!(field(&json, "revision"), 8);
     }
 
     #[test]
     fn server_shutdown_round_trip() {
         let msg = ServerMessage::Shutdown(Shutdown {});
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "shutdown");
+        assert_eq!(field(&json, "type"), "shutdown");
     }
 
     #[test]
     fn server_ping_round_trip() {
         let msg = ServerMessage::Ping(Ping {});
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "ping");
+        assert_eq!(field(&json, "type"), "ping");
     }
 
     #[test]
@@ -200,9 +233,9 @@ mod tests {
             data: json!({"ok": true}),
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "command_output");
-        assert_eq!(json["rid"], "cmd_01");
-        assert_eq!(json["name"], "status");
+        assert_eq!(field(&json, "type"), "command_output");
+        assert_eq!(field(&json, "rid"), "cmd_01");
+        assert_eq!(field(&json, "name"), "status");
     }
 
     #[test]
@@ -213,9 +246,9 @@ mod tests {
             message: "engine busy".into(),
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "error");
-        assert_eq!(json["rid"], "msg_01");
-        assert_eq!(json["code"], "busy");
+        assert_eq!(field(&json, "type"), "error");
+        assert_eq!(field(&json, "rid"), "msg_01");
+        assert_eq!(field(&json, "code"), "busy");
     }
 
     #[test]
@@ -225,9 +258,9 @@ mod tests {
             regen: false,
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "stream_start");
-        assert_eq!(json["rid"], "msg_01");
-        assert_eq!(json["regen"], false);
+        assert_eq!(field(&json, "type"), "stream_start");
+        assert_eq!(field(&json, "rid"), "msg_01");
+        assert_eq!(field(&json, "regen"), false);
     }
 
     #[test]
@@ -238,9 +271,9 @@ mod tests {
             content_type: "text".into(),
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "stream_chunk");
-        assert_eq!(json["rid"], "msg_01");
-        assert_eq!(json["content_type"], "text");
+        assert_eq!(field(&json, "type"), "stream_chunk");
+        assert_eq!(field(&json, "rid"), "msg_01");
+        assert_eq!(field(&json, "content_type"), "text");
     }
 
     #[test]
@@ -251,8 +284,8 @@ mod tests {
             content_type: "thinking".into(),
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["rid"], "msg_01");
-        assert_eq!(json["content_type"], "thinking");
+        assert_eq!(field(&json, "rid"), "msg_01");
+        assert_eq!(field(&json, "content_type"), "thinking");
     }
 
     #[test]
@@ -279,15 +312,18 @@ mod tests {
             is_final: true,
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "stream_end");
-        assert_eq!(json["rid"], "msg_01");
+        assert_eq!(field(&json, "type"), "stream_end");
+        assert_eq!(field(&json, "rid"), "msg_01");
         assert!(json.get("msg_id").is_none());
         assert!(json.get("revision").is_none());
-        assert_eq!(json["metadata"]["tokens"]["input"], 1234);
-        assert_eq!(json["metadata"]["tokens"]["cache_read"], 890);
-        assert_eq!(json["metadata"]["timing"]["total_ms"], 2340);
-        assert_eq!(json["metadata"]["timing"]["ttft_ms"], 450);
-        assert_eq!(json["metadata"]["model"], "claude-haiku-4-5-20251001");
+        let metadata = field(&json, "metadata");
+        let tokens = field(metadata, "tokens");
+        let timing = field(metadata, "timing");
+        assert_eq!(field(tokens, "input"), 1234);
+        assert_eq!(field(tokens, "cache_read"), 890);
+        assert_eq!(field(timing, "total_ms"), 2340);
+        assert_eq!(field(timing, "ttft_ms"), 450);
+        assert_eq!(field(metadata, "model"), "claude-haiku-4-5-20251001");
     }
 
     #[test]
@@ -299,9 +335,9 @@ mod tests {
                 model: Some("test-model".into()),
             });
             let (json, _back) = round_trip(&msg);
-            assert_eq!(json["type"], "phase");
-            assert_eq!(json["rid"], "msg_01");
-            assert_eq!(json["phase"], *phase_val);
+            assert_eq!(field(&json, "type"), "phase");
+            assert_eq!(field(&json, "rid"), "msg_01");
+            assert_eq!(field(&json, "phase"), *phase_val);
         }
     }
 
@@ -325,11 +361,11 @@ mod tests {
             },
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "new_message");
-        assert_eq!(json["character"], "Alice");
-        assert_eq!(json["origin"], "autonomous");
-        assert_eq!(json["msg_id"], "m2");
-        assert_eq!(json["revision"], 3);
+        assert_eq!(field(&json, "type"), "new_message");
+        assert_eq!(field(&json, "character"), "Alice");
+        assert_eq!(field(&json, "origin"), "autonomous");
+        assert_eq!(field(&json, "msg_id"), "m2");
+        assert_eq!(field(&json, "revision"), 3);
     }
 
     #[test]
@@ -341,11 +377,12 @@ mod tests {
             input: json!({"query": "rust serde"}),
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "tool_call");
-        assert_eq!(json["rid"], "msg_01");
-        assert_eq!(json["input"]["query"], "rust serde");
+        assert_eq!(field(&json, "type"), "tool_call");
+        assert_eq!(field(&json, "rid"), "msg_01");
+        let input = field(&json, "input");
+        assert_eq!(field(input, "query"), "rust serde");
         // Verify input is a JSON object, not a string
-        assert!(json["input"].is_object());
+        assert!(input.is_object());
     }
 
     #[test]
@@ -358,8 +395,8 @@ mod tests {
             is_error: false,
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "tool_result");
-        assert_eq!(json["rid"], "msg_01");
+        assert_eq!(field(&json, "type"), "tool_result");
+        assert_eq!(field(&json, "rid"), "msg_01");
     }
 
     #[test]
@@ -371,10 +408,10 @@ mod tests {
             data: None,
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "send_image");
-        assert_eq!(json["rid"], "msg_01");
-        assert_eq!(json["path"], "/tmp/img.png");
-        assert_eq!(json["caption"], "generated chart");
+        assert_eq!(field(&json, "type"), "send_image");
+        assert_eq!(field(&json, "rid"), "msg_01");
+        assert_eq!(field(&json, "path"), "/tmp/img.png");
+        assert_eq!(field(&json, "caption"), "generated chart");
     }
 
     #[test]
@@ -384,8 +421,8 @@ mod tests {
             message: "cache miss".into(),
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "cache_warning");
-        assert_eq!(json["expected_tokens"], 5000);
+        assert_eq!(field(&json, "type"), "cache_warning");
+        assert_eq!(field(&json, "expected_tokens"), 5000);
     }
 
     #[test]
@@ -404,9 +441,9 @@ mod tests {
             reset_at_display: "2026-05-19 10:00 AM".into(),
         });
         let (json, _back) = round_trip(&msg);
-        assert_eq!(json["type"], "usage_warning");
-        assert_eq!(json["rid"], "msg_01");
-        assert_eq!(json["budget"], "daily total");
+        assert_eq!(field(&json, "type"), "usage_warning");
+        assert_eq!(field(&json, "rid"), "msg_01");
+        assert_eq!(field(&json, "budget"), "daily total");
     }
 
     // ── Types ─────────────────────────────────────────────────────────
@@ -437,10 +474,14 @@ mod tests {
             provider_key: None,
         };
         let (json, back) = round_trip(&msg);
-        assert_eq!(json["alt_index"], 0);
-        assert_eq!(json["alt_count"], 1);
-        assert_eq!(json["alternatives"][0]["content"], "response");
-        assert_eq!(json["images"][0]["path"], "/img/a.png");
+        assert_eq!(field(&json, "alt_index"), 0);
+        assert_eq!(field(&json, "alt_count"), 1);
+        let alternatives = field(&json, "alternatives")
+            .as_array()
+            .expect("alternatives array");
+        let images = field(&json, "images").as_array().expect("images array");
+        assert_eq!(field(item(alternatives, 0), "content"), "response");
+        assert_eq!(field(item(images, 0), "path"), "/img/a.png");
         assert_eq!(back.alt_index, Some(0));
         assert_eq!(back.alt_count, Some(1));
         assert_eq!(back.alternatives.len(), 1);
@@ -482,10 +523,12 @@ mod tests {
             model: "test".into(),
         };
         let (json, _back) = round_trip(&meta);
-        assert!(json["tokens"].is_object());
-        assert!(json["timing"].is_object());
-        assert_eq!(json["tokens"]["input"], 100);
-        assert_eq!(json["timing"]["ttft_ms"], 200);
+        let tokens = field(&json, "tokens");
+        let timing = field(&json, "timing");
+        assert!(tokens.is_object());
+        assert!(timing.is_object());
+        assert_eq!(field(tokens, "input"), 100);
+        assert_eq!(field(timing, "ttft_ms"), 200);
     }
 
     #[test]
@@ -527,13 +570,13 @@ mod tests {
     fn character_info_avatar_round_trip() {
         let info = CharacterInfo {
             name: "alice".into(),
-            avatar: Some(crate::types::CharacterAvatar {
+            avatar: Some(CharacterAvatar {
                 mime_type: "image/png".into(),
                 data: "AQID".into(),
             }),
         };
         let (json, back) = round_trip(&info);
-        assert_eq!(json["avatar"]["mime_type"], "image/png");
+        assert_eq!(field(field(&json, "avatar"), "mime_type"), "image/png");
         assert_eq!(back.avatar.unwrap().data, "AQID");
     }
 
@@ -552,8 +595,8 @@ mod tests {
             text: "hello world".into(),
         };
         let json = serde_json::to_value(&block).unwrap();
-        assert_eq!(json["type"], "text");
-        assert_eq!(json["text"], "hello world");
+        assert_eq!(field(&json, "type"), "text");
+        assert_eq!(field(&json, "text"), "hello world");
         let back: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(back, block);
     }
@@ -565,8 +608,8 @@ mod tests {
             signature: None,
         };
         let json = serde_json::to_value(&block).unwrap();
-        assert_eq!(json["type"], "thinking");
-        assert_eq!(json["thinking"], "Let me consider...");
+        assert_eq!(field(&json, "type"), "thinking");
+        assert_eq!(field(&json, "thinking"), "Let me consider...");
         let back: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(back, block);
     }
@@ -578,9 +621,9 @@ mod tests {
             signature: Some("sig_abc123".into()),
         };
         let json = serde_json::to_value(&block).unwrap();
-        assert_eq!(json["type"], "thinking");
-        assert_eq!(json["thinking"], "Let me consider...");
-        assert_eq!(json["signature"], "sig_abc123");
+        assert_eq!(field(&json, "type"), "thinking");
+        assert_eq!(field(&json, "thinking"), "Let me consider...");
+        assert_eq!(field(&json, "signature"), "sig_abc123");
         let back: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(back, block);
     }
@@ -591,8 +634,8 @@ mod tests {
             data: "opaque_data_abc".into(),
         };
         let json = serde_json::to_value(&block).unwrap();
-        assert_eq!(json["type"], "redacted_thinking");
-        assert_eq!(json["data"], "opaque_data_abc");
+        assert_eq!(field(&json, "type"), "redacted_thinking");
+        assert_eq!(field(&json, "data"), "opaque_data_abc");
         let back: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(back, block);
     }
@@ -602,16 +645,15 @@ mod tests {
         // Simulate old JSON without signature field — should deserialize with None.
         let json = json!({"type": "thinking", "thinking": "old block"});
         let block: ContentBlock = serde_json::from_value(json).unwrap();
-        match block {
-            ContentBlock::Thinking {
-                thinking,
-                signature,
-            } => {
-                assert_eq!(thinking, "old block");
-                assert!(signature.is_none());
-            }
-            _ => panic!("Expected Thinking"),
-        }
+        let ContentBlock::Thinking {
+            thinking,
+            signature,
+        } = block
+        else {
+            panic!("Expected Thinking");
+        };
+        assert_eq!(thinking, "old block");
+        assert!(signature.is_none());
     }
 
     #[test]
@@ -622,10 +664,10 @@ mod tests {
             input: json!({"timezone": "UTC"}),
         };
         let json = serde_json::to_value(&block).unwrap();
-        assert_eq!(json["type"], "tool_use");
-        assert_eq!(json["id"], "tu_123");
-        assert_eq!(json["name"], "check_time");
-        assert_eq!(json["input"]["timezone"], "UTC");
+        assert_eq!(field(&json, "type"), "tool_use");
+        assert_eq!(field(&json, "id"), "tu_123");
+        assert_eq!(field(&json, "name"), "check_time");
+        assert_eq!(field(field(&json, "input"), "timezone"), "UTC");
         let back: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(back, block);
     }
@@ -638,9 +680,9 @@ mod tests {
             is_error: false,
         };
         let json = serde_json::to_value(&block).unwrap();
-        assert_eq!(json["type"], "tool_result");
-        assert_eq!(json["tool_use_id"], "tu_123");
-        assert_eq!(json["content"], "2026-03-27T12:00:00Z");
+        assert_eq!(field(&json, "type"), "tool_result");
+        assert_eq!(field(&json, "tool_use_id"), "tu_123");
+        assert_eq!(field(&json, "content"), "2026-03-27T12:00:00Z");
         // is_error defaults to false, verify it round-trips
         let back: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(back, block);
@@ -654,7 +696,7 @@ mod tests {
             is_error: true,
         };
         let json = serde_json::to_value(&block).unwrap();
-        assert_eq!(json["is_error"], true);
+        assert_eq!(field(&json, "is_error"), true);
         let back: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(back, block);
     }
@@ -664,10 +706,10 @@ mod tests {
         // Simulate old JSON without is_error field
         let json = json!({"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"});
         let block: ContentBlock = serde_json::from_value(json).unwrap();
-        match block {
-            ContentBlock::ToolResult { is_error, .. } => assert!(!is_error),
-            _ => panic!("Expected ToolResult"),
-        }
+        let ContentBlock::ToolResult { is_error, .. } = block else {
+            panic!("Expected ToolResult");
+        };
+        assert!(!is_error);
     }
 
     #[test]
@@ -699,11 +741,11 @@ mod tests {
         };
         let json = serde_json::to_value(&msg).unwrap();
         // content_blocks should be present in serialized form
-        let blocks = json["content_blocks"].as_array().unwrap();
+        let blocks = field(&json, "content_blocks").as_array().unwrap();
         assert_eq!(blocks.len(), 3);
-        assert_eq!(blocks[0]["type"], "thinking");
-        assert_eq!(blocks[1]["type"], "tool_use");
-        assert_eq!(blocks[2]["type"], "text");
+        assert_eq!(field(item(blocks, 0), "type"), "thinking");
+        assert_eq!(field(item(blocks, 1), "type"), "tool_use");
+        assert_eq!(field(item(blocks, 2), "type"), "text");
         // Round-trip
         let back: Message = serde_json::from_value(json).unwrap();
         assert_eq!(back.content_blocks.len(), 3);

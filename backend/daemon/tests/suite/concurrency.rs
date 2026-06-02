@@ -16,7 +16,7 @@ async fn test_streaming_is_direct_to_requesting_client() {
 
     harness.mock_llm.enqueue_text("direct hello").await;
 
-    harness
+    let _ignored = harness
         .conn
         .send_message("Hi there", true)
         .await
@@ -79,7 +79,7 @@ async fn test_new_message_during_generation_aborts_previous() {
 
     harness.mock_llm.enqueue_hanging_optional().await;
 
-    harness
+    let _ignored = harness
         .conn
         .send_message("first message", true)
         .await
@@ -91,7 +91,7 @@ async fn test_new_message_during_generation_aborts_previous() {
 
     harness.mock_llm.enqueue_text("second response").await;
 
-    harness
+    let _ignored = harness
         .conn
         .send_message("second message", true)
         .await
@@ -118,7 +118,7 @@ async fn test_client_disconnect_during_generation() {
 
     harness.mock_llm.enqueue_hanging_optional().await;
 
-    victim
+    let _ignored = victim
         .send_message("start hanging", true)
         .await
         .expect("failed to send message");
@@ -156,7 +156,7 @@ async fn test_tool_events_are_direct_to_requesting_client() {
         .enqueue_text("Time checked for one client.")
         .await;
 
-    harness
+    let _ignored = harness
         .conn
         .send_message("What time is it?", true)
         .await
@@ -209,7 +209,7 @@ async fn test_cancel_is_direct_to_requesting_client() {
 
     harness.mock_llm.enqueue_hanging_optional().await;
 
-    harness
+    let _ignored = harness
         .conn
         .send_message("please hang", true)
         .await

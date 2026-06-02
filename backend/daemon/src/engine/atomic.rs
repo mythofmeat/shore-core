@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::engine::EngineError;
 
 /// Write `data` to `path` atomically via temp-file + rename.
-pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), EngineError> {
+pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), EngineError> {
     let dir = path.parent().ok_or_else(|| EngineError::Io {
         path: path.to_path_buf(),
         source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "no parent directory"),
@@ -25,7 +25,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), EngineError> {
         source: e,
     })?;
 
-    tmp.persist(path).map_err(|e| EngineError::Io {
+    let _ignored = tmp.persist(path).map_err(|e| EngineError::Io {
         path: path.to_path_buf(),
         source: e.error,
     })?;

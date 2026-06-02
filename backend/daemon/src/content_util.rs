@@ -106,7 +106,10 @@ pub fn extract_tool_uses(blocks: &[ContentBlock]) -> Vec<(String, String, Value)
             ContentBlock::ToolUse { id, name, input } => {
                 Some((id.clone(), name.clone(), input.clone()))
             }
-            _ => None,
+            ContentBlock::Text { .. }
+            | ContentBlock::Thinking { .. }
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolResult { .. } => None,
         })
         .collect()
 }
@@ -152,7 +155,9 @@ pub fn thinking_block_portable_to(
     let carries_opaque_data = match block {
         ContentBlock::Thinking { signature, .. } => signature.is_some(),
         ContentBlock::RedactedThinking { .. } => true,
-        _ => false,
+        ContentBlock::Text { .. }
+        | ContentBlock::ToolUse { .. }
+        | ContentBlock::ToolResult { .. } => false,
     };
     if !carries_opaque_data {
         return true;
@@ -174,7 +179,11 @@ pub fn thinking_block_portable_to(
             {
                 active_provider.contains("openrouter")
             }
-            _ => true,
+            ContentBlock::Text { .. }
+            | ContentBlock::Thinking { .. }
+            | ContentBlock::ToolUse { .. }
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolResult { .. } => true,
         },
     }
 }

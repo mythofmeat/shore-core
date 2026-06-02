@@ -19,6 +19,7 @@ use shore_config::{
 };
 
 /// Manages multiple character engines with lazy initialization.
+#[derive(Debug)]
 pub struct CharacterRegistry {
     /// Config directory for discovering character definitions.
     config_dir: PathBuf,
@@ -126,11 +127,12 @@ impl CharacterRegistry {
                 self.push_tx.clone(),
             )?;
             info!(character = name, "Created engine for character");
-            self.engines
+            let _ignored = self
+                .engines
                 .insert(name.to_string(), Arc::new(Mutex::new(engine)));
         }
 
-        Ok(self.engines[name].clone())
+        Ok(Arc::clone(&self.engines[name]))
     }
 
     /// Load the character definition (system prompt) for a given character.
@@ -153,14 +155,14 @@ impl CharacterRegistry {
             match merged {
                 Ok(Some(config)) => {
                     info!(character = name, "Loaded per-character config override");
-                    self.char_configs.insert(name.to_string(), Some(config));
+                    let _ignored = self.char_configs.insert(name.to_string(), Some(config));
                 }
                 Ok(None) => {
-                    self.char_configs.insert(name.to_string(), None);
+                    let _ignored = self.char_configs.insert(name.to_string(), None);
                 }
                 Err(e) => {
                     warn!(character = name, error = %e, "Failed to load character config, using global");
-                    self.char_configs.insert(name.to_string(), None);
+                    let _ignored = self.char_configs.insert(name.to_string(), None);
                 }
             }
         }
@@ -180,7 +182,7 @@ impl CharacterRegistry {
     /// This is used by runtime config commands. It is deliberately not written
     /// back to disk, and `config_reset` clears it by reloading registry state.
     pub fn set_runtime_effective_config(&mut self, name: &str, config: LoadedConfig) {
-        self.char_configs.insert(name.to_string(), Some(config));
+        let _ignored = self.char_configs.insert(name.to_string(), Some(config));
     }
 
     /// Update the global config reference and invalidate per-character caches.
@@ -217,7 +219,7 @@ impl CharacterRegistry {
             .collect();
         let dropped_engines = removed_engines.len();
         for name in removed_engines {
-            self.engines.remove(&name);
+            let _ignored = self.engines.remove(&name);
         }
 
         self.global_config = config;
@@ -314,7 +316,7 @@ mod tests {
             .unwrap();
         }
 
-        let global_config = shore_config::LoadedConfig::new_for_test(
+        let global_config = LoadedConfig::new_for_test(
             shore_config::app::AppConfig::default(),
             shore_config::models::ModelCatalog::default(),
             shore_config::ShoreDirs {
@@ -508,7 +510,7 @@ mod tests {
     fn reload_runtime_state_drops_engines_for_removed_characters() {
         let tmp = TempDir::new().unwrap();
         let mut reg = make_registry(&tmp, &["Alice"]);
-        reg.get_or_create("Alice").unwrap();
+        let _ignored = reg.get_or_create("Alice").unwrap();
 
         std::fs::remove_dir_all(tmp.path().join("config").join("characters").join("Alice"))
             .unwrap();

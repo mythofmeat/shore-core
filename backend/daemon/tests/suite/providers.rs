@@ -95,7 +95,7 @@ async fn test_malformed_ndjson_returns_error() {
         .enqueue_raw_ndjson("this is not valid NDJSON\ngarbage\n".into())
         .await;
 
-    harness
+    let _ignored = harness
         .conn
         .send_message("Trigger malformed NDJSON", true)
         .await

@@ -497,15 +497,19 @@ mod tests {
         ProviderRegistry::from_section(providers).unwrap()
     }
 
+    fn candidate(cands: &[KeyCandidate], index: usize) -> &KeyCandidate {
+        cands.get(index).expect("key candidate")
+    }
+
     #[test]
     fn resolve_falls_back_to_single_default_key_when_provider_not_in_registry() {
         let registry = ProviderRegistry::default();
         let model = test_model("anthropic", None);
         let cands = resolve_key_candidates("anthropic", &registry, &model);
         assert_eq!(cands.len(), 1);
-        assert_eq!(cands[0].name, "default");
-        assert_eq!(cands[0].env, "ANTHROPIC_API_KEY");
-        assert!(!cands[0].warn_on_fallback);
+        assert_eq!(candidate(&cands, 0).name.as_str(), "default");
+        assert_eq!(candidate(&cands, 0).env.as_str(), "ANTHROPIC_API_KEY");
+        assert!(!candidate(&cands, 0).warn_on_fallback);
     }
 
     #[test]
@@ -514,7 +518,7 @@ mod tests {
         let model = test_model("openai", Some("MY_OVERRIDE_KEY"));
         let cands = resolve_key_candidates("openai", &registry, &model);
         assert_eq!(cands.len(), 1);
-        assert_eq!(cands[0].env, "MY_OVERRIDE_KEY");
+        assert_eq!(candidate(&cands, 0).env.as_str(), "MY_OVERRIDE_KEY");
     }
 
     #[test]
@@ -534,10 +538,10 @@ env = "OR_OVERFLOW"
         let model = test_model("openrouter", None);
         let cands = resolve_key_candidates("openrouter", &registry, &model);
         assert_eq!(cands.len(), 2);
-        assert_eq!(cands[0].name, "budget");
-        assert!(cands[0].warn_on_fallback);
-        assert_eq!(cands[1].name, "overflow");
-        assert!(!cands[1].warn_on_fallback);
+        assert_eq!(candidate(&cands, 0).name.as_str(), "budget");
+        assert!(candidate(&cands, 0).warn_on_fallback);
+        assert_eq!(candidate(&cands, 1).name.as_str(), "overflow");
+        assert!(!candidate(&cands, 1).warn_on_fallback);
     }
 
     #[test]
@@ -577,8 +581,8 @@ api_key_env = "OPENAI_API_KEY"
         let model = test_model("openai", None);
         let cands = resolve_key_candidates("openai", &registry, &model);
         assert_eq!(cands.len(), 1);
-        assert_eq!(cands[0].name, "default");
-        assert_eq!(cands[0].env, "OPENAI_API_KEY");
+        assert_eq!(candidate(&cands, 0).name.as_str(), "default");
+        assert_eq!(candidate(&cands, 0).env.as_str(), "OPENAI_API_KEY");
     }
 
     #[test]
@@ -600,8 +604,8 @@ enabled = true
         let model = test_model("openrouter", Some("OPENROUTER_API_KEY"));
         let cands = resolve_key_candidates("openrouter", &registry, &model);
         assert_eq!(cands.len(), 1);
-        assert_eq!(cands[0].name, "default");
-        assert_eq!(cands[0].env, "OPENROUTER_API_KEY");
+        assert_eq!(candidate(&cands, 0).name.as_str(), "default");
+        assert_eq!(candidate(&cands, 0).env.as_str(), "OPENROUTER_API_KEY");
     }
 
     #[test]
@@ -617,7 +621,7 @@ base_url = "https://api.anthropic.com"
         let model = test_model("anthropic", None);
         let cands = resolve_key_candidates("anthropic", &registry, &model);
         assert_eq!(cands.len(), 1);
-        assert_eq!(cands[0].env, "ANTHROPIC_API_KEY");
+        assert_eq!(candidate(&cands, 0).env.as_str(), "ANTHROPIC_API_KEY");
     }
 
     #[test]

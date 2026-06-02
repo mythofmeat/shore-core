@@ -51,6 +51,7 @@ pub enum EngineError {
 /// in numbered segment files managed by `SegmentReader`.
 ///
 /// State changes are broadcast as `History` messages to all connected clients.
+#[derive(Debug)]
 pub struct ConversationEngine {
     character_name: String,
     character_dir: PathBuf,
@@ -326,7 +327,7 @@ impl ConversationEngine {
         let history = ServerMessage::History(self.history_snapshot(serde_json::json!({})));
 
         // Ignore send errors — means no receivers are listening.
-        let _ = self.push_tx.send(history);
+        let _ignored = self.push_tx.send(history);
     }
 
     pub fn history_snapshot(&self, config: serde_json::Value) -> History {
@@ -357,6 +358,15 @@ mod tests {
     use super::*;
     use shore_protocol::types::Role;
     use tempfile::TempDir;
+
+    macro_rules! assert_variant {
+        ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+            let $pattern = $value else {
+                panic!("expected enum variant did not match");
+            };
+            $body
+        }};
+    }
 
     fn make_engine(tmp: &TempDir) -> (ConversationEngine, broadcast::Receiver<ServerMessage>) {
         let (push_tx, push_rx) = broadcast::channel(16);
@@ -427,7 +437,7 @@ mod tests {
             .unwrap();
         assert_eq!(engine.history_rewrite_generation(), 0);
 
-        engine.truncate_after_last_user_turn().unwrap();
+        let _ignored = engine.truncate_after_last_user_turn().unwrap();
         assert_eq!(engine.history_rewrite_generation(), 1);
 
         engine.edit_message("m1", "Hello again").unwrap();
@@ -447,36 +457,42 @@ mod tests {
             .append_message(make_msg("m1", Role::User, "Hi"))
             .unwrap();
         let msg = rx.try_recv().unwrap();
-        match msg {
+        assert_variant!(
+
+            msg,
             ServerMessage::History(h) => {
                 assert_eq!(h.revision, 1);
                 assert_eq!(h.messages.len(), 1);
                 assert_eq!(h.messages[0].content, "Hi");
             }
-            other => panic!("Expected History, got {other:?}"),
-        }
+
+        );
 
         // edit_message broadcasts.
         engine.edit_message("m1", "Hello").unwrap();
         let msg = rx.try_recv().unwrap();
-        match msg {
+        assert_variant!(
+
+            msg,
             ServerMessage::History(h) => {
                 assert_eq!(h.revision, 2);
                 assert_eq!(h.messages[0].content, "Hello");
             }
-            other => panic!("Expected History, got {other:?}"),
-        }
+
+        );
 
         // delete_message broadcasts.
         engine.delete_message("m1").unwrap();
         let msg = rx.try_recv().unwrap();
-        match msg {
+        assert_variant!(
+
+            msg,
             ServerMessage::History(h) => {
                 assert_eq!(h.revision, 3);
                 assert!(h.messages.is_empty());
             }
-            other => panic!("Expected History, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]
@@ -524,8 +540,8 @@ mod tests {
             make_msg("m2", Role::Assistant, "archived answer"),
         ];
         write_jsonl(&segments_dir.join("0001.jsonl"), &archived);
-        let manifest = super::segments::CompactionManifest {
-            segments: vec![super::segments::SegmentEntry {
+        let manifest = segments::CompactionManifest {
+            segments: vec![segments::SegmentEntry {
                 file: "0001.jsonl".into(),
                 message_count: archived.len(),
                 compacted_at: "2026-01-01T00:00:00Z".into(),
@@ -557,8 +573,8 @@ mod tests {
 
         let archived = vec![make_msg("m1", Role::User, "archived question")];
         write_jsonl(&segments_dir.join("0001.jsonl"), &archived);
-        let manifest = super::segments::CompactionManifest {
-            segments: vec![super::segments::SegmentEntry {
+        let manifest = segments::CompactionManifest {
+            segments: vec![segments::SegmentEntry {
                 file: "0001.jsonl".into(),
                 message_count: archived.len(),
                 compacted_at: "2026-01-01T00:00:00Z".into(),
@@ -593,19 +609,21 @@ mod tests {
         engine
             .append_message(make_msg("m1", Role::User, "Hello"))
             .unwrap();
-        let _ = rx.try_recv(); // drain append broadcast
+        let _ignored = rx.try_recv(); // drain append broadcast
 
         engine.reset().unwrap();
         assert!(engine.messages().is_empty());
 
         let msg = rx.try_recv().unwrap();
-        match msg {
+        assert_variant!(
+
+            msg,
             ServerMessage::History(h) => {
                 assert_eq!(h.revision, 2);
                 assert!(h.messages.is_empty());
             }
-            other => panic!("Expected History, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]

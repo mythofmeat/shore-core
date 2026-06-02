@@ -16,7 +16,7 @@ type BuildResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
     clippy::struct_excessive_bools,
     reason = "test harness builder mirrors daemon config toggles for concise tests"
 )]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TestConfigBuilder {
     pub character_name: String,
     pub character_definition: String,
@@ -297,7 +297,7 @@ temperature = 0.0
         );
         push_cache_ttl(&mut models_toml, self.cache_ttl.as_deref());
         for (extra_alias, extra_model_id) in &self.extra_chat_aliases {
-            let _ = write!(
+            let _ignored = write!(
                 models_toml,
                 "\n[openrouter.{extra_alias}]\nmodel_id = \"{extra_model_id}\"\nmax_output_tokens = {max_output_tokens}\ntemperature = 0.0\n",
             );
@@ -343,6 +343,6 @@ fn write_character_file(
 
 fn push_cache_ttl(models_toml: &mut String, cache_ttl: Option<&str>) {
     if let Some(cache_ttl) = cache_ttl {
-        let _ = writeln!(models_toml, "cache_ttl = \"{cache_ttl}\"");
+        let _ignored = writeln!(models_toml, "cache_ttl = \"{cache_ttl}\"");
     }
 }

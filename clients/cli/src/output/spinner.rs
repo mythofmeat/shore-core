@@ -23,7 +23,7 @@ fn lock_state(state: &Mutex<SpinnerState>) -> MutexGuard<'_, SpinnerState> {
 ///
 /// Displays elapsed time and current phase (e.g. `(thinking... 2.3s)`),
 /// updated every 200ms. Automatically disabled when stdout is not a terminal.
-pub struct StreamSpinner {
+pub(crate) struct StreamSpinner {
     state: Arc<Mutex<SpinnerState>>,
     handle: Option<JoinHandle<()>>,
     is_terminal: bool,
@@ -44,7 +44,7 @@ fn format_spinner_line(phase: &str, model: Option<&str>, elapsed_secs: f64) -> S
 }
 
 impl StreamSpinner {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(SpinnerState {
                 phase: String::new(),
@@ -59,7 +59,7 @@ impl StreamSpinner {
     }
 
     /// Start the spinner render loop. No-op if stdout is not a terminal.
-    pub fn start(&mut self) {
+    pub(crate) fn start(&mut self) {
         if !self.is_terminal {
             return;
         }
@@ -90,37 +90,37 @@ impl StreamSpinner {
                 };
                 let stdout = io::stdout();
                 let mut out = stdout.lock();
-                let _ = write!(out, "\r");
-                let _ = crossterm::execute!(out, Clear(ClearType::CurrentLine));
+                let _ignored = write!(out, "\r");
+                let _ignored = crossterm::execute!(out, Clear(ClearType::CurrentLine));
                 if use_color() {
-                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                    let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
                 }
-                let _ = write!(out, "{line}");
+                let _ignored = write!(out, "{line}");
                 if use_color() {
-                    let _ = crossterm::execute!(out, ResetColor);
+                    let _ignored = crossterm::execute!(out, ResetColor);
                 }
-                let _ = out.flush();
+                let _ignored = out.flush();
             }
         }));
     }
 
-    pub fn set_phase(&self, phase: &str) {
+    pub(crate) fn set_phase(&self, phase: &str) {
         let mut s = lock_state(&self.state);
         s.phase = phase.to_string();
     }
 
-    pub fn set_model(&self, model: Option<String>) {
+    pub(crate) fn set_model(&self, model: Option<String>) {
         let mut s = lock_state(&self.state);
         s.model = model;
     }
 
     /// Whether the spinner render loop is running.
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         lock_state(&self.state).active
     }
 
     /// Clear the spinner line and stop the render task.
-    pub async fn clear(&mut self) {
+    pub(crate) async fn clear(&mut self) {
         if self.cleared {
             return;
         }
@@ -130,24 +130,24 @@ impl StreamSpinner {
             s.active = false;
         }
         if let Some(h) = self.handle.take() {
-            let _ = h.await;
+            let _ignored = h.await;
         }
         if self.is_terminal {
             let stdout = io::stdout();
             let mut out = stdout.lock();
-            let _ = write!(out, "\r");
-            let _ = crossterm::execute!(out, Clear(ClearType::CurrentLine));
-            let _ = out.flush();
+            let _ignored = write!(out, "\r");
+            let _ignored = crossterm::execute!(out, Clear(ClearType::CurrentLine));
+            let _ignored = out.flush();
         }
     }
 
     /// Stop the spinner (alias for clear). Use when streaming ends without chunks.
-    pub async fn stop(&mut self) {
+    pub(crate) async fn stop(&mut self) {
         self.clear().await;
     }
 
     /// Restart the spinner for a new LLM round (e.g. after tool execution).
-    pub fn restart(&mut self) {
+    pub(crate) fn restart(&mut self) {
         self.cleared = false;
         self.start();
     }

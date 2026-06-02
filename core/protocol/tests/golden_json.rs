@@ -10,7 +10,10 @@
 
 // Test helpers panic on malformed fixtures by design; clippy's
 // allow-expect-in-tests doesn't reach non-#[test] helpers in integration tests.
-#![allow(clippy::expect_used)]
+#![expect(
+    clippy::expect_used,
+    reason = "golden fixture helpers intentionally fail fast when checked-in protocol JSON is malformed"
+)]
 
 use serde_json::{json, Value};
 use shore_protocol::client_msg::*;
@@ -18,6 +21,15 @@ use shore_protocol::error::*;
 use shore_protocol::server_msg::*;
 use shore_protocol::types::*;
 use shore_protocol::SWP_V1;
+
+macro_rules! assert_variant {
+    ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+        let $pattern = $value else {
+            panic!("expected enum variant did not match");
+        };
+        $body
+    }};
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -36,6 +48,14 @@ where
     parsed
 }
 
+fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
+    value.get(key).expect("expected JSON field")
+}
+
+fn item<T>(items: &[T], index: usize) -> &T {
+    items.get(index).expect("expected item")
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Server Messages — Golden Fixtures
 // ═══════════════════════════════════════════════════════════════════════════
@@ -52,17 +72,17 @@ const SERVER_HELLO_FIXTURE: &str = r#"{
 #[test]
 fn server_hello_golden() {
     let msg: ServerMessage = assert_golden(SERVER_HELLO_FIXTURE);
-    match msg {
-        ServerMessage::Hello(h) => {
-            assert_eq!(h.v, SWP_V1);
-            assert_eq!(h.server_name, "shore-daemon");
-            assert_eq!(h.characters.len(), 2);
-            assert_eq!(h.characters[0].name, "alice");
-            assert_eq!(h.characters[0].avatar, None);
-            assert_eq!(h.characters[1].name, "bob");
-        }
-        other => panic!("expected Hello, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::Hello(h) => {
+        assert_eq!(h.v, SWP_V1);
+        assert_eq!(h.server_name, "shore-daemon");
+        assert_eq!(h.characters.len(), 2);
+        assert_eq!(item(&h.characters, 0).name, "alice");
+        assert_eq!(item(&h.characters, 0).avatar, None);
+        assert_eq!(item(&h.characters, 1).name, "bob");
     }
+    );
 }
 
 const SERVER_HELLO_WITH_AVATAR_FIXTURE: &str = r#"{
@@ -81,14 +101,14 @@ const SERVER_HELLO_WITH_AVATAR_FIXTURE: &str = r#"{
 #[test]
 fn server_hello_with_avatar_golden() {
     let msg: ServerMessage = assert_golden(SERVER_HELLO_WITH_AVATAR_FIXTURE);
-    match msg {
-        ServerMessage::Hello(h) => {
-            let avatar = h.characters[0].avatar.as_ref().expect("avatar");
-            assert_eq!(avatar.mime_type, "image/png");
-            assert_eq!(avatar.data, "cG5n");
-        }
-        other => panic!("expected Hello, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::Hello(h) => {
+        let avatar = item(&h.characters, 0).avatar.as_ref().expect("avatar");
+        assert_eq!(avatar.mime_type, "image/png");
+        assert_eq!(avatar.data, "cG5n");
     }
+    );
 }
 
 // ── History ──────────────────────────────────────────────────────────────
@@ -123,32 +143,35 @@ const HISTORY_FIXTURE: &str = r#"{
 #[test]
 fn history_golden() {
     let msg: ServerMessage = assert_golden(HISTORY_FIXTURE);
-    match msg {
-        ServerMessage::History(h) => {
-            assert_eq!(h.messages.len(), 2);
-            // First message
-            assert_eq!(h.messages[0].msg_id, "m_001");
-            assert_eq!(h.messages[0].role, Role::User);
-            assert_eq!(h.messages[0].content, "Hello!");
-            assert!(h.messages[0].images.is_empty());
-            assert_eq!(h.messages[0].alt_index, None);
-            assert_eq!(h.messages[0].alt_count, None);
-            // Second message with images and alts
-            assert_eq!(h.messages[1].msg_id, "m_002");
-            assert_eq!(h.messages[1].role, Role::Assistant);
-            assert_eq!(h.messages[1].images.len(), 1);
-            assert_eq!(h.messages[1].images[0].path, "/img/wave.png");
-            assert_eq!(h.messages[1].images[0].caption.as_deref(), Some("waving"));
-            assert_eq!(h.messages[1].alt_index, Some(0));
-            assert_eq!(h.messages[1].alt_count, Some(2));
-            // Config
-            assert_eq!(h.config["model"], "claude-haiku-4-5-20251001");
-            assert_eq!(h.selected_character.as_deref(), Some("alice"));
-            assert_eq!(h.active_start, 0);
-            assert_eq!(h.revision, 12);
-        }
-        other => panic!("expected History, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::History(h) => {
+        assert_eq!(h.messages.len(), 2);
+        // First message
+        let first = item(&h.messages, 0);
+        assert_eq!(first.msg_id, "m_001");
+        assert_eq!(first.role, Role::User);
+        assert_eq!(first.content, "Hello!");
+        assert!(first.images.is_empty());
+        assert_eq!(first.alt_index, None);
+        assert_eq!(first.alt_count, None);
+        // Second message with images and alts
+        let second = item(&h.messages, 1);
+        assert_eq!(second.msg_id, "m_002");
+        assert_eq!(second.role, Role::Assistant);
+        assert_eq!(second.images.len(), 1);
+        let image = item(&second.images, 0);
+        assert_eq!(image.path, "/img/wave.png");
+        assert_eq!(image.caption.as_deref(), Some("waving"));
+        assert_eq!(second.alt_index, Some(0));
+        assert_eq!(second.alt_count, Some(2));
+        // Config
+        assert_eq!(field(&h.config, "model"), "claude-haiku-4-5-20251001");
+        assert_eq!(h.selected_character.as_deref(), Some("alice"));
+        assert_eq!(h.active_start, 0);
+        assert_eq!(h.revision, 12);
     }
+    );
 }
 
 // ── Shutdown ─────────────────────────────────────────────────────────────
@@ -183,14 +206,17 @@ const COMMAND_OUTPUT_FIXTURE: &str = r#"{
 #[test]
 fn command_output_golden() {
     let msg: ServerMessage = assert_golden(COMMAND_OUTPUT_FIXTURE);
-    match msg {
-        ServerMessage::CommandOutput(co) => {
-            assert_eq!(co.rid.as_deref(), Some("cmd_01"));
-            assert_eq!(co.name, "list_conversations");
-            assert_eq!(co.data["conversations"][0]["id"], "c1");
-        }
-        other => panic!("expected CommandOutput, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::CommandOutput(co) => {
+        assert_eq!(co.rid.as_deref(), Some("cmd_01"));
+        assert_eq!(co.name, "list_conversations");
+        let conversations = field(&co.data, "conversations")
+            .as_array()
+            .expect("conversations array");
+        assert_eq!(field(item(conversations, 0), "id"), "c1");
     }
+    );
 }
 
 // ── Error ────────────────────────────────────────────────────────────────
@@ -205,14 +231,14 @@ const ERROR_FIXTURE: &str = r#"{
 #[test]
 fn error_golden() {
     let msg: ServerMessage = assert_golden(ERROR_FIXTURE);
-    match msg {
-        ServerMessage::Error(e) => {
-            assert_eq!(e.rid.as_deref(), Some("msg_01"));
-            assert_eq!(e.code, ErrorCode::Busy);
-            assert_eq!(e.message, "Engine is currently processing another request");
-        }
-        other => panic!("expected Error, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::Error(e) => {
+        assert_eq!(e.rid.as_deref(), Some("msg_01"));
+        assert_eq!(e.code, ErrorCode::Busy);
+        assert_eq!(e.message, "Engine is currently processing another request");
     }
+    );
 }
 
 // ── StreamStart ──────────────────────────────────────────────────────────
@@ -222,13 +248,13 @@ const STREAM_START_FIXTURE: &str = r#"{"type": "stream_start", "rid": "msg_01", 
 #[test]
 fn stream_start_golden() {
     let msg: ServerMessage = assert_golden(STREAM_START_FIXTURE);
-    match msg {
-        ServerMessage::StreamStart(s) => {
-            assert_eq!(s.rid.as_deref(), Some("msg_01"));
-            assert!(!s.regen);
-        }
-        other => panic!("expected StreamStart, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::StreamStart(s) => {
+        assert_eq!(s.rid.as_deref(), Some("msg_01"));
+        assert!(!s.regen);
     }
+    );
 }
 
 // ── StreamChunk ──────────────────────────────────────────────────────────
@@ -243,14 +269,14 @@ const STREAM_CHUNK_FIXTURE: &str = r#"{
 #[test]
 fn stream_chunk_golden() {
     let msg: ServerMessage = assert_golden(STREAM_CHUNK_FIXTURE);
-    match msg {
-        ServerMessage::StreamChunk(c) => {
-            assert_eq!(c.rid.as_deref(), Some("msg_01"));
-            assert_eq!(c.text, "Hello, how can I ");
-            assert_eq!(c.content_type, "text");
-        }
-        other => panic!("expected StreamChunk, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::StreamChunk(c) => {
+        assert_eq!(c.rid.as_deref(), Some("msg_01"));
+        assert_eq!(c.text, "Hello, how can I ");
+        assert_eq!(c.content_type, "text");
     }
+    );
 }
 
 const STREAM_CHUNK_THINKING_FIXTURE: &str = r#"{
@@ -263,13 +289,13 @@ const STREAM_CHUNK_THINKING_FIXTURE: &str = r#"{
 #[test]
 fn stream_chunk_thinking_golden() {
     let msg: ServerMessage = assert_golden(STREAM_CHUNK_THINKING_FIXTURE);
-    match msg {
-        ServerMessage::StreamChunk(c) => {
-            assert_eq!(c.rid.as_deref(), Some("msg_01"));
-            assert_eq!(c.content_type, "thinking");
-        }
-        other => panic!("expected StreamChunk, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::StreamChunk(c) => {
+        assert_eq!(c.rid.as_deref(), Some("msg_01"));
+        assert_eq!(c.content_type, "thinking");
     }
+    );
 }
 
 // ── StreamEnd ────────────────────────────────────────────────────────────
@@ -299,23 +325,23 @@ const STREAM_END_FIXTURE: &str = r#"{
 #[test]
 fn stream_end_golden() {
     let msg: ServerMessage = assert_golden(STREAM_END_FIXTURE);
-    match msg {
-        ServerMessage::StreamEnd(se) => {
-            assert_eq!(se.rid.as_deref(), Some("msg_01"));
-            assert_eq!(se.msg_id.as_deref(), Some("m_assistant_01"));
-            assert_eq!(se.revision, Some(12));
-            assert_eq!(se.content, "Hello, how can I help you today?");
-            assert_eq!(se.metadata.tokens.input, 1234);
-            assert_eq!(se.metadata.tokens.output, 567);
-            assert_eq!(se.metadata.tokens.cache_read, 890);
-            assert_eq!(se.metadata.tokens.cache_write, 12);
-            assert_eq!(se.metadata.timing.total_ms, 2340);
-            assert_eq!(se.metadata.timing.ttft_ms, 450);
-            assert_eq!(se.metadata.model, "claude-haiku-4-5-20251001");
-            assert!(se.is_final);
-        }
-        other => panic!("expected StreamEnd, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::StreamEnd(se) => {
+        assert_eq!(se.rid.as_deref(), Some("msg_01"));
+        assert_eq!(se.msg_id.as_deref(), Some("m_assistant_01"));
+        assert_eq!(se.revision, Some(12));
+        assert_eq!(se.content, "Hello, how can I help you today?");
+        assert_eq!(se.metadata.tokens.input, 1234);
+        assert_eq!(se.metadata.tokens.output, 567);
+        assert_eq!(se.metadata.tokens.cache_read, 890);
+        assert_eq!(se.metadata.tokens.cache_write, 12);
+        assert_eq!(se.metadata.timing.total_ms, 2340);
+        assert_eq!(se.metadata.timing.ttft_ms, 450);
+        assert_eq!(se.metadata.model, "claude-haiku-4-5-20251001");
+        assert!(se.is_final);
     }
+    );
 }
 
 // ── Phase ────────────────────────────────────────────────────────────────
@@ -330,14 +356,14 @@ const PHASE_FIXTURE: &str = r#"{
 #[test]
 fn phase_golden() {
     let msg: ServerMessage = assert_golden(PHASE_FIXTURE);
-    match msg {
-        ServerMessage::Phase(p) => {
-            assert_eq!(p.rid.as_deref(), Some("msg_01"));
-            assert_eq!(p.phase, "thinking");
-            assert_eq!(p.model.as_deref(), Some("claude-haiku-4-5-20251001"));
-        }
-        other => panic!("expected Phase, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::Phase(p) => {
+        assert_eq!(p.rid.as_deref(), Some("msg_01"));
+        assert_eq!(p.phase, "thinking");
+        assert_eq!(p.model.as_deref(), Some("claude-haiku-4-5-20251001"));
     }
+    );
 }
 
 // ── NewMessage ───────────────────────────────────────────────────────────
@@ -359,21 +385,21 @@ const NEW_MESSAGE_FIXTURE: &str = r#"{
 #[test]
 fn new_message_golden() {
     let msg: ServerMessage = assert_golden(NEW_MESSAGE_FIXTURE);
-    match msg {
-        ServerMessage::NewMessage(nm) => {
-            assert_eq!(nm.revision, 8);
-            assert_eq!(nm.character.as_deref(), Some("Alice"));
-            assert_eq!(nm.origin, Some(MessageOrigin::Autonomous));
-            assert_eq!(nm.message.msg_id, "m_auto_01");
-            assert_eq!(nm.message.role, Role::Assistant);
-            assert_eq!(nm.message.content, "I noticed something interesting.");
-            assert!(nm.message.images.is_empty());
-            assert_eq!(nm.message.alt_index, None);
-            assert_eq!(nm.message.alt_count, None);
-            assert_eq!(nm.message.timestamp, "2026-01-15T10:35:00Z");
-        }
-        other => panic!("expected NewMessage, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::NewMessage(nm) => {
+        assert_eq!(nm.revision, 8);
+        assert_eq!(nm.character.as_deref(), Some("Alice"));
+        assert_eq!(nm.origin, Some(MessageOrigin::Autonomous));
+        assert_eq!(nm.message.msg_id, "m_auto_01");
+        assert_eq!(nm.message.role, Role::Assistant);
+        assert_eq!(nm.message.content, "I noticed something interesting.");
+        assert!(nm.message.images.is_empty());
+        assert_eq!(nm.message.alt_index, None);
+        assert_eq!(nm.message.alt_count, None);
+        assert_eq!(nm.message.timestamp, "2026-01-15T10:35:00Z");
     }
+    );
 }
 
 const NEW_MESSAGE_WITH_ALTS_FIXTURE: &str = r#"{
@@ -392,17 +418,17 @@ const NEW_MESSAGE_WITH_ALTS_FIXTURE: &str = r#"{
 #[test]
 fn new_message_with_alts_golden() {
     let msg: ServerMessage = assert_golden(NEW_MESSAGE_WITH_ALTS_FIXTURE);
-    match msg {
-        ServerMessage::NewMessage(nm) => {
-            assert_eq!(nm.revision, 9);
-            assert_eq!(nm.character, None);
-            assert_eq!(nm.origin, None);
-            assert_eq!(nm.message.msg_id, "m_auto_02");
-            assert_eq!(nm.message.alt_index, Some(1));
-            assert_eq!(nm.message.alt_count, Some(3));
-        }
-        other => panic!("expected NewMessage, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::NewMessage(nm) => {
+        assert_eq!(nm.revision, 9);
+        assert_eq!(nm.character, None);
+        assert_eq!(nm.origin, None);
+        assert_eq!(nm.message.msg_id, "m_auto_02");
+        assert_eq!(nm.message.alt_index, Some(1));
+        assert_eq!(nm.message.alt_count, Some(3));
     }
+    );
 }
 
 // ── ToolCall ─────────────────────────────────────────────────────────────
@@ -418,18 +444,18 @@ const TOOL_CALL_FIXTURE: &str = r#"{
 #[test]
 fn tool_call_golden() {
     let msg: ServerMessage = assert_golden(TOOL_CALL_FIXTURE);
-    match msg {
-        ServerMessage::ToolCall(tc) => {
-            assert_eq!(tc.rid.as_deref(), Some("msg_01"));
-            assert_eq!(tc.tool_id, "tc_001");
-            assert_eq!(tc.tool_name, "web_search");
-            // input must be a JSON object, not a string
-            assert!(tc.input.is_object());
-            assert_eq!(tc.input["query"], "rust serde tutorial");
-            assert_eq!(tc.input["max_results"], 5);
-        }
-        other => panic!("expected ToolCall, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::ToolCall(tc) => {
+        assert_eq!(tc.rid.as_deref(), Some("msg_01"));
+        assert_eq!(tc.tool_id, "tc_001");
+        assert_eq!(tc.tool_name, "web_search");
+        // input must be a JSON object, not a string
+        assert!(tc.input.is_object());
+        assert_eq!(field(&tc.input, "query"), "rust serde tutorial");
+        assert_eq!(field(&tc.input, "max_results"), 5);
     }
+    );
 }
 
 // ── ToolResult ───────────────────────────────────────────────────────────
@@ -446,16 +472,16 @@ const TOOL_RESULT_FIXTURE: &str = r#"{
 #[test]
 fn tool_result_golden() {
     let msg: ServerMessage = assert_golden(TOOL_RESULT_FIXTURE);
-    match msg {
-        ServerMessage::ToolResult(tr) => {
-            assert_eq!(tr.rid.as_deref(), Some("msg_01"));
-            assert_eq!(tr.tool_id, "tc_001");
-            assert_eq!(tr.tool_name, "web_search");
-            assert_eq!(tr.output, "Found 5 results for 'rust serde tutorial'");
-            assert!(!tr.is_error);
-        }
-        other => panic!("expected ToolResult, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::ToolResult(tr) => {
+        assert_eq!(tr.rid.as_deref(), Some("msg_01"));
+        assert_eq!(tr.tool_id, "tc_001");
+        assert_eq!(tr.tool_name, "web_search");
+        assert_eq!(tr.output, "Found 5 results for 'rust serde tutorial'");
+        assert!(!tr.is_error);
     }
+    );
 }
 
 // ── SendImage ────────────────────────────────────────────────────────────
@@ -470,14 +496,14 @@ const SEND_IMAGE_FIXTURE: &str = r#"{
 #[test]
 fn send_image_golden() {
     let msg: ServerMessage = assert_golden(SEND_IMAGE_FIXTURE);
-    match msg {
-        ServerMessage::SendImage(si) => {
-            assert_eq!(si.rid.as_deref(), Some("msg_01"));
-            assert_eq!(si.path, "/tmp/chart.png");
-            assert_eq!(si.caption.as_deref(), Some("Monthly revenue chart"));
-        }
-        other => panic!("expected SendImage, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::SendImage(si) => {
+        assert_eq!(si.rid.as_deref(), Some("msg_01"));
+        assert_eq!(si.path, "/tmp/chart.png");
+        assert_eq!(si.caption.as_deref(), Some("Monthly revenue chart"));
     }
+    );
 }
 
 // ── CacheWarning ─────────────────────────────────────────────────────────
@@ -491,16 +517,16 @@ const CACHE_WARNING_FIXTURE: &str = r#"{
 #[test]
 fn cache_warning_golden() {
     let msg: ServerMessage = assert_golden(CACHE_WARNING_FIXTURE);
-    match msg {
-        ServerMessage::CacheWarning(cw) => {
-            assert_eq!(cw.expected_tokens, 5000);
-            assert_eq!(
-                cw.message,
-                "Cache miss: context was evicted, re-processing 5000 tokens"
-            );
-        }
-        other => panic!("expected CacheWarning, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::CacheWarning(cw) => {
+        assert_eq!(cw.expected_tokens, 5000);
+        assert_eq!(
+            cw.message,
+            "Cache miss: context was evicted, re-processing 5000 tokens"
+        );
     }
+    );
 }
 
 // ── UsageWarning ─────────────────────────────────────────────────────────
@@ -523,15 +549,15 @@ const USAGE_WARNING_FIXTURE: &str = r#"{
 #[test]
 fn usage_warning_golden() {
     let msg: ServerMessage = assert_golden(USAGE_WARNING_FIXTURE);
-    match msg {
-        ServerMessage::UsageWarning(w) => {
-            assert_eq!(w.rid.as_deref(), Some("msg_01"));
-            assert_eq!(w.budget, "daily total");
-            assert_eq!(w.period, "day");
-            assert_eq!(w.crossed_warn_at, vec![0.8]);
-        }
-        other => panic!("expected UsageWarning, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::UsageWarning(w) => {
+        assert_eq!(w.rid.as_deref(), Some("msg_01"));
+        assert_eq!(w.budget, "daily total");
+        assert_eq!(w.period, "day");
+        assert_eq!(w.crossed_warn_at, vec![0.8]);
     }
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -548,14 +574,14 @@ const CLIENT_HELLO_FIXTURE: &str = r#"{
 #[test]
 fn client_hello_golden() {
     let msg: ClientMessage = assert_golden(CLIENT_HELLO_FIXTURE);
-    match msg {
-        ClientMessage::Hello(h) => {
-            assert_eq!(h.client_type, "tui");
-            assert_eq!(h.client_name, "shore-tui");
-            assert_eq!(h.capabilities, vec!["streaming", "images"]);
-        }
-        other => panic!("expected Hello, got {other:?}"),
+    assert_variant!(
+    msg,
+    ClientMessage::Hello(h) => {
+        assert_eq!(h.client_type, "tui");
+        assert_eq!(h.client_name, "shore-tui");
+        assert_eq!(h.capabilities, vec!["streaming", "images"]);
     }
+    );
 }
 
 const CLIENT_MESSAGE_FIXTURE: &str = r#"{
@@ -569,16 +595,16 @@ const CLIENT_MESSAGE_FIXTURE: &str = r#"{
 #[test]
 fn client_message_golden() {
     let msg: ClientMessage = assert_golden(CLIENT_MESSAGE_FIXTURE);
-    match msg {
-        ClientMessage::Message(m) => {
-            assert_eq!(m.rid.as_deref(), Some("req_001"));
-            assert_eq!(m.text, "Tell me about Rust");
-            assert!(m.stream);
-            assert_eq!(m.images, vec!["/tmp/screenshot.png"]);
-            assert_eq!(m.absence_seconds, None);
-        }
-        other => panic!("expected Message, got {other:?}"),
+    assert_variant!(
+    msg,
+    ClientMessage::Message(m) => {
+        assert_eq!(m.rid.as_deref(), Some("req_001"));
+        assert_eq!(m.text, "Tell me about Rust");
+        assert!(m.stream);
+        assert_eq!(m.images, vec!["/tmp/screenshot.png"]);
+        assert_eq!(m.absence_seconds, None);
     }
+    );
 }
 
 const CLIENT_REGEN_FIXTURE: &str = r#"{
@@ -591,14 +617,14 @@ const CLIENT_REGEN_FIXTURE: &str = r#"{
 #[test]
 fn client_regen_golden() {
     let msg: ClientMessage = assert_golden(CLIENT_REGEN_FIXTURE);
-    match msg {
-        ClientMessage::Regen(r) => {
-            assert_eq!(r.rid.as_deref(), Some("req_002"));
-            assert!(r.stream);
-            assert_eq!(r.guidance.as_deref(), Some("Be more concise"));
-        }
-        other => panic!("expected Regen, got {other:?}"),
+    assert_variant!(
+    msg,
+    ClientMessage::Regen(r) => {
+        assert_eq!(r.rid.as_deref(), Some("req_002"));
+        assert!(r.stream);
+        assert_eq!(r.guidance.as_deref(), Some("Be more concise"));
     }
+    );
 }
 
 const CLIENT_COMMAND_FIXTURE: &str = r#"{
@@ -611,16 +637,16 @@ const CLIENT_COMMAND_FIXTURE: &str = r#"{
 #[test]
 fn client_command_golden() {
     let msg: ClientMessage = assert_golden(CLIENT_COMMAND_FIXTURE);
-    match msg {
-        ClientMessage::Command(c) => {
-            assert_eq!(c.rid.as_deref(), Some("req_003"));
-            assert_eq!(c.name, "switch_character");
-            assert!(c.args.is_object());
-            assert_eq!(c.args["character"], "alice");
-            assert_eq!(c.args["greeting"], true);
-        }
-        other => panic!("expected Command, got {other:?}"),
+    assert_variant!(
+    msg,
+    ClientMessage::Command(c) => {
+        assert_eq!(c.rid.as_deref(), Some("req_003"));
+        assert_eq!(c.name, "switch_character");
+        assert!(c.args.is_object());
+        assert_eq!(field(&c.args, "character"), "alice");
+        assert_eq!(field(&c.args, "greeting"), true);
     }
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -648,10 +674,13 @@ fn message_object_golden() {
     assert_eq!(msg.role, Role::Assistant);
     assert_eq!(msg.content, "Here is the analysis.");
     assert_eq!(msg.images.len(), 2);
-    assert_eq!(msg.images[0].path, "/img/chart.png");
-    assert_eq!(msg.images[0].caption.as_deref(), Some("Revenue chart"));
-    assert_eq!(msg.images[1].path, "/img/table.png");
-    assert_eq!(msg.images[1].caption, None);
+    assert_eq!(item(&msg.images, 0).path, "/img/chart.png");
+    assert_eq!(
+        item(&msg.images, 0).caption.as_deref(),
+        Some("Revenue chart")
+    );
+    assert_eq!(item(&msg.images, 1).path, "/img/table.png");
+    assert_eq!(item(&msg.images, 1).caption, None);
     assert_eq!(msg.alt_index, Some(2));
     assert_eq!(msg.alt_count, Some(4));
     assert_eq!(msg.timestamp, "2026-03-15T14:22:00Z");
@@ -698,13 +727,13 @@ fn server_hello_unknown_fields_ignored() {
         "future_feature": 42
     }"#;
     let msg: ServerMessage = serde_json::from_str(fixture).expect("unknown fields ignored");
-    match msg {
-        ServerMessage::Hello(h) => {
-            assert_eq!(h.v, 1);
-            assert_eq!(h.server_name, "shore-daemon");
-        }
-        other => panic!("expected Hello, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::Hello(h) => {
+        assert_eq!(h.v, 1);
+        assert_eq!(h.server_name, "shore-daemon");
     }
+    );
 }
 
 #[test]
@@ -717,13 +746,13 @@ fn client_message_unknown_fields_ignored() {
         "new_field_v2": {"nested": true}
     }"#;
     let msg: ClientMessage = serde_json::from_str(fixture).expect("unknown fields ignored");
-    match msg {
-        ClientMessage::Message(m) => {
-            assert_eq!(m.text, "Hi");
-            assert!(!m.stream);
-        }
-        other => panic!("expected Message, got {other:?}"),
+    assert_variant!(
+    msg,
+    ClientMessage::Message(m) => {
+        assert_eq!(m.text, "Hi");
+        assert!(!m.stream);
     }
+    );
 }
 
 #[test]
@@ -736,13 +765,13 @@ fn stream_chunk_unknown_fields_ignored() {
         "experimental": true
     }"#;
     let msg: ServerMessage = serde_json::from_str(fixture).expect("unknown fields ignored");
-    match msg {
-        ServerMessage::StreamChunk(c) => {
-            assert_eq!(c.text, "partial");
-            assert_eq!(c.content_type, "text");
-        }
-        other => panic!("expected StreamChunk, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::StreamChunk(c) => {
+        assert_eq!(c.text, "partial");
+        assert_eq!(c.content_type, "text");
     }
+    );
 }
 
 #[test]
@@ -756,13 +785,13 @@ fn tool_call_unknown_fields_ignored() {
         "metadata": {"source": "agent"}
     }"#;
     let msg: ServerMessage = serde_json::from_str(fixture).expect("unknown fields ignored");
-    match msg {
-        ServerMessage::ToolCall(tc) => {
-            assert_eq!(tc.tool_id, "tc_99");
-            assert_eq!(tc.tool_name, "future_tool");
-        }
-        other => panic!("expected ToolCall, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::ToolCall(tc) => {
+        assert_eq!(tc.tool_id, "tc_99");
+        assert_eq!(tc.tool_name, "future_tool");
     }
+    );
 }
 
 #[test]
@@ -832,24 +861,24 @@ fn stream_chunk_missing_content_type_defaults_to_text() {
         "text": "partial output"
     }"#;
     let msg: ServerMessage = serde_json::from_str(fixture).expect("missing content_type");
-    match msg {
-        ServerMessage::StreamChunk(c) => {
-            assert_eq!(c.content_type, "text"); // default
-        }
-        other => panic!("expected StreamChunk, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::StreamChunk(c) => {
+        assert_eq!(c.content_type, "text"); // default
     }
+    );
 }
 
 #[test]
 fn stream_start_missing_regen_defaults_to_false() {
     let fixture = r#"{"type": "stream_start"}"#;
     let msg: ServerMessage = serde_json::from_str(fixture).expect("missing regen");
-    match msg {
-        ServerMessage::StreamStart(s) => {
-            assert!(!s.regen); // default false
-        }
-        other => panic!("expected StreamStart, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::StreamStart(s) => {
+        assert!(!s.regen); // default false
     }
+    );
 }
 
 #[test]
@@ -860,12 +889,12 @@ fn client_hello_missing_capabilities_defaults_to_empty() {
         "client_name": "shore-cli"
     }"#;
     let msg: ClientMessage = serde_json::from_str(fixture).expect("missing capabilities");
-    match msg {
-        ClientMessage::Hello(h) => {
-            assert!(h.capabilities.is_empty());
-        }
-        other => panic!("expected Hello, got {other:?}"),
+    assert_variant!(
+    msg,
+    ClientMessage::Hello(h) => {
+        assert!(h.capabilities.is_empty());
     }
+    );
 }
 
 #[test]
@@ -875,15 +904,15 @@ fn client_message_missing_optionals() {
         "text": "hello"
     }"#;
     let msg: ClientMessage = serde_json::from_str(fixture).expect("missing optionals");
-    match msg {
-        ClientMessage::Message(m) => {
-            assert_eq!(m.rid, None);
-            assert!(!m.stream); // default false
-            assert!(m.images.is_empty()); // default empty
-            assert_eq!(m.absence_seconds, None);
-        }
-        other => panic!("expected Message, got {other:?}"),
+    assert_variant!(
+    msg,
+    ClientMessage::Message(m) => {
+        assert_eq!(m.rid, None);
+        assert!(!m.stream); // default false
+        assert!(m.images.is_empty()); // default empty
+        assert_eq!(m.absence_seconds, None);
     }
+    );
 }
 
 #[test]
@@ -892,14 +921,14 @@ fn client_regen_missing_optionals() {
         "type": "regen"
     }"#;
     let msg: ClientMessage = serde_json::from_str(fixture).expect("missing optionals");
-    match msg {
-        ClientMessage::Regen(r) => {
-            assert_eq!(r.rid, None);
-            assert!(!r.stream);
-            assert_eq!(r.guidance, None);
-        }
-        other => panic!("expected Regen, got {other:?}"),
+    assert_variant!(
+    msg,
+    ClientMessage::Regen(r) => {
+        assert_eq!(r.rid, None);
+        assert!(!r.stream);
+        assert_eq!(r.guidance, None);
     }
+    );
 }
 
 #[test]
@@ -910,12 +939,12 @@ fn server_hello_missing_characters_defaults_to_empty() {
         "server_name": "shore-daemon"
     }"#;
     let msg: ServerMessage = serde_json::from_str(fixture).expect("missing characters");
-    match msg {
-        ServerMessage::Hello(h) => {
-            assert!(h.characters.is_empty());
-        }
-        other => panic!("expected Hello, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::Hello(h) => {
+        assert!(h.characters.is_empty());
     }
+    );
 }
 
 #[test]
@@ -925,13 +954,13 @@ fn phase_missing_model() {
         "phase": "text_generation"
     }"#;
     let msg: ServerMessage = serde_json::from_str(fixture).expect("missing model");
-    match msg {
-        ServerMessage::Phase(p) => {
-            assert_eq!(p.phase, "text_generation");
-            assert_eq!(p.model, None);
-        }
-        other => panic!("expected Phase, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::Phase(p) => {
+        assert_eq!(p.phase, "text_generation");
+        assert_eq!(p.model, None);
     }
+    );
 }
 
 #[test]
@@ -941,14 +970,14 @@ fn send_image_missing_caption() {
         "path": "/tmp/img.png"
     }"#;
     let msg: ServerMessage = serde_json::from_str(fixture).expect("missing caption");
-    match msg {
-        ServerMessage::SendImage(si) => {
-            assert_eq!(si.rid, None);
-            assert_eq!(si.path, "/tmp/img.png");
-            assert_eq!(si.caption, None);
-        }
-        other => panic!("expected SendImage, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::SendImage(si) => {
+        assert_eq!(si.rid, None);
+        assert_eq!(si.path, "/tmp/img.png");
+        assert_eq!(si.caption, None);
     }
+    );
 }
 
 #[test]
@@ -960,13 +989,13 @@ fn tool_result_missing_is_error_defaults_to_false() {
         "output": "results"
     }"#;
     let msg: ServerMessage = serde_json::from_str(fixture).expect("missing is_error");
-    match msg {
-        ServerMessage::ToolResult(tr) => {
-            assert_eq!(tr.rid, None);
-            assert!(!tr.is_error);
-        }
-        other => panic!("expected ToolResult, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::ToolResult(tr) => {
+        assert_eq!(tr.rid, None);
+        assert!(!tr.is_error);
     }
+    );
 }
 
 #[test]
@@ -999,7 +1028,16 @@ fn request_scoped_server_messages_missing_rid_default_to_none() {
             ServerMessage::ToolCall(msg) => assert_eq!(msg.rid, None),
             ServerMessage::ToolResult(msg) => assert_eq!(msg.rid, None),
             ServerMessage::SendImage(msg) => assert_eq!(msg.rid, None),
-            other => panic!("unexpected message for missing rid test: {other:?}"),
+            ServerMessage::Hello(_)
+            | ServerMessage::History(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_) => {
+                panic!("unexpected message for missing rid test");
+            }
         }
     }
 }
@@ -1018,29 +1056,29 @@ fn protocol_version_mismatch_produces_error() {
         "characters": []
     }"#;
     let msg: ServerMessage = serde_json::from_str(fixture).expect("deserializes fine");
-    match msg {
-        ServerMessage::Hello(h) => {
-            assert_ne!(h.v, SWP_V1);
-            // In a real client, this mismatch would produce a ProtocolError.
-            // Verify the error type serializes correctly.
-            let err = ServerMessage::Error(Error {
-                rid: None,
-                code: ErrorCode::ProtocolError,
-                message: format!(
-                    "protocol version mismatch: expected {}, got {}",
-                    SWP_V1, h.v
-                ),
-            });
-            let json = serde_json::to_value(&err).unwrap();
-            assert_eq!(json["type"], "error");
-            assert_eq!(json["code"], "protocol_error");
-            assert!(json["message"]
-                .as_str()
-                .unwrap()
-                .contains("protocol version mismatch"));
-        }
-        other => panic!("expected Hello, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::Hello(h) => {
+        assert_ne!(h.v, SWP_V1);
+        // In a real client, this mismatch would produce a ProtocolError.
+        // Verify the error type serializes correctly.
+        let err = ServerMessage::Error(Error {
+            rid: None,
+            code: ErrorCode::ProtocolError,
+            message: format!(
+                "protocol version mismatch: expected {}, got {}",
+                SWP_V1, h.v
+            ),
+        });
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(field(&json, "type"), "error");
+        assert_eq!(field(&json, "code"), "protocol_error");
+        assert!(field(&json, "message")
+            .as_str()
+            .unwrap()
+            .contains("protocol version mismatch"));
     }
+    );
 }
 
 #[test]
@@ -1051,13 +1089,13 @@ fn protocol_error_code_golden() {
         "message": "unsupported protocol version"
     }"#;
     let msg: ServerMessage = assert_golden(fixture);
-    match msg {
-        ServerMessage::Error(e) => {
-            assert_eq!(e.code, ErrorCode::ProtocolError);
-            assert_eq!(e.message, "unsupported protocol version");
-        }
-        other => panic!("expected Error, got {other:?}"),
+    assert_variant!(
+    msg,
+    ServerMessage::Error(e) => {
+        assert_eq!(e.code, ErrorCode::ProtocolError);
+        assert_eq!(e.message, "unsupported protocol version");
     }
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1078,15 +1116,15 @@ fn all_error_codes_golden() {
     for (json_str, expected_code) in cases {
         let fixture = format!(r#"{{"type": "error", "code": "{json_str}", "message": "test"}}"#);
         let msg: ServerMessage = serde_json::from_str(&fixture).expect("error code deserializes");
-        match msg {
+        assert_variant!(
+            msg,
             ServerMessage::Error(e) => {
                 assert_eq!(e.code, expected_code);
                 // Re-serialize and check code string
                 let json = serde_json::to_value(&e.code).unwrap();
                 assert_eq!(json.as_str().unwrap(), json_str);
             }
-            other => panic!("expected Error, got {other:?}"),
-        }
+        );
     }
 }
 

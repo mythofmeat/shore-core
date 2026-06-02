@@ -31,6 +31,7 @@ const CMD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Boots a real daemon in-process with a mock LLM backend and provides
 /// a connected SWP client with send/collect helpers.
+#[derive(Debug)]
 pub struct TestHarness {
     pub conn: SWPConnection,
     pub mock_llm: MockLlmSidecar,
@@ -129,7 +130,7 @@ impl TestHarness {
             push_tx.clone(),
             config.clone(),
         )));
-        server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
+        server.set_handshake_provider(build_handshake_provider(Arc::clone(&char_registry)));
 
         // ── Autonomy Manager ──────────────────────────────────────────
         let mut autonomy = AutonomyManager::new(
@@ -142,7 +143,7 @@ impl TestHarness {
         // ── Ledger-wrapped LLM Client ────────────────────────────────
         let mut raw_llm_client = LlmClient::new();
         if config.app.advanced.api_payload_logging {
-            std::fs::create_dir_all(&config.dirs.cache).ok();
+            let _ignored = std::fs::create_dir_all(&config.dirs.cache).ok();
             raw_llm_client.set_payload_log_dir(config.dirs.cache.clone());
         }
         raw_llm_client.set_sidecar_socket(mock_llm.socket_path().to_path_buf());
@@ -162,7 +163,7 @@ impl TestHarness {
             config.clone(),
             notifier.clone(),
         );
-        autonomy.set_registry(char_registry.clone());
+        autonomy.set_registry(Arc::clone(&char_registry));
 
         // ── Command Context ──────────────────────────────────────────
         let diagnostics = Arc::new(std::sync::Mutex::new(
@@ -179,7 +180,7 @@ impl TestHarness {
             session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy: autonomy.clone(),
             llm_client: llm_client.clone(),
-            diagnostics: diagnostics.clone(),
+            diagnostics: Arc::clone(&diagnostics),
         };
 
         // Clone for storage in TestHarness (before ownership is moved into msg_handler).
@@ -339,7 +340,7 @@ impl TestHarness {
     /// Enqueues nothing on the mock — caller must call `mock_llm.enqueue_text()`
     /// (or similar) before calling this method.
     pub async fn send_and_collect(&mut self, text: &str) -> CollectedResponse {
-        fail_fast(
+        let _ignored = fail_fast(
             self.conn.send_message(text, true).await,
             "failed to send message",
         );
@@ -349,7 +350,8 @@ impl TestHarness {
     /// Collect server messages until `StreamEnd` or `Error`, with a 30s timeout.
     pub async fn collect_stream(&mut self) -> CollectedResponse {
         let mut collected = CollectedResponse::new();
-        let deadline = tokio::time::Instant::now() + COLLECT_TIMEOUT;
+        let now = tokio::time::Instant::now();
+        let deadline = now.checked_add(COLLECT_TIMEOUT).unwrap_or(now);
 
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -386,13 +388,14 @@ impl TestHarness {
         cmd: &str,
         args: serde_json::Value,
     ) -> Vec<ServerMessage> {
-        fail_fast(
+        let _ignored = fail_fast(
             self.conn.send_command(cmd, args).await,
             "failed to send command",
         );
 
         let mut messages = Vec::new();
-        let deadline = tokio::time::Instant::now() + CMD_TIMEOUT;
+        let now = tokio::time::Instant::now();
+        let deadline = now.checked_add(CMD_TIMEOUT).unwrap_or(now);
 
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -532,10 +535,11 @@ impl TestHarness {
         cmd: &str,
         args: serde_json::Value,
     ) -> Vec<ServerMessage> {
-        fail_fast(conn.send_command(cmd, args).await, "failed to send command");
+        let _ignored = fail_fast(conn.send_command(cmd, args).await, "failed to send command");
 
         let mut messages = Vec::new();
-        let deadline = tokio::time::Instant::now() + CMD_TIMEOUT;
+        let now = tokio::time::Instant::now();
+        let deadline = now.checked_add(CMD_TIMEOUT).unwrap_or(now);
 
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -561,9 +565,9 @@ impl TestHarness {
 
     /// Graceful shutdown: signal the server and handler, then await both tasks.
     pub async fn shutdown(self) {
-        let _ = self.shutdown_tx.send(());
-        let _ = self.server_handle.await;
-        let _ = self.handler_handle.await;
+        let _ignored = self.shutdown_tx.send(());
+        let _ignored = self.server_handle.await;
+        let _ignored = self.handler_handle.await;
     }
 }
 

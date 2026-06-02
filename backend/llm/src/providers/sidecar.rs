@@ -42,7 +42,7 @@ pub(crate) async fn stream(
     let response = check_response(response).await?;
 
     let (mut writer, reader) = tokio::io::duplex(64 * 1024);
-    tokio::spawn(async move {
+    let _stream_pump = tokio::spawn(async move {
         let mut body = response.bytes_stream();
         while let Some(next) = body.next().await {
             match next {
@@ -143,6 +143,15 @@ impl<'a> From<&'a ImageGenerateParams<'a>> for SidecarImageRequest<'a> {
 }
 
 #[cfg(all(test, unix))]
+#[expect(
+    clippy::panic_in_result_fn,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::wildcard_enum_match_arm,
+    clippy::let_underscore_must_use,
+    unused_results,
+    reason = "test scaffolding: a hand-rolled HTTP-over-Unix-socket harness with asserts in `?`-returning tests; the panic/indexing/arithmetic lints are the test-exemption equivalent of clippy.toml's allow-unwrap/expect/panic-in-tests"
+)]
 mod tests {
     use super::*;
     use std::io;

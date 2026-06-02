@@ -1,4 +1,7 @@
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "property-test strategies and assertions intentionally fail fast on invalid generated fixtures"
+)]
 
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -286,7 +289,10 @@ fn arb_character_info() -> impl Strategy<Value = CharacterInfo> {
         .prop_map(|(name, avatar)| CharacterInfo { name, avatar })
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "single server-message strategy keeps variant coverage visible in one property-test generator"
+)]
 fn arb_server_message() -> BoxedStrategy<ServerMessage> {
     prop_oneof![
         (
@@ -516,8 +522,10 @@ fn assert_json_line_round_trip<T>(msg: &T) -> Result<(), TestCaseError>
 where
     T: Serialize + DeserializeOwned,
 {
-    let expected = serde_json::to_value(msg).expect("message serializes to JSON");
-    let mut frame = serde_json::to_vec(msg).expect("message serializes to bytes");
+    let expected = serde_json::to_value(msg)
+        .map_err(|e| TestCaseError::fail(format!("message serializes to JSON: {e}")))?;
+    let mut frame = serde_json::to_vec(msg)
+        .map_err(|e| TestCaseError::fail(format!("message serializes to bytes: {e}")))?;
 
     prop_assert!(
         !frame.contains(&b'\n'),
@@ -526,9 +534,13 @@ where
     frame.push(b'\n');
     prop_assert_eq!(frame.last().copied(), Some(b'\n'), "SWP frame is delimited");
 
-    let line = frame.strip_suffix(b"\n").expect("frame has delimiter");
-    let parsed: T = serde_json::from_slice(line).expect("frame parses");
-    let actual = serde_json::to_value(parsed).expect("parsed message serializes");
+    let Some(line) = frame.strip_suffix(b"\n") else {
+        return Err(TestCaseError::fail("frame has delimiter"));
+    };
+    let parsed: T = serde_json::from_slice(line)
+        .map_err(|e| TestCaseError::fail(format!("frame parses: {e}")))?;
+    let actual = serde_json::to_value(parsed)
+        .map_err(|e| TestCaseError::fail(format!("parsed message serializes: {e}")))?;
     prop_assert_eq!(actual, expected);
     Ok(())
 }
