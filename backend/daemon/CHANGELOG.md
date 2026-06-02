@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [11.0.2](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v11.0.1...shore-daemon-v11.0.2) - 2026-06-02
+
+### Other
+
+- Resolve provider:model_id without discovery ([#136](https://github.com/mythofmeat/shore-core/pull/136)) ([#141](https://github.com/mythofmeat/shore-core/pull/141))
+
 ## [11.0.1](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v11.0.0...shore-daemon-v11.0.1) - 2026-06-02
 
 ### Other

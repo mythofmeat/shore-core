@@ -1982,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "shore-daemon"
-version = "11.0.1"
+version = "11.0.2"
 dependencies = [
  "async-trait",
  "base64",
