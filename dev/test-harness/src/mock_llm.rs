@@ -20,6 +20,7 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 // ── ContentBlock ─────────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 enum ContentBlock {
     Text(String),
     Thinking {
@@ -38,6 +39,7 @@ enum ContentBlock {
 
 // ── AnthropicStreamBuilder ───────────────────────────────────────────────────
 
+#[derive(Debug)]
 #[must_use]
 pub struct AnthropicStreamBuilder {
     content_blocks: Vec<ContentBlock>,
@@ -125,21 +127,22 @@ impl AnthropicStreamBuilder {
         let mut out = String::new();
         let mut content = String::new();
 
-        let _ = writeln!(out, "{}", json!({"type": "start", "model": self.model}));
+        let _ignored = writeln!(out, "{}", json!({"type": "start", "model": self.model}));
 
         for block in self.content_blocks {
             match block {
                 ContentBlock::Text(text) => {
                     content.push_str(&text);
-                    let _ = writeln!(out, "{}", json!({"type": "text", "text": text}));
+                    let _ignored = writeln!(out, "{}", json!({"type": "text", "text": text}));
                 }
                 ContentBlock::Thinking {
                     thinking,
                     signature,
                 } => {
-                    let _ = writeln!(out, "{}", json!({"type": "thinking", "text": thinking}));
+                    let _ignored =
+                        writeln!(out, "{}", json!({"type": "thinking", "text": thinking}));
                     if let Some(signature) = signature {
-                        let _ = writeln!(
+                        let _ignored = writeln!(
                             out,
                             "{}",
                             json!({"type": "thinking_signature", "signature": signature})
@@ -147,14 +150,14 @@ impl AnthropicStreamBuilder {
                     }
                 }
                 ContentBlock::RedactedThinking { data } => {
-                    let _ = writeln!(
+                    let _ignored = writeln!(
                         out,
                         "{}",
                         json!({"type": "redacted_thinking", "data": data})
                     );
                 }
                 ContentBlock::ToolUse { id, name, input } => {
-                    let _ = writeln!(
+                    let _ignored = writeln!(
                         out,
                         "{}",
                         json!({"type": "tool_use", "id": id, "name": name, "input": input})
@@ -163,7 +166,7 @@ impl AnthropicStreamBuilder {
             }
         }
 
-        let _ = writeln!(
+        let _ignored = writeln!(
             out,
             "{}",
             json!({
@@ -197,6 +200,7 @@ impl Default for AnthropicStreamBuilder {
 
 /// Build normalized sidecar `GenerateResponse` bodies for tests that need
 /// structured thinking/redacted-thinking blocks.
+#[derive(Debug)]
 #[must_use]
 pub struct AnthropicJsonBuilder {
     content_blocks: Vec<ContentBlock>,
@@ -273,6 +277,10 @@ impl AnthropicJsonBuilder {
         self
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "serde_json index-assign on a Value literal we just built as an object"
+    )]
     pub fn build_sidecar_generate(self) -> Value {
         let content_blocks: Vec<Value> = self
             .content_blocks
@@ -406,7 +414,7 @@ impl QueuedSidecarResponse {
     fn ndjson(path: &'static str, events: Vec<Value>) -> Self {
         let mut body = String::new();
         for event in events {
-            let _ = writeln!(body, "{event}");
+            let _ignored = writeln!(body, "{event}");
         }
         Self {
             path,
@@ -457,6 +465,15 @@ pub struct MockLlmSidecar {
     responses: Arc<Mutex<VecDeque<QueuedSidecarResponse>>>,
     received: Arc<Mutex<Vec<(String, Value)>>>,
     task: JoinHandle<()>,
+}
+
+#[cfg(unix)]
+impl std::fmt::Debug for MockLlmSidecar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MockLlmSidecar")
+            .field("socket_path", &self.socket_path)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(unix)]
@@ -723,7 +740,7 @@ async fn run_mock_sidecar(
         let handle = tokio::spawn(async move {
             handle_mock_sidecar_connection(stream, responses, received).await;
         });
-        std::mem::drop(handle);
+        drop(handle);
     }
 }
 
@@ -762,10 +779,15 @@ async fn handle_mock_sidecar_connection(
             format!("invalid mock sidecar request: {e}"),
         ),
     };
-    let _ = write_http_response(&mut stream, response).await;
+    let _ignored = write_http_response(&mut stream, response).await;
 }
 
 #[cfg(unix)]
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "mock HTTP parser over a Unix socket; offsets are derived from the bytes just read"
+)]
 async fn read_http_request(stream: &mut UnixStream) -> io::Result<(String, String)> {
     let mut buf = Vec::new();
     let header_end = loop {

@@ -34,12 +34,12 @@ pub fn sanitize_tool_pairs(messages: &[Value]) -> Option<Vec<Value>> {
             match (role, ty) {
                 ("assistant", "tool_use") => {
                     if let Some(id) = block.get("id").and_then(|i| i.as_str()) {
-                        tool_use_ids.insert(id.to_string());
+                        let _ignored = tool_use_ids.insert(id.to_string());
                     }
                 }
                 ("user", "tool_result") => {
                     if let Some(id) = block.get("tool_use_id").and_then(|i| i.as_str()) {
-                        tool_result_ids.insert(id.to_string());
+                        let _ignored = tool_result_ids.insert(id.to_string());
                     }
                 }
                 _ => {}
@@ -91,7 +91,9 @@ pub fn sanitize_tool_pairs(messages: &[Value]) -> Option<Vec<Value>> {
         }
 
         let mut new_msg = msg.clone();
-        new_msg["content"] = Value::Array(kept);
+        if let Some(obj) = new_msg.as_object_mut() {
+            let _ignored = obj.insert("content".into(), Value::Array(kept));
+        }
         out.push(new_msg);
     }
 
@@ -102,6 +104,20 @@ pub fn sanitize_tool_pairs(messages: &[Value]) -> Option<Vec<Value>> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
+        value.get(key).expect("expected JSON field")
+    }
+
+    fn item<T>(items: &[T], index: usize) -> &T {
+        items.get(index).expect("expected item")
+    }
+
+    fn content_blocks(value: &Value) -> &[Value] {
+        field(value, "content")
+            .as_array()
+            .expect("expected content blocks")
+    }
 
     fn assistant_text(text: &str) -> Value {
         json!({
@@ -164,8 +180,14 @@ mod tests {
         ];
         let cleaned = sanitize_tool_pairs(&msgs).expect("should detect orphan");
         assert_eq!(cleaned.len(), 2);
-        assert_eq!(cleaned[0]["content"][0]["text"], "hi");
-        assert_eq!(cleaned[1]["content"][0]["text"], "ok");
+        assert_eq!(
+            field(item(content_blocks(item(&cleaned, 0)), 0), "text"),
+            "hi"
+        );
+        assert_eq!(
+            field(item(content_blocks(item(&cleaned, 1)), 0), "text"),
+            "ok"
+        );
     }
 
     #[test]
@@ -179,8 +201,14 @@ mod tests {
         ];
         let cleaned = sanitize_tool_pairs(&msgs).expect("should detect orphan");
         assert_eq!(cleaned.len(), 2);
-        assert_eq!(cleaned[0]["content"][0]["text"], "hi");
-        assert_eq!(cleaned[1]["content"][0]["text"], "never mind");
+        assert_eq!(
+            field(item(content_blocks(item(&cleaned, 0)), 0), "text"),
+            "hi"
+        );
+        assert_eq!(
+            field(item(content_blocks(item(&cleaned, 1)), 0), "text"),
+            "never mind"
+        );
     }
 
     #[test]
@@ -195,9 +223,10 @@ mod tests {
         let msgs = vec![msg];
         let cleaned = sanitize_tool_pairs(&msgs).expect("orphan present");
         assert_eq!(cleaned.len(), 1);
-        assert_eq!(cleaned[0]["content"].as_array().unwrap().len(), 1);
-        assert_eq!(cleaned[0]["content"][0]["type"], "text");
-        assert_eq!(cleaned[0]["content"][0]["text"], "actual question");
+        let blocks = content_blocks(item(&cleaned, 0));
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(field(item(blocks, 0), "type"), "text");
+        assert_eq!(field(item(blocks, 0), "text"), "actual question");
     }
 
     #[test]
@@ -212,8 +241,9 @@ mod tests {
         let msgs = vec![msg];
         let cleaned = sanitize_tool_pairs(&msgs).expect("orphan present");
         assert_eq!(cleaned.len(), 1);
-        assert_eq!(cleaned[0]["content"].as_array().unwrap().len(), 1);
-        assert_eq!(cleaned[0]["content"][0]["type"], "text");
+        let blocks = content_blocks(item(&cleaned, 0));
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(field(item(blocks, 0), "type"), "text");
     }
 
     #[test]
@@ -230,9 +260,9 @@ mod tests {
         ];
         let cleaned = sanitize_tool_pairs(&msgs).expect("orphan present");
         assert_eq!(cleaned.len(), 2);
-        let user_blocks = cleaned[1]["content"].as_array().unwrap();
+        let user_blocks = content_blocks(item(&cleaned, 1));
         assert_eq!(user_blocks.len(), 1);
-        assert_eq!(user_blocks[0]["tool_use_id"], "real_id");
+        assert_eq!(field(item(user_blocks, 0), "tool_use_id"), "real_id");
     }
 
     #[test]
@@ -260,7 +290,7 @@ mod tests {
         // String-content messages pass through; only the orphan-only user
         // message is dropped.
         assert_eq!(cleaned.len(), 2);
-        assert_eq!(cleaned[0]["content"], "hi");
-        assert_eq!(cleaned[1]["content"], "hello");
+        assert_eq!(field(item(&cleaned, 0), "content"), "hi");
+        assert_eq!(field(item(&cleaned, 1), "content"), "hello");
     }
 }

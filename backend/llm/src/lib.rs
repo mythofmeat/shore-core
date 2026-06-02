@@ -9,9 +9,26 @@
     clippy::unimplemented,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    clippy::as_conversions,
+    clippy::allow_attributes,
+    clippy::allow_attributes_without_reason,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn,
+    clippy::let_underscore_must_use,
+    clippy::clone_on_ref_ptr,
+    clippy::dbg_macro,
+    clippy::exit,
+    clippy::mem_forget,
+    clippy::match_wildcard_for_single_variants,
+    clippy::wildcard_enum_match_arm,
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::undocumented_unsafe_blocks,
+    unsafe_code,
+    elided_lifetimes_in_paths,
+    unused_qualifications
 )]
-
 pub mod cache_forensics;
 mod convert;
 pub mod credentials;
@@ -213,8 +230,7 @@ impl LlmClient {
         tools: Option<Vec<serde_json::Value>>,
         provider_options: Option<serde_json::Value>,
     ) -> Result<LlmRequest, LlmError> {
-        let candidates =
-            crate::credentials::resolve_key_candidates(&model.provider_key, registry, model);
+        let candidates = credentials::resolve_key_candidates(&model.provider_key, registry, model);
 
         if candidates.is_empty() {
             // Provider explicitly disabled — surface a recognizable error
@@ -224,9 +240,12 @@ impl LlmClient {
             });
         }
 
-        let mut last_env = candidates[0].env.clone();
+        let mut last_env = candidates
+            .first()
+            .map(|candidate| candidate.env.clone())
+            .unwrap_or_default();
         for cand in &candidates {
-            if let Some(api_key) = crate::credentials::read_candidate_env(cand) {
+            if let Some(api_key) = credentials::read_candidate_env(cand) {
                 let mut req = Self::build_request_with_resolved_key(
                     model,
                     api_key,
@@ -263,36 +282,36 @@ impl LlmClient {
         let opts = provider_options.unwrap_or_else(|| {
             let mut map = serde_json::Map::new();
             if let Some(ref effort) = model.reasoning_effort {
-                map.insert("reasoning_effort".into(), serde_json::json!(effort));
+                let _ignored = map.insert("reasoning_effort".into(), serde_json::json!(effort));
             }
             if let Some(budget) = model.budget_tokens {
-                map.insert("budget_tokens".into(), serde_json::json!(budget));
+                let _ignored = map.insert("budget_tokens".into(), serde_json::json!(budget));
             }
             if let Some(ref ttl) = model.cache_ttl {
-                map.insert("cache_ttl".into(), serde_json::json!(ttl));
+                let _ignored = map.insert("cache_ttl".into(), serde_json::json!(ttl));
             }
             if let Some(ref or_provider) = model.openrouter_provider {
                 if let Ok(val) = serde_json::to_value(or_provider) {
-                    map.insert("openrouter_provider".into(), val);
+                    let _ignored = map.insert("openrouter_provider".into(), val);
                 }
             }
             if let Some(ref project) = model.vertex_project {
-                map.insert("vertex_project".into(), serde_json::json!(project));
+                let _ignored = map.insert("vertex_project".into(), serde_json::json!(project));
             }
             if let Some(ref location) = model.vertex_location {
-                map.insert("vertex_location".into(), serde_json::json!(location));
+                let _ignored = map.insert("vertex_location".into(), serde_json::json!(location));
             }
             if let Some(gen) = model.gemini_generation {
-                map.insert("gemini_generation".into(), serde_json::json!(gen));
+                let _ignored = map.insert("gemini_generation".into(), serde_json::json!(gen));
             }
             if let Some(ws) = model.gemini_web_search {
-                map.insert("gemini_web_search".into(), serde_json::json!(ws));
+                let _ignored = map.insert("gemini_web_search".into(), serde_json::json!(ws));
             }
             if let Some(ct) = model.zai_clear_thinking {
-                map.insert("zai_clear_thinking".into(), serde_json::json!(ct));
+                let _ignored = map.insert("zai_clear_thinking".into(), serde_json::json!(ct));
             }
             if let Some(sub) = model.zai_subscription {
-                map.insert("zai_subscription".into(), serde_json::json!(sub));
+                let _ignored = map.insert("zai_subscription".into(), serde_json::json!(sub));
             }
             if map.is_empty() {
                 serde_json::Value::Null
@@ -468,6 +487,14 @@ pub fn requires_reasoning_replay(provider_key: &str) -> bool {
 mod tests {
     use super::*;
     use shore_config::models::{ResolvedModel, Sdk};
+
+    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+        value.get(key).expect("expected JSON field")
+    }
+
+    fn item<T>(items: &[T], index: usize) -> &T {
+        items.get(index).expect("expected item")
+    }
 
     /// Helper to build a minimal test ResolvedModel.
     fn test_model(name: &str, provider_key: &str, sdk: Sdk) -> ResolvedModel {
@@ -659,12 +686,10 @@ sdk = "openai"
             None,
         )
         .unwrap_err();
-        match err {
-            LlmError::MissingApiKey { var } => {
-                assert!(var.contains("openrouter"), "got {var}");
-            }
-            other => panic!("Expected MissingApiKey, got {other:?}"),
-        }
+        let LlmError::MissingApiKey { var } = err else {
+            panic!("Expected MissingApiKey");
+        };
+        assert!(var.contains("openrouter"), "got {var}");
     }
 
     #[test]
@@ -675,12 +700,10 @@ sdk = "openai"
         model.api_key_env = Some("NONEXISTENT_KEY_015".into());
 
         let err = LlmClient::build_request(&model, vec![], None, None, None).unwrap_err();
-        match err {
-            LlmError::MissingApiKey { var } => {
-                assert_eq!(var, "NONEXISTENT_KEY_015");
-            }
-            other => panic!("Expected MissingApiKey, got {other:?}"),
-        }
+        let LlmError::MissingApiKey { var } = err else {
+            panic!("Expected MissingApiKey");
+        };
+        assert_eq!(var, "NONEXISTENT_KEY_015");
     }
 
     #[test]
@@ -773,7 +796,7 @@ sdk = "openai"
             "content": "hi"
         })]);
         let out = preprocess_request(&req);
-        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(out, Cow::Borrowed(_)));
         assert_eq!(out.messages.len(), 1);
     }
 
@@ -791,9 +814,9 @@ sdk = "openai"
             }),
         ]);
         let out = preprocess_request(&req);
-        assert!(matches!(out, std::borrow::Cow::Owned(_)));
+        assert!(matches!(out, Cow::Owned(_)));
         // The orphan-only message is dropped entirely.
         assert_eq!(out.messages.len(), 1);
-        assert_eq!(out.messages[0]["content"], "hi");
+        assert_eq!(field(item(&out.messages, 0), "content"), "hi");
     }
 }

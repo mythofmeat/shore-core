@@ -42,6 +42,7 @@ pub enum HeartbeatAction {
 /// The character drives its own cadence via `schedule()`. The clock's job is
 /// to hold that deadline, apply bounds, and stop ticking when the user has
 /// been gone too long.
+#[derive(Debug)]
 pub struct HeartbeatClock {
     /// Next scheduled wake time. `None` means no wake is scheduled (first
     /// boot, or guard has tripped).
@@ -358,7 +359,7 @@ mod tests {
     fn tick_fires_after_default_interval() {
         let mut c = clock(60, 3);
         let now = Instant::now();
-        c.tick(now); // bootstrap
+        let _ignored = c.tick(now); // bootstrap
         assert_eq!(c.tick(now + secs(61)), HeartbeatAction::RunTick);
         assert_eq!(c.ticks_without_user, 1);
     }
@@ -367,7 +368,7 @@ mod tests {
     fn tick_does_not_fire_before_deadline() {
         let mut c = clock(60, 3);
         let now = Instant::now();
-        c.tick(now); // bootstrap
+        let _ignored = c.tick(now); // bootstrap
         assert_eq!(c.tick(now + secs(30)), HeartbeatAction::None);
     }
 
@@ -377,7 +378,7 @@ mod tests {
         // re-bootstrap with default_interval from the new anchor.
         let mut c = clock(60, 3);
         let now = Instant::now();
-        c.tick(now); // bootstrap
+        let _ignored = c.tick(now); // bootstrap
         let t1 = now + secs(61);
         assert_eq!(c.tick(t1), HeartbeatAction::RunTick);
         // next_wake_at is now None; next tick re-bootstraps.
@@ -393,7 +394,7 @@ mod tests {
         let mut c = clock(60, 2);
         let mut now = Instant::now();
 
-        c.tick(now); // bootstrap
+        let _ignored = c.tick(now); // bootstrap
 
         // Tick 1.
         now += secs(61);
@@ -401,13 +402,13 @@ mod tests {
 
         // Tick 2.
         now += secs(61);
-        c.tick(now); // bootstrap
+        let _ignored = c.tick(now); // bootstrap
         now += secs(61);
         assert_eq!(c.tick(now), HeartbeatAction::RunTick);
 
         // ticks_without_user is now 2 == max_idle. Next deadline: guard trips.
         now += secs(61);
-        c.tick(now); // bootstrap
+        let _ignored = c.tick(now); // bootstrap
         now += secs(61);
         assert_eq!(c.tick(now), HeartbeatAction::None);
         assert!(c.next_wake_at.is_none());
@@ -418,7 +419,7 @@ mod tests {
         let mut c = clock(60, 2);
         let mut now = Instant::now();
 
-        c.tick(now); // bootstrap
+        let _ignored = c.tick(now); // bootstrap
 
         now += secs(61);
         assert_eq!(c.tick(now), HeartbeatAction::RunTick); // tick 1
@@ -451,7 +452,7 @@ mod tests {
 
         // Bootstrap next deadline.
         let t2 = t1 + secs(1);
-        c.tick(t2);
+        let _ignored = c.tick(t2);
 
         // At 2h+1s past user message → silent guard trips.
         let t3 = now + secs(7201);
@@ -509,9 +510,9 @@ mod tests {
     fn user_message_resets_counter() {
         let mut c = clock(60, 3);
         let mut now = Instant::now();
-        c.tick(now);
+        let _ignored = c.tick(now);
         now += secs(61);
-        c.tick(now); // ticks_without_user = 1
+        let _ignored = c.tick(now); // ticks_without_user = 1
         assert_eq!(c.ticks_without_user, 1);
 
         c.on_user_message(now);
@@ -537,7 +538,7 @@ mod tests {
     fn user_message_pushes_imminent_deadline() {
         let mut c = clock(60, 3);
         let now = Instant::now();
-        c.tick(now); // bootstrap: deadline at now + 60s
+        let _ignored = c.tick(now); // bootstrap: deadline at now + 60s
 
         // User message at t+50s. The existing deadline (now+60) is only 10s
         // away, which is less than MIN_WAKE (1h), so on_user_message pushes
@@ -564,13 +565,13 @@ mod tests {
     fn user_message_wakes_from_abandoned() {
         let mut c = clock(60, 1);
         let mut now = Instant::now();
-        c.tick(now); // bootstrap
+        let _ignored = c.tick(now); // bootstrap
         now += secs(61);
-        c.tick(now); // tick 1
+        let _ignored = c.tick(now); // tick 1
 
         // Bootstrap and trip the guard.
         now += secs(61);
-        c.tick(now); // bootstrap
+        let _ignored = c.tick(now); // bootstrap
         now += secs(61);
         assert_eq!(c.tick(now), HeartbeatAction::None); // guard trips
         assert!(c.next_wake_at.is_none());
@@ -619,13 +620,13 @@ mod tests {
     fn state_label_dormant_when_tick_guard_tripped() {
         let mut c = clock(60, 1);
         let mut now = Instant::now();
-        c.tick(now); // bootstrap
+        let _ignored = c.tick(now); // bootstrap
         now += secs(61);
-        c.tick(now); // tick 1
+        let _ignored = c.tick(now); // tick 1
         now += secs(61);
-        c.tick(now); // bootstrap
+        let _ignored = c.tick(now); // bootstrap
         now += secs(61);
-        c.tick(now); // guard trips
+        let _ignored = c.tick(now); // guard trips
         assert_eq!(c.state_at(now), "Dormant");
     }
 
@@ -641,7 +642,7 @@ mod tests {
         assert_eq!(c.tick(t1), HeartbeatAction::RunTick);
 
         let t2 = t1 + secs(1);
-        c.tick(t2);
+        let _ignored = c.tick(t2);
 
         let t3 = now + secs(7201);
         assert_eq!(c.tick(t3), HeartbeatAction::None);

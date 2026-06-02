@@ -140,7 +140,7 @@ mod tests {
         let mut catalog: BTreeMap<String, toml::Value> = BTreeMap::new();
         let entry: toml::Value =
             toml::from_str("provider = \"local\"\nmodel_id = \"bge-small-en-v1.5\"\n").unwrap();
-        catalog.insert("x".into(), entry);
+        let _ignored = catalog.insert("x".into(), entry);
         let http = reqwest::Client::new();
         let err = resolve_error(Some("x"), &catalog, &http);
         assert!(
@@ -158,7 +158,7 @@ mod tests {
             "model_id = \"text-embedding-3-small\"\napi_key_env = \"{api_key_env}\"\ndimensions = -1\n"
         ))
         .unwrap();
-        catalog.insert("x".into(), entry);
+        let _ignored = catalog.insert("x".into(), entry);
         let http = reqwest::Client::new();
         let err = resolve_error(Some("x"), &catalog, &http);
         std::env::remove_var(api_key_env);

@@ -72,19 +72,26 @@ impl CronSchedule {
             )));
         }
 
+        let [minute, hour, day_of_month, month, day_of_week] = parts.as_slice() else {
+            return Err(CronError::new(format!(
+                "expected five fields (minute hour day-of-month month day-of-week), got {}",
+                parts.len()
+            )));
+        };
+
         let schedule = Self {
-            minute: CronField::parse(parts[0], FieldSpec::minute())?,
-            hour: CronField::parse(parts[1], FieldSpec::hour())?,
-            day_of_month: CronField::parse(parts[2], FieldSpec::day_of_month())?,
-            month: CronField::parse(parts[3], FieldSpec::month())?,
-            day_of_week: CronField::parse(parts[4], FieldSpec::day_of_week())?,
+            minute: CronField::parse(minute, FieldSpec::minute())?,
+            hour: CronField::parse(hour, FieldSpec::hour())?,
+            day_of_month: CronField::parse(day_of_month, FieldSpec::day_of_month())?,
+            month: CronField::parse(month, FieldSpec::month())?,
+            day_of_week: CronField::parse(day_of_week, FieldSpec::day_of_week())?,
         };
         schedule.validate_calendar_match()?;
         Ok(schedule)
     }
 
     pub fn next_after(&self, after: DateTime<Local>) -> Option<DateTime<Local>> {
-        let cursor = floor_to_minute(after) + Duration::minutes(1);
+        let cursor = floor_to_minute(after).checked_add_signed(Duration::minutes(1))?;
         let cursor_date = cursor.date_naive();
         let mut date = cursor_date;
 
@@ -362,14 +369,17 @@ fn parse_list_item(
     if let Some(step) = step {
         insert_range(values, spec, start, spec.max, step);
     } else {
-        values.insert(spec.normalize(start));
+        let _ignored = values.insert(spec.normalize(start));
     }
     Ok(())
 }
 
 fn insert_range(values: &mut BTreeSet<u32>, spec: FieldSpec, start: u32, end: u32, step: u32) {
-    for value in (start..=end).step_by(step as usize) {
-        values.insert(spec.normalize(value));
+    let Ok(step) = usize::try_from(step) else {
+        return;
+    };
+    for value in (start..=end).step_by(step) {
+        let _ignored = values.insert(spec.normalize(value));
     }
 }
 

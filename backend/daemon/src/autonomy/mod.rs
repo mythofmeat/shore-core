@@ -160,14 +160,14 @@ impl HeartbeatLog {
             match serde_json::from_str::<HeartbeatEvent>(line) {
                 Ok(event) => {
                     if events.len() >= HEARTBEAT_LOG_CAPACITY {
-                        events.pop_front();
+                        let _ignored = events.pop_front();
                     }
                     events.push_back(event);
                 }
                 Err(e) => {
                     warn!(
                         path = %path.display(),
-                        line = idx + 1,
+                        line = idx.saturating_add(1),
                         error = %e,
                         "Skipping malformed heartbeat log line"
                     );
@@ -183,7 +183,7 @@ impl HeartbeatLog {
 
     pub fn push(&mut self, kind: HeartbeatEventKind, detail: impl Into<String>) {
         if self.events.len() >= HEARTBEAT_LOG_CAPACITY {
-            self.events.pop_front();
+            let _ignored = self.events.pop_front();
         }
         self.events.push_back(HeartbeatEvent {
             timestamp: chrono::Local::now().to_rfc3339(),
@@ -229,7 +229,7 @@ impl HeartbeatLog {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut buf = String::with_capacity(self.events.len() * 96);
+        let mut buf = String::with_capacity(self.events.len().saturating_mul(96));
         for event in &self.events {
             let line = serde_json::to_string(event)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -243,25 +243,13 @@ impl HeartbeatLog {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Cache TTL parsing (shared between handler and heartbeat)
-// ---------------------------------------------------------------------------
-
-/// Parse a `cache_ttl` duration string (e.g. `"1h"`, `"5m"`) into seconds.
-pub fn parse_cache_ttl_secs(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if let Some(h) = s.strip_suffix('h') {
-        h.parse::<u64>().ok().map(|v| v * 3600)
-    } else if let Some(m) = s.strip_suffix('m') {
-        m.parse::<u64>().ok().map(|v| v * 60)
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod heartbeat_log_tests {
     use super::*;
+
+    fn item<T>(values: &[T], index: usize) -> &T {
+        values.get(index).expect("value item")
+    }
 
     #[test]
     fn push_marks_dirty_but_does_not_write() {
@@ -286,8 +274,8 @@ mod heartbeat_log_tests {
         let contents = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<_> = contents.lines().collect();
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("tick_fired"));
-        assert!(lines[1].contains("message_sent"));
+        assert!(item(&lines, 0).contains("tick_fired"));
+        assert!(item(&lines, 1).contains("message_sent"));
     }
 
     #[test]
@@ -312,8 +300,8 @@ mod heartbeat_log_tests {
         assert!(!loaded.is_dirty());
         let events: Vec<_> = loaded.recent(10).into_iter().cloned().collect();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].detail, "a");
-        assert_eq!(events[1].detail, "b");
+        assert_eq!(item(&events, 0).detail, "a");
+        assert_eq!(item(&events, 1).detail, "b");
     }
 
     #[test]
@@ -343,7 +331,7 @@ mod heartbeat_log_tests {
             detail: "x".to_string(),
         };
         let line = serde_json::to_string(&event).unwrap();
-        let contents = (0..HEARTBEAT_LOG_CAPACITY + 50)
+        let contents = (0..HEARTBEAT_LOG_CAPACITY.saturating_add(50))
             .map(|_| line.clone())
             .collect::<Vec<_>>()
             .join("\n");
@@ -376,6 +364,6 @@ mod heartbeat_log_tests {
             .map(String::from)
             .collect();
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("wake"));
+        assert!(item(&lines, 0).contains("wake"));
     }
 }

@@ -57,7 +57,7 @@ async fn test_compaction_triggers_on_max_turns() {
 
     // Ensure all 3 turns (6 messages) are persisted before compaction snapshots
     // the transcript; if a turn is still in flight it sees < max_turns and skips.
-    wait_for_persisted_messages(
+    let _ignored = wait_for_persisted_messages(
         &harness,
         |m| m.len() >= 6,
         "3 turns to persist before compaction",
@@ -116,7 +116,7 @@ async fn test_compaction_keeps_recent_turns() {
     }
 
     // Ensure all 4 turns (8 messages) are persisted before compaction snapshots.
-    wait_for_persisted_messages(
+    let _ignored = wait_for_persisted_messages(
         &harness,
         |m| m.len() >= 8,
         "4 turns to persist before compaction",
@@ -146,7 +146,7 @@ async fn test_compaction_keeps_recent_turns() {
     // The last 2 user messages must still be present.
     let raw = messages
         .iter()
-        .map(std::string::ToString::to_string)
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -167,7 +167,7 @@ async fn test_messages_still_work_after_compaction() {
     send_n_messages(&mut harness, 3).await;
 
     // Ensure all 3 turns are persisted before compaction snapshots the transcript.
-    wait_for_persisted_messages(
+    let _ignored = wait_for_persisted_messages(
         &harness,
         |m| m.len() >= 6,
         "3 turns to persist before compaction",
@@ -203,7 +203,7 @@ async fn test_messages_still_work_after_compaction() {
     .await;
     let raw = messages
         .iter()
-        .map(std::string::ToString::to_string)
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -374,8 +374,7 @@ async fn test_retain_long_routes_background_payloads_to_long_tier() {
         chat_logs.display(),
     );
     assert!(
-        !long_logs.exists()
-            || std::fs::read_dir(&long_logs).map_or(0, std::iter::Iterator::count) == 0,
+        !long_logs.exists() || std::fs::read_dir(&long_logs).map_or(0, Iterator::count) == 0,
         "long-retention dir should be empty before any background task runs; \
          path: {}",
         long_logs.display(),
@@ -506,7 +505,7 @@ async fn test_character_data_dir_paths_through_full_stack() {
     // Trigger a heartbeat tick — exercises autonomy/manager paths,
     // including `heartbeat_log_path = character_data_dir(...).join("heartbeat.jsonl")`.
     harness.mock_llm.enqueue_json_text("HEARTBEAT_OK").await;
-    let _ = harness.autonomy.heartbeat_tick_now("TestChar");
+    let _ignored = harness.autonomy.heartbeat_tick_now("TestChar");
     tokio::time::pause();
     tokio::time::advance(std::time::Duration::from_secs(15)).await;
     for _ in 0..100 {

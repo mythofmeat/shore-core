@@ -25,6 +25,7 @@ pub enum ToolLoopError {
 
 /// Result of the tool loop: the final LLM response plus any intermediate
 /// messages (assistant tool_use + user tool_result) that should be persisted.
+#[derive(Debug)]
 pub struct ToolLoopResult {
     /// The final stream result from the last LLM call.
     pub result: StreamResult,
@@ -205,7 +206,7 @@ async fn execute_tool_use(
     diag: &Arc<Mutex<Diagnostics>>,
     intermediate_messages: &mut [Message],
 ) -> ToolDispatchOutcome {
-    let _ = direct_tx
+    let _ignored = direct_tx
         .send(ServerMessage::ToolCall(ToolCall {
             rid: request_rid.map(str::to_string),
             tool_id: tool_use.id.clone(),
@@ -283,7 +284,7 @@ async fn attach_generated_image(
     if let Some(last) = intermediate_messages.last_mut() {
         last.images.push(image_ref);
     }
-    let _ = direct_tx
+    let _ignored = direct_tx
         .send(ServerMessage::SendImage(SendImage {
             rid: request_rid.map(str::to_string),
             path: path.to_string(),
@@ -323,7 +324,7 @@ async fn emit_tool_result(
     output: &str,
     is_error: bool,
 ) {
-    let _ = direct_tx
+    let _ignored = direct_tx
         .send(ServerMessage::ToolResult(SwpToolResult {
             rid: request_rid.map(str::to_string),
             tool_id: tool_use.id.clone(),
@@ -348,8 +349,8 @@ fn append_user_tool_result_turn(
     tool_result_blocks: Vec<ContentBlock>,
 ) {
     let mut user_message = serde_json::Map::new();
-    user_message.insert("role".into(), Value::String("user".into()));
-    user_message.insert("content".into(), Value::Array(tool_results));
+    let _ignored = user_message.insert("role".into(), Value::String("user".into()));
+    let _ignored = user_message.insert("content".into(), Value::Array(tool_results));
     request.messages.push(Value::Object(user_message));
 
     intermediate_messages.push(Message {
@@ -391,6 +392,10 @@ async fn stream_tool_loop_continuation(
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "tests assert on a specific ServerMessage variant and panic on any other"
+)]
 mod tests {
     use super::*;
     use crate::test_support::TestToolContext;

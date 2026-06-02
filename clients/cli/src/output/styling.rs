@@ -65,7 +65,7 @@ fn lock_chunk_state() -> MutexGuard<'static, ChunkState> {
 
 /// Reset stream chunk state. Call once at the start of each turn (not per
 /// tool-loop round) so blank-line separation survives across rounds.
-pub fn reset_chunk_state() {
+pub(crate) fn reset_chunk_state() {
     *lock_chunk_state() = ChunkState::INITIAL;
 }
 
@@ -81,24 +81,24 @@ fn begin_block(out: &mut impl Write, state: &mut ChunkState, is_process: bool) {
         return;
     }
     if !state.at_line_start {
-        let _ = writeln!(out); // close the open content line
+        let _ignored = writeln!(out); // close the open content line
         state.at_line_start = true;
     }
     if prev_process && is_process {
         write_channel_rule(out); // keep the gutter unbroken between blocks
     } else if is_process || prev_process {
-        let _ = writeln!(out); // channel ↔ speech boundary
+        let _ignored = writeln!(out); // channel ↔ speech boundary
     }
 }
 
 /// Print a stream chunk to stdout. Thinking renders as a dim, inset, sigil-led
 /// process block; response text is written verbatim (flush-left, soft-wrapped).
-pub fn print_chunk(chunk: &StreamChunk) {
+pub(crate) fn print_chunk(chunk: &StreamChunk) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut state = lock_chunk_state();
     print_chunk_to(&mut out, &mut state, chunk);
-    let _ = out.flush();
+    let _ignored = out.flush();
 }
 
 /// Flush any buffered thinking that did not end in a newline. Emits the partial
@@ -150,13 +150,13 @@ fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamCh
             }
         }
     } else {
-        let _ = write!(out, "{}", chunk.text);
+        let _ignored = write!(out, "{}", chunk.text);
         state.at_line_start = chunk.text.ends_with('\n');
     }
 }
 
 /// Print stream metadata after stream_end.
-pub fn print_stream_end(end: &StreamEnd) {
+pub(crate) fn print_stream_end(end: &StreamEnd) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
@@ -167,14 +167,14 @@ pub fn print_stream_end(end: &StreamEnd) {
     }
 
     // Newline after streamed content
-    let _ = writeln!(out);
+    let _ignored = writeln!(out);
 
     // Metadata line in dim
     let model = abbreviate_model(&end.metadata.model);
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ = write!(
+    let _ignored = write!(
         out,
         "[{} | in:{} out:{} cache_r:{} cache_w:{} | ttft:{}ms total:{}ms]",
         model,
@@ -186,81 +186,81 @@ pub fn print_stream_end(end: &StreamEnd) {
         end.metadata.timing.total_ms,
     );
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
-    let _ = writeln!(out);
-    let _ = writeln!(out); // blank line after metadata
+    let _ignored = writeln!(out);
+    let _ignored = writeln!(out); // blank line after metadata
 }
 
 /// Print an error in red to stderr.
-pub fn print_error(err: &dyn std::fmt::Display) {
+pub(crate) fn print_error(err: &dyn std::fmt::Display) {
     let stderr = io::stderr();
     let mut out = stderr.lock();
 
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::Red));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::Red));
     }
-    let _ = write!(out, "error");
+    let _ignored = write!(out, "error");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
-    let _ = writeln!(out, ": {err}");
+    let _ignored = writeln!(out, ": {err}");
 }
 
 /// Print a provider key fallback warning. Emitted when the daemon
 /// rotates away from a credential-flagged key (e.g. an exhausted budget
 /// key) so the user sees the rotation immediately.
-pub fn print_provider_fallback_warning(w: &ProviderFallbackWarning) {
+pub(crate) fn print_provider_fallback_warning(w: &ProviderFallbackWarning) {
     let stderr = io::stderr();
     let mut out = stderr.lock();
 
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::Yellow));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::Yellow));
     }
-    let _ = write!(out, "warning");
+    let _ignored = write!(out, "warning");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
-    let _ = writeln!(out, ": {}", w.message);
+    let _ignored = writeln!(out, ": {}", w.message);
 }
 
 /// Print a usage budget warning emitted after a threshold crossing.
-pub fn print_usage_warning(w: &UsageWarning) {
+pub(crate) fn print_usage_warning(w: &UsageWarning) {
     let stderr = io::stderr();
     let mut out = stderr.lock();
 
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::Yellow));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::Yellow));
     }
-    let _ = write!(out, "warning");
+    let _ignored = write!(out, "warning");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
-    let _ = writeln!(out, ": {}", w.message);
+    let _ignored = writeln!(out, ": {}", w.message);
 }
 
 /// Print a server protocol error.
-pub fn print_server_error(code: &str, message: &str) {
+pub(crate) fn print_server_error(code: &str, message: &str) {
     let stderr = io::stderr();
     let mut out = stderr.lock();
 
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::Red));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::Red));
     }
-    let _ = write!(out, "server error");
+    let _ignored = write!(out, "server error");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
-    let _ = writeln!(out, " [{code}]: {message}");
+    let _ignored = writeln!(out, " [{code}]: {message}");
 }
 
 /// Render an inline image from a SendImage server message.
-pub fn print_send_image(img: &SendImage) {
+pub(crate) fn print_send_image(img: &SendImage) {
     images::render_image(&img.path, img.caption.as_deref(), img.data.as_deref());
 }
 
 /// Render inline images from a message's image references.
-pub fn print_image_refs(refs: &[ImageRef]) {
+pub(crate) fn print_image_refs(refs: &[ImageRef]) {
     for img in refs {
         images::render_image(&img.path, img.caption.as_deref(), img.data.as_deref());
     }
@@ -278,12 +278,12 @@ pub(crate) fn format_tool_output(output: &str) -> String {
 
 pub(crate) fn write_tool_body_plain(out: &mut impl Write, body: &str) {
     for line in body.lines() {
-        let _ = writeln!(out, "  {line}");
+        let _ignored = writeln!(out, "  {line}");
     }
 }
 
 /// Print a tool call into the process channel: `⚙ name · arg` then its input.
-pub fn print_tool_call(call: &ToolCall) {
+pub(crate) fn print_tool_call(call: &ToolCall) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut state = lock_chunk_state();
@@ -305,7 +305,7 @@ pub fn print_tool_call(call: &ToolCall) {
 
 /// Print a tool result into the process channel: `✓ result` / `✗ error` then
 /// the (truncated) output.
-pub fn print_tool_result(result: &ToolResult) {
+pub(crate) fn print_tool_result(result: &ToolResult) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut state = lock_chunk_state();
@@ -327,7 +327,7 @@ pub fn print_tool_result(result: &ToolResult) {
 }
 
 /// Print the "thinking..." indicator when streaming starts.
-pub fn print_stream_start(regen: bool) {
+pub(crate) fn print_stream_start(regen: bool) {
     if !regen {
         return;
     }
@@ -335,17 +335,17 @@ pub fn print_stream_start(regen: bool) {
     let mut out = stdout.lock();
 
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ = write!(out, "(regenerating...) ");
+    let _ignored = write!(out, "(regenerating...) ");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
-    let _ = out.flush();
+    let _ignored = out.flush();
 }
 
 /// Print a phase indicator (e.g. "thinking...") during streaming.
-pub fn print_phase(phase: &Phase) {
+pub(crate) fn print_phase(phase: &Phase) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
@@ -355,13 +355,13 @@ pub fn print_phase(phase: &Phase) {
     };
 
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ = write!(out, "({label}) ");
+    let _ignored = write!(out, "({label}) ");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
-    let _ = out.flush();
+    let _ignored = out.flush();
 }
 
 #[cfg(test)]
@@ -487,10 +487,10 @@ mod tests {
         }
         set_color_enabled(false);
         let mut stdout = io::stdout();
-        let _ = stdout.write_all(b"\n----- STREAMING RENDER (live tokens) -----\n");
-        let _ = stdout.write_all(&buf);
-        let _ = stdout.write_all(b"\n----- end -----\n");
-        let _ = stdout.flush();
+        let _ignored = stdout.write_all(b"\n----- STREAMING RENDER (live tokens) -----\n");
+        let _ignored = stdout.write_all(&buf);
+        let _ignored = stdout.write_all(b"\n----- end -----\n");
+        let _ignored = stdout.flush();
     }
 
     #[test]

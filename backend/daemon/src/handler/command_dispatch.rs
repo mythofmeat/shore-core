@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -25,7 +27,7 @@ impl MessageHandler {
         if let Some(handle) = self.session_state_mut(session_id).generation_handle.take() {
             info!(reason, "Cancelling active generation");
             handle.abort();
-            let _ = self
+            let _ignored = self
                 .session_router
                 .send_to_session(
                     session_id,
@@ -62,15 +64,15 @@ impl MessageHandler {
         session_id: SessionId,
         direct_tx: mpsc::Sender<ServerMessage>,
     ) -> GenContext {
-        let session_tokens = self.session_state_mut(session_id).session_tokens.clone();
+        let session_tokens = Arc::clone(&self.session_state_mut(session_id).session_tokens);
         GenContext {
-            registry: self.registry.clone(),
+            registry: Arc::clone(&self.registry),
             llm_client: self.llm_client.clone(),
             event_tx: self.push_tx.clone(),
             direct_tx,
             autonomy: self.autonomy.clone(),
             session_tokens,
-            diagnostics: self.cmd_ctx.diagnostics.clone(),
+            diagnostics: Arc::clone(&self.cmd_ctx.diagnostics),
             notifier: self.notifier.clone(),
         }
     }
@@ -116,10 +118,10 @@ impl MessageHandler {
                 character_name: None,
                 active_model: None,
                 active_resolved_model: None,
-                session_tokens: self.session_state_mut(session_id).session_tokens.clone(),
+                session_tokens: Arc::clone(&self.session_state_mut(session_id).session_tokens),
                 autonomy: self.cmd_ctx.autonomy.clone(),
                 llm_client: self.cmd_ctx.llm_client.clone(),
-                diagnostics: self.cmd_ctx.diagnostics.clone(),
+                diagnostics: Arc::clone(&self.cmd_ctx.diagnostics),
             };
             return match commands::providers::refresh_provider_models(&ctx, &cmd.args).await {
                 Ok(data) => {
@@ -146,7 +148,10 @@ impl MessageHandler {
         {
             let (active_model, session_tokens) = {
                 let session = self.session_state_mut(session_id);
-                (session.active_model.clone(), session.session_tokens.clone())
+                (
+                    session.active_model.clone(),
+                    Arc::clone(&session.session_tokens),
+                )
             };
             let ctx = CommandContext {
                 config: self.cmd_ctx.config.clone(),
@@ -159,7 +164,7 @@ impl MessageHandler {
                 session_tokens,
                 autonomy: self.cmd_ctx.autonomy.clone(),
                 llm_client: self.cmd_ctx.llm_client.clone(),
-                diagnostics: self.cmd_ctx.diagnostics.clone(),
+                diagnostics: Arc::clone(&self.cmd_ctx.diagnostics),
             };
             let result = commands::dispatch_characterless(&ctx, cmd);
             {
@@ -244,7 +249,7 @@ impl MessageHandler {
             .as_ref()
             .map(|m| m.qualified_name.clone());
 
-        let session_tokens = self.session_state_mut(session_id).session_tokens.clone();
+        let session_tokens = Arc::clone(&self.session_state_mut(session_id).session_tokens);
 
         let mut cmd_ctx = CommandContext {
             config: effective_config,
@@ -257,10 +262,10 @@ impl MessageHandler {
             session_tokens,
             autonomy: self.cmd_ctx.autonomy.clone(),
             llm_client: self.cmd_ctx.llm_client.clone(),
-            diagnostics: self.cmd_ctx.diagnostics.clone(),
+            diagnostics: Arc::clone(&self.cmd_ctx.diagnostics),
         };
 
-        let mut result = commands::dispatch(engine_arc.clone(), &mut cmd_ctx, cmd)
+        let mut result = commands::dispatch(Arc::clone(&engine_arc), &mut cmd_ctx, cmd)
             .await
             .with_rid(meta.rid.clone());
         let runtime_config_set = cmd.name == "config"
@@ -336,13 +341,13 @@ impl MessageHandler {
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string);
                 if let Some(selected) = selected {
-                    let _ = self
+                    let _ignored = self
                         .session_router
                         .set_selected_character(session_id, Some(selected.clone()))
                         .await;
 
                     let snapshot = build_session_history_snapshot(
-                        self.registry.clone(),
+                        Arc::clone(&self.registry),
                         Some(selected.clone()),
                         None,
                     )
@@ -360,7 +365,7 @@ impl MessageHandler {
                         .cloned()
                         .unwrap_or(serde_json::Value::Bool(false));
 
-                    let _ = self
+                    let _ignored = self
                         .session_router
                         .send_to_session(
                             session_id,

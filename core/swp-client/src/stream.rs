@@ -49,6 +49,7 @@ pub trait StreamCallbacks: Send {
 ///
 /// This is the default handler — it collects all chunk text and exposes
 /// the assembled content when the stream completes.
+#[derive(Debug)]
 pub struct StreamHandler {
     /// Whether we are currently inside a stream sequence.
     active: bool,
@@ -59,7 +60,7 @@ pub struct StreamHandler {
     /// Final content from `stream_end`, if received.
     final_content: Option<String>,
     /// Metadata from stream_end, if received.
-    metadata: Option<shore_protocol::types::StreamMetadata>,
+    metadata: Option<StreamMetadata>,
     /// Persisted assistant message id from stream_end, if received.
     msg_id: Option<String>,
     /// Durable history revision from stream_end, if received.
@@ -111,7 +112,7 @@ impl StreamHandler {
     }
 
     /// Metadata from `stream_end`, if the stream has completed.
-    pub fn metadata(&self) -> Option<&shore_protocol::types::StreamMetadata> {
+    pub fn metadata(&self) -> Option<&StreamMetadata> {
         self.metadata.as_ref()
     }
 
@@ -191,7 +192,20 @@ impl StreamHandler {
                 }
                 Ok(true)
             }
-            _ => Ok(false),
+            ServerMessage::Hello(_)
+            | ServerMessage::History(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Error(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::ToolCall(_)
+            | ServerMessage::ToolResult(_)
+            | ServerMessage::SendImage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_) => Ok(false),
         }
     }
 }
@@ -252,7 +266,22 @@ pub async fn collect_stream(
                     // Defensive: handler.feed() today only flips !is_active +
                     // final_content().is_some() on StreamEnd. If that ever
                     // changes, surface the anomaly instead of spinning.
-                    _ => {
+                    ServerMessage::Hello(_)
+                    | ServerMessage::History(_)
+                    | ServerMessage::Shutdown(_)
+                    | ServerMessage::Ping(_)
+                    | ServerMessage::CommandOutput(_)
+                    | ServerMessage::Error(_)
+                    | ServerMessage::StreamStart(_)
+                    | ServerMessage::StreamChunk(_)
+                    | ServerMessage::Phase(_)
+                    | ServerMessage::NewMessage(_)
+                    | ServerMessage::ToolCall(_)
+                    | ServerMessage::ToolResult(_)
+                    | ServerMessage::SendImage(_)
+                    | ServerMessage::CacheWarning(_)
+                    | ServerMessage::ProviderFallbackWarning(_)
+                    | ServerMessage::UsageWarning(_) => {
                         return Err(ClientError::Protocol(
                             "collect_stream: stream ended on non-StreamEnd frame".into(),
                         ));
@@ -277,7 +306,14 @@ pub async fn collect_stream(
             | ServerMessage::SendImage(_)
             | ServerMessage::UsageWarning(_) => {}
             // Anything else is a protocol surprise — log and continue.
-            other => {
+            other @ (ServerMessage::Hello(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::StreamStart(_)
+            | ServerMessage::StreamChunk(_)
+            | ServerMessage::StreamEnd(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)) => {
                 tracing::debug!(?other, "collect_stream: ignoring unexpected frame");
             }
         }

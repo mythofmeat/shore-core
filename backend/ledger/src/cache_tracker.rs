@@ -34,6 +34,7 @@ pub struct ObservationResult {
     pub anomaly: Option<Anomaly>,
 }
 
+#[derive(Debug)]
 pub struct CacheTracker {
     state: CacheState,
     last_ts: Option<DateTime<Utc>>,
@@ -329,7 +330,7 @@ mod tests {
     #[test]
     fn warm_stays_warm_on_increasing_cache_read() {
         let mut tracker = CacheTracker::new();
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -352,7 +353,7 @@ mod tests {
     #[test]
     fn warm_anomaly_on_cache_read_decrease() {
         let mut tracker = CacheTracker::new();
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -360,7 +361,7 @@ mod tests {
             cache_write_tokens: 500,
             call_type: "message".into(),
         });
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:30Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -427,7 +428,7 @@ mod tests {
     #[test]
     fn compaction_transitions_to_cold() {
         let mut tracker = CacheTracker::new();
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -451,7 +452,7 @@ mod tests {
     #[test]
     fn model_change_transitions_to_cold() {
         let mut tracker = CacheTracker::new();
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -475,7 +476,7 @@ mod tests {
     #[test]
     fn thinking_toggle_transitions_to_cold() {
         let mut tracker = CacheTracker::new();
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -498,7 +499,7 @@ mod tests {
     #[test]
     fn ttl_expiry_transitions_to_cold_with_keepalive_miss() {
         let mut tracker = CacheTracker::with_ttl_secs(60);
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -547,7 +548,7 @@ mod tests {
     fn keepalive_miss_when_ttl_expires_and_next_call_is_not_keepalive() {
         let mut tracker = CacheTracker::with_ttl_secs(60);
         // Warm up.
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -572,7 +573,7 @@ mod tests {
     #[test]
     fn no_keepalive_miss_when_keepalive_arrives_after_ttl() {
         let mut tracker = CacheTracker::with_ttl_secs(60);
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -596,7 +597,7 @@ mod tests {
     #[test]
     fn no_keepalive_miss_on_compaction_cold() {
         let mut tracker = CacheTracker::with_ttl_secs(60);
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -606,7 +607,7 @@ mod tests {
         });
 
         // Compaction deliberately clears the cache — not a keepalive failure.
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:30Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -650,7 +651,7 @@ mod tests {
     fn unexpected_write_transitions_warm_to_cold() {
         let mut tracker = CacheTracker::new();
         // Warm up.
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -661,7 +662,7 @@ mod tests {
         assert_eq!(tracker.state(), CacheState::Warm);
 
         // Now observe: cache_read dropped (cache was invalidated).
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -695,7 +696,7 @@ mod tests {
     #[test]
     fn first_tool_loop_zero_read_after_warm_message_is_unexpected_write() {
         let mut tracker = CacheTracker::new();
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -721,7 +722,7 @@ mod tests {
     #[test]
     fn consecutive_tool_loop_cache_drop_is_unexpected_write() {
         let mut tracker = CacheTracker::new();
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -757,7 +758,7 @@ mod tests {
     #[test]
     fn tool_loop_does_not_replace_normal_message_baseline() {
         let mut tracker = CacheTracker::new();
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
@@ -765,7 +766,7 @@ mod tests {
             cache_write_tokens: 0,
             call_type: "message".into(),
         });
-        tracker.observe(&Observation {
+        let _ignored = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:10Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,

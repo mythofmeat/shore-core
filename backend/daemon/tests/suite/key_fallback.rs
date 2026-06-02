@@ -51,7 +51,22 @@ fn fallback_warnings(
         .iter()
         .filter_map(|m| match m {
             ServerMessage::ProviderFallbackWarning(w) => Some(w),
-            _ => None,
+            ServerMessage::Hello(_)
+            | ServerMessage::History(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Error(_)
+            | ServerMessage::StreamStart(_)
+            | ServerMessage::StreamChunk(_)
+            | ServerMessage::StreamEnd(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::ToolCall(_)
+            | ServerMessage::ToolResult(_)
+            | ServerMessage::SendImage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::UsageWarning(_) => None,
         })
         .collect()
 }

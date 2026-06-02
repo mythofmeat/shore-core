@@ -99,7 +99,22 @@ impl SWPConnection {
                 );
                 h
             }
-            other => {
+            other @ (ServerMessage::History(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Error(_)
+            | ServerMessage::StreamStart(_)
+            | ServerMessage::StreamChunk(_)
+            | ServerMessage::StreamEnd(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::ToolCall(_)
+            | ServerMessage::ToolResult(_)
+            | ServerMessage::SendImage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_)) => {
                 error!("expected server hello, got unexpected message");
                 return Err(ClientError::Protocol(format!(
                     "expected server hello, got: {other:?}"
@@ -124,7 +139,22 @@ impl SWPConnection {
                 debug!(message_count = h.messages.len(), "received history");
                 h
             }
-            other => {
+            other @ (ServerMessage::Hello(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Error(_)
+            | ServerMessage::StreamStart(_)
+            | ServerMessage::StreamChunk(_)
+            | ServerMessage::StreamEnd(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::ToolCall(_)
+            | ServerMessage::ToolResult(_)
+            | ServerMessage::SendImage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_)) => {
                 error!("expected history, got unexpected message");
                 return Err(ClientError::Protocol(format!(
                     "expected history, got: {other:?}"
@@ -313,17 +343,35 @@ where
         }
 
         let (consume, done) = match buf.iter().position(|&b| b == b'\n') {
-            Some(pos) => (pos + 1, true),
+            Some(pos) => match pos.checked_add(1) {
+                Some(consume) => (consume, true),
+                None => {
+                    return Err(ClientError::Protocol(
+                        "server message length exceeds addressable memory".into(),
+                    ));
+                }
+            },
             None => (buf.len(), false),
         };
 
-        if bytes.len() + consume > MAX_WIRE_MESSAGE_SIZE {
+        let Some(total_len) = bytes.len().checked_add(consume) else {
+            return Err(ClientError::Protocol(format!(
+                "server message exceeds maximum size of {MAX_WIRE_MESSAGE_SIZE} bytes"
+            )));
+        };
+
+        if total_len > MAX_WIRE_MESSAGE_SIZE {
             return Err(ClientError::Protocol(format!(
                 "server message exceeds maximum size of {MAX_WIRE_MESSAGE_SIZE} bytes"
             )));
         }
 
-        bytes.extend_from_slice(&buf[..consume]);
+        let Some(chunk) = buf.get(..consume) else {
+            return Err(ClientError::Protocol(
+                "server message framing exceeded read buffer".into(),
+            ));
+        };
+        bytes.extend_from_slice(chunk);
         reader.consume(consume);
         if done {
             break;

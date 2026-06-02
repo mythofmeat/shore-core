@@ -27,7 +27,7 @@ pub fn spawn_config_watcher(
 ) -> Option<tokio::task::JoinHandle<()>> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let mut watcher = match notify::recommended_watcher(move |event| {
-        let _ = event_tx.send(event);
+        let _ignored = event_tx.send(event);
     }) {
         Ok(watcher) => watcher,
         Err(e) => {
@@ -70,7 +70,7 @@ pub fn spawn_config_watcher(
                     match event {
                         Ok(event) => {
                             for path in reload_paths_for_event(&config_dir, &config_path, &event) {
-                                pending.insert(path);
+                                let _ignored = pending.insert(path);
                             }
                             if !pending.is_empty() {
                                 armed = true;
@@ -171,7 +171,10 @@ fn path_parts(path: &Path) -> Vec<String> {
     path.components()
         .filter_map(|component| match component {
             Component::Normal(part) => Some(part.to_string_lossy().to_string()),
-            _ => None,
+            Component::Prefix(_)
+            | Component::RootDir
+            | Component::CurDir
+            | Component::ParentDir => None,
         })
         .collect()
 }

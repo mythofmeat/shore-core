@@ -443,6 +443,15 @@ mod tests {
     use shore_config::ShoreDirs;
     use shore_llm::discovery::{ProviderModelsCache, CACHE_VERSION};
 
+    macro_rules! assert_variant {
+        ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+            let $pattern = $value else {
+                panic!("expected enum variant did not match");
+            };
+            $body
+        }};
+    }
+
     fn make_loaded(tmp: &tempfile::TempDir, providers_toml: &str, chat_toml: &str) -> LoadedConfig {
         // Caches in production only exist after a successful refresh, which
         // requires discovery.enabled = true. Mirror that invariant for tests:
@@ -461,8 +470,10 @@ mod tests {
                         let needs_discovery = !provider_entry.contains_key("discovery");
                         if needs_discovery {
                             let mut disc = toml::Table::new();
-                            disc.insert("enabled".into(), toml::Value::Boolean(true));
-                            provider_entry.insert("discovery".into(), toml::Value::Table(disc));
+                            let _ignored =
+                                disc.insert("enabled".into(), toml::Value::Boolean(true));
+                            let _ignored =
+                                provider_entry.insert("discovery".into(), toml::Value::Table(disc));
                         }
                     }
                 }
@@ -614,7 +625,7 @@ base_url = "https://example.test/v1"
 
         let m = find_effective_model(&loaded, tmp.path(), "claude-opus-4-6", false).unwrap();
         assert_eq!(m.provider_key, "my_anthropic_proxy");
-        assert_eq!(m.sdk, shore_config::models::Sdk::Anthropic);
+        assert_eq!(m.sdk, Sdk::Anthropic);
         assert_eq!(m.cache_ttl.as_deref(), Some("1h"));
     }
 
@@ -787,13 +798,15 @@ base_url = "https://api.together.xyz/v1"
 
         let err =
             find_effective_model(&loaded, tmp.path(), "meta-llama/llama-3-70b", false).unwrap_err();
-        match err {
+        assert_variant!(
+
+            err,
             EffectiveCatalogError::Ambiguous { ref locations, .. } => {
                 assert!(locations.contains("openrouter"));
                 assert!(locations.contains("together"));
             }
-            other => panic!("expected Ambiguous, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]
@@ -867,7 +880,9 @@ ignore = ["meta-llama/*"]
 
         let err =
             find_effective_model(&loaded, tmp.path(), "meta-llama/llama-3-70b", false).unwrap_err();
-        match err {
+        assert_variant!(
+
+            err,
             EffectiveCatalogError::Hidden {
                 ref name,
                 ref provider,
@@ -875,8 +890,8 @@ ignore = ["meta-llama/*"]
                 assert_eq!(name, "meta-llama/llama-3-70b");
                 assert_eq!(provider, "openrouter");
             }
-            other => panic!("expected Hidden, got {other:?}"),
-        }
+
+        );
         // Visible neighbour resolves fine.
         assert!(
             find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false,)

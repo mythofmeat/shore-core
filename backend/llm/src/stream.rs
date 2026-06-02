@@ -13,6 +13,7 @@ use super::LlmError;
 /// endpoint, relaying `StreamChunk` events (with content_type) to the
 /// requesting SWP session via a direct sender, and accumulating the final
 /// `StreamResult`.
+#[derive(Debug)]
 pub struct StreamConsumer {
     direct_tx: mpsc::Sender<ServerMessage>,
     rid: Option<String>,
@@ -84,7 +85,7 @@ impl StreamConsumer {
                 st.started = true;
 
                 // Emit stream_start to the requesting SWP session.
-                let _ = self
+                let _ignored = self
                     .direct_tx
                     .send(ServerMessage::StreamStart(StreamStart {
                         rid: self.rid.clone(),
@@ -101,7 +102,7 @@ impl StreamConsumer {
                 st.text_buf.push_str(&text);
 
                 // Relay as StreamChunk with content_type "text".
-                let _ = self
+                let _ignored = self
                     .direct_tx
                     .send(ServerMessage::StreamChunk(StreamChunk {
                         rid: self.rid.clone(),
@@ -117,7 +118,7 @@ impl StreamConsumer {
                 st.thinking_buf.push_str(&text);
 
                 // Relay as StreamChunk with content_type "thinking".
-                let _ = self
+                let _ignored = self
                     .direct_tx
                     .send(ServerMessage::StreamChunk(StreamChunk {
                         rid: self.rid.clone(),
@@ -270,7 +271,7 @@ pub async fn emit_stream_end(
         },
         model: result.model.clone(),
     };
-    let _ = tx
+    let _ignored = tx
         .send(ServerMessage::StreamEnd(StreamEnd {
             rid,
             msg_id,
@@ -288,6 +289,15 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncWriteExt, DuplexStream};
 
+    macro_rules! assert_variant {
+        ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+            let $pattern = $value else {
+                panic!("expected enum variant did not match");
+            };
+            $body
+        }};
+    }
+
     /// Helper: set up a duplex stream pair and return (writer, reader, direct_tx, direct_rx).
     fn setup_stream_pair() -> (
         DuplexStream,
@@ -299,6 +309,14 @@ mod tests {
         let client_reader = BufReader::new(client_half);
         let (direct_tx, direct_rx) = mpsc::channel(64);
         (server_half, client_reader, direct_tx, direct_rx)
+    }
+
+    fn item<T>(items: &[T], index: usize) -> &T {
+        items.get(index).expect("expected item")
+    }
+
+    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+        value.get(key).expect("expected JSON field")
     }
 
     #[tokio::test]
@@ -346,22 +364,26 @@ mod tests {
         ));
 
         let msg2 = direct_rx.recv().await.unwrap();
-        match msg2 {
+        assert_variant!(
+
+            msg2,
             ServerMessage::StreamChunk(chunk) => {
                 assert_eq!(chunk.text, "Hello ");
                 assert_eq!(chunk.content_type, "text");
             }
-            other => panic!("Expected StreamChunk, got {other:?}"),
-        }
+
+        );
 
         let msg3 = direct_rx.recv().await.unwrap();
-        match msg3 {
+        assert_variant!(
+
+            msg3,
             ServerMessage::StreamChunk(chunk) => {
                 assert_eq!(chunk.text, "world");
                 assert_eq!(chunk.content_type, "text");
             }
-            other => panic!("Expected StreamChunk, got {other:?}"),
-        }
+
+        );
 
         // consume() must NOT have emitted a StreamEnd yet.
         assert!(
@@ -373,7 +395,9 @@ mod tests {
         emit_stream_end(&direct_tx, None, &result, true, None, None).await;
 
         let msg4 = direct_rx.recv().await.unwrap();
-        match msg4 {
+        assert_variant!(
+
+            msg4,
             ServerMessage::StreamEnd(end) => {
                 assert_eq!(end.content, "Hello world");
                 assert_eq!(end.msg_id, None);
@@ -383,8 +407,8 @@ mod tests {
                 assert_eq!(end.metadata.tokens.cache_read, 8);
                 assert_eq!(end.metadata.timing.ttft_ms, 50);
             }
-            other => panic!("Expected StreamEnd, got {other:?}"),
-        }
+
+        );
 
         server_handle.await.unwrap();
     }
@@ -414,9 +438,10 @@ mod tests {
 
         assert_eq!(result.content, "Found it");
         assert_eq!(result.tool_uses.len(), 1);
-        assert_eq!(result.tool_uses[0].id, "t1");
-        assert_eq!(result.tool_uses[0].name, "search");
-        assert_eq!(result.tool_uses[0].input["q"], "test");
+        let tool_use = item(&result.tool_uses, 0);
+        assert_eq!(tool_use.id, "t1");
+        assert_eq!(tool_use.name, "search");
+        assert_eq!(field(&tool_use.input, "q"), "test");
 
         // Verify content_blocks accumulated correctly.
         assert_eq!(
@@ -425,25 +450,27 @@ mod tests {
             "Should have thinking + tool_use + text blocks"
         );
         assert!(
-            matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking, signature } if thinking == "Let me think..." && signature.is_none())
+            matches!(item(&result.content_blocks, 0), ContentBlock::Thinking { thinking, signature } if thinking == "Let me think..." && signature.is_none())
         );
         assert!(
-            matches!(&result.content_blocks[1], ContentBlock::ToolUse { id, name, .. } if id == "t1" && name == "search")
+            matches!(item(&result.content_blocks, 1), ContentBlock::ToolUse { id, name, .. } if id == "t1" && name == "search")
         );
         assert!(
-            matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "Found it")
+            matches!(item(&result.content_blocks, 2), ContentBlock::Text { text } if text == "Found it")
         );
 
         // Verify thinking chunk was emitted with correct content_type.
-        let _ = direct_rx.recv().await.unwrap(); // StreamStart
+        let _ignored = direct_rx.recv().await.unwrap(); // StreamStart
         let thinking_msg = direct_rx.recv().await.unwrap();
-        match thinking_msg {
+        assert_variant!(
+
+            thinking_msg,
             ServerMessage::StreamChunk(chunk) => {
                 assert_eq!(chunk.text, "Let me think...");
                 assert_eq!(chunk.content_type, "thinking");
             }
-            other => panic!("Expected StreamChunk(thinking), got {other:?}"),
-        }
+
+        );
 
         server_handle.await.unwrap();
     }
@@ -473,7 +500,9 @@ mod tests {
         let result = consumer.consume(&mut reader, false).await.unwrap();
 
         assert_eq!(result.content_blocks.len(), 2);
-        match &result.content_blocks[0] {
+        assert_variant!(
+
+            item(&result.content_blocks, 0),
             ContentBlock::Thinking {
                 thinking,
                 signature,
@@ -481,10 +510,10 @@ mod tests {
                 assert_eq!(thinking, "Let me reason...");
                 assert_eq!(signature.as_deref(), Some("sig_test_abc"));
             }
-            other => panic!("Expected Thinking with signature, got {other:?}"),
-        }
+
+        );
         assert!(
-            matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "The answer")
+            matches!(item(&result.content_blocks, 1), ContentBlock::Text { text } if text == "The answer")
         );
 
         server_handle.await.unwrap();
@@ -515,7 +544,9 @@ mod tests {
         let result = consumer.consume(&mut reader, false).await.unwrap();
 
         assert_eq!(result.content_blocks.len(), 3);
-        match &result.content_blocks[0] {
+        assert_variant!(
+
+            item(&result.content_blocks, 0),
             ContentBlock::Thinking {
                 thinking,
                 signature,
@@ -523,16 +554,18 @@ mod tests {
                 assert_eq!(thinking, "Visible thinking");
                 assert_eq!(signature.as_deref(), Some("sig_1"));
             }
-            other => panic!("Expected Thinking, got {other:?}"),
-        }
-        match &result.content_blocks[1] {
+
+        );
+        assert_variant!(
+
+            item(&result.content_blocks, 1),
             ContentBlock::RedactedThinking { data } => {
                 assert_eq!(data, "opaque_encrypted_bytes");
             }
-            other => panic!("Expected RedactedThinking, got {other:?}"),
-        }
+
+        );
         assert!(
-            matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "Answer")
+            matches!(item(&result.content_blocks, 2), ContentBlock::Text { text } if text == "Answer")
         );
 
         server_handle.await.unwrap();
@@ -555,13 +588,15 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        consumer.consume(&mut reader, true).await.unwrap();
+        let _ignored = consumer.consume(&mut reader, true).await.unwrap();
 
         let msg = push_rx.try_recv().unwrap();
-        match msg {
+        assert_variant!(
+
+            msg,
             ServerMessage::StreamStart(start) => assert!(start.regen),
-            other => panic!("Expected StreamStart with regen=true, got {other:?}"),
-        }
+
+        );
 
         server_handle.await.unwrap();
     }
@@ -614,7 +649,7 @@ mod tests {
         // Consecutive text chunks should be merged into a single Text block.
         assert_eq!(result.content_blocks.len(), 1);
         assert!(
-            matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello world!")
+            matches!(item(&result.content_blocks, 0), ContentBlock::Text { text } if text == "Hello world!")
         );
 
         server_handle.await.unwrap();
@@ -646,10 +681,10 @@ mod tests {
         // Consecutive thinking chunks merged, then text block.
         assert_eq!(result.content_blocks.len(), 2);
         assert!(
-            matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking, signature } if thinking == "First thought" && signature.is_none())
+            matches!(item(&result.content_blocks, 0), ContentBlock::Thinking { thinking, signature } if thinking == "First thought" && signature.is_none())
         );
         assert!(
-            matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "Answer")
+            matches!(item(&result.content_blocks, 1), ContentBlock::Text { text } if text == "Answer")
         );
 
         server_handle.await.unwrap();
@@ -682,13 +717,13 @@ mod tests {
         // Type change should flush: text, thinking, text → 3 blocks.
         assert_eq!(result.content_blocks.len(), 3);
         assert!(
-            matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "pre-thought ")
+            matches!(item(&result.content_blocks, 0), ContentBlock::Text { text } if text == "pre-thought ")
         );
         assert!(
-            matches!(&result.content_blocks[1], ContentBlock::Thinking { thinking, signature } if thinking == "hmm..." && signature.is_none())
+            matches!(item(&result.content_blocks, 1), ContentBlock::Thinking { thinking, signature } if thinking == "hmm..." && signature.is_none())
         );
         assert!(
-            matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "post-thought")
+            matches!(item(&result.content_blocks, 2), ContentBlock::Text { text } if text == "post-thought")
         );
 
         server_handle.await.unwrap();
@@ -717,7 +752,7 @@ mod tests {
 
         assert_eq!(result.content_blocks.len(), 1);
         assert!(
-            matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Just text")
+            matches!(item(&result.content_blocks, 0), ContentBlock::Text { text } if text == "Just text")
         );
 
         server_handle.await.unwrap();
@@ -802,7 +837,7 @@ mod tests {
         // Only a text block — the orphaned signature is discarded.
         assert_eq!(result.content_blocks.len(), 1);
         assert!(
-            matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello")
+            matches!(item(&result.content_blocks, 0), ContentBlock::Text { text } if text == "Hello")
         );
         assert_eq!(result.content, "Hello");
 
@@ -836,7 +871,7 @@ mod tests {
         assert_eq!(result.content, "Hello world");
         assert_eq!(result.content_blocks.len(), 1);
         assert!(
-            matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello world")
+            matches!(item(&result.content_blocks, 0), ContentBlock::Text { text } if text == "Hello world")
         );
 
         server_handle.await.unwrap();
@@ -865,18 +900,24 @@ mod tests {
 
         let result = consumer.consume(&mut reader, false).await.unwrap();
 
-        match direct_rx.recv().await.unwrap() {
+        assert_variant!(
+
+
+            direct_rx.recv().await.unwrap(),
             ServerMessage::StreamStart(msg) => {
                 assert_eq!(msg.rid.as_deref(), Some("req_stream_01"));
             }
-            other => panic!("Expected StreamStart, got {other:?}"),
-        }
-        match direct_rx.recv().await.unwrap() {
+
+
+        );
+        assert_variant!(
+
+            direct_rx.recv().await.unwrap(),
             ServerMessage::StreamChunk(msg) => {
                 assert_eq!(msg.rid.as_deref(), Some("req_stream_01"));
             }
-            other => panic!("Expected StreamChunk, got {other:?}"),
-        }
+
+        );
 
         // The caller emits StreamEnd, propagating the same rid.
         emit_stream_end(
@@ -888,14 +929,16 @@ mod tests {
             Some(42),
         )
         .await;
-        match direct_rx.recv().await.unwrap() {
+        assert_variant!(
+
+            direct_rx.recv().await.unwrap(),
             ServerMessage::StreamEnd(msg) => {
                 assert_eq!(msg.rid.as_deref(), Some("req_stream_01"));
                 assert_eq!(msg.msg_id.as_deref(), Some("m_stream_01"));
                 assert_eq!(msg.revision, Some(42));
             }
-            other => panic!("Expected StreamEnd, got {other:?}"),
-        }
+
+        );
 
         server_handle.await.unwrap();
     }

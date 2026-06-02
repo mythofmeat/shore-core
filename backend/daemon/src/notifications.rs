@@ -26,7 +26,7 @@ pub enum NotificationEvent {
 ///
 /// Cheap to clone (wraps `Arc` + `reqwest::Client`). Intended to be shared
 /// across the autonomy manager, handler, and compaction task.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct NotificationService {
     config: Arc<NotificationsConfig>,
     http_client: reqwest::Client,
@@ -52,11 +52,11 @@ impl NotificationService {
         if !self.config.enabled || !self.is_event_enabled(event) {
             return;
         }
-        let config = self.config.clone();
+        let config = Arc::clone(&self.config);
         let client = self.http_client.clone();
         let title = title.to_string();
         let body = truncate_summary(body, 200);
-        tokio::spawn(async move {
+        let _ignored = tokio::spawn(async move {
             if let Err(e) = dispatch(&config, &client, &title, &body).await {
                 warn!(error = %e, "Notification dispatch failed");
             }
@@ -106,7 +106,7 @@ async fn dispatch_notify_send(
     title: &str,
     body: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tokio::process::Command::new("notify-send")
+    let _ignored = tokio::process::Command::new("notify-send")
         .arg("--app-name=shore")
         .arg(title)
         .arg(body)
@@ -160,7 +160,7 @@ async fn dispatch_command(
     let rendered = template
         .replace("{title}", &shell_escape(title))
         .replace("{body}", &shell_escape(body));
-    tokio::process::Command::new("sh")
+    let _ignored = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(&rendered)
         .output()

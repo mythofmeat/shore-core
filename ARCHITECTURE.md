@@ -493,6 +493,17 @@ Release build gate:
 cargo build --release -p shore-daemon -p shore-cli
 ```
 
+The workspace correctness ratchet is intentionally compiler-enforced. Clippy
+pedantic runs workspace-wide, cleaned crates deny panic-hygiene and lossy-cast
+lints at the crate root, and Tier 2 also denies bare `#[allow]` suppressions,
+panics/unwraps inside `Result` functions, `let _ =` discards of must-use values,
+ignored return values, and unchecked `as` conversions. The low-noise Tier 2 set
+also locks ref-counted pointer clone style, single-variant wildcard matches,
+`dbg!`, stdout/stderr print macros, `std::process::exit`, `mem::forget`,
+undocumented unsafe blocks, `unsafe_code`, elided lifetimes in paths, unused
+qualifications, missing `Debug` implementations, and unreachable `pub` items.
+Suppressions must use `#[expect(..., reason = "...")]`.
+
 Before a release, also run relevant cache tests, live provider smoke tests if
 provider behavior changed, and Matrix live verification if Matrix behavior
 changed.

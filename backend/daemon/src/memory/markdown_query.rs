@@ -2,6 +2,7 @@ use crate::memory::markdown_store::{MarkdownEntry, MarkdownMemoryStore, Markdown
 
 const MAX_DIRECT_HITS: usize = 10;
 
+#[derive(Debug)]
 pub struct MemoryStatus {
     pub total_files: usize,
     pub topic_files: usize,

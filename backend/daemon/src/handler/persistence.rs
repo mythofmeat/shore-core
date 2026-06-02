@@ -93,7 +93,8 @@ pub(super) async fn persist_and_notify(
             .collect();
         generated_messages.extend(response_messages);
         if let Some(pending) = regen_alt {
-            MessageStore::attach_generated_alt(&mut generated_messages, pending.alternatives);
+            let _ignored =
+                MessageStore::attach_generated_alt(&mut generated_messages, pending.alternatives);
             let event_messages: Vec<Message> = generated_messages
                 .iter()
                 .filter(|msg| {
@@ -103,7 +104,7 @@ pub(super) async fn persist_and_notify(
                 })
                 .cloned()
                 .collect();
-            engine.replace_after_last_user_turn(generated_messages)?;
+            let _ignored = engine.replace_after_last_user_turn(generated_messages)?;
             let revision = engine.current_revision();
             for msg in &event_messages {
                 emit_new_message_event(
@@ -158,10 +159,14 @@ fn record_completion_diagnostics(
         .session_tokens
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    tokens.input += result.usage.input_tokens;
-    tokens.output += result.usage.output_tokens;
-    tokens.cache_read += result.usage.cache_read_tokens;
-    tokens.cache_write += result.usage.cache_creation_tokens;
+    tokens.input = tokens.input.saturating_add(result.usage.input_tokens);
+    tokens.output = tokens.output.saturating_add(result.usage.output_tokens);
+    tokens.cache_read = tokens
+        .cache_read
+        .saturating_add(result.usage.cache_read_tokens);
+    tokens.cache_write = tokens
+        .cache_write
+        .saturating_add(result.usage.cache_creation_tokens);
     drop(tokens);
 
     let entry = shore_diagnostics::ApiCallEntry {
@@ -250,7 +255,7 @@ fn emit_new_message_event(
 ) {
     let mut wire_msg = msg.clone();
     crate::handler::embed_image_data(&mut wire_msg.images);
-    let _ = event_tx.send(ServerMessage::NewMessage(NewMessage {
+    let _ignored = event_tx.send(ServerMessage::NewMessage(NewMessage {
         revision,
         character: Some(character.to_string()),
         origin: Some(origin),

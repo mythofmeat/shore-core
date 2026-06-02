@@ -31,7 +31,23 @@ fn extract(messages: &[ServerMessage], expected_cmd: &str) -> Value {
             {
                 Some(data.clone())
             }
-            _ => None,
+            ServerMessage::CommandOutput(_)
+            | ServerMessage::Hello(_)
+            | ServerMessage::History(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::Error(_)
+            | ServerMessage::StreamStart(_)
+            | ServerMessage::StreamChunk(_)
+            | ServerMessage::StreamEnd(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::ToolCall(_)
+            | ServerMessage::ToolResult(_)
+            | ServerMessage::SendImage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_) => None,
         })
         .unwrap_or_else(|| panic!("no CommandOutput for {expected_cmd}: {messages:#?}"))
 }

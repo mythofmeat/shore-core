@@ -9,7 +9,23 @@
     clippy::unimplemented,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    clippy::as_conversions,
+    clippy::allow_attributes,
+    clippy::allow_attributes_without_reason,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn,
+    clippy::let_underscore_must_use,
+    clippy::clone_on_ref_ptr,
+    clippy::dbg_macro,
+    clippy::exit,
+    clippy::mem_forget,
+    clippy::match_wildcard_for_single_variants,
+    clippy::wildcard_enum_match_arm,
+    clippy::undocumented_unsafe_blocks,
+    unsafe_code,
+    elided_lifetimes_in_paths,
+    unused_qualifications
 )]
 
 use std::path::{Path, PathBuf};
@@ -251,7 +267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
-    tokio::spawn(async move {
+    let _ignored = tokio::spawn(async move {
         let ctrl_c = tokio::signal::ctrl_c();
 
         #[cfg(unix)]
@@ -285,7 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        let _ = shutdown_tx.send(());
+        let _ignored = shutdown_tx.send(());
     });
 
     // ── Create server and message handler ─────────────────────────────
@@ -301,7 +317,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         push_tx.clone(),
         loaded.clone(),
     )));
-    server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
+    server.set_handshake_provider(build_handshake_provider(Arc::clone(&char_registry)));
 
     // Create autonomy manager (shared between handler, commands, and per-character tick tasks).
     let mut autonomy = AutonomyManager::new(
@@ -367,7 +383,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loaded.clone(),
         notifier.clone(),
     );
-    autonomy.set_registry(char_registry.clone());
+    autonomy.set_registry(Arc::clone(&char_registry));
 
     // In-memory diagnostic ring buffers (API calls, tool calls, errors).
     // Writer: generation tasks (handler.rs). Reader: `status`/`diagnostics` commands.
@@ -384,10 +400,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         character_name: None,
         active_model: None,
         active_resolved_model: None,
-        session_tokens: session_tokens.clone(),
+        session_tokens: Arc::clone(&session_tokens),
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
-        diagnostics: diagnostics.clone(),
+        diagnostics: Arc::clone(&diagnostics),
     };
 
     let (handler_control_tx, handler_control_rx) = tokio::sync::mpsc::channel(16);
@@ -465,11 +481,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(handle) = hot_reload_handle {
-        let _ = tokio::time::timeout(shutdown_timeout, handle).await;
+        let _ignored = tokio::time::timeout(shutdown_timeout, handle).await;
     }
-    let _ = tokio::time::timeout(shutdown_timeout, auto_discovery_handle).await;
-    let _ = tokio::time::timeout(shutdown_timeout, handler_handle).await;
-    let _ = tokio::time::timeout(shutdown_timeout, autonomy.shutdown()).await;
+    let _ignored = tokio::time::timeout(shutdown_timeout, auto_discovery_handle).await;
+    let _ignored = tokio::time::timeout(shutdown_timeout, handler_handle).await;
+    let _ignored = tokio::time::timeout(shutdown_timeout, autonomy.shutdown()).await;
 
     // ── Cleanup ──────────────────────────────────────────────────────
     if let Err(e) = registry.unregister(&instance_id) {
@@ -654,6 +670,15 @@ mod tests {
     use clap::Parser;
     use tempfile::TempDir;
 
+    macro_rules! assert_variant {
+        ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+            let $pattern = $value else {
+                panic!("expected enum variant did not match");
+            };
+            $body
+        }};
+    }
+
     #[test]
     fn loopback_bind_does_not_require_remote_opt_in() {
         let warnings = validate_remote_access_policy("127.0.0.1:7320", false, &[]).unwrap();
@@ -832,13 +857,17 @@ unsafe_allow_remote_access = true
         )
         .expect_err("non-loopback SHORE_ADDR should still enforce remote-access policy");
 
-        match err {
+        assert_variant!(
+
+
+            err,
             StartupError::RemoteAccessPolicy {
                 bind_addr_source, ..
             } => {
                 assert_eq!(bind_addr_source, StartupValueSource::Env);
             }
-            other => panic!("expected remote access policy error, got {other:?}"),
-        }
+
+
+        );
     }
 }

@@ -232,7 +232,7 @@ impl MessageStore {
             .position(|m| m.msg_id == msg_id)
             .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_string()))?;
         info!(msg_id, "Deleting message");
-        self.messages.remove(idx);
+        let _ignored = self.messages.remove(idx);
         self.persist()
     }
 
@@ -280,7 +280,8 @@ impl MessageStore {
             alternatives.push(current);
         } else {
             let last_alt = usize_to_u32(alternatives.len().saturating_sub(1));
-            let idx = active.alt_index.unwrap_or(last_alt).min(last_alt) as usize;
+            let idx = usize::try_from(active.alt_index.unwrap_or(last_alt).min(last_alt))
+                .unwrap_or(usize::MAX);
             alternatives[idx] = current;
         }
 
@@ -408,7 +409,11 @@ fn alternative_from_message(msg: &Message) -> MessageAlternative {
             ContentBlock::Text { text } if !text.trim().is_empty() => {
                 Some(ContentBlock::Text { text: text.clone() })
             }
-            _ => None,
+            ContentBlock::Text { .. }
+            | ContentBlock::Thinking { .. }
+            | ContentBlock::ToolUse { .. }
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolResult { .. } => None,
         })
         .collect();
     let mut content = derive_content_from_blocks_with(&content_blocks, false);
@@ -428,7 +433,8 @@ fn alternative_from_message(msg: &Message) -> MessageAlternative {
 }
 
 fn message_from_alternative(template: &Message, index: u32) -> Message {
-    let alt = template.alternatives[index as usize].clone();
+    let alt_pos = usize::try_from(index).unwrap_or(usize::MAX);
+    let alt = template.alternatives[alt_pos].clone();
     let mut msg = Message {
         msg_id: template.msg_id.clone(),
         role: Role::Assistant,
@@ -615,7 +621,7 @@ mod tests {
             MessageStore::attach_generated_alt(&mut regenerated, pending.alternatives).unwrap();
         assert_eq!((alt_index, alt_count), (1, 2));
 
-        store.replace_after_last_user_turn(regenerated).unwrap();
+        let _ignored = store.replace_after_last_user_turn(regenerated).unwrap();
         let active = &store.messages()[1];
         assert_eq!(active.msg_id, "a2");
         assert_eq!(active.content, "Second answer");

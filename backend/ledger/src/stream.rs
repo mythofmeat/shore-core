@@ -12,6 +12,7 @@ use tracing::error;
 
 /// Owned call metadata carried by a [`LedgerStream`] until finalization, where
 /// it is borrowed into a [`crate::client::RecordCall`].
+#[derive(Debug)]
 pub(crate) struct CallMeta {
     pub(crate) provider: String,
     pub(crate) api_key_name: Option<String>,
@@ -29,6 +30,18 @@ pub struct LedgerStream {
     pricing: Arc<PricingEngine>,
     cache_trackers: Arc<Mutex<HashMap<String, CacheTracker>>>,
     finalized: bool,
+}
+
+impl std::fmt::Debug for LedgerStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LedgerStream")
+            .field("meta", &self.meta)
+            .field("ledger", &self.ledger)
+            .field("pricing", &self.pricing)
+            .field("cache_trackers", &self.cache_trackers)
+            .field("finalized", &self.finalized)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LedgerStream {
@@ -148,7 +161,7 @@ mod tests {
     #[test]
     fn finalize_records_to_ledger() {
         let ledger = Arc::new(Ledger::open_in_memory().unwrap());
-        let pricing = Arc::new(PricingEngine::new(ledger.clone()));
+        let pricing = Arc::new(PricingEngine::new(Arc::clone(&ledger)));
         let trackers = Arc::new(Mutex::new(HashMap::<String, CacheTracker>::new()));
 
         let mut stream = LedgerStream::new_test(
@@ -161,7 +174,7 @@ mod tests {
                 thinking_enabled: true,
                 cache_ttl: None,
             },
-            ledger.clone(),
+            Arc::clone(&ledger),
             pricing,
             trackers,
         );
@@ -190,15 +203,16 @@ mod tests {
 
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].input_tokens, 100);
-        assert_eq!(rows[0].cache_read_tokens, 80);
-        assert_eq!(rows[0].cache_write_tokens, 20);
+        let row = rows.first().expect("ledger row should be present");
+        assert_eq!(row.input_tokens, 100);
+        assert_eq!(row.cache_read_tokens, 80);
+        assert_eq!(row.cache_write_tokens, 20);
     }
 
     #[test]
     fn finalize_updates_cache_tracker() {
         let ledger = Arc::new(Ledger::open_in_memory().unwrap());
-        let pricing = Arc::new(PricingEngine::new(ledger.clone()));
+        let pricing = Arc::new(PricingEngine::new(Arc::clone(&ledger)));
         let trackers = Arc::new(Mutex::new(HashMap::<String, CacheTracker>::new()));
 
         let mut stream = LedgerStream::new_test(
@@ -211,9 +225,9 @@ mod tests {
                 thinking_enabled: true,
                 cache_ttl: None,
             },
-            ledger.clone(),
+            Arc::clone(&ledger),
             pricing,
-            trackers.clone(),
+            Arc::clone(&trackers),
         );
 
         let result = StreamResult {

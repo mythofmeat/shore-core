@@ -240,7 +240,7 @@ impl ModelPreferences {
     /// followed by `set_model` does NOT delete the entry — call
     /// `clear_model` for that.
     pub fn set_model(&mut self, provider: &str, model_id: &str, pref: ModelPreference) {
-        self.models.insert(preference_key(provider, model_id), pref);
+        let _ignored = self.models.insert(preference_key(provider, model_id), pref);
     }
 
     /// Remove a per-model entry. Returns the previous value if any.
@@ -857,6 +857,15 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    macro_rules! assert_variant {
+        ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+            let $pattern = $value else {
+                panic!("expected enum variant did not match");
+            };
+            $body
+        }};
+    }
+
     fn write_prefs(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("models.toml");
         std::fs::write(&path, body).unwrap();
@@ -964,15 +973,17 @@ reasoning_effort = "off"
         let tmp = TempDir::new().unwrap();
         let path = write_prefs(tmp.path(), "typo_field = true\n");
         let err = load_preferences(&path).unwrap_err();
-        match err {
+        assert_variant!(
+
+            err,
             PreferenceError::Parse { source, .. } => {
                 assert!(
                     source.to_string().contains("unknown field"),
                     "expected unknown-field error, got: {source}"
                 );
             }
-            other => panic!("expected Parse, got {other:?}"),
-        }
+
+        );
     }
 
     #[test]
@@ -1419,7 +1430,7 @@ model_id = "kimi-k2"
     }
 
     fn make_loaded_config(
-        tmp: &tempfile::TempDir,
+        tmp: &TempDir,
         catalog: shore_config::models::ModelCatalog,
     ) -> shore_config::LoadedConfig {
         shore_config::LoadedConfig::new_for_test(

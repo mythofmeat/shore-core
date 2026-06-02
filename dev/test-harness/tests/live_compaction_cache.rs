@@ -28,7 +28,11 @@
 //!     cargo test -p shore-test-harness --test live_compaction_cache \
 //!     -- --ignored --nocapture
 //! ```
-#![allow(clippy::await_holding_lock)]
+#![expect(
+    clippy::await_holding_lock,
+    reason = "live cache probe holds an env mutex across provider awaits to pin process-global cache settings"
+)]
+#![deny(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
 use std::env;
 use std::fs;
@@ -45,6 +49,27 @@ const LCG_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
 const LCG_INCREMENT: u64 = 1_442_695_040_888_963_407;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+macro_rules! test_out {
+    () => {
+        write_stdout_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        write_stdout_line(format_args!($($arg)*))
+    };
+}
+
+fn write_stdout_line(args: std::fmt::Arguments<'_>) {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let _ignored = std::io::Write::write_fmt(&mut out, format_args!("{args}\n"));
+}
+
+fn insert_json_field(value: &mut Value, key: &str, field: Value) {
+    if let Some(object) = value.as_object_mut() {
+        let _previous = object.insert(key.to_string(), field);
+    }
+}
 
 fn load_env_file() {
     let path = env::var("SHORE_ENV_FILE").map_or_else(
@@ -181,11 +206,15 @@ fn fake_roll(input: &Value) -> String {
         seed = seed
             .wrapping_mul(LCG_MULTIPLIER)
             .wrapping_add(LCG_INCREMENT);
-        let r = (u32::try_from(seed >> 33).unwrap_or(0) % sides) + 1;
+        let base = u32::try_from(seed >> 33)
+            .unwrap_or(0)
+            .checked_rem(sides)
+            .unwrap_or(0);
+        let r = base.saturating_add(1);
         rolls.push(r);
-        total += r;
+        total = total.saturating_add(r);
     }
-    let parts: Vec<String> = rolls.iter().map(std::string::ToString::to_string).collect();
+    let parts: Vec<String> = rolls.iter().map(ToString::to_string).collect();
     format!("Rolled {count}d{sides}: [{}] = {total}", parts.join(", "))
 }
 
@@ -200,7 +229,7 @@ fn content_blocks_to_wire(blocks: &[ContentBlock]) -> Vec<Value> {
             } => {
                 let mut v = json!({"type": "thinking", "thinking": thinking});
                 if let Some(sig) = signature {
-                    v["signature"] = json!(sig);
+                    insert_json_field(&mut v, "signature", json!(sig));
                 }
                 v
             }
@@ -224,7 +253,7 @@ fn content_blocks_to_wire(blocks: &[ContentBlock]) -> Vec<Value> {
                     "content": content,
                 });
                 if *is_error {
-                    v["is_error"] = json!(true);
+                    insert_json_field(&mut v, "is_error", json!(true));
                 }
                 v
             }
@@ -345,23 +374,35 @@ fn record(stats: &mut Vec<CallStat>, label: &str, usage: &Usage) {
 }
 
 fn print_stat(s: &CallStat) {
-    println!(
+    test_out!(
         "  {:<28} input={:<6} output={:<5} cache_r={:<7} cache_w={}",
-        s.label, s.input, s.output, s.cache_r, s.cache_w
+        s.label,
+        s.input,
+        s.output,
+        s.cache_r,
+        s.cache_w
     );
 }
 
 fn print_table(stats: &[CallStat]) {
-    println!();
-    println!(
+    test_out!();
+    test_out!(
         "  {:<28} {:>8} {:>8} {:>10} {:>10}",
-        "call", "input", "output", "cache_r", "cache_w"
+        "call",
+        "input",
+        "output",
+        "cache_r",
+        "cache_w"
     );
-    println!("  {}", "─".repeat(68));
+    test_out!("  {}", "─".repeat(68));
     for s in stats {
-        println!(
+        test_out!(
             "  {:<28} {:>8} {:>8} {:>10} {:>10}",
-            s.label, s.input, s.output, s.cache_r, s.cache_w
+            s.label,
+            s.input,
+            s.output,
+            s.cache_r,
+            s.cache_w
         );
     }
 }
@@ -406,9 +447,9 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
     );
 
     let chat_system = make_chat_system(&nonce);
-    println!("model:  {model}");
-    println!("nonce:  {nonce}");
-    println!(
+    test_out!("model:  {model}");
+    test_out!("nonce:  {nonce}");
+    test_out!(
         "system: {} chars (~{} tokens)",
         chat_system.len(),
         chat_system.len() / 4
@@ -425,7 +466,7 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
             "text": "Casey, please roll 1d20 for my stealth check and narrate briefly."
         }]
     })];
-    println!("\n── chat turn 1 (cold) ──");
+    test_out!("\n── chat turn 1 (cold) ──");
     let req = build_chat_request(
         &api_key,
         &model,
@@ -452,7 +493,10 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
         .iter()
         .filter_map(|b| match b {
             ContentBlock::ToolUse { id, input, .. } => Some((id.clone(), input.clone())),
-            _ => None,
+            ContentBlock::Text { .. }
+            | ContentBlock::Thinking { .. }
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolResult { .. } => None,
         })
         .collect();
     if !tool_uses.is_empty() {
@@ -470,7 +514,7 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
 
         // Run the chat tool-loop continuation so we end on an assistant
         // text turn (matches what `last_request` would carry into compaction).
-        println!("── chat turn 1 (continuation) ──");
+        test_out!("── chat turn 1 (continuation) ──");
         let req = build_chat_request(
             &api_key,
             &model,
@@ -490,7 +534,7 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
         "role": "user",
         "content": [{"type": "text", "text": "Now describe the alley you're sneaking through, briefly."}],
     }));
-    println!("── chat turn 2 (warm) ──");
+    test_out!("── chat turn 2 (warm) ──");
     let req = build_chat_request(
         &api_key,
         &model,
@@ -526,7 +570,7 @@ Your job is to extract durable facts from the conversation above and persist the
 to memory files via the `write` tool. \
 Be concise — one file per pass. Path must start with memory/.";
 
-    println!("\n── compaction iter-0 ──");
+    test_out!("\n── compaction iter-0 ──");
     let mut compaction_req = build_compaction_request(
         &api_key,
         &model,
@@ -566,7 +610,10 @@ Be concise — one file per pass. Path must start with memory/.";
             ContentBlock::ToolUse { id, name, input } => {
                 Some((id.clone(), name.clone(), input.clone()))
             }
-            _ => None,
+            ContentBlock::Text { .. }
+            | ContentBlock::Thinking { .. }
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolResult { .. } => None,
         })
         .collect();
     if tool_uses.is_empty() {
@@ -614,7 +661,7 @@ Be concise — one file per pass. Path must start with memory/.";
     }));
     compaction_req.rid = Some("live-compaction-iter-1".into());
 
-    println!("── compaction iter-1 (after tool_result) ──");
+    test_out!("── compaction iter-1 (after tool_result) ──");
     let resp: GenerateResponse = client
         .generate(&compaction_req)
         .await
@@ -682,11 +729,11 @@ Be concise — one file per pass. Path must start with memory/.";
         cold_w / 2
     );
 
-    println!(
+    test_out!(
         "\nPASS — chat-warmed prefix carries into compaction, and the \
          compaction tool loop extends rather than invalidates the cache."
     );
-    println!(
+    test_out!(
         "       chat#1 cold cache_w={cold_w}, compaction#0 cache_r={compaction0_read} \
          cache_w={compaction0_write}, compaction#1 cache_r={compaction1_read} \
          cache_w={compaction1_write}."

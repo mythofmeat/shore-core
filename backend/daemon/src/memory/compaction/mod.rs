@@ -30,6 +30,7 @@ static COMPACTION_LOCKS: OnceLock<DashMap<PathBuf, Arc<Mutex<()>>>> = OnceLock::
 /// overlap with another compaction pass against the same pre-compaction active
 /// window. Tests may host separate daemon instances for the same character
 /// name in one process, so the character name alone is not a sufficient key.
+#[derive(Debug)]
 pub struct CompactionRunGuard {
     _guard: OwnedMutexGuard<()>,
 }
@@ -49,6 +50,7 @@ pub fn try_begin_compaction(data_dir: &Path, character: &str) -> Option<Compacti
 // CompactionManager
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct CompactionManager {
     config: CompactionConfig,
     activity_notify: Arc<Notify>,
@@ -173,7 +175,7 @@ impl CompactionManager {
 
         let mut conversation_text = String::new();
         for msg in messages {
-            let _ = writeln!(
+            let _ignored = writeln!(
                 &mut conversation_text,
                 "[{}] {}: {}",
                 msg.timestamp, msg.role, msg.content
@@ -290,7 +292,7 @@ impl CompactionManager {
         dry_run: bool,
         keep_turns_override: Option<usize>,
         chat_request: shore_llm::types::LlmRequest,
-        data_dir: Option<&std::path::Path>,
+        data_dir: Option<&Path>,
         tool_ctx: &dyn ToolContext,
     ) -> Result<CompactionOutcome, CompactionError> {
         let compaction_started = std::time::Instant::now();
@@ -796,6 +798,7 @@ async fn dispatch_compaction_tool(
 
 /// A timer that waits for an idle period to elapse without activity.
 /// Activity notifications (via `CompactionManager::notify_activity`) reset it.
+#[derive(Debug)]
 pub struct IdleTimer {
     idle_duration: Duration,
     activity_notify: Arc<Notify>,
@@ -834,6 +837,15 @@ mod tests {
     use std::sync::mpsc;
     use std::sync::Mutex as StdMutex;
     use tokio::sync::oneshot;
+
+    macro_rules! assert_variant {
+        ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+            let $pattern = $value else {
+                panic!("expected enum variant did not match");
+            };
+            $body
+        }};
+    }
 
     #[test]
     fn compaction_run_guard_serializes_per_character_data_root() {
@@ -1031,13 +1043,24 @@ mod tests {
             // fresh-vs-cached branching in the production code either.
             // We capture the chat prefix size for assertions and extend
             // with the single compact-now user turn.
-            *self.captured_chat_prefix_len.lock().unwrap() = Some(chat_request.messages.len());
-            *self.captured_built_message_count.lock().unwrap() =
+            *self
+                .captured_chat_prefix_len
+                .lock()
+                .map_err(|_| CompactionError::Llm("scripted LLM state mutex poisoned".into()))? =
+                Some(chat_request.messages.len());
+            *self
+                .captured_built_message_count
+                .lock()
+                .map_err(|_| CompactionError::Llm("scripted LLM state mutex poisoned".into()))? =
                 Some(chat_request.messages.len() + 1);
-            *self.captured_last_user_text.lock().unwrap() = compact_now_user
-                .get("content")
-                .and_then(|c| c.as_str())
-                .map(str::to_string);
+            *self
+                .captured_last_user_text
+                .lock()
+                .map_err(|_| CompactionError::Llm("scripted LLM state mutex poisoned".into()))? =
+                compact_now_user
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string);
             let mut combined = chat_request.messages.clone();
             combined.push(compact_now_user);
             let mut request = LlmRequest {
@@ -1158,7 +1181,7 @@ mod tests {
             Box::pin(async move {
                 tokio::task::spawn_blocking(move || {
                     if let Some(tx) = entered_tx {
-                        let _ = tx.send(());
+                        let _ignored = tx.send(());
                     }
                     release_rx.recv().map_err(|_| {
                         CompactionError::ConversationManager(
@@ -1455,7 +1478,10 @@ mod tests {
             .await
             .unwrap();
 
-        match result {
+        assert_variant!(
+
+
+            result,
             CompactionOutcome::Compacted(r) => {
                 assert_eq!(r.memory_files_written.len(), 2);
                 assert_eq!(r.new_conversation_id, "new-conv-1");
@@ -1465,8 +1491,9 @@ mod tests {
                 assert_eq!(r.tool_rounds, 1);
                 assert!(r.tools_called.iter().all(|n| n == "write"));
             }
-            other => panic!("expected Compacted, got {other:?}"),
-        }
+
+
+        );
 
         assert!(store.read("daily/2026-03-25.md").await.is_ok());
         assert!(store.read("preferences/beverages.md").await.is_ok());
@@ -1517,7 +1544,10 @@ mod tests {
             .await
             .unwrap();
 
-        match result {
+        assert_variant!(
+
+
+            result,
             CompactionOutcome::NoMemoryWrites(r) => {
                 assert_eq!(r.conversation_id, "conv-no-writes");
                 assert!(r.tool_rounds >= 1);
@@ -1525,8 +1555,9 @@ mod tests {
                 assert!(!r.max_rounds_hit);
                 assert!(r.tools_called.iter().any(|n| n == "list_files"));
             }
-            other => panic!("expected NoMemoryWrites, got {other:?}"),
-        }
+
+
+        );
 
         // archive_and_retain must not have been called.
         assert!(
@@ -1580,7 +1611,10 @@ mod tests {
             .await
             .unwrap();
 
-        match result {
+        assert_variant!(
+
+
+            result,
             CompactionOutcome::NoMemoryWrites(r) => {
                 assert_eq!(r.rejected_paths.len(), 5);
                 assert!(r.rejected_paths.iter().any(|p| p == "SOUL.md"));
@@ -1590,8 +1624,9 @@ mod tests {
                     .iter()
                     .any(|p| p == "memory/.dreams/notes.md"));
             }
-            other => panic!("expected NoMemoryWrites, got {other:?}"),
-        }
+
+
+        );
 
         assert!(
             conv_mgr.archived_calls().is_empty(),
@@ -1647,10 +1682,10 @@ mod tests {
             .await
             .unwrap();
 
-        let result = match result {
+        let result = assert_variant!(
+            result,
             CompactionOutcome::Compacted(r) => r,
-            other => panic!("expected Compacted, got {other:?}"),
-        };
+        );
         assert_eq!(result.memory_files_written.len(), 2);
         assert!(result.memory_files_written.iter().any(|p| p == "MEMORY.md"));
         assert!(result
@@ -1707,7 +1742,10 @@ mod tests {
             .await
             .unwrap();
 
-        match result {
+        assert_variant!(
+
+
+            result,
             CompactionOutcome::DryRun(r) => {
                 assert_eq!(r.would_write_files, 2);
                 assert_eq!(r.file_ops_preview.len(), 2);
@@ -1717,8 +1755,9 @@ mod tests {
                     .any(|op| op.path == "memory/notes/preview.md"));
                 assert!(r.tool_rounds >= 1);
             }
-            other => panic!("expected DryRun, got {other:?}"),
-        }
+
+
+        );
 
         assert!(store.read("notes/preview.md").await.is_err());
         assert!(!tmp.path().join("MEMORY.md").exists());
@@ -1758,13 +1797,17 @@ mod tests {
             .await
             .unwrap();
 
-        match result {
+        assert_variant!(
+
+
+            result,
             CompactionOutcome::Compacted(r) => {
                 assert_eq!(r.new_conversation_id, "new-conv-2");
                 assert_eq!(r.retained_count, 6);
             }
-            other => panic!("expected Compacted, got {other:?}"),
-        }
+
+
+        );
 
         let calls = conv_mgr.archived_calls();
         assert_eq!(calls.len(), 1);
@@ -1805,7 +1848,10 @@ mod tests {
             .await
             .unwrap();
 
-        match result {
+        assert_variant!(
+
+
+            result,
             CompactionOutcome::Compacted(r) => {
                 assert_eq!(r.message_count, 10);
                 assert_eq!(r.compacted_turns, 5);
@@ -1813,8 +1859,9 @@ mod tests {
                 assert_eq!(r.retained_turns, 0);
                 assert_eq!(r.memory_files_written.len(), 1);
             }
-            other => panic!("expected Compacted, got {other:?}"),
-        }
+
+
+        );
     }
 
     #[tokio::test]
@@ -1850,13 +1897,17 @@ mod tests {
             .await
             .unwrap();
 
-        match result {
+        assert_variant!(
+
+
+            result,
             CompactionOutcome::Compacted(r) => {
                 assert_eq!(r.retained_count, 6);
                 assert_eq!(r.retained_turns, 3);
             }
-            other => panic!("expected Compacted, got {other:?}"),
-        }
+
+
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1914,13 +1965,15 @@ mod tests {
         release_tx.send(()).unwrap();
 
         let result = compaction.await.unwrap().unwrap();
-        match result {
+        assert_variant!(
+
+            result,
             CompactionOutcome::Compacted(r) => {
                 assert_eq!(r.new_conversation_id, "new-conv-3");
                 assert_eq!(r.memory_files_written.len(), 1);
             }
-            other => panic!("expected Compacted, got {other:?}"),
-        }
+
+        );
     }
 
     #[tokio::test]
@@ -2071,26 +2124,27 @@ mod tests {
             retain_long: false,
         };
 
-        mgr.compact(
-            "conv-cached",
-            &messages,
-            "",
-            false,
-            DEFAULT_COMPACT_SYSTEM,
-            DEFAULT_COMPACT_PROMPT,
-            "TestChar",
-            "TestUser",
-            &llm,
-            &conv_mgr,
-            Some(&store),
-            false,
-            None,
-            chat_request,
-            None,
-            &ctx,
-        )
-        .await
-        .unwrap();
+        let _ignored = mgr
+            .compact(
+                "conv-cached",
+                &messages,
+                "",
+                false,
+                DEFAULT_COMPACT_SYSTEM,
+                DEFAULT_COMPACT_PROMPT,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &conv_mgr,
+                Some(&store),
+                false,
+                None,
+                chat_request,
+                None,
+                &ctx,
+            )
+            .await
+            .unwrap();
 
         assert_eq!(
             llm.chat_prefix_len(),

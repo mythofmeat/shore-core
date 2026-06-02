@@ -39,7 +39,21 @@ impl SyncState {
                     SyncDecision::Deliver
                 }
             }
-            _ => SyncDecision::Deliver,
+            ServerMessage::Hello(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Error(_)
+            | ServerMessage::StreamStart(_)
+            | ServerMessage::StreamChunk(_)
+            | ServerMessage::StreamEnd(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::ToolCall(_)
+            | ServerMessage::ToolResult(_)
+            | ServerMessage::SendImage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_) => SyncDecision::Deliver,
         }
     }
 }

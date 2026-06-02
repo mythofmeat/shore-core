@@ -76,7 +76,7 @@ pub fn list_providers(ctx: &CommandContext) -> CommandResult {
                     json!({
                         "present": true,
                         "models": c.models.len(),
-                        "visible": c.models.len() - hidden,
+                        "visible": c.models.len().saturating_sub(hidden),
                         "hidden": hidden,
                         "fetched_at": c.fetched_at,
                     })
@@ -182,7 +182,7 @@ pub(crate) async fn refresh_one(
         Sdk::Anthropic => {
             shore_llm::discovery::discover_anthropic(http, provider, &base_url, &key_value).await
         }
-        _ => {
+        Sdk::Openai | Sdk::Gemini | Sdk::Zai | Sdk::Openrouter => {
             shore_llm::discovery::discover_openai_compatible(http, provider, &base_url, &key_value)
                 .await
         }
@@ -407,6 +407,20 @@ mod tests {
     use crate::autonomy::manager::AutonomyManager;
     use crate::commands::SessionTokens;
 
+    fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
+        value
+            .get(key)
+            .unwrap_or_else(|| panic!("missing field {key}"))
+    }
+
+    fn array_field<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+        field(value, key).as_array().expect("array field")
+    }
+
+    fn item<T>(values: &[T], index: usize) -> &T {
+        values.get(index).expect("value item")
+    }
+
     fn build_ctx_with_registry(tmp: &tempfile::TempDir, toml_str: &str) -> CommandContext {
         let (push_tx, _push_rx) = broadcast::channel(16);
         let data_dir = tmp.path().to_path_buf();
@@ -419,7 +433,7 @@ mod tests {
             ProviderRegistry::from_section(section).unwrap()
         };
 
-        let mut loaded = shore_config::LoadedConfig::new_for_test(
+        let mut loaded = LoadedConfig::new_for_test(
             shore_config::app::AppConfig::default(),
             shore_config::models::ModelCatalog::default(),
             shore_config::ShoreDirs {
@@ -455,7 +469,7 @@ mod tests {
         }
     }
 
-    fn write_test_cache(cache_dir: &std::path::Path, provider: &str, models: Vec<DiscoveredModel>) {
+    fn write_test_cache(cache_dir: &Path, provider: &str, models: Vec<DiscoveredModel>) {
         let cache = ProviderModelsCache {
             version: CACHE_VERSION,
             provider_key: provider.into(),
@@ -483,7 +497,7 @@ mod tests {
             supports_images: None,
             supports_reasoning: None,
             supports_prompt_cache: None,
-            raw_provider_metadata: serde_json::Value::Null,
+            raw_provider_metadata: Value::Null,
             discovered_at: "2026-04-28T10:00:00Z".into(),
         }
     }
@@ -523,11 +537,12 @@ warn_on_fallback = true
         assert!(!s.contains(&unique), "env var name leaked: {s}");
 
         // But friendly key name and env_set boolean do.
-        let provider = &out["providers"][0];
-        assert_eq!(provider["name"], "openrouter");
-        assert_eq!(provider["keys"][0]["name"], "main");
-        assert_eq!(provider["keys"][0]["env_set"], true);
-        assert_eq!(provider["keys"][0]["warn_on_fallback"], true);
+        let provider = item(array_field(&out, "providers"), 0);
+        assert_eq!(field(provider, "name"), "openrouter");
+        let key = item(array_field(provider, "keys"), 0);
+        assert_eq!(field(key, "name"), "main");
+        assert_eq!(field(key, "env_set"), true);
+        assert_eq!(field(key, "warn_on_fallback"), true);
 
         std::env::remove_var(&unique);
     }
@@ -554,9 +569,10 @@ api_key_env = "OR_KEY"
         );
 
         let out = list_providers(&ctx).unwrap();
-        let cache = &out["providers"][0]["cache"];
-        assert_eq!(cache["present"], true);
-        assert_eq!(cache["models"], 1);
+        let provider = item(array_field(&out, "providers"), 0);
+        let cache = field(provider, "cache");
+        assert_eq!(field(cache, "present"), true);
+        assert_eq!(field(cache, "models"), 1);
     }
 
     #[test]
@@ -570,8 +586,10 @@ api_key_env = "OPENAI_KEY"
 "#,
         );
         let out = list_providers(&ctx).unwrap();
-        assert_eq!(out["providers"][0]["cache"]["present"], false);
-        assert_eq!(out["providers"][0]["cache"]["models"], 0);
+        let provider = item(array_field(&out, "providers"), 0);
+        let cache = field(provider, "cache");
+        assert_eq!(field(cache, "present"), false);
+        assert_eq!(field(cache, "models"), 0);
     }
 
     // ── list_provider_models ────────────────────────────────────────────
@@ -607,22 +625,23 @@ model_id = "kimi-k2"
         );
 
         let out = list_provider_models(&ctx, &json!({ "provider": "openrouter" })).unwrap();
-        assert_eq!(out["provider"], "openrouter");
-        assert_eq!(out["discovered"].as_array().unwrap().len(), 1);
-        assert_eq!(out["static"].as_array().unwrap().len(), 1);
-        assert_eq!(out["static"][0]["model_id"], "kimi-k2");
+        assert_eq!(field(&out, "provider"), "openrouter");
+        assert_eq!(array_field(&out, "discovered").len(), 1);
+        let static_models = array_field(&out, "static");
+        assert_eq!(static_models.len(), 1);
+        assert_eq!(field(item(static_models, 0), "model_id"), "kimi-k2");
         // Contract: static entries expose the renamed output-budget key and
         // never the old `max_tokens` (renamed; no backward-compatible alias).
         assert!(
-            out["static"][0].get("max_output_tokens").is_some(),
+            item(static_models, 0).get("max_output_tokens").is_some(),
             "static model JSON must expose `max_output_tokens`"
         );
         assert!(
-            out["static"][0].get("max_tokens").is_none(),
+            item(static_models, 0).get("max_tokens").is_none(),
             "static model JSON must not expose the old `max_tokens` key"
         );
         assert_eq!(
-            out["discovered"][0]["model_id"],
+            field(item(array_field(&out, "discovered"), 0), "model_id"),
             "anthropic/claude-3.5-sonnet"
         );
     }
@@ -652,9 +671,9 @@ model_id = "kimi-k2"
         .unwrap();
 
         let out = list_provider_models(&ctx, &json!({ "provider": "openrouter" })).unwrap();
-        assert!(out["discovered"].as_array().unwrap().is_empty());
-        assert_eq!(out["static"].as_array().unwrap().len(), 1);
-        assert_eq!(out["cache"]["model_count"], 0);
+        assert!(array_field(&out, "discovered").is_empty());
+        assert_eq!(array_field(&out, "static").len(), 1);
+        assert_eq!(field(field(&out, "cache"), "model_count"), 0);
     }
 
     // ── ignore filtering ────────────────────────────────────────────────
@@ -664,7 +683,7 @@ model_id = "kimi-k2"
 
         let mut v = String::new();
         for p in ignore {
-            let _ = writeln!(&mut v, "  {p:?},");
+            let _ignored = writeln!(&mut v, "  {p:?},");
         }
         let toml_str = format!(
             r#"
@@ -680,7 +699,7 @@ ignore = [
         build_ctx_with_registry(tmp, &toml_str)
     }
 
-    fn cache_with_models(cache_dir: &std::path::Path, provider: &str, ids: &[&str]) {
+    fn cache_with_models(cache_dir: &Path, provider: &str, ids: &[&str]) {
         let models = ids
             .iter()
             .map(|id| discovered_fixture(provider, id))
@@ -703,15 +722,15 @@ ignore = [
         );
 
         let out = list_provider_models(&ctx, &json!({ "provider": "openrouter" })).unwrap();
-        let discovered = out["discovered"].as_array().unwrap();
-        let hidden = out["hidden"].as_array().unwrap();
+        let discovered = array_field(&out, "discovered");
+        let hidden = array_field(&out, "hidden");
         let dids: Vec<&str> = discovered
             .iter()
-            .map(|m| m["model_id"].as_str().unwrap())
+            .map(|m| field(m, "model_id").as_str().unwrap())
             .collect();
         let hids: Vec<&str> = hidden
             .iter()
-            .map(|m| m["model_id"].as_str().unwrap())
+            .map(|m| field(m, "model_id").as_str().unwrap())
             .collect();
         assert!(dids.contains(&"anthropic/claude-3.5-sonnet"));
         assert!(dids.contains(&"openai/gpt-4o"));
@@ -734,14 +753,12 @@ ignore = [
         );
 
         let out = list_provider_models(&ctx, &json!({ "provider": "openrouter" })).unwrap();
-        let dids: Vec<&str> = out["discovered"]
-            .as_array()
-            .unwrap()
+        let dids: Vec<&str> = array_field(&out, "discovered")
             .iter()
-            .map(|m| m["model_id"].as_str().unwrap())
+            .map(|m| field(m, "model_id").as_str().unwrap())
             .collect();
         assert_eq!(dids, vec!["anthropic/claude-3.5-sonnet"]);
-        assert_eq!(out["hidden"].as_array().unwrap().len(), 2);
+        assert_eq!(array_field(&out, "hidden").len(), 2);
     }
 
     #[test]
@@ -760,17 +777,13 @@ ignore = [
         );
 
         let out = list_provider_models(&ctx, &json!({ "provider": "openrouter" })).unwrap();
-        let dids: Vec<&str> = out["discovered"]
-            .as_array()
-            .unwrap()
+        let dids: Vec<&str> = array_field(&out, "discovered")
             .iter()
-            .map(|m| m["model_id"].as_str().unwrap())
+            .map(|m| field(m, "model_id").as_str().unwrap())
             .collect();
-        let hids: Vec<&str> = out["hidden"]
-            .as_array()
-            .unwrap()
+        let hids: Vec<&str> = array_field(&out, "hidden")
             .iter()
-            .map(|m| m["model_id"].as_str().unwrap())
+            .map(|m| field(m, "model_id").as_str().unwrap())
             .collect();
         assert!(dids.contains(&"anthropic/claude-3.5-sonnet"));
         assert!(dids.contains(&"openai/gpt-4o"));
@@ -808,9 +821,9 @@ ignore = [
             &json!({ "provider": "openrouter", "include_hidden": true }),
         )
         .unwrap();
-        assert_eq!(out["discovered"].as_array().unwrap().len(), 2);
-        assert!(out["hidden"].as_array().unwrap().is_empty());
-        assert_eq!(out["include_hidden"], true);
+        assert_eq!(array_field(&out, "discovered").len(), 2);
+        assert!(array_field(&out, "hidden").is_empty());
+        assert_eq!(field(&out, "include_hidden"), true);
     }
 
     #[test]
@@ -840,11 +853,12 @@ model_id = "kimi-k2"
 
         let out = list_provider_models(&ctx, &json!({ "provider": "openrouter" })).unwrap();
         // Discovered hidden by the "*" rule.
-        assert!(out["discovered"].as_array().unwrap().is_empty());
-        assert_eq!(out["hidden"].as_array().unwrap().len(), 1);
+        assert!(array_field(&out, "discovered").is_empty());
+        assert_eq!(array_field(&out, "hidden").len(), 1);
         // Static model still surfaced.
-        assert_eq!(out["static"].as_array().unwrap().len(), 1);
-        assert_eq!(out["static"][0]["model_id"], "kimi-k2");
+        let static_models = array_field(&out, "static");
+        assert_eq!(static_models.len(), 1);
+        assert_eq!(field(item(static_models, 0), "model_id"), "kimi-k2");
     }
 
     #[test]
@@ -862,10 +876,11 @@ model_id = "kimi-k2"
         );
 
         let out = list_providers(&ctx).unwrap();
-        let cache = &out["providers"][0]["cache"];
-        assert_eq!(cache["models"], 3);
-        assert_eq!(cache["visible"], 1);
-        assert_eq!(cache["hidden"], 2);
+        let provider = item(array_field(&out, "providers"), 0);
+        let cache = field(provider, "cache");
+        assert_eq!(field(cache, "models"), 3);
+        assert_eq!(field(cache, "visible"), 1);
+        assert_eq!(field(cache, "hidden"), 2);
     }
 
     #[test]
@@ -1072,7 +1087,7 @@ enabled = true
 
         std::env::remove_var(&unique);
         // Silence the unused warning.
-        let _ = ServerMessage::Error(shore_protocol::server_msg::Error {
+        let _ignored = ServerMessage::Error(shore_protocol::server_msg::Error {
             rid: None,
             code: ErrorCode::InternalError,
             message: String::new(),
@@ -1120,8 +1135,8 @@ enabled = true
         let out = refresh_provider_models(&ctx, &json!({ "provider": "upstream" }))
             .await
             .unwrap();
-        assert_eq!(out["model_count"], 2);
-        assert_eq!(out["provider"], "upstream");
+        assert_eq!(field(&out, "model_count"), 2);
+        assert_eq!(field(&out, "provider"), "upstream");
 
         // Cache file is on disk and contains both models.
         let path = shore_llm::discovery::cache_path(&ctx.config.dirs.cache, "upstream");
@@ -1133,7 +1148,7 @@ enabled = true
             .models
             .iter()
             .any(|m| m.model_id == "anthropic/claude-3.5-sonnet"));
-        assert_eq!(cache.models[1].context_length, Some(200_000));
+        assert_eq!(item(&cache.models, 1).context_length, Some(200_000));
 
         std::env::remove_var(&unique);
     }
@@ -1186,18 +1201,18 @@ enabled = true
         let out = refresh_provider_models(&ctx, &json!({ "provider": "anthropic" }))
             .await
             .unwrap();
-        assert_eq!(out["model_count"], 1);
+        assert_eq!(field(&out, "model_count"), 1);
 
         let path = shore_llm::discovery::cache_path(&ctx.config.dirs.cache, "anthropic");
         let cache = shore_llm::discovery::read_cache(&path)
             .unwrap()
             .expect("cache");
-        assert_eq!(cache.models[0].model_id, "claude-sonnet-4-20250514");
+        assert_eq!(item(&cache.models, 0).model_id, "claude-sonnet-4-20250514");
         assert_eq!(
-            cache.models[0].display_name.as_deref(),
+            item(&cache.models, 0).display_name.as_deref(),
             Some("Claude Sonnet 4")
         );
-        assert_eq!(cache.models[0].sdk, "anthropic");
+        assert_eq!(item(&cache.models, 0).sdk, "anthropic");
 
         std::env::remove_var(&unique);
     }
@@ -1224,19 +1239,19 @@ enabled = false
         );
 
         let out = refresh_all_provider_models(&ctx).await.unwrap();
-        let skipped = out["skipped"].as_array().unwrap();
+        let skipped = array_field(&out, "skipped");
         let reasons: std::collections::BTreeMap<&str, &str> = skipped
             .iter()
             .map(|s| {
                 (
-                    s["provider"].as_str().unwrap(),
-                    s["reason"].as_str().unwrap(),
+                    field(s, "provider").as_str().unwrap(),
+                    field(s, "reason").as_str().unwrap(),
                 )
             })
             .collect();
         assert_eq!(reasons.get("alpha").copied(), Some("disabled"));
         assert_eq!(reasons.get("beta").copied(), Some("discovery disabled"));
-        assert!(out["results"].as_array().unwrap().is_empty());
+        assert!(array_field(&out, "results").is_empty());
     }
 
     #[tokio::test]
@@ -1287,19 +1302,18 @@ enabled = true
         );
 
         let out = refresh_all_provider_models(&ctx).await.unwrap();
-        let results = out["results"].as_array().unwrap();
-        let by_name: std::collections::BTreeMap<&str, &serde_json::Value> = results
+        let results = array_field(&out, "results");
+        let by_name: std::collections::BTreeMap<&str, &Value> = results
             .iter()
-            .map(|r| (r["provider"].as_str().unwrap(), r))
+            .map(|r| (field(r, "provider").as_str().unwrap(), r))
             .collect();
-        assert_eq!(by_name["good"]["ok"], true);
-        assert_eq!(by_name["good"]["model_count"], 1);
-        assert_eq!(by_name["bad"]["ok"], false);
-        assert!(by_name["bad"]["error"]
-            .as_str()
-            .unwrap()
-            .contains("API key"));
-        assert!(out["skipped"].as_array().unwrap().is_empty());
+        let good = by_name.get("good").expect("good result");
+        let bad = by_name.get("bad").expect("bad result");
+        assert_eq!(field(good, "ok"), true);
+        assert_eq!(field(good, "model_count"), 1);
+        assert_eq!(field(bad, "ok"), false);
+        assert!(field(bad, "error").as_str().unwrap().contains("API key"));
+        assert!(array_field(&out, "skipped").is_empty());
 
         std::env::remove_var(&good_key);
     }
@@ -1309,7 +1323,7 @@ enabled = true
         let tmp = tempfile::tempdir().unwrap();
         let ctx = build_ctx_with_registry(&tmp, "");
         let out = refresh_all_provider_models(&ctx).await.unwrap();
-        assert!(out["results"].as_array().unwrap().is_empty());
-        assert!(out["skipped"].as_array().unwrap().is_empty());
+        assert!(array_field(&out, "results").is_empty());
+        assert!(array_field(&out, "skipped").is_empty());
     }
 }

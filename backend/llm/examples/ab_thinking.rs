@@ -14,6 +14,21 @@ use shore_config::models::{ResolvedModel, Sdk};
 use shore_llm::types::ContentBlock;
 use shore_llm::LlmClient;
 
+macro_rules! example_out {
+    () => {
+        write_stdout_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        write_stdout_line(format_args!($($arg)*))
+    };
+}
+
+fn write_stdout_line(args: std::fmt::Arguments<'_>) {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let _ignored = std::io::Write::write_fmt(&mut out, format_args!("{args}\n"));
+}
+
 fn make_model(effort: &str) -> ResolvedModel {
     ResolvedModel {
         name: format!("ab-{effort}"),
@@ -384,9 +399,9 @@ fn heartbeat_conversation(
 // ── Output ──────────────────────────────────────────────────────────────
 
 fn print_result(label: &str, resp: &shore_llm::types::GenerateResponse) -> Vec<String> {
-    println!("\n{}", "=".repeat(72));
-    println!("  {label}");
-    println!("{}", "=".repeat(72));
+    example_out!("\n{}", "=".repeat(72));
+    example_out!("  {label}");
+    example_out!("{}", "=".repeat(72));
 
     let thinking_blocks: Vec<_> = resp
         .content_blocks
@@ -396,25 +411,28 @@ fn print_result(label: &str, resp: &shore_llm::types::GenerateResponse) -> Vec<S
                 thinking,
                 signature,
             } => Some((thinking.as_str(), signature.is_some())),
-            _ => None,
+            ContentBlock::Text { .. }
+            | ContentBlock::ToolUse { .. }
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolResult { .. } => None,
         })
         .collect();
 
-    println!("\n--- Thinking ---");
+    example_out!("\n--- Thinking ---");
     if thinking_blocks.is_empty() {
-        println!("  (no thinking blocks)");
+        example_out!("  (no thinking blocks)");
     } else {
         for (i, (text, has_sig)) in thinking_blocks.iter().enumerate() {
-            println!(
+            example_out!(
                 "  Block {}: {} chars, signed={}",
-                i + 1,
+                i.saturating_add(1),
                 text.len(),
                 has_sig
             );
             let preview: String = text.chars().take(500).collect();
-            println!("  {preview}");
+            example_out!("  {preview}");
             if text.len() > 500 {
-                println!("  ... ({} more chars)", text.len() - 500);
+                example_out!("  ... ({} more chars)", text.len().saturating_sub(500));
             }
         }
     }
@@ -425,16 +443,19 @@ fn print_result(label: &str, resp: &shore_llm::types::GenerateResponse) -> Vec<S
         .iter()
         .filter_map(|b| match b {
             ContentBlock::ToolUse { name, input, .. } => Some((name.as_str(), input.clone())),
-            _ => None,
+            ContentBlock::Text { .. }
+            | ContentBlock::Thinking { .. }
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolResult { .. } => None,
         })
         .collect();
 
     if !tool_uses.is_empty() {
-        println!("\n--- Tool calls ---");
+        example_out!("\n--- Tool calls ---");
         for (name, input) in &tool_uses {
             let input_preview = input.to_string();
             let short: String = input_preview.chars().take(120).collect();
-            println!("  {name}: {short}");
+            example_out!("  {name}: {short}");
             tools_used.push(name.to_string());
         }
     }
@@ -444,31 +465,39 @@ fn print_result(label: &str, resp: &shore_llm::types::GenerateResponse) -> Vec<S
         .iter()
         .filter_map(|b| match b {
             ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
+            ContentBlock::Thinking { .. }
+            | ContentBlock::ToolUse { .. }
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolResult { .. } => None,
         })
         .collect();
 
     if !text_blocks.is_empty() {
-        println!("\n--- Response text ---");
+        example_out!("\n--- Response text ---");
         for text in &text_blocks {
             let preview: String = text.chars().take(400).collect();
-            println!("  {preview}");
+            example_out!("  {preview}");
             if text.len() > 400 {
-                println!("  ... ({} more chars)", text.len() - 400);
+                example_out!("  ... ({} more chars)", text.len().saturating_sub(400));
             }
         }
     }
 
     let u = &resp.usage;
     let t = &resp.timing;
-    println!("\n--- Usage ---");
-    println!(
+    example_out!("\n--- Usage ---");
+    example_out!(
         "  input={} output={} cache_read={} cache_write={}",
-        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_creation_tokens
+        u.input_tokens,
+        u.output_tokens,
+        u.cache_read_tokens,
+        u.cache_creation_tokens
     );
-    println!(
+    example_out!(
         "  total_ms={} ttft_ms={} finish_reason={}",
-        t.total_ms, t.time_to_first_token_ms, resp.finish_reason
+        t.total_ms,
+        t.time_to_first_token_ms,
+        resp.finish_reason
     );
 
     tools_used
@@ -497,31 +526,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runs: u32 = args
         .iter()
         .position(|a| a == "--runs")
-        .and_then(|i| args.get(i + 1))
+        .and_then(|i| args.get(i.saturating_add(1)))
         .and_then(|s| s.parse().ok())
         .unwrap_or(if heartbeat || rut { 20 } else { 1 });
 
     let effort = args
         .iter()
         .position(|a| a == "--effort")
-        .and_then(|i| args.get(i + 1).cloned())
+        .and_then(|i| args.get(i.saturating_add(1)).cloned())
         .unwrap_or_else(|| "max".into());
 
     let client = LlmClient::new();
 
     let (system, messages, tools) = if rut {
-        println!("=== RUT mode: heartbeat + 4 ticks of scratchpad-only journal history ===");
-        println!("=== Will run until non-scratchpad tool is used (max {runs} runs) ===\n");
+        example_out!("=== RUT mode: heartbeat + 4 ticks of scratchpad-only journal history ===");
+        example_out!("=== Will run until non-scratchpad tool is used (max {runs} runs) ===\n");
         heartbeat_conversation(true)
     } else if heartbeat {
-        println!("=== HEARTBEAT mode: exact production prompt + all tools (no journal) ===");
-        println!("=== Will run until non-scratchpad tool is used (max {runs} runs) ===\n");
+        example_out!("=== HEARTBEAT mode: exact production prompt + all tools (no journal) ===");
+        example_out!("=== Will run until non-scratchpad tool is used (max {runs} runs) ===\n");
         heartbeat_conversation(false)
     } else if realistic {
-        println!("=== REALISTIC mode ===");
+        example_out!("=== REALISTIC mode ===");
         realistic_conversation()
     } else {
-        println!("=== SIMPLE mode ===");
+        example_out!("=== SIMPLE mode ===");
         simple_conversation()
     };
 
@@ -535,7 +564,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .collect();
 
     for run in 1..=runs {
-        println!("\n>>> Run {run}/{runs} — effort={effort}");
+        example_out!("\n>>> Run {run}/{runs} — effort={effort}");
 
         let model = make_model(&effort);
         let request = LlmClient::build_request(
@@ -547,10 +576,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
 
         if run == 1 {
-            println!(
+            example_out!(
                 "  messages: {} | tools: {}",
                 request.messages.len(),
-                request.tools.as_ref().map_or(0, std::vec::Vec::len)
+                request.tools.as_ref().map_or(0, Vec::len)
             );
         }
 
@@ -562,17 +591,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .any(|t| !scratchpad_names.contains(t.as_str()));
             if has_non_scratchpad {
-                println!("\n>>> NON-SCRATCHPAD TOOL USED: {tools_used:?}");
-                println!(">>> Stopping after {run} runs.");
+                example_out!("\n>>> NON-SCRATCHPAD TOOL USED: {tools_used:?}");
+                example_out!(">>> Stopping after {run} runs.");
                 break;
             } else if tools_used.is_empty() {
-                println!("\n  (no tool use — text-only response)");
+                example_out!("\n  (no tool use — text-only response)");
             } else {
-                println!("\n  scratchpad only: {tools_used:?} — continuing...");
+                example_out!("\n  scratchpad only: {tools_used:?} — continuing...");
             }
         }
     }
 
-    println!("\n\nDone.");
+    example_out!("\n\nDone.");
     Ok(())
 }

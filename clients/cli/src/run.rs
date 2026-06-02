@@ -45,7 +45,7 @@ fn active_start_index(data: &serde_json::Value) -> usize {
     clippy::too_many_lines,
     reason = "CLI dispatcher remains intentionally monolithic until command routing is split"
 )]
-pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // config --path: query the daemon for its actual config dir, fall back to local.
     if matches!(&cli.command, CliCommand::Config { path: true, .. }) {
         return print_config_path(&cli).await;
@@ -64,7 +64,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let CliCommand::Complete { kind } = &cli.command {
         // Any failure (daemon down, parse error) ends with empty stdout
         // and a zero exit code so fish falls back to no suggestions.
-        let _ = handle_complete_query(*kind, &cli).await;
+        let _ignored = handle_complete_query(*kind, &cli).await;
         return Ok(());
     }
 
@@ -91,7 +91,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     );
     // Stash so incidental messages inside `recv_command_data` can label
     // themselves correctly without threading the name through every call site.
-    let _ = SESSION_DISPLAY_CHARACTER.set(display_character.clone());
+    let _ignored = SESSION_DISPLAY_CHARACTER.set(display_character.clone());
 
     // Regression for #3: `switch_model` only mutates per-session state on
     // the daemon, so a one-shot CLI invocation discards the choice on exit.
@@ -151,7 +151,8 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             if *system {
-                conn.send_command("inject_system", serde_json::json!({ "text": text }))
+                let _ignored = conn
+                    .send_command("inject_system", serde_json::json!({ "text": text }))
                     .await?;
                 let data = recv_command_data(&mut conn).await?;
                 output::format_command("inject_system", &data);
@@ -165,13 +166,14 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     None
                 };
-                conn.send_message_full(&text, true, images.clone(), overrides)
+                let _ignored = conn
+                    .send_message_full(&text, true, images.clone(), overrides)
                     .await?;
                 recv_streaming_response(&mut conn).await?;
             }
         }
         CliCommand::Regen { guidance } => {
-            conn.send_regen(true, guidance.clone()).await?;
+            let _ignored = conn.send_regen(true, guidance.clone()).await?;
             recv_streaming_response(&mut conn).await?;
         }
         CliCommand::Notify {
@@ -187,10 +189,10 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let (name, args) =
                 crate::cli::alt_command_to_swp(selector.as_deref(), msg_ref.as_deref());
-            conn.send_command(name, args).await?;
+            let _ignored = conn.send_command(name, args).await?;
             let data = recv_command_data(&mut conn).await?;
             if *json {
-                println!("{}", serde_json::to_string_pretty(&data)?);
+                cli_out!("{}", serde_json::to_string_pretty(&data)?);
             } else {
                 output::format_command(name, &data);
             }
@@ -218,10 +220,10 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     ("delete", serde_json::json!({ "refs": msg_ref }))
                 }
             };
-            conn.send_command(name, args).await?;
+            let _ignored = conn.send_command(name, args).await?;
             let data = recv_command_data(&mut conn).await?;
             if *json {
-                println!("{}", serde_json::to_string_pretty(&data)?);
+                cli_out!("{}", serde_json::to_string_pretty(&data)?);
             } else {
                 output::format_command(name, &data);
             }
@@ -234,14 +236,18 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             role,
             ..
         } => {
-            let mut args = serde_json::json!({ "ref": r });
+            let mut args = serde_json::Map::new();
+            let _ignored = args.insert("ref".into(), serde_json::json!(r));
             if let Some(role) = role {
-                args["role"] = serde_json::json!(role.as_protocol_role());
+                let _ignored =
+                    args.insert("role".into(), serde_json::json!(role.as_protocol_role()));
             }
-            conn.send_command("get", args).await?;
+            let _ignored = conn
+                .send_command("get", serde_json::Value::Object(args))
+                .await?;
             let data = recv_command_data(&mut conn).await?;
             if *json {
-                println!("{}", serde_json::to_string_pretty(&data)?);
+                cli_out!("{}", serde_json::to_string_pretty(&data)?);
             } else if *content {
                 output::print_message_content(&data);
             } else if *plain {
@@ -258,11 +264,12 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             json,
             ..
         } => {
-            conn.send_command("heartbeat_log", serde_json::json!({ "count": count }))
+            let _ignored = conn
+                .send_command("heartbeat_log", serde_json::json!({ "count": count }))
                 .await?;
             let data = recv_command_data(&mut conn).await?;
             if *json {
-                println!("{}", serde_json::to_string_pretty(&data)?);
+                cli_out!("{}", serde_json::to_string_pretty(&data)?);
             } else {
                 output::print_heartbeat_log(&data);
             }
@@ -276,32 +283,36 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             role,
             ..
         } => {
-            let mut args = serde_json::json!({ "turns": count });
+            let mut args = serde_json::Map::new();
+            let _ignored = args.insert("turns".into(), serde_json::json!(count));
             if let Some(role) = role {
-                args["role"] = serde_json::json!(role.as_protocol_role());
+                let _ignored =
+                    args.insert("role".into(), serde_json::json!(role.as_protocol_role()));
             }
-            conn.send_command("log", args).await?;
+            let _ignored = conn
+                .send_command("log", serde_json::Value::Object(args))
+                .await?;
             let data = recv_command_data(&mut conn).await?;
 
             if *json {
-                println!("{}", serde_json::to_string_pretty(&data)?);
+                cli_out!("{}", serde_json::to_string_pretty(&data)?);
             } else if *content {
-                if let Some(messages) = data["messages"].as_array() {
+                if let Some(messages) = data.get("messages").and_then(serde_json::Value::as_array) {
                     for msg in messages {
                         if let Some(c) = msg["content"].as_str() {
-                            println!("{c}");
+                            cli_out!("{c}");
                         }
                     }
                 }
             } else if *plain {
                 let char_name = display_character.as_str();
-                if let Some(messages) = data["messages"].as_array() {
+                if let Some(messages) = data.get("messages").and_then(serde_json::Value::as_array) {
                     let active_start = active_start_index(&data);
                     output::print_log_plain_with_boundary(messages, active_start, char_name);
                 }
             } else {
                 let char_name = display_character.as_str();
-                if let Some(messages) = data["messages"].as_array() {
+                if let Some(messages) = data.get("messages").and_then(serde_json::Value::as_array) {
                     let active_start = active_start_index(&data);
                     output::print_log_with_boundary(messages, active_start, char_name);
                 }
@@ -356,7 +367,22 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             output::print_phase(phase);
                         }
                         ServerMessage::Shutdown(_) => break,
-                        _ => {}
+                        ServerMessage::Hello(_)
+                        | ServerMessage::History(_)
+                        | ServerMessage::Ping(_)
+                        | ServerMessage::CommandOutput(_)
+                        | ServerMessage::Error(_)
+                        | ServerMessage::StreamStart(_)
+                        | ServerMessage::StreamChunk(_)
+                        | ServerMessage::StreamEnd(_)
+                        | ServerMessage::Phase(_)
+                        | ServerMessage::NewMessage(_)
+                        | ServerMessage::ToolCall(_)
+                        | ServerMessage::ToolResult(_)
+                        | ServerMessage::SendImage(_)
+                        | ServerMessage::CacheWarning(_)
+                        | ServerMessage::ProviderFallbackWarning(_)
+                        | ServerMessage::UsageWarning(_) => {}
                     }
                 }
             }
@@ -367,28 +393,29 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             json,
             ..
         } => {
-            conn.send_command("diagnostics", serde_json::json!({ "count": count }))
+            let _ignored = conn
+                .send_command("diagnostics", serde_json::json!({ "count": count }))
                 .await?;
             let data = recv_command_data(&mut conn).await?;
             if *json {
-                println!("{}", serde_json::to_string_pretty(&data)?);
+                cli_out!("{}", serde_json::to_string_pretty(&data)?);
             } else {
                 output::print_diagnostics(&data);
             }
         }
         CliCommand::Status { section, json, .. } => {
-            conn.send_command("status", serde_json::json!({})).await?;
+            let _ignored = conn.send_command("status", serde_json::json!({})).await?;
             let data = recv_command_data(&mut conn).await?;
             match section {
                 Some(s) => {
                     if let Some(val) = data.get(s.as_str()) {
-                        println!("{}", serde_json::to_string_pretty(val)?);
+                        cli_out!("{}", serde_json::to_string_pretty(val)?);
                     } else {
                         return Err(format!("Unknown status section: {s}").into());
                     }
                 }
                 None if *json => {
-                    println!("{}", serde_json::to_string_pretty(&data)?);
+                    cli_out!("{}", serde_json::to_string_pretty(&data)?);
                 }
                 None => {
                     let char_name = display_character.as_str();
@@ -408,12 +435,13 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             json,
             ..
         } => {
-            conn.send_command("reset_model", serde_json::json!({}))
+            let _ignored = conn
+                .send_command("reset_model", serde_json::json!({}))
                 .await?;
             let data = recv_command_data(&mut conn).await?;
-            let _ = state::clear_active_model();
+            let _ignored = state::clear_active_model();
             if *json {
-                println!("{}", serde_json::to_string_pretty(&data)?);
+                cli_out!("{}", serde_json::to_string_pretty(&data)?);
             } else {
                 output::format_command("reset_model", &data);
             }
@@ -429,20 +457,32 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             // `--all` propagates `include_hidden = true` so `shore model
             // <hidden-id> --all` is the documented escape hatch from the
             // `discovery.ignore` error message.
-            let mut args = serde_json::json!({ "name": name });
+            let mut args = serde_json::Map::new();
+            let _ignored = args.insert("name".into(), serde_json::json!(name));
             if *all {
-                args["include_hidden"] = serde_json::json!(true);
+                let _ignored = args.insert("include_hidden".into(), serde_json::json!(true));
             }
-            conn.send_command("switch_model", args).await?;
+            let _ignored = conn
+                .send_command("switch_model", serde_json::Value::Object(args))
+                .await?;
             let data = recv_command_data(&mut conn).await?;
-            let _ = state::clear_active_model();
+            let _ignored = state::clear_active_model();
             if *json {
-                println!("{}", serde_json::to_string_pretty(&data)?);
+                cli_out!("{}", serde_json::to_string_pretty(&data)?);
             } else {
                 output::format_command("switch_model", &data);
             }
         }
-        other => {
+        other @ (CliCommand::Character { .. }
+        | CliCommand::Debug { .. }
+        | CliCommand::Model { .. }
+        | CliCommand::Provider { .. }
+        | CliCommand::Memory { .. }
+        | CliCommand::Config { .. }
+        | CliCommand::Usage { .. }
+        | CliCommand::Connectors { .. }
+        | CliCommand::Completions { .. }
+        | CliCommand::Complete { .. }) => {
             let json_mode = match other {
                 CliCommand::Model {
                     json, subcommand, ..
@@ -469,7 +509,16 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 | CliCommand::Memory { json, .. }
                 | CliCommand::Config { json, .. }
                 | CliCommand::Usage { json, .. } => *json,
-                _ => false,
+                CliCommand::Send { .. }
+                | CliCommand::Regen { .. }
+                | CliCommand::Alt { .. }
+                | CliCommand::Notify { .. }
+                | CliCommand::Log { .. }
+                | CliCommand::Status { .. }
+                | CliCommand::Debug { .. }
+                | CliCommand::Connectors { .. }
+                | CliCommand::Completions { .. }
+                | CliCommand::Complete { .. } => false,
             };
             // Read-only config only. Clap's `conflicts_with_all` rejects
             // `--toml` alongside `--check`, `--reset`, or a set value at parse
@@ -490,12 +539,12 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let Some((name, args)) = crate::cli::to_swp_command(other) else {
                 return Err("non-send/regen/local command must map to SWP command".into());
             };
-            conn.send_command(name, args).await?;
+            let _ignored = conn.send_command(name, args).await?;
             let data = recv_command_data(&mut conn).await?;
             if toml_mode {
                 print_config_toml(&data, show_all)?;
             } else if json_mode {
-                println!("{}", serde_json::to_string_pretty(&data)?);
+                cli_out!("{}", serde_json::to_string_pretty(&data)?);
             } else if name == "config" {
                 output::commands::print_config(&data, show_all);
             } else {
@@ -513,12 +562,13 @@ async fn handle_switch_character(
     name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(character = name, "Switching active character");
-    conn.send_command("switch_character", serde_json::json!({ "name": name }))
+    let _ignored = conn
+        .send_command("switch_character", serde_json::json!({ "name": name }))
         .await?;
-    let _ = recv_command_data(conn).await?;
+    let _ignored = recv_command_data(conn).await?;
     state::write_active_character(name)?;
-    println!("Switched to character: {name}");
-    println!("To override per-terminal: export SHORE_CHARACTER={name}");
+    cli_out!("Switched to character: {name}");
+    cli_out!("To override per-terminal: export SHORE_CHARACTER={name}");
     Ok(())
 }
 
@@ -526,20 +576,21 @@ async fn handle_switch_character(
 async fn handle_list_characters(
     conn: &mut SWPConnection,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    conn.send_command("list_characters", serde_json::json!({}))
+    let _ignored = conn
+        .send_command("list_characters", serde_json::json!({}))
         .await?;
     let data = recv_command_data(conn).await?;
 
     let active = state::read_active_character();
 
-    if let Some(chars) = data["characters"].as_array() {
+    if let Some(chars) = data.get("characters").and_then(serde_json::Value::as_array) {
         debug!(count = chars.len(), "Listed characters from daemon");
         for ch in chars {
             if let Some(name) = ch["name"].as_str() {
                 if active.as_deref() == Some(name) {
-                    println!("  * {name} (active)");
+                    cli_out!("  * {name} (active)");
                 } else {
-                    println!("    {name}");
+                    cli_out!("    {name}");
                 }
             }
         }
@@ -568,12 +619,12 @@ async fn handle_complete_query(
         CompleteKind::Providers => ("list_providers", "providers"),
     };
 
-    conn.send_command(cmd, serde_json::json!({})).await?;
+    let _ignored = conn.send_command(cmd, serde_json::json!({})).await?;
     let data = recv_command_data(&mut conn).await?;
-    if let Some(items) = data[array_key].as_array() {
+    if let Some(items) = data.get(array_key).and_then(serde_json::Value::as_array) {
         for item in items {
             if let Some(name) = item["name"].as_str() {
-                println!("{name}");
+                cli_out!("{name}");
             }
         }
     }
@@ -613,25 +664,25 @@ fn handle_matrix_command(
             .map(|p| p.display().to_string()),
     };
     if let Some(ref config) = resolved_config {
-        cmd.arg("--config").arg(config);
+        let _ignored = cmd.arg("--config").arg(config);
     }
     if std::env::var_os("SHORE_DATA_DIR").is_none() {
         if let Some(data_dir) = shore_swp_client::discover_data_dir().ok().flatten() {
-            cmd.env("SHORE_DATA_DIR", data_dir);
+            let _ignored = cmd.env("SHORE_DATA_DIR", data_dir);
         }
     }
     if let Some(ref addr) = cli.addr {
-        cmd.arg("--addr").arg(addr);
+        let _ignored = cmd.arg("--addr").arg(addr);
     }
 
     match subcommand {
         crate::cli::MatrixCommand::Setup => {
-            cmd.arg("--setup");
+            let _ignored = cmd.arg("--setup");
         }
         crate::cli::MatrixCommand::Register { username, password } => {
-            cmd.arg("--register").arg(username);
+            let _ignored = cmd.arg("--register").arg(username);
             if let Some(pw) = password {
-                cmd.arg("--register-password").arg(pw);
+                let _ignored = cmd.arg("--register-password").arg(pw);
             }
         }
     }
@@ -674,12 +725,12 @@ fn handle_create_character(name: &str) -> Result<(), Box<dyn std::error::Error>>
         &character_md,
         format!("You are {name}.\n\n<!-- Edit this file to define {name}'s personality and behavior. -->\n"),
     )?;
-    println!("Created character scaffold: {}", char_dir.display());
+    cli_out!("Created character scaffold: {}", char_dir.display());
     Ok(())
 }
 
 /// Resolve the Shore config directory.
-fn config_dir() -> std::path::PathBuf {
+fn config_dir() -> PathBuf {
     shore_config::config_dir()
 }
 
@@ -730,7 +781,19 @@ async fn handle_notify(
             }
             ServerMessage::Shutdown(_) => break,
             ServerMessage::Ping(_) | ServerMessage::History(_) => {}
-            other => {
+            other @ (ServerMessage::Hello(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Error(_)
+            | ServerMessage::StreamStart(_)
+            | ServerMessage::StreamChunk(_)
+            | ServerMessage::StreamEnd(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::ToolCall(_)
+            | ServerMessage::ToolResult(_)
+            | ServerMessage::SendImage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_)) => {
                 debug!(?other, "ignoring non-notification event");
             }
         }
@@ -918,9 +981,9 @@ fn send_desktop_notification(
     icon: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = std::process::Command::new("notify-send");
-    cmd.arg("--app-name=shore");
+    let _ignored = cmd.arg("--app-name=shore");
     if let Some(icon) = icon {
-        cmd.arg("--icon").arg(icon);
+        let _ignored = cmd.arg("--icon").arg(icon);
     }
     let status = cmd.arg(title).arg(body).status()?;
     if status.success() {
@@ -939,17 +1002,17 @@ async fn print_config_path(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> 
     if let Ok((mut conn, _hello, _history)) =
         SWPConnection::connect(&addr, "cli", "shore-cli", character).await
     {
-        conn.send_command("status", serde_json::json!({})).await?;
+        let _ignored = conn.send_command("status", serde_json::json!({})).await?;
         let data = recv_command_data(&mut conn).await?;
-        if let Some(dir) = data["config_dir"].as_str() {
-            println!("{dir}");
+        if let Some(dir) = data.get("config_dir").and_then(serde_json::Value::as_str) {
+            cli_out!("{dir}");
         } else {
-            println!("{}", config_dir().display());
+            cli_out!("{}", config_dir().display());
         }
         Ok(())
     } else {
-        eprintln!("(no daemon running — showing local config dir)");
-        println!("{}", config_dir().display());
+        cli_err!("(no daemon running — showing local config dir)");
+        cli_out!("{}", config_dir().display());
         Ok(())
     }
 }
@@ -995,7 +1058,7 @@ fn print_config_toml(
     let section_payload;
     let to_serialize: &serde_json::Value = if let Some(k) = key {
         let mut section_map = serde_json::Map::new();
-        section_map.insert(k.to_string(), effective.clone());
+        let _ignored = section_map.insert(k.to_string(), effective.clone());
         section_payload = serde_json::Value::Object(section_map);
         &section_payload
     } else {
@@ -1006,9 +1069,14 @@ fn print_config_toml(
         json_to_toml_value(to_serialize).ok_or("config payload is not a TOML table")?;
     let rendered = match toml_value {
         toml::Value::Table(t) => toml::to_string_pretty(&t)?,
-        other => toml::to_string_pretty(&other)?,
+        other @ (toml::Value::String(_)
+        | toml::Value::Integer(_)
+        | toml::Value::Float(_)
+        | toml::Value::Boolean(_)
+        | toml::Value::Datetime(_)
+        | toml::Value::Array(_)) => toml::to_string_pretty(&other)?,
     };
-    print!("{rendered}");
+    cli_write!("{rendered}");
     Ok(())
 }
 
@@ -1027,10 +1095,10 @@ fn filter_non_defaults(
                 let d = defaults.and_then(|dd| dd.get(k));
                 if matches!(v, serde_json::Value::Object(_)) {
                     if let Some(sub) = filter_non_defaults(v, d) {
-                        out.insert(k.clone(), sub);
+                        let _ignored = out.insert(k.clone(), sub);
                     }
                 } else if d.is_none_or(|dd| dd != v) {
-                    out.insert(k.clone(), v.clone());
+                    let _ignored = out.insert(k.clone(), v.clone());
                 }
             }
             if out.is_empty() {
@@ -1039,7 +1107,10 @@ fn filter_non_defaults(
                 Some(serde_json::Value::Object(out))
             }
         }
-        leaf => {
+        leaf @ (serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_)
+        | serde_json::Value::Array(_)) => {
             if defaults.is_none_or(|d| d != leaf) {
                 Some(leaf.clone())
             } else {
@@ -1077,12 +1148,12 @@ fn json_to_toml_value(value: &serde_json::Value) -> Option<toml::Value> {
                 .collect();
             for (k, v) in &converted {
                 if !matches!(v, toml::Value::Table(_)) {
-                    table.insert((*k).clone(), v.clone());
+                    let _ignored = table.insert((*k).clone(), v.clone());
                 }
             }
             for (k, v) in &converted {
                 if matches!(v, toml::Value::Table(_)) {
-                    table.insert((*k).clone(), v.clone());
+                    let _ignored = table.insert((*k).clone(), v.clone());
                 }
             }
             Some(toml::Value::Table(table))
@@ -1093,7 +1164,7 @@ fn json_to_toml_value(value: &serde_json::Value) -> Option<toml::Value> {
 /// Read all of stdin to a string (for piped input).
 fn read_stdin() -> Result<String, Box<dyn std::error::Error>> {
     let mut buf = String::new();
-    io::stdin().read_to_string(&mut buf)?;
+    let _ignored = io::stdin().read_to_string(&mut buf)?;
     Ok(buf.trim().to_string())
 }
 
@@ -1203,7 +1274,13 @@ async fn recv_streaming_response(
                 spinner.clear().await;
                 output::print_usage_warning(w);
             }
-            _ => {}
+            ServerMessage::Hello(_)
+            | ServerMessage::History(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::CacheWarning(_) => {}
         }
     }
 }
@@ -1236,7 +1313,19 @@ async fn recv_command_data(
                         .unwrap_or_else(|| session_display_character()),
                 );
             }
-            _ => {}
+            ServerMessage::Hello(_)
+            | ServerMessage::History(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::StreamStart(_)
+            | ServerMessage::StreamChunk(_)
+            | ServerMessage::StreamEnd(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::ToolCall(_)
+            | ServerMessage::ToolResult(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_) => {}
         }
     }
 }
@@ -1254,6 +1343,19 @@ mod tests {
     use shore_protocol::SWP_V1;
 
     use crate::cli::{Cli, CliCommand};
+
+    macro_rules! assert_variant {
+        ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+            let $pattern = $value else {
+                panic!("expected enum variant did not match");
+            };
+            $body
+        }};
+    }
+
+    fn arg<'a>(args: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+        args.get(key).expect("expected command argument")
+    }
 
     fn notify_msg(character: &str, origin: Option<MessageOrigin>, role: Role) -> NewMessage {
         NewMessage {
@@ -1418,7 +1520,7 @@ mod tests {
         r: &mut R,
     ) -> T {
         let mut line = String::new();
-        r.read_line(&mut line).await.unwrap();
+        let _ignored = r.read_line(&mut line).await.unwrap();
         serde_json::from_str(line.trim()).unwrap()
     }
 
@@ -1496,18 +1598,32 @@ mod tests {
                 message, images, ..
             } => {
                 let text = message.join(" ");
-                conn.send_message_with_images(&text, true, images.clone())
+                let _ignored = conn
+                    .send_message_with_images(&text, true, images.clone())
                     .await
                     .unwrap();
                 super::recv_streaming_response(&mut conn).await.unwrap();
             }
             CliCommand::Regen { guidance } => {
-                conn.send_regen(true, guidance.clone()).await.unwrap();
+                let _ignored = conn.send_regen(true, guidance.clone()).await.unwrap();
                 super::recv_streaming_response(&mut conn).await.unwrap();
             }
-            other => {
+            other @ (CliCommand::Alt { .. }
+            | CliCommand::Notify { .. }
+            | CliCommand::Log { .. }
+            | CliCommand::Character { .. }
+            | CliCommand::Status { .. }
+            | CliCommand::Debug { .. }
+            | CliCommand::Model { .. }
+            | CliCommand::Provider { .. }
+            | CliCommand::Memory { .. }
+            | CliCommand::Config { .. }
+            | CliCommand::Usage { .. }
+            | CliCommand::Connectors { .. }
+            | CliCommand::Completions { .. }
+            | CliCommand::Complete { .. }) => {
                 let (name, args) = crate::cli::to_swp_command(other).unwrap();
-                conn.send_command(name, args).await.unwrap();
+                let _ignored = conn.send_command(name, args).await.unwrap();
                 let _data = super::recv_command_data(&mut conn).await.unwrap();
             }
         }
@@ -1573,13 +1689,13 @@ mod tests {
         });
         let received = execute_with_mock(cli, streaming_response("Hi there!")).await;
 
-        match received {
+        assert_variant!(
+            received,
             ClientMessage::Message(m) => {
                 assert_eq!(m.text, "hello world");
                 assert!(m.stream);
             }
-            other => panic!("expected Message, got: {other:?}"),
-        }
+        );
     }
 
     // ── Regen command ────────────────────────────────────────────────
@@ -1591,13 +1707,13 @@ mod tests {
         });
         let received = execute_with_mock(cli, streaming_response("Haha!")).await;
 
-        match received {
+        assert_variant!(
+            received,
             ClientMessage::Regen(r) => {
                 assert!(r.stream);
                 assert_eq!(r.guidance.as_deref(), Some("be funny"));
             }
-            other => panic!("expected Regen, got: {other:?}"),
-        }
+        );
     }
 
     // ── Status command ───────────────────────────────────────────────
@@ -1612,12 +1728,12 @@ mod tests {
         });
         let received = execute_with_mock(cli, command_response("status")).await;
 
-        match received {
+        assert_variant!(
+            received,
             ClientMessage::Command(c) => {
                 assert_eq!(c.name, "status");
             }
-            other => panic!("expected Command, got: {other:?}"),
-        }
+        );
     }
 
     // ── Character is handled locally (see state.rs) ───────────────
@@ -1633,13 +1749,13 @@ mod tests {
         });
         let received = execute_with_mock(cli, command_response("compact")).await;
 
-        match received {
+        assert_variant!(
+            received,
             ClientMessage::Command(c) => {
                 assert_eq!(c.name, "compact");
                 assert_eq!(c.args, serde_json::json!({}));
             }
-            other => panic!("expected Command, got: {other:?}"),
-        }
+        );
     }
 
     // ── Memory query command ─────────────────────────────────────────
@@ -1653,13 +1769,13 @@ mod tests {
         });
         let received = execute_with_mock(cli, command_response("memory")).await;
 
-        match received {
+        assert_variant!(
+            received,
             ClientMessage::Command(c) => {
                 assert_eq!(c.name, "memory");
-                assert_eq!(c.args["query"], "recent topics");
+                assert_eq!(arg(&c.args, "query"), "recent topics");
             }
-            other => panic!("expected Command, got: {other:?}"),
-        }
+        );
     }
 
     // ── Log edit command ─────────────────────────────────────────────
@@ -1682,14 +1798,14 @@ mod tests {
         });
         let received = execute_with_mock(cli, command_response("edit")).await;
 
-        match received {
+        assert_variant!(
+            received,
             ClientMessage::Command(c) => {
                 assert_eq!(c.name, "edit");
-                assert_eq!(c.args["ref"], "m1");
-                assert_eq!(c.args["content"], "new text");
+                assert_eq!(arg(&c.args, "ref"), "m1");
+                assert_eq!(arg(&c.args, "content"), "new text");
             }
-            other => panic!("expected Command, got: {other:?}"),
-        }
+        );
     }
 
     // ── Log delete command ───────────────────────────────────────────
@@ -1711,13 +1827,13 @@ mod tests {
         });
         let received = execute_with_mock(cli, command_response("delete")).await;
 
-        match received {
+        assert_variant!(
+            received,
             ClientMessage::Command(c) => {
                 assert_eq!(c.name, "delete");
-                assert_eq!(c.args["refs"], "m1");
+                assert_eq!(arg(&c.args, "refs"), "m1");
             }
-            other => panic!("expected Command, got: {other:?}"),
-        }
+        );
     }
 
     // ── Streaming with thinking chunks ───────────────────────────────
@@ -1787,7 +1903,12 @@ mod tests {
         let tv = super::json_to_toml_value(&json).expect("table");
         let rendered = match tv {
             toml::Value::Table(t) => toml::to_string_pretty(&t).expect("serialize"),
-            _ => panic!("expected table"),
+            toml::Value::String(_)
+            | toml::Value::Integer(_)
+            | toml::Value::Float(_)
+            | toml::Value::Boolean(_)
+            | toml::Value::Datetime(_)
+            | toml::Value::Array(_) => panic!("expected table"),
         };
         // scalar definition must precede the [section_a] header
         let scalar_idx = rendered.find("scalar").expect("scalar present");
@@ -1852,12 +1973,17 @@ mod tests {
         let payload = data.get("config").unwrap();
         let key = data.get("key").and_then(|v| v.as_str()).unwrap();
         let mut section_map = serde_json::Map::new();
-        section_map.insert(key.to_string(), payload.clone());
+        let _ignored = section_map.insert(key.to_string(), payload.clone());
         let section_payload = serde_json::Value::Object(section_map);
         let toml_value = super::json_to_toml_value(&section_payload).expect("table");
         let rendered = match toml_value {
             toml::Value::Table(t) => toml::to_string_pretty(&t).expect("ok"),
-            _ => panic!("expected table"),
+            toml::Value::String(_)
+            | toml::Value::Integer(_)
+            | toml::Value::Float(_)
+            | toml::Value::Boolean(_)
+            | toml::Value::Datetime(_)
+            | toml::Value::Array(_) => panic!("expected table"),
         };
         assert!(
             rendered.contains("[daemon]"),

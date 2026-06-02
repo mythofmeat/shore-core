@@ -7,7 +7,6 @@ use shore_config::character_data_dir;
 use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{debug, info, instrument};
 
-use crate::autonomy::parse_cache_ttl_secs;
 use crate::convert::u64_to_usize;
 use crate::engine::messages::PendingAlt;
 use crate::engine::prompt;
@@ -52,7 +51,7 @@ pub(super) async fn handle_generation(
         character = %char_name,
         regen,
         text_len = body.text.len(),
-        image_count = body.images.len() + body.image_data.len(),
+        image_count = body.images.len().saturating_add(body.image_data.len()),
         "handle_generation starting"
     );
     let wall_clock_start = Instant::now();
@@ -95,16 +94,16 @@ pub(super) async fn handle_generation(
             let revision = engine.current_revision();
             let mut wire_msg = user_msg;
             embed_image_data(&mut wire_msg.images);
-            let _ = ctx
-                .event_tx
-                .send(shore_protocol::server_msg::ServerMessage::NewMessage(
-                    shore_protocol::server_msg::NewMessage {
-                        revision,
-                        character: Some(char_name.clone()),
-                        origin: Some(shore_protocol::server_msg::MessageOrigin::UserInput),
-                        message: wire_msg,
-                    },
-                ));
+            let _ignored =
+                ctx.event_tx
+                    .send(shore_protocol::server_msg::ServerMessage::NewMessage(
+                        shore_protocol::server_msg::NewMessage {
+                            revision,
+                            character: Some(char_name.clone()),
+                            origin: Some(shore_protocol::server_msg::MessageOrigin::UserInput),
+                            message: wire_msg,
+                        },
+                    ));
         }
     }
 
@@ -150,19 +149,23 @@ pub(super) async fn handle_generation(
         "model resolved"
     );
 
-    let cache_ttl_secs = resolved.cache_ttl.as_deref().and_then(parse_cache_ttl_secs);
-    let is_new_autonomy_state =
-        ctx.autonomy
-            .ensure_state_with_config(&char_name, cache_ttl_secs, Some(&effective_config));
+    let is_new_autonomy_state = ctx
+        .autonomy
+        .ensure_state_with_config(&char_name, Some(&effective_config));
 
     if is_new_autonomy_state {
         let engine = engine_arc.lock().await;
-        let cutoff = chrono::Local::now().naive_local() - chrono::Duration::days(90);
+        let now = chrono::Local::now().naive_local();
+        let cutoff = now
+            .checked_sub_signed(chrono::Duration::days(90))
+            .unwrap_or(now);
         let mut timestamps: Vec<chrono::NaiveDateTime> = Vec::new();
 
-        for msg in engine.messages().iter().filter(|msg| {
-            msg.role == shore_protocol::types::Role::User && !msg.is_tool_result_only()
-        }) {
+        for msg in engine
+            .messages()
+            .iter()
+            .filter(|msg| msg.role == Role::User && !msg.is_tool_result_only())
+        {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&msg.timestamp) {
                 let naive = dt.with_timezone(&chrono::Local).naive_local();
                 if naive >= cutoff {
@@ -174,9 +177,10 @@ pub(super) async fn handle_generation(
         let segments = engine.segments();
         for i in 0..segments.segment_count() {
             if let Ok(segment_msgs) = segments.read_segment(i) {
-                for msg in segment_msgs.iter().filter(|msg| {
-                    msg.role == shore_protocol::types::Role::User && !msg.is_tool_result_only()
-                }) {
+                for msg in segment_msgs
+                    .iter()
+                    .filter(|msg| msg.role == Role::User && !msg.is_tool_result_only())
+                {
                     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&msg.timestamp) {
                         let naive = dt.with_timezone(&chrono::Local).naive_local();
                         if naive >= cutoff {
@@ -269,9 +273,9 @@ pub(super) async fn handle_generation(
         if let Some(budget) = ov.thinking_budget {
             let opts = request
                 .provider_options
-                .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
             if let Some(map) = opts.as_object_mut() {
-                map.insert("budget_tokens".into(), serde_json::json!(budget));
+                let _ignored = map.insert("budget_tokens".into(), serde_json::json!(budget));
             }
         }
     }
@@ -372,7 +376,7 @@ pub(super) async fn handle_generation(
         );
         spawn_inline_compaction(
             ctx.clone(),
-            engine_arc.clone(),
+            Arc::clone(&engine_arc),
             char_name.clone(),
             effective_config.clone(),
             data_dir.clone(),
@@ -393,7 +397,7 @@ fn spawn_inline_compaction(
     rid: Option<String>,
     cached_request: Option<shore_llm::types::LlmRequest>,
 ) {
-    tokio::spawn(async move {
+    let _ignored = tokio::spawn(async move {
         run_inline_compaction(
             ctx,
             engine_arc,
@@ -416,7 +420,7 @@ async fn run_inline_compaction(
     rid: Option<String>,
     cached_request: Option<shore_llm::types::LlmRequest>,
 ) {
-    let _ = ctx
+    let _ignored = ctx
         .direct_tx
         .send(
             shore_protocol::server_msg::ServerMessage::Phase(shore_protocol::server_msg::Phase {
@@ -539,7 +543,10 @@ pub(crate) fn build_llm_messages(
     let system = if prompt_result.system.is_empty() {
         None
     } else if prompt_result.system.len() == 1 {
-        Some(json!(prompt_result.system[0].content))
+        prompt_result
+            .system
+            .first()
+            .map(|block| json!(block.content))
     } else {
         Some(json!(prompt_result
             .system

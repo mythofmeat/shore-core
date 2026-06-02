@@ -9,7 +9,31 @@
     clippy::unimplemented,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    clippy::as_conversions,
+    clippy::allow_attributes,
+    clippy::allow_attributes_without_reason,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn,
+    clippy::let_underscore_must_use,
+    clippy::clone_on_ref_ptr,
+    clippy::dbg_macro,
+    clippy::exit,
+    clippy::mem_forget,
+    clippy::match_wildcard_for_single_variants,
+    clippy::wildcard_enum_match_arm,
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::undocumented_unsafe_blocks,
+    unsafe_code,
+    elided_lifetimes_in_paths,
+    unused_qualifications
+)]
+#![deny(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    missing_debug_implementations,
+    unreachable_pub
 )]
 
 pub mod app;
@@ -480,7 +504,7 @@ pub fn deep_merge(base: &mut toml::Table, overlay: &toml::Table) {
                 deep_merge(base_sub, overlay_sub);
             }
             _ => {
-                base.insert(key.clone(), overlay_val.clone());
+                let _ignored = base.insert(key.clone(), overlay_val.clone());
             }
         }
     }
@@ -666,7 +690,8 @@ fn validate_usage_config(config: &app::UsageConfig) -> Result<(), ConfigError> {
         }
         validate_budget_anchors(idx, budget)?;
         let name = if budget.name.trim().is_empty() {
-            format!("budget {}", idx + 1)
+            let display_index = idx.saturating_add(1);
+            format!("budget {display_index}")
         } else {
             budget.name.trim().to_string()
         };
@@ -764,7 +789,7 @@ fn validate_default_embedding(
 }
 
 fn validate_cron_schedule(expr: &str) -> Result<(), ConfigError> {
-    CronSchedule::parse(expr).map_err(|e| {
+    let _ignored = CronSchedule::parse(expr).map_err(|e| {
         ConfigError::Validation(format!(
             "memory.dreaming.frequency must be a valid five-field cron expression \
              (minute hour day-of-month month day-of-week), got {expr:?}: {e}"
@@ -954,6 +979,17 @@ pub fn resolve_prompt_template(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn table_value<'a>(table: &'a toml::Table, key: &str) -> &'a toml::Value {
+        table.get(key).expect("table key should be present")
+    }
+
+    fn provider_key(
+        keys: &[providers::ProviderKeyEntry],
+        index: usize,
+    ) -> &providers::ProviderKeyEntry {
+        keys.get(index).expect("provider key should be present")
+    }
 
     /// Helper: create a temp config directory with given files.
     fn setup_config_dir(files: &[(&str, &str)]) -> tempfile::TempDir {
@@ -1158,7 +1194,7 @@ model_id = "google/gemini-flash"
 model = "nonexistent-model"
 "#,
         )]);
-        load_config(Some(&tmp.path().join("config.toml")))
+        let _ignored = load_config(Some(&tmp.path().join("config.toml")))
             .expect("unresolvable defaults.model should warn, not fail");
     }
 
@@ -1174,7 +1210,7 @@ heartbeat = "ghost-haiku"
 model_id = "claude-opus-4-6"
 "#,
         )]);
-        load_config(Some(&tmp.path().join("config.toml")))
+        let _ignored = load_config(Some(&tmp.path().join("config.toml")))
             .expect("unresolvable heartbeat default should warn, not fail");
     }
 
@@ -1190,7 +1226,7 @@ dreaming = "no-such-model"
 model_id = "claude-opus-4-6"
 "#,
         )]);
-        load_config(Some(&tmp.path().join("config.toml")))
+        let _ignored = load_config(Some(&tmp.path().join("config.toml")))
             .expect("unresolvable dreaming default should warn, not fail");
     }
 
@@ -1212,7 +1248,7 @@ api_key_env = "OPENROUTER_API_KEY"
 enabled = true
 "#,
         )]);
-        load_config(Some(&tmp.path().join("config.toml")))
+        let _ignored = load_config(Some(&tmp.path().join("config.toml")))
             .expect("discovered model id should validate when provider+discovery enabled");
     }
 
@@ -1231,7 +1267,7 @@ api_key_env = "OPENROUTER_API_KEY"
 enabled = true
 "#,
         )]);
-        load_config(Some(&tmp.path().join("config.toml")))
+        let _ignored = load_config(Some(&tmp.path().join("config.toml")))
             .expect("discovered model id in background heartbeat should validate");
     }
 
@@ -1247,7 +1283,7 @@ enabled = true
 model = "openroute:anthropic/claude-opus-4.6"
 "#,
         )]);
-        load_config(Some(&tmp.path().join("config.toml")))
+        let _ignored = load_config(Some(&tmp.path().join("config.toml")))
             .expect("unknown provider key should warn, not fail");
     }
 
@@ -1278,7 +1314,7 @@ model_id = "openai/text-embedding-3-large"
 embedding = "bge-large-en-v1.5"
 "#,
         )]);
-        load_config(Some(&tmp.path().join("config.toml")))
+        let _ignored = load_config(Some(&tmp.path().join("config.toml")))
             .expect("bundled local id should validate without an [embedding.*] block");
     }
 
@@ -1320,7 +1356,7 @@ model_id = "openai/text-embedding-3-large"
 model_id = "google/gemini-flash"
 "#,
         )]);
-        load_config(Some(&tmp.path().join("config.toml"))).unwrap();
+        let _ignored = load_config(Some(&tmp.path().join("config.toml"))).unwrap();
     }
 
     #[test]
@@ -1485,7 +1521,7 @@ temperature = 0.9
         let mut base = r#"key = "a""#.parse::<toml::Table>().unwrap();
         let overlay = r#"key = "b""#.parse::<toml::Table>().unwrap();
         deep_merge(&mut base, &overlay);
-        assert_eq!(base["key"].as_str(), Some("b"));
+        assert_eq!(table_value(&base, "key").as_str(), Some("b"));
     }
 
     #[test]
@@ -1507,10 +1543,10 @@ c = 4
         .unwrap();
 
         deep_merge(&mut base, &overlay);
-        let section = base["section"].as_table().unwrap();
-        assert_eq!(section["a"].as_integer(), Some(1)); // preserved
-        assert_eq!(section["b"].as_integer(), Some(3)); // overwritten
-        assert_eq!(section["c"].as_integer(), Some(4)); // added
+        let section = table_value(&base, "section").as_table().unwrap();
+        assert_eq!(table_value(section, "a").as_integer(), Some(1)); // preserved
+        assert_eq!(table_value(section, "b").as_integer(), Some(3)); // overwritten
+        assert_eq!(table_value(section, "c").as_integer(), Some(4)); // added
     }
 
     // ── Character / prompt tests ──────────────────────────────────────
@@ -1945,7 +1981,7 @@ model_id = "claude-opus-4-6"
         assert!(or.enabled);
         assert_eq!(or.base_url.as_deref(), Some("https://openrouter.ai/api/v1"));
         assert_eq!(or.keys.len(), 2);
-        assert_eq!(or.keys[0].name, "budget");
+        assert_eq!(provider_key(&or.keys, 0).name, "budget");
         assert!(or.discovery.enabled);
 
         // Static catalog continues to work.
@@ -1964,8 +2000,9 @@ api_key_env = "OPENAI_API_KEY"
         let loaded = load_config(Some(&tmp.path().join("config.toml"))).unwrap();
         let p = loaded.providers.get("openai").unwrap();
         assert_eq!(p.keys.len(), 1, "compact form folded into a single key");
-        assert_eq!(p.keys[0].name, "default");
-        assert_eq!(p.keys[0].env, "OPENAI_API_KEY");
+        let default = provider_key(&p.keys, 0);
+        assert_eq!(default.name, "default");
+        assert_eq!(default.env, "OPENAI_API_KEY");
     }
 
     #[test]
@@ -2101,16 +2138,17 @@ model = "sonnet"
             .expect("openrouter present");
         assert!(or.enabled);
         assert_eq!(or.keys.len(), 2);
-        assert_eq!(or.keys[0].name, "budget");
-        assert!(or.keys[0].warn_on_fallback);
-        assert_eq!(or.keys[1].name, "overflow");
+        let budget = provider_key(&or.keys, 0);
+        assert_eq!(budget.name, "budget");
+        assert!(budget.warn_on_fallback);
+        assert_eq!(provider_key(&or.keys, 1).name, "overflow");
         assert!(or.discovery.enabled);
         assert_eq!(or.discovery.ignore.len(), 4);
 
         // Compact form folds into a synthetic "default" key.
         let openai = loaded.providers.get("openai").unwrap();
         assert_eq!(openai.keys.len(), 1);
-        assert_eq!(openai.keys[0].name, "default");
+        assert_eq!(provider_key(&openai.keys, 0).name, "default");
 
         // Static alias still drives [defaults].model validation.
         let sonnet = loaded.models.find_model("sonnet").unwrap();
@@ -2208,7 +2246,7 @@ period = "week"
 cost_usd = 10.0
 reset_day_of_week = "funday"
 "#;
-        let err = toml::from_str::<app::AppConfig>(toml_str).unwrap_err();
+        let err = toml::from_str::<AppConfig>(toml_str).unwrap_err();
         assert!(
             format!("{err}").contains("funday") || format!("{err}").contains("unknown variant")
         );

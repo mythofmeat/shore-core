@@ -1,14 +1,15 @@
-pub mod commands;
-pub mod spinner;
-pub mod styling;
-pub mod transcript;
+pub(crate) mod commands;
+pub(crate) mod spinner;
+pub(crate) mod styling;
+pub(crate) mod transcript;
 
-pub use commands::*;
-pub use spinner::*;
-pub use styling::*;
-pub use transcript::*;
+pub(crate) use commands::*;
+pub(crate) use spinner::*;
+pub(crate) use styling::*;
+pub(crate) use transcript::*;
 
-use std::io::Write;
+use std::fmt;
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, FixedOffset, Local};
@@ -21,7 +22,7 @@ use crossterm::style::{Color, ResetColor, SetForegroundColor};
 static COLOR_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// Set whether color output is enabled. Call once at startup.
-pub fn set_color_enabled(enabled: bool) {
+pub(crate) fn set_color_enabled(enabled: bool) {
     COLOR_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
@@ -29,12 +30,30 @@ pub(crate) fn use_color() -> bool {
     COLOR_ENABLED.load(Ordering::Relaxed)
 }
 
+pub(crate) fn write_stdout_line(args: fmt::Arguments<'_>) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let _ignored = writeln!(out, "{args}");
+}
+
+pub(crate) fn write_stdout(args: fmt::Arguments<'_>) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let _ignored = write!(out, "{args}");
+}
+
+pub(crate) fn write_stderr_line(args: fmt::Arguments<'_>) {
+    let stderr = io::stderr();
+    let mut out = stderr.lock();
+    let _ignored = writeln!(out, "{args}");
+}
+
 /// Strip trailing date suffix (`-YYYYMMDD`) from a model ID.
 pub(crate) fn abbreviate_model(model_id: &str) -> &str {
     if let Some(i) = model_id.rfind('-') {
-        let suffix = &model_id[i + 1..];
-        if suffix.len() == 8 && suffix.bytes().all(|b| b.is_ascii_digit()) {
-            return &model_id[..i];
+        let suffix = i.checked_add(1).and_then(|start| model_id.get(start..));
+        if suffix.is_some_and(|s| s.len() == 8 && s.bytes().all(|b| b.is_ascii_digit())) {
+            return model_id.get(..i).unwrap_or(model_id);
         }
     }
     model_id
@@ -45,7 +64,7 @@ pub(crate) const MAX_TOOL_OUTPUT: usize = 500;
 
 /// Get terminal width, falling back to 80 columns.
 pub(crate) fn term_width() -> usize {
-    crossterm::terminal::size().map_or(80, |(w, _)| w as usize)
+    crossterm::terminal::size().map_or(80, |(w, _)| usize::from(w))
 }
 
 // ---------------------------------------------------------------------------
@@ -93,11 +112,11 @@ pub(crate) fn process_wrap_width() -> usize {
 /// always dim — it marks the channel; per-block color lives in the header.
 fn write_gutter(out: &mut impl Write) {
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ = write!(out, " {CHANNEL_BAR} ");
+    let _ignored = write!(out, " {CHANNEL_BAR} ");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -106,11 +125,11 @@ fn write_gutter(out: &mut impl Write) {
 /// a thought.
 pub(crate) fn write_channel_rule(out: &mut impl Write) {
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ = writeln!(out, " {CHANNEL_BAR}");
+    let _ignored = writeln!(out, " {CHANNEL_BAR}");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -119,11 +138,11 @@ pub(crate) fn write_channel_rule(out: &mut impl Write) {
 pub(crate) fn write_sigil_header(out: &mut impl Write, sigil: char, text: &str, color: Color) {
     write_gutter(out);
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(color));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(color));
     }
-    let _ = writeln!(out, "{sigil} {text}");
+    let _ignored = writeln!(out, "{sigil} {text}");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -151,13 +170,13 @@ pub(crate) fn write_process_body(out: &mut impl Write, body: &str) {
         let avail = base.saturating_sub(indent_len).max(MIN_BODY_WRAP);
         let indent = " ".repeat(indent_len);
         if use_color() {
-            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+            let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
         }
         for wrapped in wrap_line(content, avail) {
-            let _ = writeln!(out, " {CHANNEL_BAR}   {indent}{wrapped}");
+            let _ignored = writeln!(out, " {CHANNEL_BAR}   {indent}{wrapped}");
         }
         if use_color() {
-            let _ = crossterm::execute!(out, ResetColor);
+            let _ignored = crossterm::execute!(out, ResetColor);
         }
     }
 }
@@ -171,13 +190,13 @@ pub(crate) fn write_thinking_content_line(out: &mut impl Write, line: &str, widt
         return;
     }
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
     for wrapped in wrap_line(line, width) {
-        let _ = writeln!(out, " {CHANNEL_BAR}   {wrapped}");
+        let _ignored = writeln!(out, " {CHANNEL_BAR}   {wrapped}");
     }
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -231,10 +250,10 @@ pub(crate) fn wrap_line(text: &str, width: usize) -> Vec<String> {
         if cur_len == 0 {
             cur.push_str(word);
             cur_len = wlen;
-        } else if cur_len + 1 + wlen <= width {
+        } else if cur_len.saturating_add(1).saturating_add(wlen) <= width {
             cur.push(' ');
             cur.push_str(word);
-            cur_len += 1 + wlen;
+            cur_len = cur_len.saturating_add(1).saturating_add(wlen);
         } else {
             lines.push(std::mem::take(&mut cur));
             cur.push_str(word);
@@ -255,11 +274,11 @@ pub(crate) fn parse_timestamp(ts: &str) -> Option<DateTime<Local>> {
 /// Write text in a specific foreground color (respects use_color()).
 pub(crate) fn write_fg(out: &mut impl Write, color: Color, text: &str) {
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(color));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(color));
     }
-    let _ = write!(out, "{text}");
+    let _ignored = write!(out, "{text}");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -271,11 +290,11 @@ pub(crate) fn write_dim(out: &mut impl Write, text: &str) {
 /// Print a dimmed line (for empty states).
 pub(crate) fn print_dim_line(out: &mut impl Write, text: &str) {
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ = writeln!(out, "  {text}");
+    let _ignored = writeln!(out, "  {text}");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -291,13 +310,13 @@ pub(crate) fn write_section_header(out: &mut impl Write, title: &str, suffix: &s
     let rule: String = "\u{2500}".repeat(trail);
 
     if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::White));
+        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::White));
     }
-    let _ = write!(out, "{prefix}{rule}");
+    let _ignored = write!(out, "{prefix}{rule}");
     if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
+        let _ignored = crossterm::execute!(out, ResetColor);
     }
-    let _ = writeln!(out);
+    let _ignored = writeln!(out);
 }
 
 /// Write a label-value row, optionally coloring the value.
@@ -306,10 +325,10 @@ pub(crate) fn write_row_with(out: &mut impl Write, label: &str, value: &str, col
     match color {
         Some(c) => write_fg(out, c, value),
         None => {
-            let _ = write!(out, "{value}");
+            let _ignored = write!(out, "{value}");
         }
     }
-    let _ = writeln!(out);
+    let _ignored = writeln!(out);
 }
 
 /// Write a label-value row: `  Label        Value`

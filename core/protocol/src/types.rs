@@ -175,12 +175,27 @@ impl Message {
     pub fn serialize_for_storage(&self) -> Result<String, serde_json::Error> {
         let mut val = serde_json::to_value(self)?;
         if let Some(obj) = val.as_object_mut() {
-            obj.remove("content");
+            let _ignored = obj.remove("content");
+
             // Strip inline image data — storage uses paths, not embedded bytes.
-            if let Some(images) = obj.get_mut("images").and_then(|v| v.as_array_mut()) {
-                for img in images {
-                    if let Some(obj) = img.as_object_mut() {
-                        obj.remove("data");
+            let strip_image_data = |images: Option<&mut serde_json::Value>| {
+                if let Some(images) = images.and_then(|v| v.as_array_mut()) {
+                    for img in images {
+                        if let Some(img_obj) = img.as_object_mut() {
+                            let _ignored = img_obj.remove("data");
+                        }
+                    }
+                }
+            };
+
+            strip_image_data(obj.get_mut("images"));
+
+            // `alternatives` (regenerated responses) carry their own image refs,
+            // which must be stripped too or they persist base64 blobs to disk.
+            if let Some(alternatives) = obj.get_mut("alternatives").and_then(|v| v.as_array_mut()) {
+                for alternative in alternatives {
+                    if let Some(alt_obj) = alternative.as_object_mut() {
+                        strip_image_data(alt_obj.get_mut("images"));
                     }
                 }
             }
@@ -242,7 +257,10 @@ pub fn derive_content_from_blocks_with(
                     parts.push(trimmed);
                 }
             }
-            _ => {}
+            ContentBlock::Thinking { .. }
+            | ContentBlock::ToolUse { .. }
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolResult { .. } => {}
         }
     }
 
@@ -282,6 +300,14 @@ impl CharacterInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+        value.get(key).expect("expected JSON field")
+    }
+
+    fn item<T>(items: &[T], index: usize) -> &T {
+        items.get(index).expect("expected item")
+    }
 
     #[test]
     fn derive_content_empty_blocks() {
@@ -372,7 +398,7 @@ mod tests {
         msg.normalize();
         assert_eq!(msg.content_blocks.len(), 1);
         assert!(
-            matches!(&msg.content_blocks[0], ContentBlock::Text { text } if text == "hello world")
+            matches!(item(&msg.content_blocks, 0), ContentBlock::Text { text } if text == "hello world")
         );
         assert_eq!(msg.content, "hello world");
     }
@@ -427,9 +453,46 @@ mod tests {
         );
         let json_str = msg.serialize_for_storage().unwrap();
         let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(val["msg_id"], "m1");
-        assert_eq!(val["role"], "user");
-        assert_eq!(val["timestamp"], "2026-01-01T00:00:00Z");
+        assert_eq!(field(&val, "msg_id"), "m1");
+        assert_eq!(field(&val, "role"), "user");
+        assert_eq!(field(&val, "timestamp"), "2026-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn serialize_for_storage_strips_inline_image_data_everywhere() {
+        let mut msg = make_msg(
+            "ignored",
+            vec![ContentBlock::Text {
+                text: "active".into(),
+            }],
+        );
+        msg.images = vec![ImageRef {
+            path: "/img/top.png".into(),
+            caption: None,
+            data: Some("TOPDATA".into()),
+        }];
+        msg.alternatives = vec![MessageAlternative {
+            content: "alt".into(),
+            images: vec![ImageRef {
+                path: "/img/alt.png".into(),
+                caption: None,
+                data: Some("ALTDATA".into()),
+            }],
+            content_blocks: vec![],
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        }];
+
+        let json_str = msg.serialize_for_storage().unwrap();
+        assert!(
+            !json_str.contains("TOPDATA"),
+            "top-level image data must be stripped"
+        );
+        assert!(
+            !json_str.contains("ALTDATA"),
+            "alternative image data must be stripped"
+        );
+        // Image paths are retained — storage references files by path.
+        assert!(json_str.contains("/img/alt.png"));
     }
 
     // ── derive_content_from_blocks_with ─────────────────────────────

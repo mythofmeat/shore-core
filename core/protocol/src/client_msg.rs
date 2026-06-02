@@ -93,11 +93,15 @@ pub enum ClientMessage {
 mod tests {
     use super::*;
 
+    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+        value.get(key).expect("expected JSON field")
+    }
+
     #[test]
     fn cancel_serialization_roundtrip() {
         let msg = ClientMessage::Cancel(Cancel {});
         let json = serde_json::to_value(&msg).unwrap();
-        assert_eq!(json["type"], "cancel");
+        assert_eq!(field(&json, "type"), "cancel");
 
         let roundtrip: ClientMessage = serde_json::from_value(json).unwrap();
         assert!(matches!(roundtrip, ClientMessage::Cancel(_)));
@@ -111,9 +115,9 @@ mod tests {
             thinking_budget: Some(4096),
         };
         let json = serde_json::to_value(&overrides).unwrap();
-        assert_eq!(json["temperature"], 0.8);
-        assert_eq!(json["top_p"], 0.95);
-        assert_eq!(json["thinking_budget"], 4096);
+        assert_eq!(field(&json, "temperature"), 0.8);
+        assert_eq!(field(&json, "top_p"), 0.95);
+        assert_eq!(field(&json, "thinking_budget"), 4096);
     }
 
     #[test]
@@ -133,7 +137,7 @@ mod tests {
             thinking_budget: None,
         };
         let json = serde_json::to_value(&overrides).unwrap();
-        assert_eq!(json["temperature"], 0.5);
+        assert_eq!(field(&json, "temperature"), 0.5);
         assert!(json.get("top_p").is_none());
     }
 
@@ -154,21 +158,20 @@ mod tests {
         };
         let msg = ClientMessage::Message(body);
         let json = serde_json::to_value(&msg).unwrap();
-        assert_eq!(json["type"], "message");
-        assert_eq!(json["overrides"]["temperature"], 0.7);
-        assert_eq!(json["overrides"]["thinking_budget"], 2048);
-        assert!(json["overrides"].get("top_p").is_none());
+        assert_eq!(field(&json, "type"), "message");
+        let overrides = field(&json, "overrides");
+        assert_eq!(field(overrides, "temperature"), 0.7);
+        assert_eq!(field(overrides, "thinking_budget"), 2048);
+        assert!(overrides.get("top_p").is_none());
 
         let roundtrip: ClientMessage = serde_json::from_value(json).unwrap();
-        match roundtrip {
-            ClientMessage::Message(b) => {
-                let o = b.overrides.unwrap();
-                assert_eq!(o.temperature, Some(0.7));
-                assert_eq!(o.thinking_budget, Some(2048));
-                assert_eq!(o.top_p, None);
-            }
-            _ => panic!("wrong variant"),
-        }
+        let ClientMessage::Message(b) = roundtrip else {
+            panic!("wrong variant");
+        };
+        let o = b.overrides.unwrap();
+        assert_eq!(o.temperature, Some(0.7));
+        assert_eq!(o.thinking_budget, Some(2048));
+        assert_eq!(o.top_p, None);
     }
 
     #[test]

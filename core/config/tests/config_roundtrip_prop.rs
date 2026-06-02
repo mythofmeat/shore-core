@@ -1,8 +1,6 @@
-#![allow(
-    clippy::expect_used,
-    clippy::too_many_lines,
-    clippy::type_complexity,
-    clippy::unwrap_used
+#![expect(
+    clippy::unwrap_used,
+    reason = "property-test generators and helpers intentionally fail fast on invalid generated config shapes"
 )]
 
 use proptest::prelude::*;
@@ -783,8 +781,10 @@ fn assert_toml_round_trip<T>(value: &T) -> Result<(), TestCaseError>
 where
     T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug,
 {
-    let encoded = toml::to_string(value).expect("config value serializes to TOML");
-    let decoded: T = toml::from_str(&encoded).expect("serialized TOML parses");
+    let encoded = toml::to_string(value)
+        .map_err(|e| TestCaseError::fail(format!("config value serializes to TOML: {e}")))?;
+    let decoded: T = toml::from_str(&encoded)
+        .map_err(|e| TestCaseError::fail(format!("serialized TOML parses: {e}")))?;
     prop_assert_eq!(&decoded, value);
     Ok(())
 }

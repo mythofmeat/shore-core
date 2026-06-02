@@ -165,7 +165,7 @@ pub const COMPACTION_TAIL_ENTRY_COUNT: usize = 2;
 /// — see [`COMPACTION_TAIL_ENTRY_COUNT`] for why this is the only safe
 /// shape across the compaction tool loop.
 fn append_compaction_tail(
-    request: &mut shore_llm::types::LlmRequest,
+    request: &mut LlmRequest,
     user_prompt: serde_json::Value,
     system_prompt: &str,
 ) {
@@ -180,6 +180,7 @@ fn append_compaction_tail(
 /// Production `CompactionLlm` backed by `LedgerClient` (ledger-tracked LLM calls).
 ///
 /// Returns raw LLM text — the compaction library handles XML parsing.
+#[derive(Debug)]
 pub struct RealCompactionLlm {
     client: LedgerClient,
     model: ResolvedModel,
@@ -299,6 +300,7 @@ impl CompactionLlm for RealCompactionLlm {
 
 /// Production `ConversationManager` that archives conversations to segment
 /// files with message retention.
+#[derive(Debug)]
 pub struct RealConversationManager {
     character_dir: PathBuf,
 }
@@ -490,8 +492,8 @@ mod tests {
         system: Option<serde_json::Value>,
         tools: Option<Vec<serde_json::Value>>,
         messages: Vec<serde_json::Value>,
-    ) -> shore_llm::types::LlmRequest {
-        shore_llm::types::LlmRequest {
+    ) -> LlmRequest {
+        LlmRequest {
             sdk,
             model: "chat-model".to_string(),
             api_key: "chat-secret".to_string(),
@@ -516,7 +518,7 @@ mod tests {
 
     #[test]
     fn compaction_request_keeps_chat_prefix_but_uses_compaction_settings() {
-        let api_key_env = format!("SHORE_TEST_COMPACTION_{}", uuid::Uuid::new_v4().simple());
+        let api_key_env = format!("SHORE_TEST_COMPACTION_{}", Uuid::new_v4().simple());
         std::env::set_var(&api_key_env, "compaction-secret");
         let model = test_compaction_model(&api_key_env);
         let ledger_tmp = TempDir::new().unwrap();
@@ -600,10 +602,7 @@ mod tests {
     /// ~40% API-spend regression in production.
     #[test]
     fn compaction_request_matches_chat_prefix_byte_for_byte() {
-        let api_key_env = format!(
-            "SHORE_TEST_COMPACTION_PREFIX_{}",
-            uuid::Uuid::new_v4().simple()
-        );
+        let api_key_env = format!("SHORE_TEST_COMPACTION_PREFIX_{}", Uuid::new_v4().simple());
         std::env::set_var(&api_key_env, "compaction-secret");
         let model = test_compaction_model(&api_key_env);
         let ledger_tmp = TempDir::new().unwrap();
@@ -687,10 +686,7 @@ mod tests {
     /// lives in the sidecar.
     #[test]
     fn compaction_request_carries_inline_system_for_openai_sdk() {
-        let api_key_env = format!(
-            "SHORE_TEST_OPENAI_COMPACTION_{}",
-            uuid::Uuid::new_v4().simple()
-        );
+        let api_key_env = format!("SHORE_TEST_OPENAI_COMPACTION_{}", Uuid::new_v4().simple());
         std::env::set_var(&api_key_env, "openai-secret");
         let model = test_openai_compaction_model(&api_key_env);
         let ledger_tmp = TempDir::new().unwrap();
@@ -775,10 +771,7 @@ mod tests {
         mock.enqueue_json_text("done").await;
 
         // Build a ResolvedModel pointed at the mock so generate() lands there.
-        let api_key_env = format!(
-            "SHORE_TEST_COMPACTION_LOOP_{}",
-            uuid::Uuid::new_v4().simple()
-        );
+        let api_key_env = format!("SHORE_TEST_COMPACTION_LOOP_{}", Uuid::new_v4().simple());
         std::env::set_var(&api_key_env, "compaction-secret");
         let model = ResolvedModel::from_parts(
             "compact".into(),
@@ -924,7 +917,7 @@ mod tests {
     fn strip_cache_control_for_test(v: &mut serde_json::Value) {
         match v {
             serde_json::Value::Object(map) => {
-                map.remove("cache_control");
+                let _ignored = map.remove("cache_control");
                 for (_, child) in map.iter_mut() {
                     strip_cache_control_for_test(child);
                 }
@@ -934,7 +927,10 @@ mod tests {
                     strip_cache_control_for_test(child);
                 }
             }
-            _ => {}
+            serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::String(_) => {}
         }
     }
 
@@ -1000,14 +996,15 @@ mod tests {
         std::fs::write(dir.join("active.jsonl"), &content).unwrap();
 
         let mgr = RealConversationManager::new(dir);
-        mgr.archive_and_retain(
-            "conv",
-            &RetentionParams {
-                keep_last_n: 5, // more than available
-                active_content: content,
-            },
-        )
-        .unwrap();
+        let _ignored = mgr
+            .archive_and_retain(
+                "conv",
+                &RetentionParams {
+                    keep_last_n: 5, // more than available
+                    active_content: content,
+                },
+            )
+            .unwrap();
 
         // All messages retained, no segment created.
         let active = std::fs::read_to_string(dir.join("active.jsonl")).unwrap();
@@ -1042,14 +1039,15 @@ mod tests {
         std::fs::write(dir.join("active.jsonl"), &content).unwrap();
 
         let mgr = RealConversationManager::new(dir);
-        mgr.archive_and_retain(
-            "conv",
-            &RetentionParams {
-                keep_last_n: 0,
-                active_content: content,
-            },
-        )
-        .unwrap();
+        let _ignored = mgr
+            .archive_and_retain(
+                "conv",
+                &RetentionParams {
+                    keep_last_n: 0,
+                    active_content: content,
+                },
+            )
+            .unwrap();
 
         assert!(dir.join("segments/0002.jsonl").exists());
 

@@ -11,8 +11,26 @@
     clippy::unimplemented,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    clippy::as_conversions,
+    clippy::allow_attributes,
+    clippy::allow_attributes_without_reason,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn,
+    clippy::let_underscore_must_use,
+    clippy::clone_on_ref_ptr,
+    clippy::dbg_macro,
+    clippy::exit,
+    clippy::mem_forget,
+    clippy::match_wildcard_for_single_variants,
+    clippy::wildcard_enum_match_arm,
+    clippy::indexing_slicing,
+    clippy::undocumented_unsafe_blocks,
+    unsafe_code,
+    elided_lifetimes_in_paths,
+    unused_qualifications
 )]
+#![deny(clippy::print_stdout, clippy::print_stderr, unreachable_pub)]
 
 use std::collections::VecDeque;
 
@@ -26,6 +44,7 @@ pub mod logging;
 // ---------------------------------------------------------------------------
 
 /// Fixed-capacity ring buffer backed by a `VecDeque`.
+#[derive(Debug)]
 pub struct RingBuffer<T> {
     buf: VecDeque<T>,
     capacity: usize,
@@ -41,7 +60,7 @@ impl<T> RingBuffer<T> {
 
     pub fn push(&mut self, item: T) {
         if self.buf.len() >= self.capacity {
-            self.buf.pop_front();
+            let _ignored = self.buf.pop_front();
         }
         self.buf.push_back(item);
     }
@@ -144,6 +163,7 @@ pub struct KeyFallbackEntry {
 
 const DEFAULT_CAPACITY: usize = 100;
 
+#[derive(Debug)]
 pub struct Diagnostics {
     pub api_calls: RingBuffer<ApiCallEntry>,
     pub tool_calls: RingBuffer<ToolCallEntry>,
@@ -309,19 +329,33 @@ mod tests {
         });
 
         let json = diag.to_json(10);
-        assert_eq!(json["api_calls"]["count"], 1);
-        assert_eq!(json["tool_calls"]["count"], 1);
-        assert_eq!(json["errors"]["count"], 1);
-        assert_eq!(json["api_calls"]["recent"][0]["model"], "test-model");
-        assert_eq!(json["tool_calls"]["recent"][0]["tool_name"], "check_time");
-        assert_eq!(json["errors"]["recent"][0]["error_type"], "llm");
+        assert_eq!(json.pointer("/api_calls/count"), Some(&json!(1)));
+        assert_eq!(json.pointer("/tool_calls/count"), Some(&json!(1)));
+        assert_eq!(json.pointer("/errors/count"), Some(&json!(1)));
+        assert_eq!(
+            json.pointer("/api_calls/recent/0/model"),
+            Some(&json!("test-model"))
+        );
+        assert_eq!(
+            json.pointer("/tool_calls/recent/0/tool_name"),
+            Some(&json!("check_time"))
+        );
+        assert_eq!(
+            json.pointer("/errors/recent/0/error_type"),
+            Some(&json!("llm"))
+        );
     }
 
     #[test]
     fn diagnostics_empty_to_json() {
         let diag = Diagnostics::default();
         let json = diag.to_json(10);
-        assert_eq!(json["api_calls"]["count"], 0);
-        assert_eq!(json["api_calls"]["recent"].as_array().unwrap().len(), 0);
+        assert_eq!(json.pointer("/api_calls/count"), Some(&json!(0)));
+        assert_eq!(
+            json.pointer("/api_calls/recent")
+                .and_then(Value::as_array)
+                .map(Vec::is_empty),
+            Some(true)
+        );
     }
 }

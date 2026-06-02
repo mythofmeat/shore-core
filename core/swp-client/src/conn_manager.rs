@@ -56,7 +56,7 @@ pub fn spawn_connection(
     let client_id = client_id.to_string();
     let app_name = app_name.to_string();
 
-    tokio::spawn(connection_loop(
+    let _ignored = tokio::spawn(connection_loop(
         addr, config, client_id, app_name, character, event_tx, cmd_rx,
     ));
 
@@ -65,7 +65,7 @@ pub fn spawn_connection(
 
 /// Compute next backoff duration, doubling each time up to the cap.
 fn next_backoff(current: Duration, max: Duration) -> Duration {
-    (current * 2).min(max)
+    current.saturating_mul(2).min(max)
 }
 
 fn resolve_addr(addr: Option<&str>, config: Option<&str>) -> crate::Result<ServerAddr> {
@@ -96,7 +96,7 @@ async fn connection_loop(
             Ok(addr) => addr,
             Err(e) => {
                 error!(error = %e, "failed to resolve daemon address");
-                let _ = event_tx
+                let _ignored = event_tx
                     .send(ConnEvent::Disconnected(format!(
                         "address resolution failed: {e}"
                     )))
@@ -119,7 +119,7 @@ async fn connection_loop(
                 backoff = Duration::from_millis(500);
                 let mut sync_state = SyncState::new(history.revision);
 
-                let _ = event_tx
+                let _ignored = event_tx
                     .send(ConnEvent::Connected {
                         server_name: hello.server_name,
                         characters: hello.characters,
@@ -139,7 +139,7 @@ async fn connection_loop(
                                 Some(ConnCommand::Send(msg)) => {
                                     if let Err(e) = conn.send(&msg).await {
                                         error!(error = %e, "send failed, disconnecting");
-                                        let _ = event_tx.send(ConnEvent::Disconnected(
+                                        let _ignored = event_tx.send(ConnEvent::Disconnected(
                                             "send failed".into()
                                         )).await;
                                         break;
@@ -159,7 +159,7 @@ async fn connection_loop(
                             match msg {
                                 Ok(ServerMessage::Shutdown(_)) => {
                                     info!("server sent shutdown");
-                                    let _ = event_tx.send(ConnEvent::Disconnected(
+                                    let _ignored = event_tx.send(ConnEvent::Disconnected(
                                         "server shutdown".into()
                                     )).await;
                                     break;
@@ -182,7 +182,7 @@ async fn connection_loop(
                                 }
                                 Err(e) => {
                                     warn!(error = %e, "connection lost");
-                                    let _ = event_tx.send(ConnEvent::Disconnected(
+                                    let _ignored = event_tx.send(ConnEvent::Disconnected(
                                         "connection lost".into()
                                     )).await;
                                     break;
@@ -194,7 +194,7 @@ async fn connection_loop(
             }
             Err(e) => {
                 warn!(error = %e, "connect failed");
-                let _ = event_tx
+                let _ignored = event_tx
                     .send(ConnEvent::Disconnected(format!("connect failed: {e}")))
                     .await;
             }

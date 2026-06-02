@@ -427,7 +427,7 @@ impl ToolToggles {
     }
 
     pub fn set(&mut self, tool: &str, enabled: bool) {
-        self.0.insert(tool.to_string(), enabled);
+        let _ignored = self.0.insert(tool.to_string(), enabled);
     }
 
     pub fn generate_image(&self) -> bool {
@@ -1296,7 +1296,11 @@ min_cost_usd = 2.5
         assert_eq!(config.usage.timezone, "utc");
         assert!(!config.usage.allow_compaction_over_budget);
         assert_eq!(config.usage.budgets.len(), 1);
-        let budget = &config.usage.budgets[0];
+        let budget = config
+            .usage
+            .budgets
+            .first()
+            .expect("usage budget should be present");
         assert_eq!(budget.period, UsageBudgetPeriod::Day);
         assert_eq!(budget.limit, UsageBudgetAction::Block);
         assert_eq!(budget.provider.as_deref(), Some("openrouter"));

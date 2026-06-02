@@ -75,7 +75,7 @@ fn missing_sidecar_error() -> LlmError {
 /// Dispatch a streaming request through the sidecar.
 ///
 /// Returns the read half of a DuplexStream that yields NDJSON `StreamEvent` lines.
-pub async fn stream(
+pub(crate) async fn stream(
     _client: &reqwest::Client,
     request: &LlmRequest,
     sidecar_socket: Option<&Path>,
@@ -102,7 +102,7 @@ pub async fn stream(
 }
 
 /// Dispatch a non-streaming generate request through the sidecar.
-pub async fn generate(
+pub(crate) async fn generate(
     _client: &reqwest::Client,
     request: &LlmRequest,
     sidecar_socket: Option<&Path>,
@@ -138,7 +138,7 @@ pub async fn generate(
 }
 
 /// Dispatch an embedding request.
-pub async fn embed(
+pub(crate) async fn embed(
     client: &reqwest::Client,
     provider: &str,
     model: &str,
@@ -151,7 +151,7 @@ pub async fn embed(
 }
 
 /// Dispatch an image generation request through the sidecar.
-pub async fn image_generate(
+pub(crate) async fn image_generate(
     _client: &reqwest::Client,
     params: &ImageGenerateParams<'_>,
     sidecar_socket: Option<&Path>,
@@ -167,6 +167,10 @@ pub async fn image_generate(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "asserts in `?`-returning tests; the test-exemption equivalent of clippy.toml's allow-panic-in-tests"
+)]
 mod tests {
     use super::*;
     use serde_json::json;

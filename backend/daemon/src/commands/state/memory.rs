@@ -375,11 +375,10 @@ pub async fn compact(
 
     let display_name = ctx.config.app.defaults.resolve_display_name();
 
-    let markdown_store = crate::memory::markdown_store::MarkdownMemoryStore::open(
-        character_memory_dir(&ctx.config.dirs.config, &char_name),
-    )
-    .await
-    .ok();
+    let markdown_store =
+        MarkdownMemoryStore::open(character_memory_dir(&ctx.config.dirs.config, &char_name))
+            .await
+            .ok();
 
     // Resolve the chat-shape request compaction will extend. Prefer the
     // in-memory cached `last_request`; fall back to rebuilding from disk
@@ -564,9 +563,10 @@ fn build_swp_compaction_tool_context(
         workspace_dir: character_workspace_dir(&ctx.config.dirs.config, char_name)
             .to_string_lossy()
             .into_owned(),
-        markdown_store: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
-            character_memory_dir(&ctx.config.dirs.config, char_name),
-        )
+        markdown_store: MarkdownMemoryStore::open_sync(character_memory_dir(
+            &ctx.config.dirs.config,
+            char_name,
+        ))
         .ok(),
         memory_retrieval_config: ctx.config.app.memory.retrieval.clone(),
         embedder,
@@ -584,7 +584,10 @@ fn compaction_err(e: &CompactionError) -> (ErrorCode, String) {
         CompactionError::PrivateConversation | CompactionError::InsufficientMessages => {
             (ErrorCode::InvalidRequest, e.to_string())
         }
-        _ => (ErrorCode::InternalError, e.to_string()),
+        CompactionError::Llm(_)
+        | CompactionError::Parse(_)
+        | CompactionError::ConversationManager(_)
+        | CompactionError::MarkdownStore(_) => (ErrorCode::InternalError, e.to_string()),
     }
 }
 

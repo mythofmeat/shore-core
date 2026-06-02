@@ -225,7 +225,7 @@ pub async fn dream_status(
     character: &str,
     cfg: &DreamingConfig,
 ) -> Result<DreamStatus, DreamingError> {
-    let _ = character_memory_dir(config_dir, character);
+    let _ignored = character_memory_dir(config_dir, character);
     let state = read_state(data_dir, config_dir, character).await?;
     let due = cfg.enabled && is_due(cfg, state.last_run_at.as_deref())?;
     Ok(DreamStatus {
@@ -1044,11 +1044,11 @@ async fn snapshot_memory_files(
         .await
         .map_err(|e| DreamingError::Memory(e.to_string()))?
     {
-        snapshot.insert(entry.path, entry.content);
+        let _ignored = snapshot.insert(entry.path, entry.content);
     }
     match fs::read_to_string(memory_index_path).await {
         Ok(content) => {
-            snapshot.insert(MEMORY_INDEX_FILE.to_string(), content);
+            let _ignored = snapshot.insert(MEMORY_INDEX_FILE.to_string(), content);
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(DreamingError::Io(e.to_string())),
@@ -1103,15 +1103,15 @@ async fn write_fallback_memory_index(
     );
     body.push_str("Use it to decide which memory files to inspect before answering.\n\n");
     body.push_str("Core user facts and standing behavior guidance are already loaded from USER.md and AGENTS.md; do not duplicate them here unless needed as pointers to memory files.\n\n");
-    let _ = writeln!(body, "Character: {character}");
-    let _ = writeln!(body, "Last updated: {ran_at}");
+    let _ignored = writeln!(body, "Character: {character}");
+    let _ignored = writeln!(body, "Last updated: {ran_at}");
     body.push_str("Fallback note: Rust created this minimal index because the AI librarian pass did not leave a usable MEMORY.md.\n\n");
     body.push_str("## Memory areas\n\n");
     if entries.is_empty() {
         body.push_str("- No ordinary memory files were found yet.\n");
     } else {
         for entry in entries.iter().take(MAX_INDEX_FILES) {
-            let _ = writeln!(body, "- `{}` - {}", entry.path, memory_file_summary(entry));
+            let _ignored = writeln!(body, "- `{}` - {}", entry.path, memory_file_summary(entry));
         }
     }
     body.push_str("\n## Recently updated files\n\n");
@@ -1140,7 +1140,7 @@ async fn append_librarian_audit(
     final_report: Option<&str>,
 ) -> Result<(), DreamingError> {
     let mut body = String::new();
-    let _ = write!(body, "AI librarian dreaming pass at `{ran_at}`.\n\n");
+    let _ignored = write!(body, "AI librarian dreaming pass at `{ran_at}`.\n\n");
     body.push_str("Files inspected:\n");
     push_markdown_list_or_none(&mut body, inspected);
     body.push_str("\nFiles changed by tools:\n");
@@ -1174,7 +1174,7 @@ fn push_markdown_list_or_none(body: &mut String, items: &[String]) {
         return;
     }
     for item in items {
-        let _ = writeln!(body, "- `{}`", item.replace('`', "'"));
+        let _ignored = writeln!(body, "- `{}`", item.replace('`', "'"));
     }
 }
 
@@ -1407,10 +1407,10 @@ fn run_light_phase(
             let mut evidence_sources = prior
                 .map(|seen| seen.sources.iter().cloned().collect::<BTreeSet<_>>())
                 .unwrap_or_default();
-            evidence_sources.insert(evidence.source.clone());
+            let _ignored = evidence_sources.insert(evidence.source.clone());
             let first_seen_at = match prior {
                 Some(seen) if !seen.first_seen_at.is_empty() => seen.first_seen_at.clone(),
-                _ => ran_at.to_string(),
+                Some(_) | None => ran_at.to_string(),
             };
             let themes = detect_themes(&text);
             let recency = recency_score(&entry.modified_at);
@@ -1438,7 +1438,7 @@ fn run_light_phase(
                 decision_reason: "staged by Light Sleep; Deep has not evaluated it yet".to_string(),
                 evidence: vec![evidence],
             };
-            by_key.insert(key, candidate);
+            let _ignored = by_key.insert(key, candidate);
         }
     }
 
@@ -1784,17 +1784,17 @@ async fn append_dream_diary(
         Err(e) => return Err(DreamingError::Io(e.to_string())),
     };
 
-    let _ = write!(body, "## Dream Cycle - {ran_at}\n\n");
+    let _ignored = write!(body, "## Dream Cycle - {ran_at}\n\n");
     body.push_str("### Light Sleep - Staging\n\n");
-    let _ = writeln!(body, "- Sources reviewed: {}", light.sources_reviewed);
-    let _ = writeln!(body, "- Candidates staged: {}", light.candidates_staged);
-    let _ = writeln!(body, "- Duplicates ignored: {}", light.duplicates_ignored);
+    let _ignored = writeln!(body, "- Sources reviewed: {}", light.sources_reviewed);
+    let _ignored = writeln!(body, "- Candidates staged: {}", light.candidates_staged);
+    let _ignored = writeln!(body, "- Duplicates ignored: {}", light.duplicates_ignored);
     body.push_str("- No durable memory was written\n\n");
 
     if !light.candidates.is_empty() {
         body.push_str("Staged examples:\n\n");
         for candidate in light.candidates.iter().take(MAX_DIARY_ITEMS) {
-            let _ = writeln!(
+            let _ignored = writeln!(
                 body,
                 "- {}\n  - source: `{}`{}",
                 diary_text(&candidate.text),
@@ -1814,7 +1814,7 @@ async fn append_dream_diary(
     } else {
         body.push_str("- Themes noticed:\n");
         for theme in rem.themes.iter().take(MAX_DIARY_ITEMS) {
-            let _ = writeln!(body, "  - {} ({} hits)", theme.theme, theme.hits);
+            let _ignored = writeln!(body, "  - {} ({} hits)", theme.theme, theme.hits);
         }
     }
     if rem.reinforcement_signals.is_empty() {
@@ -1822,7 +1822,7 @@ async fn append_dream_diary(
     } else {
         body.push_str("- Reinforcement signals:\n");
         for (theme, hits) in rem.reinforcement_signals.iter().take(MAX_DIARY_ITEMS) {
-            let _ = writeln!(body, "  - {theme}: {hits} supporting candidates");
+            let _ignored = writeln!(body, "  - {theme}: {hits} supporting candidates");
         }
     }
     body.push_str("- No durable memory was written\n\n");
@@ -1833,10 +1833,10 @@ async fn append_dream_diary(
         body.push_str("- None\n");
     } else {
         for promotion in deep.promoted.iter().take(MAX_DIARY_ITEMS) {
-            let _ = writeln!(body, "- {}", diary_text(&promotion.text));
-            let _ = writeln!(body, "  - score: {:.2}", promotion.score);
+            let _ignored = writeln!(body, "- {}", diary_text(&promotion.text));
+            let _ignored = writeln!(body, "  - score: {:.2}", promotion.score);
             if let Some(evidence) = promotion.evidence.first() {
-                let _ = writeln!(
+                let _ignored = writeln!(
                     body,
                     "  - evidence/source: `{}`{}",
                     evidence.source,
@@ -1846,7 +1846,7 @@ async fn append_dream_diary(
                         .unwrap_or_default()
                 );
             }
-            let _ = writeln!(
+            let _ignored = writeln!(
                 body,
                 "  - gates passed: {}",
                 promotion.gates_passed.join(", ")
@@ -1858,8 +1858,8 @@ async fn append_dream_diary(
         body.push_str("- None\n");
     } else {
         for rejection in deep.rejected.iter().take(MAX_DIARY_ITEMS) {
-            let _ = writeln!(body, "- {}", diary_text(&rejection.text));
-            let _ = writeln!(body, "  - reason: {}", rejection.reason);
+            let _ignored = writeln!(body, "- {}", diary_text(&rejection.text));
+            let _ignored = writeln!(body, "  - reason: {}", rejection.reason);
         }
     }
     body.push_str("\n### Notes for Review\n\n");
@@ -1887,22 +1887,22 @@ async fn write_phase_reports(
 ) -> Result<(), DreamingError> {
     let (light_report_rel, rem_report_rel, deep_report_rel) = report_paths;
     let mut light_report = format!("# Light Sleep - {ran_at}\n\n");
-    let _ = writeln!(
+    let _ignored = writeln!(
         light_report,
         "- Sources reviewed: {}",
         light.sources_reviewed
     );
-    let _ = writeln!(
+    let _ignored = writeln!(
         light_report,
         "- Generated sources ignored: {}",
         light.generated_sources_ignored
     );
-    let _ = writeln!(
+    let _ignored = writeln!(
         light_report,
         "- Candidates staged: {}",
         light.candidates_staged
     );
-    let _ = writeln!(
+    let _ignored = writeln!(
         light_report,
         "- Duplicates ignored: {}",
         light.duplicates_ignored
@@ -1912,7 +1912,7 @@ async fn write_phase_reports(
     let mut rem_report = format!("# REM Sleep - {ran_at}\n\n");
     rem_report.push_str("## Themes\n\n");
     for theme in &rem.themes {
-        let _ = writeln!(rem_report, "- {}: {} hits", theme.theme, theme.hits);
+        let _ignored = writeln!(rem_report, "- {}: {} hits", theme.theme, theme.hits);
     }
     if rem.themes.is_empty() {
         rem_report.push_str("- None\n");
@@ -1925,7 +1925,7 @@ async fn write_phase_reports(
         deep_report.push_str("- None\n");
     } else {
         for promotion in &deep.promoted {
-            let _ = writeln!(deep_report, "- {} ({:.2})", promotion.text, promotion.score);
+            let _ignored = writeln!(deep_report, "- {} ({:.2})", promotion.text, promotion.score);
         }
     }
     deep_report.push_str("\n## Rejected/deferred\n\n");
@@ -1933,7 +1933,7 @@ async fn write_phase_reports(
         deep_report.push_str("- None\n");
     } else {
         for rejection in &deep.rejected {
-            let _ = writeln!(deep_report, "- {} - {}", rejection.text, rejection.reason);
+            let _ignored = writeln!(deep_report, "- {} - {}", rejection.text, rejection.reason);
         }
     }
 
@@ -1967,8 +1967,8 @@ async fn write_memory_index(
 
     let mut body = String::new();
     body.push_str("# Memory Index\n\n");
-    let _ = writeln!(body, "Character: {character}");
-    let _ = write!(body, "Last updated: {ran_at}\n\n");
+    let _ignored = writeln!(body, "Character: {character}");
+    let _ignored = write!(body, "Last updated: {ran_at}\n\n");
     body.push_str("This file is the prompt-visible memory index. It maps durable memory files in workspace/memory, recent updates, and still-relevant conversational throughlines.\n\n");
     body.push_str("It is not the character definition, user profile, standing behavior, tool guide, or heartbeat guide. Those roles stay in SOUL.md, USER.md, AGENTS.md, TOOLS.md, and HEARTBEAT.md.\n\n");
 
@@ -1977,10 +1977,10 @@ async fn write_memory_index(
         body.push_str("- No memory files yet.\n");
     } else {
         for entry in entries.iter().take(MAX_INDEX_FILES) {
-            let _ = writeln!(body, "- `{}` - {}", entry.path, memory_file_summary(entry));
+            let _ignored = writeln!(body, "- `{}` - {}", entry.path, memory_file_summary(entry));
         }
         if entries.len() > MAX_INDEX_FILES {
-            let _ = writeln!(
+            let _ignored = writeln!(
                 body,
                 "- {} additional memory files omitted from this index.",
                 entries.len() - MAX_INDEX_FILES
@@ -1993,7 +1993,7 @@ async fn write_memory_index(
         body.push_str("- No recent memory file updates.\n");
     } else {
         for entry in recent.iter().take(MAX_RECENT_INDEX_FILES) {
-            let _ = writeln!(
+            let _ignored = writeln!(
                 body,
                 "- `{}` - modified {}",
                 entry.path,
@@ -2007,9 +2007,9 @@ async fn write_memory_index(
         body.push_str("- No high-confidence throughlines selected in the latest dream cycle.\n");
     } else {
         for item in throughlines.iter().take(MAX_INDEX_THROUGHLINES) {
-            let _ = writeln!(body, "- {}", diary_text(&item.text));
+            let _ignored = writeln!(body, "- {}", diary_text(&item.text));
             if let Some(evidence) = item.evidence.first() {
-                let _ = writeln!(
+                let _ignored = writeln!(
                     body,
                     "  - source: `{}`{}",
                     evidence.source,
@@ -2093,7 +2093,7 @@ fn update_seen_state(state: &mut DreamState, candidates: &[DreamCandidate]) {
         if let Some(existing) = state.seen_candidates.get(&key) {
             sources.extend(existing.sources.iter().cloned());
         }
-        state.seen_candidates.insert(
+        let _ignored = state.seen_candidates.insert(
             key,
             DreamSeenState {
                 first_seen_at: candidate.first_seen_at.clone(),
@@ -2208,7 +2208,7 @@ fn detect_themes(text: &str) -> Vec<String> {
             "wants",
         ],
     ) {
-        themes.insert("preference".to_string());
+        let _ignored = themes.insert("preference".to_string());
     }
     if contains_any(
         &lower,
@@ -2221,13 +2221,13 @@ fn detect_themes(text: &str) -> Vec<String> {
             "calls themself",
         ],
     ) {
-        themes.insert("identity".to_string());
+        let _ignored = themes.insert("identity".to_string());
     }
     if contains_any(
         &lower,
         &["project", "working on", "building", "repo", "branch"],
     ) {
-        themes.insert("project".to_string());
+        let _ignored = themes.insert("project".to_string());
     }
     if contains_any(
         &lower,
@@ -2240,19 +2240,19 @@ fn detect_themes(text: &str) -> Vec<String> {
             "must not forget",
         ],
     ) {
-        themes.insert("commitment".to_string());
+        let _ignored = themes.insert("commitment".to_string());
     }
     if contains_any(
         &lower,
         &["friend", "partner", "family", "works with", "relationship"],
     ) {
-        themes.insert("relationship".to_string());
+        let _ignored = themes.insert("relationship".to_string());
     }
     if contains_any(
         &lower,
         &["always", "usually", "never", "long-term", "durable"],
     ) {
-        themes.insert("stable_context".to_string());
+        let _ignored = themes.insert("stable_context".to_string());
     }
     themes.into_iter().collect()
 }
@@ -2572,7 +2572,7 @@ mod tests {
 
         mock.enqueue_json_text("Librarian pass complete.").await;
 
-        run_librarian_sweep(
+        let _ignored = run_librarian_sweep(
             &config,
             &config.dirs.data,
             &test_ledger(&tmp, &mock),
@@ -2638,7 +2638,7 @@ mod tests {
             .await;
         mock.enqueue_json_text("Librarian pass complete.").await;
 
-        run_librarian_sweep(
+        let _ignored = run_librarian_sweep(
             &config,
             &config.dirs.data,
             &test_ledger(&tmp, &mock),
@@ -2703,20 +2703,20 @@ mod tests {
 
     /// Recursively remove every `cache_control` marker from a JSON value so
     /// prefix *content* can be compared independent of breakpoint placement.
-    fn strip_cache_control(v: &mut serde_json::Value) {
+    fn strip_cache_control(v: &mut Value) {
         match v {
-            serde_json::Value::Object(map) => {
-                map.remove("cache_control");
+            Value::Object(map) => {
+                let _ignored = map.remove("cache_control");
                 for (_, child) in map.iter_mut() {
                     strip_cache_control(child);
                 }
             }
-            serde_json::Value::Array(arr) => {
+            Value::Array(arr) => {
                 for child in arr.iter_mut() {
                     strip_cache_control(child);
                 }
             }
-            _ => {}
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
         }
     }
 
@@ -2839,7 +2839,6 @@ mod tests {
         let dreams_path = crate::memory::dreams_log::dreams_log_path(&config.dirs.data, "alice");
         let dreams = fs::read_to_string(&dreams_path).await.unwrap();
         assert!(dreams.contains("AI librarian dreaming pass"));
-        let _ = mem;
     }
 
     #[tokio::test]

@@ -99,6 +99,38 @@ unreachable = "warn"
 todo = "warn"
 unimplemented = "warn"
 
+# Tier 2 correctness ratchet (#115): close suppression escape hatches and make
+# ignored must-use results explicit. These stay at workspace `warn` so local
+# development gets signal while CI's `-D warnings` keeps the tree hard-locked.
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+unwrap_in_result = "warn"
+panic_in_result_fn = "warn"
+let_underscore_must_use = "warn"
+as_conversions = "warn"
+
+# Low-noise Tier 2 lints (#115) that are clean workspace-wide.
+clone_on_ref_ptr = "warn"
+dbg_macro = "warn"
+exit = "warn"
+mem_forget = "warn"
+match_wildcard_for_single_variants = "warn"
+wildcard_enum_match_arm = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+undocumented_unsafe_blocks = "warn"
+
+[workspace.lints.rust]
+# Rustc-side paranoia lints from the Tier 2 ratchet (#115). Crates also deny
+# these at their roots once clean, with documented local `unsafe_code`
+# expectations for the small libc FFI surfaces.
+unsafe_code = "warn"
+elided_lifetimes_in_paths = "warn"
+unused_qualifications = "warn"
+unused_results = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
 [profile.dev]
 debug = "line-tables-only"
 

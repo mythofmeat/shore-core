@@ -78,6 +78,7 @@ pub struct AssembledPrompt {
 // ---------------------------------------------------------------------------
 
 /// Parameters required for prompt assembly.
+#[derive(Debug)]
 pub struct PromptParams<'a> {
     /// Character name.
     pub character_name: &'a str,
@@ -164,11 +165,11 @@ fn configured_token_limit(configured: Option<u32>, default: usize) -> usize {
 
 fn template_vars(params: &PromptParams<'_>) -> HashMap<String, String> {
     let mut vars = HashMap::new();
-    vars.insert("char".into(), params.character_name.to_string());
-    vars.insert("character_name".into(), params.character_name.to_string());
-    vars.insert("user".into(), params.display_name.to_string());
-    vars.insert("date".into(), String::new());
-    vars.insert("time".into(), String::new());
+    let _ignored = vars.insert("char".into(), params.character_name.to_string());
+    let _ignored = vars.insert("character_name".into(), params.character_name.to_string());
+    let _ignored = vars.insert("user".into(), params.display_name.to_string());
+    let _ignored = vars.insert("date".into(), String::new());
+    let _ignored = vars.insert("time".into(), String::new());
     vars
 }
 
@@ -462,7 +463,7 @@ fn trim_messages(
 
     // Drop leading tool-loop messages that would be orphaned.
     while !selected.is_empty() && is_tool_loop_msg_prompt(&selected[0].0) {
-        selected.remove(0);
+        let _ignored = selected.remove(0);
     }
 
     // True when the model is missing prior context — either compaction
@@ -569,9 +570,9 @@ mod tests {
 
     fn test_vars() -> HashMap<String, String> {
         let mut vars = HashMap::new();
-        vars.insert("char".into(), "Shore".into());
-        vars.insert("character_name".into(), "Shore".into());
-        vars.insert("user".into(), "Alice".into());
+        let _ignored = vars.insert("char".into(), "Shore".into());
+        let _ignored = vars.insert("character_name".into(), "Shore".into());
+        let _ignored = vars.insert("user".into(), "Alice".into());
         vars
     }
 
@@ -621,7 +622,7 @@ mod tests {
     #[test]
     fn render_template_conditional_present() {
         let mut vars = test_vars();
-        vars.insert("character_definition".into(), "A helpful companion".into());
+        let _ignored = vars.insert("character_definition".into(), "A helpful companion".into());
         let template =
             "Start.{{#if character_definition}}\nDef: {{character_definition}}{{/if}}\nEnd.";
         let result = render_template(template, &vars);
@@ -640,7 +641,7 @@ mod tests {
     #[test]
     fn render_template_conditional_empty_string() {
         let mut vars = test_vars();
-        vars.insert("recap".into(), String::new());
+        let _ignored = vars.insert("recap".into(), String::new());
         let template = "Before{{#if recap}} RECAP: {{recap}}{{/if}} After";
         let result = render_template(template, &vars);
         assert_eq!(result, "Before After");
@@ -649,8 +650,8 @@ mod tests {
     #[test]
     fn render_template_builtin_system() {
         let mut vars = test_vars();
-        vars.insert("char".into(), "TestChar".into());
-        vars.insert("user".into(), "TestUser".into());
+        let _ignored = vars.insert("char".into(), "TestChar".into());
+        let _ignored = vars.insert("user".into(), "TestUser".into());
         let result = render_template(BUILTIN_SYSTEM_TEMPLATE, &vars);
         assert!(result.contains("You are TestChar, in conversation with TestUser."));
         assert!(result.contains("Communicate directly"));

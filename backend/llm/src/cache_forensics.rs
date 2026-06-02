@@ -16,7 +16,7 @@ use serde_json::json;
 static FORENSIC_DIR: OnceLock<PathBuf> = OnceLock::new();
 static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct RequestLog<'a> {
     pub call_id: u64,
     pub character: Option<&'a str>,
@@ -31,7 +31,7 @@ pub struct RequestLog<'a> {
     pub rid: Option<&'a str>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct ResponseLog<'a> {
     pub call_id: u64,
     pub model: &'a str,
@@ -45,7 +45,7 @@ pub struct ResponseLog<'a> {
 
 /// Enable cache forensics.  Call once at startup with the cache directory.
 pub fn enable(cache_dir: PathBuf) {
-    let _ = FORENSIC_DIR.set(cache_dir);
+    let _ignored = FORENSIC_DIR.set(cache_dir);
 }
 
 /// Whether forensics is enabled.
@@ -72,7 +72,7 @@ pub fn write_entry(entry: &serde_json::Value) {
         .append(true)
         .open(&path)
     {
-        let _ = writeln!(f, "{line}");
+        let _ignored = writeln!(f, "{line}");
     }
 }
 
@@ -143,7 +143,7 @@ pub fn notify_anomaly(
     }
     let summary = format!("shore: cache {anomaly}");
     let body = format!("{character} ({call_type})\nread={cache_read} write={cache_write}");
-    let _ = std::process::Command::new("notify-send")
+    let _ignored = std::process::Command::new("notify-send")
         .args(["--urgency=normal", "--app-name=shore", &summary, &body])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

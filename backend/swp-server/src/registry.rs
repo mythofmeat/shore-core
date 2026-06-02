@@ -22,6 +22,7 @@ pub struct InstanceInfo {
 }
 
 /// Handle to the instance registry file at a known path.
+#[derive(Debug)]
 pub struct Registry {
     path: PathBuf,
 }
@@ -191,12 +192,18 @@ enum ProcessState {
 }
 
 #[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "process liveness probe uses libc::kill(pid, 0), which has no safe std wrapper"
+)]
 fn pid_state(pid: u32) -> ProcessState {
     // The kernel's pid_t is i32; real PIDs fit far below i32::MAX. A value that
     // doesn't fit can't name a live process, so treat it as dead.
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return ProcessState::Dead;
     };
+    // SAFETY: signal 0 performs permission/existence checking only. `pid`
+    // was range-checked for this platform's pid_t above.
     let rc = unsafe { libc::kill(pid, 0) };
     if rc == 0 {
         return ProcessState::Alive;
@@ -225,10 +232,11 @@ mod tests {
     }
 
     fn sample_instance(id: &str) -> InstanceInfo {
+        let port = 7320usize.saturating_add(id.len());
         InstanceInfo {
             id: id.into(),
             pid: std::process::id(),
-            addr: format!("127.0.0.1:{}", 7320 + id.len()),
+            addr: format!("127.0.0.1:{port}"),
             started_at: "2026-01-01T00:00:00Z".into(),
             data_dir: None,
             config_dir: None,
@@ -243,7 +251,7 @@ mod tests {
 
         let entries = reg.list().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0], info);
+        assert_eq!(entries.first(), Some(&info));
     }
 
     #[test]
@@ -257,7 +265,10 @@ mod tests {
         reg.unregister("test-2").unwrap();
         let entries = reg.list().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, "test-3");
+        assert_eq!(
+            entries.first().map(|entry| entry.id.as_str()),
+            Some("test-3")
+        );
     }
 
     #[test]
@@ -271,7 +282,10 @@ mod tests {
 
         let entries = reg.list().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].addr, "127.0.0.1:9999");
+        assert_eq!(
+            entries.first().map(|entry| entry.addr.as_str()),
+            Some("127.0.0.1:9999")
+        );
     }
 
     #[test]
@@ -291,7 +305,10 @@ mod tests {
 
         let entries = reg.list().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, "daemon-b");
+        assert_eq!(
+            entries.first().map(|entry| entry.id.as_str()),
+            Some("daemon-b")
+        );
     }
 
     #[test]
@@ -323,7 +340,7 @@ mod tests {
 
         let backups: Vec<_> = std::fs::read_dir(reg.path().parent().unwrap())
             .unwrap()
-            .filter_map(std::result::Result::ok)
+            .filter_map(Result::ok)
             .map(|entry| entry.path())
             .filter(|path| {
                 let is_json = path
@@ -338,6 +355,7 @@ mod tests {
             })
             .collect();
         assert_eq!(backups.len(), 1, "expected one preserved corrupt backup");
-        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), corrupt);
+        let backup = backups.first().expect("backup path should exist");
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), corrupt);
     }
 }

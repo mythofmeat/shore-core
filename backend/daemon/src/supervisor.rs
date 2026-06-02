@@ -26,12 +26,12 @@ const LLM_SIDECAR_BIN_ENV: &str = "SHORE_LLM_SIDECAR_BIN";
 const LLM_SIDECAR_LIBEXEC: &str = "/usr/lib/shore/shore-llm-sidecar";
 
 /// Handle to the supervisor's background task; `shutdown()` joins it.
-pub struct MatrixSupervisor {
+pub(crate) struct MatrixSupervisor {
     handle: tokio::task::JoinHandle<()>,
 }
 
 /// Handle to the LLM sidecar supervisor's background task.
-pub struct LlmSidecarSupervisor {
+pub(crate) struct LlmSidecarSupervisor {
     handle: tokio::task::JoinHandle<()>,
 }
 
@@ -39,7 +39,7 @@ pub struct LlmSidecarSupervisor {
 /// child process. Returns `None` when no binary can be located on PATH or
 /// next to the running daemon — the supervisor then becomes a no-op and
 /// the daemon continues without the Matrix bridge.
-pub fn spawn(shutdown_rx: watch::Receiver<()>) -> Option<MatrixSupervisor> {
+pub(crate) fn spawn(shutdown_rx: watch::Receiver<()>) -> Option<MatrixSupervisor> {
     let binary = locate_matrix_binary()?;
     let handle = tokio::spawn(async move {
         let mut rx = shutdown_rx;
@@ -53,7 +53,7 @@ pub fn spawn(shutdown_rx: watch::Receiver<()>) -> Option<MatrixSupervisor> {
 /// Returns `None` when no `shore-llm-sidecar` binary can be located. This keeps
 /// externally-managed sidecars possible during development, but packaged
 /// installs should ship the binary next to `shore-daemon` or on `PATH`.
-pub fn spawn_llm_sidecar(
+pub(crate) fn spawn_llm_sidecar(
     socket_path: PathBuf,
     shutdown_rx: watch::Receiver<()>,
 ) -> Option<LlmSidecarSupervisor> {
@@ -68,16 +68,16 @@ pub fn spawn_llm_sidecar(
 impl MatrixSupervisor {
     /// Wait up to `timeout` for the supervisor task to exit after a
     /// shutdown signal has been sent on the watch channel.
-    pub async fn shutdown(self, timeout: Duration) {
-        let _ = tokio::time::timeout(timeout, self.handle).await;
+    pub(crate) async fn shutdown(self, timeout: Duration) {
+        let _ignored = tokio::time::timeout(timeout, self.handle).await;
     }
 }
 
 impl LlmSidecarSupervisor {
     /// Wait up to `timeout` for the supervisor task to exit after a
     /// shutdown signal has been sent on the watch channel.
-    pub async fn shutdown(self, timeout: Duration) {
-        let _ = tokio::time::timeout(timeout, self.handle).await;
+    pub(crate) async fn shutdown(self, timeout: Duration) {
+        let _ignored = tokio::time::timeout(timeout, self.handle).await;
     }
 }
 
@@ -155,7 +155,7 @@ async fn supervise(binary: PathBuf, shutdown_rx: &mut watch::Receiver<()>) {
         info!(binary = %binary.display(), "spawning shore-matrix");
         let started_at = Instant::now();
         let mut command = Command::new(&binary);
-        command
+        let _ignored = command
             .kill_on_drop(true)
             .env("RUST_LOG", matrix_log_filter());
         let mut child = match command.spawn() {
@@ -343,7 +343,7 @@ fn spawn_llm_sidecar_child(
     #[cfg(unix)]
     remove_stale_llm_sidecar_socket(socket_path)?;
     let mut command = Command::new(binary);
-    command.kill_on_drop(true).arg("--socket").arg(socket_path);
+    let _ignored = command.kill_on_drop(true).arg("--socket").arg(socket_path);
     command.spawn()
 }
 
@@ -532,6 +532,10 @@ fn record_child_exit(
 /// We route SIGTERM through `libc::kill` because tokio's `Child::start_kill`
 /// sends SIGKILL on Unix, which gives supervised children no chance to tear
 /// down their own subprocesses or flush state.
+#[expect(
+    unsafe_code,
+    reason = "SIGTERM is routed through libc::kill so children can tear down gracefully; tokio's Child::start_kill only sends SIGKILL"
+)]
 async fn graceful_shutdown(child: &mut tokio::process::Child, grace: Duration) {
     if let Some(pid) = child.id() {
         let Ok(pid_t) = libc::pid_t::try_from(pid) else {
@@ -539,8 +543,8 @@ async fn graceful_shutdown(child: &mut tokio::process::Child, grace: Duration) {
                 pid,
                 "supervised child pid does not fit platform pid_t; escalating"
             );
-            let _ = child.start_kill();
-            let _ = child.wait().await;
+            let _ignored = child.start_kill();
+            let _ignored = child.wait().await;
             return;
         };
         // SAFETY: `libc::kill` is a standard syscall; passing a valid pid
@@ -560,8 +564,8 @@ async fn graceful_shutdown(child: &mut tokio::process::Child, grace: Duration) {
             grace_secs = grace.as_secs(),
             "supervised child did not exit within grace period; sending SIGKILL"
         );
-        let _ = child.start_kill();
-        let _ = child.wait().await;
+        let _ignored = child.start_kill();
+        let _ignored = child.wait().await;
     }
 }
 
@@ -593,6 +597,11 @@ async fn sleep_or_shutdown(dur: Duration, rx: &mut watch::Receiver<()>) -> bool 
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    unused_results,
+    reason = "asserts in `?`-returning tests and detached spawn handles; the test-exemption equivalent of clippy.toml's allow-panic-in-tests"
+)]
 mod tests {
     use super::*;
 
@@ -610,8 +619,8 @@ mod tests {
                 return;
             };
             let mut buf = [0_u8; 128];
-            let _ = stream.read(&mut buf).await;
-            let _ = stream.write_all(response).await;
+            let _ignored = stream.read(&mut buf).await;
+            let _ignored = stream.write_all(response).await;
         });
 
         Ok((tmp, probe_path))

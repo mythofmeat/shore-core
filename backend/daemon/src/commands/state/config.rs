@@ -131,7 +131,7 @@ fn config_set(ctx: &mut CommandContext, key: &str, value: &str) -> CommandResult
     match key {
         "defaults.model" | "model" => {
             // Validate the model exists.
-            let _ = ctx
+            let _ignored = ctx
                 .config
                 .models
                 .find_model(value)

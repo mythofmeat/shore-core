@@ -9,8 +9,29 @@
     clippy::unimplemented,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    clippy::as_conversions,
+    clippy::allow_attributes,
+    clippy::allow_attributes_without_reason,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn,
+    clippy::let_underscore_must_use,
+    clippy::clone_on_ref_ptr,
+    clippy::dbg_macro,
+    clippy::exit,
+    clippy::mem_forget,
+    clippy::match_wildcard_for_single_variants,
+    clippy::wildcard_enum_match_arm,
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::undocumented_unsafe_blocks,
+    unsafe_code,
+    elided_lifetimes_in_paths,
+    unused_qualifications
 )]
+#![deny(unreachable_pub)]
 
 pub mod client_config;
 pub mod conn_manager;
@@ -61,7 +82,7 @@ mod tests {
         r: &mut R,
     ) -> T {
         let mut line = String::new();
-        r.read_line(&mut line).await.unwrap();
+        let _ignored = r.read_line(&mut line).await.unwrap();
         serde_json::from_str(line.trim()).unwrap()
     }
 
@@ -91,14 +112,12 @@ mod tests {
 
             // Server reads client hello
             let client_hello: ClientMessage = read_json_line(&mut reader).await;
-            match client_hello {
-                ClientMessage::Hello(h) => {
-                    assert_eq!(h.client_type, "tui");
-                    assert_eq!(h.client_name, "test-client");
-                    assert!(h.capabilities.contains(&"streaming".to_string()));
-                }
-                other => panic!("expected client hello, got: {other:?}"),
-            }
+            let ClientMessage::Hello(h) = client_hello else {
+                panic!("expected client hello");
+            };
+            assert_eq!(h.client_type, "tui");
+            assert_eq!(h.client_name, "test-client");
+            assert!(h.capabilities.contains(&"streaming".to_string()));
 
             // Server sends history
             let history = ServerMessage::History(History {
@@ -132,7 +151,13 @@ mod tests {
         assert_eq!(server_hello.server_name, "test-daemon");
         assert_eq!(server_hello.characters.len(), 1);
         assert_eq!(history.messages.len(), 1);
-        assert_eq!(history.messages[0].content, "hello");
+        assert_eq!(
+            history
+                .messages
+                .first()
+                .map(|message| message.content.as_str()),
+            Some("hello")
+        );
         assert_eq!(history.selected_character.as_deref(), Some("alice"));
         assert_eq!(history.revision, 4);
 
@@ -144,7 +169,7 @@ mod tests {
     async fn handshake_wrong_version() {
         let (client_stream, server_stream) = duplex(8192);
 
-        tokio::spawn(async move {
+        let _ignored = tokio::spawn(async move {
             let (_r, mut w) = tokio::io::split(server_stream);
             let bad_hello = ServerMessage::Hello(ServerHello {
                 v: 999,
@@ -167,7 +192,7 @@ mod tests {
     async fn handshake_unexpected_first_message() {
         let (client_stream, server_stream) = duplex(8192);
 
-        tokio::spawn(async move {
+        let _ignored = tokio::spawn(async move {
             let (_r, mut w) = tokio::io::split(server_stream);
             let ping = ServerMessage::Ping(Ping {});
             write_json_line(&mut w, &ping).await;
@@ -194,13 +219,11 @@ mod tests {
 
             // Read client message
             let msg: ClientMessage = read_json_line(&mut reader).await;
-            match msg {
-                ClientMessage::Message(m) => {
-                    assert_eq!(m.text, "test message");
-                    assert!(m.stream);
-                }
-                other => panic!("expected message, got: {other:?}"),
-            }
+            let ClientMessage::Message(m) = msg else {
+                panic!("expected message");
+            };
+            assert_eq!(m.text, "test message");
+            assert!(m.stream);
 
             // Send a ping back
             let pong = ServerMessage::Ping(Ping {});
@@ -232,17 +255,16 @@ mod tests {
 
             // Read command
             let msg: ClientMessage = read_json_line(&mut reader).await;
-            match msg {
-                ClientMessage::Command(c) => {
-                    assert_eq!(c.name, "switch_character");
-                }
-                other => panic!("expected command, got: {other:?}"),
-            }
+            let ClientMessage::Command(c) = msg else {
+                panic!("expected command");
+            };
+            assert_eq!(c.name, "switch_character");
         });
 
         let mut conn = SWPConnection::from_raw_stream(client_stream);
-        conn.send_regen(true, None).await.unwrap();
-        conn.send_command("switch_character", serde_json::json!({"name": "alice"}))
+        let _ignored = conn.send_regen(true, None).await.unwrap();
+        let _ignored = conn
+            .send_command("switch_character", serde_json::json!({"name": "alice"}))
             .await
             .unwrap();
 
@@ -296,7 +318,7 @@ mod tests {
     async fn handshake_rejects_oversized_server_hello() {
         let (client_stream, server_stream) = duplex(MAX_WIRE_MESSAGE_SIZE + 4096);
 
-        tokio::spawn(async move {
+        let _ignored = tokio::spawn(async move {
             let (_r, mut w) = tokio::io::split(server_stream);
             let oversized = serde_json::json!({
                 "type": "hello",
@@ -381,7 +403,7 @@ mod tests {
             rid: None,
             regen: true,
         });
-        handler.feed(&start, None).unwrap();
+        let _ignored = handler.feed(&start, None).unwrap();
         assert!(handler.is_regen());
     }
 
@@ -439,7 +461,7 @@ mod tests {
             rid: None,
             regen: false,
         });
-        handler.feed(&start, None).unwrap();
+        let _ignored = handler.feed(&start, None).unwrap();
 
         let start2 = ServerMessage::StreamStart(StreamStart {
             rid: None,
@@ -476,9 +498,9 @@ mod tests {
         let ended = Arc::new(Mutex::new(false));
 
         let mut cb = TestCallbacks {
-            started: started.clone(),
-            chunk_count: chunk_count.clone(),
-            ended: ended.clone(),
+            started: Arc::clone(&started),
+            chunk_count: Arc::clone(&chunk_count),
+            ended: Arc::clone(&ended),
         };
 
         let mut handler = StreamHandler::new();
@@ -487,7 +509,7 @@ mod tests {
             rid: None,
             regen: false,
         });
-        handler.feed(&start, Some(&mut cb)).unwrap();
+        let _ignored = handler.feed(&start, Some(&mut cb)).unwrap();
         assert!(*started.lock().unwrap());
 
         let chunk = ServerMessage::StreamChunk(StreamChunk {
@@ -495,8 +517,8 @@ mod tests {
             text: "hi".into(),
             content_type: "text".into(),
         });
-        handler.feed(&chunk, Some(&mut cb)).unwrap();
-        handler.feed(&chunk, Some(&mut cb)).unwrap();
+        let _ignored = handler.feed(&chunk, Some(&mut cb)).unwrap();
+        let _ignored = handler.feed(&chunk, Some(&mut cb)).unwrap();
         assert_eq!(*chunk_count.lock().unwrap(), 2);
 
         let end = ServerMessage::StreamEnd(StreamEnd {
@@ -520,7 +542,7 @@ mod tests {
             finish_reason: "end_turn".into(),
             is_final: true,
         });
-        handler.feed(&end, Some(&mut cb)).unwrap();
+        let _ignored = handler.feed(&end, Some(&mut cb)).unwrap();
         assert!(*ended.lock().unwrap());
     }
 
@@ -533,13 +555,13 @@ mod tests {
             rid: None,
             regen: false,
         });
-        handler.feed(&start, None).unwrap();
+        let _ignored = handler.feed(&start, None).unwrap();
         let chunk = ServerMessage::StreamChunk(StreamChunk {
             rid: None,
             text: "first".into(),
             content_type: "text".into(),
         });
-        handler.feed(&chunk, None).unwrap();
+        let _ignored = handler.feed(&chunk, None).unwrap();
         let end = ServerMessage::StreamEnd(StreamEnd {
             rid: None,
             msg_id: None,
@@ -561,14 +583,14 @@ mod tests {
             finish_reason: "end_turn".into(),
             is_final: true,
         });
-        handler.feed(&end, None).unwrap();
+        let _ignored = handler.feed(&end, None).unwrap();
 
         // Second stream — feed automatically resets on stream_start
         let start2 = ServerMessage::StreamStart(StreamStart {
             rid: None,
             regen: true,
         });
-        handler.feed(&start2, None).unwrap();
+        let _ignored = handler.feed(&start2, None).unwrap();
         assert!(handler.is_active());
         assert!(handler.is_regen());
         assert_eq!(handler.assembled_text(), "");
@@ -876,13 +898,25 @@ mod tests {
             1,
             "one ToolCall frame must be collected"
         );
-        assert_eq!(response.tool_calls[0].tool_name, "memory_search");
+        assert_eq!(
+            response
+                .tool_calls
+                .first()
+                .map(|tool_call| tool_call.tool_name.as_str()),
+            Some("memory_search")
+        );
         assert_eq!(
             response.tool_results.len(),
             1,
             "one ToolResult frame must be collected"
         );
-        assert_eq!(response.tool_results[0].tool_id, "toolu_01");
+        assert_eq!(
+            response
+                .tool_results
+                .first()
+                .map(|tool_result| tool_result.tool_id.as_str()),
+            Some("toolu_01")
+        );
 
         drop(conn);
         server_handle.await.unwrap();

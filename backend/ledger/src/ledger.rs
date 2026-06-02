@@ -94,6 +94,7 @@ pub struct CallRow {
 
 // ── Ledger ────────────────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct Ledger {
     conn: Mutex<Connection>,
 }
@@ -172,7 +173,7 @@ impl Ledger {
     pub fn insert(&self, row: &CallRow) -> Result<i64, rusqlite::Error> {
         let started = std::time::Instant::now();
         let row_id = self.with_conn(|conn| {
-            conn.execute(
+            let _ignored = conn.execute(
                 r"INSERT INTO calls (
                     ts, character, provider, api_key_name, model, call_type,
                     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
@@ -274,7 +275,7 @@ impl Ledger {
 
 // ── Row deserializer ──────────────────────────────────────────────────────────
 
-pub(crate) fn row_from_sqlite(row: &rusqlite::Row) -> SqlResult<CallRow> {
+pub(crate) fn row_from_sqlite(row: &rusqlite::Row<'_>) -> SqlResult<CallRow> {
     // Use column names, not positions. Migrations (e.g. adding `cache_ttl`)
     // append columns to the end of the table on existing databases, which
     // makes positional indexing return the wrong column on migrated rows.
@@ -316,6 +317,10 @@ mod tests {
         Ledger::open_in_memory().unwrap()
     }
 
+    fn first_item<T>(items: &[T]) -> &T {
+        items.first().expect("expected at least one item")
+    }
+
     fn sample_row() -> CallRow {
         CallRow {
             ts: "2026-04-05T12:00:00Z".into(),
@@ -354,29 +359,30 @@ mod tests {
     #[test]
     fn insert_and_read_back() {
         let ledger = test_ledger();
-        ledger.insert(&sample_row()).unwrap();
+        let _ignored = ledger.insert(&sample_row()).unwrap();
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].character, "aria");
-        assert_eq!(rows[0].api_key_name.as_deref(), Some("default"));
-        assert_eq!(rows[0].input_tokens, 100);
-        assert_eq!(rows[0].cache_read_tokens, 80);
-        assert!(rows[0].cache_anomaly.is_none());
+        let row = first_item(&rows);
+        assert_eq!(row.character, "aria");
+        assert_eq!(row.api_key_name.as_deref(), Some("default"));
+        assert_eq!(row.input_tokens, 100);
+        assert_eq!(row.cache_read_tokens, 80);
+        assert!(row.cache_anomaly.is_none());
     }
 
     #[test]
     fn last_anthropic_call() {
         let ledger = test_ledger();
         let mut row = sample_row();
-        ledger.insert(&row).unwrap();
+        let _ignored = ledger.insert(&row).unwrap();
         row.ts = "2026-04-05T12:01:00Z".into();
         row.cache_read_tokens = 120;
-        ledger.insert(&row).unwrap();
+        let _ignored = ledger.insert(&row).unwrap();
         // Compaction should be excluded
         row.ts = "2026-04-05T12:02:00Z".into();
         row.call_type = "compaction".into();
         row.cache_read_tokens = 0;
-        ledger.insert(&row).unwrap();
+        let _ignored = ledger.insert(&row).unwrap();
         let last = ledger.last_anthropic_call("aria").unwrap().unwrap();
         assert_eq!(last.cache_read_tokens, 120);
     }
@@ -390,9 +396,9 @@ mod tests {
         row.cache_read_cost = None;
         row.cache_write_cost = None;
         row.total_cost = None;
-        ledger.insert(&row).unwrap();
+        let _ignored = ledger.insert(&row).unwrap();
         let rows = ledger.recent(1).unwrap();
-        assert!(rows[0].total_cost.is_none());
+        assert!(first_item(&rows).total_cost.is_none());
     }
 
     #[test]
@@ -455,21 +461,22 @@ mod tests {
 
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].character, "aria");
-        assert_eq!(rows[0].total_ms, 1500);
+        let row = first_item(&rows);
+        assert_eq!(row.character, "aria");
+        assert_eq!(row.total_ms, 1500);
         // Pre-v2 rows are backfilled with the cache_ttl column default and
         // have no friendly key name.
-        assert_eq!(rows[0].cache_ttl.as_deref(), Some("1h"));
-        assert!(rows[0].api_key_name.is_none());
-        assert_eq!(rows[0].cost_source.as_deref(), Some("pricing_catalog"));
-        assert_eq!(rows[0].cache_anomaly.as_deref(), Some("unexpected_read"));
+        assert_eq!(row.cache_ttl.as_deref(), Some("1h"));
+        assert!(row.api_key_name.is_none());
+        assert_eq!(row.cost_source.as_deref(), Some("pricing_catalog"));
+        assert_eq!(row.cache_anomaly.as_deref(), Some("unexpected_read"));
 
         // And also check the anomaly query path (the one that surfaces the
         // error in `shore usage --anomalies`).
         let anomalies =
             crate::query::query_anomalies(&ledger, &crate::query::QueryFilter::default()).unwrap();
         assert_eq!(anomalies.len(), 1);
-        assert_eq!(anomalies[0].total_ms, 1500);
+        assert_eq!(first_item(&anomalies).total_ms, 1500);
     }
 
     #[test]
@@ -523,7 +530,10 @@ mod tests {
         };
 
         let rows = ledger.recent(1).unwrap();
-        assert_eq!(rows[0].cost_source.as_deref(), Some("provider_reported"));
+        assert_eq!(
+            first_item(&rows).cost_source.as_deref(),
+            Some("provider_reported")
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@ use shore_test_harness::TestHarness;
 use tokio::time::{sleep, timeout, Instant};
 
 /// Collect whatever messages arrive within a bounded duration.
-pub async fn collect_messages_for(
+pub(crate) async fn collect_messages_for(
     conn: &mut shore_swp_client::connection::SWPConnection,
     duration: Duration,
 ) -> Vec<ServerMessage> {
@@ -26,7 +26,7 @@ pub async fn collect_messages_for(
     }
 }
 
-pub async fn wait_for_mock_requests(harness: &TestHarness, expected: usize) {
+pub(crate) async fn wait_for_mock_requests(harness: &TestHarness, expected: usize) {
     // Matches the harness's COLLECT_TIMEOUT. 5s was too tight on loaded CI
     // runners where each tokio::test spins its own runtime; the request
     // would arrive after the deadline despite no real fault.
@@ -43,7 +43,7 @@ pub async fn wait_for_mock_requests(harness: &TestHarness, expected: usize) {
     }
 }
 
-pub async fn wait_for_heartbeat_detail(
+pub(crate) async fn wait_for_heartbeat_detail(
     harness: &TestHarness,
     character: &str,
     detail_needle: &str,
@@ -66,7 +66,7 @@ pub async fn wait_for_heartbeat_detail(
     }
 }
 
-pub async fn wait_for_file_contents(path: &std::path::Path, needle: &str) -> String {
+pub(crate) async fn wait_for_file_contents(path: &std::path::Path, needle: &str) -> String {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let contents = std::fs::read_to_string(path).unwrap_or_default();
@@ -92,7 +92,7 @@ pub async fn wait_for_file_contents(path: &std::path::Path, needle: &str) -> Str
 /// that depend on a turn being on disk — e.g. compaction snapshotting the
 /// transcript — must wait for the observable state instead. `what` names the
 /// condition for the timeout message.
-pub async fn wait_for_persisted_messages(
+pub(crate) async fn wait_for_persisted_messages(
     harness: &TestHarness,
     pred: impl Fn(&[serde_json::Value]) -> bool,
     what: &str,
@@ -112,7 +112,7 @@ pub async fn wait_for_persisted_messages(
     }
 }
 
-pub fn is_request_scoped_message(msg: &ServerMessage) -> bool {
+pub(crate) fn is_request_scoped_message(msg: &ServerMessage) -> bool {
     matches!(
         msg,
         ServerMessage::CommandOutput(_)

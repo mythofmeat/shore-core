@@ -410,7 +410,7 @@ fn map_entry(
         .get("name")
         .or_else(|| raw.get("display_name"))
         .and_then(|v| v.as_str())
-        .map(std::string::ToString::to_string);
+        .map(ToString::to_string);
     let created_at = raw
         .get("created")
         .and_then(serde_json::Value::as_i64)
@@ -423,11 +423,11 @@ fn map_entry(
     let owned_by = raw
         .get("owned_by")
         .and_then(|v| v.as_str())
-        .map(std::string::ToString::to_string);
+        .map(ToString::to_string);
     let description = raw
         .get("description")
         .and_then(|v| v.as_str())
-        .map(std::string::ToString::to_string);
+        .map(ToString::to_string);
 
     let context_length = raw
         .get("context_length")
@@ -491,6 +491,16 @@ fn modality_includes(raw: &serde_json::Value, side: &str, modality: &str) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn model(models: &[DiscoveredModel], index: usize) -> &DiscoveredModel {
+        models.get(index).expect("discovered model")
+    }
+
+    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+        value
+            .get(key)
+            .unwrap_or_else(|| panic!("missing field {key}"))
+    }
 
     #[test]
     fn cache_path_layout() {
@@ -604,17 +614,15 @@ mod tests {
         let models =
             parse_openai_models_response("openai", "https://api.openai.com/v1", body).unwrap();
         assert_eq!(models.len(), 2);
-        assert_eq!(models[0].model_id, "gpt-4o");
-        assert_eq!(models[0].owned_by.as_deref(), Some("openai"));
-        assert_eq!(models[0].created_at, Some(1_234_567_890));
-        assert!(models[0].supports_tools.is_none(), "unknown stays unknown");
-        assert!(models[0].supports_images.is_none());
-        assert_eq!(models[0].sdk, "openai");
-        assert_eq!(
-            models[0].base_url.as_deref(),
-            Some("https://api.openai.com/v1")
-        );
-        assert_eq!(models[1].owned_by, None);
+        let first = model(&models, 0);
+        assert_eq!(first.model_id, "gpt-4o");
+        assert_eq!(first.owned_by.as_deref(), Some("openai"));
+        assert_eq!(first.created_at, Some(1_234_567_890));
+        assert!(first.supports_tools.is_none(), "unknown stays unknown");
+        assert!(first.supports_images.is_none());
+        assert_eq!(first.sdk, "openai");
+        assert_eq!(first.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(model(&models, 1).owned_by, None);
     }
 
     #[test]
@@ -637,7 +645,7 @@ mod tests {
             parse_openai_models_response("openrouter", "https://openrouter.ai/api/v1", body)
                 .unwrap();
         assert_eq!(models.len(), 1);
-        let m = &models[0];
+        let m = model(&models, 0);
         assert_eq!(m.model_id, "anthropic/claude-3.5-sonnet");
         assert_eq!(m.display_name.as_deref(), Some("Claude 3.5 Sonnet"));
         assert_eq!(m.context_length, Some(200_000));
@@ -647,7 +655,10 @@ mod tests {
         assert_eq!(m.supports_images, Some(true));
         assert_eq!(m.supports_prompt_cache, Some(false));
         assert_eq!(m.description.as_deref(), Some("Strong general model."));
-        assert_eq!(m.raw_provider_metadata["id"], "anthropic/claude-3.5-sonnet");
+        assert_eq!(
+            field(&m.raw_provider_metadata, "id"),
+            &serde_json::json!("anthropic/claude-3.5-sonnet")
+        );
     }
 
     #[test]
@@ -665,22 +676,26 @@ mod tests {
             parse_anthropic_models_response("anthropic", "https://api.anthropic.com", body)
                 .unwrap();
         assert_eq!(models.len(), 1);
-        let m = &models[0];
+        let m = model(&models, 0);
         assert_eq!(m.model_id, "claude-sonnet-4-20250514");
         assert_eq!(m.display_name.as_deref(), Some("Claude Sonnet 4"));
         assert_eq!(m.created_at, Some(0));
         assert_eq!(m.sdk, "anthropic");
-        assert_eq!(m.raw_provider_metadata["type"], "model");
+        assert_eq!(
+            field(&m.raw_provider_metadata, "type"),
+            &serde_json::json!("model")
+        );
     }
 
     #[test]
     fn unknown_capability_stays_unknown_when_field_absent() {
         let body = r#"{"data": [{"id": "x", "object": "model"}]}"#;
         let models = parse_openai_models_response("p", "u", body).unwrap();
-        assert_eq!(models[0].supports_tools, None);
-        assert_eq!(models[0].supports_images, None);
-        assert_eq!(models[0].supports_reasoning, None);
-        assert_eq!(models[0].supports_prompt_cache, None);
+        let first = model(&models, 0);
+        assert_eq!(first.supports_tools, None);
+        assert_eq!(first.supports_images, None);
+        assert_eq!(first.supports_reasoning, None);
+        assert_eq!(first.supports_prompt_cache, None);
     }
 
     #[test]
@@ -688,7 +703,7 @@ mod tests {
         let body = r#"{"data": [{"object":"model"}, {"id":"keep","object":"model"}]}"#;
         let models = parse_openai_models_response("p", "u", body).unwrap();
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0].model_id, "keep");
+        assert_eq!(model(&models, 0).model_id, "keep");
     }
 
     #[test]

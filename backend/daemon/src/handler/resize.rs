@@ -7,7 +7,7 @@
 //! - XDG disk cache to avoid re-encoding on every turn
 //! - Async pre-warming via spawn_blocking
 
-use crate::convert::{f64_to_u32_saturating, u64_to_f64, usize_to_f64};
+use crate::convert::{f64_to_u32_saturating, u64_to_f64, usize_to_f64, usize_to_u64};
 use fast_image_resize as fir;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
@@ -20,13 +20,18 @@ const DIMENSION_FLOOR: u32 = 2048;
 
 pub(super) fn has_meaningful_alpha(img: &DynamicImage) -> bool {
     use image::DynamicImage::{ImageLumaA16, ImageLumaA8, ImageRgba16, ImageRgba32F, ImageRgba8};
-    match img {
-        ImageRgba8(rgba) => rgba.pixels().any(|p| p[3] < 255),
-        ImageRgba16(rgba) => rgba.pixels().any(|p| p[3] < 65535),
-        ImageRgba32F(rgba) => rgba.pixels().any(|p| p[3] < 1.0),
-        ImageLumaA8(la) => la.pixels().any(|p| p[1] < 255),
-        ImageLumaA16(la) => la.pixels().any(|p| p[1] < 65535),
-        _ => false,
+    if let ImageRgba8(rgba) = img {
+        rgba.pixels().any(|p| p[3] < 255)
+    } else if let ImageRgba16(rgba) = img {
+        rgba.pixels().any(|p| p[3] < 65535)
+    } else if let ImageRgba32F(rgba) = img {
+        rgba.pixels().any(|p| p[3] < 1.0)
+    } else if let ImageLumaA8(la) = img {
+        la.pixels().any(|p| p[1] < 255)
+    } else if let ImageLumaA16(la) = img {
+        la.pixels().any(|p| p[1] < 65535)
+    } else {
+        false
     }
 }
 
@@ -35,7 +40,7 @@ pub(super) fn smart_resize(
     media_type: &str,
     max_bytes: u64,
 ) -> Option<(Vec<u8>, &'static str)> {
-    if max_bytes == 0 || (bytes.len() as u64) <= max_bytes {
+    if max_bytes == 0 || usize_to_u64(bytes.len()) <= max_bytes {
         return None;
     }
     if media_type == "image/gif" {
@@ -55,14 +60,15 @@ pub(super) fn smart_resize(
     };
     let (src_w, src_h) = (img.width(), img.height());
     if has_meaningful_alpha(&img) {
-        resize_transparent(&img, src_w, src_h, bytes.len() as u64, max_bytes)
+        resize_transparent(&img, src_w, src_h, usize_to_u64(bytes.len()), max_bytes)
     } else {
         let longest = src_w.max(src_h);
         if longest <= DIMENSION_FLOOR {
-            resize_quality_only(&img, max_bytes)
-                .or_else(|| resize_with_dims(&img, src_w, src_h, bytes.len() as u64, max_bytes))
+            resize_quality_only(&img, max_bytes).or_else(|| {
+                resize_with_dims(&img, src_w, src_h, usize_to_u64(bytes.len()), max_bytes)
+            })
         } else {
-            resize_with_dims(&img, src_w, src_h, bytes.len() as u64, max_bytes)
+            resize_with_dims(&img, src_w, src_h, usize_to_u64(bytes.len()), max_bytes)
         }
     }
 }
@@ -77,21 +83,35 @@ fn resize_transparent(
     let scale = ((u64_to_f64(max_bytes) / u64_to_f64(src_bytes)).sqrt() * 0.85).min(1.0);
     let (new_w, new_h) = scaled_dims(src_w, src_h, scale);
     if let Some(buf) = fir_resize_and_encode_png(img, new_w, new_h) {
-        if (buf.len() as u64) <= max_bytes {
-            log_resize(src_w, src_h, new_w, new_h, src_bytes, buf.len() as u64);
+        if usize_to_u64(buf.len()) <= max_bytes {
+            log_resize(
+                src_w,
+                src_h,
+                new_w,
+                new_h,
+                src_bytes,
+                usize_to_u64(buf.len()),
+            );
             return Some((buf, "image/png"));
         }
         let correction = ((u64_to_f64(max_bytes) / usize_to_f64(buf.len())).sqrt() * 0.85).min(1.0);
         let (retry_w, retry_h) = scaled_dims(new_w, new_h, correction);
         if let Some(buf2) = fir_resize_and_encode_png(img, retry_w, retry_h) {
-            if (buf2.len() as u64) > max_bytes {
+            if usize_to_u64(buf2.len()) > max_bytes {
                 warn!(
                     size = buf2.len(),
                     max = max_bytes,
                     "Transparent image still exceeds limit after retry; sending best-effort result"
                 );
             }
-            log_resize(src_w, src_h, retry_w, retry_h, src_bytes, buf2.len() as u64);
+            log_resize(
+                src_w,
+                src_h,
+                retry_w,
+                retry_h,
+                src_bytes,
+                usize_to_u64(buf2.len()),
+            );
             return Some((buf2, "image/png"));
         }
     }
@@ -102,7 +122,7 @@ fn resize_transparent(
 fn resize_quality_only(img: &DynamicImage, max_bytes: u64) -> Option<(Vec<u8>, &'static str)> {
     for quality in [90u8, 75] {
         if let Some(buf) = encode_jpeg_from_dynamic(img, img.width(), img.height(), quality) {
-            if (buf.len() as u64) <= max_bytes {
+            if usize_to_u64(buf.len()) <= max_bytes {
                 info!(
                     quality,
                     size = buf.len(),
@@ -137,22 +157,36 @@ fn resize_with_dims(
     }
     let quality: u8 = 90;
     if let Some(buf) = fir_resize_and_encode_jpeg(img, new_w, new_h, quality) {
-        if (buf.len() as u64) <= max_bytes {
-            log_resize(src_w, src_h, new_w, new_h, src_bytes, buf.len() as u64);
+        if usize_to_u64(buf.len()) <= max_bytes {
+            log_resize(
+                src_w,
+                src_h,
+                new_w,
+                new_h,
+                src_bytes,
+                usize_to_u64(buf.len()),
+            );
             return Some((buf, "image/jpeg"));
         }
         let correction = ((u64_to_f64(max_bytes) / usize_to_f64(buf.len())).sqrt() * 0.9).min(1.0);
         let (retry_w, retry_h) = scaled_dims(new_w, new_h, correction);
         let retry_q: u8 = 85;
         if let Some(buf2) = fir_resize_and_encode_jpeg(img, retry_w, retry_h, retry_q) {
-            if (buf2.len() as u64) > max_bytes {
+            if usize_to_u64(buf2.len()) > max_bytes {
                 warn!(
                     size = buf2.len(),
                     max = max_bytes,
                     "Image still exceeds limit after retry; sending best-effort result"
                 );
             }
-            log_resize(src_w, src_h, retry_w, retry_h, src_bytes, buf2.len() as u64);
+            log_resize(
+                src_w,
+                src_h,
+                retry_w,
+                retry_h,
+                src_bytes,
+                usize_to_u64(buf2.len()),
+            );
             return Some((buf2, "image/jpeg"));
         }
     }
@@ -282,7 +316,7 @@ pub(super) fn cached_resize(
     max_bytes: u64,
     cache_dir: &Path,
 ) -> Option<(Vec<u8>, &'static str)> {
-    if max_bytes == 0 || (bytes.len() as u64) <= max_bytes {
+    if max_bytes == 0 || usize_to_u64(bytes.len()) <= max_bytes {
         return None;
     }
 
@@ -341,7 +375,7 @@ pub(crate) async fn warm_image_cache(
             let cache_dir = cache_dir.clone();
             tokio::task::spawn_blocking(move || {
                 if let Ok(bytes) = std::fs::read(&path) {
-                    let _ = cached_resize(&path, &bytes, &media_type, max_bytes, &cache_dir);
+                    let _ignored = cached_resize(&path, &bytes, &media_type, max_bytes, &cache_dir);
                 }
             })
         })
@@ -365,7 +399,7 @@ mod tests {
         }
         let mut buf = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut buf);
-        image::DynamicImage::ImageRgba8(img)
+        DynamicImage::ImageRgba8(img)
             .write_to(&mut cursor, image::ImageFormat::Png)
             .unwrap();
         buf
@@ -379,7 +413,7 @@ mod tests {
         }
         let mut buf = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut buf);
-        image::DynamicImage::ImageRgba8(img)
+        DynamicImage::ImageRgba8(img)
             .write_to(&mut cursor, image::ImageFormat::Png)
             .unwrap();
         buf
@@ -395,32 +429,40 @@ mod tests {
         }
     }
 
+    fn rgb_len(w: u32, h: u32) -> usize {
+        usize::try_from(w.saturating_mul(h).saturating_mul(3)).unwrap_or(usize::MAX)
+    }
+
+    fn rgba_len(w: u32, h: u32) -> usize {
+        usize::try_from(w.saturating_mul(h).saturating_mul(4)).unwrap_or(usize::MAX)
+    }
+
     fn make_noisy_jpeg(w: u32, h: u32) -> Vec<u8> {
-        let mut pixels = vec![0u8; (w * h * 3) as usize];
+        let mut pixels = vec![0u8; rgb_len(w, h)];
         fill_noise(&mut pixels, 0xdead_beef_cafe_babe);
         let img = image::RgbImage::from_raw(w, h, pixels).unwrap();
         let mut buf = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut buf);
-        image::DynamicImage::ImageRgb8(img)
+        DynamicImage::ImageRgb8(img)
             .write_to(&mut cursor, image::ImageFormat::Jpeg)
             .unwrap();
         buf
     }
 
     fn make_noisy_png_rgb(w: u32, h: u32) -> Vec<u8> {
-        let mut pixels = vec![0u8; (w * h * 3) as usize];
+        let mut pixels = vec![0u8; rgb_len(w, h)];
         fill_noise(&mut pixels, 0xcafe_f00d_1234_5678);
         let img = image::RgbImage::from_raw(w, h, pixels).unwrap();
         let mut buf = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut buf);
-        image::DynamicImage::ImageRgb8(img)
+        DynamicImage::ImageRgb8(img)
             .write_to(&mut cursor, image::ImageFormat::Png)
             .unwrap();
         buf
     }
 
     fn make_noisy_transparent_png(w: u32, h: u32) -> Vec<u8> {
-        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        let mut pixels = vec![0u8; rgba_len(w, h)];
         fill_noise(&mut pixels, 0xbabe_cafe_dead_f00d);
         for chunk in pixels.chunks_mut(4) {
             if chunk[0] < 64 {
@@ -430,7 +472,7 @@ mod tests {
         let img = image::RgbaImage::from_raw(w, h, pixels).unwrap();
         let mut buf = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut buf);
-        image::DynamicImage::ImageRgba8(img)
+        DynamicImage::ImageRgba8(img)
             .write_to(&mut cursor, image::ImageFormat::Png)
             .unwrap();
         buf
@@ -478,13 +520,13 @@ mod tests {
     #[test]
     fn smart_resize_opaque_png_becomes_jpeg() {
         let png = make_noisy_png_rgb(2000, 2000);
-        let max = (png.len() as u64) / 4;
+        let max = usize_to_u64(png.len()) / 4;
         let result = smart_resize(&png, "image/png", max);
         assert!(result.is_some(), "Should resize oversized opaque PNG");
         let (resized, media_type) = result.unwrap();
         assert_eq!(media_type, "image/jpeg");
         assert!(
-            (resized.len() as u64) <= max,
+            usize_to_u64(resized.len()) <= max,
             "Resized ({}) should be under limit ({})",
             resized.len(),
             max
@@ -495,13 +537,13 @@ mod tests {
     #[test]
     fn smart_resize_transparent_png_stays_png() {
         let png = make_noisy_transparent_png(2000, 2000);
-        let max = (png.len() as u64) / 2;
+        let max = usize_to_u64(png.len()) / 2;
         let result = smart_resize(&png, "image/png", max);
         assert!(result.is_some(), "Should resize oversized transparent PNG");
         let (resized, media_type) = result.unwrap();
         assert_eq!(media_type, "image/png");
         assert!(
-            (resized.len() as u64) <= max,
+            usize_to_u64(resized.len()) <= max,
             "Resized ({}) should be under limit ({})",
             resized.len(),
             max
@@ -512,12 +554,12 @@ mod tests {
     #[test]
     fn smart_resize_small_image_quality_only() {
         let jpeg = make_noisy_jpeg(1000, 1000);
-        let max = (jpeg.len() as u64) / 2;
+        let max = usize_to_u64(jpeg.len()) / 2;
         let result = smart_resize(&jpeg, "image/jpeg", max);
         assert!(result.is_some());
         let (resized, media_type) = result.unwrap();
         assert_eq!(media_type, "image/jpeg");
-        assert!((resized.len() as u64) <= max);
+        assert!(usize_to_u64(resized.len()) <= max);
     }
 
     #[test]
@@ -537,7 +579,7 @@ mod tests {
     #[test]
     fn smart_resize_respects_dimension_floor() {
         let jpeg = make_noisy_jpeg(4000, 3000);
-        let max = (jpeg.len() as u64) / 3;
+        let max = usize_to_u64(jpeg.len()) / 3;
         let result = smart_resize(&jpeg, "image/jpeg", max);
         assert!(result.is_some());
         let (resized, _) = result.unwrap();

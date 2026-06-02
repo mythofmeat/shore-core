@@ -169,9 +169,15 @@ fn sync_one_template(
         // File exists and in manifest — check hash.
         let current_content = fs::read(file_path)?;
         let current_hash = sha256_hex(&current_content);
-        let manifest_hash = &manifest.templates[name].hash;
+        let manifest_hash = manifest
+            .templates
+            .get(name)
+            .map(|entry| entry.hash.as_str())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "template missing from manifest")
+            })?;
 
-        if current_hash == *manifest_hash {
+        if current_hash == manifest_hash {
             // Hash matches → user hasn't touched it → overwrite with new default.
             write_template(file_path, default_content, name, manifest)?;
             Ok(TemplateAction::Updated)
@@ -190,7 +196,7 @@ fn write_template(
 ) -> io::Result<()> {
     fs::write(file_path, content)?;
     let hash = sha256_hex(content.as_bytes());
-    manifest.templates.insert(
+    let _ignored = manifest.templates.insert(
         name.to_string(),
         TemplateEntry {
             hash,
@@ -235,6 +241,17 @@ mod tests {
         ]
     }
 
+    fn item<T>(values: &[T], index: usize) -> &T {
+        values.get(index).expect("value item")
+    }
+
+    fn template_entry<'a>(manifest: &'a PromptManifest, name: &str) -> &'a TemplateEntry {
+        manifest
+            .templates
+            .get(name)
+            .unwrap_or_else(|| panic!("missing template entry {name}"))
+    }
+
     // -- Manifest serialization / deserialization -----------------------------
 
     #[test]
@@ -243,7 +260,7 @@ mod tests {
         let path = dir.path().join("manifest.json");
 
         let mut manifest = PromptManifest::default();
-        manifest.templates.insert(
+        let _ignored = manifest.templates.insert(
             "system.md".to_string(),
             TemplateEntry {
                 hash: "sha256:abc123".to_string(),
@@ -287,12 +304,12 @@ mod tests {
 
         assert_eq!(report.actions.len(), 2);
         assert_eq!(
-            report.actions[0],
-            ("system.md".to_string(), TemplateAction::Written)
+            item(&report.actions, 0),
+            &("system.md".to_string(), TemplateAction::Written)
         );
         assert_eq!(
-            report.actions[1],
-            ("compact.md".to_string(), TemplateAction::Written)
+            item(&report.actions, 1),
+            &("compact.md".to_string(), TemplateAction::Written)
         );
 
         // Files exist with correct content.
@@ -309,9 +326,11 @@ mod tests {
         let manifest = PromptManifest::load(&manifest_path).unwrap();
         assert!(manifest.templates.contains_key("system.md"));
         assert!(manifest.templates.contains_key("compact.md"));
-        assert!(manifest.templates["system.md"].hash.starts_with("sha256:"));
+        assert!(template_entry(&manifest, "system.md")
+            .hash
+            .starts_with("sha256:"));
         assert_eq!(
-            manifest.templates["system.md"].hash,
+            template_entry(&manifest, "system.md").hash.as_str(),
             sha256_hex(b"You are {{character_name}}.")
         );
     }
@@ -329,7 +348,7 @@ mod tests {
             name: "system.md".to_string(),
             content: "Version 1".to_string(),
         }];
-        sync_templates(&prompts, &manifest_path, &defaults_v1).unwrap();
+        let _ignored = sync_templates(&prompts, &manifest_path, &defaults_v1).unwrap();
         assert_eq!(
             fs::read_to_string(prompts.join("system.md")).unwrap(),
             "Version 1"
@@ -343,8 +362,8 @@ mod tests {
         let report = sync_templates(&prompts, &manifest_path, &defaults_v2).unwrap();
 
         assert_eq!(
-            report.actions[0],
-            ("system.md".to_string(), TemplateAction::Updated)
+            item(&report.actions, 0),
+            &("system.md".to_string(), TemplateAction::Updated)
         );
         assert_eq!(
             fs::read_to_string(prompts.join("system.md")).unwrap(),
@@ -354,7 +373,7 @@ mod tests {
         // Manifest hash updated to v2 content.
         let manifest = PromptManifest::load(&manifest_path).unwrap();
         assert_eq!(
-            manifest.templates["system.md"].hash,
+            template_entry(&manifest, "system.md").hash.as_str(),
             sha256_hex(b"Version 2")
         );
     }
@@ -372,7 +391,7 @@ mod tests {
             name: "system.md".to_string(),
             content: "Default content".to_string(),
         }];
-        sync_templates(&prompts, &manifest_path, &defaults).unwrap();
+        let _ignored = sync_templates(&prompts, &manifest_path, &defaults).unwrap();
 
         // User edits the template.
         fs::write(prompts.join("system.md"), "My custom prompt").unwrap();
@@ -380,8 +399,8 @@ mod tests {
         // Second sync — should leave user's version alone.
         let report = sync_templates(&prompts, &manifest_path, &defaults).unwrap();
         assert_eq!(
-            report.actions[0],
-            ("system.md".to_string(), TemplateAction::UserModified)
+            item(&report.actions, 0),
+            &("system.md".to_string(), TemplateAction::UserModified)
         );
         assert_eq!(
             fs::read_to_string(prompts.join("system.md")).unwrap(),
@@ -408,8 +427,8 @@ mod tests {
         let report = sync_templates(&prompts, &manifest_path, &defaults).unwrap();
 
         assert_eq!(
-            report.actions[0],
-            ("system.md".to_string(), TemplateAction::PreManifest)
+            item(&report.actions, 0),
+            &("system.md".to_string(), TemplateAction::PreManifest)
         );
         assert_eq!(
             fs::read_to_string(prompts.join("system.md")).unwrap(),

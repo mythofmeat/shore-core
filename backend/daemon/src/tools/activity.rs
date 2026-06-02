@@ -30,10 +30,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
 /// Handle `activity_heatmap` — returns real data from the ActivityTracker
 /// when available, otherwise an empty heatmap.
 pub fn handle_activity_heatmap(input: &Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
-    let days = input
-        .get("days")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(30);
+    let days = input.get("days").and_then(Value::as_u64).unwrap_or(30);
 
     let character = ctx.character_name();
     let autonomy = ctx.autonomy_manager();
@@ -129,7 +126,7 @@ mod tests {
 
         let hours = result["hours"].as_array().unwrap();
         for (i, hour) in hours.iter().enumerate() {
-            assert_eq!(hour["hour"], i as u64);
+            assert_eq!(hour["hour"], u64::try_from(i).unwrap_or(u64::MAX));
             assert_eq!(hour["density"], 0.0);
             assert_eq!(hour["classification"], "normal");
         }
@@ -151,7 +148,7 @@ mod tests {
         );
 
         // Initialize state and record some messages.
-        mgr.ensure_state("TestChar", None::<u64>);
+        let _ignored = mgr.ensure_state("TestChar");
         for turn in 1..=5 {
             mgr.notify_user_message("TestChar", turn);
             mgr.notify_assistant_message("TestChar", turn);
@@ -186,7 +183,7 @@ mod tests {
         );
 
         // State exists for "TestChar" but context asks for "OtherChar".
-        mgr.ensure_state("TestChar", None::<u64>);
+        let _ignored = mgr.ensure_state("TestChar");
         mgr.notify_user_message("TestChar", 1);
 
         let ctx = TestToolContext::new().with_autonomy(mgr, "OtherChar");

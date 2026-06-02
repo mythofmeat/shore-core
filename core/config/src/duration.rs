@@ -24,7 +24,10 @@ impl ConfigDuration {
 
         // Try bare integer (no suffix) -> seconds
         if let Ok(secs) = s.parse::<u64>() {
-            return Ok(Self(secs * 1000));
+            let millis = secs
+                .checked_mul(1000)
+                .ok_or_else(|| format!("duration too large: {s}"))?;
+            return Ok(Self(millis));
         }
 
         // Find where the numeric part ends and the suffix begins.
@@ -42,19 +45,12 @@ impl ConfigDuration {
             return Err("duration cannot be negative".into());
         }
 
-        // `value` is a validated, non-negative, human-scale duration; flooring
-        // the fractional-millisecond remainder to u64 is the intended behavior.
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "value is non-negative and bounded; flooring sub-ms is intended"
-        )]
         let millis = match suffix {
-            "ms" => value as u64,
-            "s" => (value * 1000.0) as u64,
-            "m" => (value * 60.0 * 1000.0) as u64,
-            "h" => (value * 3600.0 * 1000.0) as u64,
-            "d" => (value * 86400.0 * 1000.0) as u64,
+            "ms" => millis_from_secs_f64(value / 1000.0)?,
+            "s" => millis_from_secs_f64(value)?,
+            "m" => millis_from_secs_f64(value * 60.0)?,
+            "h" => millis_from_secs_f64(value * 3600.0)?,
+            "d" => millis_from_secs_f64(value * 86400.0)?,
             _ => return Err(format!("invalid duration suffix: {suffix}")),
         };
 
@@ -62,7 +58,7 @@ impl ConfigDuration {
     }
 
     pub const fn from_secs(secs: u64) -> Self {
-        Self(secs * 1000)
+        Self(secs.saturating_mul(1000))
     }
 
     pub const fn from_millis(millis: u64) -> Self {
@@ -80,6 +76,12 @@ impl ConfigDuration {
     pub const fn as_duration(&self) -> Duration {
         Duration::from_millis(self.0)
     }
+}
+
+fn millis_from_secs_f64(secs: f64) -> Result<u64, String> {
+    let duration = Duration::try_from_secs_f64(secs)
+        .map_err(|_| "duration must be finite, non-negative, and in range".to_string())?;
+    u64::try_from(duration.as_millis()).map_err(|_| "duration is too large".to_string())
 }
 
 impl fmt::Display for ConfigDuration {
@@ -115,7 +117,7 @@ impl<'de> Deserialize<'de> for ConfigDuration {
         impl de::Visitor<'_> for ConfigDurationVisitor {
             type Value = ConfigDuration;
 
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("a duration string (e.g. \"30s\", \"2m\"), or a number (seconds)")
             }
 
@@ -139,12 +141,7 @@ impl<'de> Deserialize<'de> for ConfigDuration {
                 if v < 0.0 {
                     return Err(de::Error::custom("duration cannot be negative"));
                 }
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "v is non-negative; flooring sub-ms is intended"
-                )]
-                let millis = (v * 1000.0) as u64;
+                let millis = millis_from_secs_f64(v).map_err(de::Error::custom)?;
                 Ok(ConfigDuration::from_millis(millis))
             }
         }

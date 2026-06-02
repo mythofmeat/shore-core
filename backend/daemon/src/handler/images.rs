@@ -265,7 +265,9 @@ mod tests {
     /// Pseudo-random pixels prevent JPEG/PNG from compressing the image to near-zero,
     /// ensuring the resulting file is large enough for the resize tests to be meaningful.
     fn make_noisy_jpeg(width: u32, height: u32) -> Vec<u8> {
-        let mut pixels = vec![0u8; (width * height * 3) as usize];
+        let len =
+            usize::try_from(width.saturating_mul(height).saturating_mul(3)).unwrap_or(usize::MAX);
+        let mut pixels = vec![0u8; len];
         // Simple LCG to fill with pseudo-random values without pulling in rand.
         let mut state: u64 = 0xdead_beef_cafe_babe;
         for byte in &mut pixels {
@@ -434,7 +436,9 @@ mod tests {
 
     /// Create a valid PNG image with pseudo-random pixels (high entropy).
     fn make_noisy_png(width: u32, height: u32) -> Vec<u8> {
-        let mut pixels = vec![0u8; (width * height * 3) as usize];
+        let len =
+            usize::try_from(width.saturating_mul(height).saturating_mul(3)).unwrap_or(usize::MAX);
+        let mut pixels = vec![0u8; len];
         let mut state: u64 = 0xcafe_f00d_1234_5678;
         for byte in &mut pixels {
             state = state
@@ -488,9 +492,7 @@ mod tests {
 
         // Decode the base64 and verify the raw bytes are under 2MB.
         let b64_data = blocks[0]["source"]["data"].as_str().unwrap();
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(b64_data)
-            .unwrap();
+        let decoded = STANDARD.decode(b64_data).unwrap();
         assert!(
             decoded.len() < 2_000_000,
             "Resized image should be under 2MB, got {} bytes (original was {})",
@@ -529,9 +531,7 @@ mod tests {
 
         // Base64 should decode to the exact original bytes (no resize).
         let b64_data = blocks[0]["source"]["data"].as_str().unwrap();
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(b64_data)
-            .unwrap();
+        let decoded = STANDARD.decode(b64_data).unwrap();
         assert_eq!(
             decoded.len(),
             small_jpeg.len(),
@@ -569,9 +569,7 @@ mod tests {
         assert_eq!(blocks[0]["source"]["media_type"], "image/jpeg");
 
         let b64_data = blocks[0]["source"]["data"].as_str().unwrap();
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(b64_data)
-            .unwrap();
+        let decoded = STANDARD.decode(b64_data).unwrap();
         assert!(
             decoded.len() < 2_000_000,
             "Resized PNG→JPEG should be under 2MB, got {} bytes",

@@ -8,7 +8,7 @@ use clap_complete::Shell;
     about = "Shore chat client",
     disable_help_subcommand = true
 )]
-pub struct Cli {
+pub(crate) struct Cli {
     /// TCP address of the daemon (overrides discovery)
     #[arg(long, global = true, env = "SHORE_ADDR")]
     pub addr: Option<String>,
@@ -30,7 +30,7 @@ pub struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum CliCommand {
+pub(crate) enum CliCommand {
     /// Send a message
     Send {
         /// The message text
@@ -373,7 +373,7 @@ pub enum CliCommand {
 
 /// Targets for the hidden `__complete` helper.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CompleteKind {
+pub(crate) enum CompleteKind {
     /// Chat model names from the daemon's catalog
     Models,
     /// Discovered character names
@@ -383,7 +383,7 @@ pub enum CompleteKind {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ConnectorsCommand {
+pub(crate) enum ConnectorsCommand {
     /// Matrix bridge setup and management
     Matrix {
         #[command(subcommand)]
@@ -392,7 +392,7 @@ pub enum ConnectorsCommand {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum MatrixCommand {
+pub(crate) enum MatrixCommand {
     /// Initialize embedded Synapse and provision all characters
     Setup,
 
@@ -410,7 +410,7 @@ pub enum MatrixCommand {
 
 /// Message roles accepted by `shore log --role`.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LogRole {
+pub(crate) enum LogRole {
     User,
     #[value(alias = "character")]
     Assistant,
@@ -428,7 +428,7 @@ impl LogRole {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum LogCommand {
+pub(crate) enum LogCommand {
     /// Edit a message by reference (last, -1, 3, etc.)
     Edit {
         /// Message reference (last, -1, -2, 3, etc.)
@@ -448,7 +448,7 @@ pub enum LogCommand {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ModelCommand {
+pub(crate) enum ModelCommand {
     /// Show, set, or reset saved sampler settings (temperature, top_p,
     /// reasoning_effort, thinking_enabled, budget_tokens, max_output_tokens,
     /// cache_ttl, sdk, preserve_prior_turns) for the active model.
@@ -486,7 +486,7 @@ pub enum ModelCommand {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ProviderCommand {
+pub(crate) enum ProviderCommand {
     /// List discovered + statically configured models for one provider.
     Models {
         /// Provider key (e.g. `openrouter`, `anthropic`)
@@ -515,7 +515,7 @@ pub enum ProviderCommand {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum MemoryCommand {
+pub(crate) enum MemoryCommand {
     /// Compact conversation into markdown memory.
     /// Optional positional: number of recent user turns to retain
     /// (0 = retain none — leaves only the prompt files and memory index).
@@ -553,7 +553,7 @@ pub enum MemoryCommand {
 
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "snake_case")]
-pub enum DebugCommand {
+pub(crate) enum DebugCommand {
     /// Schedule a heartbeat tick to fire immediately
     #[command(name = "heartbeat_tick_now")]
     TickNow,
@@ -571,11 +571,11 @@ pub enum DebugCommand {
 /// hidden `shore __complete` helper, so `shore model <TAB>` and
 /// `shore character <TAB>` expand to the daemon's live lists instead
 /// of leaving the positional argument uncompleted.
-pub fn print_completions(shell: Shell) {
+pub(crate) fn print_completions(shell: Shell) {
     use clap::CommandFactory;
     clap_complete::generate(shell, &mut Cli::command(), "shore", &mut std::io::stdout());
     if shell == Shell::Fish {
-        println!("{}", fish_dynamic_completions_footer());
+        cli_out!("{}", fish_dynamic_completions_footer());
     }
 }
 
@@ -583,7 +583,7 @@ pub fn print_completions(shell: Shell) {
 /// `shore character`, and `shore provider {models,refresh}`. Kept as a
 /// plain string so unit tests can assert exact content without depending
 /// on the clap-generated output above.
-pub fn fish_dynamic_completions_footer() -> &'static str {
+pub(crate) fn fish_dynamic_completions_footer() -> &'static str {
     // `shore complete <kind> 2>/dev/null` swallows daemon-down errors so
     // fish silently falls back to no suggestions rather than printing a
     // wall of error messages at every tab press.
@@ -644,16 +644,16 @@ pub(crate) fn alt_command_to_swp(
 
     let mut args = serde_json::Map::new();
     if let Some(msg_ref) = msg_ref {
-        args.insert("ref".into(), json!(msg_ref));
+        let _ignored = args.insert("ref".into(), json!(msg_ref));
     }
 
     match selector.unwrap_or("list") {
         "" | "list" => ("list_alternatives", serde_json::Value::Object(args)),
         selector => {
             if let Ok(position) = selector.parse::<u32>() {
-                args.insert("position".into(), json!(position));
+                let _ignored = args.insert("position".into(), json!(position));
             } else {
-                args.insert("direction".into(), json!(selector));
+                let _ignored = args.insert("direction".into(), json!(selector));
             }
             ("alt", serde_json::Value::Object(args))
         }
@@ -668,8 +668,9 @@ pub(crate) fn alt_command_to_swp(
     clippy::too_many_lines,
     reason = "central CLI-to-SWP command mapping is easier to audit as one dispatch table"
 )]
-pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
+pub(crate) fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
     use serde_json::json;
+    use serde_json::{Map, Value};
     match cmd {
         // These use dedicated SWP message types or are handled locally.
         CliCommand::Send { system: false, .. }
@@ -723,11 +724,12 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             role,
             ..
         } => {
-            let mut args = json!({ "ref": r });
+            let mut args = Map::new();
+            let _ignored = args.insert("ref".into(), json!(r));
             if let Some(role) = role {
-                args["role"] = json!(role.as_protocol_role());
+                let _ignored = args.insert("role".into(), json!(role.as_protocol_role()));
             }
-            Some(("get", args))
+            Some(("get", Value::Object(args)))
         }
         CliCommand::Log {
             heartbeat: true,
@@ -735,11 +737,12 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             ..
         } => Some(("heartbeat_log", json!({ "count": count }))),
         CliCommand::Log { count, role, .. } => {
-            let mut args = json!({ "turns": count });
+            let mut args = Map::new();
+            let _ignored = args.insert("turns".into(), json!(count));
             if let Some(role) = role {
-                args["role"] = json!(role.as_protocol_role());
+                let _ignored = args.insert("role".into(), json!(role.as_protocol_role()));
             }
-            Some(("log", args))
+            Some(("log", Value::Object(args)))
         }
 
         // Status: diagnostics mode or normal status.
@@ -777,7 +780,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
                     "set_model_setting",
                     json!({
                         "key": k,
-                        "value": serde_json::Value::Null,
+                        "value": Value::Null,
                         "scope": if *global { "global" } else { "character" },
                     }),
                 )),
@@ -806,18 +809,19 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
                     (Some(name), true) => Some(("model_info", json!({ "name": name }))),
                     (None, true) => Some(("model_info", json!({}))),
                     (None, false) => {
-                        let mut args = json!({});
+                        let mut args = Map::new();
                         if *all {
-                            args["include_hidden"] = json!(true);
+                            let _ignored = args.insert("include_hidden".into(), json!(true));
                         }
-                        Some(("list_models", args))
+                        Some(("list_models", Value::Object(args)))
                     }
                     (Some(name), false) => {
-                        let mut args = json!({ "name": name });
+                        let mut args = Map::new();
+                        let _ignored = args.insert("name".into(), json!(name));
                         if *all {
-                            args["include_hidden"] = json!(true);
+                            let _ignored = args.insert("include_hidden".into(), json!(true));
                         }
-                        Some(("switch_model", args))
+                        Some(("switch_model", Value::Object(args)))
                     }
                 }
             }
@@ -847,11 +851,11 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             subcommand: Some(MemoryCommand::Compact { keep_turns }),
             ..
         } => {
-            let mut args = json!({});
+            let mut args = Map::new();
             if let Some(n) = keep_turns {
-                args["keep_turns"] = json!(n);
+                let _ignored = args.insert("keep_turns".into(), json!(n));
             }
-            Some(("compact", args))
+            Some(("compact", Value::Object(args)))
         }
         CliCommand::Memory {
             subcommand: Some(MemoryCommand::Changelog { limit }),
@@ -941,6 +945,15 @@ mod tests {
 
     use super::*;
 
+    macro_rules! assert_variant {
+        ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
+            let $pattern = $value else {
+                panic!("expected enum variant did not match");
+            };
+            $body
+        }};
+    }
+
     /// Helper: parse a command line into a Cli.
     fn parse(args: &[&str]) -> Cli {
         let mut full = vec!["shore"];
@@ -948,48 +961,52 @@ mod tests {
         Cli::parse_from(full)
     }
 
+    fn arg<'a>(args: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+        args.get(key).expect("expected command argument")
+    }
+
     // ── Send ─────────────────────────────────────────────────────────
 
     #[test]
     fn parse_send() {
         let cli = parse(&["send", "hello", "world"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Send {
                 message, images, ..
             } => {
                 assert_eq!(message, &["hello", "world"]);
                 assert!(images.is_empty());
             }
-            other => panic!("expected Send, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_send_with_image() {
         let cli = parse(&["send", "-i", "photo.jpg", "describe", "this"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Send {
                 message, images, ..
             } => {
                 assert_eq!(message, &["describe", "this"]);
                 assert_eq!(images, &["photo.jpg"]);
             }
-            other => panic!("expected Send, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_send_with_multiple_images() {
         let cli = parse(&["send", "-i", "a.jpg", "-i", "b.png", "compare"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Send {
                 message, images, ..
             } => {
                 assert_eq!(message, &["compare"]);
                 assert_eq!(images, &["a.jpg", "b.png"]);
             }
-            other => panic!("expected Send, got: {other:?}"),
-        }
+        );
     }
 
     // ── Regen ────────────────────────────────────────────────────────
@@ -997,23 +1014,23 @@ mod tests {
     #[test]
     fn parse_regen_no_guidance() {
         let cli = parse(&["regen"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Regen { guidance } => {
                 assert!(guidance.is_none());
             }
-            other => panic!("expected Regen, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_regen_with_guidance() {
         let cli = parse(&["regen", "--guidance", "be more concise"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Regen { guidance } => {
                 assert_eq!(guidance.as_deref(), Some("be more concise"));
             }
-            other => panic!("expected Regen, got: {other:?}"),
-        }
+        );
     }
 
     // ── Notify ───────────────────────────────────────────────────────
@@ -1021,7 +1038,8 @@ mod tests {
     #[test]
     fn parse_notify_default() {
         let cli = parse(&["notify"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Notify {
                 autonomous_only,
                 all_messages,
@@ -1029,19 +1047,18 @@ mod tests {
                 assert!(!autonomous_only);
                 assert!(!all_messages);
             }
-            other => panic!("expected Notify, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_notify_all_messages() {
         let cli = parse(&["notify", "--all-messages"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Notify { all_messages, .. } => {
                 assert!(*all_messages);
             }
-            other => panic!("expected Notify, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
@@ -1056,7 +1073,8 @@ mod tests {
     #[test]
     fn parse_alt_defaults_to_list() {
         let cli = parse(&["alt"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Alt {
                 selector,
                 msg_ref,
@@ -1066,14 +1084,14 @@ mod tests {
                 assert!(msg_ref.is_none());
                 assert!(!json);
             }
-            other => panic!("expected Alt, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_alt_position_with_ref_and_json() {
         let cli = parse(&["alt", "2", "--ref", "-1", "--json"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Alt {
                 selector,
                 msg_ref,
@@ -1083,8 +1101,7 @@ mod tests {
                 assert_eq!(msg_ref.as_deref(), Some("-1"));
                 assert!(*json);
             }
-            other => panic!("expected Alt, got: {other:?}"),
-        }
+        );
     }
 
     // ── Log ──────────────────────────────────────────────────────────
@@ -1092,7 +1109,8 @@ mod tests {
     #[test]
     fn parse_log_default() {
         let cli = parse(&["log"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Log {
                 subcommand,
                 msg_ref,
@@ -1114,25 +1132,25 @@ mod tests {
                 assert!(!plain);
                 assert!(!heartbeat);
             }
-            other => panic!("expected Log, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_log_custom_count() {
         let cli = parse(&["log", "--count", "50"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Log { count, .. } => {
                 assert_eq!(*count, 50);
             }
-            other => panic!("expected Log, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_log_get_by_ref() {
         let cli = parse(&["log", "last"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Log {
                 msg_ref,
                 subcommand,
@@ -1141,37 +1159,37 @@ mod tests {
                 assert!(subcommand.is_none());
                 assert_eq!(msg_ref.as_deref(), Some("last"));
             }
-            other => panic!("expected Log, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_log_get_by_role() {
         let cli = parse(&["log", "last", "--role", "user"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Log { msg_ref, role, .. } => {
                 assert_eq!(msg_ref.as_deref(), Some("last"));
                 assert_eq!(*role, Some(LogRole::User));
             }
-            other => panic!("expected Log, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_log_character_role_alias() {
         let cli = parse(&["log", "--role", "character"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Log { role, .. } => {
                 assert_eq!(*role, Some(LogRole::Assistant));
             }
-            other => panic!("expected Log, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_log_get_positive_index() {
         let cli = parse(&["log", "3"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Log {
                 msg_ref,
                 subcommand,
@@ -1180,14 +1198,14 @@ mod tests {
                 assert!(subcommand.is_none());
                 assert_eq!(msg_ref.as_deref(), Some("3"));
             }
-            other => panic!("expected Log, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_log_edit() {
         let cli = parse(&["log", "edit", "msg_123", "new", "text"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Log {
                 subcommand: Some(LogCommand::Edit { msg_ref, content }),
                 ..
@@ -1195,14 +1213,14 @@ mod tests {
                 assert_eq!(msg_ref, "msg_123");
                 assert_eq!(content, &["new", "text"]);
             }
-            other => panic!("expected Log Edit, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_log_edit_last() {
         let cli = parse(&["log", "edit", "last", "updated"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Log {
                 subcommand: Some(LogCommand::Edit { msg_ref, content }),
                 ..
@@ -1210,14 +1228,14 @@ mod tests {
                 assert_eq!(msg_ref, "last");
                 assert_eq!(content, &["updated"]);
             }
-            other => panic!("expected Log Edit, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_log_edit_negative_index() {
         let cli = parse(&["log", "edit", "-1", "new", "text"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Log {
                 subcommand: Some(LogCommand::Edit { msg_ref, content }),
                 ..
@@ -1225,36 +1243,35 @@ mod tests {
                 assert_eq!(msg_ref, "-1");
                 assert_eq!(content, &["new", "text"]);
             }
-            other => panic!("expected Log Edit, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_log_delete() {
         let cli = parse(&["log", "delete", "msg_456"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Log {
                 subcommand: Some(LogCommand::Delete { msg_ref }),
                 ..
             } => {
                 assert_eq!(msg_ref, "msg_456");
             }
-            other => panic!("expected Log Delete, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_log_delete_negative_index() {
         let cli = parse(&["log", "delete", "-1"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Log {
                 subcommand: Some(LogCommand::Delete { msg_ref }),
                 ..
             } => {
                 assert_eq!(msg_ref, "-1");
             }
-            other => panic!("expected Log Delete, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
@@ -1268,37 +1285,37 @@ mod tests {
     #[test]
     fn parse_character_list() {
         let cli = parse(&["character"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Character { name, info, .. } => {
                 assert!(name.is_none());
                 assert!(!info);
             }
-            other => panic!("expected Character, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_character_switch() {
         let cli = parse(&["character", "alice"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Character { name, info, .. } => {
                 assert_eq!(name.as_deref(), Some("alice"));
                 assert!(!info);
             }
-            other => panic!("expected Character, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_character_info() {
         let cli = parse(&["character", "alice", "--info"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Character { name, info, .. } => {
                 assert_eq!(name.as_deref(), Some("alice"));
                 assert!(info);
             }
-            other => panic!("expected Character, got: {other:?}"),
-        }
+        );
     }
 
     // ── Status ───────────────────────────────────────────────────────
@@ -1306,7 +1323,8 @@ mod tests {
     #[test]
     fn parse_status() {
         let cli = parse(&["status"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Status {
                 section,
                 diagnostics,
@@ -1315,36 +1333,35 @@ mod tests {
                 assert!(section.is_none());
                 assert!(!diagnostics);
             }
-            other => panic!("expected Status, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_status_diagnostics() {
         let cli = parse(&["status", "--diagnostics"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Status {
                 diagnostics, count, ..
             } => {
                 assert!(diagnostics);
                 assert_eq!(*count, 10);
             }
-            other => panic!("expected Status, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_status_diagnostics_with_count() {
         let cli = parse(&["status", "--diagnostics", "-n", "25"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Status {
                 diagnostics, count, ..
             } => {
                 assert!(diagnostics);
                 assert_eq!(*count, 25);
             }
-            other => panic!("expected Status, got: {other:?}"),
-        }
+        );
     }
 
     // ── Debug ────────────────────────────────────────────────────────
@@ -1352,34 +1369,34 @@ mod tests {
     #[test]
     fn parse_debug_tick_now() {
         let cli = parse(&["debug", "heartbeat_tick_now"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Debug {
                 subcommand: DebugCommand::TickNow,
             } => {}
-            other => panic!("expected Debug TickNow, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_debug_status_dormant() {
         let cli = parse(&["debug", "heartbeat_status_dormant"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Debug {
                 subcommand: DebugCommand::StatusDormant,
             } => {}
-            other => panic!("expected Debug StatusDormant, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_debug_status_active() {
         let cli = parse(&["debug", "heartbeat_status_active"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Debug {
                 subcommand: DebugCommand::StatusActive,
             } => {}
-            other => panic!("expected Debug StatusActive, got: {other:?}"),
-        }
+        );
     }
 
     // ── Model ────────────────────────────────────────────────────────
@@ -1387,7 +1404,8 @@ mod tests {
     #[test]
     fn parse_model_list() {
         let cli = parse(&["model"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Model {
                 name,
                 info,
@@ -1400,14 +1418,14 @@ mod tests {
                 assert!(subcommand.is_none());
                 assert!(!all);
             }
-            other => panic!("expected Model, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_model_switch() {
         let cli = parse(&["model", "claude-haiku-4-5-20251001"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Model {
                 name,
                 info,
@@ -1418,35 +1436,35 @@ mod tests {
                 assert!(!info);
                 assert!(subcommand.is_none());
             }
-            other => panic!("expected Model, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_model_info() {
         let cli = parse(&["model", "opus", "--info"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Model { name, info, .. } => {
                 assert_eq!(name.as_deref(), Some("opus"));
                 assert!(info);
             }
-            other => panic!("expected Model, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_model_all_flag() {
         let cli = parse(&["model", "--all"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Model { all, .. } => assert!(all),
-            other => panic!("expected Model, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_model_setting_show() {
         let cli = parse(&["model", "setting"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Model {
                 subcommand: Some(ModelCommand::Setting { key, value, .. }),
                 ..
@@ -1454,14 +1472,14 @@ mod tests {
                 assert!(key.is_none());
                 assert!(value.is_none());
             }
-            other => panic!("expected Model Setting, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_model_setting_with_value() {
         let cli = parse(&["model", "setting", "temperature", "0.8"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Model {
                 subcommand:
                     Some(ModelCommand::Setting {
@@ -1478,14 +1496,14 @@ mod tests {
                 assert!(!global);
                 assert!(!reset);
             }
-            other => panic!("expected Model Setting, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_model_setting_reset() {
         let cli = parse(&["model", "setting", "--reset", "temperature"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Model {
                 subcommand:
                     Some(ModelCommand::Setting {
@@ -1497,22 +1515,21 @@ mod tests {
                 assert!(reset);
                 assert!(value.is_none());
             }
-            other => panic!("expected Model Setting reset, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_model_setting_global_flag() {
         let cli = parse(&["model", "setting", "--global", "top_p", "0.9"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Model {
                 subcommand: Some(ModelCommand::Setting { global, .. }),
                 ..
             } => {
                 assert!(global);
             }
-            other => panic!("expected Model Setting global, got: {other:?}"),
-        }
+        );
     }
 
     // ── Provider ─────────────────────────────────────────────────────
@@ -1520,16 +1537,17 @@ mod tests {
     #[test]
     fn parse_provider_list() {
         let cli = parse(&["provider"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Provider { subcommand, .. } => assert!(subcommand.is_none()),
-            other => panic!("expected Provider, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_provider_models() {
         let cli = parse(&["provider", "models", "openrouter"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Provider {
                 subcommand: Some(ProviderCommand::Models { name, all, .. }),
                 ..
@@ -1537,44 +1555,43 @@ mod tests {
                 assert_eq!(name, "openrouter");
                 assert!(!all);
             }
-            other => panic!("expected Provider Models, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_provider_models_all() {
         let cli = parse(&["provider", "models", "openrouter", "--all"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Provider {
                 subcommand: Some(ProviderCommand::Models { all, .. }),
                 ..
             } => assert!(all),
-            other => panic!("expected Provider Models, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_provider_refresh() {
         let cli = parse(&["provider", "refresh", "openrouter"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Provider {
                 subcommand: Some(ProviderCommand::Refresh { name, .. }),
                 ..
             } => assert_eq!(name.as_deref(), Some("openrouter")),
-            other => panic!("expected Provider Refresh, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_provider_refresh_no_arg() {
         let cli = parse(&["provider", "refresh"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Provider {
                 subcommand: Some(ProviderCommand::Refresh { name, .. }),
                 ..
             } => assert!(name.is_none()),
-            other => panic!("expected Provider Refresh, got: {other:?}"),
-        }
+        );
     }
 
     // ── Memory ───────────────────────────────────────────────────────
@@ -1582,47 +1599,48 @@ mod tests {
     #[test]
     fn parse_memory_no_query() {
         let cli = parse(&["memory"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Memory {
                 query, subcommand, ..
             } => {
                 assert!(query.is_none());
                 assert!(subcommand.is_none());
             }
-            other => panic!("expected Memory, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_memory_with_query() {
         let cli = parse(&["memory", "recent topics"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Memory {
                 query, subcommand, ..
             } => {
                 assert_eq!(query.as_deref(), Some("recent topics"));
                 assert!(subcommand.is_none());
             }
-            other => panic!("expected Memory, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_memory_compact() {
         let cli = parse(&["memory", "compact"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Memory {
                 subcommand: Some(MemoryCommand::Compact { keep_turns: None }),
                 ..
             } => {}
-            other => panic!("expected Memory Compact, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_memory_compact_with_keep_turns_zero() {
         let cli = parse(&["memory", "compact", "0"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Memory {
                 subcommand:
                     Some(MemoryCommand::Compact {
@@ -1630,14 +1648,14 @@ mod tests {
                     }),
                 ..
             } => {}
-            other => panic!("expected Memory Compact keep_turns=0, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_memory_compact_with_keep_turns_n() {
         let cli = parse(&["memory", "compact", "8"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Memory {
                 subcommand:
                     Some(MemoryCommand::Compact {
@@ -1645,36 +1663,35 @@ mod tests {
                     }),
                 ..
             } => {}
-            other => panic!("expected Memory Compact keep_turns=8, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_memory_changelog() {
         let cli = parse(&["memory", "changelog"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Memory {
                 subcommand: Some(MemoryCommand::Changelog { limit }),
                 ..
             } => {
                 assert_eq!(*limit, 20);
             }
-            other => panic!("expected Memory Changelog, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_memory_changelog_with_limit() {
         let cli = parse(&["memory", "changelog", "-n", "50"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Memory {
                 subcommand: Some(MemoryCommand::Changelog { limit }),
                 ..
             } => {
                 assert_eq!(*limit, 50);
             }
-            other => panic!("expected Memory Changelog, got: {other:?}"),
-        }
+        );
     }
 
     // ── Config ───────────────────────────────────────────────────────
@@ -1682,7 +1699,8 @@ mod tests {
     #[test]
     fn parse_config_no_args() {
         let cli = parse(&["config"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Config {
                 key,
                 value,
@@ -1697,43 +1715,42 @@ mod tests {
                 assert!(!check);
                 assert!(!reset);
             }
-            other => panic!("expected Config, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_config_with_key() {
         let cli = parse(&["config", "model"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Config { key, value, .. } => {
                 assert_eq!(key.as_deref(), Some("model"));
                 assert!(value.is_none());
             }
-            other => panic!("expected Config, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_config_with_key_value() {
         let cli = parse(&["config", "model", "claude-haiku-4-5-20251001"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Config { key, value, .. } => {
                 assert_eq!(key.as_deref(), Some("model"));
                 assert_eq!(value.as_deref(), Some("claude-haiku-4-5-20251001"));
             }
-            other => panic!("expected Config, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_config_path() {
         let cli = parse(&["config", "--path"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Config { path, .. } => {
                 assert!(path);
             }
-            other => panic!("expected Config, got: {other:?}"),
-        }
+        );
     }
 
     // ── Global flags ─────────────────────────────────────────────────
@@ -1784,9 +1801,7 @@ mod tests {
 
     #[test]
     fn completions_maps_to_none() {
-        let cmd = CliCommand::Completions {
-            shell: clap_complete::Shell::Fish,
-        };
+        let cmd = CliCommand::Completions { shell: Shell::Fish };
         assert!(to_swp_command(&cmd).is_none());
     }
 
@@ -1813,7 +1828,7 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "diagnostics");
-        assert_eq!(args["count"], 15);
+        assert_eq!(arg(&args, "count"), 15);
     }
 
     #[test]
@@ -1874,7 +1889,7 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "character_info");
-        assert_eq!(args["name"], "alice");
+        assert_eq!(arg(&args, "name"), "alice");
     }
 
     #[test]
@@ -1889,7 +1904,7 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "model_info");
-        assert_eq!(args["name"], "opus");
+        assert_eq!(arg(&args, "name"), "opus");
     }
 
     #[test]
@@ -1904,7 +1919,7 @@ mod tests {
         };
         let (cmd_name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(cmd_name, "list_models");
-        assert_eq!(args["include_hidden"], true);
+        assert_eq!(arg(&args, "include_hidden"), true);
     }
 
     #[test]
@@ -1945,9 +1960,9 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "set_model_setting");
-        assert_eq!(args["key"], "temperature");
-        assert_eq!(args["value"], 0.8);
-        assert_eq!(args["scope"], "character");
+        assert_eq!(arg(&args, "key"), "temperature");
+        assert_eq!(arg(&args, "value"), 0.8);
+        assert_eq!(arg(&args, "scope"), "character");
     }
 
     #[test]
@@ -1968,7 +1983,7 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "set_model_setting");
-        assert!(args["value"].is_null());
+        assert!(arg(&args, "value").is_null());
     }
 
     #[test]
@@ -1988,7 +2003,7 @@ mod tests {
             json: false,
         };
         let (_, args) = to_swp_command(&cmd).unwrap();
-        assert_eq!(args["scope"], "global");
+        assert_eq!(arg(&args, "scope"), "global");
     }
 
     #[test]
@@ -2013,7 +2028,7 @@ mod tests {
             json: false,
         };
         let (_, args) = to_swp_command(&cmd).unwrap();
-        assert_eq!(args["value"], "off");
+        assert_eq!(arg(&args, "value"), "off");
     }
 
     #[test]
@@ -2034,7 +2049,7 @@ mod tests {
                 json: false,
             };
             let (_, args) = to_swp_command(&cmd).unwrap();
-            assert_eq!(args["value"], "off", "synonym {synonym:?}");
+            assert_eq!(arg(&args, "value"), "off", "synonym {synonym:?}");
         }
     }
 
@@ -2060,8 +2075,8 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "list_provider_models");
-        assert_eq!(args["provider"], "openrouter");
-        assert_eq!(args["include_hidden"], true);
+        assert_eq!(arg(&args, "provider"), "openrouter");
+        assert_eq!(arg(&args, "include_hidden"), true);
     }
 
     #[test]
@@ -2075,7 +2090,7 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "refresh_provider_models");
-        assert_eq!(args["provider"], "openrouter");
+        assert_eq!(arg(&args, "provider"), "openrouter");
     }
 
     #[test]
@@ -2138,8 +2153,8 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "edit");
-        assert_eq!(args["ref"], "m1");
-        assert_eq!(args["content"], "new text");
+        assert_eq!(arg(&args, "ref"), "m1");
+        assert_eq!(arg(&args, "content"), "new text");
     }
 
     #[test]
@@ -2159,7 +2174,7 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "delete");
-        assert_eq!(args["refs"], "m1");
+        assert_eq!(arg(&args, "refs"), "m1");
     }
 
     #[test]
@@ -2171,8 +2186,8 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "alt");
-        assert_eq!(args["position"], 2);
-        assert_eq!(args["ref"], "last");
+        assert_eq!(arg(&args, "position"), 2);
+        assert_eq!(arg(&args, "ref"), "last");
     }
 
     #[test]
@@ -2202,8 +2217,8 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "get");
-        assert_eq!(args["ref"], "last");
-        assert_eq!(args["role"], "user");
+        assert_eq!(arg(&args, "ref"), "last");
+        assert_eq!(arg(&args, "role"), "user");
     }
 
     #[test]
@@ -2221,8 +2236,8 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "log");
-        assert_eq!(args["turns"], 20);
-        assert_eq!(args["role"], "assistant");
+        assert_eq!(arg(&args, "turns"), 20);
+        assert_eq!(arg(&args, "role"), "assistant");
     }
 
     #[test]
@@ -2248,7 +2263,7 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "compact");
-        assert_eq!(args["keep_turns"], 0);
+        assert_eq!(arg(&args, "keep_turns"), 0);
     }
 
     #[test]
@@ -2260,7 +2275,7 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "memory_changelog");
-        assert_eq!(args["limit"], 20);
+        assert_eq!(arg(&args, "limit"), 20);
     }
 
     #[test]
@@ -2449,34 +2464,34 @@ mod tests {
     #[test]
     fn parse_completions_fish() {
         let cli = parse(&["completions", "fish"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Completions { shell } => {
-                assert_eq!(*shell, clap_complete::Shell::Fish);
+                assert_eq!(*shell, Shell::Fish);
             }
-            other => panic!("expected Completions, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_completions_bash() {
         let cli = parse(&["completions", "bash"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Completions { shell } => {
-                assert_eq!(*shell, clap_complete::Shell::Bash);
+                assert_eq!(*shell, Shell::Bash);
             }
-            other => panic!("expected Completions, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_completions_zsh() {
         let cli = parse(&["completions", "zsh"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Completions { shell } => {
-                assert_eq!(*shell, clap_complete::Shell::Zsh);
+                assert_eq!(*shell, Shell::Zsh);
             }
-            other => panic!("expected Completions, got: {other:?}"),
-        }
+        );
     }
 
     // ── Usage ────────────────────────────────────────────────────────
@@ -2484,12 +2499,12 @@ mod tests {
     #[test]
     fn parse_usage_no_call_type_flag() {
         let cli = parse(&["usage"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Usage { call_type, .. } => {
                 assert!(call_type.is_none(), "flag absent → None");
             }
-            other => panic!("expected Usage, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
@@ -2498,23 +2513,23 @@ mod tests {
         // clap required a value. The bare flag should mean "break down by
         // call type" (Some(None)).
         let cli = parse(&["usage", "--call-type"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Usage { call_type, .. } => {
                 assert_eq!(*call_type, Some(None), "bare flag → Some(None)");
             }
-            other => panic!("expected Usage, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_usage_call_type_with_value() {
         let cli = parse(&["usage", "--call-type", "message"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Usage { call_type, .. } => {
                 assert_eq!(*call_type, Some(Some("message".into())));
             }
-            other => panic!("expected Usage, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
@@ -2522,7 +2537,7 @@ mod tests {
         let cli = parse(&["usage", "--last", "4h"]);
         let (cmd, args) = to_swp_command(&cli.command).unwrap();
         assert_eq!(cmd, "usage");
-        assert_eq!(args["last"], "4h");
+        assert_eq!(arg(&args, "last"), "4h");
     }
 
     #[test]
@@ -2532,18 +2547,18 @@ mod tests {
         let cli = parse(&["usage", "--call-type"]);
         let (cmd, args) = to_swp_command(&cli.command).unwrap();
         assert_eq!(cmd, "usage");
-        assert_eq!(args["by_call_type"], serde_json::Value::Bool(true));
-        assert!(args["call_type"].is_null());
+        assert_eq!(arg(&args, "by_call_type").as_bool(), Some(true));
+        assert!(arg(&args, "call_type").is_null());
     }
 
     #[test]
     fn usage_call_type_value_sets_filter_not_flag() {
         let cli = parse(&["usage", "--call-type", "message"]);
         let (_cmd, args) = to_swp_command(&cli.command).unwrap();
-        assert_eq!(args["call_type"], "message");
+        assert_eq!(arg(&args, "call_type"), "message");
         assert!(
-            args["by_call_type"].is_null()
-                || args["by_call_type"] == serde_json::Value::Bool(false),
+            arg(&args, "by_call_type").is_null()
+                || arg(&args, "by_call_type").as_bool() == Some(false),
             "filter value should not imply breakdown flag",
         );
     }
@@ -2558,27 +2573,23 @@ mod tests {
             "overflow",
         ]);
         let (_cmd, args) = to_swp_command(&cli.command).unwrap();
-        assert_eq!(args["by_kind"], serde_json::Value::Bool(true));
-        assert_eq!(args["by_api_key"], serde_json::Value::Bool(true));
-        assert_eq!(args["api_key"], "overflow");
+        assert_eq!(arg(&args, "by_kind").as_bool(), Some(true));
+        assert_eq!(arg(&args, "by_api_key").as_bool(), Some(true));
+        assert_eq!(arg(&args, "api_key"), "overflow");
     }
 
     #[test]
     fn usage_budget_flag_forwarded() {
         let cli = parse(&["usage", "--budget"]);
         let (_cmd, args) = to_swp_command(&cli.command).unwrap();
-        assert_eq!(args["budget"], serde_json::Value::Bool(true));
+        assert_eq!(arg(&args, "budget").as_bool(), Some(true));
     }
 
     #[test]
     fn completions_generates_output() {
         // Verify that completion generation produces non-empty output for each shell.
         use clap::CommandFactory;
-        for shell in [
-            clap_complete::Shell::Fish,
-            clap_complete::Shell::Bash,
-            clap_complete::Shell::Zsh,
-        ] {
+        for shell in [Shell::Fish, Shell::Bash, Shell::Zsh] {
             let mut buf = Vec::new();
             clap_complete::generate(shell, &mut Cli::command(), "shore", &mut buf);
             assert!(
@@ -2630,23 +2641,23 @@ mod tests {
         // The `complete` helper must parse cleanly so fish can call
         // it at completion time without triggering a clap error.
         let cli = parse(&["complete", "models"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Complete { kind } => {
                 assert_eq!(*kind, CompleteKind::Models);
             }
-            other => panic!("expected Complete, got: {other:?}"),
-        }
+        );
     }
 
     #[test]
     fn parse_complete_characters() {
         let cli = parse(&["complete", "characters"]);
-        match &cli.command {
+        assert_variant!(
+            &cli.command,
             CliCommand::Complete { kind } => {
                 assert_eq!(*kind, CompleteKind::Characters);
             }
-            other => panic!("expected Complete, got: {other:?}"),
-        }
+        );
     }
 
     #[test]

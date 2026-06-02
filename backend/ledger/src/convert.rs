@@ -30,6 +30,7 @@ pub(crate) fn u64_to_i64(v: u64) -> i64 {
 
 /// Widen a token count to `f64` for cost math.
 #[expect(
+    clippy::as_conversions,
     clippy::cast_precision_loss,
     reason = "token counts never approach f64's 2^53 exact-integer ceiling"
 )]

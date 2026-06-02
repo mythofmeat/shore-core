@@ -54,7 +54,9 @@ fn push_value(lines: &mut Vec<String>, value: &Value, indent: usize) {
             }
         }
         Value::Array(values) => push_array(lines, values, indent),
-        _ => push_scalar(lines, value, indent),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            push_scalar(lines, value, indent);
+        }
     }
 }
 
@@ -66,7 +68,7 @@ fn push_key_value(lines: &mut Vec<String>, key: &str, value: &Value, indent: usi
     }
 
     lines.push(format!("{prefix}{key}:"));
-    push_value(lines, value, indent + 2);
+    push_value(lines, value, indent.saturating_add(2));
 }
 
 fn push_array(lines: &mut Vec<String>, values: &[Value], indent: usize) {
@@ -91,7 +93,7 @@ fn push_array(lines: &mut Vec<String>, values: &[Value], indent: usize) {
             lines.push(format!("{prefix}- {inline}"));
         } else {
             lines.push(format!("{prefix}-"));
-            push_value(lines, value, indent + 2);
+            push_value(lines, value, indent.saturating_add(2));
         }
     }
 }
@@ -104,7 +106,7 @@ fn push_scalar(lines: &mut Vec<String>, value: &Value, indent: usize) {
                 lines.push(format!("{prefix}{line}"));
             }
         }
-        _ => {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
             if let Some(inline) = inline_value(value) {
                 lines.push(format!("{prefix}{inline}"));
             }
@@ -127,7 +129,7 @@ fn inline_value(value: &Value) -> Option<String> {
             Some(format!("[{joined}]"))
         }
         Value::Object(map) if map.is_empty() => Some("{}".to_string()),
-        _ => None,
+        Value::String(_) | Value::Array(_) | Value::Object(_) => None,
     }
 }
 
@@ -162,7 +164,7 @@ fn floor_char_boundary(s: &str, max: usize) -> usize {
     }
     let mut i = max;
     while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
+        i = i.saturating_sub(1);
     }
     i
 }

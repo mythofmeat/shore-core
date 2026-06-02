@@ -16,19 +16,19 @@ fn runtime_dir() -> PathBuf {
 }
 
 /// Return the path to the active character state file.
-pub fn state_file_path() -> PathBuf {
+pub(crate) fn state_file_path() -> PathBuf {
     runtime_dir().join("active_character")
 }
 
 /// Return the path to the active model state file.
-pub fn model_state_file_path() -> PathBuf {
+pub(crate) fn model_state_file_path() -> PathBuf {
     runtime_dir().join("active_model")
 }
 
 /// Read the active character from the state file.
 ///
 /// Returns `None` if the file doesn't exist, is empty, or is unreadable.
-pub fn read_active_character() -> Option<String> {
+pub(crate) fn read_active_character() -> Option<String> {
     let content = std::fs::read_to_string(state_file_path()).ok()?;
     let trimmed = content.trim();
     if trimmed.is_empty() {
@@ -43,7 +43,7 @@ pub fn read_active_character() -> Option<String> {
 /// Write the active character to the state file.
 ///
 /// Creates parent directories if needed.
-pub fn write_active_character(name: &str) -> std::io::Result<()> {
+pub(crate) fn write_active_character(name: &str) -> std::io::Result<()> {
     let path = state_file_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -55,7 +55,7 @@ pub fn write_active_character(name: &str) -> std::io::Result<()> {
 /// Read the active model name from the state file.
 ///
 /// Returns `None` if the file doesn't exist, is empty, or is unreadable.
-pub fn read_active_model() -> Option<String> {
+pub(crate) fn read_active_model() -> Option<String> {
     let content = std::fs::read_to_string(model_state_file_path()).ok()?;
     let trimmed = content.trim();
     if trimmed.is_empty() {
@@ -71,7 +71,7 @@ pub fn read_active_model() -> Option<String> {
 ///
 /// Missing file is not an error: we only care that the file is gone
 /// afterwards.
-pub fn clear_active_model() -> std::io::Result<()> {
+pub(crate) fn clear_active_model() -> std::io::Result<()> {
     let path = model_state_file_path();
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
@@ -91,7 +91,10 @@ pub fn clear_active_model() -> std::io::Result<()> {
 /// The daemon's answer wins because it is authoritative: the client may
 /// have sent no character and let the daemon auto-select, in which case
 /// only the daemon knows what got attached.
-pub fn resolve_display_character(daemon_selected: Option<&str>, requested: Option<&str>) -> String {
+pub(crate) fn resolve_display_character(
+    daemon_selected: Option<&str>,
+    requested: Option<&str>,
+) -> String {
     daemon_selected
         .filter(|s| !s.is_empty())
         .or(requested.filter(|s| !s.is_empty()))

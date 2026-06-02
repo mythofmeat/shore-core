@@ -28,7 +28,7 @@ use crate::engine::prompt::{self, AssembledPrompt, PromptParams};
 /// Inputs for [`prepare_chat_context`]. Callers fill this in instead of
 /// passing seven parallel arguments.
 #[derive(Clone, Copy)]
-pub struct PrepareChatContextParams<'a> {
+pub(crate) struct PrepareChatContextParams<'a> {
     pub character: &'a str,
     pub character_data_dir: &'a Path,
     pub config: &'a LoadedConfig,
@@ -46,7 +46,7 @@ pub struct PrepareChatContextParams<'a> {
 /// request needs, plus the assembled prompt for callers that want to do
 /// additional work (e.g., image cache warming) before building the
 /// request.
-pub struct PreparedChatContext {
+pub(crate) struct PreparedChatContext {
     pub llm_messages: Vec<Value>,
     pub system: Option<Value>,
     pub tool_defs: Option<Vec<Value>>,
@@ -64,7 +64,7 @@ pub struct PreparedChatContext {
 /// The returned `prompt` is the [`AssembledPrompt`] that produced
 /// `llm_messages` and `system`; callers can use its `.messages` field
 /// directly for things like image cache warming.
-pub fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> PreparedChatContext {
+pub(crate) fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> PreparedChatContext {
     let PrepareChatContextParams {
         character,
         character_data_dir,
@@ -167,7 +167,7 @@ pub fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> PreparedCha
 /// here because the compaction tool loop rebuilds the request against its
 /// own model in `RealCompactionLlm::build_compaction_request`; the chat
 /// model just establishes the wire shape.
-pub fn build_chat_shape_request_from_disk(
+pub(crate) fn build_chat_shape_request_from_disk(
     character: &str,
     character_data_dir: &Path,
     config: &LoadedConfig,

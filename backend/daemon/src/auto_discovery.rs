@@ -115,7 +115,7 @@ mod tests {
             let section = table.get("providers").and_then(|v| v.as_table());
             ProviderRegistry::from_section(section).unwrap()
         };
-        let mut loaded = shore_config::LoadedConfig::new_for_test(
+        let mut loaded = LoadedConfig::new_for_test(
             shore_config::app::AppConfig::default(),
             shore_config::models::ModelCatalog::default(),
             shore_config::ShoreDirs {
@@ -146,7 +146,7 @@ mod tests {
         );
         // Let the boot pass run, then signal shutdown.
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let _ = tx.send(());
+        let _ignored = tx.send(());
         let res = tokio::time::timeout(Duration::from_secs(1), handle).await;
         assert!(res.is_ok(), "loop should exit promptly on shutdown");
     }

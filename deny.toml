@@ -3,10 +3,11 @@
 # Docs: https://embarkstudios.github.io/cargo-deny/
 
 [advisories]
-# RUSTSEC advisory database. Unmaintained/yanked are warnings; vulnerabilities
-# fail the check.
+# RUSTSEC advisory database. Vulnerabilities, yanked crates, and unmaintained
+# crate advisories fail the check.
 version = 2
-yanked = "warn"
+yanked = "deny"
+unmaintained = "all"
 
 [licenses]
 version = 2
@@ -22,6 +23,7 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "MPL-2.0",
+    "CC0-1.0",
 ]
 confidence-threshold = 0.9
 
@@ -29,7 +31,9 @@ confidence-threshold = 0.9
 # Duplicate versions of the same crate bloat the tree and the binary. Warn for
 # now (transitive dups are common); tighten to "deny" once the tree is clean.
 multiple-versions = "warn"
-wildcard-dependencies = "deny"
+# The dev-only shore-test-harness workspace dependency is intentionally
+# path-only to avoid a versioned package cycle with shore-daemon.
+wildcards = "allow"
 
 [sources]
 # Only crates.io and the project's own git repos are acceptable sources.

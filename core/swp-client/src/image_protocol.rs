@@ -91,7 +91,8 @@ fn probe_kitty_graphics() -> bool {
     // Read response in a loop until we see the string terminator (\x1b\\)
     // or the deadline expires. A single read can miss a slow or split response,
     // and any unconsumed bytes leak into crossterm's event reader as phantom input.
-    let deadline = Instant::now() + Duration::from_millis(200);
+    let now = Instant::now();
+    let deadline = now.checked_add(Duration::from_millis(200)).unwrap_or(now);
     let mut response = Vec::with_capacity(64);
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -103,7 +104,10 @@ fn probe_kitty_graphics() -> bool {
         if n == 0 {
             break;
         }
-        response.extend_from_slice(&buf[..n]);
+        let Some(chunk) = buf.get(..n) else {
+            return false;
+        };
+        response.extend_from_slice(chunk);
         // Full kitty response ends with ST (ESC \)
         if response.windows(2).any(|w| w == b"\x1b\\") {
             break;
@@ -116,6 +120,10 @@ fn probe_kitty_graphics() -> bool {
 
 /// Read from a file descriptor with a timeout using poll(2).
 #[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "terminal protocol probing needs libc::poll on the tty fd"
+)]
 fn read_with_timeout(file: &mut std::fs::File, buf: &mut [u8], timeout: Duration) -> usize {
     use std::os::unix::io::AsRawFd;
 
@@ -128,7 +136,8 @@ fn read_with_timeout(file: &mut std::fs::File, buf: &mut [u8], timeout: Duration
         revents: 0,
     };
 
-    // Safety: single pollfd, valid fd, bounded timeout.
+    // SAFETY: `pfd` points to one initialized pollfd, `fd` comes from the live
+    // file handle, and `timeout_ms` is bounded to i32.
     let ready = unsafe { libc::poll(&raw mut pfd, 1, timeout_ms) };
     if ready <= 0 {
         return 0;
