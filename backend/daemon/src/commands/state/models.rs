@@ -504,13 +504,7 @@ fn apply_sampler_value(
             };
         }
         "thinking_enabled" => {
-            sampler.thinking_enabled = if is_null {
-                None
-            } else {
-                Some(value.as_bool().ok_or_else(|| {
-                    invalid(format!("thinking_enabled must be a boolean, got {value}"))
-                })?)
-            };
+            sampler.thinking_enabled = parse_bool_value(value, "thinking_enabled")?;
         }
         "budget_tokens" => {
             sampler.budget_tokens = if is_null {
@@ -557,19 +551,25 @@ fn apply_sampler_value(
             };
         }
         "preserve_prior_turns" => {
-            sampler.preserve_prior_turns = if is_null {
-                None
-            } else {
-                Some(value.as_bool().ok_or_else(|| {
-                    invalid(format!(
-                        "preserve_prior_turns must be a boolean, got {value}"
-                    ))
-                })?)
-            };
+            sampler.preserve_prior_turns = parse_bool_value(value, "preserve_prior_turns")?;
         }
         _ => return Err(invalid(format!("unknown setting key: {key}"))),
     }
     Ok(())
+}
+
+/// Parse an optional boolean setting value. `null` clears the field
+/// (returns `None`); any non-boolean is rejected.
+fn parse_bool_value(value: &Value, name: &str) -> Result<Option<bool>, (ErrorCode, String)> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    value.as_bool().map(Some).ok_or_else(|| {
+        (
+            ErrorCode::InvalidRequest,
+            format!("{name} must be a boolean, got {value}"),
+        )
+    })
 }
 
 fn parse_u32_value(value: &Value, name: &str) -> Result<u32, (ErrorCode, String)> {
