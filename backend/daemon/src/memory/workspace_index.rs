@@ -530,7 +530,10 @@ async fn embed_documents(
         let mut batch_chars = 0usize;
 
         while end < docs.len() && end - start < EMBED_BATCH_MAX_ITEMS {
-            let doc_chars = docs[end].chars().count();
+            let Some(doc) = docs.get(end) else {
+                break;
+            };
+            let doc_chars = doc.chars().count();
             if end > start && batch_chars.saturating_add(doc_chars) > EMBED_BATCH_MAX_CHARS {
                 break;
             }
@@ -542,7 +545,12 @@ async fn embed_documents(
             end += 1;
         }
 
-        let inputs: Vec<&str> = docs[start..end].iter().map(String::as_str).collect();
+        let inputs: Vec<&str> = docs
+            .get(start..end)
+            .unwrap_or(&[])
+            .iter()
+            .map(String::as_str)
+            .collect();
         let batch_vectors = embedder
             .embed(&inputs)
             .await

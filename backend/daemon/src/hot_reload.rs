@@ -129,27 +129,31 @@ pub fn path_triggers_reload(config_dir: &Path, config_path: &Path, path: &Path) 
         return false;
     };
     let parts = path_parts(relative);
-    if parts.is_empty() {
+    let Some(first) = parts.first().map(String::as_str) else {
         return false;
-    }
+    };
 
     if is_character_workspace_path(&parts) {
         return false;
     }
 
-    if parts.len() == 1 && parts[0] == ".env" {
+    if parts.len() == 1 && first == ".env" {
         return true;
     }
 
-    if parts[0] == "conf.d" {
+    if first == "conf.d" {
         return parts.len() == 1 || has_toml_extension(&path);
     }
 
-    if parts[0] == "characters" {
+    if first == "characters" {
         if parts.len() == 2 {
             return true;
         }
-        if parts.len() == 3 && (parts[2] == "config.toml" || parts[2] == "character.md") {
+        if parts.len() == 3
+            && parts
+                .get(2)
+                .is_some_and(|p| p == "config.toml" || p == "character.md")
+        {
             return true;
         }
         return has_toml_extension(&path);
@@ -180,7 +184,8 @@ fn path_parts(path: &Path) -> Vec<String> {
 }
 
 fn is_character_workspace_path(parts: &[String]) -> bool {
-    parts.len() >= 3 && parts[0] == "characters" && parts[2] == "workspace"
+    parts.first().is_some_and(|p| p == "characters")
+        && parts.get(2).is_some_and(|p| p == "workspace")
 }
 
 fn has_toml_extension(path: &Path) -> bool {

@@ -462,7 +462,10 @@ fn trim_messages(
     selected.reverse();
 
     // Drop leading tool-loop messages that would be orphaned.
-    while !selected.is_empty() && is_tool_loop_msg_prompt(&selected[0].0) {
+    while selected
+        .first()
+        .is_some_and(|first| is_tool_loop_msg_prompt(&first.0))
+    {
         let _ignored = selected.remove(0);
     }
 

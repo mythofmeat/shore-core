@@ -261,13 +261,21 @@ pub fn dispatch_tool<'a>(
                     crate::memory::deferred_edits::normalize_prompt_visible_path(&path)
                 {
                     ctx.defer_edit(&path);
-                    result["prompt_visible_file"] = serde_json::json!(true);
-                    if crate::memory::deferred_edits::normalize_protected_path(&path).is_some() {
-                        result["protected_file"] = serde_json::json!(true);
+                    if let Some(obj) = result.as_object_mut() {
+                        let _ignored =
+                            obj.insert("prompt_visible_file".into(), serde_json::json!(true));
+                        if crate::memory::deferred_edits::normalize_protected_path(&path).is_some()
+                        {
+                            let _ignored =
+                                obj.insert("protected_file".into(), serde_json::json!(true));
+                        }
+                        let _ignored =
+                            obj.insert("deferred_until_compaction".into(), serde_json::json!(true));
+                        let _ignored =
+                            obj.insert("deferred_path".into(), serde_json::json!(deferred_path));
+                        let _ignored =
+                            obj.insert("prompt_reload_required".into(), serde_json::json!(true));
                     }
-                    result["deferred_until_compaction"] = serde_json::json!(true);
-                    result["deferred_path"] = serde_json::json!(deferred_path);
-                    result["prompt_reload_required"] = serde_json::json!(true);
                 }
                 Ok(result)
             }
@@ -282,13 +290,21 @@ pub fn dispatch_tool<'a>(
                     crate::memory::deferred_edits::normalize_prompt_visible_path(&path)
                 {
                     ctx.defer_edit(&path);
-                    result["prompt_visible_file"] = serde_json::json!(true);
-                    if crate::memory::deferred_edits::normalize_protected_path(&path).is_some() {
-                        result["protected_file"] = serde_json::json!(true);
+                    if let Some(obj) = result.as_object_mut() {
+                        let _ignored =
+                            obj.insert("prompt_visible_file".into(), serde_json::json!(true));
+                        if crate::memory::deferred_edits::normalize_protected_path(&path).is_some()
+                        {
+                            let _ignored =
+                                obj.insert("protected_file".into(), serde_json::json!(true));
+                        }
+                        let _ignored =
+                            obj.insert("deferred_until_compaction".into(), serde_json::json!(true));
+                        let _ignored =
+                            obj.insert("deferred_path".into(), serde_json::json!(deferred_path));
+                        let _ignored =
+                            obj.insert("prompt_reload_required".into(), serde_json::json!(true));
                     }
-                    result["deferred_until_compaction"] = serde_json::json!(true);
-                    result["deferred_path"] = serde_json::json!(deferred_path);
-                    result["prompt_reload_required"] = serde_json::json!(true);
                 }
                 Ok(result)
             }

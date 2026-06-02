@@ -36,7 +36,9 @@ pub fn content_block_to_api_json(block: &ContentBlock) -> Option<Value> {
                 "type": "tool_result", "tool_use_id": tool_use_id, "content": content,
             });
             if *is_error {
-                v["is_error"] = json!(true);
+                if let Some(obj) = v.as_object_mut() {
+                    let _ignored = obj.insert("is_error".into(), json!(true));
+                }
             }
             Some(v)
         }
@@ -60,7 +62,9 @@ pub fn content_block_to_json(block: &ContentBlock) -> Value {
         } => {
             let mut block = json!({"type": "thinking", "thinking": thinking});
             if let Some(sig) = signature {
-                block["signature"] = json!(sig);
+                if let Some(obj) = block.as_object_mut() {
+                    let _ignored = obj.insert("signature".into(), json!(sig));
+                }
             }
             block
         }
@@ -75,7 +79,9 @@ pub fn content_block_to_json(block: &ContentBlock) -> Value {
             let mut v =
                 json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content});
             if *is_error {
-                v["is_error"] = json!(true);
+                if let Some(obj) = v.as_object_mut() {
+                    let _ignored = obj.insert("is_error".into(), json!(true));
+                }
             }
             v
         }
@@ -273,7 +279,9 @@ pub fn build_tool_result_json(tool_use_id: &str, content: &str, is_error: bool) 
         "content": content,
     });
     if is_error {
-        v["is_error"] = json!(true);
+        if let Some(obj) = v.as_object_mut() {
+            let _ignored = obj.insert("is_error".into(), json!(true));
+        }
     }
     v
 }

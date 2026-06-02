@@ -105,11 +105,16 @@ pub fn heartbeat_tick_now(engine: &ConversationEngine, ctx: &CommandContext) -> 
                 "character": char_name,
             });
             if dormant {
-                result["warning"] = json!(
-                    "Heartbeat is dormant. The scheduled tick will be suppressed \
-                     by the abandonment guard. Run `shore debug heartbeat_status_active` \
-                     first to wake the clock."
-                );
+                if let Some(obj) = result.as_object_mut() {
+                    let _ignored = obj.insert(
+                        "warning".into(),
+                        json!(
+                            "Heartbeat is dormant. The scheduled tick will be suppressed \
+                             by the abandonment guard. Run `shore debug heartbeat_status_active` \
+                             first to wake the clock."
+                        ),
+                    );
+                }
             }
             Ok(result)
         }

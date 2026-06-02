@@ -331,8 +331,8 @@ impl RealConversationManager {
         let keep = params.keep_last_n.min(lines.len());
         let split_at = lines.len() - keep;
 
-        let archive_lines = &lines[..split_at];
-        let retained_lines = &lines[split_at..];
+        let archive_lines = lines.get(..split_at).unwrap_or(&[]);
+        let retained_lines = lines.get(split_at..).unwrap_or(&[]);
 
         // Archive the compacted portion to a segment file.
         if !archive_lines.is_empty() {

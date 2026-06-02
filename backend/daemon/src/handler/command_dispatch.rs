@@ -297,15 +297,21 @@ impl MessageHandler {
                     .autonomy
                     .reload_runtime_config(runtime_config.clone());
 
-                if output
-                    .data
-                    .get("invalidated")
-                    .and_then(serde_json::Value::as_object)
-                    .is_none()
-                {
-                    output.data["invalidated"] = json!({});
+                if let Some(data) = output.data.as_object_mut() {
+                    if !data
+                        .get("invalidated")
+                        .is_some_and(serde_json::Value::is_object)
+                    {
+                        let _ignored = data.insert("invalidated".into(), json!({}));
+                    }
+                    if let Some(inv) = data
+                        .get_mut("invalidated")
+                        .and_then(serde_json::Value::as_object_mut)
+                    {
+                        let _ignored =
+                            inv.insert("merged_character_configs".into(), json!(true));
+                    }
                 }
-                output.data["invalidated"]["merged_character_configs"] = json!(true);
             }
         }
 
@@ -317,19 +323,29 @@ impl MessageHandler {
                     .apply_reloaded_config(reloaded_config, RuntimeReloadSource::ManualReset)
                     .await;
 
-                if output
-                    .data
-                    .get("invalidated")
-                    .and_then(serde_json::Value::as_object)
-                    .is_none()
-                {
-                    output.data["invalidated"] = json!({});
+                if let Some(data) = output.data.as_object_mut() {
+                    if !data
+                        .get("invalidated")
+                        .is_some_and(serde_json::Value::is_object)
+                    {
+                        let _ignored = data.insert("invalidated".into(), json!({}));
+                    }
+                    if let Some(inv) = data
+                        .get_mut("invalidated")
+                        .and_then(serde_json::Value::as_object_mut)
+                    {
+                        let _ignored = inv.insert(
+                            "character_discovery".into(),
+                            json!(summary.character_discovery_changed),
+                        );
+                        let _ignored =
+                            inv.insert("merged_character_configs".into(), json!(true));
+                        let _ignored = inv.insert(
+                            "removed_character_engines".into(),
+                            json!(summary.dropped_engines),
+                        );
+                    }
                 }
-                output.data["invalidated"]["character_discovery"] =
-                    json!(summary.character_discovery_changed);
-                output.data["invalidated"]["merged_character_configs"] = json!(true);
-                output.data["invalidated"]["removed_character_engines"] =
-                    json!(summary.dropped_engines);
             }
         }
 
@@ -353,17 +369,28 @@ impl MessageHandler {
                     )
                     .await;
 
-                    output.data["selected_character"] = serde_json::Value::String(selected.clone());
-                    output.data["active_model"] = snapshot
-                        .config
-                        .get("active_model")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null);
-                    output.data["private"] = snapshot
-                        .config
-                        .get("private")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Bool(false));
+                    if let Some(data) = output.data.as_object_mut() {
+                        let _ignored = data.insert(
+                            "selected_character".into(),
+                            serde_json::Value::String(selected.clone()),
+                        );
+                        let _ignored = data.insert(
+                            "active_model".into(),
+                            snapshot
+                                .config
+                                .get("active_model")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                        );
+                        let _ignored = data.insert(
+                            "private".into(),
+                            snapshot
+                                .config
+                                .get("private")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Bool(false)),
+                        );
+                    }
 
                     let _ignored = self
                         .session_router

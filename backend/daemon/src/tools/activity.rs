@@ -41,14 +41,16 @@ pub fn handle_activity_heatmap(input: &Value, ctx: &dyn ToolContext) -> Result<V
         Some((stats, turn_count)) => {
             let hours: Vec<Value> = (0..24)
                 .map(|h| {
-                    let class = match stats.hour_classifications[h] {
-                        crate::autonomy::activity::HourClassification::Peak => "peak",
-                        crate::autonomy::activity::HourClassification::Trough => "trough",
-                        crate::autonomy::activity::HourClassification::Normal => "normal",
+                    let class = match stats.hour_classifications.get(h) {
+                        Some(crate::autonomy::activity::HourClassification::Peak) => "peak",
+                        Some(crate::autonomy::activity::HourClassification::Trough) => "trough",
+                        Some(crate::autonomy::activity::HourClassification::Normal) | None => {
+                            "normal"
+                        }
                     };
                     json!({
                         "hour": h,
-                        "density": stats.hour_histogram[h],
+                        "density": stats.hour_histogram.get(h).copied().unwrap_or(0.0),
                         "classification": class,
                     })
                 })

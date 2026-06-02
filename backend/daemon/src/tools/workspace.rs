@@ -475,16 +475,21 @@ pub async fn handle_read(input: Value, workspace_dir: &str) -> Result<Value, Too
     });
 
     if offset > 0 || end < total_lines {
-        result["offset"] = json!(offset + 1);
-        result["returned_lines"] = json!(end - offset);
-        if end < total_lines {
-            result["note"] = json!(format!(
-                "Showing lines {}–{} of {}. Use offset={} to continue.",
-                offset + 1,
-                end,
-                total_lines,
-                end + 1
-            ));
+        if let Some(obj) = result.as_object_mut() {
+            let _ignored = obj.insert("offset".into(), json!(offset + 1));
+            let _ignored = obj.insert("returned_lines".into(), json!(end - offset));
+            if end < total_lines {
+                let _ignored = obj.insert(
+                    "note".into(),
+                    json!(format!(
+                        "Showing lines {}–{} of {}. Use offset={} to continue.",
+                        offset + 1,
+                        end,
+                        total_lines,
+                        end + 1
+                    )),
+                );
+            }
         }
     }
 
@@ -853,13 +858,18 @@ async fn handle_search_lexical(
     });
 
     if count > 0 {
-        response["files"] = json!(files_summary);
-        response["note"] = json!(
-            "These are line-level excerpts, ordered by file recency. \
-             Call `read` on the top file paths to see surrounding context — \
-             excerpts almost never contain the full answer, and one file \
-             often references others worth reading too."
-        );
+        if let Some(obj) = response.as_object_mut() {
+            let _ignored = obj.insert("files".into(), json!(files_summary));
+            let _ignored = obj.insert(
+                "note".into(),
+                json!(
+                    "These are line-level excerpts, ordered by file recency. \
+                     Call `read` on the top file paths to see surrounding context — \
+                     excerpts almost never contain the full answer, and one file \
+                     often references others worth reading too."
+                ),
+            );
+        }
     }
 
     Ok(response)
@@ -932,11 +942,16 @@ async fn handle_search_hybrid(
     });
 
     if count > 0 {
-        response["note"] = json!(
-            "Files ranked by combined semantic + lexical score. Excerpts are \
-             best-effort line-level snippets; call `read` on the top paths for \
-             full context — one file often references others worth reading too."
-        );
+        if let Some(obj) = response.as_object_mut() {
+            let _ignored = obj.insert(
+                "note".into(),
+                json!(
+                    "Files ranked by combined semantic + lexical score. Excerpts are \
+                     best-effort line-level snippets; call `read` on the top paths for \
+                     full context — one file often references others worth reading too."
+                ),
+            );
+        }
     }
 
     Ok(response)
@@ -1288,11 +1303,13 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
         .ok_or_else(|| ToolError::InvalidArgs("missing required field: command".into()))?;
 
     let argv = parse_command(command)?;
+    let Some((program, program_args)) = argv.split_first() else {
+        return Err(ToolError::InvalidArgs("command is empty".into()));
+    };
 
     if !is_command_allowed(&argv) {
         return Err(ToolError::InvalidArgs(format!(
-            "command '{}' is not in the allowlist",
-            argv[0]
+            "command '{program}' is not in the allowlist"
         )));
     }
 
@@ -1304,8 +1321,8 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
         .map(|w| resolve_path(workspace_dir, w))
         .transpose()?;
 
-    let mut cmd = tokio::process::Command::new(&argv[0]);
-    let _ignored = cmd.args(&argv[1..]);
+    let mut cmd = tokio::process::Command::new(program);
+    let _ignored = cmd.args(program_args);
 
     if let Some(dir) = workdir {
         let _ignored = cmd.current_dir(dir);

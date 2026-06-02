@@ -267,18 +267,26 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
             &resolved.model_id,
             Some(&resolved),
         );
-        data["effective_sampler"] = serde_json::to_value(&sampler).unwrap_or(Value::Null);
-        data["scopes"] = json!({
-            "temperature": scopes.temperature.map(scope_str),
-            "top_p": scopes.top_p.map(scope_str),
-            "reasoning_effort": scopes.reasoning_effort.map(scope_str),
-            "thinking_enabled": scopes.thinking_enabled.map(scope_str),
-            "budget_tokens": scopes.budget_tokens.map(scope_str),
-            "max_output_tokens": scopes.max_output_tokens.map(scope_str),
-            "cache_ttl": scopes.cache_ttl.map(scope_str),
-            "sdk": scopes.sdk.map(scope_str),
-            "preserve_prior_turns": scopes.preserve_prior_turns.map(scope_str),
-        });
+        if let Some(obj) = data.as_object_mut() {
+            let _ignored = obj.insert(
+                "effective_sampler".into(),
+                serde_json::to_value(&sampler).unwrap_or(Value::Null),
+            );
+            let _ignored = obj.insert(
+                "scopes".into(),
+                json!({
+                    "temperature": scopes.temperature.map(scope_str),
+                    "top_p": scopes.top_p.map(scope_str),
+                    "reasoning_effort": scopes.reasoning_effort.map(scope_str),
+                    "thinking_enabled": scopes.thinking_enabled.map(scope_str),
+                    "budget_tokens": scopes.budget_tokens.map(scope_str),
+                    "max_output_tokens": scopes.max_output_tokens.map(scope_str),
+                    "cache_ttl": scopes.cache_ttl.map(scope_str),
+                    "sdk": scopes.sdk.map(scope_str),
+                    "preserve_prior_turns": scopes.preserve_prior_turns.map(scope_str),
+                }),
+            );
+        }
     }
 
     Ok(data)
