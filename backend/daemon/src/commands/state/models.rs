@@ -561,7 +561,9 @@ fn apply_sampler_value(
                 None
             } else {
                 Some(value.as_bool().ok_or_else(|| {
-                    invalid(format!("preserve_prior_turns must be a boolean, got {value}"))
+                    invalid(format!(
+                        "preserve_prior_turns must be a boolean, got {value}"
+                    ))
                 })?)
             };
         }
