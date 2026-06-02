@@ -141,7 +141,7 @@ pub fn parse_dice_notation(notation: &str) -> Result<DiceNotation, String> {
         return Err("Dice count must be at least 1".into());
     }
 
-    let after_d = &s[d_pos + 1..];
+    let after_d = &s[d_pos.saturating_add(1)..];
     if after_d.is_empty() {
         return Err("Missing sides after 'd'".into());
     }

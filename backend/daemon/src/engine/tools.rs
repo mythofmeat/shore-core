@@ -90,7 +90,7 @@ pub async fn run_tool_loop(
         .await;
 
         info!(
-            iteration = iteration + 1,
+            iteration = iteration.saturating_add(1),
             max = max_iterations,
             tool_count = result.tool_uses.len(),
             "Tool loop iteration"

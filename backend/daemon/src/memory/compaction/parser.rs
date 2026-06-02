@@ -35,9 +35,9 @@ pub(super) fn extract_xml_tag(text: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let start = text.find(&open)?;
-    let content_start = start + open.len();
+    let content_start = start.saturating_add(open.len());
     let end = text[content_start..].find(&close)?;
-    let content = text[content_start..content_start + end].trim();
+    let content = text[content_start..content_start.saturating_add(end)].trim();
     if content.is_empty() {
         None
     } else {
@@ -75,40 +75,40 @@ fn extract_write_ops(text: &str) -> Vec<MemoryFileOp> {
     let mut search_from = 0;
 
     while let Some(start) = text[search_from..].find("<write ") {
-        let abs_start = search_from + start;
+        let abs_start = search_from.saturating_add(start);
         // Find path attribute
         let Some(path_offset) = text[abs_start..].find("path=\"") else {
-            search_from = abs_start + 1;
+            search_from = abs_start.saturating_add(1);
             continue;
         };
-        let path_start = abs_start + path_offset + 6;
+        let path_start = abs_start.saturating_add(path_offset).saturating_add(6);
         let Some(path_offset_end) = text[path_start..].find('"') else {
-            search_from = abs_start + 1;
+            search_from = abs_start.saturating_add(1);
             continue;
         };
-        let path_end = path_start + path_offset_end;
+        let path_end = path_start.saturating_add(path_offset_end);
         let path = text[path_start..path_end].trim().to_string();
 
         // Find closing > of the opening tag
         let Some(content_offset) = text[abs_start..].find('>') else {
-            search_from = abs_start + 1;
+            search_from = abs_start.saturating_add(1);
             continue;
         };
-        let content_start = abs_start + content_offset + 1;
+        let content_start = abs_start.saturating_add(content_offset).saturating_add(1);
 
         // Find </write>
         let close = "</write>";
         let Some(content_offset_end) = text[content_start..].find(close) else {
-            search_from = abs_start + 1;
+            search_from = abs_start.saturating_add(1);
             continue;
         };
-        let content_end = content_start + content_offset_end;
+        let content_end = content_start.saturating_add(content_offset_end);
 
         let content = text[content_start..content_end].trim().to_string();
         if !path.is_empty() {
             ops.push(MemoryFileOp { path, content });
         }
-        search_from = content_end + close.len();
+        search_from = content_end.saturating_add(close.len());
     }
 
     ops

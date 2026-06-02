@@ -400,11 +400,12 @@ impl MessageHandler {
         };
 
         if !regen {
+            let now = Instant::now();
             let _ignored = self.last_user_session.insert(
                 char_name.clone(),
                 LastUserLease {
                     session_id: meta.session.session_id,
-                    expires_at: Instant::now() + LEASE_TTL,
+                    expires_at: now.checked_add(LEASE_TTL).unwrap_or(now),
                 },
             );
         }

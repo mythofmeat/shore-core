@@ -153,7 +153,7 @@ impl MessageStore {
                     DateTime::parse_from_rfc3339(&m.timestamp)
                         .map_or(true, |existing| existing <= new_ts)
                 })
-                .map_or(0, |i| i + 1),
+                .map_or(0, |i| i.saturating_add(1)),
             Err(_) => self.messages.len(),
         };
         info!(
@@ -193,7 +193,7 @@ impl MessageStore {
     /// Returns the number of messages removed.
     pub fn truncate_after_last_user_turn(&mut self) -> Result<usize, EngineError> {
         let keep = self.last_real_user_turn_keep_index();
-        let removed = self.messages.len() - keep;
+        let removed = self.messages.len().saturating_sub(keep);
         if removed > 0 {
             info!(removed, "Truncating messages after last user turn");
             self.messages.truncate(keep);
@@ -212,7 +212,7 @@ impl MessageStore {
         new_messages: Vec<Message>,
     ) -> Result<usize, EngineError> {
         let keep = self.last_real_user_turn_keep_index();
-        let removed = self.messages.len() - keep;
+        let removed = self.messages.len().saturating_sub(keep);
         info!(
             removed,
             added = new_messages.len(),
@@ -257,10 +257,10 @@ impl MessageStore {
             .iter_mut()
             .find(|m| m.msg_id == msg_id)
             .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_string()))?;
-        let new_count = msg.alt_count.unwrap_or(1) + 1;
+        let new_count = msg.alt_count.unwrap_or(1).saturating_add(1);
         msg.alt_count = Some(new_count);
         // Point to the newest candidate.
-        msg.alt_index = Some(new_count - 1);
+        msg.alt_index = Some(new_count.saturating_sub(1));
         info!(msg_id, alt_count = new_count, "Added alt candidate");
         self.persist()?;
         Ok(new_count)
@@ -330,7 +330,7 @@ impl MessageStore {
         if index >= alt_count {
             return Err(EngineError::InvalidAlt(format!(
                 "alternate index {} out of range (message has {} alternate response(s))",
-                index + 1,
+                index.saturating_add(1),
                 alt_count
             )));
         }
@@ -348,7 +348,7 @@ impl MessageStore {
         let selected = message_from_alternative(target, index).ok_or_else(|| {
             EngineError::InvalidAlt(format!(
                 "alternate index {} out of range (message has {} alternate response(s))",
-                index + 1,
+                index.saturating_add(1),
                 alt_count
             ))
         })?;
@@ -403,7 +403,7 @@ impl MessageStore {
         self.messages
             .iter()
             .rposition(is_real_user_turn)
-            .map_or(0, |i| i + 1)
+            .map_or(0, |i| i.saturating_add(1))
     }
 }
 

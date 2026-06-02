@@ -83,7 +83,7 @@ pub(super) async fn stream_with_credential_fallback(
     let mut last_err: Option<LlmError> = None;
 
     for (i, cand) in candidates.iter().enumerate() {
-        let next_cand = candidates.get(i + 1);
+        let next_cand = candidates.get(i.saturating_add(1));
 
         // Step 1: resolve the env var. A missing/empty value is a
         // credential failure (`MissingKey`) — rotate without touching

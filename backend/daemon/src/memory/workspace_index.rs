@@ -195,7 +195,7 @@ pub async fn hybrid_search(
     let mut stale_docs: Vec<String> = Vec::new();
     for file in &mut candidates {
         if file.skip_reason.as_deref() == Some("oversize") {
-            skipped_binary_or_large += 1;
+            skipped_binary_or_large = skipped_binary_or_large.saturating_add(1);
             let _ignored = index.entries.insert(
                 file.display_path.clone(),
                 IndexedEntry {
@@ -239,7 +239,7 @@ pub async fn hybrid_search(
             }
             file.content = Some(text);
         } else {
-            skipped_binary_or_large += 1;
+            skipped_binary_or_large = skipped_binary_or_large.saturating_add(1);
             let reason = match retrieval_config.binary {
                 RetrievalBinaryMode::Skip => "non-utf8",
                 RetrievalBinaryMode::Metadata => "binary-metadata-only",
@@ -482,25 +482,25 @@ fn lexical_score(path: &str, content: &str, q_lower: &str, terms: &[&str]) -> us
         .unwrap_or_default()
         .to_lowercase();
 
-    let mut score = 0;
+    let mut score: usize = 0;
     if path_lower.contains(q_lower) {
-        score += 50;
+        score = score.saturating_add(50);
     }
     if title_lower.contains(q_lower) {
-        score += 40;
+        score = score.saturating_add(40);
     }
     if content_lower.contains(q_lower) {
-        score += 30;
+        score = score.saturating_add(30);
     }
     for term in terms {
         if path_lower.contains(term) {
-            score += 12;
+            score = score.saturating_add(12);
         }
         if title_lower.contains(term) {
-            score += 10;
+            score = score.saturating_add(10);
         }
         if content_lower.contains(term) {
-            score += 4;
+            score = score.saturating_add(4);
         }
     }
     score
@@ -529,7 +529,7 @@ async fn embed_documents(
         let mut end = start;
         let mut batch_chars = 0usize;
 
-        while end < docs.len() && end - start < EMBED_BATCH_MAX_ITEMS {
+        while end < docs.len() && end.saturating_sub(start) < EMBED_BATCH_MAX_ITEMS {
             let Some(doc) = docs.get(end) else {
                 break;
             };
@@ -538,11 +538,11 @@ async fn embed_documents(
                 break;
             }
             batch_chars = batch_chars.saturating_add(doc_chars);
-            end += 1;
+            end = end.saturating_add(1);
         }
 
         if end == start {
-            end += 1;
+            end = end.saturating_add(1);
         }
 
         let inputs: Vec<&str> = docs
