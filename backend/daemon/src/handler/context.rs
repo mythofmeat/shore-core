@@ -125,7 +125,11 @@ pub fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> PreparedCha
     );
     crate::content_util::maybe_strip_prior_thinking(
         &mut llm_messages,
-        config.app.memory.thinking.preserve_prior_turns,
+        // Per-model override (preferences overlay) falls back to the global
+        // `[memory.thinking]` default. The effect is model-dependent — see #129.
+        resolved
+            .preserve_prior_turns
+            .unwrap_or(config.app.memory.thinking.preserve_prior_turns),
         &resolved.provider_key,
     );
 

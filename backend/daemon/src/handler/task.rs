@@ -321,7 +321,11 @@ pub(super) async fn handle_generation(
         &request,
         tool_intermediate_messages,
         wall_clock_start,
-        effective_config.app.memory.thinking.preserve_prior_turns,
+        // Per-model override (preferences overlay) falls back to the global
+        // `[memory.thinking]` default. The effect is model-dependent — see #129.
+        resolved
+            .preserve_prior_turns
+            .unwrap_or(effective_config.app.memory.thinking.preserve_prior_turns),
         regen_alt,
     )
     .await?;

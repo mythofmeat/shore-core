@@ -872,6 +872,52 @@ fn set_model_setting_sdk_persists_to_preferences() {
 }
 
 #[test]
+fn set_model_setting_preserve_prior_turns_persists_and_surfaces() {
+    // #129: per-model `preserve_prior_turns` override is user-controlled,
+    // persists to the character preferences file, and surfaces through
+    // model_settings at character_model scope.
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    set_model_setting(
+        &mut ctx,
+        &json!({"key": "preserve_prior_turns", "value": false}),
+    )
+    .unwrap();
+
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert_eq!(
+        prefs
+            .model("openrouter", "gpt-4o")
+            .unwrap()
+            .sampler
+            .preserve_prior_turns,
+        Some(false)
+    );
+
+    let out = model_settings(&ctx, &json!({})).unwrap();
+    assert_eq!(out["effective_sampler"]["preserve_prior_turns"], false);
+    assert_eq!(out["scopes"]["preserve_prior_turns"], "character_model");
+}
+
+#[test]
+fn set_model_setting_preserve_prior_turns_rejects_non_bool() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    let err = set_model_setting(
+        &mut ctx,
+        &json!({"key": "preserve_prior_turns", "value": "yes"}),
+    )
+    .unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+    assert!(err.1.contains("boolean"), "got: {}", err.1);
+}
+
+#[test]
 fn set_model_setting_sdk_rejects_unknown_value() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());

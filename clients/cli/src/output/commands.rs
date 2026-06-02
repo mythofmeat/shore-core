@@ -603,7 +603,9 @@ fn print_model_settings(data: &serde_json::Value) {
         "max_output_tokens",
         "cache_ttl",
         "sdk",
+        "preserve_prior_turns",
     ];
+    let label_width = keys.iter().map(|key| key.len()).max().unwrap_or(0);
     for key in keys {
         let value = match sampler.get(key) {
             Some(v) if v.is_null() => "(unset)".to_string(),
@@ -614,7 +616,7 @@ fn print_model_settings(data: &serde_json::Value) {
             .get(key)
             .and_then(|v| v.as_str())
             .unwrap_or("(default)");
-        let label = format!("{key:<17}");
+        let label = format!("{key:<label_width$}");
         write_row(&mut out, &label, &format!("{value}  [{scope}]"));
     }
     let _ = writeln!(out);
