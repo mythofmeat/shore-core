@@ -614,8 +614,8 @@ fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
     match key {
         "thinking_enabled" | "preserve_prior_turns" => {
             match trimmed.to_ascii_lowercase().as_str() {
-                "true" | "yes" | "on" | "1" => Value::Bool(true),
-                "false" | "no" | "off" | "0" => Value::Bool(false),
+                "true" | "yes" | "on" => Value::Bool(true),
+                "false" | "no" | "off" => Value::Bool(false),
                 _ => Value::String(trimmed.to_string()),
             }
         }
