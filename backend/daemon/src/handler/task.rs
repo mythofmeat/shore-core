@@ -7,7 +7,6 @@ use shore_config::character_data_dir;
 use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{debug, info, instrument};
 
-use crate::autonomy::parse_cache_ttl_secs;
 use crate::convert::u64_to_usize;
 use crate::engine::messages::PendingAlt;
 use crate::engine::prompt;
@@ -150,10 +149,9 @@ pub(super) async fn handle_generation(
         "model resolved"
     );
 
-    let cache_ttl_secs = resolved.cache_ttl.as_deref().and_then(parse_cache_ttl_secs);
-    let is_new_autonomy_state =
-        ctx.autonomy
-            .ensure_state_with_config(&char_name, cache_ttl_secs, Some(&effective_config));
+    let is_new_autonomy_state = ctx
+        .autonomy
+        .ensure_state_with_config(&char_name, Some(&effective_config));
 
     if is_new_autonomy_state {
         let engine = engine_arc.lock().await;

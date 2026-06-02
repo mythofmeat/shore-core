@@ -199,7 +199,7 @@ fn status_returns_state() {
     rt.block_on(async {
         let (engine, mut ctx, _rx) = make_ctx(&tmp);
         ctx.active_model = Some("claude-sonnet".into());
-        ctx.autonomy.ensure_state(engine.character_name(), None);
+        ctx.autonomy.ensure_state(engine.character_name());
 
         let result = status(&engine, &ctx).unwrap();
         assert_eq!(result["character"], "TestChar");
@@ -220,7 +220,7 @@ fn status_reports_dormant_heartbeat() {
     rt.block_on(async {
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
-        ctx.autonomy.ensure_state(engine.character_name(), None);
+        ctx.autonomy.ensure_state(engine.character_name());
         assert!(ctx.autonomy.heartbeat_set_dormant(engine.character_name()));
 
         let result = status(&engine, &ctx).unwrap();

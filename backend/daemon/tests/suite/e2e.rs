@@ -643,9 +643,9 @@ async fn e2e_conversation_milestone() {
 
     // ── Cleanup ────────────────────────────────────────────────────────
     test_err!("=== Cleanup ===");
-    let _ignored = shutdown_tx.send(());
-    let _ignored = server_handle.await;
-    let _ignored = handler_handle.await;
+    let _ignored = shutdown_tx.send(()); // best-effort: receiver may already be gone
+    server_handle.await.expect("server task panicked");
+    handler_handle.await.expect("handler task panicked");
     test_err!("=== E2E test passed ===");
 }
 
@@ -774,9 +774,9 @@ impl E2EHarness {
     }
 
     async fn shutdown(self) {
-        let _ignored = self.shutdown_tx.send(());
-        let _ignored = self.server_handle.await;
-        let _ignored = self.handler_handle.await;
+        let _ignored = self.shutdown_tx.send(()); // best-effort: receiver may already be gone
+        self.server_handle.await.expect("server task panicked");
+        self.handler_handle.await.expect("handler task panicked");
     }
 }
 

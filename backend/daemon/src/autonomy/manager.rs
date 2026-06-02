@@ -431,8 +431,8 @@ impl AutonomyManager {
     /// Ensure autonomy state exists for a character. On first call for a
     /// character, creates the state (restoring from disk if available) and
     /// spawns a per-character tick task.
-    pub fn ensure_state(&self, character: &str, cache_ttl_secs: Option<u64>) -> bool {
-        self.ensure_state_with_config(character, cache_ttl_secs, None)
+    pub fn ensure_state(&self, character: &str) -> bool {
+        self.ensure_state_with_config(character, None)
     }
 
     /// Like `ensure_state`, but accepts an optional per-character effective config
@@ -440,7 +440,6 @@ impl AutonomyManager {
     pub fn ensure_state_with_config(
         &self,
         character: &str,
-        _cache_ttl_secs: Option<u64>,
         effective_config: Option<&LoadedConfig>,
     ) -> bool {
         if self.states.contains_key(character) {
@@ -845,7 +844,9 @@ impl AutonomyManager {
         let count = handles.len();
         info!(task_count = count, "Autonomy manager shutting down");
         for handle in handles {
-            let _ignored = handle.await;
+            if let Err(e) = handle.await {
+                warn!(error = %e, "Autonomy task failed during shutdown");
+            }
         }
         info!("Autonomy manager shutdown complete");
     }
@@ -2543,7 +2544,7 @@ mod tests {
         let mgr = rt.block_on(async { test_manager(tmp.path()) });
 
         rt.block_on(async {
-            let _ignored = mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice");
             assert!(mgr.states.contains_key("alice"));
         });
     }
@@ -2558,8 +2559,8 @@ mod tests {
         let mgr = rt.block_on(async { test_manager(tmp.path()) });
 
         rt.block_on(async {
-            let _ignored = mgr.ensure_state("alice", None);
-            let _ignored = mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice");
+            let _ignored = mgr.ensure_state("alice");
             assert_eq!(mgr.states.len(), 1);
         });
     }
@@ -2586,7 +2587,7 @@ mod tests {
         assert!(result.is_err());
 
         rt.block_on(async {
-            assert!(mgr.ensure_state("alice", None));
+            assert!(mgr.ensure_state("alice"));
         });
         assert!(mgr.states.contains_key("alice"));
 
@@ -2638,7 +2639,7 @@ mod tests {
 
         rt.block_on(async {
             let mgr = test_manager(tmp.path());
-            let _ignored = mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice");
             let status = mgr.status("alice").unwrap();
             assert_eq!(status.heartbeat_state, "Active");
             assert_eq!(status.ticks_without_user, 0);
@@ -2655,7 +2656,7 @@ mod tests {
 
         rt.block_on(async {
             let mgr = test_manager(tmp.path());
-            let _ignored = mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice");
             assert!(mgr.heartbeat_set_dormant("alice"));
 
             let status = mgr.status("alice").unwrap();
@@ -2673,7 +2674,7 @@ mod tests {
 
         rt.block_on(async {
             let mgr = test_manager(tmp.path());
-            let _ignored = mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice");
             let _ignored = mgr.with_state("alice", |s| {
                 let now = Instant::now();
                 s.heartbeat.on_user_message(now - Duration::from_hours(72));
@@ -2696,8 +2697,8 @@ mod tests {
         let mgr = rt.block_on(async { test_manager(tmp.path()) });
 
         rt.block_on(async {
-            assert!(mgr.ensure_state("alice", None));
-            assert!(!mgr.ensure_state("alice", None));
+            assert!(mgr.ensure_state("alice"));
+            assert!(!mgr.ensure_state("alice"));
         });
     }
 
@@ -2711,7 +2712,7 @@ mod tests {
         let mgr = rt.block_on(async { test_manager(tmp.path()) });
 
         rt.block_on(async {
-            let _ignored = mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice");
 
             let timestamps = vec![
                 chrono::NaiveDate::from_ymd_opt(2026, 3, 20)
@@ -2744,7 +2745,7 @@ mod tests {
         let mgr = rt.block_on(async { test_manager(tmp.path()) });
 
         rt.block_on(async {
-            let _ignored = mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice");
             // Heartbeat starts with no user activity.
             let _ignored =
                 mgr.with_state("alice", |s| assert!(s.heartbeat.last_user_at().is_none()));
@@ -3078,7 +3079,7 @@ mod tests {
     async fn compaction_keeps_keepalive_deadline() {
         let tmp = tempfile::tempdir().unwrap();
         let mgr = test_manager(tmp.path());
-        let _ignored = mgr.ensure_state("alice", None);
+        let _ignored = mgr.ensure_state("alice");
 
         let now = Instant::now();
         let _ignored = mgr.with_state("alice", |s| {
@@ -3159,7 +3160,7 @@ mod tests {
 
         let mgr = rt.block_on(async { test_manager(data_dir) });
         rt.block_on(async {
-            let _ignored = mgr.ensure_state("alice", None);
+            let _ignored = mgr.ensure_state("alice");
         });
 
         // The keepalive should be primed: after 55 minutes, tick should
@@ -3536,7 +3537,7 @@ api_key_env = "{heartbeat_env}"
             .enable_all()
             .build()
             .unwrap();
-        let _ignored = rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice") });
 
         // Below max_turns: should not compact.
         assert!(!mgr.should_compact_now("alice", 15, 0));
@@ -3572,7 +3573,7 @@ api_key_env = "{heartbeat_env}"
             .enable_all()
             .build()
             .unwrap();
-        let _ignored = rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice") });
 
         // Below max_turns and no pending flag: should not compact.
         assert!(!mgr.should_compact_now("alice", 20, 0));
@@ -3611,7 +3612,7 @@ api_key_env = "{heartbeat_env}"
             .enable_all()
             .build()
             .unwrap();
-        let _ignored = rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice") });
 
         // Even above max_turns, disabled config means no compaction.
         assert!(!mgr.should_compact_now("alice", 100, 0));
@@ -3641,7 +3642,7 @@ api_key_env = "{heartbeat_env}"
             .enable_all()
             .build()
             .unwrap();
-        let _ignored = rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice") });
 
         // Below threshold: no trigger.
         assert!(!mgr.should_compact_now("alice", 10, 29_999));
@@ -3677,7 +3678,7 @@ api_key_env = "{heartbeat_env}"
             .enable_all()
             .build()
             .unwrap();
-        let _ignored = rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice") });
 
         // Huge context, past min_turns — must not trigger when disabled.
         assert!(!mgr.should_compact_now("alice", 100, 1_000_000));
@@ -3705,7 +3706,7 @@ api_key_env = "{heartbeat_env}"
             .enable_all()
             .build()
             .unwrap();
-        let _ignored = rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice") });
 
         // Trigger compaction.
         assert!(mgr.should_compact_now("alice", 16, 0));

@@ -243,22 +243,6 @@ impl HeartbeatLog {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Cache TTL parsing (shared between handler and heartbeat)
-// ---------------------------------------------------------------------------
-
-/// Parse a `cache_ttl` duration string (e.g. `"1h"`, `"5m"`) into seconds.
-pub fn parse_cache_ttl_secs(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if let Some(h) = s.strip_suffix('h') {
-        h.parse::<u64>().ok().and_then(|v| v.checked_mul(3600))
-    } else if let Some(m) = s.strip_suffix('m') {
-        m.parse::<u64>().ok().and_then(|v| v.checked_mul(60))
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod heartbeat_log_tests {
     use super::*;

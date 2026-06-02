@@ -148,7 +148,7 @@ mod tests {
         );
 
         // Initialize state and record some messages.
-        let _ignored = mgr.ensure_state("TestChar", None::<u64>);
+        let _ignored = mgr.ensure_state("TestChar");
         for turn in 1..=5 {
             mgr.notify_user_message("TestChar", turn);
             mgr.notify_assistant_message("TestChar", turn);
@@ -183,7 +183,7 @@ mod tests {
         );
 
         // State exists for "TestChar" but context asks for "OtherChar".
-        let _ignored = mgr.ensure_state("TestChar", None::<u64>);
+        let _ignored = mgr.ensure_state("TestChar");
         mgr.notify_user_message("TestChar", 1);
 
         let ctx = TestToolContext::new().with_autonomy(mgr, "OtherChar");
