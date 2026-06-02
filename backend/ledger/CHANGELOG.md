@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v3.0.0...shore-ledger-v3.0.1) - 2026-06-02
+
+### Other
+
+- updated the following local packages: shore-config, shore-llm
+
 ## [3.0.0](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v2.0.4...shore-ledger-v3.0.0) - 2026-05-31
 
 ### Breaking

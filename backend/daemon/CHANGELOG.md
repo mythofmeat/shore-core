@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [12.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v11.0.0...shore-daemon-v12.0.0) - 2026-06-02
+
+### Other
+
+- Make preserve_prior_turns a per-model setting ([#129](https://github.com/mythofmeat/shore-core/pull/129)) ([#134](https://github.com/mythofmeat/shore-core/pull/134))
+- LLM sidecar migration ([#123](https://github.com/mythofmeat/shore-core/pull/123)) — consolidated + OpenRouter SDK ([#128](https://github.com/mythofmeat/shore-core/pull/128))
+
 ## [11.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v10.0.0...shore-daemon-v11.0.0) - 2026-05-31
 
 ### Breaking

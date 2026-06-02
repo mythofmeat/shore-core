@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.5](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.0.4...shore-cli-v2.0.5) - 2026-06-02
+
+### Other
+
+- Make preserve_prior_turns a per-model setting ([#129](https://github.com/mythofmeat/shore-core/pull/129)) ([#134](https://github.com/mythofmeat/shore-core/pull/134))
+
 ## [2.0.4](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.0.3...shore-cli-v2.0.4) - 2026-05-31
 
 ### Other
