@@ -16,6 +16,8 @@ Environment=SHORE_MATRIX_RUST_LOG=warn,shore_matrix=info,matrix_sdk_crypto::back
 Environment=XDG_CONFIG_HOME=%h/.config
 Environment=XDG_DATA_HOME=%h/.local/share
 Environment=XDG_RUNTIME_DIR=/run/user/%U
+# Sidecar lives in /usr/lib/shore (off $PATH); the daemon resolves it from here.
+Environment=SHORE_LLM_SIDECAR_BIN=/usr/lib/shore/shore-llm-sidecar
 
 # Hardening
 NoNewPrivileges=yes

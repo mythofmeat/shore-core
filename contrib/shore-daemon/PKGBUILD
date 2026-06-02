@@ -34,8 +34,11 @@ package() {
     cd shore-core
 
     install -Dm755 target/release/shore-daemon "$pkgdir/usr/bin/shore-daemon"
+    # Kept out of /usr/bin on purpose: the daemon supervises this directly and
+    # locates it via SHORE_LLM_SIDECAR_BIN, so no user (or the AI's bash tool)
+    # should be able to run it by name off $PATH.
     install -Dm755 backend/llm-sidecar/dist/shore-llm-sidecar \
-        "$pkgdir/usr/bin/shore-llm-sidecar"
+        "$pkgdir/usr/lib/shore/shore-llm-sidecar"
 
     install -Dm644 contrib/shore-daemon.service \
         "$pkgdir/usr/lib/systemd/user/shore-daemon.service"

@@ -18,6 +18,12 @@ const MATRIX_LOG_ENV: &str = "SHORE_MATRIX_RUST_LOG";
 const DEFAULT_MATRIX_LOG_FILTER: &str = "warn,shore_matrix=info,matrix_sdk_crypto::backups=error";
 const MATRIX_BINARY: &str = "shore-matrix";
 const LLM_SIDECAR_BINARY: &str = "shore-llm-sidecar";
+/// Explicit path override for the sidecar binary, set by the packaged systemd
+/// unit so the daemon can find a sidecar installed off `$PATH`.
+const LLM_SIDECAR_BIN_ENV: &str = "SHORE_LLM_SIDECAR_BIN";
+/// Known install location for packaged builds. Deliberately kept out of `$PATH`
+/// (no user — or the AI's bash tool — should run the sidecar by name).
+const LLM_SIDECAR_LIBEXEC: &str = "/usr/lib/shore/shore-llm-sidecar";
 
 /// Handle to the supervisor's background task; `shutdown()` joins it.
 pub struct MatrixSupervisor {
@@ -87,15 +93,40 @@ fn locate_matrix_binary() -> Option<PathBuf> {
 }
 
 fn locate_llm_sidecar_binary() -> Option<PathBuf> {
-    let binary = locate_binary(LLM_SIDECAR_BINARY);
+    let binary = resolve_llm_sidecar_binary();
     if binary.is_none() {
         warn!(
-            "shore-llm-sidecar binary not found on PATH or next to shore-daemon; \
-             LLM sidecar supervision disabled. Install shore-llm-sidecar, add it \
-             to PATH, or run a sidecar manually at the configured socket path."
+            "shore-llm-sidecar binary not found via {LLM_SIDECAR_BIN_ENV}, PATH, \
+             next to shore-daemon, or {LLM_SIDECAR_LIBEXEC}; LLM sidecar \
+             supervision disabled. Install shore-llm-sidecar, set \
+             {LLM_SIDECAR_BIN_ENV}, or run a sidecar manually at the configured \
+             socket path."
         );
     }
     binary
+}
+
+/// Resolve the sidecar binary, in order of preference:
+/// 1. the `SHORE_LLM_SIDECAR_BIN` override (set by the packaged systemd unit),
+/// 2. `$PATH` and a sibling of `shore-daemon` (development from source),
+/// 3. the known `/usr/lib/shore` install location (packaged, off `$PATH`).
+fn resolve_llm_sidecar_binary() -> Option<PathBuf> {
+    if let Some(raw) = std::env::var_os(LLM_SIDECAR_BIN_ENV) {
+        let path = PathBuf::from(raw);
+        if path.is_file() {
+            return Some(path);
+        }
+        warn!(
+            path = %path.display(),
+            "{LLM_SIDECAR_BIN_ENV} is set but does not point at a file; \
+             falling back to PATH and known install locations"
+        );
+    }
+    if let Some(found) = locate_binary(LLM_SIDECAR_BINARY) {
+        return Some(found);
+    }
+    let libexec = PathBuf::from(LLM_SIDECAR_LIBEXEC);
+    libexec.is_file().then_some(libexec)
 }
 
 fn locate_binary(name: &str) -> Option<PathBuf> {
