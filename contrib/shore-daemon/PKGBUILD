@@ -6,7 +6,11 @@ pkgdesc='Persistent AI character engine — daemon'
 arch=('x86_64')
 url='https://github.com/mythofmeat/shore-core'
 license=('custom')
-depends=('gcc-libs' 'openssl')
+# bun is a runtime dep: the LLM sidecar ships as a bundled JS script with a
+# `#!/usr/bin/env bun` shebang rather than a ~70MB --compile binary (the
+# embedded Bun runtime dwarfed the ~1.4MB of actual code). Trades the
+# self-contained binary for a shared bun package.
+depends=('gcc-libs' 'openssl' 'bun')
 makedepends=('bun' 'cargo' 'git')
 provides=('shore-daemon')
 conflicts=('shore-daemon' 'shore-core' 'shore-git')

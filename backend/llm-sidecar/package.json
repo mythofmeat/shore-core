@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/server.ts",
-    "build": "bun build src/server.ts --compile --outfile dist/shore-llm-sidecar",
+    "build": "bun build src/server.ts --outfile dist/shore-llm-sidecar --minify --target=bun --banner='#!/usr/bin/env bun' && chmod +x dist/shore-llm-sidecar",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
