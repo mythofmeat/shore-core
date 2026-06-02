@@ -92,15 +92,12 @@ impl LlmRequest {
     /// tail — which is what keeps Anthropic's content-addressed prefix
     /// cache valid across iterations.
     ///
-    /// Per-adapter handling of the resulting inline `role:"system"`:
-    /// - Anthropic (`convert_inline_system_messages`): merges the block
-    ///   into the immediately preceding user message. Because the slot
-    ///   is fixed, the merge target is fixed too.
-    /// - OpenAI-shape with `wrap_inline_system=true` (OpenRouter slugs
-    ///   `anthropic/*` and `google/*`): wraps as a user message with
-    ///   `<system_instruction>` XML.
-    /// - OpenAI-shape with `wrap_inline_system=false` (raw OpenAI,
-    ///   Gemini direct, Z.AI): emits a real `role:"system"` mid-history.
+    /// Per-adapter handling of the resulting inline `role:"system"` now lives
+    /// in the TypeScript sidecar. Anthropic-family adapters merge the block
+    /// into the immediately preceding user message; OpenAI-family adapters
+    /// either wrap it as a user `<system_instruction>` or pass through a real
+    /// mid-history `role:"system"`, depending on provider dialect. Because the
+    /// slot is fixed, any merge/wrap target is fixed too.
     ///
     /// This replaces the deleted `system_suffix` field. That field was a
     /// footgun: `preprocess_request` re-expanded it into a trailing

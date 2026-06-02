@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use crate::helpers::wait_for_heartbeat_detail;
-use shore_test_harness::{MockLlmServer, TestConfigBuilder, TestHarness};
+use shore_test_harness::{MockLlmSidecar, TestConfigBuilder, TestHarness};
 
 fn registry_with(budget_env: &str, overflow_env: &str) -> String {
     format!(
@@ -58,7 +58,7 @@ async fn yield_many(n: usize) {
 /// pattern, which fails under heavy parallel CPU load when N is too small for
 /// the scheduled tick to land.
 async fn wait_until_count_above(
-    mock_llm: &MockLlmServer,
+    mock_llm: &MockLlmSidecar,
     baseline: usize,
     max_iters: usize,
 ) -> usize {
@@ -71,6 +71,33 @@ async fn wait_until_count_above(
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     mock_llm.received_requests().await.len()
+}
+
+fn heartbeat_detail_count(harness: &TestHarness, character: &str, detail: &str) -> usize {
+    harness
+        .autonomy
+        .heartbeat_log(character, 100)
+        .into_iter()
+        .filter(|event| event.detail == detail)
+        .count()
+}
+
+async fn wait_until_heartbeat_detail_count_above(
+    harness: &TestHarness,
+    character: &str,
+    detail: &str,
+    baseline: usize,
+    max_iters: usize,
+) -> usize {
+    for _ in 0..max_iters {
+        let n = heartbeat_detail_count(harness, character, detail);
+        if n > baseline {
+            return n;
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    heartbeat_detail_count(harness, character, detail)
 }
 
 /// Test 1: After sending a user message (which primes last_request and warms
@@ -364,6 +391,7 @@ async fn test_sustained_keepalive_over_four_hours() {
     // Simulate 4+ hours of silence. Expect ~4-5 keepalive pings
     // (at 55, 110, 165, 220 minutes).
     let expected_pings = 4;
+    let ping_log_baseline = heartbeat_detail_count(&harness, "TestChar", "Cache keepalive ping");
     for i in 0..expected_pings {
         // Enqueue response for this ping.
         harness.mock_llm.enqueue_json_text_optional("ping").await;
@@ -378,6 +406,20 @@ async fn test_sustained_keepalive_over_four_hours() {
             "Expected ping #{} at ~{}min. Baseline: {baseline}, Current: {current}",
             i + 1,
             (i + 1) * 56
+        );
+        let logged = wait_until_heartbeat_detail_count_above(
+            &harness,
+            "TestChar",
+            "Cache keepalive ping",
+            ping_log_baseline + i,
+            200,
+        )
+        .await;
+        assert!(
+            logged > ping_log_baseline + i,
+            "Expected keepalive ping #{} to complete and reschedule before advancing again. \
+             Baseline logs: {ping_log_baseline}, Logged: {logged}",
+            i + 1
         );
     }
 

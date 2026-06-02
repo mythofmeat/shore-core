@@ -12,9 +12,9 @@ use serde::Serialize;
 use shore_config::app::{
     AdvancedConfig, AppConfig, AutonomyConfig, BackgroundDefaultsConfig, BehaviorConfig,
     BudgetWeekday, CommandNotifyConfig, CompactionConfig, ConnectionsConfig, DaemonConfig,
-    DefaultsConfig, DreamingConfig, EmbeddedConfig, HeartbeatConfig, MatrixConfig, MemoryConfig,
-    NotificationBackend, NotificationEventsConfig, NotificationsConfig, NtfyConfig,
-    RetrievalBinaryMode, RetrievalConfig, RetrievalMode, SearchConfig, ServiceEntry,
+    DefaultsConfig, DreamingConfig, EmbeddedConfig, HeartbeatConfig, LlmSidecarConfig,
+    MatrixConfig, MemoryConfig, NotificationBackend, NotificationEventsConfig, NotificationsConfig,
+    NtfyConfig, RetrievalBinaryMode, RetrievalConfig, RetrievalMode, SearchConfig, ServiceEntry,
     ServicesConfig, ThinkingConfig, ToolToggles, ToolUseConfig, UsageBudgetAction,
     UsageBudgetConfig, UsageBudgetPeriod, UsageConfig, UsageSpikeWarningsConfig,
 };
@@ -63,6 +63,7 @@ fn arb_sdk() -> impl Strategy<Value = Sdk> {
     prop_oneof![
         Just(Sdk::Anthropic),
         Just(Sdk::Openai),
+        Just(Sdk::Openrouter),
         Just(Sdk::Gemini),
         Just(Sdk::Zai),
     ]
@@ -704,6 +705,7 @@ fn arb_advanced_config() -> impl Strategy<Value = AdvancedConfig> {
         prop::option::of(0u32..10),
         prop::option::of(arb_duration()),
         0u64..20_000_000,
+        arb_llm_sidecar_config(),
     )
         .prop_map(
             |(
@@ -713,6 +715,7 @@ fn arb_advanced_config() -> impl Strategy<Value = AdvancedConfig> {
                 max_retries,
                 retry_backoff,
                 max_image_size,
+                llm_sidecar,
             )| AdvancedConfig {
                 api_payload_logging,
                 cache_forensics,
@@ -720,8 +723,18 @@ fn arb_advanced_config() -> impl Strategy<Value = AdvancedConfig> {
                 max_retries,
                 retry_backoff,
                 max_image_size,
+                llm_sidecar,
             },
         )
+}
+
+fn arb_llm_sidecar_config() -> impl Strategy<Value = LlmSidecarConfig> {
+    (any::<bool>(), prop::option::of(arb_nonempty_text())).prop_map(|(enabled, socket_path)| {
+        LlmSidecarConfig {
+            enabled,
+            socket_path: socket_path.map(std::path::PathBuf::from),
+        }
+    })
 }
 
 fn arb_app_config() -> impl Strategy<Value = AppConfig> {

@@ -135,14 +135,13 @@ pub fn resolve_image_gen_config(
 /// The compaction instruction is pushed inline via
 /// [`shore_llm::types::LlmRequest::push_inline_system`] at build time, so
 /// its *index* in `messages` is fixed before the tool loop starts. Each
-/// adapter then handles it the way it already handles inline system
-/// messages (Anthropic merges into the preceding user via
-/// `convert_inline_system_messages`; OpenAI-compatible providers either
-/// emit it as a real `role:"system"` or wrap it as a user with
-/// `<system_instruction>` XML, per `ProviderContext.wrap_inline_system`).
-/// Because the merge target is fixed, the bytes at every position ≤ the
-/// system index are byte-stable across tool-loop rounds, so Anthropic's
-/// content-addressed prefix cache stays valid.
+/// sidecar adapter then handles it the way that provider dialect expects
+/// (Anthropic-family providers merge into the preceding user; OpenAI-family
+/// providers either emit a real `role:"system"` or wrap it as a user with
+/// `<system_instruction>` XML). Because the inline system index is fixed, any
+/// provider-side merge/wrap target is fixed too, so the bytes at every
+/// position ≤ the system index are byte-stable across tool-loop rounds and
+/// Anthropic's content-addressed prefix cache stays valid.
 ///
 /// The earlier `system_suffix` affordance was removed precisely because it
 /// re-expanded the instruction at the *moving* tail on every `generate()`
@@ -221,9 +220,9 @@ impl RealCompactionLlm {
         // three, so this is the lever that keeps compaction's call hitting
         // the cache chat seeded for this conversation. The compaction
         // instruction is pinned at a fixed inline `role:"system"` slot via
-        // `push_inline_system` (see `append_compaction_tail`); Anthropic's
-        // `convert_inline_system_messages` merges it into the appended user
-        // turn, so it never appears in the cache prefix itself.
+        // `push_inline_system` (see `append_compaction_tail`); the sidecar's
+        // provider adapter may merge/wrap it, but the canonical daemon slot
+        // is stable before any tool-loop continuation is appended.
         //
         // `chat_request` is either the live in-memory `last_request` (cache
         // is warm) or a chat-shape request rebuilt from disk via
@@ -441,6 +440,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use shore_config::models::{ModelConfigFields, Sdk};
+    use shore_test_harness::MockLlmSidecar;
     use tempfile::TempDir;
 
     fn test_compaction_model(api_key_env: &str) -> ResolvedModel {
@@ -681,11 +681,10 @@ mod tests {
     /// the compaction prompt is pushed inline as `{"role":"system", ...}`
     /// at a fixed slot regardless of provider. Each adapter then decides
     /// how to emit it on the wire — Anthropic merges into the preceding
-    /// user via `convert_inline_system_messages`; OpenAI-compatible
-    /// providers either emit a real `role:"system"` mid-history (Z.ai)
-    /// or wrap as a user with `<system_instruction>` XML (OpenRouter,
-    /// most chat-completions backends) per
-    /// `ProviderContext.wrap_inline_system`.
+    /// user; OpenAI-compatible providers either emit a real `role:"system"`
+    /// mid-history (Z.ai) or wrap as a user with `<system_instruction>` XML
+    /// (OpenRouter, most chat-completions backends). That conversion now
+    /// lives in the sidecar.
     #[test]
     fn compaction_request_carries_inline_system_for_openai_sdk() {
         let api_key_env = format!(
@@ -727,8 +726,8 @@ mod tests {
         // Chat's system block passes through verbatim, regardless of SDK.
         assert_eq!(request.system, Some(json!("chat system prompt")));
         // The compaction instruction rides inline as a `role:"system"`
-        // entry at a fixed slot; the OpenAI adapter handles it at
-        // dispatch time per `ProviderContext.wrap_inline_system`.
+        // entry at a fixed slot; the sidecar adapter handles OpenAI-family
+        // provider-specific wrapping at dispatch time.
         assert_eq!(request.messages.len(), 3);
         assert_eq!(request.messages[0]["content"], "hi");
         assert_eq!(request.messages[1]["content"], "compact now");
@@ -759,28 +758,21 @@ mod tests {
     /// instruction at a fixed slot via `push_inline_system` keeps every
     /// byte ≤ that slot stable across rounds.
     ///
-    /// Uses MockLlmServer (no real credentials) so this runs in CI.
+    /// Uses MockLlmSidecar (no real credentials) so this runs in CI.
     #[tokio::test]
     async fn compaction_tool_loop_keeps_compact_now_user_byte_stable_across_rounds() {
-        use shore_test_harness::mock_llm::{AnthropicJsonBuilder, MockLlmServer};
-
-        let mock = MockLlmServer::start().await;
-        // RealCompactionLlm uses non-streaming generate(), so enqueue JSON
-        // responses (matching `POST /v1/messages` non-streaming shape).
+        let mock = MockLlmSidecar::start().await;
+        // RealCompactionLlm uses non-streaming generate(), so enqueue
+        // sidecar-normalized JSON responses for `POST /v1/generate`.
         // iter-0: model emits tool_use → caller pushes assistant + tool_result.
-        mock.enqueue_json(
-            AnthropicJsonBuilder::new()
-                .tool_use(
-                    "toolu_1",
-                    "write",
-                    json!({"path": "memory/x.md", "content": "ok"}),
-                )
-                .stop_reason("tool_use"),
+        mock.enqueue_json_tool_use(
+            "toolu_1",
+            "write",
+            json!({"path": "memory/x.md", "content": "ok"}),
         )
         .await;
         // iter-1: model finishes.
-        mock.enqueue_json(AnthropicJsonBuilder::new().text("done"))
-            .await;
+        mock.enqueue_json_text("done").await;
 
         // Build a ResolvedModel pointed at the mock so generate() lands there.
         let api_key_env = format!(
@@ -805,12 +797,10 @@ mod tests {
             },
         );
         let ledger_tmp = TempDir::new().unwrap();
+        let mut llm_client = shore_llm::LlmClient::new();
+        llm_client.set_sidecar_socket(mock.socket_path().to_path_buf());
         let llm = RealCompactionLlm::new(
-            LedgerClient::new(
-                shore_llm::LlmClient::new(),
-                &ledger_tmp.path().join("ledger.db"),
-            )
-            .unwrap(),
+            LedgerClient::new(llm_client, &ledger_tmp.path().join("ledger.db")).unwrap(),
             model,
             ProviderRegistry::default(),
             "alice".into(),
@@ -840,14 +830,11 @@ mod tests {
             )
             .unwrap();
 
-        // Record where compact_now_user lands in the messages array so we
-        // can compare the same WIRE slot in both iterations. Note: the
-        // post-fix shape has TWO new entries (compact_now user + inline
-        // system); after `convert_inline_system_messages` runs on the
-        // Anthropic adapter, the system entry merges into the preceding
-        // user and the wire-shape index of compact_now is `chat_prefix_len`.
-        // We locate it by content so the test doesn't break if the
-        // pre-merge layout changes.
+        // Record where the compaction tail lands in the canonical sidecar
+        // request so we can compare the same slots in both iterations. The
+        // sidecar owns provider-specific merging; the daemon's invariant is
+        // that the compact-now user and pinned inline system entries do not
+        // move or mutate when the private tool loop appends more turns.
         let compact_now_idx = request
             .messages
             .iter()
@@ -856,9 +843,18 @@ mod tests {
                     && m.to_string().contains("compact now")
             })
             .expect("test setup: compact_now_user must be in the request");
+        let pinned_system_idx = request
+            .messages
+            .iter()
+            .position(|m| {
+                m.get("role").and_then(|r| r.as_str()) == Some("system")
+                    && m.to_string().contains("compaction system instruction")
+            })
+            .expect("test setup: compaction inline system must be in the request");
+        assert_eq!(pinned_system_idx, compact_now_idx + 1);
 
         // ── iter-0 ── send through the real generate path so preprocess_request
-        // + the Anthropic adapter run end-to-end; the mock observes the wire.
+        // and sidecar IPC run end-to-end; the mock observes the sidecar request.
         let _resp_0 = llm.generate(&mut request).await.expect("iter-0 generate");
 
         // Mimic compaction/mod.rs tool-loop: push assistant(tool_use) then
@@ -882,7 +878,7 @@ mod tests {
 
         std::env::remove_var(&api_key_env);
 
-        // Inspect the two wire bodies the mock observed.
+        // Inspect the two sidecar request bodies the mock observed.
         let bodies = mock.received_requests().await;
         assert_eq!(bodies.len(), 2, "expected exactly 2 requests to the mock");
         let iter0 = &bodies[0]["messages"]
@@ -894,10 +890,11 @@ mod tests {
             .expect("iter-1 messages")
             .clone();
 
-        // Walk every position up to and including compact_now_user. The
+        // Walk every position up to and including the pinned inline system. The
         // bytes at each slot must match exactly — any divergence at or
-        // before `compact_now_idx` invalidates Anthropic's cached prefix.
-        for i in 0..=compact_now_idx {
+        // before that fixed tail invalidates Anthropic's cached prefix once
+        // the sidecar adapter converts the canonical request.
+        for i in 0..=pinned_system_idx {
             // Strip cache_control markers before comparison: their placement
             // is allowed to shift across iterations (e.g. the iter-0
             // last_msg breakpoint becomes the iter-1 last_stable_assistant
@@ -913,9 +910,9 @@ mod tests {
                  content-addressed cache prefix will not extend past this \
                  position.\n\niter-0[{i}]: {a}\n\niter-1[{i}]: {b}\n\n\
                  This is the moving-tail cache-invalidation bug — the \
-                 compaction instruction must NOT be re-merged into a \
-                 different message across tool-loop rounds. Keep it pinned \
-                 at a fixed slot via push_inline_system at build time."
+                 compaction instruction must NOT move across tool-loop \
+                 rounds. Keep it pinned at a fixed slot via push_inline_system \
+                 at build time."
             );
         }
     }

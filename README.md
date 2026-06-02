@@ -75,6 +75,8 @@ Start the daemon and send a message:
 
 ```sh
 cargo build --release -p shore-daemon -p shore-cli
+(cd backend/llm-sidecar && bun install --frozen-lockfile && bun run build)
+cp backend/llm-sidecar/dist/shore-llm-sidecar target/release/
 target/release/shore-daemon &
 target/release/shore send "Hello!"
 ```
@@ -118,6 +120,7 @@ Main binaries built here:
 | --- | --- |
 | `shore-daemon` | persistent daemon |
 | `shore` | CLI client |
+| `shore-llm-sidecar` | supervised TypeScript LLM wire process |
 
 Out-of-tree clients and bridges (separate repos, consuming the core libraries
 from crates.io):
@@ -147,6 +150,7 @@ python3 scripts/harness-check.py
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+(cd backend/llm-sidecar && bun install --frozen-lockfile && bun run typecheck && bun test && bun run build)
 cargo build --release -p shore-daemon -p shore-cli
 ```
 

@@ -6,8 +6,12 @@ pkgdesc='Persistent AI character engine — daemon'
 arch=('x86_64')
 url='https://github.com/mythofmeat/shore-core'
 license=('custom')
-depends=('gcc-libs' 'openssl')
-makedepends=('cargo' 'git')
+# bun is a runtime dep: the LLM sidecar ships as a bundled JS script with a
+# `#!/usr/bin/env bun` shebang rather than a ~70MB --compile binary (the
+# embedded Bun runtime dwarfed the ~1.4MB of actual code). Trades the
+# self-contained binary for a shared bun package.
+depends=('gcc-libs' 'openssl' 'bun')
+makedepends=('bun' 'cargo' 'git')
 provides=('shore-daemon')
 conflicts=('shore-daemon' 'shore-core' 'shore-git')
 source=("shore-core::git+ssh://git@github.com/mythofmeat/shore-core.git")
@@ -25,12 +29,20 @@ build() {
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     cargo build --release --frozen -p shore-daemon
+    cd backend/llm-sidecar
+    bun install --frozen-lockfile
+    bun run build
 }
 
 package() {
     cd shore-core
 
     install -Dm755 target/release/shore-daemon "$pkgdir/usr/bin/shore-daemon"
+    # Kept out of /usr/bin on purpose: the daemon supervises this directly and
+    # locates it via SHORE_LLM_SIDECAR_BIN, so no user (or the AI's bash tool)
+    # should be able to run it by name off $PATH.
+    install -Dm755 backend/llm-sidecar/dist/shore-llm-sidecar \
+        "$pkgdir/usr/lib/shore/shore-llm-sidecar"
 
     install -Dm644 contrib/shore-daemon.service \
         "$pkgdir/usr/lib/systemd/user/shore-daemon.service"

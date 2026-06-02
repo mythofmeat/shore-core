@@ -24,6 +24,11 @@ pub enum Sdk {
     #[default]
     Anthropic,
     Openai,
+    /// OpenRouter's first-party SDK (`@openrouter/sdk`) — the normalized path
+    /// for non-Anthropic models routed via OpenRouter (DeepSeek, Kimi, GLM,
+    /// MiniMax, GPT, xAI). OpenRouter folds each vendor's bespoke reasoning
+    /// shape into one typed `reasoning_details` array, round-tripped opaquely.
+    Openrouter,
     Gemini,
     Zai,
 }
@@ -37,6 +42,7 @@ impl<'de> Deserialize<'de> for Sdk {
         match s.as_str() {
             "anthropic" => Ok(Sdk::Anthropic),
             "openai" => Ok(Sdk::Openai),
+            "openrouter" => Ok(Sdk::Openrouter),
             "gemini" => Ok(Sdk::Gemini),
             "zai" => Ok(Sdk::Zai),
             "deepseek" | "zhipuai" => {
@@ -48,7 +54,7 @@ impl<'de> Deserialize<'de> for Sdk {
             }
             other => Err(serde::de::Error::unknown_variant(
                 other,
-                &["anthropic", "openai", "gemini", "zai"],
+                &["anthropic", "openai", "openrouter", "gemini", "zai"],
             )),
         }
     }
@@ -60,6 +66,7 @@ impl Sdk {
         match self {
             Sdk::Anthropic => "anthropic",
             Sdk::Openai => "openai",
+            Sdk::Openrouter => "openrouter",
             Sdk::Gemini => "gemini",
             Sdk::Zai => "zai",
         }
@@ -73,6 +80,7 @@ impl Sdk {
         match s {
             "anthropic" => Some(Sdk::Anthropic),
             "openai" => Some(Sdk::Openai),
+            "openrouter" => Some(Sdk::Openrouter),
             "gemini" => Some(Sdk::Gemini),
             "zai" => Some(Sdk::Zai),
             _ => None,
@@ -716,7 +724,12 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
             ..base_provider_defaults()
         },
         "openrouter" => ModelConfigFields {
-            sdk: Some(Sdk::Openai),
+            // Non-Anthropic OpenRouter models route through the first-party
+            // `@openrouter/sdk` adapter (the sidecar's normalized path that
+            // folds each vendor's reasoning shape into one `reasoning_details`
+            // array). Claude-over-OpenRouter uses a separate `openrouter-anthropic`
+            // provider with an explicit `sdk = "anthropic"`.
+            sdk: Some(Sdk::Openrouter),
             api_key_env: Some("OPENROUTER_API_KEY".into()),
             base_url: Some("https://openrouter.ai/api/v1".into()),
             ..base_provider_defaults()
@@ -765,10 +778,14 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
 pub fn default_sdk(provider_key: &str) -> Sdk {
     match provider_key {
         "anthropic" => Sdk::Anthropic,
+        // OpenRouter's non-Anthropic models route through the first-party
+        // `@openrouter/sdk` adapter by default (`anthropic/*` model_ids are
+        // still auto-promoted to Sdk::Anthropic in `from_parts`).
+        "openrouter" => Sdk::Openrouter,
         "gemini" => Sdk::Gemini,
         "zai" => Sdk::Zai,
-        // Everything else (openrouter, xai, deepseek, zhipuai, custom)
-        // defaults to OpenAI-compatible.
+        // Everything else (xai, deepseek, zhipuai, custom) defaults to the
+        // direct OpenAI-compatible path.
         _ => Sdk::Openai,
     }
 }
@@ -809,6 +826,52 @@ model_id = "claude-opus-4-6"
         assert_eq!(opus.sdk, Sdk::Anthropic);
         assert_eq!(opus.model_id, "claude-opus-4-6");
         assert_eq!(opus.api_key_env.as_deref(), Some("MY_KEY"));
+    }
+
+    #[test]
+    fn openrouter_provider_defaults_to_openrouter_sdk() {
+        let table = parse_table(
+            r#"
+[openrouter]
+api_key_env = "OPENROUTER_API_KEY"
+
+[openrouter.deepseek]
+model_id = "deepseek/deepseek-v4"
+
+[openrouter.glm]
+model_id = "z-ai/glm-5.1"
+sdk = "zai"
+"#,
+        );
+        let (models, _) = parse_category("chat", &table, None).unwrap();
+
+        // Non-Anthropic OpenRouter model → first-party OpenRouter SDK by default.
+        assert_eq!(models["chat.openrouter.deepseek"].sdk, Sdk::Openrouter);
+        // An explicit per-model `sdk` pin is always honored over the default.
+        assert_eq!(models["chat.openrouter.glm"].sdk, Sdk::Zai);
+    }
+
+    #[test]
+    fn anthropic_slug_auto_promotes_when_sdk_unset() {
+        // A provider with no hardcoded SDK + an `anthropic/*` model_id and no
+        // explicit `sdk` auto-promotes to the Anthropic SDK (cache_control
+        // path). This is the seam `openrouter-anthropic` relies on.
+        let table = parse_table(
+            r#"
+[myrouter.claude]
+model_id = "anthropic/claude-sonnet-4-6"
+api_key_env = "MY_KEY"
+"#,
+        );
+        let (models, _) = parse_category("chat", &table, None).unwrap();
+        assert_eq!(models["chat.myrouter.claude"].sdk, Sdk::Anthropic);
+    }
+
+    #[test]
+    fn openrouter_sdk_wire_string_round_trips() {
+        assert_eq!(default_sdk("openrouter"), Sdk::Openrouter);
+        assert_eq!(Sdk::Openrouter.as_str(), "openrouter");
+        assert_eq!(Sdk::parse_wire("openrouter"), Some(Sdk::Openrouter));
     }
 
     #[test]
@@ -894,8 +957,9 @@ model_id = "anthropic/claude-opus-4.6"
         );
         let (models, _) = parse_category("chat", &table, None).unwrap();
         let foo = &models["chat.openrouter.foo"];
-        // openrouter -> Sdk::Openai via hardcoded_defaults; no auto cache_ttl.
-        assert_eq!(foo.sdk, Sdk::Openai);
+        // openrouter -> Sdk::Openrouter via hardcoded_defaults (non-Anthropic),
+        // so it still gets no automatic "1h" cache_ttl.
+        assert_eq!(foo.sdk, Sdk::Openrouter);
         assert_eq!(foo.cache_ttl, None);
     }
 
@@ -1132,7 +1196,7 @@ model_id = "google/gemini-3.1-pro-preview"
         let (models, _) = parse_category("chat", &table, None).unwrap();
         assert_eq!(models.len(), 2);
         assert_eq!(models["chat.anthropic.opus"].sdk, Sdk::Anthropic);
-        assert_eq!(models["chat.openrouter.gemini-pro"].sdk, Sdk::Openai); // openrouter default
+        assert_eq!(models["chat.openrouter.gemini-pro"].sdk, Sdk::Openrouter); // openrouter default
     }
 
     // ── ModelCatalog ────────────────────────────────────────────────

@@ -25,7 +25,7 @@ pub mod stream;
 pub mod types;
 
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tokio::io::{AsyncRead, BufReader};
 use tracing::{debug, warn};
@@ -67,13 +67,16 @@ pub enum LlmError {
     Refusal,
 }
 
-/// HTTP client that calls LLM provider APIs directly.
+/// HTTP client that calls LLM provider APIs through the sidecar.
 ///
 /// Uses reqwest for connection pooling and TLS session reuse.
 /// Each request is fully self-contained with provider, model, and API key.
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     http_client: reqwest::Client,
+    /// Unix socket for the Bun LLM sidecar. `None` makes chat/image calls
+    /// return a clear configuration error; embeddings still use HTTP directly.
+    sidecar_socket: Option<PathBuf>,
     /// If set, per-call request/response files are written to
     /// `{cache_dir}/debug/api_logs/`. See `debug_log` module.
     payload_log_dir: Option<PathBuf>,
@@ -102,6 +105,7 @@ impl LlmClient {
 
         Self {
             http_client,
+            sidecar_socket: None,
             payload_log_dir: None,
         }
     }
@@ -116,6 +120,22 @@ impl LlmClient {
     /// Set the cache directory used for payload logs.
     pub fn set_payload_log_dir(&mut self, dir: PathBuf) {
         self.payload_log_dir = Some(dir);
+    }
+
+    /// Route stream/generate/image calls through a sidecar listening on `path`.
+    pub fn set_sidecar_socket(&mut self, path: PathBuf) {
+        self.sidecar_socket = Some(path);
+    }
+
+    /// Clear the sidecar socket. Chat/image calls then return a configuration
+    /// error because the legacy Rust provider wire has been removed.
+    pub fn clear_sidecar_socket(&mut self) {
+        self.sidecar_socket = None;
+    }
+
+    /// Current sidecar socket path, if sidecar routing is enabled.
+    pub fn sidecar_socket(&self) -> Option<&Path> {
+        self.sidecar_socket.as_deref()
     }
 
     /// Borrow the shared `reqwest::Client` so other modules (e.g.
@@ -320,7 +340,8 @@ impl LlmClient {
             "Sending streaming request to provider"
         );
 
-        let read_half = providers::stream(&self.http_client, &request).await?;
+        let read_half =
+            providers::stream(&self.http_client, &request, self.sidecar_socket()).await?;
         let reader: Box<dyn AsyncRead + Send + Unpin> = match handle {
             Some(h) => Box::new(debug_log::TeeReader::new(read_half, &h)),
             None => Box::new(read_half),
@@ -337,7 +358,7 @@ impl LlmClient {
         let body = serde_json::to_string(&*request).map_err(LlmError::Serialize)?;
         let handle = debug_log::log_request(self.payload_log_dir.as_deref(), &request, &body);
 
-        let result = providers::generate(&self.http_client, &request).await;
+        let result = providers::generate(&self.http_client, &request, self.sidecar_socket()).await;
         if let Some(h) = handle {
             match &result {
                 Ok(resp) => debug_log::log_response(&h, resp),
@@ -352,7 +373,7 @@ impl LlmClient {
         &self,
         params: &ImageGenerateParams<'_>,
     ) -> Result<ImageGenerateResponse, LlmError> {
-        providers::image_generate(&self.http_client, params).await
+        providers::image_generate(&self.http_client, params, self.sidecar_socket()).await
     }
 }
 
@@ -436,12 +457,9 @@ pub fn default_base_url(provider_key: &str) -> Option<&'static str> {
 /// for these providers produces a 400 like
 /// `"reasoning_content in the thinking mode must be passed back to the API."`.
 ///
-/// This is a distinct concept from
-/// [`providers::context::reasoning_field_for`]: Z.ai also emits its
-/// reasoning into the `reasoning_content` field but does NOT require it
-/// be replayed (its `zai_clear_thinking` provider option exists
-/// specifically to drop prior thinking), so the two views are tracked
-/// separately.
+/// This is a prompt-history shaping hint, not a Rust-provider wire rule. The
+/// sidecar adapters own provider request conversion and do not replay prior
+/// thinking into output-only fields.
 pub fn requires_reasoning_replay(provider_key: &str) -> bool {
     matches!(provider_key, "deepseek" | "moonshot")
 }

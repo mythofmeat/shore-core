@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -1129,6 +1129,33 @@ pub struct AdvancedConfig {
     /// Set to 0 to disable resizing. Default: 2,000,000 (2 MB).
     #[serde(default = "default_max_image_size")]
     pub max_image_size: u64,
+
+    /// LLM sidecar transport. Enabled by default; shore-llm POSTs provider
+    /// requests to a Bun sidecar over a Unix socket instead of carrying
+    /// provider-specific chat/image wire code in Rust.
+    #[serde(default)]
+    pub llm_sidecar: LlmSidecarConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LlmSidecarConfig {
+    /// Route LLM stream/generate/image calls through the sidecar.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Optional Unix socket path. If unset, the daemon uses
+    /// `<runtime_dir>/llm.sock`.
+    pub socket_path: Option<PathBuf>,
+}
+
+impl Default for LlmSidecarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            socket_path: None,
+        }
+    }
 }
 
 impl Default for AdvancedConfig {
@@ -1140,6 +1167,7 @@ impl Default for AdvancedConfig {
             max_retries: None,
             retry_backoff: None,
             max_image_size: default_max_image_size(),
+            llm_sidecar: LlmSidecarConfig::default(),
         }
     }
 }
@@ -1201,6 +1229,8 @@ mod tests {
         assert!(config.advanced.editor.is_none());
         assert!(config.advanced.max_retries.is_none());
         assert!(config.advanced.retry_backoff.is_none());
+        assert!(config.advanced.llm_sidecar.enabled);
+        assert!(config.advanced.llm_sidecar.socket_path.is_none());
         assert_eq!(config.usage.timezone, "local");
         assert!(config.usage.allow_compaction_over_budget);
         assert!(config.usage.budgets.is_empty());
@@ -1653,6 +1683,25 @@ cache_forensics = true
 ";
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(config.advanced.cache_forensics);
+    }
+
+    #[test]
+    fn llm_sidecar_defaults_on_and_accepts_socket_path() {
+        let config = AppConfig::default();
+        assert!(config.advanced.llm_sidecar.enabled);
+        assert!(config.advanced.llm_sidecar.socket_path.is_none());
+
+        let toml_str = r#"
+[advanced.llm_sidecar]
+enabled = false
+socket_path = "/tmp/shore-llm.sock"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(!config.advanced.llm_sidecar.enabled);
+        assert_eq!(
+            config.advanced.llm_sidecar.socket_path.as_deref(),
+            Some(std::path::Path::new("/tmp/shore-llm.sock"))
+        );
     }
 
     // ── BackgroundDefaultsConfig + resolver ──────────────────────────

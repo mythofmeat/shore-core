@@ -109,7 +109,7 @@ async fn test_tool_use_roundtrip() {
         .expect("failed to send message");
 
     // The stream consumer sends a StreamEnd after each LLM call, so there are two:
-    //   Phase 1: StreamStart → StreamEnd  (tool_use SSE; no text chunks)
+    //   Phase 1: StreamStart → StreamEnd  (tool_use event; no text chunks)
     //   Phase 2: ToolCall → ToolResult → StreamStart → chunks → StreamEnd  (final phase)
     //
     // ToolCall is emitted AFTER the first StreamEnd, so it lands in phase 2.
@@ -132,7 +132,7 @@ async fn test_tool_use_roundtrip() {
         "Expected second phase to have stream_ended = true"
     );
 
-    // The mock must have received at least 2 POST /v1/messages requests:
+    // The mock must have received at least 2 sidecar stream requests:
     // one for the initial user message and one after tool execution.
     let requests = harness.mock_llm.received_requests().await;
     assert!(

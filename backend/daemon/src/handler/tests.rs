@@ -669,7 +669,7 @@ async fn handle_engine_message_regen_builds_empty_body() {
     let gen_ctx = handler.gen_context(shore_swp_server::SessionId(1), direct_tx);
     let data_dir = handler.cmd_ctx.data_dir.clone();
 
-    let result = super::task::handle_generation(
+    let result = Box::pin(super::task::handle_generation(
         gen_ctx,
         GenerationParams {
             request: RequestMeta {
@@ -685,7 +685,7 @@ async fn handle_engine_message_regen_builds_empty_body() {
             active_model: None,
             sampler_overlay: crate::preferences::SamplerSettings::default(),
         },
-    )
+    ))
     .await;
 
     assert!(result.is_err(), "Expected error due to no model configured");
@@ -1028,7 +1028,7 @@ async fn pipeline_user_message_to_persisted_response() {
     let gen_ctx = handler.gen_context(shore_swp_server::SessionId(1), direct_tx);
     let data_dir = handler.cmd_ctx.data_dir.clone();
 
-    let result = super::task::handle_generation(
+    let result = Box::pin(super::task::handle_generation(
         gen_ctx,
         GenerationParams {
             request: RequestMeta {
@@ -1044,7 +1044,7 @@ async fn pipeline_user_message_to_persisted_response() {
             active_model: None,
             sampler_overlay: crate::preferences::SamplerSettings::default(),
         },
-    )
+    ))
     .await;
 
     assert!(

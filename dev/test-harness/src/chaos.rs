@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::config::TestConfigBuilder;
 use crate::harness::TestHarness;
-use crate::mock_llm::MockLlmServer;
+use crate::mock_llm::MockLlmSidecar;
 
 /// Holds the persistent state of a crashed daemon so it can be rebooted.
 ///
@@ -11,7 +11,7 @@ use crate::mock_llm::MockLlmServer;
 /// aborted; the on-disk data in `tmp_dir` is intact for recovery testing.
 pub struct CrashedHarness {
     pub tmp_dir: tempfile::TempDir,
-    pub mock_llm: MockLlmServer,
+    pub mock_llm: MockLlmSidecar,
     pub data_dir: PathBuf,
     pub addr: String,
 }

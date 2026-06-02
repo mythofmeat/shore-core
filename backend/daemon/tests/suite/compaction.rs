@@ -219,12 +219,10 @@ async fn test_messages_still_work_after_compaction() {
 /// (`COMPACTION_TAIL_ENTRY_COUNT`, `append_compaction_tail`).
 ///
 /// The cached compaction path appends exactly two entries after the chat
-/// prefix: one `role:"user"` ("compact now") plus one inline
-/// `role:"system"` (the compaction instruction). Anthropic's
-/// `convert_inline_system_messages` merges the trailing system into the
-/// preceding user before the request leaves the adapter, so the
-/// wire-format `messages.len()` is `cached_prefix_len + 1` — the system
-/// entry collapses into the compact-now user. The inline-system shape
+/// prefix: one `role:"user"` ("compact now") plus one pinned inline
+/// `role:"system"` (the compaction instruction). The daemon sends this
+/// canonical request to the sidecar; provider-specific merging/wrapping
+/// happens after the sidecar boundary. The inline-system shape
 /// (instead of `system_suffix`) is what keeps the compact-now slot
 /// byte-stable across compaction tool-loop rounds; the contract is pinned
 /// at the unit level by
@@ -294,33 +292,39 @@ async fn test_compaction_cached_path_appends_exactly_one_tail() {
 
     // The cached request carried `cached_prefix_len` messages at the
     // moment `trigger_compaction_now` snapshotted it. `append_compaction_tail`
-    // adds COMPACTION_TAIL_ENTRY_COUNT = 2 entries (one user, one inline
-    // `role:"system"`); Anthropic's `convert_inline_system_messages`
-    // merges the trailing system into the preceding compact-now user, so
-    // the wire-format `messages.len()` = cached_prefix_len + 1.
+    // adds exactly 2 entries (one user, one pinned inline `role:"system"`),
+    // and the daemon sends that canonical shape to the sidecar. The `+ 2` is
+    // hardcoded on purpose: pinning the wire shape against a literal keeps this
+    // regression test from silently tracking an accidental change to
+    // `COMPACTION_TAIL_ENTRY_COUNT`.
     assert_eq!(
         compaction_msgs.len(),
-        cached_prefix_len + 1,
-        "cached compaction wire shape must be `cached_prefix_len + 1` after \
-         the trailing inline-system merges into compact-now; got {} vs \
-         expected {} = {} + 1.\n\
+        cached_prefix_len + 2,
+        "cached compaction sidecar shape must be `cached_prefix_len + 2`; \
+         got {} vs expected {} = {} + 2.\n\
          If this fails, check `append_compaction_tail` and `build_compaction_request`.",
         compaction_msgs.len(),
-        cached_prefix_len + 1,
+        cached_prefix_len + 2,
         cached_prefix_len,
     );
 
-    // And the appended turn must be a user turn — the inline system
-    // entry merged into the compact-now user via
-    // `convert_inline_system_messages`.
-    let tail = compaction_msgs
+    // And the appended tail must be compact-now user followed by pinned inline
+    // system; the sidecar adapter owns any provider-specific merge after this.
+    let compact_now_tail = &compaction_msgs[cached_prefix_len];
+    assert_eq!(
+        compact_now_tail
+            .get("role")
+            .and_then(serde_json::Value::as_str),
+        Some("user"),
+        "first compaction tail message must be the compact-now user turn"
+    );
+    let system_tail = compaction_msgs
         .last()
         .expect("compaction request must have a tail message");
     assert_eq!(
-        tail.get("role").and_then(serde_json::Value::as_str),
-        Some("user"),
-        "tail message must be a user turn (trailing system merged in via \
-         convert_inline_system_messages)"
+        system_tail.get("role").and_then(serde_json::Value::as_str),
+        Some("system"),
+        "final compaction tail message must be the pinned inline system"
     );
 
     harness.shutdown().await;

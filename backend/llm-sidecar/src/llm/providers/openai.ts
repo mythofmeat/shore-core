@@ -1,0 +1,416 @@
+/**
+ * OpenAI-compatible adapter (the sidecar contract shape).
+ *
+ * Fronts OpenAI and every OpenAI-compatible gateway — DeepSeek, Kimi (Moonshot),
+ * xAI, NanoGPT, etc. — which differ only by `base_url`. It consumes a
+ * `SidecarRequest` (canonical Anthropic-shape blocks, as the Rust daemon
+ * assembled them) and emits the `StreamEvent` NDJSON vocabulary the daemon's
+ * `StreamConsumer` parses.
+ *
+ * No client-side cache markers: OpenAI-compatible backends cache server-side.
+ *
+ * **It must never replay prior thinking back into the request** (no
+ * `reasoning_content`/`reasoning` field on outbound assistant messages). That
+ * replay was the retired Rust adapter's deepseek/kimi tool-loop bug; the
+ * conversion regression test pins that we don't do it. (Inbound reasoning deltas ARE
+ * surfaced as `thinking` events for display/persistence; they're dropped from
+ * the request on the next turn by `turnToOpenAI`.)
+ */
+
+import OpenAI from "openai";
+import type {
+  ChatCompletionAssistantMessageParam,
+  ChatCompletionChunk,
+  ChatCompletionCreateParams,
+  ChatCompletionMessageParam,
+  ChatCompletionTool,
+  ChatCompletionToolMessageParam,
+} from "openai/resources/chat/completions";
+
+import type { ContentBlock, ImageRef } from "../../engine/types.ts";
+import { resolveImage } from "../images.ts";
+import type {
+  GenerateResponse,
+  SidecarProvider,
+  SidecarRequest,
+  StreamEvent,
+  SystemContent,
+  TurnMessage,
+  Usage,
+  WireMessage,
+} from "../types.ts";
+
+export class OpenAIProvider implements SidecarProvider {
+  async *stream(req: SidecarRequest, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+    const { client, params } = buildOpenAICall(req, /*streaming*/ true);
+    const stream = (await client.chat.completions.create(
+      params,
+      signal ? { signal } : undefined,
+    )) as AsyncIterable<ChatCompletionChunk>;
+    yield* openAIStreamEvents(req.model, stream);
+  }
+
+  async generate(req: SidecarRequest, signal?: AbortSignal): Promise<GenerateResponse> {
+    const startedAt = Date.now();
+    const { client, params } = buildOpenAICall(req, /*streaming*/ false);
+    const completion = await client.chat.completions.create(
+      params,
+      signal ? { signal } : undefined,
+    );
+    // `params.stream` is false → the SDK returns a single ChatCompletion. Its
+    // discriminated union doesn't narrow on a runtime boolean, so we read it
+    // through a structural view.
+    const c = completion as unknown as {
+      choices: Array<{
+        message: {
+          content?: string | null;
+          reasoning_content?: string | null;
+          reasoning?: string | null;
+          tool_calls?: unknown[];
+        };
+        finish_reason: string | null;
+      }>;
+      usage?: RawUsage;
+    };
+
+    const choice = c.choices[0];
+    const message = choice?.message;
+    const content_blocks: ContentBlock[] = [];
+    const reasoning = message?.reasoning_content ?? message?.reasoning;
+    if (typeof reasoning === "string" && reasoning.length > 0) {
+      content_blocks.push({ type: "thinking", thinking: reasoning });
+    }
+    const text = typeof message?.content === "string" ? message.content : "";
+    if (text) content_blocks.push({ type: "text", text });
+    if (Array.isArray(message?.tool_calls)) {
+      for (const [index, tc] of message.tool_calls.entries()) {
+        const tool = tc as { id?: string; function?: { name?: string; arguments?: string } };
+        content_blocks.push({
+          type: "tool_use",
+          id: tool.id ?? `tc_${index}`,
+          name: tool.function?.name ?? "",
+          input: parseArgs(tool.function?.arguments ?? ""),
+        });
+      }
+    }
+
+    const total = Date.now() - startedAt;
+    return {
+      content: text,
+      content_blocks,
+      finish_reason: mapStopReason(choice?.finish_reason ?? "stop"),
+      usage: extractUsage(c.usage),
+      timing: { total_ms: total, time_to_first_token_ms: total },
+      model: req.model,
+    };
+  }
+}
+
+/**
+ * Pure chunk → `StreamEvent` mapping. Separated from the SDK call so it can be
+ * unit-tested with hand-built chunks and a fake clock.
+ *
+ * Emits: `start` (once), incremental `text`/`thinking`, then ONE consolidated
+ * `tool_use` per call (full parsed input — not deltas), then `done`. Tool-call
+ * argument fragments are accumulated internally; the daemon's `StreamConsumer`
+ * expects a single `tool_use` event, not start/delta/stop.
+ */
+export async function* openAIStreamEvents(
+  model: string,
+  chunks: AsyncIterable<ChatCompletionChunk>,
+  now: () => number = Date.now,
+): AsyncIterable<StreamEvent> {
+  const startedAt = now();
+  let firstTokenAt = 0;
+  const markFirst = () => {
+    if (firstTokenAt === 0) firstTokenAt = now();
+  };
+
+  yield { type: "start", model };
+
+  const toolCalls = new Map<number, { id: string; name: string; argsJson: string }>();
+  let textAccum = "";
+  let finishReason: string | undefined;
+  let usage: Usage = emptyUsage();
+
+  for await (const chunk of chunks) {
+    const choice = chunk.choices[0];
+    if (choice) {
+      const delta = choice.delta as {
+        content?: string | null;
+        reasoning_content?: string | null;
+        reasoning?: string | null;
+        tool_calls?: ChatCompletionChunk.Choice.Delta.ToolCall[];
+      };
+
+      const reasoningDelta = delta.reasoning_content ?? delta.reasoning;
+      if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
+        markFirst();
+        yield { type: "thinking", text: reasoningDelta };
+      }
+
+      if (typeof delta.content === "string" && delta.content.length > 0) {
+        markFirst();
+        textAccum += delta.content;
+        yield { type: "text", text: delta.content };
+      }
+
+      if (delta.tool_calls) {
+        markFirst();
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index;
+          let state = toolCalls.get(idx);
+          if (!state) {
+            state = { id: tc.id ?? `tc_${idx}`, name: tc.function?.name ?? "", argsJson: "" };
+            toolCalls.set(idx, state);
+          }
+          if (tc.id && tc.id !== state.id) state.id = tc.id;
+          if (tc.function?.name) state.name = tc.function.name;
+          if (tc.function?.arguments) state.argsJson += tc.function.arguments;
+        }
+      }
+
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+    }
+    if (chunk.usage) usage = extractUsage(chunk.usage as RawUsage);
+  }
+
+  // One consolidated tool_use event per call, in index order, with full input.
+  for (const tc of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
+    yield { type: "tool_use", id: tc[1].id, name: tc[1].name, input: parseArgs(tc[1].argsJson) };
+  }
+
+  const total = now() - startedAt;
+  yield {
+    type: "done",
+    content: textAccum,
+    finish_reason: mapStopReason(finishReason ?? "stop"),
+    usage,
+    timing: {
+      total_ms: total,
+      time_to_first_token_ms: firstTokenAt === 0 ? total : firstTokenAt - startedAt,
+    },
+  };
+}
+
+// ── request construction ──────────────────────────────────────────────────
+
+function buildOpenAICall(
+  req: SidecarRequest,
+  streaming: boolean,
+): { client: OpenAI; params: ChatCompletionCreateParams } {
+  const client = new OpenAI({
+    apiKey: req.api_key,
+    maxRetries: 0,
+    ...(req.base_url ? { baseURL: req.base_url } : {}),
+  });
+
+  const messages: ChatCompletionMessageParam[] = [];
+  const systemText = systemToText(req.system);
+  if (systemText) messages.push({ role: "system", content: systemText });
+  for (const turn of req.messages) messages.push(...turnToOpenAI(normalizeTurn(turn)));
+
+  const tools = toOpenAITools(req.tools);
+
+  const params: ChatCompletionCreateParams = {
+    model: req.model,
+    messages,
+    max_tokens: req.max_tokens,
+    ...(streaming ? { stream: true, stream_options: { include_usage: true } } : {}),
+  };
+  if (tools.length > 0) params.tools = tools;
+  if (req.temperature !== undefined) params.temperature = req.temperature;
+  if (req.top_p !== undefined) params.top_p = req.top_p;
+
+  // reasoning_effort comes via provider_options (the daemon only sets it for
+  // models that accept it). Map to the OpenAI-valid set; unknown → omit.
+  const effortRaw = req.provider_options?.["reasoning_effort"];
+  if (typeof effortRaw === "string") {
+    const effort = mapReasoningEffort(effortRaw);
+    if (effort) params.reasoning_effort = effort;
+  }
+
+  return { client, params };
+}
+
+function toOpenAITools(tools: unknown[] | undefined): ChatCompletionTool[] {
+  if (!tools) return [];
+  return tools.map((raw) => {
+    const t = raw as { name?: string; description?: string; input_schema?: unknown };
+    return {
+      type: "function",
+      function: {
+        name: t.name ?? "",
+        description: t.description ?? "",
+        parameters: (t.input_schema ?? {}) as Record<string, unknown>,
+      },
+    };
+  });
+}
+
+// ── message conversion ──────────────────────────────────────────────────────
+
+/** Canonical wire turn → the converter's turn shape (string content → block). */
+function normalizeTurn(turn: WireMessage): TurnMessage {
+  if (typeof turn.content === "string") {
+    return { role: turn.role, content: [{ type: "text", text: turn.content }] };
+  }
+  return { role: turn.role, content: turn.content };
+}
+
+function systemToText(system: SystemContent | undefined): string {
+  if (system === undefined) return "";
+  if (typeof system === "string") return system;
+  // Join structured blocks; `_label`/`cache_control` are internal, dropped.
+  return system.map((b) => b.text).join("\n\n");
+}
+
+/**
+ * Convert one canonical turn into OpenAI chat-completion message(s). Exported
+ * for the conversion regression test: it must NEVER emit a `reasoning_content`
+ * / `reasoning` field (the deepseek/kimi tool-loop bug — the retired Rust
+ * adapter replayed prior thinking here; we don't), and must omit `content` (not emit
+ * `null`) on tool-call-only assistant turns.
+ */
+export function turnToOpenAI(turn: TurnMessage): ChatCompletionMessageParam[] {
+  if (turn.role === "system") {
+    // OpenAI accepts mid-history `role:"system"` natively — pass through.
+    const text = turn.content
+      .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+    return [{ role: "system", content: text }];
+  }
+
+  if (turn.role === "assistant") {
+    const text = turn.content
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { text: string }).text)
+      .join("");
+    const toolUses = turn.content.filter(
+      (b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use",
+    );
+    const msg: ChatCompletionAssistantMessageParam = { role: "assistant" };
+    if (text) msg.content = text;
+    if (toolUses.length > 0) {
+      msg.tool_calls = toolUses.map((tu) => ({
+        id: tu.id,
+        type: "function",
+        function: { name: tu.name, arguments: JSON.stringify(tu.input ?? {}) },
+      }));
+    }
+    return [msg];
+  }
+
+  // User turn: tool_results → one `role:tool` message each; text + images ride
+  // on a single user message (images prepended).
+  const out: ChatCompletionMessageParam[] = [];
+  const textParts: Array<{ type: "text"; text: string }> = [];
+  for (const b of turn.content) {
+    if (b.type === "tool_result") {
+      const toolMsg: ChatCompletionToolMessageParam = {
+        role: "tool",
+        tool_call_id: b.tool_use_id,
+        content: b.content,
+      };
+      out.push(toolMsg);
+    } else if (b.type === "text") {
+      textParts.push({ type: "text", text: b.text });
+    }
+  }
+  const imageParts = imagesToOpenAIParts(turn.images);
+  if (imageParts.length > 0 || textParts.length > 0) {
+    const parts: Array<
+      { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }
+    > = [...imageParts, ...textParts];
+    out.push({ role: "user", content: parts });
+  }
+  return out;
+}
+
+function imagesToOpenAIParts(
+  images: ImageRef[] | undefined,
+): Array<{ type: "image_url"; image_url: { url: string } }> {
+  if (!images || images.length === 0) return [];
+  const out: Array<{ type: "image_url"; image_url: { url: string } }> = [];
+  for (const img of images) {
+    const resolved = resolveImage(img);
+    if (!resolved) continue;
+    out.push({
+      type: "image_url",
+      image_url: { url: `data:${resolved.mediaType};base64,${resolved.base64}` },
+    });
+  }
+  return out;
+}
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+interface RawUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+  cost?: number;
+}
+
+function emptyUsage(): Usage {
+  return {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+  };
+}
+
+function extractUsage(u: RawUsage | undefined): Usage {
+  const usage: Usage = {
+    input_tokens: u?.prompt_tokens ?? 0,
+    output_tokens: u?.completion_tokens ?? 0,
+    cache_read_tokens: u?.prompt_tokens_details?.cached_tokens ?? 0,
+    cache_creation_tokens: 0,
+  };
+  // OpenRouter reports total spend on `usage.cost`.
+  if (typeof u?.cost === "number") usage.total_cost_usd = u.cost;
+  return usage;
+}
+
+function parseArgs(argsJson: string): unknown {
+  if (argsJson.trim() === "") return {};
+  try {
+    return JSON.parse(argsJson);
+  } catch {
+    return {};
+  }
+}
+
+function mapReasoningEffort(
+  effort: string,
+): "low" | "medium" | "high" | "minimal" | undefined {
+  switch (effort) {
+    case "minimal":
+      return "minimal";
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+    case "xhigh":
+    case "max":
+      return "high";
+    default:
+      return undefined;
+  }
+}
+
+function mapStopReason(finish: string): string {
+  switch (finish) {
+    case "stop":
+      return "end_turn";
+    case "tool_calls":
+      return "tool_use";
+    case "length":
+      return "max_tokens";
+    default:
+      return finish;
+  }
+}

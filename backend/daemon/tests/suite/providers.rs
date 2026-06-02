@@ -80,24 +80,24 @@ async fn test_server_error_triggers_retry() {
     harness.shutdown().await;
 }
 
-/// Verify that a malformed/garbage SSE response doesn't cause the daemon to
+/// Verify that a malformed/garbage NDJSON response doesn't cause the daemon to
 /// hang indefinitely — either an Error message is received, or the stream ends.
 ///
 /// The 30-second collect_stream timeout in TestHarness is the hard backstop
 /// against hangs. If the daemon propagates the parse error correctly, we expect
 /// either a ServerMessage::Error or stream_ended = true (stream closes cleanly).
 #[tokio::test]
-async fn test_malformed_sse_returns_error() {
+async fn test_malformed_ndjson_returns_error() {
     let mut harness = TestHarness::boot().await;
 
     harness
         .mock_llm
-        .enqueue_raw_sse("this is not valid SSE\ngarbage\n".into())
+        .enqueue_raw_ndjson("this is not valid NDJSON\ngarbage\n".into())
         .await;
 
     harness
         .conn
-        .send_message("Trigger malformed SSE", true)
+        .send_message("Trigger malformed NDJSON", true)
         .await
         .expect("failed to send message");
 
@@ -111,7 +111,7 @@ async fn test_malformed_sse_returns_error() {
 
     assert!(
         received_error || response.stream_ended,
-        "Expected either an Error message or stream_ended after malformed SSE, \
+        "Expected either an Error message or stream_ended after malformed NDJSON, \
          but got {} messages with stream_ended={}: {:?}",
         response.raw_messages.len(),
         response.stream_ended,
