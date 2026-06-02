@@ -69,8 +69,10 @@ pub struct EffectiveModel {
 ///
 /// 1. Static catalog by short or qualified name (existing behavior).
 /// 2. Provider-prefixed form `provider:model_id`. The provider must be in
-///    the registry. If a static entry shares the same `(provider, model_id)`,
-///    that wins; otherwise a `ResolvedModel` is synthesized from the cache.
+///    the registry and enabled. A static entry sharing the same
+///    `(provider, model_id)` wins; otherwise a discovery-cache record is used
+///    when available, and failing that the `model_id` is trusted as-given and
+///    routed via the provider's transport (no discovery required — #136).
 /// 3. Bare upstream `model_id`. Searched across every registered provider's
 ///    cache. If multiple providers carry the same id, returns
 ///    `Ambiguous` so the caller can disambiguate with `provider:id`.
@@ -88,35 +90,10 @@ pub fn find_effective_model(
     }
 
     if let Some((provider, model_id)) = name.split_once(':') {
-        if !provider.is_empty() && !model_id.is_empty() {
-            if let Some(entry) = config.providers.get(provider) {
-                // Static-by-upstream wins regardless of discovery state.
-                if let Some(static_match) =
-                    find_static_by_upstream(&config.models, provider, model_id)
-                {
-                    return Ok(static_match.clone());
-                }
-                // Discovered match only honored when the provider and its
-                // discovery are both enabled — never trust a stale cache
-                // for a provider the user has turned off.
-                if entry.enabled && entry.discovery.enabled {
-                    if let Some(disc) = read_provider_discovery(cache_dir, provider, model_id) {
-                        let hidden = !entry.discovery.is_visible(&disc.model_id);
-                        if hidden && !include_hidden {
-                            return Err(EffectiveCatalogError::Hidden {
-                                name: name.into(),
-                                provider: provider.into(),
-                            });
-                        }
-                        return Ok(build_resolved_from_discovered(
-                            provider,
-                            entry,
-                            &disc,
-                            config.models.chat_provider_defaults.get(provider),
-                        ));
-                    }
-                }
-            }
+        if let Some(result) =
+            resolve_provider_prefixed(config, cache_dir, name, provider, model_id, include_hidden)
+        {
+            return result;
         }
     }
 
@@ -136,10 +113,11 @@ pub fn find_effective_model(
             continue;
         };
         let hidden = !entry.discovery.is_visible(&disc.model_id);
-        let resolved = build_resolved_from_discovered(
+        let resolved = build_resolved_from_provider(
             provider_key,
             entry,
-            &disc,
+            &disc.model_id,
+            Some(&disc),
             config.models.chat_provider_defaults.get(provider_key),
         );
         hits.push((provider_key.into(), resolved, hidden));
@@ -230,10 +208,11 @@ pub fn list_effective_models(
             if hidden && !include_hidden {
                 continue;
             }
-            let resolved = build_resolved_from_discovered(
+            let resolved = build_resolved_from_provider(
                 provider_key,
                 entry,
-                disc,
+                &disc.model_id,
+                Some(disc),
                 config.models.chat_provider_defaults.get(provider_key),
             );
             out.push(EffectiveModel {
@@ -259,6 +238,82 @@ fn read_provider_discovery(
     cache.models.into_iter().find(|m| m.model_id == model_id)
 }
 
+/// Resolve the provider-prefixed form `provider:model_id`.
+///
+/// Returns `Some(result)` when the named provider is registered *and enabled*
+/// — the lookup is authoritative from there (a resolved model or `Hidden`).
+/// Returns `None` when the prefix is malformed, the provider isn't registered,
+/// or the provider is disabled, so the caller falls through to the
+/// bare-upstream-id search (which then yields `NotFound`).
+fn resolve_provider_prefixed(
+    config: &LoadedConfig,
+    cache_dir: &Path,
+    name: &str,
+    provider: &str,
+    model_id: &str,
+    include_hidden: bool,
+) -> Option<Result<ResolvedModel, EffectiveCatalogError>> {
+    if provider.is_empty() || model_id.is_empty() {
+        return None;
+    }
+    let entry = config.providers.get(provider)?;
+
+    // Static-by-upstream wins regardless of discovery state.
+    if let Some(static_match) = find_static_by_upstream(&config.models, provider, model_id) {
+        return Some(Ok(static_match.clone()));
+    }
+
+    // A disabled provider is unreferenceable — never trust a stale cache or
+    // route to a provider the user has turned off.
+    if !entry.enabled {
+        return None;
+    }
+
+    let chat_defaults = config.models.chat_provider_defaults.get(provider);
+    let hidden_err = || {
+        Err(EffectiveCatalogError::Hidden {
+            name: name.into(),
+            provider: provider.into(),
+        })
+    };
+
+    if entry.discovery.enabled {
+        // Prefer a cached discovery record (richer upstream metadata) and
+        // honor `discovery.ignore` visibility.
+        if let Some(disc) = read_provider_discovery(cache_dir, provider, model_id) {
+            if !entry.discovery.is_visible(&disc.model_id) && !include_hidden {
+                return Some(hidden_err());
+            }
+            return Some(Ok(build_resolved_from_provider(
+                provider,
+                entry,
+                &disc.model_id,
+                Some(&disc),
+                chat_defaults,
+            )));
+        }
+        // Not in the cache, but an explicitly-ignored id stays hidden so
+        // qualified refs can't bypass `discovery.ignore` (matches the
+        // cached-and-hidden behavior above).
+        if !entry.discovery.is_visible(model_id) && !include_hidden {
+            return Some(hidden_err());
+        }
+    }
+
+    // Trust a fully-qualified `provider:model_id` on an enabled provider even
+    // without a discovery record: route transport from `[providers.<provider>]`
+    // and take `model_id` as given. This keeps models on discovery-off
+    // providers referenceable once the static `[chat.*]` catalog is retired
+    // (#136).
+    Some(Ok(build_resolved_from_provider(
+        provider,
+        entry,
+        model_id,
+        None,
+        chat_defaults,
+    )))
+}
+
 fn find_static_by_upstream<'a>(
     catalog: &'a ModelCatalog,
     provider: &str,
@@ -270,10 +325,20 @@ fn find_static_by_upstream<'a>(
         .find(|m| m.provider_key == provider && m.model_id == model_id)
 }
 
-fn build_resolved_from_discovered(
+/// Build a `ResolvedModel` for a `provider:model_id` reference, routing
+/// transport from the provider registry entry.
+///
+/// When a discovery record is supplied (`disc = Some`), its upstream metadata
+/// (SDK hint, base_url, context/output limits) fills fields the provider entry
+/// leaves unset. With `disc = None` the `model_id` is trusted as-given and only
+/// provider/hardcoded defaults apply — the path that keeps models on a
+/// discovery-off provider referenceable after the static `[chat.*]` catalog is
+/// retired (#136).
+fn build_resolved_from_provider(
     provider_key: &str,
     entry: &ProviderEntry,
-    disc: &DiscoveredModel,
+    model_id: &str,
+    disc: Option<&DiscoveredModel>,
     chat_provider_defaults: Option<&ModelConfigFields>,
 ) -> ResolvedModel {
     let provider_defaults = hardcoded_provider_defaults(provider_key).fields;
@@ -291,36 +356,33 @@ fn build_resolved_from_discovered(
     // openai-compatible discovery stamps a blanket `"openai"` for every model
     // and so carries no real per-model signal. This keeps the discovered path
     // consistent with the static path, where the hardcoded default fills `sdk`.
-    // A provider with no hardcoded default falls through to `disc.sdk`.
+    // A provider with no hardcoded default falls through to `disc.sdk` (when a
+    // discovery record is present), then to `default_sdk`.
     let sdk = entry
         .sdk
         .clone()
-        .or_else(|| {
-            disc.model_id
-                .starts_with("anthropic/")
-                .then_some(Sdk::Anthropic)
-        })
+        .or_else(|| model_id.starts_with("anthropic/").then_some(Sdk::Anthropic))
         .or_else(|| provider_defaults.sdk.clone())
-        .or_else(|| Sdk::parse_wire(&disc.sdk))
+        .or_else(|| disc.and_then(|d| Sdk::parse_wire(&d.sdk)))
         .unwrap_or_else(|| default_sdk(provider_key));
 
     let base_url = entry
         .base_url
         .clone()
-        .or_else(|| disc.base_url.clone())
+        .or_else(|| disc.and_then(|d| d.base_url.clone()))
         .or_else(|| provider_defaults.base_url.clone());
 
     let max_context_tokens = disc
-        .context_length
+        .and_then(|d| d.context_length)
         .and_then(|v| u32::try_from(v).ok())
         .or(provider_defaults.max_context_tokens);
 
     let max_output_tokens = disc
-        .max_output_tokens
+        .and_then(|d| d.max_output_tokens)
         .and_then(|v| u32::try_from(v).ok())
         .or(provider_defaults.max_output_tokens);
 
-    let qualified_name = format!("chat.{provider_key}.{}", disc.model_id);
+    let qualified_name = format!("chat.{provider_key}.{model_id}");
 
     let mut fields = ModelConfigFields {
         sdk: Some(sdk.clone()),
@@ -360,11 +422,11 @@ fn build_resolved_from_discovered(
     let sdk_fallback = fields.sdk.clone().unwrap_or(sdk);
 
     ResolvedModel::from_parts(
-        disc.model_id.clone(),
+        model_id.to_string(),
         qualified_name,
         "chat".into(),
         provider_key.into(),
-        disc.model_id.clone(),
+        model_id.to_string(),
         sdk_fallback,
         fields,
     )
@@ -1191,6 +1253,141 @@ base_url = "https://openrouter.ai/api/v1"
         )
         .unwrap_err();
         assert!(matches!(err, EffectiveCatalogError::NotFound { .. }));
+    }
+
+    // ── Trusted `provider:model_id` without discovery (#136) ────────────
+
+    #[test]
+    fn provider_prefix_resolves_on_discovery_off_provider() {
+        // With the static `[chat.*]` catalog retired, a fully-qualified
+        // `provider:model_id` on an enabled provider must resolve even when
+        // discovery is off and there is no cache — transport comes from the
+        // provider entry, `model_id` is taken as given.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.local]
+sdk = "openai"
+api_key_env = "LOCAL_KEY"
+base_url = "https://local.test/v1"
+
+[providers.local.discovery]
+enabled = false
+"#,
+            "",
+        );
+
+        let m = find_effective_model(&loaded, tmp.path(), "local:my-model-7b", false).unwrap();
+        assert_eq!(m.provider_key, "local");
+        assert_eq!(m.model_id, "my-model-7b");
+        assert_eq!(m.sdk, Sdk::Openai);
+        assert_eq!(m.base_url.as_deref(), Some("https://local.test/v1"));
+    }
+
+    #[test]
+    fn provider_prefix_resolves_when_not_in_discovery_cache() {
+        // Discovery is on but the model isn't in the cache (e.g. brand-new
+        // upstream model, or a private id discovery never lists). A
+        // fully-qualified ref on the enabled provider is still trusted.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+        );
+        write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
+
+        let m = find_effective_model(&loaded, tmp.path(), "openrouter:cohere/command-r", false)
+            .unwrap();
+        assert_eq!(m.provider_key, "openrouter");
+        assert_eq!(m.model_id, "cohere/command-r");
+        // Provider base_url still applies on the trusted path.
+        assert_eq!(m.base_url.as_deref(), Some("https://openrouter.ai/api/v1"));
+    }
+
+    #[test]
+    fn trusted_anthropic_slug_promotes_sdk_and_cache_ttl() {
+        // The `anthropic/*` auto-promotion that fires for discovered/static
+        // models must also fire on the trusted (no-discovery) path, so prompt
+        // caching works by default for `anthropic/*` slugs.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.or-anthropic]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+
+[providers.or-anthropic.discovery]
+enabled = false
+"#,
+            "",
+        );
+
+        let m = find_effective_model(
+            &loaded,
+            tmp.path(),
+            "or-anthropic:anthropic/claude-opus-4.8",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            m.sdk,
+            Sdk::Anthropic,
+            "anthropic/* slug promotes to Anthropic SDK"
+        );
+        assert_eq!(
+            m.cache_ttl.as_deref(),
+            Some("1h"),
+            "anthropic SDK gets default cache_ttl"
+        );
+    }
+
+    #[test]
+    fn trusted_path_still_respects_discovery_ignore() {
+        // When discovery is on, `discovery.ignore` is honored for qualified
+        // refs even when the id isn't in the cache — qualified refs must not
+        // be a backdoor around ignore rules. `include_hidden` still opts in.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+
+[providers.openrouter.discovery]
+enabled = true
+ignore = ["meta-llama/*"]
+"#,
+            "",
+        );
+        write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
+
+        // Not in the cache, but matches an ignore pattern → Hidden.
+        let err = find_effective_model(
+            &loaded,
+            tmp.path(),
+            "openrouter:meta-llama/llama-4-uncached",
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(err, EffectiveCatalogError::Hidden { .. }));
+
+        // include_hidden opts back in and resolves on the trusted path.
+        let m = find_effective_model(
+            &loaded,
+            tmp.path(),
+            "openrouter:meta-llama/llama-4-uncached",
+            true,
+        )
+        .unwrap();
+        assert_eq!(m.model_id, "meta-llama/llama-4-uncached");
     }
 
     #[test]
