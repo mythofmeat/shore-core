@@ -308,8 +308,7 @@ impl MessageHandler {
                         .get_mut("invalidated")
                         .and_then(serde_json::Value::as_object_mut)
                     {
-                        let _ignored =
-                            inv.insert("merged_character_configs".into(), json!(true));
+                        let _ignored = inv.insert("merged_character_configs".into(), json!(true));
                     }
                 }
             }
@@ -338,8 +337,7 @@ impl MessageHandler {
                             "character_discovery".into(),
                             json!(summary.character_discovery_changed),
                         );
-                        let _ignored =
-                            inv.insert("merged_character_configs".into(), json!(true));
+                        let _ignored = inv.insert("merged_character_configs".into(), json!(true));
                         let _ignored = inv.insert(
                             "removed_character_engines".into(),
                             json!(summary.dropped_engines),

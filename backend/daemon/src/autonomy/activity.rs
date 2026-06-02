@@ -349,8 +349,7 @@ impl ActivityTracker {
                 let [a, b] = pair else {
                     continue;
                 };
-                let (Some(ts_b), Some(ts_a)) =
-                    (self.timestamps.get(*b), self.timestamps.get(*a))
+                let (Some(ts_b), Some(ts_a)) = (self.timestamps.get(*b), self.timestamps.get(*a))
                 else {
                     continue;
                 };
