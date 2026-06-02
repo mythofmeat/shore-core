@@ -1126,19 +1126,18 @@ model_id = "claude-opus-4-6"
 "#,
         );
         let err = parse_category("chat", &table, None).unwrap_err();
-        match err {
-            CatalogError::ProviderScalarRetired {
-                category,
-                provider,
-                key,
-                ..
-            } => {
-                assert_eq!(category, "chat");
-                assert_eq!(provider, "anthropic");
-                assert_eq!(key, "openrouter_provider");
-            }
-            other => panic!("expected ProviderScalarRetired, got {other:?}"),
-        }
+        let CatalogError::ProviderScalarRetired {
+            category,
+            provider,
+            key,
+            ..
+        } = err
+        else {
+            panic!("expected ProviderScalarRetired, got {err:?}");
+        };
+        assert_eq!(category, "chat");
+        assert_eq!(provider, "anthropic");
+        assert_eq!(key, "openrouter_provider");
     }
 
     #[test]

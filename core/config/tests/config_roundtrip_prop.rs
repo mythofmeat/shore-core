@@ -202,7 +202,7 @@ fn arb_provider_entry() -> impl Strategy<Value = ProviderEntry> {
                 api_key_env,
                 keys,
                 discovery,
-                defaults: shore_config::models::ModelConfigFields::default(),
+                defaults: ModelConfigFields::default(),
             },
         )
 }
