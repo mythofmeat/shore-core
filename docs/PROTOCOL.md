@@ -688,7 +688,8 @@ with that role.
 #### `set_model_setting`
 - **args:** `{ "key": "<key>", "value": <number|string|bool|null>, "scope"?: "character" | "global" }`
 - **valid keys:** `temperature`, `top_p`, `reasoning_effort`,
-  `thinking_enabled`, `budget_tokens`, `max_output_tokens`, `cache_ttl`.
+  `thinking_enabled`, `budget_tokens`, `max_output_tokens`, `cache_ttl`,
+  `sdk`, `preserve_prior_turns`.
 - **data:** `{ "changed": true, "scope": "character", "model": "…", "provider": "…", "model_id": "…", "key": "…", "value": … }`
 - `value: null` clears the setting.
 

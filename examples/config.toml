@@ -121,6 +121,9 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 #                               # for Anthropic Claude 4.x. DeepSeek V3.1+
 #                               # and Moonshot Kimi-thinking ignore the
 #                               # strip and always replay reasoning_content.
+#                               # Global fallback only — the effect is
+#                               # model-dependent, so override per model via
+#                               # `set_model_setting preserve_prior_turns`.
 
 # ── Notifications ────────────────────────────────────────────────────────
 

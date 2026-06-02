@@ -278,6 +278,13 @@ pub struct ResolvedModel {
     pub gemini_web_search: Option<bool>,
     pub zai_clear_thinking: Option<bool>,
     pub zai_subscription: Option<bool>,
+    /// Per-model override for preserving prior-turn extended-thinking blocks
+    /// in outgoing requests. `None` means "inherit the global
+    /// `[memory.thinking].preserve_prior_turns`". Not sourced from the static
+    /// `[chat.*]` catalog — it is stamped here by the runtime preference
+    /// overlay (`preferences::apply_sampler_overlay`). The quality effect is
+    /// model-dependent (issue #129), so there is no opinionated default.
+    pub preserve_prior_turns: Option<bool>,
 }
 
 impl ResolvedModel {
@@ -340,6 +347,10 @@ impl ResolvedModel {
             gemini_web_search: fields.gemini_web_search,
             zai_clear_thinking: fields.zai_clear_thinking,
             zai_subscription: fields.zai_subscription,
+            // The static catalog has no `preserve_prior_turns` field; the
+            // value is supplied later by the runtime preference overlay
+            // (issue #129). `None` here means "inherit the global default".
+            preserve_prior_turns: None,
         }
     }
 }

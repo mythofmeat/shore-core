@@ -18,6 +18,7 @@ const SAMPLER_KEYS: &[&str] = &[
     "max_output_tokens",
     "cache_ttl",
     "sdk",
+    "preserve_prior_turns",
 ];
 
 /// Resolve the character whose preferences should be loaded/saved.
@@ -276,6 +277,7 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
             "max_output_tokens": scopes.max_output_tokens.map(scope_str),
             "cache_ttl": scopes.cache_ttl.map(scope_str),
             "sdk": scopes.sdk.map(scope_str),
+            "preserve_prior_turns": scopes.preserve_prior_turns.map(scope_str),
         });
     }
 
@@ -369,7 +371,8 @@ pub fn reset_model(ctx: &mut CommandContext) -> CommandResult {
 ///
 /// Args:
 /// - `key`: one of `temperature`, `top_p`, `reasoning_effort`,
-///   `thinking_enabled`, `budget_tokens`, `max_output_tokens`, `cache_ttl`.
+///   `thinking_enabled`, `budget_tokens`, `max_output_tokens`, `cache_ttl`,
+///   `sdk`, `preserve_prior_turns`.
 /// - `value`: a number/string/bool/null. `null` removes the setting.
 /// - `scope`: `"character"` (default) or `"global"`.
 pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResult {
@@ -553,6 +556,15 @@ fn apply_sampler_value(
                 Some(s.to_string())
             };
         }
+        "preserve_prior_turns" => {
+            sampler.preserve_prior_turns = if is_null {
+                None
+            } else {
+                Some(value.as_bool().ok_or_else(|| {
+                    invalid(format!("preserve_prior_turns must be a boolean, got {value}"))
+                })?)
+            };
+        }
         _ => return Err(invalid(format!("unknown setting key: {key}"))),
     }
     Ok(())
@@ -632,6 +644,7 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
             "max_output_tokens": scopes.max_output_tokens.map(scope_str),
             "cache_ttl": scopes.cache_ttl.map(scope_str),
             "sdk": scopes.sdk.map(scope_str),
+            "preserve_prior_turns": scopes.preserve_prior_turns.map(scope_str),
         },
     }))
 }

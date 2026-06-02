@@ -576,6 +576,12 @@ pub struct ThinkingConfig {
     /// 4.x). DeepSeek V3.1+ and Moonshot Kimi-thinking reject requests
     /// that omit prior `reasoning_content` while in thinking mode, and
     /// model performance is generally better when thinking is preserved.
+    ///
+    /// This is the **global fallback**. The quality effect is
+    /// model-dependent (issue #129), so it can be overridden per model via
+    /// the runtime preference overlay (`SamplerSettings::preserve_prior_turns`
+    /// → `ResolvedModel::preserve_prior_turns`); an unset per-model value
+    /// inherits this default.
     #[serde(default = "default_preserve_prior_turns")]
     pub preserve_prior_turns: bool,
 }

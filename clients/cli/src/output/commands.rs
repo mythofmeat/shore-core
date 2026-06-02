@@ -603,6 +603,7 @@ fn print_model_settings(data: &serde_json::Value) {
         "max_output_tokens",
         "cache_ttl",
         "sdk",
+        "preserve_prior_turns",
     ];
     for key in keys {
         let value = match sampler.get(key) {

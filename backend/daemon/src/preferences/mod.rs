@@ -95,6 +95,15 @@ pub struct SamplerSettings {
     /// Lets users force, e.g., the Anthropic wire shape for a model that
     /// the discovery cache labelled as `openai`. Validated on write.
     pub sdk: Option<String>,
+    /// Per-model override for `[memory.thinking].preserve_prior_turns`:
+    /// whether to keep prior-turn extended-thinking blocks in outgoing
+    /// requests. `None` inherits the global value. The quality effect is
+    /// model-dependent (issue #129) — opus-4.8 is reproducibly better with
+    /// it OFF while minimax-m3/glm-5.1 want it ON — so there is no
+    /// opinionated default and no auto-promotion in either direction. The
+    /// DeepSeek/Kimi reasoning-replay floor (`requires_reasoning_replay`) is
+    /// orthogonal and still enforced regardless of this setting.
+    pub preserve_prior_turns: Option<bool>,
 }
 
 impl SamplerSettings {
@@ -117,6 +126,7 @@ impl SamplerSettings {
         merge!(max_output_tokens);
         merge!(cache_ttl);
         merge!(sdk);
+        merge!(preserve_prior_turns);
     }
 
     /// Returns true if every field is unset.
@@ -129,6 +139,7 @@ impl SamplerSettings {
             && self.max_output_tokens.is_none()
             && self.cache_ttl.is_none()
             && self.sdk.is_none()
+            && self.preserve_prior_turns.is_none()
     }
 
     /// Extract the sampler-shaped fields from a resolved static-catalog
@@ -144,6 +155,7 @@ impl SamplerSettings {
             max_output_tokens: model.max_output_tokens,
             cache_ttl: model.cache_ttl.clone(),
             sdk: Some(model.sdk.as_str().to_string()),
+            preserve_prior_turns: model.preserve_prior_turns,
         }
     }
 }
@@ -418,6 +430,7 @@ pub struct SamplerScopes {
     pub max_output_tokens: Option<PreferenceScope>,
     pub cache_ttl: Option<PreferenceScope>,
     pub sdk: Option<PreferenceScope>,
+    pub preserve_prior_turns: Option<PreferenceScope>,
 }
 
 pub fn resolve_sampler_scopes(
@@ -444,6 +457,7 @@ pub fn resolve_sampler_scopes(
         note!(max_output_tokens);
         note!(cache_ttl);
         note!(sdk);
+        note!(preserve_prior_turns);
     };
     if let Some(rm) = static_default {
         update(
@@ -684,6 +698,9 @@ pub fn apply_sampler_overlay(
                 "preferences overlay carries unknown sdk; keeping catalog value"
             );
         }
+    }
+    if let Some(p) = overlay.preserve_prior_turns {
+        patched.preserve_prior_turns = Some(p);
     }
     patched
 }
@@ -1010,6 +1027,7 @@ typo_setting = "x"
                     max_output_tokens: Some(4096),
                     cache_ttl: Some("5m".into()),
                     sdk: Some("anthropic".into()),
+                    preserve_prior_turns: Some(false),
                 },
             },
         );
@@ -1608,6 +1626,91 @@ max_output_tokens = 4096
         );
         assert_eq!(patched.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(patched.budget_tokens, Some(2048));
+    }
+
+    #[test]
+    fn apply_sampler_overlay_stamps_preserve_prior_turns() {
+        // #129: the per-model `preserve_prior_turns` override is carried
+        // onto the resolved model by the overlay. The static catalog never
+        // sets it (always None), so an unset overlay leaves it None — the
+        // signal the request path uses to fall back to the global default.
+        let catalog = make_catalog(
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+        );
+        let base = catalog.find_model("opus").unwrap();
+        assert_eq!(
+            base.preserve_prior_turns, None,
+            "static catalog carries no opinion"
+        );
+
+        let no_overlay = apply_sampler_overlay(base, &SamplerSettings::default());
+        assert_eq!(
+            no_overlay.preserve_prior_turns, None,
+            "empty overlay → inherit global"
+        );
+
+        let overlay = SamplerSettings {
+            preserve_prior_turns: Some(false),
+            ..Default::default()
+        };
+        let patched = apply_sampler_overlay(base, &overlay);
+        assert_eq!(patched.preserve_prior_turns, Some(false));
+    }
+
+    #[test]
+    fn resolve_sampler_settings_layers_preserve_prior_turns() {
+        // Character-model override wins over the global default layer, and
+        // the static catalog (layer 0) contributes nothing for this field.
+        let catalog = make_catalog(
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+        );
+        let base = catalog.find_model("opus").unwrap();
+
+        let mut global = ModelPreferences::default();
+        global.defaults.sampler.preserve_prior_turns = Some(true);
+
+        let mut character = ModelPreferences::default();
+        character.set_model(
+            "anthropic",
+            "claude-opus-4-6",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    preserve_prior_turns: Some(false),
+                    ..Default::default()
+                },
+            },
+        );
+
+        let effective = resolve_sampler_settings(
+            &global,
+            Some(&character),
+            "anthropic",
+            "claude-opus-4-6",
+            Some(base),
+        );
+        assert_eq!(
+            effective.preserve_prior_turns,
+            Some(false),
+            "character per-model override beats global default"
+        );
+
+        let scopes = resolve_sampler_scopes(
+            &global,
+            Some(&character),
+            "anthropic",
+            "claude-opus-4-6",
+            Some(base),
+        );
+        assert_eq!(
+            scopes.preserve_prior_turns,
+            Some(PreferenceScope::CharacterModel)
+        );
     }
 
     #[test]
