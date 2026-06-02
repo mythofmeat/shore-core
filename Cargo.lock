@@ -1944,7 +1944,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shore-cli"
-version = "2.0.4"
+version = "2.0.5"
 dependencies = [
  "base64",
  "chrono",
@@ -1966,7 +1966,7 @@ dependencies = [
 
 [[package]]
 name = "shore-config"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -1982,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "shore-daemon"
-version = "11.0.0"
+version = "11.0.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -2031,7 +2031,7 @@ dependencies = [
 
 [[package]]
 name = "shore-ledger"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "chrono",
  "reqwest",
@@ -2046,7 +2046,7 @@ dependencies = [
 
 [[package]]
 name = "shore-llm"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2078,7 +2078,7 @@ dependencies = [
 
 [[package]]
 name = "shore-swp-client"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "base64",
  "libc",
@@ -2095,7 +2095,7 @@ dependencies = [
 
 [[package]]
 name = "shore-swp-server"
-version = "1.8.13"
+version = "1.8.14"
 dependencies = [
  "fs2",
  "libc",
