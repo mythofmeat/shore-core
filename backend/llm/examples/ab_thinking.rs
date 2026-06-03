@@ -536,7 +536,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|i| args.get(i.saturating_add(1)).cloned())
         .unwrap_or_else(|| "max".into());
 
-    let client = LlmClient::new();
+    let client = LlmClient::try_new()?;
 
     let (system, messages, tools) = if rut {
         example_out!("=== RUT mode: heartbeat + 4 ticks of scratchpad-only journal history ===");

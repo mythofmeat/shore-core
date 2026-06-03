@@ -213,8 +213,11 @@ async fn e2e_conversation_milestone() {
         shutdown_rx.clone(),
     );
 
-    let llm_client =
-        LedgerClient::new(LlmClient::new(), &loaded.dirs.data.join("ledger.db")).unwrap();
+    let llm_client = LedgerClient::new(
+        LlmClient::try_new().unwrap(),
+        &loaded.dirs.data.join("ledger.db"),
+    )
+    .unwrap();
 
     let cmd_ctx = CommandContext {
         config: loaded.clone(),
@@ -712,8 +715,11 @@ impl E2EHarness {
             shutdown_rx.clone(),
         );
 
-        let llm_client =
-            LedgerClient::new(LlmClient::new(), &loaded.dirs.data.join("ledger.db")).unwrap();
+        let llm_client = LedgerClient::new(
+            LlmClient::try_new().unwrap(),
+            &loaded.dirs.data.join("ledger.db"),
+        )
+        .unwrap();
 
         let cmd_ctx = CommandContext {
             config: loaded.clone(),

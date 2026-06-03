@@ -234,8 +234,11 @@ mod tests {
             active_resolved_model: None,
             session_tokens: Arc::new(Mutex::new(SessionTokens::default())),
             autonomy,
-            llm_client: LedgerClient::new(shore_llm::LlmClient::new(), &data_dir.join("ledger.db"))
-                .unwrap(),
+            llm_client: LedgerClient::new(
+                shore_llm::LlmClient::try_new().unwrap(),
+                &data_dir.join("ledger.db"),
+            )
+            .unwrap(),
             diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
         };
         (engine, ctx, push_rx)

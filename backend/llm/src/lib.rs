@@ -108,23 +108,24 @@ impl LlmClient {
     /// A global request timeout here would fire mid-body-read for any
     /// long generation and surface as the misleading "error decoding
     /// response body".
-    #[must_use]
-    pub fn new() -> Self {
-        // The customized builder only fails if the TLS backend can't
-        // initialize — a process-level invariant. Rather than make `new`
-        // (and the `Default` impl + ~30 call sites) fallible for that, fall
-        // back to reqwest's default client, which drops only the
-        // connect_timeout customization.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying `reqwest::Error` if the HTTP client cannot be
+    /// built — in practice only when the platform TLS backend or DNS
+    /// resolver fails to initialize, a process-level invariant. This is the
+    /// same failure class that makes `reqwest::Client::new()` panic, so we
+    /// surface it as a `Result` rather than keeping a panic fallback.
+    pub fn try_new() -> Result<Self, reqwest::Error> {
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .build()?;
 
-        Self {
+        Ok(Self {
             http_client,
             sidecar_socket: None,
             payload_log_dir: None,
-        }
+        })
     }
 
     /// Enable API payload logging under the given cache directory.
@@ -403,12 +404,6 @@ impl LlmClient {
         params: &ImageGenerateParams<'_>,
     ) -> Result<ImageGenerateResponse, LlmError> {
         providers::image_generate(&self.http_client, params, self.sidecar_socket()).await
-    }
-}
-
-impl Default for LlmClient {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

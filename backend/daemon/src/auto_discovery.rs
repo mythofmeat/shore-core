@@ -133,8 +133,11 @@ mod tests {
     async fn run_loop_exits_on_shutdown() {
         let tmp = tempfile::tempdir().unwrap();
         let config = loaded_with("", tmp.path());
-        let llm =
-            LedgerClient::new(shore_llm::LlmClient::new(), &tmp.path().join("ledger.db")).unwrap();
+        let llm = LedgerClient::new(
+            shore_llm::LlmClient::try_new().unwrap(),
+            &tmp.path().join("ledger.db"),
+        )
+        .unwrap();
 
         let (tx, rx) = watch::channel(());
         let handle = spawn(
@@ -167,8 +170,11 @@ enabled = false
 "#,
             tmp.path(),
         );
-        let llm =
-            LedgerClient::new(shore_llm::LlmClient::new(), &tmp.path().join("ledger.db")).unwrap();
+        let llm = LedgerClient::new(
+            shore_llm::LlmClient::try_new().unwrap(),
+            &tmp.path().join("ledger.db"),
+        )
+        .unwrap();
 
         // Should be a no-op for both providers; absence of panic is the assertion.
         refresh_pass(&config, tmp.path(), &llm).await;
@@ -200,8 +206,11 @@ enabled = true
             ),
             tmp.path(),
         );
-        let llm =
-            LedgerClient::new(shore_llm::LlmClient::new(), &tmp.path().join("ledger.db")).unwrap();
+        let llm = LedgerClient::new(
+            shore_llm::LlmClient::try_new().unwrap(),
+            &tmp.path().join("ledger.db"),
+        )
+        .unwrap();
 
         // Pre-write a fresh cache.
         let cache_path = discovery::cache_path(tmp.path(), "upstream");

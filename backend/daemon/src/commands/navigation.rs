@@ -241,7 +241,7 @@ mod tests {
             session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy,
             llm_client: shore_ledger::LedgerClient::new(
-                shore_llm::LlmClient::new(),
+                shore_llm::LlmClient::try_new().unwrap(),
                 &data_dir.join("ledger.db"),
             )
             .unwrap(),

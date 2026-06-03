@@ -405,14 +405,14 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn test_ledger_client(tmp: &tempfile::TempDir) -> LedgerClient {
-        LedgerClient::new(LlmClient::new(), &tmp.path().join("ledger.db")).unwrap()
+        LedgerClient::new(LlmClient::try_new().unwrap(), &tmp.path().join("ledger.db")).unwrap()
     }
 
     fn test_ledger_client_with_sidecar(
         tmp: &tempfile::TempDir,
         sidecar: &MockLlmSidecar,
     ) -> LedgerClient {
-        let mut llm = LlmClient::new();
+        let mut llm = LlmClient::try_new().unwrap();
         llm.set_sidecar_socket(sidecar.socket_path().to_path_buf());
         LedgerClient::new(llm, &tmp.path().join("ledger.db")).unwrap()
     }

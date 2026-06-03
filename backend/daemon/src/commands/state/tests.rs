@@ -70,7 +70,7 @@ fn make_ctx_with_models(
         )),
         autonomy,
         llm_client: shore_ledger::LedgerClient::new(
-            shore_llm::LlmClient::new(),
+            shore_llm::LlmClient::try_new().unwrap(),
             &data_dir.join("ledger.db"),
         )
         .unwrap(),

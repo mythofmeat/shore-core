@@ -141,7 +141,7 @@ impl TestHarness {
         );
 
         // ── Ledger-wrapped LLM Client ────────────────────────────────
-        let mut raw_llm_client = LlmClient::new();
+        let mut raw_llm_client = fail_fast(LlmClient::try_new(), "failed to create LlmClient");
         if config.app.advanced.api_payload_logging {
             let _ignored = std::fs::create_dir_all(&config.dirs.cache).ok();
             raw_llm_client.set_payload_log_dir(config.dirs.cache.clone());

@@ -2406,7 +2406,7 @@ mod tests {
     use tokio::fs;
 
     fn test_ledger(tmp: &tempfile::TempDir, sidecar: &MockLlmSidecar) -> LedgerClient {
-        let mut llm = LlmClient::new();
+        let mut llm = LlmClient::try_new().unwrap();
         llm.set_sidecar_socket(sidecar.socket_path().to_path_buf());
         LedgerClient::new(llm, &tmp.path().join("ledger.db")).unwrap()
     }
