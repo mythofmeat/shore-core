@@ -12,9 +12,10 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::engine::segments::{CompactionManifest, SegmentEntry};
-use shore_config::models::ResolvedModel;
+use shore_config::models::{hardcoded_provider_defaults, ImageGenSettings, ResolvedModel};
 use shore_config::providers::ProviderRegistry;
 use shore_ledger::{CallType, LedgerClient};
+use shore_llm::credentials::{read_candidate_env, resolve_key_candidates_for};
 use shore_llm::types::{GenerateResponse, LlmRequest};
 
 use super::compaction::{CompactionError, CompactionLlm, ConversationManager, RetentionParams};
@@ -40,76 +41,94 @@ pub struct ImageGenConfig {
     pub image_size: Option<String>,
 }
 
-/// Resolve image generation config from the raw TOML catalog entry.
+/// Resolve image generation config from the model catalog.
 ///
-/// Looks up the default image generation profile name, finds the raw TOML
-/// entry, extracts `model_id` and provider, and resolves the API key from
-/// the environment.
+/// `default_ref` is `defaults.image_generation` — a `provider:model_id`
+/// identity. `image_gen` holds optional per-model category settings keyed by
+/// the same identity. Transport (`base_url`) and credentials resolve through
+/// `providers`, reusing the same `[providers.*]` key-fallback contract as chat.
 pub fn resolve_image_gen_config(
-    default_name: Option<&str>,
-    image_gen_catalog: &std::collections::BTreeMap<String, toml::Value>,
+    default_ref: Option<&str>,
+    image_gen: &std::collections::BTreeMap<String, ImageGenSettings>,
+    providers: &ProviderRegistry,
 ) -> Result<ImageGenConfig, String> {
-    let profile_name = default_name
-        .or_else(|| image_gen_catalog.keys().next().map(String::as_str))
-        .ok_or_else(|| "no image generation model configured".to_string())?;
-
-    let entry = image_gen_catalog.get(profile_name).ok_or_else(|| {
-        format!("image generation profile '{profile_name}' not found in model catalog")
-    })?;
-
-    let model_id = entry
-        .get("model_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| format!("image generation profile '{profile_name}' is missing model_id"))?
-        .to_string();
-
-    let provider = entry
-        .get("provider")
-        .and_then(|v| v.as_str())
-        .unwrap_or("openai")
-        .to_string();
-
-    let default_api_key_env = match provider.as_str() {
-        "openrouter" => "OPENROUTER_API_KEY",
-        _ => "OPENAI_API_KEY",
+    // Identity: the configured default, else the sole settings-overlay key.
+    // With multiple overlay entries and no default, fail rather than silently
+    // pick one — the choice would be arbitrary (BTreeMap order).
+    let target = if let Some(t) = default_ref {
+        t
+    } else {
+        let mut keys = image_gen.keys();
+        match (keys.next(), keys.next()) {
+            (Some(only), None) => only.as_str(),
+            (Some(_), Some(_)) => {
+                return Err(
+                    "multiple [image_generation.\"provider:model_id\"] entries are \
+                     configured but defaults.image_generation is unset; set \
+                     defaults.image_generation to choose one"
+                        .to_string(),
+                );
+            }
+            _ => {
+                return Err("no image generation model configured; set \
+                     defaults.image_generation = \"provider:model_id\" and configure \
+                     [providers.<provider>] (see CONFIGURATION.md)."
+                    .to_string());
+            }
+        }
     };
-    let api_key_env = entry
-        .get("api_key_env")
-        .and_then(|v| v.as_str())
-        .unwrap_or(default_api_key_env);
 
-    let api_key = std::env::var(api_key_env)
-        .map_err(|_| format!("image generation API key env var '{api_key_env}' is not set"))?;
+    let Some((provider_key, model_id)) = target.split_once(':') else {
+        return Err(format!(
+            "image generation model '{target}' must be a `provider:model_id` identity \
+             with transport under [providers.<provider>]"
+        ));
+    };
+    if provider_key.is_empty() || model_id.is_empty() {
+        return Err(format!(
+            "image generation model '{target}' is not a valid `provider:model_id` identity"
+        ));
+    }
 
-    let base_url = entry
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string);
+    // Transport: registry base_url, else the hardcoded provider default, else
+    // None (the SDK default endpoint).
+    let base_url = providers
+        .get(provider_key)
+        .and_then(|e| e.base_url.clone())
+        .or_else(|| hardcoded_provider_defaults(provider_key).fields.base_url);
 
-    let size = entry
-        .get("size")
-        .and_then(|v| v.as_str())
-        .unwrap_or("1024x1024")
-        .to_string();
+    // Credentials: the `[providers.<p>].keys[]` fallback chain; first env-set
+    // candidate wins.
+    let candidates = resolve_key_candidates_for(provider_key, providers, None);
+    if candidates.is_empty() {
+        return Err(format!(
+            "image generation provider '{provider_key}' is disabled in \
+             [providers.{provider_key}]"
+        ));
+    }
+    let api_key = candidates
+        .iter()
+        .find_map(read_candidate_env)
+        .ok_or_else(|| {
+            let envs: Vec<&str> = candidates.iter().map(|c| c.env.as_str()).collect();
+            format!(
+                "image generation API key not set for provider '{provider_key}'; \
+             set one of these env vars: {}",
+                envs.join(", ")
+            )
+        })?;
 
-    let quality = entry
-        .get("quality")
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string);
-
-    let aspect_ratio = entry
-        .get("aspect_ratio")
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string);
-
-    let image_size = entry
-        .get("image_size")
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string);
+    let settings = image_gen.get(target);
+    let size = settings
+        .and_then(|s| s.size.clone())
+        .unwrap_or_else(|| "1024x1024".to_string());
+    let quality = settings.and_then(|s| s.quality.clone());
+    let aspect_ratio = settings.and_then(|s| s.aspect_ratio.clone());
+    let image_size = settings.and_then(|s| s.image_size.clone());
 
     Ok(ImageGenConfig {
-        provider,
-        model_id,
+        provider: provider_key.to_string(),
+        model_id: model_id.to_string(),
         api_key,
         base_url,
         size,

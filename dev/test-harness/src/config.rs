@@ -11,6 +11,11 @@ use shore_config::{
 
 type BuildResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+/// `provider:model_id` identity for the harness embedding model. Transport
+/// (`base_url` = mock, `api_key_env` = `SHORE_TEST_API_KEY`) is injected as a
+/// `[providers.testembed]` entry in `apply_provider_registry`.
+const TEST_EMBED_REF: &str = "testembed:text-embedding-3-small";
+
 #[must_use]
 #[expect(
     clippy::struct_excessive_bools,
@@ -205,7 +210,7 @@ impl TestConfigBuilder {
                 cache: tmp_dir.join("cache"),
             },
         );
-        self.apply_provider_registry(&mut loaded)?;
+        self.apply_provider_registry(&mut loaded, mock_base_url)?;
 
         Ok(loaded)
     }
@@ -258,7 +263,7 @@ impl TestConfigBuilder {
                 keep_recent_turns: self.compaction_keep_recent.unwrap_or(2),
                 ..CompactionConfig::default()
             };
-            app.defaults.embedding = Some("test-embed".into());
+            app.defaults.embedding = Some(TEST_EMBED_REF.into());
         }
 
         app
@@ -266,10 +271,7 @@ impl TestConfigBuilder {
 
     fn build_model_catalog(&self, mock_base_url: &str) -> BuildResult<ModelCatalog> {
         let chat_table: toml::Table = self.models_toml(mock_base_url).parse()?;
-        let embed_table = self
-            .embed_toml(mock_base_url)
-            .map(|toml| toml.parse())
-            .transpose()?;
+        let embed_table = self.embed_toml().map(|toml| toml.parse()).transpose()?;
         Ok(ModelCatalog::from_sections(
             Some(&chat_table),
             None,
@@ -306,26 +308,50 @@ temperature = 0.0
         models_toml
     }
 
-    fn embed_toml(&self, mock_base_url: &str) -> Option<String> {
+    fn embed_toml(&self) -> Option<String> {
+        // New shape: identity is the `provider:model_id` key; transport lives on
+        // the `[providers.testembed]` entry injected in `apply_provider_registry`.
         self.compaction_enabled.then(|| {
             format!(
                 r#"
-[test-embed]
-model_id = "text-embedding-3-small"
-provider = "openai"
-api_key_env = "SHORE_TEST_API_KEY"
-base_url = "{mock_base_url}"
+["{TEST_EMBED_REF}"]
 dimensions = 8
 "#,
             )
         })
     }
 
-    fn apply_provider_registry(&self, loaded: &mut LoadedConfig) -> BuildResult<()> {
-        if let Some(ref toml_text) = self.provider_registry_toml {
-            let table: toml::Table = toml_text.parse()?;
-            let providers_section = table.get("providers").and_then(|v| v.as_table());
-            loaded.providers = ProviderRegistry::from_section(providers_section)?;
+    fn apply_provider_registry(
+        &self,
+        loaded: &mut LoadedConfig,
+        mock_base_url: &str,
+    ) -> BuildResult<()> {
+        // Start from any caller-supplied `[providers]` section, then inject the
+        // embedding provider when compaction is enabled. The embedder resolves
+        // transport + credentials through this registry (mirroring chat), so the
+        // `testembed` provider must carry the mock base_url and the dummy key env.
+        let mut providers_section: toml::Table = match self.provider_registry_toml {
+            Some(ref toml_text) => {
+                let table: toml::Table = toml_text.parse()?;
+                table
+                    .get("providers")
+                    .and_then(|v| v.as_table())
+                    .cloned()
+                    .unwrap_or_default()
+            }
+            None => toml::Table::new(),
+        };
+
+        if self.compaction_enabled && !providers_section.contains_key("testembed") {
+            let entry: toml::Value =
+                format!("base_url = \"{mock_base_url}\"\napi_key_env = \"SHORE_TEST_API_KEY\"\n")
+                    .parse::<toml::Table>()?
+                    .into();
+            let _ignored = providers_section.insert("testembed".to_string(), entry);
+        }
+
+        if !providers_section.is_empty() {
+            loaded.providers = ProviderRegistry::from_section(Some(&providers_section))?;
         }
         Ok(())
     }

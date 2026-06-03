@@ -252,11 +252,13 @@ fn build_compaction_tool_context(
     let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
         effective.app.defaults.image_generation.as_deref(),
         &effective.models.image_generation,
+        &effective.providers,
     )
     .ok();
     let embedder = crate::memory::retrieval::resolve_embedder(
         effective.app.defaults.embedding.as_deref(),
         &effective.models.embedding,
+        &effective.providers,
         llm_client.inner().http_client(),
     )
     .ok();

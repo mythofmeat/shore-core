@@ -149,6 +149,7 @@ pub(super) async fn run_tool_phase(
     let image_gen_config = resolve_image_gen_config(
         effective_config.app.defaults.image_generation.as_deref(),
         &effective_config.models.image_generation,
+        &effective_config.providers,
     )
     .ok();
 
@@ -159,6 +160,7 @@ pub(super) async fn run_tool_phase(
     let embedder = resolve_embedder(
         effective_config.app.defaults.embedding.as_deref(),
         &effective_config.models.embedding,
+        &effective_config.providers,
         ctx.llm_client.inner().http_client(),
     )
     .map_err(|e| {

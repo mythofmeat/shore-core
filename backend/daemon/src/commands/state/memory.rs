@@ -542,11 +542,13 @@ fn build_swp_compaction_tool_context(
     let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
         ctx.config.app.defaults.image_generation.as_deref(),
         &ctx.config.models.image_generation,
+        &ctx.config.providers,
     )
     .ok();
     let embedder = crate::memory::retrieval::resolve_embedder(
         ctx.config.app.defaults.embedding.as_deref(),
         &ctx.config.models.embedding,
+        &ctx.config.providers,
         ctx.llm_client.inner().http_client(),
     )
     .ok();

@@ -2178,11 +2178,13 @@ fn build_tool_context(
     let image_gen_config = resolve_image_gen_config(
         config.app.defaults.image_generation.as_deref(),
         &config.models.image_generation,
+        &config.providers,
     )
     .ok();
     let embedder = resolve_embedder(
         config.app.defaults.embedding.as_deref(),
         &config.models.embedding,
+        &config.providers,
         client.inner().http_client(),
     )
     .map_err(|e| {

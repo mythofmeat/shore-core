@@ -847,11 +847,13 @@ fn build_librarian_tool_context(
     let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
         loaded_config.app.defaults.image_generation.as_deref(),
         &loaded_config.models.image_generation,
+        &loaded_config.providers,
     )
     .ok();
     let embedder = crate::memory::retrieval::resolve_embedder(
         loaded_config.app.defaults.embedding.as_deref(),
         &loaded_config.models.embedding,
+        &loaded_config.providers,
         llm_client.inner().http_client(),
     )
     .ok();
