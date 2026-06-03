@@ -1003,29 +1003,37 @@ mod tests {
     #[test]
     fn gemini_3_1_pro_rejects_minimal_via_model_override() {
         // Gemini 3.1 Pro exposes thinkingLevel low|medium|high only; `minimal` is
-        // a Flash / Flash-Lite-only level (issue #166, grounded in the Gemini 3
-        // developer guide). The per-model override drops it from the sdk default.
+        // a Flash / Flash-Lite / Flash-Image level (issue #166, grounded in the
+        // Gemini 3 developer guide). The Pro-specific override drops it from the
+        // sdk default. Uses the real registry id `google/gemini-3.1-pro-preview`.
         let eff = |v: &str| toml::Value::String(v.into());
-        let domain = reasoning_effort_domain(&Sdk::Gemini, "gemini-3.1");
+        let pro = "google/gemini-3.1-pro-preview";
+        let domain = reasoning_effort_domain(&Sdk::Gemini, pro);
         assert!(!domain.iter().any(|v| v == "minimal"));
         for v in ["low", "medium", "high"] {
             assert!(
-                validate(&Sdk::Gemini, "gemini-3.1", Field::ReasoningEffort, &eff(v)).is_ok(),
-                "gemini-3.1 should accept {v}"
+                validate(&Sdk::Gemini, pro, Field::ReasoningEffort, &eff(v)).is_ok(),
+                "gemini-3.1-pro should accept {v}"
             );
         }
         assert!(matches!(
-            validate(
-                &Sdk::Gemini,
-                "gemini-3.1",
-                Field::ReasoningEffort,
-                &eff("minimal")
-            ),
+            validate(&Sdk::Gemini, pro, Field::ReasoningEffort, &eff("minimal")),
             Err(CapabilityError::OutOfDomain { .. })
         ));
-        // The sdk default (Flash tier) still keeps `minimal`.
-        assert!(reasoning_effort_domain(&Sdk::Gemini, "gemini-3.5-flash")
-            .iter()
-            .any(|v| v == "minimal"));
+
+        // The Pro-specific match must NOT catch Flash 3.1 ids — Flash / Flash-Lite
+        // / Flash-Image keep `minimal` (it is in fact their default thinkingLevel).
+        for flash in [
+            "google/gemini-3.1-flash-image-preview",
+            "google/gemini-3.1-flash-lite",
+            "gemini-3.5-flash",
+        ] {
+            assert!(
+                reasoning_effort_domain(&Sdk::Gemini, flash)
+                    .iter()
+                    .any(|v| v == "minimal"),
+                "{flash} must keep `minimal`"
+            );
+        }
     }
 }
