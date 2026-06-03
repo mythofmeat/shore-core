@@ -244,19 +244,20 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 # Model-level values take precedence over provider-level values.
 #
 # Known providers with hardcoded defaults:
-#   anthropic  — sdk: anthropic, api_key_env: ANTHROPIC_API_KEY,  temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#   openrouter — sdk: openai,     api_key_env: OPENROUTER_API_KEY, temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#   deepseek   — sdk: openai,     api_key_env: DEEPSEEK_API_KEY,   temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   anthropic  — sdk: anthropic,  api_key_env: ANTHROPIC_API_KEY,  temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   openrouter — sdk: openrouter, api_key_env: OPENROUTER_API_KEY, temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   deepseek   — sdk: deepseek,   api_key_env: DEEPSEEK_API_KEY,   temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   moonshot   — sdk: moonshot,   api_key_env: MOONSHOT_API_KEY,   temp: 1.0, max_output_tokens: 8192, max_context: 200000
 #   gemini     — sdk: gemini,     api_key_env: GEMINI_API_KEY,     temp: 1.0, max_output_tokens: 8192, max_context: 200000
 #   xai        — sdk: openai,     api_key_env: XAI_API_KEY,        temp: 1.0, max_output_tokens: 8192, max_context: 200000
 #   zhipuai    — sdk: openai,     api_key_env: ZAI_API_KEY,        temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#   zai        — sdk: zai,       api_key_env: ZAI_API_KEY,        temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#   nanogpt    — sdk: openai,    api_key_env: NANOGPT_API_KEY,    temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   zai        — sdk: zai,        api_key_env: ZAI_API_KEY,        temp: 1.0, max_output_tokens: 8192, max_context: 200000
+#   nanogpt    — sdk: openai,     api_key_env: NANOGPT_API_KEY,    temp: 1.0, max_output_tokens: 8192, max_context: 200000
 #
 # Available fields (provider- or model-level):
 #
 #   — Auth & connection —
-#   sdk = "anthropic"                        # Wire protocol: anthropic, openai, gemini, zai
+#   sdk = "anthropic"                        # Wire: anthropic, openai, openrouter, gemini, zai, deepseek, moonshot
 #   api_key_env = "MY_API_KEY"               # Env var holding the API key
 #   base_url = "https://..."                 # Override the API base URL
 #   keepalive_enabled = false                # Keep the HTTP connection alive between requests

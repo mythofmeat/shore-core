@@ -84,6 +84,8 @@ struct ReasoningEffortDoc {
     openrouter: SdkEffort,
     gemini: SdkEffort,
     zai: SdkEffort,
+    deepseek: SdkEffort,
+    moonshot: SdkEffort,
 }
 
 impl ReasoningEffortDoc {
@@ -94,6 +96,8 @@ impl ReasoningEffortDoc {
             Sdk::Openrouter => &self.openrouter,
             Sdk::Gemini => &self.gemini,
             Sdk::Zai => &self.zai,
+            Sdk::Deepseek => &self.deepseek,
+            Sdk::Moonshot => &self.moonshot,
         }
     }
 }
@@ -421,12 +425,17 @@ pub fn applicability(sdk: &Sdk, model_id: &str, field: Field) -> Applicability {
         | Field::KeepaliveTtl
         | Field::KeepaliveMaxPings => Applicability::Honored,
 
-        // Every sidecar adapter maps `reasoning_effort` except Z.AI, which
-        // drives thinking via `zai_clear_thinking` / `thinking.type` instead.
-        // The accepted value set is sdk-specific — see `reasoning_effort_domain`.
+        // Most sidecar adapters map `reasoning_effort` to a graded value. Z.AI
+        // and Moonshot (Kimi) instead drive thinking via an on/off toggle (no
+        // graded effort), so the knob is `Ignored` there — disable with
+        // `reasoning_effort = "off"` (→ `thinking_enabled = false`). DeepSeek's
+        // Vercel provider does expose a graded `reasoningEffort`. The accepted
+        // value set is sdk-specific — see `reasoning_effort_domain`.
         Field::ReasoningEffort => match sdk {
-            Sdk::Anthropic | Sdk::Openai | Sdk::Openrouter | Sdk::Gemini => Applicability::Honored,
-            Sdk::Zai => Applicability::Ignored,
+            Sdk::Anthropic | Sdk::Openai | Sdk::Openrouter | Sdk::Gemini | Sdk::Deepseek => {
+                Applicability::Honored
+            }
+            Sdk::Zai | Sdk::Moonshot => Applicability::Ignored,
         },
 
         // Sampler knobs: rejected on Claude opus/sonnet >= 4.7 OR on a model a
@@ -443,10 +452,11 @@ pub fn applicability(sdk: &Sdk, model_id: &str, field: Field) -> Applicability {
             }
         }
 
-        // `budget_tokens` is only consumed by the Anthropic and Gemini wires
-        // (`anthropic.ts` thinking budget / `gemini.ts` thinkingBudget). On
-        // Anthropic it follows the same Claude >=4.7 sampler cutoff; the
-        // OpenAI/OpenRouter/Z.AI adapters never read it, so it is `Ignored`.
+        // `budget_tokens` is consumed by the Anthropic, Gemini, and Moonshot
+        // wires (`anthropic.ts` thinking budget / `gemini.ts` thinkingBudget /
+        // Moonshot `thinking.budgetTokens`). On Anthropic it follows the same
+        // Claude >=4.7 sampler cutoff; the OpenAI/OpenRouter/Z.AI/DeepSeek
+        // adapters never read it, so it is `Ignored`.
         Field::BudgetTokens => match sdk {
             Sdk::Anthropic => {
                 if claude_rejects_sampling(model_id) {
@@ -455,8 +465,8 @@ pub fn applicability(sdk: &Sdk, model_id: &str, field: Field) -> Applicability {
                     Applicability::Honored
                 }
             }
-            Sdk::Gemini => Applicability::Honored,
-            Sdk::Openai | Sdk::Openrouter | Sdk::Zai => Applicability::Ignored,
+            Sdk::Gemini | Sdk::Moonshot => Applicability::Honored,
+            Sdk::Openai | Sdk::Openrouter | Sdk::Zai | Sdk::Deepseek => Applicability::Ignored,
         },
 
         // `cache_ttl` only produces `cache_control` on the Anthropic sdk.
@@ -495,7 +505,16 @@ fn vendor_field(sdk: &Sdk, owner: &Sdk) -> Applicability {
 pub fn default_value(sdk: &Sdk, field: Field) -> Option<&'static str> {
     match (sdk, field) {
         (Sdk::Anthropic, Field::CacheTtl) => Some("1h"),
-        (Sdk::Anthropic | Sdk::Openai | Sdk::Openrouter | Sdk::Gemini | Sdk::Zai, _) => None,
+        (
+            Sdk::Anthropic
+            | Sdk::Openai
+            | Sdk::Openrouter
+            | Sdk::Gemini
+            | Sdk::Zai
+            | Sdk::Deepseek
+            | Sdk::Moonshot,
+            _,
+        ) => None,
     }
 }
 
@@ -1136,6 +1155,34 @@ mod tests {
         assert!(rejects_sampling("openai/o3"));
         assert!(!rejects_sampling("openai/gpt-5"));
         assert!(rejects_sampling("claude-opus-4-8"));
+    }
+
+    #[test]
+    fn native_deepseek_moonshot_reasoning_capabilities() {
+        // Issue #164: native DeepSeek/Moonshot via the Vercel AI SDK providers.
+        // DeepSeek exposes a graded reasoningEffort low|medium|high|xhigh|max.
+        let ds = reasoning_effort_domain(&Sdk::Deepseek, "deepseek-reasoner");
+        assert_eq!(ds, ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(
+            applicability(&Sdk::Deepseek, "deepseek-reasoner", Field::ReasoningEffort),
+            Applicability::Honored
+        );
+        // Moonshot reasoning is an on/off toggle (no graded effort): the knob is
+        // Ignored and the domain is empty (disable via the "off" sentinel).
+        assert!(reasoning_effort_domain(&Sdk::Moonshot, "kimi-k2-thinking").is_empty());
+        assert_eq!(
+            applicability(&Sdk::Moonshot, "kimi-k2-thinking", Field::ReasoningEffort),
+            Applicability::Ignored
+        );
+        // Moonshot consumes budget_tokens (thinking.budgetTokens); DeepSeek does not.
+        assert_eq!(
+            applicability(&Sdk::Moonshot, "kimi-k2-thinking", Field::BudgetTokens),
+            Applicability::Honored
+        );
+        assert_eq!(
+            applicability(&Sdk::Deepseek, "deepseek-reasoner", Field::BudgetTokens),
+            Applicability::Ignored
+        );
     }
 
     #[test]

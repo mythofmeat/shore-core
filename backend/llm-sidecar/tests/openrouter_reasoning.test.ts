@@ -18,7 +18,7 @@ function req(provider_options?: Record<string, unknown>): SidecarRequest {
     api_key: "sk-test",
     messages: [],
     max_tokens: 1024,
-    provider_options,
+    ...(provider_options ? { provider_options } : {}),
   };
 }
 

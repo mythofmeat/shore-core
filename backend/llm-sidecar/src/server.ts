@@ -5,6 +5,7 @@ import { GeminiProvider } from "./llm/providers/gemini.ts";
 import { AnthropicProvider } from "./llm/providers/anthropic.ts";
 import { OpenAIProvider } from "./llm/providers/openai.ts";
 import { OpenRouterProvider } from "./llm/providers/openrouter.ts";
+import { VercelProvider } from "./llm/providers/vercel.ts";
 import { ZaiProvider } from "./llm/providers/zai.ts";
 import type {
   ImageRequest,
@@ -32,13 +33,19 @@ interface HttpishError {
 // `openrouter` is the normalized path for non-Anthropic providers (DeepSeek,
 // Kimi, GLM, MiniMax, GPT via OpenRouter). `openai`/`zai` are kept for DIRECT
 // vendor access — native OpenAI, and Z.ai's coding-subscription base URLs —
-// which OpenRouter can't serve. Anthropic + Gemini keep their native SDKs.
+// which OpenRouter can't serve. `deepseek`/`moonshot` are DIRECT native access
+// via the Vercel AI SDK providers (issue #164), which expose vendor reasoning
+// controls (thinking on/off + effort/budget). Anthropic + Gemini keep their
+// native SDKs.
+const vercel = new VercelProvider();
 const DEFAULT_PROVIDERS: Partial<Record<SidecarRequest["sdk"], SidecarProvider>> = {
   anthropic: new AnthropicProvider(),
   gemini: new GeminiProvider(),
   openrouter: new OpenRouterProvider(),
   openai: new OpenAIProvider(),
   zai: new ZaiProvider(),
+  deepseek: vercel,
+  moonshot: vercel,
 };
 
 const NDJSON_HEADERS = {

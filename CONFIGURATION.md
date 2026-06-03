@@ -395,6 +395,14 @@ set: their reasoning is an on/off toggle that OpenRouter maps to a token-budget
 ratio, so every effort value is meaningful. Unknown vendors fall back to the
 generic set.
 
+DeepSeek and Moonshot (Kimi) can also be reached **natively** (not through
+OpenRouter) via `sdk = "deepseek"` / `sdk = "moonshot"` — the built-in `deepseek`
+and `moonshot` providers default to these. They use the Vercel AI SDK providers
+and expose native reasoning control: DeepSeek a graded `reasoning_effort`
+(`low|medium|high|xhigh|max`), Moonshot a thinking on/off toggle driven by
+`budget_tokens`. On both, `reasoning_effort = "off"` disables thinking outright
+(`thinking.type = "disabled"`).
+
 In addition to the sampler knobs, the **vendor knobs** are settable per-model
 through the same store: `openrouter_provider` (a routing object, e.g.
 `'{"order":["Anthropic"]}'`), `vertex_project`, `vertex_location`,
