@@ -108,6 +108,10 @@ async fn wait_until_heartbeat_detail_count_above(
 /// when execute_dormant_ping skips due to None last_request) and Bug 2 (dead
 /// timer — next_ping_at is None on startup, so no pings fire until the first
 /// user message).
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn test_keepalive_ping_fires_after_59_minutes() {
     let mut harness = TestHarness::boot().await;

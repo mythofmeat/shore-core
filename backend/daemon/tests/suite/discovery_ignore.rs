@@ -95,6 +95,10 @@ fn ids(arr: &Value) -> Vec<String> {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "end-to-end test indexes known-shape command-output JSON and Vec fixtures; panics on mismatch"
+)]
 async fn discovery_and_ignore_filter_listings_end_to_end() {
     // Ignore: hide everything by default, then re-expose anthropic/*.
     // Last match wins in gitignore-style rules.

@@ -6,6 +6,10 @@ use shore_test_harness::TestHarness;
 use tokio::time::{sleep, timeout, Instant};
 
 /// Collect whatever messages arrive within a bounded duration.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "arithmetic on fixed test values (deadlines/indices) with no meaningful overflow"
+)]
 pub(crate) async fn collect_messages_for(
     conn: &mut shore_swp_client::connection::SWPConnection,
     duration: Duration,
@@ -26,6 +30,10 @@ pub(crate) async fn collect_messages_for(
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "arithmetic on fixed test values (deadlines/indices) with no meaningful overflow"
+)]
 pub(crate) async fn wait_for_mock_requests(harness: &TestHarness, expected: usize) {
     // Matches the harness's COLLECT_TIMEOUT. 5s was too tight on loaded CI
     // runners where each tokio::test spins its own runtime; the request
@@ -43,6 +51,10 @@ pub(crate) async fn wait_for_mock_requests(harness: &TestHarness, expected: usiz
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "arithmetic on fixed test values (deadlines/indices) with no meaningful overflow"
+)]
 pub(crate) async fn wait_for_heartbeat_detail(
     harness: &TestHarness,
     character: &str,
@@ -66,6 +78,10 @@ pub(crate) async fn wait_for_heartbeat_detail(
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "arithmetic on fixed test values (deadlines/indices) with no meaningful overflow"
+)]
 pub(crate) async fn wait_for_file_contents(path: &std::path::Path, needle: &str) -> String {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
@@ -92,6 +108,10 @@ pub(crate) async fn wait_for_file_contents(path: &std::path::Path, needle: &str)
 /// that depend on a turn being on disk — e.g. compaction snapshotting the
 /// transcript — must wait for the observable state instead. `what` names the
 /// condition for the timeout message.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "arithmetic on fixed test values (deadlines/indices) with no meaningful overflow"
+)]
 pub(crate) async fn wait_for_persisted_messages(
     harness: &TestHarness,
     pred: impl Fn(&[serde_json::Value]) -> bool,

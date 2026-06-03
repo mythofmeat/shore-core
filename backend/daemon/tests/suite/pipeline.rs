@@ -84,6 +84,10 @@ async fn test_streaming_chunks_arrive_in_order() {
 /// 3. Send a user message and collect both stream phases.
 /// 4. Assert the mock received at least 2 requests (initial + post-tool).
 /// 5. Assert the collected response contains the check_time tool call.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn test_tool_use_roundtrip() {
     let mut harness = TestHarness::boot().await;
@@ -232,6 +236,10 @@ async fn test_tool_result_persisted_in_jsonl() {
 ///
 /// The default TestHarness config has tool_use enabled, so the first POST to the mock
 /// should include a non-empty "tools" array alongside "messages" and a "system" field.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn test_request_body_includes_tools() {
     let mut harness = TestHarness::boot().await;
@@ -282,6 +290,10 @@ async fn test_request_body_includes_tools() {
 ///
 /// The "messages" array in the POST body must contain at least one entry whose content
 /// includes the exact string "Hello test message".
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn test_request_body_contains_user_message() {
     let mut harness = TestHarness::boot().await;

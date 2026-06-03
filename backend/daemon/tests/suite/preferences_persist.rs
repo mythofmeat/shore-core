@@ -52,6 +52,10 @@ fn extract(messages: &[ServerMessage], expected_cmd: &str) -> Value {
         .unwrap_or_else(|| panic!("no CommandOutput for {expected_cmd}: {messages:#?}"))
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 async fn switch_model(conn: &mut SWPConnection, name: &str) {
     let messages =
         TestHarness::send_command_on(conn, "switch_model", json!({ "name": name })).await;
@@ -62,6 +66,10 @@ async fn switch_model(conn: &mut SWPConnection, name: &str) {
     );
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 async fn set_temperature(conn: &mut SWPConnection, value: f64) {
     let messages = TestHarness::send_command_on(
         conn,
@@ -74,6 +82,10 @@ async fn set_temperature(conn: &mut SWPConnection, value: f64) {
     assert_eq!(data["scope"], "character");
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 async fn read_temperature(conn: &mut SWPConnection) -> Option<f64> {
     let messages = TestHarness::send_command_on(conn, "model_settings", json!({})).await;
     let data = extract(&messages, "model_settings");
