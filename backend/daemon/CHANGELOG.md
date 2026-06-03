@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [12.0.1](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v12.0.0...shore-daemon-v12.0.1) - 2026-06-03
+
+### Other
+
+- make LlmClient construction fallible via try_new() ([#119](https://github.com/mythofmeat/shore-core/pull/119))
+
 ## [12.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v11.0.2...shore-daemon-v12.0.0) - 2026-06-03
 
 ### Other

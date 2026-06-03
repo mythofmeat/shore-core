@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.3](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v3.0.2...shore-ledger-v3.0.3) - 2026-06-03
+
+### Fixed
+
+- *(ledger)* track routed-Anthropic in cache gates ([#118](https://github.com/mythofmeat/shore-core/pull/118))
+
 ## [3.0.2](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v3.0.1...shore-ledger-v3.0.2) - 2026-06-03
 
 ### Other
