@@ -34,9 +34,12 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   Relatedly, `reasoning_effort = "off"` now sends the provider's explicit
   disable on OpenRouter (`reasoning: { effort: "none" }`) instead of merely
   omitting the field — so reasoning-by-default models that *support* toggling
-  actually stop reasoning. Note: dedicated thinking-only endpoints (e.g.
-  `moonshotai/kimi-k2-thinking`) reject disabling with a provider 400
-  ("reasoning is mandatory for this endpoint") — they cannot be turned off, by
+  actually stop reasoning. `shore model setting reasoning_effort off` is accepted
+  only on sdks whose adapter actually has an off-switch (Anthropic, OpenRouter,
+  native DeepSeek/Moonshot); on native OpenAI/Gemini, where it would be a silent
+  no-op, it is now rejected at the boundary. Note: dedicated thinking-only
+  endpoints (e.g. `moonshotai/kimi-k2-thinking`) reject disabling with a provider
+  400 ("reasoning is mandatory for this endpoint") — they cannot be turned off, by
   design of the upstream model.
 - The **vendor knobs** (`openrouter_provider`, `vertex_project`,
   `vertex_location`, `gemini_generation`, `gemini_web_search`,

@@ -91,6 +91,15 @@ describe("turnToVercel", () => {
     });
   });
 
+  test("tool_result with unknown tool_use_id throws (no empty toolName)", () => {
+    expect(() =>
+      conv({
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tc_missing", content: "result" }],
+      }),
+    ).toThrow(/unknown tool_use_id: tc_missing/);
+  });
+
   test("user text → single role:user message", () => {
     const out = conv({ role: "user", content: [{ type: "text", text: "hi" }] });
     expect(out).toEqual([{ role: "user", content: [{ type: "text", text: "hi" }] }]);

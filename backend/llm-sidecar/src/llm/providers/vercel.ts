@@ -291,12 +291,22 @@ export function turnToVercel(turn: TurnMessage, toolNames: Map<string, string>):
   const out: ModelMessage[] = [];
   const toolParts = turn.content
     .filter((b): b is Extract<ContentBlock, { type: "tool_result" }> => b.type === "tool_result")
-    .map((b) => ({
-      type: "tool-result" as const,
-      toolCallId: b.tool_use_id,
-      toolName: toolNames.get(b.tool_use_id) ?? "",
-      output: { type: "text" as const, value: b.content },
-    }));
+    .map((b) => {
+      // The originating tool_use must be in this request's history (orphan
+      // tool_result blocks are stripped upstream in the daemon). A missing name
+      // means a malformed turn — surface a clear error instead of an empty
+      // toolName, which the AI SDK would forward as an invalid tool-result.
+      const toolName = toolNames.get(b.tool_use_id);
+      if (toolName === undefined) {
+        throw new Error(`tool_result references unknown tool_use_id: ${b.tool_use_id}`);
+      }
+      return {
+        type: "tool-result" as const,
+        toolCallId: b.tool_use_id,
+        toolName,
+        output: { type: "text" as const, value: b.content },
+      };
+    });
   if (toolParts.length > 0) out.push({ role: "tool", content: toolParts });
 
   const userParts: Array<

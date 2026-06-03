@@ -828,6 +828,43 @@ model_id = "kimi-k2-thinking"
 }
 
 #[test]
+fn set_model_setting_reasoning_off_gated_by_adapter_support() {
+    // Issue #164 (CodeRabbit): `reasoning_effort = "off"` is only accepted where
+    // an adapter actually disables reasoning. Native DeepSeek (Vercel AI SDK,
+    // thinking.type=disabled) honors it; native Gemini has no disable path, so
+    // `off` must be rejected rather than silently persisted.
+    let tmp = TempDir::new().unwrap();
+    let toml_str = r#"
+[deepseek.r1]
+model_id = "deepseek-reasoner"
+
+[gemini.flash]
+model_id = "gemini-2.5-flash"
+"#;
+    let table: toml::Table = toml_str.parse().unwrap();
+    let catalog = ModelCatalog::from_sections(Some(&table), None, None, None).unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, catalog);
+
+    // Native DeepSeek: `off` accepted (adapter disables thinking).
+    ctx.active_model = Some("r1".into());
+    let result = set_model_setting(
+        &mut ctx,
+        &json!({"key": "reasoning_effort", "value": "off"}),
+    )
+    .unwrap();
+    assert_eq!(result["changed"], true);
+
+    // Native Gemini: no off-switch → `off` rejected at the capability boundary.
+    ctx.active_model = Some("flash".into());
+    let err = set_model_setting(
+        &mut ctx,
+        &json!({"key": "reasoning_effort", "value": "off"}),
+    )
+    .unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+}
+
+#[test]
 fn set_model_setting_validates_value_type() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
