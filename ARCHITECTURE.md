@@ -538,7 +538,7 @@ New lints land through a fixed sequence so the baseline only tightens:
 
 - **Tier 1** — `clippy::pedantic` workspace-wide, panic-hygiene and lossy-cast
   lints deny-locked per crate, `deny.toml` dependency hygiene, and
-  `#[expect(reason = …)]` discipline.
+  `#[expect(..., reason = …)]` discipline.
 - **Tier 2** — draconian `clippy::restriction` plus rustc paranoia: no panics
   or unwraps inside `Result` functions, no `let _ =` discards of must-use
   values, no ignored return values, no unchecked `as` conversions, locked
