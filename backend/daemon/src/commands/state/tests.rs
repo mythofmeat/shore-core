@@ -1189,6 +1189,33 @@ fn set_model_setting_zai_clear_thinking_rejected_on_non_zai_model() {
 }
 
 #[test]
+fn set_model_setting_openrouter_provider_rejects_scalar() {
+    // The routing value must be an object, not a scalar.
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    let err = set_model_setting(
+        &mut ctx,
+        &json!({"key": "openrouter_provider", "value": "Anthropic"}),
+    )
+    .unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+    assert!(
+        err.1.contains("routing object"),
+        "expected object-required message, got {:?}",
+        err.1
+    );
+
+    // An object is accepted.
+    set_model_setting(
+        &mut ctx,
+        &json!({"key": "openrouter_provider", "value": {"order": ["Anthropic"]}}),
+    )
+    .unwrap();
+}
+
+#[test]
 fn set_model_setting_gemini_generation_persists_on_gemini_model() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());

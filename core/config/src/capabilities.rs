@@ -275,11 +275,22 @@ pub fn parse_claude_version(model_id: &str) -> Option<ClaudeVersion> {
     };
     let lower = bare.to_ascii_lowercase();
 
-    let family = if lower.contains("opus") {
+    // Tokenize on non-alphanumeric boundaries so we match whole words, not
+    // substrings: require a distinct `claude` token (an unrelated id that merely
+    // *contains* "opus"/"sonnet"/"haiku" is not a Claude model) plus a family
+    // token.
+    let tokens: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if !tokens.contains(&"claude") {
+        return None;
+    }
+    let family = if tokens.contains(&"opus") {
         ClaudeFamily::Opus
-    } else if lower.contains("sonnet") {
+    } else if tokens.contains(&"sonnet") {
         ClaudeFamily::Sonnet
-    } else if lower.contains("haiku") {
+    } else if tokens.contains(&"haiku") {
         ClaudeFamily::Haiku
     } else {
         return None;
@@ -289,8 +300,8 @@ pub fn parse_claude_version(model_id: &str) -> Option<ClaudeVersion> {
     // of 3+ digits is a date/build stamp, not a version part — skip it.
     let mut major: Option<u32> = None;
     let mut minor: u32 = 0;
-    for tok in lower.split(['-', '.', '/']) {
-        if tok.is_empty() || tok.len() > 2 || !tok.bytes().all(|b| b.is_ascii_digit()) {
+    for tok in &tokens {
+        if tok.len() > 2 || !tok.bytes().all(|b| b.is_ascii_digit()) {
             continue;
         }
         let Ok(n) = tok.parse::<u32>() else { continue };
@@ -644,6 +655,17 @@ mod tests {
                 minor: 8
             })
         );
+    }
+
+    #[test]
+    fn requires_a_claude_token_not_a_substring() {
+        // An unrelated id that merely *contains* a family word is not Claude.
+        assert_eq!(ver("opus-writer-v2"), None);
+        assert_eq!(ver("some-haiku-poet"), None);
+        assert_eq!(ver("sonnet-composer-3"), None);
+        // A real Claude id (either ordering) still parses.
+        assert!(ver("claude-opus-4-8").is_some());
+        assert!(ver("claude-3-opus-20240229").is_some());
     }
 
     #[test]

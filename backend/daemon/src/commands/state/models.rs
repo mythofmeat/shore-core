@@ -652,7 +652,14 @@ fn apply_vendor_sampler_value(
             sampler.openrouter_provider = if value.is_null() {
                 None
             } else {
-                // The routing object arrives as JSON over SWP; store it as the
+                // Routing is an object (`{ order, allow_fallbacks, ... }`); a
+                // scalar would be stored verbatim but mean nothing on the wire.
+                if !value.is_object() {
+                    return Err(invalid(format!(
+                        "openrouter_provider must be a routing object, got {value}"
+                    )));
+                }
+                // The object arrives as JSON over SWP; store it as the
                 // `toml::Value` the catalog/overlay expects.
                 Some(toml::Value::try_from(value).map_err(|e| {
                     invalid(format!(

@@ -119,16 +119,22 @@ export function parseClaudeModel(modelId: string): ClaudeVersion | undefined {
   const slash = modelId.lastIndexOf("/");
   const lower = (slash >= 0 ? modelId.slice(slash + 1) : modelId).toLowerCase();
 
+  // Tokenize on non-alphanumeric boundaries: require a distinct `claude` token
+  // (an id that merely contains "opus"/"sonnet"/"haiku" is not a Claude model)
+  // plus a family token. Mirrors Rust `parse_claude_version`.
+  const tokens = lower.split(/[^a-z0-9]+/).filter(Boolean);
+  if (!tokens.includes("claude")) return undefined;
+
   let family: ClaudeFamily | undefined;
-  if (lower.includes("opus")) family = "opus";
-  else if (lower.includes("sonnet")) family = "sonnet";
-  else if (lower.includes("haiku")) family = "haiku";
+  if (tokens.includes("opus")) family = "opus";
+  else if (tokens.includes("sonnet")) family = "sonnet";
+  else if (tokens.includes("haiku")) family = "haiku";
   else return undefined;
 
   let major: number | undefined;
   let minor = 0;
-  for (const tok of lower.split(/[-./]/)) {
-    if (tok.length === 0 || tok.length > 2 || !/^[0-9]+$/.test(tok)) continue;
+  for (const tok of tokens) {
+    if (tok.length > 2 || !/^[0-9]+$/.test(tok)) continue;
     const n = Number.parseInt(tok, 10);
     if (Number.isNaN(n)) continue;
     if (major === undefined) major = n;

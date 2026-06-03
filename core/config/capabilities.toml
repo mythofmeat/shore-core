@@ -39,9 +39,10 @@ domain = []
 
 # Optional per-model overrides of the accepted set. First whose `match` is a
 # (case-insensitive) substring of the model_id wins; otherwise the sdk default
-# applies. Intentionally EMPTY today — e.g. `reasoning_effort=max` stays valid on
-# GPT-5 (it folds to `high`); do not narrow it here without a real provider-doc
-# reason. Shape, for when one is needed:
+# applies. Intentionally EMPTY today — the per-sdk domains above are already
+# grounded in the provider docs (OpenAI/OpenRouter top out at `xhigh`; `max` is
+# Anthropic-only). Add an override only when a specific model's accepted set
+# genuinely differs from its sdk default, with a provider-doc reason. Shape:
 #   [[reasoning_effort.model_override]]
 #   match  = "some-model-id"
 #   domain = ["minimal", "low", "medium", "high"]
