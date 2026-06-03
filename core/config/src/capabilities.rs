@@ -52,7 +52,7 @@ use crate::models::Sdk;
 // the single source of truth; the `pub fn`s below read from it. See that file's
 // header for the schema and the cross-language parity contract.
 //
-// Rust deliberately models only the fields it consumes (`domain` /
+// Rust deliberately models only the fields it consumes (per-sdk `domain` /
 // `model_override` / the claude rules); serde ignores the TS-only keys (`fold`,
 // `budget`) by default.
 
@@ -70,6 +70,11 @@ static CAPS: LazyLock<CapabilitiesDoc> = LazyLock::new(|| {
 struct CapabilitiesDoc {
     reasoning_effort: ReasoningEffortDoc,
     claude: ClaudeDoc,
+    /// Per-model capability overlay for the OpenRouter passthrough (issue #164),
+    /// keyed by a substring of the model_id. See [`reasoning_effort_domain`] and
+    /// [`model_override_rejects_sampling`].
+    #[serde(default)]
+    model_override: Vec<ModelOverride>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,8 +84,6 @@ struct ReasoningEffortDoc {
     openrouter: SdkEffort,
     gemini: SdkEffort,
     zai: SdkEffort,
-    #[serde(default)]
-    model_override: Vec<ModelOverride>,
 }
 
 impl ReasoningEffortDoc {
@@ -101,11 +104,19 @@ struct SdkEffort {
     domain: Vec<String>,
 }
 
+/// One per-model override entry. `reasoning_effort` and `rejects_sampling` are
+/// looked up independently (each by the first matching entry that carries that
+/// field), so an effort-only and a sampling-only entry never interfere.
 #[derive(Debug, Deserialize)]
 struct ModelOverride {
     #[serde(rename = "match")]
     match_substr: String,
-    domain: Vec<String>,
+    /// Overrides the per-sdk accepted `reasoning_effort` value set.
+    #[serde(default)]
+    reasoning_effort: Option<Vec<String>>,
+    /// The underlying model rejects sampler knobs (`temperature` / `top_p`).
+    #[serde(default)]
+    rejects_sampling: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -418,12 +429,14 @@ pub fn applicability(sdk: &Sdk, model_id: &str, field: Field) -> Applicability {
             Sdk::Zai => Applicability::Ignored,
         },
 
-        // Sampler knobs: rejected on Claude opus/sonnet >= 4.7, honored
-        // otherwise. The cutoff is sdk-independent — it follows the model id,
-        // since the same Claude model can be reached via several sdks (every
-        // adapter forwards temperature/top_p verbatim).
+        // Sampler knobs: rejected on Claude opus/sonnet >= 4.7 OR on a model a
+        // `[[model_override]]` flags (the OpenRouter passthrough case — e.g. the
+        // OpenAI o-series, issue #164), honored otherwise. The cutoff is
+        // sdk-independent — it follows the model id, since the same model can be
+        // reached via several sdks (every adapter forwards temperature/top_p
+        // verbatim).
         Field::Temperature | Field::TopP => {
-            if claude_rejects_sampling(model_id) {
+            if rejects_sampling(model_id) {
                 Applicability::Rejected
             } else {
                 Applicability::Honored
@@ -500,16 +513,46 @@ pub fn default_value(sdk: &Sdk, field: Field) -> Option<&'static str> {
 /// * **Z.AI** — ignores `reasoning_effort` entirely (empty set; also `Ignored`
 ///   in [`applicability`], so [`validate`] returns `Inapplicable` before this).
 ///
-/// A per-model override (first whose `match` is a substring of `model_id`) wins
-/// over the per-sdk default; see `[[reasoning_effort.model_override]]`.
+/// A per-model override (first whose `match` is a substring of `model_id` and
+/// which carries a `reasoning_effort`) wins over the per-sdk default; see
+/// `[[model_override]]`.
 pub fn reasoning_effort_domain(sdk: &Sdk, model_id: &str) -> &'static [String] {
     let lower = model_id.to_ascii_lowercase();
-    for ov in &CAPS.reasoning_effort.model_override {
-        if lower.contains(&ov.match_substr.to_ascii_lowercase()) {
-            return &ov.domain;
+    for ov in &CAPS.model_override {
+        if let Some(domain) = ov.reasoning_effort.as_deref() {
+            if lower.contains(&ov.match_substr.to_ascii_lowercase()) {
+                return domain;
+            }
         }
     }
     &CAPS.reasoning_effort.for_sdk(sdk).domain
+}
+
+/// Whether a `[[model_override]]` marks `model_id`'s underlying model as
+/// rejecting sampler knobs (`temperature` / `top_p`). This is the OpenRouter
+/// passthrough analogue of the Claude version cutoff (issue #164): the
+/// `openrouter` sdk fronts vendors whose reasoning-only models (e.g. the OpenAI
+/// o-series) reject sampling. First match whose `rejects_sampling` is present
+/// wins.
+fn model_override_rejects_sampling(model_id: &str) -> bool {
+    let lower = model_id.to_ascii_lowercase();
+    for ov in &CAPS.model_override {
+        if let Some(rejects) = ov.rejects_sampling {
+            if lower.contains(&ov.match_substr.to_ascii_lowercase()) {
+                return rejects;
+            }
+        }
+    }
+    false
+}
+
+/// Whether `model_id`'s wire rejects sampler knobs (`temperature` / `top_p`),
+/// from EITHER the Claude >=4.7 cutoff ([`claude_rejects_sampling`]) or a
+/// per-model `[[model_override]]` ([`model_override_rejects_sampling`], the
+/// OpenRouter passthrough case). Both inputs key off the model id alone, so this
+/// is sdk-independent — every adapter forwards `temperature`/`top_p` verbatim.
+pub fn rejects_sampling(model_id: &str) -> bool {
+    claude_rejects_sampling(model_id) || model_override_rejects_sampling(model_id)
 }
 
 /// Why a setting was rejected at the boundary.
@@ -766,7 +809,7 @@ mod tests {
                 c.model
             );
             assert_eq!(
-                claude_rejects_sampling(&c.model),
+                rejects_sampling(&c.model),
                 c.rejects_sampling,
                 "rejects_sampling mismatch for {}",
                 c.model
@@ -1035,5 +1078,75 @@ mod tests {
                 "{flash} must keep `minimal`"
             );
         }
+    }
+
+    #[test]
+    fn openrouter_per_vendor_reasoning_domains() {
+        // Issue #164: OR-routed vendors resolve their effort domain by model id,
+        // not by the generic `openrouter` sdk default (minimal..xhigh).
+        let dom = |id: &str| reasoning_effort_domain(&Sdk::Openrouter, id).to_vec();
+
+        // Gemini: drops `xhigh` (thinkingLevel has no xhigh); Pro override still
+        // wins for Pro ids (no `minimal`).
+        assert_eq!(
+            dom("google/gemini-2.5-flash"),
+            ["minimal", "low", "medium", "high"]
+        );
+        assert_eq!(dom("google/gemini-3.1-pro"), ["low", "medium", "high"]);
+
+        // Grok (enum effort): low|medium|high only.
+        assert_eq!(dom("x-ai/grok-4.3"), ["low", "medium", "high"]);
+
+        // No-tier / budget-mapped OR vendors keep the generic set (OR maps
+        // effort→budget ratio), matching the #166 audit. Kimi is the issue's own
+        // example — its native reasoning is on/off, not graded.
+        let generic = ["minimal", "low", "medium", "high", "xhigh"];
+        assert_eq!(dom("moonshotai/kimi-k2.6"), generic);
+        assert_eq!(dom("deepseek/deepseek-v4-pro"), generic);
+        assert_eq!(dom("z-ai/glm-5.1"), generic);
+        assert_eq!(dom("some-vendor/mystery-model"), generic);
+    }
+
+    #[test]
+    fn openrouter_o_series_rejects_sampling_via_override() {
+        // OR-routed OpenAI o-series reject temperature/top_p → Rejected, so
+        // `shore model setting` hides them and `from_parts` strips them.
+        for id in ["openai/o1-mini", "openai/o3", "openai/o4-mini"] {
+            for field in [Field::Temperature, Field::TopP] {
+                assert_eq!(
+                    applicability(&Sdk::Openrouter, id, field),
+                    Applicability::Rejected,
+                    "{id} {field} should be Rejected"
+                );
+            }
+        }
+
+        // GPT-5 supports temperature — NOT in the reject list (distinct from the
+        // o-series); samplers stay Honored.
+        for field in [Field::Temperature, Field::TopP] {
+            assert_eq!(
+                applicability(&Sdk::Openrouter, "openai/gpt-5", field),
+                Applicability::Honored,
+                "gpt-5 {field} should stay Honored"
+            );
+        }
+
+        // The override path is sdk-independent (keys off the model id) and does
+        // not disturb the Claude cutoff.
+        assert!(rejects_sampling("openai/o3"));
+        assert!(!rejects_sampling("openai/gpt-5"));
+        assert!(rejects_sampling("claude-opus-4-8"));
+    }
+
+    #[test]
+    fn validate_rejects_sampler_on_or_o_series() {
+        let err = validate(
+            &Sdk::Openrouter,
+            "openai/o3-mini",
+            Field::Temperature,
+            &toml::Value::Float(0.5),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CapabilityError::Inapplicable { .. }));
     }
 }

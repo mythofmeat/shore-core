@@ -8,6 +8,17 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **Per-model capability resolution for OpenRouter models** (issue #164). Because
+  the OpenRouter sdk fronts many different underlying vendors, `shore model setting`
+  now resolves a model's capability surface from its **model id**, not just the sdk,
+  via a `[[model_override]]` table in `core/config/capabilities.toml` (substring
+  match, single source of truth for both the Rust daemon and the TS sidecar).
+  OR-routed Gemini (`google/gemini-*`) no longer advertises `xhigh`; OR-routed Grok
+  (`x-ai/grok-*`) is `low/medium/high`; OR-routed OpenAI **o-series**
+  (`openai/o1|o3|o4*`) now correctly reject `temperature`/`top_p` (and are stripped
+  before the wire), while GPT-5 keeps sampling. No-tier / budget-mapped vendors
+  (Kimi, DeepSeek, Z.AI, MiniMax) intentionally keep the generic OpenRouter effort
+  set, since OpenRouter maps any effort to a token-budget ratio for them.
 - The **vendor knobs** (`openrouter_provider`, `vertex_project`,
   `vertex_location`, `gemini_generation`, `gemini_web_search`,
   `zai_clear_thinking`, `zai_subscription`) are now settable per-model at runtime

@@ -377,6 +377,20 @@ OpenAI/OpenRouter `minimal|low|medium|high|xhigh` (`xhigh` is their ceiling —
 override dropping `minimal` for Gemini 3.x **Pro**, where it is Flash-only —
 see the matrix below).
 
+Because the **OpenRouter** sdk fronts many different underlying vendors, its
+capability surface is additionally resolved by the **model id** (issue #164),
+not just the sdk: an entry in `core/config/capabilities.toml`'s `[[model_override]]`
+table (matched by a substring of the model id) narrows the accepted
+`reasoning_effort` set and/or marks samplers as rejected for that vendor.
+Populated cases: OR-routed **Gemini** (`google/gemini-*`) drops `xhigh`;
+OR-routed **Grok** (`x-ai/grok-*`) is `low|medium|high`; OR-routed OpenAI
+**o-series** (`openai/o1|o3|o4*`) reject `temperature`/`top_p` (GPT-5 does not —
+it keeps sampling). No-tier / budget-mapped vendors (`moonshotai/kimi-*`,
+`deepseek/*`, `z-ai/*`, `minimax/*`) deliberately keep the generic OpenRouter
+set: their reasoning is an on/off toggle that OpenRouter maps to a token-budget
+ratio, so every effort value is meaningful. Unknown vendors fall back to the
+generic set.
+
 In addition to the sampler knobs, the **vendor knobs** are settable per-model
 through the same store: `openrouter_provider` (a routing object, e.g.
 `'{"order":["Anthropic"]}'`), `vertex_project`, `vertex_location`,

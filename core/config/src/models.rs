@@ -412,7 +412,8 @@ fn strip_rejected_sampler<T: PartialEq>(
         warn!(
             model = model_id,
             sdk = sdk.as_str(),
-            "dropping `{}`: the `{}` wire rejects it (Claude >=4.7 sampler cutoff)",
+            "dropping `{}`: the `{}` wire rejects it (Claude >=4.7 cutoff or \
+             per-model OpenRouter override)",
             field,
             model_id,
         );
@@ -1287,6 +1288,24 @@ temperature = 0.3
         // still applies: it follows the model id, not the sdk.
         assert_eq!(opus.sdk, Sdk::Openrouter);
         assert_eq!(opus.temperature, None);
+    }
+
+    #[test]
+    fn openrouter_o_series_drops_explicit_sampler_values() {
+        // Issue #164: an OR-routed OpenAI o-series model rejects samplers via a
+        // `[[model_override]]`, so `from_parts` strips an explicit temperature
+        // just like the Claude >=4.7 cutoff does.
+        let table = parse_table(
+            r#"
+[openrouter.o3]
+model_id = "openai/o3-mini"
+temperature = 0.3
+"#,
+        );
+        let models = parse_category("chat", &table, None).unwrap();
+        let o3 = &models["chat.openrouter.o3"];
+        assert_eq!(o3.sdk, Sdk::Openrouter);
+        assert_eq!(o3.temperature, None, "o-series sampler dropped (would 400)");
     }
 
     #[test]

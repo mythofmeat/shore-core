@@ -2,10 +2,12 @@
 #
 # Loaded by BOTH the Rust tests (`capabilities.rs`) and the TS sidecar tests
 # (`tests/capabilities_parity.test.ts`). Each side asserts its `parse` +
-# `claude_rejects_sampling` + `claude_thinking_caps` agree with these expected
-# values — so the two reimplementations of the parser/rule-evaluator (driven by
+# `rejects_sampling` + `claude_thinking_caps` agree with these expected values —
+# so the two reimplementations of the parser/rule-evaluator (driven by
 # `capabilities.toml`) cannot silently diverge.
 #
+# `rejects_sampling` is the COMBINED verdict (Claude >=4.7 cutoff OR a per-model
+# `[[model_override]]`, issue #164), matching `applicability` for temperature.
 # `adaptive`/`enabled` omitted ⇒ a non-Claude id (parser yields nothing).
 
 [[case]]
@@ -105,5 +107,37 @@ enabled = false
 [[case]]
 # Non-Claude id: no family token, parser yields nothing, honors sampling.
 model = "gpt-4o"
+is_claude = false
+rejects_sampling = false
+
+# ── OpenRouter passthrough overrides (issue #164) — non-Claude ids ────────────
+
+[[case]]
+# OR-routed OpenAI o-series reject samplers via `[[model_override]]`.
+model = "openai/o3-mini"
+is_claude = false
+rejects_sampling = true
+
+[[case]]
+# OR-routed GPT-5 is NOT in the reject list — it supports temperature.
+model = "openai/gpt-5"
+is_claude = false
+rejects_sampling = false
+
+[[case]]
+# OR-routed Gemini: effort override only, samplers honored.
+model = "google/gemini-3.1-pro-preview"
+is_claude = false
+rejects_sampling = false
+
+[[case]]
+# OR-routed Kimi: effort override only, samplers honored.
+model = "moonshotai/kimi-k2.6"
+is_claude = false
+rejects_sampling = false
+
+[[case]]
+# OR-routed Grok: effort override only, samplers honored.
+model = "x-ai/grok-4.3"
 is_claude = false
 rejects_sampling = false

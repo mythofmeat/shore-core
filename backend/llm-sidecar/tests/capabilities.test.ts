@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 
-import { effortBudget, foldEffort, geminiLevelName, reasoningDomain } from "../src/llm/capabilities.ts";
+import {
+  effortBudget,
+  foldEffort,
+  geminiLevelName,
+  modelOverrideRejectsSampling,
+  reasoningDomain,
+  rejectsSampling,
+} from "../src/llm/capabilities.ts";
 
 test("openai/openrouter accept xhigh (passthrough) and reject max", () => {
   for (const sdk of ["openai", "openrouter"] as const) {
@@ -43,4 +50,35 @@ test("gemini-3.1 Pro drops `minimal` via model_override (Flash keeps it)", () =>
   ]) {
     expect(reasoningDomain("gemini", flash)).toContain("minimal");
   }
+});
+
+test("OpenRouter per-vendor reasoning domains (issue #164)", () => {
+  // OR-routed vendors resolve effort by model id, not the generic openrouter set.
+  expect(reasoningDomain("openrouter", "google/gemini-2.5-flash")).toEqual([
+    "minimal",
+    "low",
+    "medium",
+    "high",
+  ]);
+  // Pro override still wins for Pro ids.
+  expect(reasoningDomain("openrouter", "google/gemini-3.1-pro")).toEqual(["low", "medium", "high"]);
+  // Grok (enum effort): low|medium|high.
+  expect(reasoningDomain("openrouter", "x-ai/grok-4.3")).toEqual(["low", "medium", "high"]);
+  // No-tier / budget-mapped OR vendors keep the generic set (OR maps
+  // effort→budget). Kimi is the issue's example but its reasoning is on/off (#166).
+  const generic = ["minimal", "low", "medium", "high", "xhigh"];
+  expect(reasoningDomain("openrouter", "moonshotai/kimi-k2.6")).toEqual(generic);
+  expect(reasoningDomain("openrouter", "z-ai/glm-5.1")).toEqual(generic);
+  expect(reasoningDomain("openrouter", "some-vendor/mystery")).toEqual(generic);
+});
+
+test("OpenRouter o-series reject samplers; GPT-5 does not (issue #164)", () => {
+  for (const id of ["openai/o1-mini", "openai/o3", "openai/o4-mini"]) {
+    expect(modelOverrideRejectsSampling(id), id).toBe(true);
+    expect(rejectsSampling(id), id).toBe(true);
+  }
+  expect(modelOverrideRejectsSampling("openai/gpt-5")).toBe(false);
+  expect(rejectsSampling("openai/gpt-5")).toBe(false);
+  // Claude cutoff still flows through the combined helper.
+  expect(rejectsSampling("claude-opus-4-8")).toBe(true);
 });
