@@ -508,6 +508,48 @@ Before a release, also run relevant cache tests, live provider smoke tests if
 provider behavior changed, and Matrix live verification if Matrix behavior
 changed.
 
+## Correctness Ratchet
+
+### Rationale
+
+The ratchet exists so that heavy AI-assisted development cannot silently
+degrade the codebase. It is a CI ratchet: quality-gating checks that block
+merges and can only hold or improve over time, never regress. The long-term
+aim is to make it as close to *impossible for bad code to compile* as the lint
+surface allows — minimal exceptions, minimal escape hatches. Every gate is a
+pure internal-hardening change, invisible to end users, leaving the daemon
+functional after every merge.
+
+### Rollout Convention
+
+New lints land through a fixed sequence so the baseline only tightens:
+
+- **Spike one crate first.** Enable the lint on a single crate to get a real
+  violation count before committing to a workspace-wide cleanup.
+- **Stage `warn` → per-crate lock → workspace promotion.** Start as a workspace
+  `warn`, then add `#![deny(...)]` at the crate root once a crate is clean, then
+  promote to `[workspace.lints]` so new crates inherit the baseline
+  automatically. CI's `-D warnings` keeps the promoted set hard.
+- **No bare suppressions.** There are `0` bare `#[allow]` in the tree. Every
+  suppression is a reasoned `#[expect(..., reason = "...")]`, so a suppression
+  that stops being needed fails the build instead of lingering.
+
+### Tier Model
+
+- **Tier 1** — `clippy::pedantic` workspace-wide, panic-hygiene and lossy-cast
+  lints deny-locked per crate, `deny.toml` dependency hygiene, and
+  `#[expect(..., reason = …)]` discipline.
+- **Tier 2** — draconian `clippy::restriction` plus rustc paranoia: no panics
+  or unwraps inside `Result` functions, no `let _ =` discards of must-use
+  values, no ignored return values, no unchecked `as` conversions, locked
+  ref-counted clone style, banned `dbg!`/print macros/`process::exit`/
+  `mem::forget`, documented unsafe blocks, and no unreachable `pub` items.
+- **Tier 2/3 tests** — `insta` snapshots, `proptest` round-trips, and a
+  `cargo-llvm-cov` coverage job for visibility.
+
+The Validation section above lists the currently enforced set; this section is
+the convention every new gate follows.
+
 ## Removed Runtime Architecture
 
 These are no longer normal runtime architecture:
