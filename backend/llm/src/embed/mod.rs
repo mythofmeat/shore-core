@@ -22,7 +22,11 @@ use crate::LlmError;
 pub trait Embedder: Send + Sync {
     async fn embed(&self, inputs: &[&str]) -> Result<Vec<Vec<f32>>, LlmError>;
     fn model_id(&self) -> &str;
-    fn dimensions(&self) -> usize;
+    /// Requested output width, or `None` to use the model's native width.
+    ///
+    /// This is the configured `dimensions` knob, not a measured width: when
+    /// `None`, the actual vector length is whatever the provider returns.
+    fn dimensions(&self) -> Option<usize>;
 }
 
 /// Hosted OpenAI-compatible embedder (`/v1/embeddings`).
@@ -34,7 +38,7 @@ pub struct OpenAIEmbedder {
     model: String,
     api_key: String,
     base_url: Option<String>,
-    dimensions: usize,
+    dimensions: Option<usize>,
 }
 
 impl std::fmt::Debug for OpenAIEmbedder {
@@ -55,7 +59,7 @@ impl OpenAIEmbedder {
         model: impl Into<String>,
         api_key: impl Into<String>,
         base_url: Option<String>,
-        dimensions: usize,
+        dimensions: Option<usize>,
     ) -> Self {
         Self {
             http_client,
@@ -77,6 +81,7 @@ impl Embedder for OpenAIEmbedder {
             &self.api_key,
             self.base_url.as_deref(),
             inputs,
+            self.dimensions,
         )
         .await
     }
@@ -85,7 +90,7 @@ impl Embedder for OpenAIEmbedder {
         &self.model
     }
 
-    fn dimensions(&self) -> usize {
+    fn dimensions(&self) -> Option<usize> {
         self.dimensions
     }
 }
@@ -146,8 +151,8 @@ mod tests {
         fn model_id(&self) -> &'static str {
             "fake"
         }
-        fn dimensions(&self) -> usize {
-            self.dim
+        fn dimensions(&self) -> Option<usize> {
+            Some(self.dim)
         }
     }
 
@@ -158,6 +163,6 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out.first().expect("embedding output").len(), 4);
         assert_eq!(e.model_id(), "fake");
-        assert_eq!(e.dimensions(), 4);
+        assert_eq!(e.dimensions(), Some(4));
     }
 }

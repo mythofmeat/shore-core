@@ -13,7 +13,8 @@
 //! Identity is a bare `provider:model_id`; transport (`base_url`) and
 //! credentials resolve through `[providers.<provider>]`, reusing the same
 //! key-fallback contract as chat (`resolve_key_candidates_for`). Optional
-//! per-model `[embedding."provider:model_id"]` settings carry `dimensions`.
+//! per-model `[embedding."provider:model_id"]` settings carry `dimensions`;
+//! when unset the provider returns the model's native width.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -22,8 +23,6 @@ use shore_config::models::{hardcoded_provider_defaults, EmbeddingSettings};
 use shore_config::providers::ProviderRegistry;
 use shore_llm::credentials::{read_candidate_env, resolve_key_candidates_for};
 use shore_llm::embed::{Embedder, OpenAIEmbedder};
-
-const DEFAULT_EMBEDDING_DIMENSIONS: usize = 1_536;
 
 /// Build (or fetch from the process-wide cache) the configured embedder.
 ///
@@ -82,15 +81,21 @@ pub fn resolve_embedder(
         ));
     }
 
-    let dimensions = match embedding.get(target).and_then(|s| s.dimensions) {
-        Some(value) => usize::try_from(value).map_err(|_| {
-            format!(
-                "embedding model '{target}' has invalid dimensions {value}; \
-                 expected a value that fits in usize"
-            )
-        })?,
-        None => DEFAULT_EMBEDDING_DIMENSIONS,
-    };
+    // Preserve "unset" as `None` so the wire request omits `dimensions` and the
+    // provider returns the model's native width, rather than substituting a
+    // hardcoded default that silently dimension-reduces non-1536 models.
+    let dimensions = embedding
+        .get(target)
+        .and_then(|s| s.dimensions)
+        .map(|value| {
+            usize::try_from(value).map_err(|_| {
+                format!(
+                    "embedding model '{target}' has invalid dimensions {value}; \
+                     expected a value that fits in usize"
+                )
+            })
+        })
+        .transpose()?;
 
     // Transport: registry base_url, else the hardcoded provider default, else
     // None (the OpenAI-compatible SDK default endpoint).
@@ -120,8 +125,9 @@ pub fn resolve_embedder(
         })?;
 
     let cache_key = format!(
-        "{provider_key}::{model_id}::{}::{dimensions}",
-        base_url.as_deref().unwrap_or("default")
+        "{provider_key}::{model_id}::{}::{}",
+        base_url.as_deref().unwrap_or("default"),
+        dimensions.map_or_else(|| "native".to_string(), |d| d.to_string())
     );
     let model_id = model_id.to_string();
     let http_client = http_client.clone();
@@ -222,6 +228,30 @@ api_key_env = "{api_key_env}"
             .expect("embedder should build");
         std::env::remove_var(api_key_env);
         assert_eq!(embedder.model_id(), "my-embed");
-        assert_eq!(embedder.dimensions(), 512);
+        assert_eq!(embedder.dimensions(), Some(512));
+    }
+
+    #[test]
+    fn unset_dimensions_resolve_to_none() {
+        let api_key_env = "SHORE_TEST_EMBED_NATIVE_KEY";
+        std::env::set_var(api_key_env, "test-key");
+        let providers = registry_from(&format!(
+            r#"
+[providers.acme]
+base_url = "https://acme.example.com/v1"
+api_key_env = "{api_key_env}"
+"#,
+        ));
+        // No [embedding."acme:native-embed"] overlay → dimensions unset.
+        let embedding = BTreeMap::new();
+        let http = reqwest::Client::new();
+        let embedder = resolve_embedder(Some("acme:native-embed"), &embedding, &providers, &http)
+            .expect("embedder should build");
+        std::env::remove_var(api_key_env);
+        assert_eq!(
+            embedder.dimensions(),
+            None,
+            "unset dimensions must stay None so the wire request omits the field"
+        );
     }
 }

@@ -1851,7 +1851,7 @@ mod tests {
     #[async_trait]
     impl Embedder for DummyEmbedder {
         async fn embed(&self, inputs: &[&str]) -> Result<Vec<Vec<f32>>, shore_llm::LlmError> {
-            let dim = self.dimensions();
+            let dim = self.dimensions().unwrap_or(4);
             Ok(inputs.iter().map(|_| vec![0.0; dim]).collect())
         }
 
@@ -1859,8 +1859,8 @@ mod tests {
             "dummy"
         }
 
-        fn dimensions(&self) -> usize {
-            4
+        fn dimensions(&self) -> Option<usize> {
+            Some(4)
         }
     }
 

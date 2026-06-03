@@ -5,6 +5,10 @@ use crate::LlmError;
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
 /// Generate embeddings via an OpenAI-compatible embeddings API.
+///
+/// `dimensions` maps to the OpenAI `dimensions` request field, which asks
+/// `text-embedding-3*` models to return dimension-reduced vectors. `None`
+/// omits the field so the provider returns the model's native width.
 pub(crate) async fn embed(
     client: &reqwest::Client,
     _provider: &str,
@@ -12,14 +16,12 @@ pub(crate) async fn embed(
     api_key: &str,
     base_url: Option<&str>,
     input: &[&str],
+    dimensions: Option<usize>,
 ) -> Result<Vec<Vec<f32>>, LlmError> {
     let base = base_url.unwrap_or(OPENAI_BASE_URL);
     let url = format!("{base}/embeddings");
 
-    let body = json!({
-        "model": model,
-        "input": input,
-    });
+    let body = build_embed_body(model, input, dimensions);
 
     let response = client
         .post(&url)
@@ -40,6 +42,18 @@ pub(crate) async fn embed(
     })?;
 
     parse_embedding_response(&resp, input.len())
+}
+
+/// Build the `/v1/embeddings` request body. `dimensions` is emitted only when
+/// `Some`; `None` omits the field so the provider returns the native width.
+fn build_embed_body(model: &str, input: &[&str], dimensions: Option<usize>) -> Value {
+    let mut map = serde_json::Map::new();
+    let _ignored = map.insert("model".into(), json!(model));
+    let _ignored = map.insert("input".into(), json!(input));
+    if let Some(dims) = dimensions {
+        let _ignored = map.insert("dimensions".into(), json!(dims));
+    }
+    Value::Object(map)
 }
 
 fn parse_embedding_response(
@@ -102,6 +116,22 @@ fn parse_embedding_response(
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_embed_body_omits_dimensions_when_unset() {
+        let body = build_embed_body("text-embedding-3-large", &["hi"], None);
+        assert!(
+            body.get("dimensions").is_none(),
+            "unset dimensions must be omitted so the provider returns native width: {body}"
+        );
+        assert_eq!(body.get("model"), Some(&json!("text-embedding-3-large")));
+    }
+
+    #[test]
+    fn build_embed_body_includes_dimensions_when_set() {
+        let body = build_embed_body("text-embedding-3-large", &["hi"], Some(256));
+        assert_eq!(body.get("dimensions"), Some(&json!(256)));
+    }
 
     #[test]
     fn parse_embedding_response_accepts_vectors() -> Result<(), String> {
