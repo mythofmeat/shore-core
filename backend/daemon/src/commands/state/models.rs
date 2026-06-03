@@ -95,6 +95,28 @@ fn load_char_prefs(
     })
 }
 
+/// Map each settable sampler key to how the resolved `sdk` treats it (#162):
+/// `"honored"` / `"ignored"` / `"rejected"` from the capability matrix, or
+/// `"always"` for Shore-only keys (`thinking_enabled`, `sdk`,
+/// `preserve_prior_turns`) that name no matrix field. Clients show only
+/// `honored` / `always` keys.
+fn key_applicability(sdk: &shore_config::models::Sdk, model_id: &str) -> Value {
+    use shore_config::capabilities::{applicability, Applicability, Field};
+    let mut map = serde_json::Map::new();
+    for key in SAMPLER_KEYS {
+        let label = match Field::from_key(key) {
+            None => "always",
+            Some(field) => match applicability(sdk, model_id, field) {
+                Applicability::Honored => "honored",
+                Applicability::Ignored => "ignored",
+                Applicability::Rejected => "rejected",
+            },
+        };
+        let _ignored = map.insert((*key).to_string(), json!(label));
+    }
+    Value::Object(map)
+}
+
 fn scope_str(scope: PreferenceScope) -> &'static str {
     match scope {
         PreferenceScope::StaticDefault => "static_default",
@@ -417,6 +439,12 @@ pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResul
     let model_id = active.model_id.clone();
     let qualified = active.qualified_name.clone();
 
+    // Capability boundary (#162): reject keys the resolved sdk ignores/rejects
+    // and out-of-domain values *before* they reach the preference file (and
+    // later the wire). Keys with no matrix field — `thinking_enabled`, `sdk`,
+    // `preserve_prior_turns` — are Shore behaviors / transport and skip this.
+    capability_check(&active.sdk, &model_id, &key, &value)?;
+
     // Load the appropriate preferences file.
     let mut prefs = if scope == "global" {
         preferences::load_preferences(&preferences::global_preferences_path(&ctx.data_dir))
@@ -466,6 +494,42 @@ pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResul
         "key": key,
         "value": value,
     }))
+}
+
+/// Reject a setting the model's resolved `sdk` cannot honor, sourcing the
+/// message from [`shore_config::capabilities`] (#162). Returns `Ok(())` for
+/// keys outside the capability matrix (`thinking_enabled`, `sdk`,
+/// `preserve_prior_turns`) and for clearing a value (`null`).
+fn capability_check(
+    sdk: &shore_config::models::Sdk,
+    model_id: &str,
+    key: &str,
+    value: &Value,
+) -> Result<(), (ErrorCode, String)> {
+    use shore_config::capabilities::{self, Field};
+
+    // Clearing (`--reset`) is always allowed — there is no value to validate.
+    if value.is_null() {
+        return Ok(());
+    }
+    let Some(field) = Field::from_key(key) else {
+        return Ok(());
+    };
+
+    // The reasoning-effort disable sentinel ("off") is not a wire value — the
+    // overlay suppresses reasoning rather than sending it — so it is
+    // intentionally absent from every domain. Gate only its applicability.
+    let reasoning_off = field == Field::ReasoningEffort && value.as_str() == Some("off");
+
+    // `validate` only inspects the value for `reasoning_effort` (a string
+    // domain); for every other field a placeholder is sufficient, since the
+    // check there is pure applicability.
+    let probe = match value.as_str() {
+        Some(s) if !reasoning_off => toml::Value::String(s.to_string()),
+        _ => toml::Value::Boolean(true),
+    };
+    capabilities::validate(sdk, model_id, field, &probe)
+        .map_err(|e| (ErrorCode::InvalidRequest, e.to_string()))
 }
 
 fn apply_sampler_value(
@@ -645,6 +709,11 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
         "effective_sampler": sampler,
         "saved_global": saved_global.map(|p| p.sampler),
         "saved_character": saved_character.map(|p| p.sampler),
+        // Capability matrix (#162): how the resolved sdk treats each key, so
+        // clients can hide keys the model ignores/rejects, plus the accepted
+        // `reasoning_effort` value set for the sdk.
+        "applicability": key_applicability(&active.sdk, &active.model_id),
+        "reasoning_effort_domain": shore_config::capabilities::reasoning_effort_domain(&active.sdk),
         "scopes": {
             "temperature": scopes.temperature.map(scope_str),
             "top_p": scopes.top_p.map(scope_str),

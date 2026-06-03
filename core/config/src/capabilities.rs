@@ -106,6 +106,36 @@ impl Field {
             Field::ZaiSubscription => "zai_subscription",
         }
     }
+
+    /// Parse a TOML key back into its [`Field`] — the inverse of [`key`]. Keys
+    /// that name no matrix field (Shore-only behaviors like `thinking_enabled`
+    /// / `preserve_prior_turns`, or transport like `sdk`) return `None`, which
+    /// callers treat as "no capability opinion — always applicable".
+    ///
+    /// [`key`]: Field::key
+    pub fn from_key(key: &str) -> Option<Field> {
+        let field = match key {
+            "max_context_tokens" => Field::MaxContextTokens,
+            "max_output_tokens" => Field::MaxOutputTokens,
+            "temperature" => Field::Temperature,
+            "top_p" => Field::TopP,
+            "reasoning_effort" => Field::ReasoningEffort,
+            "budget_tokens" => Field::BudgetTokens,
+            "cache_ttl" => Field::CacheTtl,
+            "keepalive_enabled" => Field::KeepaliveEnabled,
+            "keepalive_ttl" => Field::KeepaliveTtl,
+            "keepalive_max_pings" => Field::KeepaliveMaxPings,
+            "openrouter_provider" => Field::OpenrouterProvider,
+            "vertex_project" => Field::VertexProject,
+            "vertex_location" => Field::VertexLocation,
+            "gemini_generation" => Field::GeminiGeneration,
+            "gemini_web_search" => Field::GeminiWebSearch,
+            "zai_clear_thinking" => Field::ZaiClearThinking,
+            "zai_subscription" => Field::ZaiSubscription,
+            _ => return None,
+        };
+        Some(field)
+    }
 }
 
 impl std::fmt::Display for Field {
@@ -170,7 +200,17 @@ pub fn parse_claude_version(model_id: &str) -> Option<ClaudeVersion> {
     // `major` and `minor` numbers, ignoring any trailing date/suffix segments.
     let mut nums = version_str.splitn(3, ['-', '.']);
     let major: u32 = nums.next()?.parse().ok()?;
-    let minor: u32 = nums.next()?.parse().ok()?;
+
+    // The next segment is the `minor` version — but only when it actually is
+    // one. Anthropic's `X.0` releases attach the date directly after the major
+    // (`claude-sonnet-4-20250514` = Sonnet *4.0*, dated), so a date-shaped run
+    // (5+ digits — a `YYYYMMDD` stamp) is **not** a minor: treat it as `0`.
+    // Real minors are 1–2 digits (`claude-opus-4-1-20250805` → minor `1`).
+    let minor = match nums.next() {
+        Some(tok) if tok.len() <= 2 => tok.parse().ok()?,
+        // Date-shaped or absent → the `.0` release.
+        Some(_) | None => 0,
+    };
 
     Some(ClaudeVersion {
         family,
@@ -345,6 +385,45 @@ mod tests {
     }
 
     #[test]
+    fn from_key_round_trips_every_field() {
+        for field in [
+            Field::MaxContextTokens,
+            Field::MaxOutputTokens,
+            Field::Temperature,
+            Field::TopP,
+            Field::ReasoningEffort,
+            Field::BudgetTokens,
+            Field::CacheTtl,
+            Field::KeepaliveEnabled,
+            Field::KeepaliveTtl,
+            Field::KeepaliveMaxPings,
+            Field::OpenrouterProvider,
+            Field::VertexProject,
+            Field::VertexLocation,
+            Field::GeminiGeneration,
+            Field::GeminiWebSearch,
+            Field::ZaiClearThinking,
+            Field::ZaiSubscription,
+        ] {
+            assert_eq!(Field::from_key(field.key()), Some(field), "{field}");
+        }
+    }
+
+    #[test]
+    fn from_key_is_none_for_non_matrix_keys() {
+        // Shore-only behaviors and transport name no capability field — callers
+        // treat `None` as "always applicable".
+        for key in [
+            "thinking_enabled",
+            "preserve_prior_turns",
+            "sdk",
+            "nonsense",
+        ] {
+            assert_eq!(Field::from_key(key), None, "{key}");
+        }
+    }
+
+    #[test]
     fn parses_dash_and_dot_minor_separators() {
         assert_eq!(
             ver("claude-opus-4-7"),
@@ -403,6 +482,20 @@ mod tests {
         assert!(!ver("claude-opus-4-6").unwrap().rejects_sampling());
         // Haiku is exempt at every version.
         assert!(!ver("claude-haiku-4-8").unwrap().rejects_sampling());
+    }
+
+    #[test]
+    fn dated_dot_zero_release_is_not_misread_as_a_minor() {
+        // `claude-sonnet-4-20250514` is Sonnet *4.0* with a `YYYYMMDD` stamp —
+        // the date must NOT be parsed as minor `20250514` (which would wrongly
+        // trip the >=4.7 cutoff). It is below the cutoff and honors sampling.
+        let v = ver("claude-sonnet-4-20250514").unwrap();
+        assert_eq!(v.minor, 0);
+        assert!(!v.rejects_sampling());
+        // A real minor *plus* a date still parses the minor correctly.
+        assert_eq!(ver("claude-opus-4-1-20250805").unwrap().minor, 1);
+        // A dated major-5 release still rejects via the `major > 4` branch.
+        assert!(ver("claude-opus-5-20260101").unwrap().rejects_sampling());
     }
 
     #[test]

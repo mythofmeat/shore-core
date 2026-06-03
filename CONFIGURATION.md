@@ -316,6 +316,17 @@ store. One-shot overrides — `shore model --all <name>`, `:model all
 <name>`, `shore provider refresh <name>` — apply to a single call and
 are never persisted.
 
+Writes are **capability-aware**: a setting is validated against the active
+model's resolved `(sdk, model_id)` before it is persisted. A key the sdk
+ignores or rejects (e.g. `cache_ttl` on a non-Anthropic model, or a sampler
+knob on a Claude ≥ 4.7 model) is refused, as is a `reasoning_effort` value
+outside the sdk's accepted set (the allowed set is shown in the error). The
+accepted `reasoning_effort` values are sdk-specific: Anthropic
+`adaptive|low|medium|high|xhigh|max`, OpenAI/OpenRouter the same plus
+`minimal`, Gemini `minimal|low|medium|high`. `shore model setting` (no key)
+lists only the keys the active model honors and shows the accepted
+`reasoning_effort` domain.
+
 ## Character Workspaces
 
 Characters live under:

@@ -588,6 +588,27 @@ fn print_model_info(data: &serde_json::Value) {
 }
 
 /// Print effective sampler settings + which scope set each value.
+/// Keys to display in `model_settings`, hiding those the model's resolved sdk
+/// ignores/rejects (#162). A key is shown when its `applicability` label is
+/// `"honored"` or `"always"`, or when no label is present — older daemons omit
+/// the `applicability` map, in which case every key is shown (forward/backward
+/// compatible).
+fn visible_setting_keys<'a>(
+    all_keys: &[&'a str],
+    applicability: &serde_json::Value,
+) -> Vec<&'a str> {
+    all_keys
+        .iter()
+        .copied()
+        .filter(
+            |key| match applicability.get(*key).and_then(|v| v.as_str()) {
+                Some(label) => label == "honored" || label == "always",
+                None => true,
+            },
+        )
+        .collect()
+}
+
 fn print_model_settings(data: &serde_json::Value) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -598,7 +619,8 @@ fn print_model_settings(data: &serde_json::Value) {
 
     let sampler = data.get("effective_sampler").cloned().unwrap_or_default();
     let scopes = data.get("scopes").cloned().unwrap_or_default();
-    let keys = [
+    let applicability = data.get("applicability").cloned().unwrap_or_default();
+    let all_keys = [
         "temperature",
         "top_p",
         "reasoning_effort",
@@ -609,6 +631,17 @@ fn print_model_settings(data: &serde_json::Value) {
         "sdk",
         "preserve_prior_turns",
     ];
+    // Capability matrix (#162): show only keys the resolved sdk honors (or
+    // Shore-only keys it always applies).
+    let keys = visible_setting_keys(&all_keys, &applicability);
+
+    // Accepted `reasoning_effort` value set for this model's sdk, if provided.
+    let effort_domain: Vec<&str> = data
+        .get("reasoning_effort_domain")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+
     let label_width = keys.iter().map(|key| key.len()).max().unwrap_or(0);
     for key in keys {
         let value = match sampler.get(key) {
@@ -621,7 +654,13 @@ fn print_model_settings(data: &serde_json::Value) {
             .and_then(|v| v.as_str())
             .unwrap_or("(default)");
         let label = format!("{key:<label_width$}");
-        write_row(&mut out, &label, &format!("{value}  [{scope}]"));
+        let mut detail = format!("{value}  [{scope}]");
+        if key == "reasoning_effort" && !effort_domain.is_empty() {
+            detail.push_str("  {");
+            detail.push_str(&effort_domain.join(", "));
+            detail.push('}');
+        }
+        write_row(&mut out, &label, &detail);
     }
     let _ignored = writeln!(out);
 }
@@ -2227,6 +2266,54 @@ mod tests {
         format_command("config_reset", &serde_json::json!({"message": "reloaded"}));
         format_command("inject_system", &serde_json::json!({}));
         format_command("edit", &serde_json::json!({"ref": "m42"}));
+    }
+
+    #[test]
+    fn visible_setting_keys_hides_ignored_and_rejected() {
+        let all = [
+            "temperature",
+            "reasoning_effort",
+            "cache_ttl",
+            "sdk",
+            "preserve_prior_turns",
+        ];
+        // openrouter-shaped: cache_ttl ignored, temperature honored, Shore keys always.
+        let applicability = serde_json::json!({
+            "temperature": "honored",
+            "reasoning_effort": "honored",
+            "cache_ttl": "ignored",
+            "sdk": "always",
+            "preserve_prior_turns": "always",
+        });
+        let visible = visible_setting_keys(&all, &applicability);
+        assert!(visible.contains(&"temperature"));
+        assert!(visible.contains(&"reasoning_effort"));
+        assert!(visible.contains(&"sdk"));
+        assert!(
+            !visible.contains(&"cache_ttl"),
+            "ignored key must be hidden"
+        );
+    }
+
+    #[test]
+    fn visible_setting_keys_falls_back_when_absent() {
+        // Older daemon without the applicability map → show everything.
+        let all = ["temperature", "cache_ttl"];
+        let visible = visible_setting_keys(&all, &serde_json::Value::Null);
+        assert_eq!(visible, vec!["temperature", "cache_ttl"]);
+    }
+
+    #[test]
+    fn print_model_settings_renders_filtered_with_domain() {
+        set_color_enabled(false);
+        // Exercises the filter + reasoning_effort domain branches without panic.
+        print_model_settings(&serde_json::json!({
+            "model": "chat.openrouter.gpt-4o",
+            "effective_sampler": {"reasoning_effort": "high"},
+            "scopes": {"reasoning_effort": "character_model"},
+            "applicability": {"reasoning_effort": "honored", "cache_ttl": "ignored"},
+            "reasoning_effort_domain": ["minimal", "low", "medium", "high", "xhigh", "max"],
+        }));
     }
 
     #[test]

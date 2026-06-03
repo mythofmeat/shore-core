@@ -8,6 +8,17 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- `shore model setting` is now **capability-aware** (issue #162). It consumes the
+  per-sdk capability matrix (#138): setting a key the active model's resolved sdk
+  ignores or rejects (e.g. `cache_ttl` on a non-Anthropic model, a sampler knob on
+  a Claude ≥ 4.7 model) is refused at the boundary instead of silently misbehaving
+  on the wire, and a `reasoning_effort` value outside the sdk's accepted set is
+  rejected with the allowed set shown. `shore model setting` with no key now lists
+  only the keys the model honors and shows the accepted `reasoning_effort` domain.
+  Note: `reasoning_effort=max` remains **valid** on OpenAI/OpenRouter models (it is
+  an accepted alias that folds to `high`), so the boundary accepts it — issue #130's
+  "no reasoning produced" symptom is a separate adapter wire-mapping bug (`max`
+  forwarded raw instead of folded), not something this validation should reject.
 - `[behavior.tool_use] max_result_chars` caps how many characters a single tool
   result may contribute to the conversation. Defaults to `20000` (~5k tokens of
   code-like output); set to `0` to disable. Longer results are cut at a
@@ -41,6 +52,14 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   - A legacy `budget_tokens`/`thinking` request against Opus 4.7/4.8 (which
     reject `type: "enabled"`) now upgrades to adaptive thinking instead of 400ing.
   Unknown/future model ids stay permissive and honor the requested mode.
+- The Claude version parser (`parse_claude_version`, capabilities matrix #138) no
+  longer misreads the `YYYYMMDD` date in a dated `X.0` model id as the minor
+  version. `claude-sonnet-4-20250514` (Sonnet **4.0**) parsed as minor `20250514`,
+  wrongly tripping the ≥ 4.7 sampler-rejection cutoff — so `temperature`/`top_p`/
+  `budget_tokens` were dropped (in `from_parts`) or refused (now in `shore model
+  setting`) for a model that actually honors them. A date-shaped segment is now
+  treated as the `.0` release; a real minor plus a date (`claude-opus-4-1-20250805`
+  → `1`) still parses correctly.
 
 ### Removed
 - `clients/gui-godot/` moved to its own repository at
