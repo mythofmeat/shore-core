@@ -46,11 +46,14 @@ domain = []
 #   domain = ["minimal", "low", "medium", "high"]
 
 # Gemini 3.x Pro exposes thinkingLevel low|medium|high only; `minimal` is a
-# Flash / Flash-Lite-only level, so the sdk default (which keeps `minimal` for
-# the Flash tier) over-reports for Pro. Verified against the Gemini 3 developer
-# guide: https://ai.google.dev/gemini-api/docs/gemini-3 (issue #166).
+# Flash / Flash-Lite / Flash-Image level (it is in fact their default), so the
+# sdk default (which keeps `minimal` for the Flash tier) over-reports for Pro.
+# The match is Pro-specific on purpose: a bare "gemini-3.1" substring would also
+# strip `minimal` from `gemini-3.1-flash-image-preview`, which supports it.
+# Verified against the Gemini 3 developer guide:
+# https://ai.google.dev/gemini-api/docs/gemini-3 (issue #166).
 [[reasoning_effort.model_override]]
-match  = "gemini-3.1"
+match  = "gemini-3.1-pro"
 domain = ["low", "medium", "high"]
 
 # ── Claude version rules ─────────────────────────────────────────────────────

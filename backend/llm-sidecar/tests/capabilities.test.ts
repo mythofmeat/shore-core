@@ -27,12 +27,20 @@ test("gemini thinking levels stop at high", () => {
   expect(geminiLevelName("xhigh")).toBeUndefined();
 });
 
-test("gemini-3.1 Pro drops `minimal` via model_override (Flash-only level)", () => {
+test("gemini-3.1 Pro drops `minimal` via model_override (Flash keeps it)", () => {
   // Issue #166, grounded in https://ai.google.dev/gemini-api/docs/gemini-3 —
-  // Pro exposes thinkingLevel low|medium|high; `minimal` is Flash/Flash-Lite-only.
-  expect(reasoningDomain("gemini", "gemini-3.1")).toEqual(["low", "medium", "high"]);
-  expect(foldEffort("gemini", "minimal", "gemini-3.1")).toBeUndefined();
-  expect(foldEffort("gemini", "low", "gemini-3.1")).toBe("low");
-  // The sdk default (Flash tier) still keeps `minimal`.
-  expect(reasoningDomain("gemini", "gemini-3.5-flash")).toContain("minimal");
+  // Pro exposes thinkingLevel low|medium|high; `minimal` is a Flash/Flash-Lite/
+  // Flash-Image level (their default). The override is Pro-specific on purpose.
+  const pro = "google/gemini-3.1-pro-preview";
+  expect(reasoningDomain("gemini", pro)).toEqual(["low", "medium", "high"]);
+  expect(foldEffort("gemini", "minimal", pro)).toBeUndefined();
+  expect(foldEffort("gemini", "low", pro)).toBe("low");
+  // The Pro-specific match must NOT catch Flash 3.1 ids — they keep `minimal`.
+  for (const flash of [
+    "google/gemini-3.1-flash-image-preview",
+    "google/gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+  ]) {
+    expect(reasoningDomain("gemini", flash)).toContain("minimal");
+  }
 });
