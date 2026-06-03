@@ -24,7 +24,8 @@ interface SdkEffort {
 
 interface ModelOverride {
   match: string;
-  domain: readonly string[];
+  reasoning_effort?: readonly string[];
+  rejects_sampling?: boolean;
 }
 
 interface ClaudeRule {
@@ -46,7 +47,6 @@ interface CapabilitiesDoc {
     openrouter: SdkEffort;
     gemini: SdkEffort;
     zai: SdkEffort;
-    model_override?: ModelOverride[];
   };
   claude: {
     default_adaptive: boolean;
@@ -55,6 +55,8 @@ interface CapabilitiesDoc {
     thinking_rule?: ClaudeRule[];
     sampler_rule?: ClaudeRule[];
   };
+  // Per-model capability overlay for the OpenRouter passthrough (issue #164).
+  model_override?: ModelOverride[];
 }
 
 const caps = rawCaps as CapabilitiesDoc;
@@ -81,8 +83,8 @@ function sdkEffort(sdk: Sdk): SdkEffort {
 export function reasoningDomain(sdk: Sdk, modelId?: string): readonly string[] {
   if (modelId !== undefined) {
     const lower = modelId.toLowerCase();
-    for (const ov of caps.reasoning_effort.model_override ?? []) {
-      if (lower.includes(ov.match.toLowerCase())) return ov.domain;
+    for (const ov of caps.model_override ?? []) {
+      if (ov.reasoning_effort && lower.includes(ov.match.toLowerCase())) return ov.reasoning_effort;
     }
   }
   return sdkEffort(sdk).domain;
@@ -185,9 +187,8 @@ export function claudeThinkingCaps(model: string): { adaptive: boolean; enabled:
   return { adaptive: caps.claude.default_adaptive, enabled: caps.claude.default_enabled };
 }
 
-/** Whether the model's wire rejects sampler knobs. Mirrors Rust `claude_rejects_sampling`.
- *  Exported for the cross-language parity fixture; the sidecar receives requests
- *  with samplers already stripped by the daemon, so no adapter calls this. */
+/** Whether the model's wire rejects sampler knobs via the Claude version cutoff.
+ *  Mirrors Rust `claude_rejects_sampling`. */
 export function claudeRejectsSampling(model: string): boolean {
   const lower = model.toLowerCase();
   const v = parseClaudeModel(model);
@@ -197,4 +198,26 @@ export function claudeRejectsSampling(model: string): boolean {
     }
   }
   return caps.claude.default_rejects_sampling;
+}
+
+/** Whether a `[[model_override]]` flags the model's underlying vendor as
+ *  rejecting samplers (the OpenRouter passthrough case, issue #164). Mirrors
+ *  Rust `model_override_rejects_sampling`. */
+export function modelOverrideRejectsSampling(model: string): boolean {
+  const lower = model.toLowerCase();
+  for (const ov of caps.model_override ?? []) {
+    if (ov.rejects_sampling !== undefined && lower.includes(ov.match.toLowerCase())) {
+      return ov.rejects_sampling;
+    }
+  }
+  return false;
+}
+
+/** Whether the model's wire rejects sampler knobs (`temperature` / `top_p`),
+ *  from the Claude >=4.7 cutoff OR a per-model override. Mirrors Rust
+ *  `rejects_sampling`. Exported for the cross-language parity fixture; the
+ *  sidecar receives requests with samplers already stripped by the daemon, so no
+ *  adapter calls this. */
+export function rejectsSampling(model: string): boolean {
+  return claudeRejectsSampling(model) || modelOverrideRejectsSampling(model);
 }

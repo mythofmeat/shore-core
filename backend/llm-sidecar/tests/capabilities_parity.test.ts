@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 
 import fixture from "../../../core/config/capability_parity_fixture.toml";
 import {
-  claudeRejectsSampling,
   claudeThinkingCaps,
   parseClaudeModel,
+  rejectsSampling,
 } from "../src/llm/capabilities.ts";
 
 interface Case {
@@ -23,7 +23,7 @@ test("cross-language capability parity", () => {
   expect(cases.length).toBeGreaterThan(0);
   for (const c of cases) {
     expect(parseClaudeModel(c.model) !== undefined, `is_claude: ${c.model}`).toBe(c.is_claude);
-    expect(claudeRejectsSampling(c.model), `rejects_sampling: ${c.model}`).toBe(c.rejects_sampling);
+    expect(rejectsSampling(c.model), `rejects_sampling: ${c.model}`).toBe(c.rejects_sampling);
     if (c.adaptive !== undefined && c.enabled !== undefined) {
       expect(claudeThinkingCaps(c.model), `thinking: ${c.model}`).toEqual({
         adaptive: c.adaptive,
