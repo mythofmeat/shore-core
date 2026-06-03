@@ -113,6 +113,16 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   Anthropic wire field (`max_tokens` on the request body) is unchanged.
 
 ### Fixed
+- Ledger cache-health tracking no longer skips OpenRouter-routed Anthropic
+  calls (issue #118). Two gates keyed off the literal `provider == "anthropic"`
+  instead of the routed-aware `is_anthropic_pricing(provider, model)` predicate:
+  the zero-metric observation gate (a cold/keepalive-miss call with both cache
+  counters at zero) and restart seeding (`last_anthropic_call`, which matched
+  only `provider = 'anthropic'`). Routed-Anthropic characters
+  (`openrouter-anthropic`, `anthropic/...` models) could miss cold→warm
+  observations and rebuild as cold after a restart, emitting false cache-health
+  state until a native Anthropic row appeared. Both now match routed rows via
+  `model LIKE 'anthropic/%'`.
 - Embedding `dimensions` now defaults to the model's **native width** when
   unset, instead of being forced to `1536` (issue #170). An unset
   `[embedding."provider:model_id"].dimensions` previously substituted a

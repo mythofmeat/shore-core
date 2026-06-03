@@ -93,7 +93,8 @@ fn track_cache_state(
     has_cache_metrics: bool,
 ) -> (Option<String>, Option<String>) {
     if !(record.call_type.affects_cache_tracker()
-        && (has_cache_metrics || record.provider == "anthropic"))
+        && (has_cache_metrics
+            || crate::pricing::is_anthropic_pricing(record.provider, record.model)))
     {
         return (None, None);
     }

@@ -241,13 +241,17 @@ impl Ledger {
     }
 
     /// Return the most recent non-compaction Anthropic call for `character`.
+    ///
+    /// Matches both native Anthropic (`provider = 'anthropic'`) and
+    /// OpenRouter-routed Anthropic (`model LIKE 'anthropic/%'`, regardless of
+    /// custom provider key). Mirrors `pricing::is_anthropic_pricing`.
     pub fn last_anthropic_call(&self, character: &str) -> Result<Option<CallRow>, rusqlite::Error> {
         let started = std::time::Instant::now();
         let row = self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 r"SELECT * FROM calls
                    WHERE character = ?1
-                     AND provider  = 'anthropic'
+                     AND (provider = 'anthropic' OR model LIKE 'anthropic/%')
                      AND call_type != 'compaction'
                    ORDER BY id DESC
                    LIMIT 1",
@@ -385,6 +389,21 @@ mod tests {
         let _ignored = ledger.insert(&row).unwrap();
         let last = ledger.last_anthropic_call("aria").unwrap().unwrap();
         assert_eq!(last.cache_read_tokens, 120);
+    }
+
+    #[test]
+    fn last_anthropic_call_matches_routed_anthropic() {
+        // OpenRouter-routed Anthropic carries a custom provider key but an
+        // `anthropic/...` model id by the time it reaches the ledger; seeding
+        // must still find it (issue #118).
+        let ledger = test_ledger();
+        let mut row = sample_row();
+        row.provider = "openrouter-anthropic".into();
+        row.model = "anthropic/claude-opus-4-6".into();
+        row.cache_read_tokens = 99;
+        let _ignored = ledger.insert(&row).unwrap();
+        let last = ledger.last_anthropic_call("aria").unwrap().unwrap();
+        assert_eq!(last.cache_read_tokens, 99);
     }
 
     #[test]
