@@ -18,8 +18,8 @@
 
 [defaults]
 model = "claude-sonnet"            # Chat default; also fallback for background tasks
-# embedding = "text-large"          # Embedding profile
-# image_generation = "gemini-flash" # Image generation profile
+# embedding = "openai:text-embedding-3-large"           # Embedding model (provider:model_id)
+# image_generation = "gemini:gemini-2.5-flash-image"    # Image model (provider:model_id)
 # display_name = "Your Name"        # {{user}} in templates; falls back to $USER
 # stream = true
 
@@ -435,21 +435,32 @@ model_id = "claude-sonnet-4-6"
 
 # ── Embedding ────────────────────────────────────────────────────────────
 
-# [embedding.text-large]
+# Identity is `provider:model_id`; transport + credentials come from
+# [providers.<provider>]. The settings table is optional and carries only
+# category knobs (e.g. dimensions). Select it with defaults.embedding above.
+# [providers.openai]
 # api_key_env = "OPENAI_API_KEY"
-# model_id = "text-embedding-3-large"
+#
+# [embedding."openai:text-embedding-3-large"]
+# dimensions = 1024
 
 # ── Image generation ─────────────────────────────────────────────────────
 
+# Same model: identity is `provider:model_id`, transport on [providers.*],
+# optional settings table holds size/quality/aspect_ratio/image_size.
+
 # OpenAI DALL-E:
-# [image_generation.dalle]
-# provider = "openai"
-# model_id = "dall-e-3"
+# [providers.openai]
+# api_key_env = "OPENAI_API_KEY"
+#
+# [image_generation."openai:dall-e-3"]
 # size = "1024x1024"
 # quality = "hd"
 
 # OpenRouter (Gemini, Flux, etc.):
-# [image_generation.gemini-flash]
-# provider = "openrouter"
+# [providers.openrouter]
 # api_key_env = "OPENROUTER_API_KEY"
-# model_id = "google/gemini-2.5-flash-image"
+# base_url = "https://openrouter.ai/api/v1"
+#
+# [image_generation."openrouter:google/gemini-2.5-flash-image"]
+# aspect_ratio = "1:1"

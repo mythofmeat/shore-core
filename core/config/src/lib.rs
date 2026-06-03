@@ -640,13 +640,8 @@ fn validate_config(
         "defaults.background.dreaming",
         app.defaults.background.dreaming.as_deref(),
     );
-    validate_default_embedding(&catalog.embedding, app.defaults.embedding.as_deref())?;
-    validate_profile_ref(
-        &catalog.image_generation,
-        "defaults.image_generation",
-        "image_generation",
-        app.defaults.image_generation.as_deref(),
-    )?;
+    validate_default_embedding(providers, app.defaults.embedding.as_deref())?;
+    validate_default_image_generation(providers, app.defaults.image_generation.as_deref())?;
 
     validate_cron_schedule(&app.memory.dreaming.frequency)?;
     validate_usage_config(&app.usage)?;
@@ -744,25 +739,8 @@ fn validate_budget_anchors(idx: usize, budget: &app::UsageBudgetConfig) -> Resul
     Ok(())
 }
 
-/// Validate that an optional profile reference exists in a profile map.
-fn validate_profile_ref(
-    profiles: &std::collections::BTreeMap<String, toml::Value>,
-    field: &str,
-    catalog_section: &str,
-    name: Option<&str>,
-) -> Result<(), ConfigError> {
-    if let Some(name) = name {
-        if !profiles.contains_key(name) {
-            return Err(ConfigError::Validation(format!(
-                "{field} \"{name}\" not found in [{catalog_section}] profiles"
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// Bundled local embedding model ids that resolve without a profile block.
-/// Keep in sync with `backend/llm/src/embed/local.rs::resolve_model`.
+/// Bundled local embedding model ids that resolve without a provider or
+/// settings block. Keep in sync with `backend/llm/src/embed/local.rs::resolve_model`.
 const BUNDLED_LOCAL_EMBEDDING_IDS: &[&str] = &[
     "bge-small-en-v1.5",
     "bge-base-en-v1.5",
@@ -771,22 +749,70 @@ const BUNDLED_LOCAL_EMBEDDING_IDS: &[&str] = &[
     "nomic-embed-text-v1.5",
 ];
 
-/// Validate `defaults.embedding`: accept either a configured `[embedding.*]`
-/// profile or one of the bundled local model ids (which resolve without a
-/// profile block — see `backend/daemon/src/memory/retrieval.rs`).
+/// Validate the `provider_key` portion of a `provider:model_id` ref, warning
+/// (advisory, not fatal) when the provider is not configured under
+/// `[providers.<provider_key>]` — transport defaults are used for well-known
+/// keys and discovery/runtime can otherwise fill in.
+fn warn_unconfigured_aux_provider(providers: &ProviderRegistry, field: &str, provider_key: &str) {
+    if providers.get(provider_key).is_none() {
+        warn!(
+            field,
+            provider = provider_key,
+            "{field} references provider \"{provider_key}\" not configured under \
+             [providers.{provider_key}]; built-in transport defaults are used for \
+             well-known providers, otherwise set base_url/api_key_env there"
+        );
+    }
+}
+
+/// Validate `defaults.embedding`: accept a bundled local model id (resolves
+/// without a provider) or a `provider:model_id` identity. The optional
+/// `[embedding."provider:model_id"]` settings table is not required for the
+/// default to be valid; transport resolves through `[providers.<provider>]`.
 fn validate_default_embedding(
-    profiles: &std::collections::BTreeMap<String, toml::Value>,
+    providers: &ProviderRegistry,
     name: Option<&str>,
 ) -> Result<(), ConfigError> {
     let Some(name) = name else { return Ok(()) };
-    if profiles.contains_key(name) || BUNDLED_LOCAL_EMBEDDING_IDS.contains(&name) {
+    if BUNDLED_LOCAL_EMBEDDING_IDS.contains(&name) {
         return Ok(());
     }
-    Err(ConfigError::Validation(format!(
-        "defaults.embedding \"{name}\" not found in [embedding] profiles \
-         and is not a bundled local model id (one of: {})",
-        BUNDLED_LOCAL_EMBEDDING_IDS.join(", "),
-    )))
+    let Some((provider_key, model_id)) = name.split_once(':') else {
+        return Err(ConfigError::Validation(format!(
+            "defaults.embedding \"{name}\" is neither a `provider:model_id` identity \
+             nor a bundled local model id (one of: {})",
+            BUNDLED_LOCAL_EMBEDDING_IDS.join(", "),
+        )));
+    };
+    if provider_key.is_empty() || model_id.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "defaults.embedding \"{name}\" is not a valid `provider:model_id` identity"
+        )));
+    }
+    warn_unconfigured_aux_provider(providers, "defaults.embedding", provider_key);
+    Ok(())
+}
+
+/// Validate `defaults.image_generation`: must be a `provider:model_id` identity
+/// (transport lives on `[providers.<provider>]`). There is no bundled fallback.
+fn validate_default_image_generation(
+    providers: &ProviderRegistry,
+    name: Option<&str>,
+) -> Result<(), ConfigError> {
+    let Some(name) = name else { return Ok(()) };
+    let Some((provider_key, model_id)) = name.split_once(':') else {
+        return Err(ConfigError::Validation(format!(
+            "defaults.image_generation \"{name}\" must be a `provider:model_id` identity \
+             (transport lives on [providers.<provider>])"
+        )));
+    };
+    if provider_key.is_empty() || model_id.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "defaults.image_generation \"{name}\" is not a valid `provider:model_id` identity"
+        )));
+    }
+    warn_unconfigured_aux_provider(providers, "defaults.image_generation", provider_key);
+    Ok(())
 }
 
 fn validate_cron_schedule(expr: &str) -> Result<(), ConfigError> {
@@ -1164,11 +1190,11 @@ model_id = "claude-opus-4-6"
 [tools.openrouter.mistral]
 model_id = "mistralai/mistral-small"
 
-[embedding.text-large]
-model_id = "openai/text-embedding-3-large"
+[embedding."openai:text-embedding-3-large"]
+dimensions = 1024
 
-[image_generation.gemini-flash]
-model_id = "google/gemini-flash"
+[image_generation."gemini:gemini-3.1-flash-image-preview"]
+size = "1024x1024"
 "#,
         )]);
 
@@ -1176,8 +1202,14 @@ model_id = "google/gemini-flash"
         let loaded = load_config(Some(&config_path)).unwrap();
         assert!(loaded.models.find_model("opus").is_ok());
         assert!(loaded.models.find_model("mistral").is_ok());
-        assert!(loaded.models.embedding.contains_key("text-large"));
-        assert!(loaded.models.image_generation.contains_key("gemini-flash"));
+        assert!(loaded
+            .models
+            .embedding
+            .contains_key("openai:text-embedding-3-large"));
+        assert!(loaded
+            .models
+            .image_generation
+            .contains_key("gemini:gemini-3.1-flash-image-preview"));
     }
 
     #[test]
@@ -1287,20 +1319,37 @@ model = "openroute:anthropic/claude-opus-4.6"
 
     #[test]
     fn invalid_default_embedding_reference() {
+        // A bare alias (no colon, not a bundled local id) is rejected: the
+        // default must be a `provider:model_id` identity or a bundled id.
         let tmp = setup_config_dir(&[(
             "config.toml",
             r#"
 [defaults]
 embedding = "missing-profile"
-
-[embedding.text-large]
-model_id = "openai/text-embedding-3-large"
 "#,
         )]);
         let err = load_config(Some(&tmp.path().join("config.toml"))).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("defaults.embedding"), "{msg}");
         assert!(msg.contains("missing-profile"), "{msg}");
+    }
+
+    #[test]
+    fn provider_model_id_embedding_default_passes() {
+        // A `provider:model_id` default validates without a settings overlay;
+        // transport resolves through [providers.<provider>] at runtime.
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults]
+embedding = "openai:text-embedding-3-large"
+
+[providers.openai]
+api_key_env = "OPENAI_API_KEY"
+"#,
+        )]);
+        let _ignored = load_config(Some(&tmp.path().join("config.toml")))
+            .expect("provider:model_id embedding default should validate");
     }
 
     #[test]
@@ -1318,14 +1367,13 @@ embedding = "bge-large-en-v1.5"
 
     #[test]
     fn invalid_default_image_generation_reference() {
+        // A bare alias (no colon) is rejected: image_generation must be a
+        // `provider:model_id` identity.
         let tmp = setup_config_dir(&[(
             "config.toml",
             r#"
 [defaults]
 image_generation = "missing-profile"
-
-[image_generation.gemini-flash]
-model_id = "google/gemini-flash"
 "#,
         )]);
         let err = load_config(Some(&tmp.path().join("config.toml"))).unwrap_err();
@@ -1341,17 +1389,23 @@ model_id = "google/gemini-flash"
 model = "opus"
 heartbeat = "opus"
 dreaming = "opus"
-embedding = "text-large"
-image_generation = "gemini-flash"
+embedding = "openai:text-embedding-3-large"
+image_generation = "gemini:gemini-3.1-flash-image-preview"
 
 [chat.anthropic.opus]
 model_id = "claude-opus-4-6"
 
-[embedding.text-large]
-model_id = "openai/text-embedding-3-large"
+[providers.openai]
+api_key_env = "OPENAI_API_KEY"
 
-[image_generation.gemini-flash]
-model_id = "google/gemini-flash"
+[providers.gemini]
+api_key_env = "GEMINI_API_KEY"
+
+[embedding."openai:text-embedding-3-large"]
+dimensions = 1024
+
+[image_generation."gemini:gemini-3.1-flash-image-preview"]
+size = "1024x1024"
 "#,
         )]);
         let _ignored = load_config(Some(&tmp.path().join("config.toml"))).unwrap();

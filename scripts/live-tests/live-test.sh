@@ -115,6 +115,7 @@ addr = "127.0.0.1:0"
 
 [defaults]
 model = "haiku"
+embedding = "openrouter:text-embedding-3-small"
 stream = true
 
 [behavior.autonomy]
@@ -141,19 +142,16 @@ check_time = true
 roll_dice = true
 activity_heatmap = false
 
-[chat.openrouter]
+[providers.openrouter]
 base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
 
 [chat.openrouter.haiku]
 model_id = "google/gemini-3.1-flash-lite-preview"
 max_tokens = 2048
 temperature = 0.3
 
-[embedding.default]
-provider = "openai"
-model_id = "text-embedding-3-small"
-api_key_env = "OPENROUTER_API_KEY"
-base_url = "https://openrouter.ai/api/v1"
+[embedding."openrouter:text-embedding-3-small"]
 dimensions = 1536
 EOF
 

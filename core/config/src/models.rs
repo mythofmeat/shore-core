@@ -453,6 +453,36 @@ fn warn_ignored_fields(sdk: &Sdk, model_id: &str, fields: &ModelConfigFields) {
     }
 }
 
+// ── Auxiliary model categories (embedding / image generation) ───────────
+
+/// Per-model category settings for an `[embedding."provider:model_id"]` table.
+///
+/// Identity (`provider:model_id`) is the map key; transport (`sdk`, `base_url`,
+/// credentials) comes from `[providers.<provider>]`. This struct holds only the
+/// category-specific knobs — `deny_unknown_fields` rejects leftover inline
+/// transport/identity from the retired flat shape so the migration fails loudly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct EmbeddingSettings {
+    /// Embedding vector dimensions. `None` falls back to the resolver default.
+    pub dimensions: Option<u32>,
+}
+
+/// Per-model category settings for an `[image_generation."provider:model_id"]`
+/// table. Identity is the map key; transport comes from `[providers.<provider>]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImageGenSettings {
+    /// Default size for the OpenAI path (e.g. `"1024x1024"`).
+    pub size: Option<String>,
+    /// Optional quality hint for the OpenAI path (e.g. `"hd"`).
+    pub quality: Option<String>,
+    /// OpenRouter aspect ratio (e.g. `"1:1"`, `"16:9"`).
+    pub aspect_ratio: Option<String>,
+    /// OpenRouter image size (e.g. `"1K"`, `"2K"`, `"4K"`).
+    pub image_size: Option<String>,
+}
+
 // ── Model catalog ───────────────────────────────────────────────────────
 
 /// The parsed model catalog — replaces the old flat `ModelsConfig`.
@@ -462,10 +492,11 @@ pub struct ModelCatalog {
     pub chat: BTreeMap<String, ResolvedModel>,
     /// Tool models keyed by short name.
     pub tools: BTreeMap<String, ResolvedModel>,
-    /// Embedding profiles as raw TOML (consumers not yet implemented).
-    pub embedding: BTreeMap<String, toml::Value>,
-    /// Image generation profiles as raw TOML (consumers not yet implemented).
-    pub image_generation: BTreeMap<String, toml::Value>,
+    /// Embedding category settings keyed by `provider:model_id`. Identity is the
+    /// key; transport resolves through `[providers.<provider>]`.
+    pub embedding: BTreeMap<String, EmbeddingSettings>,
+    /// Image-generation category settings keyed by `provider:model_id`.
+    pub image_generation: BTreeMap<String, ImageGenSettings>,
 }
 
 /// Errors from model catalog parsing.
@@ -502,6 +533,18 @@ pub enum CatalogError {
         provider: String,
         key: String,
         target: &'static str,
+    },
+    #[error(
+        "[{category}.{key:?}] is not a valid `provider:model_id` settings table: {detail}. \
+         Identity is the key (e.g. `[{category}.\"openai:{example}\"]`); put transport \
+         (sdk/base_url/api_key_env) on [providers.<provider>] and keep only category \
+         settings in the table"
+    )]
+    AuxProfileInvalid {
+        category: String,
+        key: String,
+        detail: String,
+        example: &'static str,
     },
 }
 
@@ -554,13 +597,18 @@ impl ModelCatalog {
             None => BTreeMap::new(),
         };
 
-        // Embedding and image_generation are stored as raw TOML for now.
+        // Embedding and image_generation are keyed by `provider:model_id`;
+        // identity is the key, transport resolves through `[providers.*]`, and
+        // the table body holds only category settings. The old flat shape
+        // (bare alias key + inline transport) is rejected here.
         let embedding_profiles = match embedding {
-            Some(t) => t.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            Some(t) => {
+                parse_aux_section::<EmbeddingSettings>("embedding", t, "text-embedding-3-large")?
+            }
             None => BTreeMap::new(),
         };
         let image_gen_profiles = match image_generation {
-            Some(t) => t.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            Some(t) => parse_aux_section::<ImageGenSettings>("image_generation", t, "dall-e-3")?,
             None => BTreeMap::new(),
         };
 
@@ -792,6 +840,59 @@ fn parse_category(
 
     debug!(category, models = models.len(), "Category parsing complete");
     Ok(models)
+}
+
+// ── Auxiliary category parser ───────────────────────────────────────────
+
+/// Parse an auxiliary category section (`[embedding]` or `[image_generation]`)
+/// keyed by `provider:model_id`. Each value table holds only category settings
+/// (`T`); transport and identity are derived from the key plus `[providers.*]`
+/// at resolution time. The retired flat shape — a bare alias key, or inline
+/// transport/identity fields in the table body — is rejected with a clear
+/// migration error.
+fn parse_aux_section<T>(
+    category: &str,
+    section: &toml::Table,
+    example: &'static str,
+) -> Result<BTreeMap<String, T>, CatalogError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let mut out = BTreeMap::new();
+    for (key, value) in section {
+        // The new shape requires a `provider:model_id` identity key. A bare
+        // alias (no colon) is the retired flat shape.
+        if !key.contains(':') {
+            return Err(CatalogError::AuxProfileInvalid {
+                category: category.to_string(),
+                key: key.clone(),
+                detail: "the key must be a `provider:model_id` identity, not a bare alias"
+                    .to_string(),
+                example,
+            });
+        }
+        if !value.is_table() {
+            return Err(CatalogError::AuxProfileInvalid {
+                category: category.to_string(),
+                key: key.clone(),
+                detail: "the value must be a settings table".to_string(),
+                example,
+            });
+        }
+        // `deny_unknown_fields` on `T` rejects leftover inline transport/identity
+        // (`model_id`/`provider`/`api_key_env`/`base_url`/`sdk`) from the old
+        // shape, as well as misspelled settings.
+        let settings: T = value.clone().try_into().map_err(|e: toml::de::Error| {
+            CatalogError::AuxProfileInvalid {
+                category: category.to_string(),
+                key: key.clone(),
+                detail: e.message().to_string(),
+                example,
+            }
+        })?;
+        let _ignored = out.insert(key.clone(), settings);
+    }
+    Ok(out)
 }
 
 // ── Provider defaults ───────────────────────────────────────────────────
@@ -1430,25 +1531,67 @@ model_id = "tools-fast"
     }
 
     #[test]
-    fn embedding_and_image_gen_stored_as_raw_toml() {
+    fn embedding_and_image_gen_parsed_by_provider_model_id() {
+        // New shape: keyed by `provider:model_id`, body holds only category
+        // settings; transport lives on `[providers.*]`.
         let embedding = parse_table(
             r#"
-[text-large]
-model_id = "openai/text-embedding-3-large"
-api_key_env = "EMBED_KEY"
+["openai:text-embedding-3-large"]
+dimensions = 1024
 "#,
         );
         let image_gen = parse_table(
             r#"
-[gemini-flash]
-model_id = "google/gemini-3.1-flash-image-preview"
+["gemini:gemini-3.1-flash-image-preview"]
 size = "1024x1024"
+quality = "hd"
 "#,
         );
         let catalog =
             ModelCatalog::from_sections(None, None, Some(&embedding), Some(&image_gen)).unwrap();
-        assert!(catalog.embedding.contains_key("text-large"));
-        assert!(catalog.image_generation.contains_key("gemini-flash"));
+        assert_eq!(
+            catalog.embedding["openai:text-embedding-3-large"].dimensions,
+            Some(1024)
+        );
+        let img = &catalog.image_generation["gemini:gemini-3.1-flash-image-preview"];
+        assert_eq!(img.size.as_deref(), Some("1024x1024"));
+        assert_eq!(img.quality.as_deref(), Some("hd"));
+    }
+
+    #[test]
+    fn aux_bare_alias_key_is_rejected() {
+        // A colon-less key is the retired flat alias shape.
+        let embedding = parse_table(
+            r"
+[text-large]
+dimensions = 1024
+",
+        );
+        let err = ModelCatalog::from_sections(None, None, Some(&embedding), None).unwrap_err();
+        let CatalogError::AuxProfileInvalid { category, key, .. } = err else {
+            panic!("expected AuxProfileInvalid, got {err:?}");
+        };
+        assert_eq!(category, "embedding");
+        assert_eq!(key, "text-large");
+    }
+
+    #[test]
+    fn aux_inline_transport_is_rejected() {
+        // Inline transport/identity in the body is the retired flat shape;
+        // `deny_unknown_fields` surfaces it as a migration error.
+        let embedding = parse_table(
+            r#"
+["openai:text-embedding-3-large"]
+model_id = "text-embedding-3-large"
+api_key_env = "EMBED_KEY"
+dimensions = 1024
+"#,
+        );
+        let err = ModelCatalog::from_sections(None, None, Some(&embedding), None).unwrap_err();
+        assert!(
+            matches!(err, CatalogError::AuxProfileInvalid { .. }),
+            "expected AuxProfileInvalid, got {err:?}"
+        );
     }
 
     #[test]

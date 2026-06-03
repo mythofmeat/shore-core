@@ -252,6 +252,25 @@ pub fn resolve_key_candidates(
     registry: &ProviderRegistry,
     model: &ResolvedModel,
 ) -> Vec<KeyCandidate> {
+    resolve_key_candidates_for(provider_key, registry, model.api_key_env.as_deref())
+}
+
+/// Resolve the ordered list of API key candidates for `provider_key` without a
+/// [`ResolvedModel`]. Used by the non-chat categories (embedding, image
+/// generation) whose identity is a bare `provider:model_id` rather than a
+/// resolved chat model, but which must reuse the exact same `[providers.*]`
+/// key-fallback contract.
+///
+/// `fallback_api_key_env` is the single env name to synthesize a `"default"`
+/// key from when the provider declares no `[[keys]]` (mirrors a static model's
+/// `api_key_env`). `None` falls back to [`crate::default_api_key_env`].
+///
+/// See [`resolve_key_candidates`] for the full resolution-order contract.
+pub fn resolve_key_candidates_for(
+    provider_key: &str,
+    registry: &ProviderRegistry,
+    fallback_api_key_env: Option<&str>,
+) -> Vec<KeyCandidate> {
     if let Some(entry) = registry.get(provider_key) {
         if !entry.enabled {
             return Vec::new();
@@ -275,10 +294,10 @@ pub fn resolve_key_candidates(
     // env resolution so providers not yet in the registry — or registered
     // for sdk/base_url/discovery only — behave identically to pre-Phase-4
     // code.
-    let env = model
-        .api_key_env
-        .clone()
-        .unwrap_or_else(|| crate::default_api_key_env(provider_key).to_string());
+    let env = fallback_api_key_env.map_or_else(
+        || crate::default_api_key_env(provider_key).to_string(),
+        str::to_string,
+    );
     vec![KeyCandidate {
         name: "default".into(),
         env,

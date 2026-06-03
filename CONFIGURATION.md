@@ -94,8 +94,8 @@ Non-loopback binds require `unsafe_allow_remote_access = true`. `allowed_hosts` 
 ```toml
 [defaults]
 model = "claude-sonnet"           # initial chat model when a character has none selected
-embedding = "text-large"
-image_generation = "image"
+embedding = "openai:text-embedding-3-large"
+image_generation = "openai:dall-e-3"
 display_name = "Ren"
 stream = true
 
@@ -109,14 +109,16 @@ model = "haiku"                   # blanket model for every background task
 # dreaming = "claude-sonnet"
 ```
 
-Selectors are aliases declared under `[chat.*]`, `[tools.*]`, `[embedding.*]`, or `[image_generation.*]`.
+Chat/tool selectors are aliases declared under `[chat.*]` or `[tools.*]`.
+`embedding` and `image_generation` are bare `provider:model_id` identities
+(see [Embedding](#embedding) and [Image generation](#image-generation)).
 
 Important slots:
 
 - `model` — chat default. Optional: if unset, chat starts on the first chat model declared in the catalog. Also acts as a late-stage fallback for background tasks (see below).
 - `[defaults.background]` — heartbeat, compaction, and dreaming selectors. Each task chains `background.<task> → background.model → active chat model → defaults.model → first chat model`. When no background-specific model is configured, background work tracks the character's current chat selection, so `shore model <name>` moves heartbeat/compaction/dreaming alongside chat. Set `background.model` (or a per-task key) to pin background to a different model regardless of chat selection.
-- `embedding` — optional hybrid retrieval profile
-- `image_generation` — image generation profile
+- `embedding` — optional hybrid retrieval model (`provider:model_id`, or a bundled local id)
+- `image_generation` — image generation model (`provider:model_id`)
 
 > **Deprecated:** the older top-level `defaults.heartbeat` and `defaults.dreaming` keys still parse but emit a deprecation warning and are forwarded into `[defaults.background]` at load time. Move them under `[defaults.background]` to silence the warning.
 
@@ -138,31 +140,77 @@ api_key_env = "OPENROUTER_API_KEY"
 base_url = "https://openrouter.ai/api/v1"
 ```
 
-Embedding profiles. Shore only ships an OpenAI-compatible embedder; any
-endpoint that speaks `/v1/embeddings` works (OpenAI, Together, Voyage's
-compat endpoint, OpenRouter, or a self-hosted server like
-text-embedding-inference or llama.cpp's HTTP server).
+### Embedding
+
+Embedding and image generation share the chat model shape: identity is a
+bare `provider:model_id`, transport (`sdk`/`base_url`/`api_key_env`/`keys`)
+comes from `[providers.<provider>]`, and an **optional** settings table
+keyed by the same `provider:model_id` carries category knobs only. There is
+no `[embedding.<alias>]` profile table — select the model with
+`defaults.embedding`.
+
+Shore only ships an OpenAI-compatible embedder; any endpoint that speaks
+`/v1/embeddings` works (OpenAI, Together, Voyage's compat endpoint,
+OpenRouter, or a self-hosted server like text-embedding-inference or
+llama.cpp's HTTP server).
 
 ```toml
-# Hosted OpenAI:
-[embedding.text-large]
-model_id = "text-embedding-3-large"
+[defaults]
+embedding = "openai:text-embedding-3-large"
+
+# Transport + credentials (multi-key fallback supported via [[keys]]).
+[providers.openai]
 api_key_env = "OPENAI_API_KEY"
 
-# Self-hosted (e.g. text-embedding-inference). `api_key_env` still has
-# to point at a set variable; if your server doesn't validate keys, set
-# it to any non-empty value.
-[embedding.local-tei]
-model_id = "BAAI/bge-large-en-v1.5"
-api_key_env = "TEI_API_KEY"
-base_url = "http://127.0.0.1:8080/v1"
+# Optional: per-model category settings (only `dimensions`).
+[embedding."openai:text-embedding-3-large"]
 dimensions = 1024
 ```
 
-When no `[embedding.*]` profile is configured (and `defaults.embedding`
-doesn't reference one), the workspace `search` tool's `hybrid` and
-`vector` modes degrade to lexical-only at the call site. Configure an
-embedding profile to enable semantic search.
+```toml
+# Self-hosted (e.g. text-embedding-inference) — register it as a provider.
+# `api_key_env` still has to point at a set variable; if your server doesn't
+# validate keys, set it to any non-empty value.
+[defaults]
+embedding = "local-tei:BAAI/bge-large-en-v1.5"
+
+[providers.local-tei]
+base_url = "http://127.0.0.1:8080/v1"
+api_key_env = "TEI_API_KEY"
+
+[embedding."local-tei:BAAI/bge-large-en-v1.5"]
+dimensions = 1024
+```
+
+When no embedding model is configured (and `defaults.embedding` doesn't
+reference one), the workspace `search` tool's `hybrid` and `vector` modes
+degrade to lexical-only at the call site. Configure an embedding model to
+enable semantic search.
+
+### Image generation
+
+Same shape — identity `provider:model_id`, transport on `[providers.*]`,
+optional settings table with `size`, `quality` (OpenAI), `aspect_ratio`,
+and `image_size` (OpenRouter).
+
+```toml
+[defaults]
+image_generation = "openai:dall-e-3"
+
+[providers.openai]
+api_key_env = "OPENAI_API_KEY"
+
+[image_generation."openai:dall-e-3"]
+size = "1024x1024"
+quality = "hd"
+```
+
+> **Migration:** the older flat `[embedding.<alias>]` /
+> `[image_generation.<alias>]` tables (with inline `model_id`/`provider`/
+> `api_key_env`/`base_url`) were removed. Move identity into the
+> `provider:model_id` key, transport onto `[providers.<provider>]`, and keep
+> only category settings in the table. A leftover flat block now fails config
+> load with a migration error.
 
 ## Providers
 

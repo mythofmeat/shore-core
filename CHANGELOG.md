@@ -16,6 +16,19 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   turns replay.
 
 ### Changed (BREAKING)
+- Unified `[embedding]` and `[image_generation]` onto the `provider:model_id`
+  model shape (matches chat). Identity is now a bare `provider:model_id` set via
+  `defaults.embedding` / `defaults.image_generation`; transport
+  (`sdk`/`base_url`/`api_key_env`/`keys`) lives on `[providers.<provider>]`
+  (with multi-key fallback); and the per-category knobs live in an optional
+  settings table keyed by the same id — `[embedding."provider:model_id"]`
+  (`dimensions`) and `[image_generation."provider:model_id"]`
+  (`size`/`quality`/`aspect_ratio`/`image_size`). The old flat
+  `[embedding.<alias>]` / `[image_generation.<alias>]` tables with inline
+  `model_id`/`provider`/`api_key_env`/`base_url` are removed; a leftover flat
+  block now fails config load with a migration error. Credentials for these
+  categories now resolve through the provider key resolver, so budget/overflow
+  key rotation applies to embedding and image generation too.
 - Renamed the model-config key `max_tokens` to `max_output_tokens` to disambiguate
   it from `max_context_tokens` (the context-window size) and to match the
   discovery field of the same name. This is the output-token budget per response.

@@ -63,11 +63,11 @@ TOML
         [[ -n "$REASONING_EFFORT" ]] && echo "reasoning_effort      = \"$REASONING_EFFORT\""
         [[ -n "$OPENROUTER_PROVIDER" ]] && echo "openrouter_provider   = $OPENROUTER_PROVIDER" || true
         echo ''
-        echo '[embedding.qwen3]'
-        echo 'api_key_env = "OPENROUTER_SHORE_EMBEDDING"'
-        echo 'provider    = "openai_compatible"'
-        echo 'model_id    = "qwen/qwen3-embedding-8b"'
+        echo '[providers.openrouter]'
         echo 'base_url    = "https://openrouter.ai/api/v1"'
+        echo 'api_key_env = "OPENROUTER_SHORE_EMBEDDING"'
+        echo ''
+        echo '[embedding."openrouter:qwen/qwen3-embedding-8b"]'
         echo 'dimensions  = 4096'
     } > "$model_toml"
 }

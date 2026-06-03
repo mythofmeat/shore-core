@@ -9,79 +9,104 @@
 //! OpenAI-compatible endpoint (hosted or self-hosted, e.g.
 //! text-embedding-inference, llama.cpp's `/v1/embeddings`); when nothing is
 //! configured, hybrid search degrades to lexical-only at the call site.
+//!
+//! Identity is a bare `provider:model_id`; transport (`base_url`) and
+//! credentials resolve through `[providers.<provider>]`, reusing the same
+//! key-fallback contract as chat (`resolve_key_candidates_for`). Optional
+//! per-model `[embedding."provider:model_id"]` settings carry `dimensions`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use shore_config::models::{hardcoded_provider_defaults, EmbeddingSettings};
+use shore_config::providers::ProviderRegistry;
+use shore_llm::credentials::{read_candidate_env, resolve_key_candidates_for};
 use shore_llm::embed::{Embedder, OpenAIEmbedder};
 
 const DEFAULT_EMBEDDING_DIMENSIONS: usize = 1_536;
 
 /// Build (or fetch from the process-wide cache) the configured embedder.
 ///
-/// Returns `Err` when no `[embedding.<name>]` profile is configured (or
-/// `defaults.embedding` doesn't reference one). Callers degrade hybrid
-/// search to lexical mode in that case.
+/// `default_ref` is `defaults.embedding` — a `provider:model_id` identity.
+/// `embedding` holds optional per-model category settings keyed by the same
+/// identity. Transport and credentials resolve through `providers`.
+///
+/// Returns `Err` when no embedding model is configured, the identity is not a
+/// hosted `provider:model_id`, or no API key is set. Callers degrade hybrid
+/// search to lexical mode on any error.
 pub fn resolve_embedder(
-    default_name: Option<&str>,
-    embedding_catalog: &BTreeMap<String, toml::Value>,
+    default_ref: Option<&str>,
+    embedding: &BTreeMap<String, EmbeddingSettings>,
+    providers: &ProviderRegistry,
     http_client: &reqwest::Client,
 ) -> Result<Arc<dyn Embedder>, String> {
-    let profile_name = default_name
-        .or_else(|| embedding_catalog.keys().next().map(String::as_str))
+    // Identity: the configured default, else the sole settings-overlay key.
+    let target = default_ref
+        .or_else(|| embedding.keys().next().map(String::as_str))
         .ok_or_else(|| {
-            "no embedding profile configured; semantic search disabled. \
-             Add an [embedding.<name>] block pointing at an OpenAI-compatible \
-             embeddings endpoint (see CONFIGURATION.md)."
+            "no embedding model configured; semantic search disabled. Set \
+             defaults.embedding = \"provider:model_id\" pointing at an \
+             OpenAI-compatible embeddings endpoint and configure \
+             [providers.<provider>] (see CONFIGURATION.md)."
                 .to_string()
         })?;
-    let entry = embedding_catalog.get(profile_name).ok_or_else(|| {
-        format!(
-            "embedding profile '{profile_name}' is not declared; add an \
-             [embedding.{profile_name}] block to your config"
-        )
-    })?;
 
-    let provider = entry
-        .get("provider")
-        .and_then(|v| v.as_str())
-        .unwrap_or("openai");
-    if provider == "local" {
+    let Some((provider_key, model_id)) = target.split_once(':') else {
         return Err(format!(
-            "embedding profile '{profile_name}' uses provider = \"local\", \
-             which is no longer supported. Run an OpenAI-compatible \
-             embeddings server yourself (e.g. text-embedding-inference, \
-             llama.cpp server) and point base_url at it."
+            "embedding model '{target}' is not a `provider:model_id` identity. \
+             Hosted semantic search needs an OpenAI-compatible embeddings endpoint \
+             (e.g. \"openai:text-embedding-3-large\") with transport under \
+             [providers.<provider>]; bundled local ids are not served at runtime."
+        ));
+    };
+    if provider_key.is_empty() || model_id.is_empty() {
+        return Err(format!(
+            "embedding model '{target}' is not a valid `provider:model_id` identity"
         ));
     }
-    let model_id = entry
-        .get("model_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| format!("embedding profile '{profile_name}' is missing model_id"))?;
 
-    let api_key_env = entry
-        .get("api_key_env")
-        .and_then(|v| v.as_str())
-        .unwrap_or("OPENAI_API_KEY");
-    let api_key = std::env::var(api_key_env)
-        .map_err(|_| format!("embedding API key env var '{api_key_env}' is not set"))?;
-    let base_url = entry
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let dimensions = match entry.get("dimensions").and_then(toml::Value::as_integer) {
+    let dimensions = match embedding.get(target).and_then(|s| s.dimensions) {
         Some(value) => usize::try_from(value).map_err(|_| {
             format!(
-                "embedding profile '{profile_name}' has invalid dimensions {value}; \
-                 expected a non-negative integer that fits in usize"
+                "embedding model '{target}' has invalid dimensions {value}; \
+                 expected a value that fits in usize"
             )
         })?,
         None => DEFAULT_EMBEDDING_DIMENSIONS,
     };
+
+    // Transport: registry base_url, else the hardcoded provider default, else
+    // None (the OpenAI-compatible SDK default endpoint).
+    let base_url = providers
+        .get(provider_key)
+        .and_then(|e| e.base_url.clone())
+        .or_else(|| hardcoded_provider_defaults(provider_key).fields.base_url);
+
+    // Credentials: the `[providers.<p>].keys[]` fallback chain; first env-set
+    // candidate wins. Mirrors chat's resolution so multi-key providers work.
+    let candidates = resolve_key_candidates_for(provider_key, providers, None);
+    if candidates.is_empty() {
+        return Err(format!(
+            "embedding provider '{provider_key}' is disabled in [providers.{provider_key}]"
+        ));
+    }
+    let api_key = candidates
+        .iter()
+        .find_map(read_candidate_env)
+        .ok_or_else(|| {
+            let envs: Vec<&str> = candidates.iter().map(|c| c.env.as_str()).collect();
+            format!(
+                "embedding API key not set for provider '{provider_key}'; \
+             set one of these env vars: {}",
+                envs.join(", ")
+            )
+        })?;
+
     let cache_key = format!(
-        "{provider}::{model_id}::{api_key_env}::{}::{dimensions}",
+        "{provider_key}::{model_id}::{}::{dimensions}",
         base_url.as_deref().unwrap_or("default")
     );
+    let model_id = model_id.to_string();
     let http_client = http_client.clone();
     shore_llm::embed::cache_or_build(&cache_key, move || {
         Ok::<Arc<dyn Embedder>, String>(Arc::new(OpenAIEmbedder::new(
@@ -98,73 +123,88 @@ pub fn resolve_embedder(
 mod tests {
     use super::*;
 
+    fn registry_from(toml_str: &str) -> ProviderRegistry {
+        let table: toml::Table = toml_str.parse().unwrap();
+        ProviderRegistry::from_section(table.get("providers").and_then(|v| v.as_table())).unwrap()
+    }
+
+    fn empty_registry() -> ProviderRegistry {
+        ProviderRegistry::from_section(None).unwrap()
+    }
+
     fn resolve_error(
-        default_name: Option<&str>,
-        catalog: &BTreeMap<String, toml::Value>,
-        http: &reqwest::Client,
+        default_ref: Option<&str>,
+        embedding: &BTreeMap<String, EmbeddingSettings>,
+        providers: &ProviderRegistry,
     ) -> String {
-        match resolve_embedder(default_name, catalog, http) {
+        let http = reqwest::Client::new();
+        match resolve_embedder(default_ref, embedding, providers, &http) {
             Ok(_) => panic!("resolve_embedder unexpectedly succeeded"),
             Err(err) => err,
         }
     }
 
     #[test]
-    fn empty_catalog_no_default_returns_clear_error() {
-        let catalog: BTreeMap<String, toml::Value> = BTreeMap::new();
-        let http = reqwest::Client::new();
-        let err = resolve_error(None, &catalog, &http);
+    fn no_model_configured_returns_clear_error() {
+        let embedding = BTreeMap::new();
+        let err = resolve_error(None, &embedding, &empty_registry());
         assert!(
-            err.contains("no embedding profile configured"),
+            err.contains("no embedding model configured"),
             "expected unconfigured-error, got: {err}"
         );
     }
 
     #[test]
-    fn unknown_default_name_errors_clearly() {
-        let catalog: BTreeMap<String, toml::Value> = BTreeMap::new();
-        let http = reqwest::Client::new();
-        let err = resolve_error(Some("not-a-profile"), &catalog, &http);
+    fn bare_alias_ref_is_rejected() {
+        let embedding = BTreeMap::new();
+        let err = resolve_error(Some("not-a-provider-model"), &embedding, &empty_registry());
         assert!(
-            err.contains("not-a-profile"),
-            "error should name the missing profile: {err}"
-        );
-        assert!(
-            err.contains("not declared"),
-            "error should explain the profile is undeclared: {err}"
+            err.contains("not a `provider:model_id` identity"),
+            "error should explain the identity shape: {err}"
         );
     }
 
     #[test]
-    fn local_provider_returns_migration_error() {
-        let mut catalog: BTreeMap<String, toml::Value> = BTreeMap::new();
-        let entry: toml::Value =
-            toml::from_str("provider = \"local\"\nmodel_id = \"bge-small-en-v1.5\"\n").unwrap();
-        let _ignored = catalog.insert("x".into(), entry);
-        let http = reqwest::Client::new();
-        let err = resolve_error(Some("x"), &catalog, &http);
+    fn missing_api_key_names_the_env() {
+        // A custom provider with a guaranteed-unset env makes this deterministic.
+        let providers = registry_from(
+            r#"
+[providers.acme]
+base_url = "https://acme.example.com/v1"
+api_key_env = "SHORE_TEST_EMBED_DEFINITELY_UNSET_KEY"
+"#,
+        );
+        let embedding = BTreeMap::new();
+        let err = resolve_error(Some("acme:some-embed-model"), &embedding, &providers);
         assert!(
-            err.contains("no longer supported"),
-            "expected migration error, got: {err}"
+            err.contains("SHORE_TEST_EMBED_DEFINITELY_UNSET_KEY"),
+            "error should name the unset env var: {err}"
         );
     }
 
     #[test]
-    fn negative_dimensions_returns_clear_error() {
-        let mut catalog: BTreeMap<String, toml::Value> = BTreeMap::new();
-        let api_key_env = "SHORE_TEST_RETRIEVAL_NEGATIVE_DIMENSIONS_KEY";
+    fn builds_embedder_with_settings_dimensions() {
+        let api_key_env = "SHORE_TEST_EMBED_BUILD_KEY";
         std::env::set_var(api_key_env, "test-key");
-        let entry: toml::Value = toml::from_str(&format!(
-            "model_id = \"text-embedding-3-small\"\napi_key_env = \"{api_key_env}\"\ndimensions = -1\n"
-        ))
-        .unwrap();
-        let _ignored = catalog.insert("x".into(), entry);
-        let http = reqwest::Client::new();
-        let err = resolve_error(Some("x"), &catalog, &http);
-        std::env::remove_var(api_key_env);
-        assert!(
-            err.contains("invalid dimensions -1"),
-            "expected dimensions error, got: {err}"
+        let providers = registry_from(&format!(
+            r#"
+[providers.acme]
+base_url = "https://acme.example.com/v1"
+api_key_env = "{api_key_env}"
+"#,
+        ));
+        let mut embedding = BTreeMap::new();
+        let _ignored = embedding.insert(
+            "acme:my-embed".to_string(),
+            EmbeddingSettings {
+                dimensions: Some(512),
+            },
         );
+        let http = reqwest::Client::new();
+        let embedder = resolve_embedder(Some("acme:my-embed"), &embedding, &providers, &http)
+            .expect("embedder should build");
+        std::env::remove_var(api_key_env);
+        assert_eq!(embedder.model_id(), "my-embed");
+        assert_eq!(embedder.dimensions(), 512);
     }
 }
