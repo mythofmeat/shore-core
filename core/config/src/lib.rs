@@ -1383,6 +1383,27 @@ api_key_env = "OPENAI_API_KEY"
     }
 
     #[test]
+    fn image_generation_default_on_disabled_provider_is_rejected() {
+        // Mirror of the embedding case for the second `validate_aux_provider`
+        // call site and its field-specific error text.
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults]
+image_generation = "gemini:gemini-3.1-flash-image-preview"
+
+[providers.gemini]
+enabled = false
+api_key_env = "GEMINI_API_KEY"
+"#,
+        )]);
+        let err = load_config(Some(&tmp.path().join("config.toml"))).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("defaults.image_generation"), "{msg}");
+        assert!(msg.contains("disabled"), "{msg}");
+    }
+
+    #[test]
     fn bundled_local_embedding_id_is_rejected() {
         // There is no runtime local embedder — a bundled id can never serve
         // embeddings, so it must fail config load (matching `resolve_embedder`)
