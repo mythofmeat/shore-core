@@ -1127,6 +1127,103 @@ fn model_settings_surfaces_applicability_and_domain() {
     assert!(!domain.iter().any(|v| v == "max"));
 }
 
+/// A catalog with Z.AI and Gemini models (their providers resolve to the Zai /
+/// Gemini sdks) for exercising the vendor knobs.
+fn vendor_models() -> ModelCatalog {
+    let toml_str = r#"
+[zai.glm]
+model_id = "glm-4.6"
+
+[gemini.flash]
+model_id = "gemini-2.5-flash"
+
+[openrouter.gpt-4o]
+model_id = "gpt-4o"
+"#;
+    let table: toml::Table = toml_str.parse().unwrap();
+    ModelCatalog::from_sections(Some(&table), None, None, None).unwrap()
+}
+
+#[test]
+fn set_model_setting_zai_clear_thinking_persists_on_zai_model() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());
+    ctx.active_model = Some("glm".into());
+
+    set_model_setting(
+        &mut ctx,
+        &json!({"key": "zai_clear_thinking", "value": false}),
+    )
+    .unwrap();
+
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert_eq!(
+        prefs
+            .model("zai", "glm-4.6")
+            .unwrap()
+            .sampler
+            .zai_clear_thinking,
+        Some(false)
+    );
+}
+
+#[test]
+fn set_model_setting_zai_clear_thinking_rejected_on_non_zai_model() {
+    // gpt-4o resolves to the openrouter sdk, which ignores zai_clear_thinking.
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    let err = set_model_setting(
+        &mut ctx,
+        &json!({"key": "zai_clear_thinking", "value": true}),
+    )
+    .unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+    assert!(
+        err.1.contains("zai_clear_thinking") && err.1.contains("not applicable"),
+        "expected Inapplicable, got {:?}",
+        err.1
+    );
+}
+
+#[test]
+fn set_model_setting_gemini_generation_persists_on_gemini_model() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());
+    ctx.active_model = Some("flash".into());
+
+    set_model_setting(&mut ctx, &json!({"key": "gemini_generation", "value": 3})).unwrap();
+
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert_eq!(
+        prefs
+            .model("gemini", "gemini-2.5-flash")
+            .unwrap()
+            .sampler
+            .gemini_generation,
+        Some(3)
+    );
+}
+
+#[test]
+fn model_settings_vendor_knob_applicability_per_sdk() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());
+    ctx.active_model = Some("glm".into());
+
+    let out = model_settings(&ctx, &json!({})).unwrap();
+    // Z.AI sdk: its own knob is honored; another vendor's knob is ignored;
+    // budget_tokens is ignored (only anthropic/gemini consume it).
+    assert_eq!(out["applicability"]["zai_clear_thinking"], "honored");
+    assert_eq!(out["applicability"]["gemini_generation"], "ignored");
+    assert_eq!(out["applicability"]["budget_tokens"], "ignored");
+    // Shore-only keys stay always-applicable.
+    assert_eq!(out["applicability"]["preserve_prior_turns"], "always");
+}
+
 #[test]
 fn model_info_includes_effective_sampler_for_active_character() {
     let tmp = TempDir::new().unwrap();

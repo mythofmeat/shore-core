@@ -409,14 +409,31 @@ pub fn applicability(sdk: &Sdk, model_id: &str, field: Field) -> Applicability {
 
         // Sampler knobs: rejected on Claude opus/sonnet >= 4.7, honored
         // otherwise. The cutoff is sdk-independent — it follows the model id,
-        // since the same Claude model can be reached via several sdks.
-        Field::Temperature | Field::TopP | Field::BudgetTokens => {
+        // since the same Claude model can be reached via several sdks (every
+        // adapter forwards temperature/top_p verbatim).
+        Field::Temperature | Field::TopP => {
             if claude_rejects_sampling(model_id) {
                 Applicability::Rejected
             } else {
                 Applicability::Honored
             }
         }
+
+        // `budget_tokens` is only consumed by the Anthropic and Gemini wires
+        // (`anthropic.ts` thinking budget / `gemini.ts` thinkingBudget). On
+        // Anthropic it follows the same Claude >=4.7 sampler cutoff; the
+        // OpenAI/OpenRouter/Z.AI adapters never read it, so it is `Ignored`.
+        Field::BudgetTokens => match sdk {
+            Sdk::Anthropic => {
+                if claude_rejects_sampling(model_id) {
+                    Applicability::Rejected
+                } else {
+                    Applicability::Honored
+                }
+            }
+            Sdk::Gemini => Applicability::Honored,
+            Sdk::Openai | Sdk::Openrouter | Sdk::Zai => Applicability::Ignored,
+        },
 
         // `cache_ttl` only produces `cache_control` on the Anthropic sdk.
         Field::CacheTtl => vendor_field(sdk, &Sdk::Anthropic),
@@ -754,7 +771,9 @@ mod tests {
 
     #[test]
     fn sampler_fields_rejected_only_past_cutoff() {
-        for field in [Field::Temperature, Field::TopP, Field::BudgetTokens] {
+        // temperature/top_p are forwarded by every adapter, so the Claude >=4.7
+        // cutoff applies regardless of sdk.
+        for field in [Field::Temperature, Field::TopP] {
             assert_eq!(
                 applicability(&Sdk::Anthropic, "claude-opus-4-8", field),
                 Applicability::Rejected
@@ -763,10 +782,35 @@ mod tests {
                 applicability(&Sdk::Anthropic, "claude-sonnet-4-6", field),
                 Applicability::Honored
             );
-            // Same model via a different sdk is still gated by the model id.
             assert_eq!(
                 applicability(&Sdk::Openrouter, "anthropic/claude-opus-4.8", field),
                 Applicability::Rejected
+            );
+        }
+    }
+
+    #[test]
+    fn budget_tokens_only_on_anthropic_and_gemini() {
+        // Anthropic: follows the same >=4.7 cutoff.
+        assert_eq!(
+            applicability(&Sdk::Anthropic, "claude-opus-4-8", Field::BudgetTokens),
+            Applicability::Rejected
+        );
+        assert_eq!(
+            applicability(&Sdk::Anthropic, "claude-sonnet-4-6", Field::BudgetTokens),
+            Applicability::Honored
+        );
+        // Gemini honors it (thinkingBudget).
+        assert_eq!(
+            applicability(&Sdk::Gemini, "gemini-2.5-pro", Field::BudgetTokens),
+            Applicability::Honored
+        );
+        // OpenAI/OpenRouter/Z.AI adapters never read budget_tokens → Ignored.
+        for sdk in [Sdk::Openai, Sdk::Openrouter, Sdk::Zai] {
+            assert_eq!(
+                applicability(&sdk, "anthropic/claude-opus-4.8", Field::BudgetTokens),
+                Applicability::Ignored,
+                "{sdk:?} should ignore budget_tokens"
             );
         }
     }

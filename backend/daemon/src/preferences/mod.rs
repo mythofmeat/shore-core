@@ -104,6 +104,21 @@ pub struct SamplerSettings {
     /// DeepSeek/Kimi reasoning-replay floor (`requires_reasoning_replay`) is
     /// orthogonal and still enforced regardless of this setting.
     pub preserve_prior_turns: Option<bool>,
+
+    // ── Vendor knobs (per-model runtime settings) ───────────────────────
+    // These mirror the same-named `ModelConfigFields`/`ResolvedModel` fields,
+    // exposed here so they are configurable per-model at runtime (model > sdk >
+    // provider). `shore model setting` gates each by the capability matrix, so
+    // a model only ever sees the knobs its resolved sdk honors.
+    /// OpenRouter provider routing object (`{ order, allow_fallbacks, ... }`).
+    pub openrouter_provider: Option<toml::Value>,
+    pub vertex_project: Option<String>,
+    pub vertex_location: Option<String>,
+    pub gemini_generation: Option<u32>,
+    pub gemini_web_search: Option<bool>,
+    /// Z.AI `thinking.clear_thinking` toggle.
+    pub zai_clear_thinking: Option<bool>,
+    pub zai_subscription: Option<bool>,
 }
 
 impl SamplerSettings {
@@ -127,6 +142,13 @@ impl SamplerSettings {
         merge!(cache_ttl);
         merge!(sdk);
         merge!(preserve_prior_turns);
+        merge!(openrouter_provider);
+        merge!(vertex_project);
+        merge!(vertex_location);
+        merge!(gemini_generation);
+        merge!(gemini_web_search);
+        merge!(zai_clear_thinking);
+        merge!(zai_subscription);
     }
 
     /// Returns true if every field is unset.
@@ -140,6 +162,13 @@ impl SamplerSettings {
             && self.cache_ttl.is_none()
             && self.sdk.is_none()
             && self.preserve_prior_turns.is_none()
+            && self.openrouter_provider.is_none()
+            && self.vertex_project.is_none()
+            && self.vertex_location.is_none()
+            && self.gemini_generation.is_none()
+            && self.gemini_web_search.is_none()
+            && self.zai_clear_thinking.is_none()
+            && self.zai_subscription.is_none()
     }
 
     /// Extract the sampler-shaped fields from a resolved static-catalog
@@ -156,6 +185,13 @@ impl SamplerSettings {
             cache_ttl: model.cache_ttl.clone(),
             sdk: Some(model.sdk.as_str().to_string()),
             preserve_prior_turns: model.preserve_prior_turns,
+            openrouter_provider: model.openrouter_provider.clone(),
+            vertex_project: model.vertex_project.clone(),
+            vertex_location: model.vertex_location.clone(),
+            gemini_generation: model.gemini_generation,
+            gemini_web_search: model.gemini_web_search,
+            zai_clear_thinking: model.zai_clear_thinking,
+            zai_subscription: model.zai_subscription,
         }
     }
 }
@@ -431,6 +467,13 @@ pub struct SamplerScopes {
     pub cache_ttl: Option<PreferenceScope>,
     pub sdk: Option<PreferenceScope>,
     pub preserve_prior_turns: Option<PreferenceScope>,
+    pub openrouter_provider: Option<PreferenceScope>,
+    pub vertex_project: Option<PreferenceScope>,
+    pub vertex_location: Option<PreferenceScope>,
+    pub gemini_generation: Option<PreferenceScope>,
+    pub gemini_web_search: Option<PreferenceScope>,
+    pub zai_clear_thinking: Option<PreferenceScope>,
+    pub zai_subscription: Option<PreferenceScope>,
 }
 
 pub fn resolve_sampler_scopes(
@@ -458,6 +501,13 @@ pub fn resolve_sampler_scopes(
         note!(cache_ttl);
         note!(sdk);
         note!(preserve_prior_turns);
+        note!(openrouter_provider);
+        note!(vertex_project);
+        note!(vertex_location);
+        note!(gemini_generation);
+        note!(gemini_web_search);
+        note!(zai_clear_thinking);
+        note!(zai_subscription);
     };
     if let Some(rm) = static_default {
         update(
@@ -701,6 +751,27 @@ pub fn apply_sampler_overlay(
     }
     if let Some(p) = overlay.preserve_prior_turns {
         patched.preserve_prior_turns = Some(p);
+    }
+    if let Some(ref v) = overlay.openrouter_provider {
+        patched.openrouter_provider = Some(v.clone());
+    }
+    if let Some(ref v) = overlay.vertex_project {
+        patched.vertex_project = Some(v.clone());
+    }
+    if let Some(ref v) = overlay.vertex_location {
+        patched.vertex_location = Some(v.clone());
+    }
+    if let Some(g) = overlay.gemini_generation {
+        patched.gemini_generation = Some(g);
+    }
+    if let Some(w) = overlay.gemini_web_search {
+        patched.gemini_web_search = Some(w);
+    }
+    if let Some(c) = overlay.zai_clear_thinking {
+        patched.zai_clear_thinking = Some(c);
+    }
+    if let Some(s) = overlay.zai_subscription {
+        patched.zai_subscription = Some(s);
     }
     patched
 }
@@ -1039,6 +1110,7 @@ typo_setting = "x"
                     cache_ttl: Some("5m".into()),
                     sdk: Some("anthropic".into()),
                     preserve_prior_turns: Some(false),
+                    ..Default::default()
                 },
             },
         );
@@ -1637,6 +1709,33 @@ max_output_tokens = 4096
         );
         assert_eq!(patched.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(patched.budget_tokens, Some(2048));
+    }
+
+    #[test]
+    fn apply_sampler_overlay_patches_vendor_knobs() {
+        // Per-model vendor knobs ride the same overlay onto the resolved model.
+        let catalog = make_catalog(
+            r#"
+[chat.zai.glm]
+model_id = "glm-4.6"
+"#,
+        );
+        let base = catalog.find_model("glm").unwrap();
+        // The Z.AI provider default seeds `zai_clear_thinking = false`; the
+        // per-model overlay must win (model > sdk > provider).
+        assert_eq!(base.zai_clear_thinking, Some(false));
+        let overlay = SamplerSettings {
+            zai_clear_thinking: Some(true),
+            gemini_generation: Some(3),
+            ..Default::default()
+        };
+        let patched = apply_sampler_overlay(base, &overlay);
+        assert_eq!(
+            patched.zai_clear_thinking,
+            Some(true),
+            "overlay overrides provider default"
+        );
+        assert_eq!(patched.gemini_generation, Some(3));
     }
 
     #[test]

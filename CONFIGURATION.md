@@ -318,14 +318,25 @@ are never persisted.
 
 Writes are **capability-aware**: a setting is validated against the active
 model's resolved `(sdk, model_id)` before it is persisted. A key the sdk
-ignores or rejects (e.g. `cache_ttl` on a non-Anthropic model, or a sampler
-knob on a Claude ≥ 4.7 model) is refused, as is a `reasoning_effort` value
-outside the sdk's accepted set (the allowed set is shown in the error). The
-accepted `reasoning_effort` values are sdk-specific: Anthropic
-`adaptive|low|medium|high|xhigh|max`, OpenAI/OpenRouter the same plus
-`minimal`, Gemini `minimal|low|medium|high`. `shore model setting` (no key)
-lists only the keys the active model honors and shows the accepted
-`reasoning_effort` domain.
+ignores or rejects (e.g. `cache_ttl` on a non-Anthropic model, a sampler
+knob on a Claude ≥ 4.7 model, `budget_tokens` on an OpenAI/OpenRouter model)
+is refused, as is a `reasoning_effort` value outside the sdk's accepted set
+(the allowed set is shown in the error). The accepted `reasoning_effort`
+values are grounded in the provider docs: Anthropic
+`low|medium|high|xhigh|max` (plus the `adaptive`/`off` sentinels),
+OpenAI/OpenRouter `minimal|low|medium|high|xhigh` (`xhigh` is their ceiling —
+`max` is Anthropic-only), Gemini `minimal|low|medium|high`.
+
+In addition to the sampler knobs, the **vendor knobs** are settable per-model
+through the same store: `openrouter_provider` (a routing object, e.g.
+`'{"order":["Anthropic"]}'`), `vertex_project`, `vertex_location`,
+`gemini_generation`, `gemini_web_search`, `zai_clear_thinking`,
+`zai_subscription`. These resolve **model > sdk > provider** (a per-model value
+beats a `[providers.*.defaults]` or hardcoded provider default).
+
+`shore model setting` (no key) lists only the keys the active model's resolved
+sdk honors — so the vendor knobs appear for the models that use them and are
+hidden elsewhere — and shows the accepted `reasoning_effort` domain.
 
 ## Character Workspaces
 

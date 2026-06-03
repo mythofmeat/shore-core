@@ -8,6 +8,16 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- The **vendor knobs** (`openrouter_provider`, `vertex_project`,
+  `vertex_location`, `gemini_generation`, `gemini_web_search`,
+  `zai_clear_thinking`, `zai_subscription`) are now settable per-model at runtime
+  via `shore model setting` and the `preferences/models.toml` overlay, resolving
+  **model > sdk > provider**. Combined with the capability gating below,
+  `shore model setting` shows and accepts exactly the knobs each model's resolved
+  sdk honors — e.g. `zai_clear_thinking` appears for Z.AI models and is rejected
+  on others. Also: `budget_tokens` is now `Ignored` on OpenAI/OpenRouter/Z.AI
+  (only the Anthropic and Gemini wires consume it), so it no longer shows as a
+  no-op setting there.
 - `shore model setting` is now **capability-aware** (issue #162). It consumes the
   per-sdk capability matrix (#138): setting a key the active model's resolved sdk
   ignores or rejects (e.g. `cache_ttl` on a non-Anthropic model, a sampler knob on

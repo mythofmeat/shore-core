@@ -630,6 +630,13 @@ fn print_model_settings(data: &serde_json::Value) {
         "cache_ttl",
         "sdk",
         "preserve_prior_turns",
+        "openrouter_provider",
+        "vertex_project",
+        "vertex_location",
+        "gemini_generation",
+        "gemini_web_search",
+        "zai_clear_thinking",
+        "zai_subscription",
     ];
     // Capability matrix (#162): show only keys the resolved sdk honors (or
     // Shore-only keys it always applies).

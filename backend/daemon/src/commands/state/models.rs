@@ -19,6 +19,15 @@ const SAMPLER_KEYS: &[&str] = &[
     "cache_ttl",
     "sdk",
     "preserve_prior_turns",
+    // Vendor knobs (per-model). The capability matrix gates which of these a
+    // given model's resolved sdk actually honors — see `capability_check`.
+    "openrouter_provider",
+    "vertex_project",
+    "vertex_location",
+    "gemini_generation",
+    "gemini_web_search",
+    "zai_clear_thinking",
+    "zai_subscription",
 ];
 
 /// Resolve the character whose preferences should be loaded/saved.
@@ -625,9 +634,71 @@ fn apply_sampler_value(
         "preserve_prior_turns" => {
             sampler.preserve_prior_turns = parse_bool_value(value, "preserve_prior_turns")?;
         }
+        _ => return apply_vendor_sampler_value(sampler, key, value),
+    }
+    Ok(())
+}
+
+/// Parse/store the vendor knobs (`openrouter_provider`, `vertex_*`, `gemini_*`,
+/// `zai_*`). Split out of [`apply_sampler_value`] to keep each function small.
+fn apply_vendor_sampler_value(
+    sampler: &mut SamplerSettings,
+    key: &str,
+    value: &Value,
+) -> Result<(), (ErrorCode, String)> {
+    let invalid = |msg: String| (ErrorCode::InvalidRequest, msg);
+    match key {
+        "openrouter_provider" => {
+            sampler.openrouter_provider = if value.is_null() {
+                None
+            } else {
+                // The routing object arrives as JSON over SWP; store it as the
+                // `toml::Value` the catalog/overlay expects.
+                Some(toml::Value::try_from(value).map_err(|e| {
+                    invalid(format!(
+                        "openrouter_provider must be a TOML-compatible object: {e}"
+                    ))
+                })?)
+            };
+        }
+        "vertex_project" => {
+            sampler.vertex_project = parse_string_value(value, "vertex_project")?;
+        }
+        "vertex_location" => {
+            sampler.vertex_location = parse_string_value(value, "vertex_location")?;
+        }
+        "gemini_generation" => {
+            sampler.gemini_generation = if value.is_null() {
+                None
+            } else {
+                Some(parse_u32_value(value, "gemini_generation")?)
+            };
+        }
+        "gemini_web_search" => {
+            sampler.gemini_web_search = parse_bool_value(value, "gemini_web_search")?;
+        }
+        "zai_clear_thinking" => {
+            sampler.zai_clear_thinking = parse_bool_value(value, "zai_clear_thinking")?;
+        }
+        "zai_subscription" => {
+            sampler.zai_subscription = parse_bool_value(value, "zai_subscription")?;
+        }
         _ => return Err(invalid(format!("unknown setting key: {key}"))),
     }
     Ok(())
+}
+
+/// Parse an optional string setting value. `null` clears the field.
+fn parse_string_value(value: &Value, name: &str) -> Result<Option<String>, (ErrorCode, String)> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    value.as_str().map(|s| Some(s.to_string())).ok_or_else(|| {
+        (
+            ErrorCode::InvalidRequest,
+            format!("{name} must be a string, got {value}"),
+        )
+    })
 }
 
 /// Parse an optional boolean setting value. `null` clears the field
@@ -724,6 +795,13 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
             "cache_ttl": scopes.cache_ttl.map(scope_str),
             "sdk": scopes.sdk.map(scope_str),
             "preserve_prior_turns": scopes.preserve_prior_turns.map(scope_str),
+            "openrouter_provider": scopes.openrouter_provider.map(scope_str),
+            "vertex_project": scopes.vertex_project.map(scope_str),
+            "vertex_location": scopes.vertex_location.map(scope_str),
+            "gemini_generation": scopes.gemini_generation.map(scope_str),
+            "gemini_web_search": scopes.gemini_web_search.map(scope_str),
+            "zai_clear_thinking": scopes.zai_clear_thinking.map(scope_str),
+            "zai_subscription": scopes.zai_subscription.map(scope_str),
         },
     }))
 }
