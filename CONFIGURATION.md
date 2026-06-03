@@ -117,8 +117,8 @@ Important slots:
 
 - `model` — chat default. Optional: if unset, chat starts on the first chat model declared in the catalog. Also acts as a late-stage fallback for background tasks (see below).
 - `[defaults.background]` — heartbeat, compaction, and dreaming selectors. Each task chains `background.<task> → background.model → active chat model → defaults.model → first chat model`. When no background-specific model is configured, background work tracks the character's current chat selection, so `shore model <name>` moves heartbeat/compaction/dreaming alongside chat. Set `background.model` (or a per-task key) to pin background to a different model regardless of chat selection.
-- `embedding` — optional hybrid retrieval model (`provider:model_id`, or a bundled local id)
-- `image_generation` — image generation model (`provider:model_id`)
+- `embedding` — optional hybrid retrieval model, as `provider:model_id` (e.g. `openai:text-embedding-3-small`)
+- `image_generation` — image generation model, as `provider:model_id`
 
 > **Deprecated:** the older top-level `defaults.heartbeat` and `defaults.dreaming` keys still parse but emit a deprecation warning and are forwarded into `[defaults.background]` at load time. Move them under `[defaults.background]` to silence the warning.
 

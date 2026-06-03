@@ -148,7 +148,7 @@ api_key_env = "OPENROUTER_API_KEY"
 
 [chat.openrouter.haiku]
 model_id = "google/gemini-3.1-flash-lite-preview"
-max_tokens = 2048
+max_output_tokens = 2048
 temperature = 0.3
 
 [embedding."openrouter:text-embedding-3-small"]
