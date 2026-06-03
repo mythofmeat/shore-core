@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.6](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.0.5...shore-cli-v2.0.6) - 2026-06-03
+
+### Other
+
+- Remove the dead `thinking_enabled` model setting ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Capability-aware `shore model setting` + single-source capabilities.toml ([#162](https://github.com/mythofmeat/shore-core/pull/162)) ([#165](https://github.com/mythofmeat/shore-core/pull/165))
+- Correctness ratchet Tier 2: draconian clippy::restriction + rustc paranoia lints ([#115](https://github.com/mythofmeat/shore-core/pull/115)) ([#144](https://github.com/mythofmeat/shore-core/pull/144))
+
 ## [2.0.5](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.0.4...shore-cli-v2.0.5) - 2026-06-02
 
 ### Other

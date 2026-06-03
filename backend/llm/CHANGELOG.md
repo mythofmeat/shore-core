@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.2](https://github.com/mythofmeat/shore-core/compare/shore-llm-v7.0.1...shore-llm-v7.0.2) - 2026-06-03
+
+### Other
+
+- Deprecate static [chat.*]/[tools.*] catalog ([#139](https://github.com/mythofmeat/shore-core/pull/139))
+- Embedding dimensions: preserve unset (None) instead of defaulting to 1536
+- Address CodeRabbit review on #172 ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Native DeepSeek + Moonshot providers via the Vercel AI SDK ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Disable reasoning on OpenRouter via reasoning.effort="none" ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Unify embedding/image_generation onto provider:model_id shape ([#140](https://github.com/mythofmeat/shore-core/pull/140)) ([#169](https://github.com/mythofmeat/shore-core/pull/169))
+- Correctness ratchet Tier 2: draconian clippy::restriction + rustc paranoia lints ([#115](https://github.com/mythofmeat/shore-core/pull/115)) ([#144](https://github.com/mythofmeat/shore-core/pull/144))
+
 ## [7.0.1](https://github.com/mythofmeat/shore-core/compare/shore-llm-v7.0.0...shore-llm-v7.0.1) - 2026-06-02
 
 ### Other
