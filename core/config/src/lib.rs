@@ -739,16 +739,6 @@ fn validate_budget_anchors(idx: usize, budget: &app::UsageBudgetConfig) -> Resul
     Ok(())
 }
 
-/// Bundled local embedding model ids that resolve without a provider or
-/// settings block. Keep in sync with `backend/llm/src/embed/local.rs::resolve_model`.
-const BUNDLED_LOCAL_EMBEDDING_IDS: &[&str] = &[
-    "bge-small-en-v1.5",
-    "bge-base-en-v1.5",
-    "bge-large-en-v1.5",
-    "all-minilm-l6-v2",
-    "nomic-embed-text-v1.5",
-];
-
 /// Validate the `provider_key` portion of a `provider:model_id` ref, warning
 /// (advisory, not fatal) when the provider is not configured under
 /// `[providers.<provider_key>]` — transport defaults are used for well-known
@@ -765,8 +755,10 @@ fn warn_unconfigured_aux_provider(providers: &ProviderRegistry, field: &str, pro
     }
 }
 
-/// Validate `defaults.embedding`: accept a bundled local model id (resolves
-/// without a provider) or a `provider:model_id` identity. The optional
+/// Validate `defaults.embedding`: must be a `provider:model_id` identity.
+/// Shore only ships an OpenAI-compatible (hosted) embedder; there is no
+/// runtime local embedder, so bundled ids are not accepted here — that kept
+/// config validation in lockstep with `resolve_embedder`. The optional
 /// `[embedding."provider:model_id"]` settings table is not required for the
 /// default to be valid; transport resolves through `[providers.<provider>]`.
 fn validate_default_embedding(
@@ -774,14 +766,11 @@ fn validate_default_embedding(
     name: Option<&str>,
 ) -> Result<(), ConfigError> {
     let Some(name) = name else { return Ok(()) };
-    if BUNDLED_LOCAL_EMBEDDING_IDS.contains(&name) {
-        return Ok(());
-    }
     let Some((provider_key, model_id)) = name.split_once(':') else {
         return Err(ConfigError::Validation(format!(
-            "defaults.embedding \"{name}\" is neither a `provider:model_id` identity \
-             nor a bundled local model id (one of: {})",
-            BUNDLED_LOCAL_EMBEDDING_IDS.join(", "),
+            "defaults.embedding \"{name}\" must be a `provider:model_id` identity \
+             (transport lives on [providers.<provider>]); Shore ships only a hosted \
+             OpenAI-compatible embedder, so bundled local ids are not served"
         )));
     };
     if provider_key.is_empty() || model_id.is_empty() {
@@ -1353,7 +1342,10 @@ api_key_env = "OPENAI_API_KEY"
     }
 
     #[test]
-    fn bundled_local_embedding_id_passes_without_profile() {
+    fn bundled_local_embedding_id_is_rejected() {
+        // There is no runtime local embedder — a bundled id can never serve
+        // embeddings, so it must fail config load (matching `resolve_embedder`)
+        // rather than silently validate and degrade to lexical at runtime.
         let tmp = setup_config_dir(&[(
             "config.toml",
             r#"
@@ -1361,8 +1353,10 @@ api_key_env = "OPENAI_API_KEY"
 embedding = "bge-large-en-v1.5"
 "#,
         )]);
-        let _ignored = load_config(Some(&tmp.path().join("config.toml")))
-            .expect("bundled local id should validate without an [embedding.*] block");
+        let err = load_config(Some(&tmp.path().join("config.toml"))).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("defaults.embedding"), "{msg}");
+        assert!(msg.contains("provider:model_id"), "{msg}");
     }
 
     #[test]

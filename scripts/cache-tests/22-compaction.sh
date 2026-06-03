@@ -27,7 +27,7 @@ _write_config() {
 [defaults]
 display_name = "tester"
 model        = "chat.test.model"
-embedding    = "qwen3"
+embedding    = "openrouter:qwen/qwen3-embedding-8b"
 
 [behavior.autonomy]
 enabled = true

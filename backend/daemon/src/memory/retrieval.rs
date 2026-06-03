@@ -41,15 +41,32 @@ pub fn resolve_embedder(
     http_client: &reqwest::Client,
 ) -> Result<Arc<dyn Embedder>, String> {
     // Identity: the configured default, else the sole settings-overlay key.
-    let target = default_ref
-        .or_else(|| embedding.keys().next().map(String::as_str))
-        .ok_or_else(|| {
-            "no embedding model configured; semantic search disabled. Set \
-             defaults.embedding = \"provider:model_id\" pointing at an \
-             OpenAI-compatible embeddings endpoint and configure \
-             [providers.<provider>] (see CONFIGURATION.md)."
-                .to_string()
-        })?;
+    // With multiple overlay entries and no default, fail rather than silently
+    // pick one — the choice would be arbitrary (BTreeMap order).
+    let target = if let Some(t) = default_ref {
+        t
+    } else {
+        let mut keys = embedding.keys();
+        match (keys.next(), keys.next()) {
+            (Some(only), None) => only.as_str(),
+            (Some(_), Some(_)) => {
+                return Err(
+                    "multiple [embedding.\"provider:model_id\"] entries are configured \
+                     but defaults.embedding is unset; set defaults.embedding to choose one"
+                        .to_string(),
+                );
+            }
+            _ => {
+                return Err(
+                    "no embedding model configured; semantic search disabled. Set \
+                     defaults.embedding = \"provider:model_id\" pointing at an \
+                     OpenAI-compatible embeddings endpoint and configure \
+                     [providers.<provider>] (see CONFIGURATION.md)."
+                        .to_string(),
+                );
+            }
+        }
+    };
 
     let Some((provider_key, model_id)) = target.split_once(':') else {
         return Err(format!(

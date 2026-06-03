@@ -860,16 +860,30 @@ where
 {
     let mut out = BTreeMap::new();
     for (key, value) in section {
-        // The new shape requires a `provider:model_id` identity key. A bare
-        // alias (no colon) is the retired flat shape.
-        if !key.contains(':') {
-            return Err(CatalogError::AuxProfileInvalid {
-                category: category.to_string(),
-                key: key.clone(),
-                detail: "the key must be a `provider:model_id` identity, not a bare alias"
-                    .to_string(),
-                example,
-            });
+        // The new shape requires a `provider:model_id` identity key with both
+        // halves non-empty. A bare alias (no colon) is the retired flat shape;
+        // `:model` / `provider:` are malformed.
+        match key.split_once(':') {
+            Some((provider, model_id)) if !provider.is_empty() && !model_id.is_empty() => {}
+            Some(_) => {
+                return Err(CatalogError::AuxProfileInvalid {
+                    category: category.to_string(),
+                    key: key.clone(),
+                    detail: "both the provider and model_id halves of the \
+                             `provider:model_id` key must be non-empty"
+                        .to_string(),
+                    example,
+                });
+            }
+            None => {
+                return Err(CatalogError::AuxProfileInvalid {
+                    category: category.to_string(),
+                    key: key.clone(),
+                    detail: "the key must be a `provider:model_id` identity, not a bare alias"
+                        .to_string(),
+                    example,
+                });
+            }
         }
         if !value.is_table() {
             return Err(CatalogError::AuxProfileInvalid {
@@ -1573,6 +1587,22 @@ dimensions = 1024
         };
         assert_eq!(category, "embedding");
         assert_eq!(key, "text-large");
+    }
+
+    #[test]
+    fn aux_malformed_identity_key_is_rejected() {
+        // Both halves of `provider:model_id` must be non-empty.
+        for key in [":model", "provider:"] {
+            let embedding = parse_table(&format!("[\"{key}\"]\ndimensions = 1024\n"));
+            let err = ModelCatalog::from_sections(None, None, Some(&embedding), None).unwrap_err();
+            let CatalogError::AuxProfileInvalid { detail, .. } = err else {
+                panic!("expected AuxProfileInvalid for {key:?}, got {err:?}");
+            };
+            assert!(
+                detail.contains("non-empty"),
+                "expected non-empty-halves detail for {key:?}, got: {detail}"
+            );
+        }
     }
 
     #[test]
