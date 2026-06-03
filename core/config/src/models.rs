@@ -319,8 +319,8 @@ impl ResolvedModel {
         // `cache_ttl = ""` to disable). Matches the billing-side default in
         // backend/ledger/src/pricing.rs.
         if fields.cache_ttl.is_none() {
-            fields.cache_ttl =
-                capabilities::default_value(&sdk, capabilities::Field::CacheTtl).map(str::to_string);
+            fields.cache_ttl = capabilities::default_value(&sdk, capabilities::Field::CacheTtl)
+                .map(str::to_string);
         }
 
         // Drop sampler knobs the model's wire rejects (Claude >=4.7 cutoff,
@@ -427,7 +427,10 @@ fn warn_ignored_fields(sdk: &Sdk, model_id: &str, fields: &ModelConfigFields) {
     use capabilities::Field;
     let checks: [(Field, bool); 8] = [
         (Field::CacheTtl, fields.cache_ttl.is_some()),
-        (Field::OpenrouterProvider, fields.openrouter_provider.is_some()),
+        (
+            Field::OpenrouterProvider,
+            fields.openrouter_provider.is_some(),
+        ),
         (Field::VertexProject, fields.vertex_project.is_some()),
         (Field::VertexLocation, fields.vertex_location.is_some()),
         (Field::GeminiGeneration, fields.gemini_generation.is_some()),
@@ -1143,7 +1146,11 @@ top_p = 0.9
         );
         let models = parse_category("chat", &table, None).unwrap();
         let sonnet = &models["chat.anthropic.sonnet"];
-        assert_eq!(sonnet.temperature, Some(1.0), "baked default kept below cutoff");
+        assert_eq!(
+            sonnet.temperature,
+            Some(1.0),
+            "baked default kept below cutoff"
+        );
         assert_eq!(sonnet.top_p, Some(0.9));
     }
 

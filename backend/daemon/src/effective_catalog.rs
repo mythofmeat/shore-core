@@ -644,7 +644,8 @@ temperature = 0.5
         assert_eq!(opus.temperature, None, "rejected for opus >=4.7");
 
         let sonnet =
-            find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.6", false).unwrap();
+            find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.6", false)
+                .unwrap();
         assert_eq!(sonnet.temperature, Some(0.5), "kept below the 4.7 cutoff");
     }
 
