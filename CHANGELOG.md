@@ -140,6 +140,14 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   `shore-swp-client` from crates.io.
 
 ### Removed (BREAKING)
+- The `thinking_enabled` model setting (key for `shore model setting` /
+  `set_model_setting`, and the `SamplerSettings.thinking_enabled` preferences
+  field). It was a forward-compat stub that was never wired to the wire — a
+  no-op. Disabling reasoning is `reasoning_effort = "off"` (which the daemon
+  translates to the provider's native disable). `shore model setting
+  thinking_enabled …` now errors as an unknown key; remove any stray
+  `thinking_enabled` line from `preferences/*.toml`. (The unrelated ledger
+  `thinking_enabled` accounting column is unaffected.)
 - The `LlmRequest::system_suffix` field on outbound LLM requests. It expanded
   into a trailing `role:"system"` message at the *moving* tail of `messages`
   on every dispatch, so any caller running a tool loop (compaction, the
