@@ -32,10 +32,10 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 #   model (the most common split — two fields total).
 # - Per-task keys override `background.model` for that one task.
 # [defaults.background]
-# model = "claude-haiku"
-# heartbeat = "claude-haiku"
-# compaction = "claude-sonnet"
-# dreaming = "claude-sonnet"
+# model = "anthropic:claude-haiku-4-5"
+# heartbeat = "anthropic:claude-haiku-4-5"
+# compaction = "anthropic:claude-sonnet-4-6"
+# dreaming = "anthropic:claude-sonnet-4-6"
 
 # ── Autonomy ─────────────────────────────────────────────────────────────
 # Controls the character's autonomous behavior — what makes it feel present
