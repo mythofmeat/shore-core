@@ -682,8 +682,8 @@ mod tests {
         fn model_id(&self) -> &'static str {
             "topic-test"
         }
-        fn dimensions(&self) -> usize {
-            self.topics.len()
+        fn dimensions(&self) -> Option<usize> {
+            Some(self.topics.len())
         }
     }
 

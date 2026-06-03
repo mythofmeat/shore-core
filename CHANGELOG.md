@@ -63,6 +63,19 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   Anthropic wire field (`max_tokens` on the request body) is unchanged.
 
 ### Fixed
+- Embedding `dimensions` now defaults to the model's **native width** when
+  unset, instead of being forced to `1536` (issue #170). An unset
+  `[embedding."provider:model_id"].dimensions` previously substituted a
+  hardcoded `1536` — correct for `text-embedding-3-small` but a silent
+  dimension-reduction for models with a wider native width (e.g.
+  `text-embedding-3-large` at `3072`). The resolved value is now an
+  `Option<usize>`; `None` omits the `dimensions` field on the `/v1/embeddings`
+  wire so the provider returns its native width, and a configured value is
+  actually sent on the wire (previously it was dropped). The embedder cache key
+  distinguishes `native` from an explicit width. **Behavior change for existing
+  vector stores:** if you relied on the old `1536` default for a wider model,
+  set `dimensions = 1536` explicitly to keep cached vectors valid — otherwise
+  re-embedding will produce native-width vectors.
 - Anthropic extended thinking is now model-aware and renders again on Opus
   4.8/4.7. The thinking request param is matched to what each model accepts
   instead of a single fixed shape:

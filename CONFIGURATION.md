@@ -163,6 +163,9 @@ embedding = "openai:text-embedding-3-large"
 api_key_env = "OPENAI_API_KEY"
 
 # Optional: per-model category settings (only `dimensions`).
+# When omitted, Shore sends no `dimensions` on the wire and the provider
+# returns the model's native width (e.g. 3072 for text-embedding-3-large).
+# Set it only to request dimension-reduced vectors from models that support it.
 [embedding."openai:text-embedding-3-large"]
 dimensions = 1024
 ```

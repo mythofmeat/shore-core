@@ -145,9 +145,13 @@ pub(crate) async fn embed(
     api_key: &str,
     base_url: Option<&str>,
     input: &[&str],
+    dimensions: Option<usize>,
 ) -> Result<Vec<Vec<f32>>, LlmError> {
     debug!(provider = %provider, model = %model, input_count = input.len(), "dispatching embedding request");
-    openai::embed(client, provider, model, api_key, base_url, input).await
+    openai::embed(
+        client, provider, model, api_key, base_url, input, dimensions,
+    )
+    .await
 }
 
 /// Dispatch an image generation request through the sidecar.
