@@ -209,6 +209,33 @@ Friendly key names are usage metadata only; Shore never sends them to providers
 or logs key values. `shore usage --by-api-key` groups ledger spend by these
 names, and `shore usage --api-key overflow` filters to one key.
 
+### Provider-wide defaults
+
+Provider-level behavioral and vendor knobs live under `[providers.<name>.defaults]`:
+
+```toml
+[providers.or-anthropic]
+sdk = "anthropic"
+api_key_env = "OR_KEY"
+
+[providers.or-anthropic.defaults]
+max_output_tokens = 8192
+openrouter_provider = { order = ["Anthropic"] }
+```
+
+This is the same field set as the per-model overlay (`[models."provider:model_id"]`
+in `preferences/`), applied provider-wide as the lowest user-config tier. It carries
+behavioral defaults (`max_output_tokens`, `cache_ttl`, sampler knobs) and vendor knobs
+(`openrouter_provider`, `vertex_*`, `gemini_*`, `zai_*`) onto every model the provider
+resolves — discovered, trusted (`provider:model_id`), or static. Transport
+(`sdk`/`base_url`/`api_key_env`/`keys`) belongs on the provider entry itself and is
+rejected inside `[.defaults]`.
+
+> Provider-level scalars under `[chat.<provider>]` were retired — move behavioral
+> defaults to `[providers.<provider>.defaults]` and transport to
+> `[providers.<provider>]`. Per-model `[chat.<provider>.<alias>]` fields are
+> unaffected.
+
 ### Discovery and filtering
 
 ```toml
@@ -246,7 +273,9 @@ that merges three sources:
 
 1. Static `[chat.<provider>.<alias>]` entries (this file).
 2. Discovered `[providers.<name>]` cache rows.
-3. Hardcoded provider defaults for well-known providers.
+3. Trusted `provider:model_id` refs (routed via `[providers.<name>]` transport).
+4. `[providers.<name>.defaults]` provider-wide behavioral/vendor defaults.
+5. Hardcoded provider defaults for well-known providers.
 
 Conflict rules:
 
@@ -276,9 +305,10 @@ Merge order (lowest to highest precedence):
 
 1. Hardcoded provider defaults.
 2. Discovered model metadata.
-3. Static `[chat.<provider>.<alias>]` overrides.
-4. Saved global preferences (`preferences/global.toml`).
-5. Saved per-character preferences (`characters/<C>/preferences/models.toml`).
+3. `[providers.<provider>.defaults]` provider-wide defaults.
+4. Static `[chat.<provider>.<alias>]` overrides.
+5. Saved global preferences (`preferences/global.toml`).
+6. Saved per-character preferences (`characters/<C>/preferences/models.toml`).
 
 `reasoning_effort` accepts `low`/`medium`/`high` or `off` (cleared).
 The legacy `shore reasoning ...` command writes through the same

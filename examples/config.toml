@@ -353,6 +353,16 @@ model_id = "claude-sonnet-4-6"
 #   "!openai/*",
 #   "!google/gemini-*",
 # ]
+#
+# ── Provider-wide defaults ───────────────────────────────────────────────
+# Behavioral + vendor knobs applied to every model this provider resolves
+# (discovered, trusted `provider:model_id`, or static). Same field set as
+# the per-model overlay, one tier lower. Transport (sdk/base_url/keys) stays
+# on the provider entry above — it is rejected inside [.defaults].
+# [providers.openrouter.defaults]
+# max_output_tokens = 8192
+# cache_ttl = "1h"
+# openrouter_provider = { order = ["anthropic"] }   # routing pin for anthropic/*
 
 # ── Manual alias for the default model ───────────────────────────────────
 # [defaults].model must reference a static `[chat.*.*]` alias, so define

@@ -113,13 +113,8 @@ pub fn find_effective_model(
             continue;
         };
         let hidden = !entry.discovery.is_visible(&disc.model_id);
-        let resolved = build_resolved_from_provider(
-            provider_key,
-            entry,
-            &disc.model_id,
-            Some(&disc),
-            config.models.chat_provider_defaults.get(provider_key),
-        );
+        let resolved =
+            build_resolved_from_provider(provider_key, entry, &disc.model_id, Some(&disc));
         hits.push((provider_key.into(), resolved, hidden));
     }
 
@@ -208,13 +203,8 @@ pub fn list_effective_models(
             if hidden && !include_hidden {
                 continue;
             }
-            let resolved = build_resolved_from_provider(
-                provider_key,
-                entry,
-                &disc.model_id,
-                Some(disc),
-                config.models.chat_provider_defaults.get(provider_key),
-            );
+            let resolved =
+                build_resolved_from_provider(provider_key, entry, &disc.model_id, Some(disc));
             out.push(EffectiveModel {
                 source: EffectiveSource::Discovered,
                 resolved,
@@ -269,7 +259,6 @@ fn resolve_provider_prefixed(
         return None;
     }
 
-    let chat_defaults = config.models.chat_provider_defaults.get(provider);
     let hidden_err = || {
         Err(EffectiveCatalogError::Hidden {
             name: name.into(),
@@ -289,7 +278,6 @@ fn resolve_provider_prefixed(
                 entry,
                 &disc.model_id,
                 Some(&disc),
-                chat_defaults,
             )));
         }
         // Not in the cache, but an explicitly-ignored id stays hidden so
@@ -306,11 +294,7 @@ fn resolve_provider_prefixed(
     // providers referenceable once the static `[chat.*]` catalog is retired
     // (#136).
     Some(Ok(build_resolved_from_provider(
-        provider,
-        entry,
-        model_id,
-        None,
-        chat_defaults,
+        provider, entry, model_id, None,
     )))
 }
 
@@ -334,12 +318,15 @@ fn find_static_by_upstream<'a>(
 /// provider/hardcoded defaults apply — the path that keeps models on a
 /// discovery-off provider referenceable after the static `[chat.*]` catalog is
 /// retired (#136).
+///
+/// `[providers.<provider>.defaults]` (the rehomed provider-level behavioral and
+/// vendor defaults — #137) is applied last, so it wins over discovered/hardcoded
+/// metadata, mirroring the static cascade.
 fn build_resolved_from_provider(
     provider_key: &str,
     entry: &ProviderEntry,
     model_id: &str,
     disc: Option<&DiscoveredModel>,
-    chat_provider_defaults: Option<&ModelConfigFields>,
 ) -> ResolvedModel {
     let provider_defaults = hardcoded_provider_defaults(provider_key).fields;
 
@@ -407,15 +394,12 @@ fn build_resolved_from_provider(
         zai_subscription: None,
     };
 
-    // Apply explicit `[chat.<provider>]` provider-level config last, so it
-    // wins over discovered upstream metadata — the same "user config wins"
-    // precedence static `[chat.<provider>.<model>]` entries get. This carries
-    // routing (`openrouter_provider`), `cache_ttl`, sampler knobs, etc. that
-    // the discovery feed never reports. Unset fields fall through to the
-    // discovered/hardcoded values built above.
-    if let Some(defaults) = chat_provider_defaults {
-        fields.merge_from(defaults);
-    }
+    // Apply `[providers.<provider>.defaults]` last, so it wins over discovered
+    // upstream metadata — the same "user config wins" precedence the static
+    // cascade gives. This carries routing (`openrouter_provider`), `cache_ttl`,
+    // sampler knobs, etc. that the discovery feed never reports. Unset fields
+    // fall through to the discovered/hardcoded values built above.
+    fields.merge_from(&entry.defaults);
 
     // The overlay may have changed `sdk`; `from_parts` reads it from `fields`
     // when present, so pass the (possibly overridden) value as the fallback too.
@@ -630,13 +614,13 @@ base_url = "https://example.test/v1"
     }
 
     #[test]
-    fn discovered_model_inherits_provider_level_chat_defaults() {
-        // `[chat.<provider>]` provider-level fields must cascade onto
-        // discovered models the same way they fold into static
-        // `[chat.<provider>.<model>]` entries. Regression: discovered models
-        // previously hard-coded `openrouter_provider: None`, silently dropping
-        // routing pins for discovery-only setups (the entire reason a user
-        // pins `order = ["Anthropic"]` for anthropic/* models on OpenRouter).
+    fn discovered_model_inherits_provider_level_defaults() {
+        // `[providers.<provider>.defaults]` fields must cascade onto discovered
+        // models the same way they fold into static `[chat.<provider>.<model>]`
+        // entries. Regression: discovered models previously hard-coded
+        // `openrouter_provider: None`, silently dropping routing pins for
+        // discovery-only setups (the entire reason a user pins
+        // `order = ["Anthropic"]` for anthropic/* models on OpenRouter).
         let tmp = tempfile::tempdir().unwrap();
         let loaded = make_loaded(
             &tmp,
@@ -645,12 +629,12 @@ base_url = "https://example.test/v1"
 sdk = "anthropic"
 api_key_env = "OR_KEY"
 base_url = "https://openrouter.ai/api/v1"
-"#,
-            r#"
-[chat.openrouter]
+
+[providers.openrouter.defaults]
 cache_ttl = "1h"
 openrouter_provider = { order = ["Anthropic"] }
 "#,
+            "",
         );
         write_cache_for(&tmp, "openrouter", &["anthropic/claude-opus-4.8"]);
 
@@ -660,7 +644,7 @@ openrouter_provider = { order = ["Anthropic"] }
         assert_eq!(m.cache_ttl.as_deref(), Some("1h"));
         let or = m
             .openrouter_provider
-            .expect("routing pin should be inherited from [chat.openrouter]");
+            .expect("routing pin should be inherited from [providers.openrouter.defaults]");
         let order = or
             .get("order")
             .and_then(|v| v.as_array())
@@ -670,7 +654,7 @@ openrouter_provider = { order = ["Anthropic"] }
     }
 
     #[test]
-    fn discovered_model_explicit_chat_default_overrides_discovered_metadata() {
+    fn discovered_model_explicit_default_overrides_discovered_metadata() {
         // User config wins over discovered upstream metadata: a provider-level
         // `max_output_tokens` must beat the discovery feed's reported value.
         let tmp = tempfile::tempdir().unwrap();
@@ -681,11 +665,11 @@ openrouter_provider = { order = ["Anthropic"] }
 sdk = "anthropic"
 api_key_env = "OR_KEY"
 base_url = "https://openrouter.ai/api/v1"
-"#,
-            r"
-[chat.openrouter]
+
+[providers.openrouter.defaults]
 max_output_tokens = 32768
-",
+"#,
+            "",
         );
         // write_cache_for reports max_output_tokens = 8192.
         write_cache_for(&tmp, "openrouter", &["anthropic/claude-opus-4.8"]);
@@ -1360,6 +1344,48 @@ enabled = false
             m.cache_ttl.as_deref(),
             Some("1h"),
             "anthropic SDK gets default cache_ttl"
+        );
+    }
+
+    #[test]
+    fn trusted_path_picks_up_provider_defaults() {
+        // The load-bearing `or-anthropic` case from #131: a discovery-off
+        // provider whose routing pin + max_output_tokens live in
+        // `[providers.<provider>.defaults]` must flow onto a trusted
+        // `provider:model_id` ref (no discovery, no static catalog).
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.or-anthropic]
+sdk = "anthropic"
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+
+[providers.or-anthropic.discovery]
+enabled = false
+
+[providers.or-anthropic.defaults]
+max_output_tokens = 8192
+openrouter_provider = { order = ["Anthropic"] }
+"#,
+            "",
+        );
+
+        let m = find_effective_model(
+            &loaded,
+            tmp.path(),
+            "or-anthropic:anthropic/claude-opus-4.8",
+            false,
+        )
+        .unwrap();
+        assert_eq!(m.max_output_tokens, Some(8192));
+        let or = m
+            .openrouter_provider
+            .expect("routing pin from [providers.or-anthropic.defaults]");
+        assert_eq!(
+            or.get("order").and_then(|v| v.as_array()).map(Vec::len),
+            Some(1)
         );
     }
 
