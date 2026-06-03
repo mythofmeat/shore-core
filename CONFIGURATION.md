@@ -325,7 +325,9 @@ is refused, as is a `reasoning_effort` value outside the sdk's accepted set
 values are grounded in the provider docs: Anthropic
 `low|medium|high|xhigh|max` (plus the `adaptive`/`off` sentinels),
 OpenAI/OpenRouter `minimal|low|medium|high|xhigh` (`xhigh` is their ceiling —
-`max` is Anthropic-only), Gemini `minimal|low|medium|high`.
+`max` is Anthropic-only), Gemini `minimal|low|medium|high` (with a per-model
+override dropping `minimal` for Gemini 3.x **Pro**, where it is Flash-only —
+see the matrix below).
 
 In addition to the sampler knobs, the **vendor knobs** are settable per-model
 through the same store: `openrouter_provider` (a routing object, e.g.
@@ -337,6 +339,38 @@ beats a `[providers.*.defaults]` or hardcoded provider default).
 `shore model setting` (no key) lists only the keys the active model's resolved
 sdk honors — so the vendor knobs appear for the models that use them and are
 hidden elsewhere — and shows the accepted `reasoning_effort` domain.
+
+### Verified capability matrix
+
+The data backing the capability checks lives in `core/config/capabilities.toml`
+(compiled into both the Rust daemon and the TS sidecar). The table below is the
+provider-doc audit (issue #166) for the models in rotation. Legend: ✅ honored ·
+🚫 rejected (400) · ⬜ ignored (no-op) · — n/a.
+
+| Model (sdk) | `reasoning_effort` | `temperature` / `top_p` | `budget_tokens` | thinking mode | caching | `max_output` |
+|---|---|---|---|---|---|---|
+| `claude-opus-4-8` (anthropic) | `low/medium/high/xhigh` (+`max`); default high | 🚫 | 🚫 (adaptive-only) | adaptive only | ✅ (1024-tok min) | 128k |
+| `claude-opus-4-6` (anthropic) | `low/medium/high/xhigh` (+`max`) → budget | ✅ | ✅ (enabled, deprecated) | adaptive + enabled | ✅ | 128k |
+| `deepseek-v4-pro` (openrouter) | native `{high, max}`, def high; OR folds `low/med→high`, `xhigh→max` | ⬜ (in thinking mode) | — | thinking on/off | undocumented on OR | 384k ctx |
+| `kimi-k2.6` (openrouter) | thinking on/off, no tiers (OR maps) | ✅ | — | thinking on/off | undocumented | 262k ctx |
+| `minimax-m3` (openrouter) | reasoning tokens, no tiers (OR maps) | ✅ (def 1 / 0.95) | — | reasoning on/off | undocumented | 1M ctx |
+| `glm-5.1` (zai) | ⬜ none — `thinking: enabled/disabled` only | ✅ `[0,1]`/`[0.01,1]`, gated by `do_sample` | — | thinking (compulsory when enabled) | ✅ context caching | 128k |
+| `gemini-3.1` Pro (gemini) | `low/medium/high`; `minimal` is **Flash-only** | ✅ (rec. default 1.0) | ✅ `thinkingBudget` (🚫 if combined with level) | thinkingLevel | ✅ | 64k (1M ctx) |
+
+Vendor-knob notes: `zai_clear_thinking` is a real GLM param (default true; affects
+**cross-turn** thinking blocks only); `zai_subscription` is account/auth (the GLM
+Coding Plan), not an API param, so it is a runtime knob rather than matrix data.
+`gemini_web_search` maps to Gemini's Google Search grounding (supported on 3.x).
+
+Sources: Anthropic
+[what's-new 4.8](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8)
+and [migration guide](https://platform.claude.com/docs/en/about-claude/models/migration-guide);
+[DeepSeek thinking_mode](https://api-docs.deepseek.com/guides/thinking_mode);
+[OpenRouter Kimi K2.6](https://openrouter.ai/moonshotai/kimi-k2.6/api) and
+[MiniMax M3](https://openrouter.ai/minimax/minimax-m3/api);
+[Z.AI chat-completion](https://docs.z.ai/api-reference/llm/chat-completion) and
+[GLM-5.1](https://docs.z.ai/guides/llm/glm-5.1);
+[Gemini 3 developer guide](https://ai.google.dev/gemini-api/docs/gemini-3).
 
 ## Character Workspaces
 

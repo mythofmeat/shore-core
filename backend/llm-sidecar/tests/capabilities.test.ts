@@ -26,3 +26,13 @@ test("gemini thinking levels stop at high", () => {
   expect(geminiLevelName("max")).toBeUndefined();
   expect(geminiLevelName("xhigh")).toBeUndefined();
 });
+
+test("gemini-3.1 Pro drops `minimal` via model_override (Flash-only level)", () => {
+  // Issue #166, grounded in https://ai.google.dev/gemini-api/docs/gemini-3 —
+  // Pro exposes thinkingLevel low|medium|high; `minimal` is Flash/Flash-Lite-only.
+  expect(reasoningDomain("gemini", "gemini-3.1")).toEqual(["low", "medium", "high"]);
+  expect(foldEffort("gemini", "minimal", "gemini-3.1")).toBeUndefined();
+  expect(foldEffort("gemini", "low", "gemini-3.1")).toBe("low");
+  // The sdk default (Flash tier) still keeps `minimal`.
+  expect(reasoningDomain("gemini", "gemini-3.5-flash")).toContain("minimal");
+});
