@@ -32,7 +32,7 @@ fn write_stdout_line(args: std::fmt::Arguments<'_>) {
 fn make_model(effort: &str) -> ResolvedModel {
     ResolvedModel {
         name: format!("ab-{effort}"),
-        qualified_name: format!("chat.anthropic.ab-{effort}"),
+        qualified_name: "anthropic:claude-opus-4-6".into(),
         category: "chat".into(),
         provider_key: "anthropic".into(),
         sdk: Sdk::Anthropic,

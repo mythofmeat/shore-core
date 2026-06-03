@@ -512,7 +512,7 @@ mod tests {
     fn test_model(name: &str, provider_key: &str, sdk: Sdk) -> ResolvedModel {
         ResolvedModel {
             name: name.into(),
-            qualified_name: format!("chat.{provider_key}.{name}"),
+            qualified_name: format!("{provider_key}:claude-test"),
             category: "chat".into(),
             provider_key: provider_key.into(),
             sdk,

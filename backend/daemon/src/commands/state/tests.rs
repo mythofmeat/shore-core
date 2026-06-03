@@ -333,18 +333,16 @@ fn list_models_reports_config_default_as_active() {
 #[test]
 fn list_models_active_name_prefers_resolved_model_over_string() {
     // The active-model display name must come from the already-resolved model,
-    // not from re-resolving the `active_model` string. This matters for
-    // discovered models whose `qualified_name` (`chat.<provider>.<model_id>`)
-    // is a synthetic, display-only string the resolver rejects — reading the
-    // resolved model avoids that dead round-trip. A divergent `active_model`
-    // string proves the resolved model is authoritative.
+    // not from re-resolving the `active_model` string. A divergent
+    // `active_model` string proves the resolved model is authoritative; the
+    // resolved model carries the canonical `provider:model_id` qualified_name.
     use shore_config::models::{ModelConfigFields, ResolvedModel, Sdk};
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
     let resolved = ResolvedModel::from_parts(
         "anthropic/claude-opus-4.8".into(),
-        "chat.openrouter.anthropic/claude-opus-4.8".into(),
+        "openrouter:anthropic/claude-opus-4.8".into(),
         "chat".into(),
         "openrouter".into(),
         "anthropic/claude-opus-4.8".into(),
@@ -356,7 +354,7 @@ fn list_models_active_name_prefers_resolved_model_over_string() {
 
     let result = list_models(&ctx).unwrap();
     assert_eq!(
-        result["active"], "chat.openrouter.anthropic/claude-opus-4.8",
+        result["active"], "openrouter:anthropic/claude-opus-4.8",
         "active name should come from the resolved model, not the string"
     );
 }
@@ -1623,8 +1621,8 @@ base_url = "https://openrouter.ai/api/v1"
         switch_model(&mut ctx, &json!({"name": "anthropic/claude-opus-4.6"})).unwrap();
 
         // Simulate a fresh connection: dispatcher rebuilds ctx from
-        // preferences. `active_model` becomes the synthetic
-        // qualified_name (not a valid resolver input), but
+        // preferences. `active_model` becomes the canonical
+        // `provider:model_id` qualified_name (#139), and
         // `active_resolved_model` carries the real `ResolvedModel`.
         let (global, char_prefs) =
             crate::preferences::load_for_character(&ctx.data_dir, "TestChar").unwrap();
@@ -1640,10 +1638,10 @@ base_url = "https://openrouter.ai/api/v1"
         ctx.active_model = Some(resolved.qualified_name.clone());
         ctx.active_resolved_model = Some(resolved.clone());
 
-        // `model_settings` must succeed even though the string in
-        // `active_model` is the synthetic discovered qualified_name.
+        // `model_settings` must succeed with the canonical `provider:model_id`
+        // string in `active_model`.
         let out = model_settings(&ctx, &json!({})).unwrap();
-        assert_eq!(out["model"], "chat.openrouter.anthropic/claude-opus-4.6");
+        assert_eq!(out["model"], "openrouter:anthropic/claude-opus-4.6");
         assert_eq!(out["provider"], "openrouter");
         assert_eq!(out["model_id"], "anthropic/claude-opus-4.6");
 

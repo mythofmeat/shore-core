@@ -4,29 +4,41 @@
 #   include = ["models.toml"]
 #
 # Or placed in conf.d/ for automatic loading.
+#
+# Models are identified by `provider:model_id` (#139). Declare each provider's
+# transport once under [providers.<name>]; reference models as provider:model_id
+# (e.g. in [defaults].model). Behavioral defaults for every model a provider
+# resolves go under [providers.<name>.defaults]; per-model overrides go under
+# [models."<provider>:<model_id>"]. The legacy [chat.*] / [tools.*] catalogs are
+# deprecated (honored this release, with a warning on load).
 
-[chat.anthropic]
-sdk = "anthropic"
+# ── Chat providers ───────────────────────────────────────────────────────
+# `anthropic` and `openai` have hardcoded transport defaults, so an empty block
+# (or just an api_key_env override) is enough to register them. Reference their
+# models directly, e.g. `defaults.model = "anthropic:claude-sonnet-4-6"`.
+[providers.anthropic]
 api_key_env = "ANTHROPIC_API_KEY"
 
-[chat.anthropic.claude-sonnet]
-model_id = "claude-sonnet-4-6"
+# Provider-wide behavioral defaults (optional):
+[providers.anthropic.defaults]
+cache_ttl = "1h"
 
-[chat.anthropic.claude-opus]
-model_id = "claude-opus-4-6"
+# Per-model override keyed by the canonical provider:model_id (optional):
+[models."anthropic:claude-opus-4-6"]
 max_output_tokens = 8192
 
-[chat.openai]
-sdk = "openai"
+[providers.openai]
 api_key_env = "OPENAI_API_KEY"
 
-[chat.openai.gpt-4o]
-model_id = "gpt-4o"
-
-[tools.openrouter]
+# ── Tool / background provider ───────────────────────────────────────────
+# A custom OpenAI-compatible provider (here, OpenRouter) used for cheap
+# background work. Transport lives on the entry; behavioral defaults under
+# [.defaults]. Send background tasks to it via [defaults.background].model =
+# "openrouter:mistralai/mistral-small-2603".
+[providers.openrouter]
 sdk = "openai"
 api_key_env = "OPENROUTER_API_KEY"
-temperature = 0.5
+base_url = "https://openrouter.ai/api/v1"
 
-[tools.openrouter.mistral-small]
-model_id = "mistralai/mistral-small-2603"
+[providers.openrouter.defaults]
+temperature = 0.5

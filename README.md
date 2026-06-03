@@ -41,11 +41,12 @@ Create `~/.config/shore/config.toml`:
 
 ```toml
 [defaults]
-model = "claude-sonnet"
+model = "anthropic:claude-sonnet-4-6"   # provider:model_id
 
-[chat.anthropic.claude-sonnet]
-model_id = "claude-sonnet-4-6"
+[providers.anthropic]
 api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.anthropic.defaults]
 cache_ttl = "1h"
 ```
 

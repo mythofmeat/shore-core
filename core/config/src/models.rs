@@ -152,6 +152,18 @@ impl Sdk {
 /// The 20 configuration fields shared by provider configs, model entries,
 /// and resolved models.  All fields are `Option<T>` — `None` means "inherit
 /// from the next level up" (model → provider → hardcoded defaults).
+///
+/// The first three fields — `sdk` / `api_key_env` / `base_url` — are
+/// **transport**, not behavioral overlay. With the legacy `[chat.*]` catalog
+/// deprecated (#139), transport has a single authoritative home: the
+/// `[providers.<name>]` registry entry. They survive on this struct only for
+/// (a) the legacy static `ModelEntry` path, honored during the deprecation
+/// window, and (b) `ResolvedModel`, where they hold *resolved* transport. They
+/// are deliberately **not** an overlay concern: `[providers.<name>.defaults]`
+/// rejects them (`providers::transport_field_in_defaults`) and the per-model
+/// `[models."<provider>:<id>"]` overlay is `SamplerSettings`, which has no
+/// transport fields. Don't reintroduce transport as a model/provider-default
+/// overlay knob; route it through the registry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct ModelConfigFields {
@@ -863,6 +875,23 @@ fn parse_category(
             );
             let _ignored = models.insert(qualified, resolved);
         }
+    }
+
+    // Deprecation window (#139): `[chat.*]` / `[tools.*]` static catalogs are no
+    // longer the primary model-definition mechanism. Identity is now
+    // `provider:model_id`, transport lives in `[providers.<p>]`, and behavioral
+    // knobs live in `[models."<p>:<id>"]`. We still honor the static entries this
+    // cycle, but warn once per non-empty category so configs migrate before the
+    // entries are physically removed.
+    if !models.is_empty() {
+        warn!(
+            category,
+            entries = models.len(),
+            "`[{category}.*]` is deprecated and will be removed: define models via \
+             `[providers.<provider>]` and select them as `provider:model_id`; move \
+             behavioral overrides to `[models.\"<provider>:<model_id>\"]`. The static \
+             entries are still honored this release."
+        );
     }
 
     debug!(category, models = models.len(), "Category parsing complete");
