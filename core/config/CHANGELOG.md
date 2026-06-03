@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.9.0...shore-config-v0.10.0) - 2026-06-03
+
+### Other
+
+- Address CodeRabbit review (PR #176)
+- Deprecate static [chat.*]/[tools.*] catalog ([#139](https://github.com/mythofmeat/shore-core/pull/139))
+- Address CodeRabbit review on #172 ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Remove the dead `thinking_enabled` model setting ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Make `reasoning_effort = "off"` settable on Kimi/moonshot ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Native DeepSeek + Moonshot providers via the Vercel AI SDK ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Per-model OpenRouter capability resolution by model id ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Make Gemini 3.1 effort override Pro-specific (CodeRabbit #171)
+- Ground capability matrix in provider docs; fix Gemini 3.x Pro effort domain ([#166](https://github.com/mythofmeat/shore-core/pull/166))
+- Unify embedding/image_generation onto provider:model_id shape ([#140](https://github.com/mythofmeat/shore-core/pull/140)) ([#169](https://github.com/mythofmeat/shore-core/pull/169))
+- Capability-aware `shore model setting` + single-source capabilities.toml ([#162](https://github.com/mythofmeat/shore-core/pull/162)) ([#165](https://github.com/mythofmeat/shore-core/pull/165))
+- Per-sdk capability matrix in code + provider/sdk tiebreak ([#138](https://github.com/mythofmeat/shore-core/pull/138)) ([#161](https://github.com/mythofmeat/shore-core/pull/161))
+- Recover #137: rehome per-provider defaults onto [providers.*.defaults] (stranded by merge race) ([#160](https://github.com/mythofmeat/shore-core/pull/160))
+- Correctness ratchet Tier 2: draconian clippy::restriction + rustc paranoia lints ([#115](https://github.com/mythofmeat/shore-core/pull/115)) ([#144](https://github.com/mythofmeat/shore-core/pull/144))
+
 ## [0.9.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.8.1...shore-config-v0.9.0) - 2026-06-02
 
 ### Breaking

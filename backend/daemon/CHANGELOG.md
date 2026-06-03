@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [12.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v11.0.2...shore-daemon-v12.0.0) - 2026-06-03
+
+### Other
+
+- Address CodeRabbit review (PR #176)
+- Deprecate static [chat.*]/[tools.*] catalog ([#139](https://github.com/mythofmeat/shore-core/pull/139))
+- Embedding dimensions: preserve unset (None) instead of defaulting to 1536
+- Track provider provenance per MessageAlternative ([#102](https://github.com/mythofmeat/shore-core/pull/102))
+- Harden compaction write_allowed_path against traversal ([#117](https://github.com/mythofmeat/shore-core/pull/117))
+- Address CodeRabbit review on #172 ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Remove the dead `thinking_enabled` model setting ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Make `reasoning_effort = "off"` settable on Kimi/moonshot ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Native DeepSeek + Moonshot providers via the Vercel AI SDK ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Disable reasoning on OpenRouter via reasoning.effort="none" ([#164](https://github.com/mythofmeat/shore-core/pull/164))
+- Unify embedding/image_generation onto provider:model_id shape ([#140](https://github.com/mythofmeat/shore-core/pull/140)) ([#169](https://github.com/mythofmeat/shore-core/pull/169))
+- Capability-aware `shore model setting` + single-source capabilities.toml ([#162](https://github.com/mythofmeat/shore-core/pull/162)) ([#165](https://github.com/mythofmeat/shore-core/pull/165))
+- Per-sdk capability matrix in code + provider/sdk tiebreak ([#138](https://github.com/mythofmeat/shore-core/pull/138)) ([#161](https://github.com/mythofmeat/shore-core/pull/161))
+- enable clippy::arithmetic_side_effects on shore-daemon + diagnostics ([#148](https://github.com/mythofmeat/shore-core/pull/148)) ([#159](https://github.com/mythofmeat/shore-core/pull/159))
+- Recover #137: rehome per-provider defaults onto [providers.*.defaults] (stranded by merge race) ([#160](https://github.com/mythofmeat/shore-core/pull/160))
+- enable clippy::indexing_slicing on shore-daemon ([#147](https://github.com/mythofmeat/shore-core/pull/147)) ([#157](https://github.com/mythofmeat/shore-core/pull/157))
+- Correctness ratchet Tier 2: draconian clippy::restriction + rustc paranoia lints ([#115](https://github.com/mythofmeat/shore-core/pull/115)) ([#144](https://github.com/mythofmeat/shore-core/pull/144))
+
 ## [11.0.2](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v11.0.1...shore-daemon-v11.0.2) - 2026-06-02
 
 ### Other
