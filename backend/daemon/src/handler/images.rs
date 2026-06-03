@@ -414,6 +414,7 @@ mod tests {
                 }],
                 content_blocks: vec![],
                 timestamp: "t".into(),
+                provider_key: None,
             }],
             timestamp: "t".into(),
             provider_key: None,

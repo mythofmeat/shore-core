@@ -469,6 +469,7 @@ mod tests {
                     text: "response".into(),
                 }],
                 timestamp: "2026-01-01T00:00:00Z".into(),
+                provider_key: None,
             }],
             timestamp: "2026-01-01T00:00:00Z".into(),
             provider_key: None,

@@ -107,6 +107,16 @@ pub struct MessageAlternative {
     pub content_blocks: Vec<ContentBlock>,
     #[serde(default)]
     pub timestamp: String,
+    /// Provider key that minted this alternative's content. A regenerated
+    /// assistant body can be produced under a different provider than the
+    /// original message or a sibling alternative, so each alternative carries
+    /// its own provenance rather than inheriting the single
+    /// [`Message::provider_key`]. The replay portability filter uses this to
+    /// drop opaque thinking data the active provider cannot interpret. `None`
+    /// for alternatives persisted before per-alternative provenance tracking,
+    /// in which case callers fall back to [`Message::provider_key`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_key: Option<String>,
 }
 
 impl MessageAlternative {
@@ -480,6 +490,7 @@ mod tests {
             }],
             content_blocks: vec![],
             timestamp: "2026-01-01T00:00:00Z".into(),
+            provider_key: None,
         }];
 
         let json_str = msg.serialize_for_storage().unwrap();

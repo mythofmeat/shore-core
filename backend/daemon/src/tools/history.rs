@@ -598,6 +598,7 @@ mod tests {
                 images: vec![],
                 content_blocks: active.content_blocks.clone(),
                 timestamp: active.timestamp.clone(),
+                provider_key: None,
             },
             MessageAlternative {
                 content: "Coffee came up in a regenerated reply.".to_string(),
@@ -606,6 +607,7 @@ mod tests {
                     text: "Coffee came up in a regenerated reply.".to_string(),
                 }],
                 timestamp: "2026-01-01T00:01:00Z".to_string(),
+                provider_key: None,
             },
         ];
         std::fs::write(
@@ -764,6 +766,7 @@ mod tests {
                 images: vec![],
                 content_blocks: active.content_blocks.clone(),
                 timestamp: active.timestamp.clone(),
+                provider_key: None,
             },
             MessageAlternative {
                 content: "Tea appeared in a regenerated reply.".to_string(),
@@ -772,6 +775,7 @@ mod tests {
                     text: "Tea appeared in a regenerated reply.".to_string(),
                 }],
                 timestamp: "2026-05-13T09:30:00+10:00".to_string(),
+                provider_key: None,
             },
         ];
         write_active(character_dir, &[active]);
@@ -816,6 +820,7 @@ mod tests {
                 images: vec![],
                 content_blocks: first.content_blocks.clone(),
                 timestamp: first.timestamp.clone(),
+                provider_key: None,
             },
             MessageAlternative {
                 content: "Regenerated reply.".to_string(),
@@ -824,6 +829,7 @@ mod tests {
                     text: "Regenerated reply.".to_string(),
                 }],
                 timestamp: "2026-05-13T11:00:00+10:00".to_string(),
+                provider_key: None,
             },
         ];
         let second = msg_at(

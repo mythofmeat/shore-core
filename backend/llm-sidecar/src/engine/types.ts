@@ -33,6 +33,8 @@ export interface MessageAlternative {
   images: ImageRef[];
   content_blocks: ContentBlock[];
   timestamp: string;
+  /** Provider that minted this alternative's content; see `Message.provider_key`. */
+  provider_key?: string;
 }
 
 export interface Message {
@@ -45,4 +47,9 @@ export interface Message {
   alt_count?: number;
   alternatives?: MessageAlternative[];
   timestamp: string;
+  /**
+   * Provider key that minted this message's opaque thinking data. Carried for
+   * wire-shape parity; the replay portability filter runs daemon-side.
+   */
+  provider_key?: string;
 }
