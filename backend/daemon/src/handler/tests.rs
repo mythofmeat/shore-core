@@ -1,13 +1,3 @@
-#![expect(
-    unused_qualifications,
-    unused_results,
-    clippy::wildcard_enum_match_arm,
-    clippy::clone_on_ref_ptr,
-    clippy::unreachable,
-    clippy::let_underscore_must_use,
-    reason = "test module: fully-qualified paths, ignored JSON/Option results, exhaustive-by-panic match arms, Arc clones, and unreachable! assertions are idiomatic test scaffolding (mirrors clippy.toml's allow-unwrap/expect/panic-in-tests)"
-)]
-
 use super::*;
 use images::media_type_for_path;
 use shore_config::app::{AutonomyConfig, CompactionConfig, NotificationsConfig};
@@ -25,7 +15,7 @@ async fn make_handler(
 ) -> (
     MessageHandler,
     broadcast::Receiver<ServerMessage>,
-    tokio::sync::mpsc::Receiver<ServerMessage>,
+    mpsc::Receiver<ServerMessage>,
 ) {
     make_basic_handler_with_models(tmp, chars, shore_config::models::ModelCatalog::default()).await
 }
@@ -37,7 +27,7 @@ async fn make_basic_handler_with_models(
 ) -> (
     MessageHandler,
     broadcast::Receiver<ServerMessage>,
-    tokio::sync::mpsc::Receiver<ServerMessage>,
+    mpsc::Receiver<ServerMessage>,
 ) {
     let config_dir = tmp.path().join("config");
     let data_dir = tmp.path().join("data");
@@ -54,7 +44,7 @@ async fn make_basic_handler_with_models(
     }
 
     let (push_tx, push_rx) = broadcast::channel(16);
-    let (direct_tx, direct_rx) = tokio::sync::mpsc::channel(16);
+    let (direct_tx, direct_rx) = mpsc::channel(16);
     let server = shore_swp_server::Server::new(shore_swp_server::ServerConfig {
         addr: "127.0.0.1:0".into(),
         allowed_hosts: vec![],
@@ -75,7 +65,7 @@ async fn make_basic_handler_with_models(
         )
         .await;
 
-    let loaded_config = shore_config::LoadedConfig::new_for_test(
+    let loaded_config = LoadedConfig::new_for_test(
         shore_config::app::AppConfig::default(),
         models,
         shore_config::ShoreDirs {
@@ -101,7 +91,7 @@ async fn make_basic_handler_with_models(
         loaded_config.clone(),
     );
 
-    let ledger_client = shore_ledger::LedgerClient::new(
+    let ledger_client = LedgerClient::new(
         shore_llm::LlmClient::try_new().unwrap(),
         &data_dir.join("ledger.db"),
     )
@@ -123,7 +113,7 @@ async fn make_basic_handler_with_models(
         )),
     };
 
-    let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);
+    let (_control_tx, control_rx) = mpsc::channel(16);
     let handler = MessageHandler::new(MessageHandlerDeps {
         registry: Arc::new(Mutex::new(registry)),
         cmd_ctx,
@@ -154,7 +144,7 @@ fn test_request_meta(character: Option<&str>, rid: Option<&str>) -> RequestMeta 
     RequestMeta {
         session: shore_swp_server::SessionMeta {
             client_id: shore_swp_server::ClientId(1),
-            session_id: shore_swp_server::SessionId(1),
+            session_id: SessionId(1),
             client_type: "test-client".into(),
             client_name: "test".into(),
             capabilities: vec!["streaming".into()],
@@ -208,6 +198,10 @@ async fn list_models_reports_effective_active_model_for_selected_character() {
     let result = handler
         .dispatch_command(&cmd, &test_request_meta(Some("Alice"), None))
         .await;
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "exhaustive-by-panic test arm"
+    )]
     match result {
         ServerMessage::CommandOutput(output) => {
             assert_eq!(output.name, "list_models");
@@ -216,7 +210,7 @@ async fn list_models_reports_effective_active_model_for_selected_character() {
         other => panic!("Expected CommandOutput, got {other:?}"),
     }
 
-    let session = handler.session_state_mut(shore_swp_server::SessionId(1));
+    let session = handler.session_state_mut(SessionId(1));
     assert_eq!(
         session.active_model.as_deref(),
         Some("chat.openrouter.gpt-4o")
@@ -239,7 +233,7 @@ async fn history_snapshot_reports_effective_active_model_for_selected_character(
     .unwrap();
 
     let snapshot = crate::handshake::build_session_history_snapshot(
-        handler.registry.clone(),
+        Arc::clone(&handler.registry),
         Some("Alice".into()),
         None,
     )
@@ -260,6 +254,10 @@ async fn dispatch_command_invalid_character() {
 
     let meta = test_request_meta(Some("Bob"), None);
     let result = handler.dispatch_command(&cmd, &meta).await;
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "exhaustive-by-panic test arm"
+    )]
     match result {
         ServerMessage::Error(e) => {
             assert_eq!(e.code, ErrorCode::InvalidRequest);
@@ -327,6 +325,10 @@ async fn switch_character_pushes_authoritative_history_to_session() {
         )
         .await;
 
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "exhaustive-by-panic test arm"
+    )]
     match result {
         ServerMessage::CommandOutput(output) => {
             assert_eq!(output.name, "switch_character");
@@ -338,6 +340,10 @@ async fn switch_character_pushes_authoritative_history_to_session() {
     }
 
     let history = direct_rx.recv().await.unwrap();
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "exhaustive-by-panic test arm"
+    )]
     match history {
         ServerMessage::History(history) => {
             assert_eq!(history.selected_character.as_deref(), Some("Bob"));
@@ -362,6 +368,10 @@ async fn dispatch_command_ambiguous_character() {
 
     let meta = test_request_meta(None, None);
     let result = handler.dispatch_command(&cmd, &meta).await;
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "exhaustive-by-panic test arm"
+    )]
     match result {
         ServerMessage::Error(e) => {
             assert_eq!(e.code, ErrorCode::InvalidRequest);
@@ -415,6 +425,10 @@ async fn config_reset_refreshes_registry_runtime_state() {
         )
         .await;
 
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "exhaustive-by-panic test arm"
+    )]
     match result {
         ServerMessage::CommandOutput(output) => {
             assert_eq!(output.name, "config_reset");
@@ -512,7 +526,7 @@ async fn hot_reload_clears_router_character_when_removed() {
     let tmp = TempDir::new().unwrap();
     let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
 
-    handler
+    let _ = handler
         .session_router
         .set_selected_character(SessionId(1), Some("Alice".into()))
         .await;
@@ -609,6 +623,10 @@ async fn config_set_runtime_override_survives_next_command() {
         )
         .await;
 
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "exhaustive-by-panic test arm"
+    )]
     match result {
         ServerMessage::CommandOutput(output) => {
             assert_eq!(output.data["set"], "defaults.stream");
@@ -631,6 +649,10 @@ async fn config_set_runtime_override_survives_next_command() {
         )
         .await;
 
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "exhaustive-by-panic test arm"
+    )]
     match result {
         ServerMessage::CommandOutput(output) => {
             assert_eq!(output.data["config"]["stream"], false);
@@ -657,9 +679,14 @@ async fn handle_engine_message_regen_builds_empty_body() {
         (char_name, effective_config)
     };
 
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        clippy::unreachable,
+        reason = "exhaustive-by-panic test arm"
+    )]
     let (body, is_regen) = match regen {
         ClientMessage::Regen(r) => {
-            let body = shore_protocol::client_msg::ClientMessageBody {
+            let body = ClientMessageBody {
                 rid: r.rid,
                 text: String::new(),
                 stream: r.stream,
@@ -675,13 +702,13 @@ async fn handle_engine_message_regen_builds_empty_body() {
 
     let direct_tx = handler
         .session_router
-        .sender_for(shore_swp_server::SessionId(1))
+        .sender_for(SessionId(1))
         .await
         .unwrap();
-    let gen_ctx = handler.gen_context(shore_swp_server::SessionId(1), direct_tx);
+    let gen_ctx = handler.gen_context(SessionId(1), direct_tx);
     let data_dir = handler.cmd_ctx.data_dir.clone();
 
-    let result = Box::pin(super::task::handle_generation(
+    let result = Box::pin(handle_generation(
         gen_ctx,
         GenerationParams {
             request: RequestMeta {
@@ -707,13 +734,11 @@ async fn handle_engine_message_regen_builds_empty_body() {
 async fn run_cancel_route_aborts_active_generation() {
     let tmp = TempDir::new().unwrap();
     let (mut handler, _push_rx, mut direct_rx) = make_handler(&tmp, &["Alice"]).await;
-    let (route_tx, route_rx) = tokio::sync::mpsc::channel(4);
+    let (route_tx, route_rx) = mpsc::channel(4);
     let route_rx = Arc::new(Mutex::new(route_rx));
 
-    handler
-        .session_state_mut(shore_swp_server::SessionId(1))
-        .generation_handle = Some(tokio::spawn(async {
-        tokio::time::sleep(std::time::Duration::from_mins(1)).await;
+    handler.session_state_mut(SessionId(1)).generation_handle = Some(tokio::spawn(async {
+        tokio::time::sleep(Duration::from_mins(1)).await;
     }));
 
     let handler_task = tokio::spawn(async move {
@@ -733,6 +758,10 @@ async fn run_cancel_route_aborts_active_generation() {
     drop(route_tx);
 
     let msg = direct_rx.recv().await.unwrap();
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "exhaustive-by-panic test arm"
+    )]
     match msg {
         ServerMessage::StreamEnd(end) => assert_eq!(end.finish_reason, "cancelled"),
         other => panic!("Expected StreamEnd, got {other:?}"),
@@ -841,6 +870,10 @@ async fn mock_sse_server(sse_body: String) -> (String, tokio::task::JoinHandle<(
         let (mut stream, _) = listener.accept().await.unwrap();
         let (mut reader, mut writer) = stream.split();
         let mut buf = vec![0u8; 16384];
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "probe read drains the socket; result intentionally ignored"
+        )]
         let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
 
         let response = format!(
@@ -889,7 +922,7 @@ fn mock_model_catalog(base_url: &str) -> shore_config::models::ModelCatalog {
     };
 
     let mut chat = BTreeMap::new();
-    chat.insert("test".into(), model);
+    let _ = chat.insert("test".into(), model);
     ModelCatalog {
         chat,
         ..Default::default()
@@ -903,7 +936,7 @@ async fn make_handler_with_models(
 ) -> (
     MessageHandler,
     broadcast::Receiver<ServerMessage>,
-    tokio::sync::mpsc::Receiver<ServerMessage>,
+    mpsc::Receiver<ServerMessage>,
 ) {
     let config_dir = tmp.path().join("config");
     let data_dir = tmp.path().join("data");
@@ -920,7 +953,7 @@ async fn make_handler_with_models(
     }
 
     let (push_tx, push_rx) = broadcast::channel(64);
-    let (direct_tx, direct_rx) = tokio::sync::mpsc::channel(64);
+    let (direct_tx, direct_rx) = mpsc::channel(64);
     let server = shore_swp_server::Server::new(shore_swp_server::ServerConfig {
         addr: "127.0.0.1:0".into(),
         allowed_hosts: vec![],
@@ -945,7 +978,7 @@ async fn make_handler_with_models(
     app_config.defaults.model = Some("test".into());
     app_config.behavior.tool_use.enabled = false;
 
-    let loaded_config = shore_config::LoadedConfig::new_for_test(
+    let loaded_config = LoadedConfig::new_for_test(
         app_config,
         models,
         shore_config::ShoreDirs {
@@ -971,7 +1004,7 @@ async fn make_handler_with_models(
         loaded_config.clone(),
     );
 
-    let ledger_client = shore_ledger::LedgerClient::new(
+    let ledger_client = LedgerClient::new(
         shore_llm::LlmClient::try_new().unwrap(),
         &data_dir.join("ledger.db"),
     )
@@ -993,7 +1026,7 @@ async fn make_handler_with_models(
         )),
     };
 
-    let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);
+    let (_control_tx, control_rx) = mpsc::channel(16);
     let handler = MessageHandler::new(MessageHandlerDeps {
         registry: Arc::new(Mutex::new(registry)),
         cmd_ctx,
@@ -1025,7 +1058,7 @@ async fn pipeline_user_message_to_persisted_response() {
         (char_name, effective_config)
     };
 
-    let body = shore_protocol::client_msg::ClientMessageBody {
+    let body = ClientMessageBody {
         rid: Some("test-rid".into()),
         text: "Hello, Alice!".into(),
         stream: true,
@@ -1037,13 +1070,13 @@ async fn pipeline_user_message_to_persisted_response() {
 
     let direct_tx = handler
         .session_router
-        .sender_for(shore_swp_server::SessionId(1))
+        .sender_for(SessionId(1))
         .await
         .unwrap();
-    let gen_ctx = handler.gen_context(shore_swp_server::SessionId(1), direct_tx);
+    let gen_ctx = handler.gen_context(SessionId(1), direct_tx);
     let data_dir = handler.cmd_ctx.data_dir.clone();
 
-    let result = Box::pin(super::task::handle_generation(
+    let result = Box::pin(handle_generation(
         gen_ctx,
         GenerationParams {
             request: RequestMeta {
@@ -1125,8 +1158,8 @@ async fn pipeline_user_message_to_persisted_response() {
 async fn register_extra_session(
     handler: &MessageHandler,
     id: u64,
-) -> tokio::sync::mpsc::Receiver<ServerMessage> {
-    let (tx, rx) = tokio::sync::mpsc::channel(16);
+) -> mpsc::Receiver<ServerMessage> {
+    let (tx, rx) = mpsc::channel(16);
     handler
         .session_router
         .register_session(
@@ -1147,7 +1180,7 @@ fn meta_for_session(character: Option<&str>, session_id: u64) -> RequestMeta {
     RequestMeta {
         session: shore_swp_server::SessionMeta {
             client_id: shore_swp_server::ClientId(session_id),
-            session_id: shore_swp_server::SessionId(session_id),
+            session_id: SessionId(session_id),
             client_type: "test-client".into(),
             client_name: format!("test-{session_id}"),
             capabilities: vec!["streaming".into()],
@@ -1160,7 +1193,7 @@ fn meta_for_session(character: Option<&str>, session_id: u64) -> RequestMeta {
 
 fn abort_generation(handler: &mut MessageHandler, session_id: u64) {
     if let Some(handle) = handler
-        .session_state_mut(shore_swp_server::SessionId(session_id))
+        .session_state_mut(SessionId(session_id))
         .generation_handle
         .take()
     {
@@ -1173,7 +1206,7 @@ async fn lease_set_on_user_message() {
     let tmp = TempDir::new().unwrap();
     let (mut handler, _push_rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
 
-    let body = shore_protocol::client_msg::ClientMessageBody {
+    let body = ClientMessageBody {
         rid: Some("r1".into()),
         text: "hi".into(),
         stream: false,
@@ -1194,7 +1227,7 @@ async fn lease_set_on_user_message() {
         .get("Alice")
         .copied()
         .expect("user message must seed the lease");
-    assert_eq!(lease.session_id, shore_swp_server::SessionId(1));
+    assert_eq!(lease.session_id, SessionId(1));
 
     abort_generation(&mut handler, 1);
 }
@@ -1226,17 +1259,17 @@ async fn resolve_lease_skips_self() {
     let tmp = TempDir::new().unwrap();
     let (mut handler, _push_rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
 
-    handler.last_user_session.insert(
+    let _ = handler.last_user_session.insert(
         "Alice".into(),
         LastUserLease {
-            session_id: shore_swp_server::SessionId(1),
+            session_id: SessionId(1),
             expires_at: Instant::now() + LEASE_TTL,
         },
     );
 
     assert!(
         handler
-            .resolve_lease_tx(shore_swp_server::SessionId(1), "Alice")
+            .resolve_lease_tx(SessionId(1), "Alice")
             .await
             .is_none(),
         "Same-session lease must not fan out to itself"
@@ -1249,17 +1282,17 @@ async fn resolve_lease_evicts_expired() {
     let (mut handler, _push_rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
 
     let _rx_b = register_extra_session(&handler, 2).await;
-    handler.last_user_session.insert(
+    let _ = handler.last_user_session.insert(
         "Alice".into(),
         LastUserLease {
-            session_id: shore_swp_server::SessionId(2),
+            session_id: SessionId(2),
             expires_at: Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
         },
     );
 
     assert!(
         handler
-            .resolve_lease_tx(shore_swp_server::SessionId(1), "Alice")
+            .resolve_lease_tx(SessionId(1), "Alice")
             .await
             .is_none(),
         "Expired lease must not be used"
@@ -1275,17 +1308,17 @@ async fn resolve_lease_evicts_disconnected_session() {
     let tmp = TempDir::new().unwrap();
     let (mut handler, _push_rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
 
-    handler.last_user_session.insert(
+    let _ = handler.last_user_session.insert(
         "Alice".into(),
         LastUserLease {
-            session_id: shore_swp_server::SessionId(99),
+            session_id: SessionId(99),
             expires_at: Instant::now() + LEASE_TTL,
         },
     );
 
     assert!(
         handler
-            .resolve_lease_tx(shore_swp_server::SessionId(1), "Alice")
+            .resolve_lease_tx(SessionId(1), "Alice")
             .await
             .is_none(),
         "Lease pointing at unknown session must yield None"
@@ -1302,21 +1335,21 @@ async fn fanout_forwards_to_lease_holder_when_different_session() {
     let (mut handler, _push_rx, mut rx_a) = make_handler(&tmp, &["Alice"]).await;
     let mut rx_b = register_extra_session(&handler, 2).await;
 
-    handler.last_user_session.insert(
+    let _ = handler.last_user_session.insert(
         "Alice".into(),
         LastUserLease {
-            session_id: shore_swp_server::SessionId(2),
+            session_id: SessionId(2),
             expires_at: Instant::now() + LEASE_TTL,
         },
     );
 
     let issuer_tx = handler
         .session_router
-        .sender_for(shore_swp_server::SessionId(1))
+        .sender_for(SessionId(1))
         .await
         .unwrap();
     let fan_tx = handler
-        .build_fanout_tx(shore_swp_server::SessionId(1), "Alice", issuer_tx)
+        .build_fanout_tx(SessionId(1), "Alice", issuer_tx)
         .await;
 
     let probe = ServerMessage::CommandOutput(shore_protocol::server_msg::CommandOutput {
@@ -1338,21 +1371,21 @@ async fn fanout_skips_lease_when_issuer_is_lease_holder() {
     let (mut handler, _push_rx, mut rx_a) = make_handler(&tmp, &["Alice"]).await;
     let mut rx_b = register_extra_session(&handler, 2).await;
 
-    handler.last_user_session.insert(
+    let _ = handler.last_user_session.insert(
         "Alice".into(),
         LastUserLease {
-            session_id: shore_swp_server::SessionId(1),
+            session_id: SessionId(1),
             expires_at: Instant::now() + LEASE_TTL,
         },
     );
 
     let issuer_tx = handler
         .session_router
-        .sender_for(shore_swp_server::SessionId(1))
+        .sender_for(SessionId(1))
         .await
         .unwrap();
     let fan_tx = handler
-        .build_fanout_tx(shore_swp_server::SessionId(1), "Alice", issuer_tx)
+        .build_fanout_tx(SessionId(1), "Alice", issuer_tx)
         .await;
 
     let probe = ServerMessage::CommandOutput(shore_protocol::server_msg::CommandOutput {
@@ -1376,7 +1409,7 @@ async fn cross_session_user_message_transfers_lease() {
     let (mut handler, _push_rx, _rx_a) = make_handler(&tmp, &["Alice"]).await;
     let _rx_b = register_extra_session(&handler, 2).await;
 
-    let body_a = shore_protocol::client_msg::ClientMessageBody {
+    let body_a = ClientMessageBody {
         rid: Some("ra".into()),
         text: "from a".into(),
         stream: false,
@@ -1393,7 +1426,7 @@ async fn cross_session_user_message_transfers_lease() {
         .await;
     abort_generation(&mut handler, 1);
 
-    let body_b = shore_protocol::client_msg::ClientMessageBody {
+    let body_b = ClientMessageBody {
         rid: Some("rb".into()),
         text: "from b".into(),
         stream: false,
@@ -1417,7 +1450,7 @@ async fn cross_session_user_message_transfers_lease() {
         .expect("lease should still be set");
     assert_eq!(
         lease.session_id,
-        shore_swp_server::SessionId(2),
+        SessionId(2),
         "Lease should transfer to the most recent user-message sender"
     );
 }
@@ -1426,19 +1459,19 @@ async fn cross_session_user_message_transfers_lease() {
 async fn all_clients_disconnected_clears_leases() {
     let tmp = TempDir::new().unwrap();
     let (mut handler, _push_rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
-    let (route_tx, route_rx) = tokio::sync::mpsc::channel(4);
+    let (route_tx, route_rx) = mpsc::channel(4);
     let route_rx = Arc::new(Mutex::new(route_rx));
 
-    handler.last_user_session.insert(
+    let _ = handler.last_user_session.insert(
         "Alice".into(),
         LastUserLease {
-            session_id: shore_swp_server::SessionId(1),
+            session_id: SessionId(1),
             expires_at: Instant::now() + LEASE_TTL,
         },
     );
 
     let leases_clear: Arc<std::sync::Mutex<Option<bool>>> = Arc::new(std::sync::Mutex::new(None));
-    let probe = leases_clear.clone();
+    let probe = Arc::clone(&leases_clear);
 
     let handler_task = tokio::spawn(async move {
         handler.run(route_rx).await;
