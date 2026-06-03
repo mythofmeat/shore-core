@@ -109,6 +109,22 @@ panic_in_result_fn = "warn"
 let_underscore_must_use = "warn"
 as_conversions = "warn"
 
+# Indexing/arithmetic/cast ratchet (#149). Same belt-and-suspenders pattern as
+# the panic-hygiene block above: `warn` here so a newly-added or un-locked crate
+# inherits the baseline automatically (CI's `-D warnings` keeps it hard), while
+# each cleaned crate independently escalates these to `deny` via its crate-root
+# `#![deny(...)]` (Cargo `[lints] workspace = true` can't add per-crate
+# overrides). All 10 crates currently deny these, so the workspace entry is a
+# floor for future crates, not a relaxation. `indexing_slicing` (#147) and
+# `arithmetic_side_effects` (#148) panic at runtime; the cast lints silently
+# corrupt values. Daemon tests exempt the index/arith pair at module level via
+# `#![cfg_attr(test, expect(...))]`, which a workspace `warn` does not disturb.
+indexing_slicing = "warn"
+arithmetic_side_effects = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_possible_wrap = "warn"
+
 # Low-noise Tier 2 lints (#115) that are clean workspace-wide.
 clone_on_ref_ptr = "warn"
 dbg_macro = "warn"
