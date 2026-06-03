@@ -545,7 +545,7 @@ mod tests {
         let ledger_tmp = TempDir::new().unwrap();
         let llm = RealCompactionLlm::new(
             LedgerClient::new(
-                shore_llm::LlmClient::new(),
+                shore_llm::LlmClient::try_new().unwrap(),
                 &ledger_tmp.path().join("ledger.db"),
             )
             .unwrap(),
@@ -629,7 +629,7 @@ mod tests {
         let ledger_tmp = TempDir::new().unwrap();
         let llm = RealCompactionLlm::new(
             LedgerClient::new(
-                shore_llm::LlmClient::new(),
+                shore_llm::LlmClient::try_new().unwrap(),
                 &ledger_tmp.path().join("ledger.db"),
             )
             .unwrap(),
@@ -713,7 +713,7 @@ mod tests {
         let ledger_tmp = TempDir::new().unwrap();
         let llm = RealCompactionLlm::new(
             LedgerClient::new(
-                shore_llm::LlmClient::new(),
+                shore_llm::LlmClient::try_new().unwrap(),
                 &ledger_tmp.path().join("ledger.db"),
             )
             .unwrap(),
@@ -811,7 +811,7 @@ mod tests {
             },
         );
         let ledger_tmp = TempDir::new().unwrap();
-        let mut llm_client = shore_llm::LlmClient::new();
+        let mut llm_client = shore_llm::LlmClient::try_new().unwrap();
         llm_client.set_sidecar_socket(mock.socket_path().to_path_buf());
         let llm = RealCompactionLlm::new(
             LedgerClient::new(llm_client, &ledger_tmp.path().join("ledger.db")).unwrap(),

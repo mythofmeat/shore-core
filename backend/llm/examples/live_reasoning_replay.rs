@@ -245,7 +245,13 @@ async fn main() -> ExitCode {
         retain_long: false,
     };
 
-    let client = LlmClient::new();
+    let client = match LlmClient::try_new() {
+        Ok(client) => client,
+        Err(e) => {
+            example_err!("failed to build HTTP client: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     match client.generate(&request).await {
         Ok(resp) => {
             let text = resp.extract_text();

@@ -455,7 +455,7 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
         chat_system.len() / 4
     );
 
-    let client = LlmClient::new();
+    let client = LlmClient::try_new().unwrap();
     let mut stats: Vec<CallStat> = Vec::new();
 
     // ── Phase 1: chat turns to warm the cache ────────────────────────────

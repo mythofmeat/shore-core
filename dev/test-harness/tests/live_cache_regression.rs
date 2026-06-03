@@ -468,7 +468,7 @@ async fn cache_holds_through_adaptive_tool_loop_and_followup() {
         system.len() / 4
     );
 
-    let client = LlmClient::new();
+    let client = LlmClient::try_new().unwrap();
     let mut stats: Vec<CallStat> = Vec::new();
     let mut cold_write: Option<u64> = None;
 

@@ -339,7 +339,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_rx.clone(),
     );
 
-    let mut raw_llm_client = LlmClient::new();
+    let mut raw_llm_client = LlmClient::try_new()?;
     if loaded.app.advanced.api_payload_logging {
         raw_llm_client.set_payload_log_dir(loaded.dirs.cache.clone());
         info!(

@@ -101,9 +101,11 @@ async fn make_basic_handler_with_models(
         loaded_config.clone(),
     );
 
-    let ledger_client =
-        shore_ledger::LedgerClient::new(shore_llm::LlmClient::new(), &data_dir.join("ledger.db"))
-            .unwrap();
+    let ledger_client = shore_ledger::LedgerClient::new(
+        shore_llm::LlmClient::try_new().unwrap(),
+        &data_dir.join("ledger.db"),
+    )
+    .unwrap();
 
     let cmd_ctx = CommandContext {
         config: loaded_config.clone(),
@@ -969,9 +971,11 @@ async fn make_handler_with_models(
         loaded_config.clone(),
     );
 
-    let ledger_client =
-        shore_ledger::LedgerClient::new(shore_llm::LlmClient::new(), &data_dir.join("ledger.db"))
-            .unwrap();
+    let ledger_client = shore_ledger::LedgerClient::new(
+        shore_llm::LlmClient::try_new().unwrap(),
+        &data_dir.join("ledger.db"),
+    )
+    .unwrap();
 
     let cmd_ctx = CommandContext {
         config: loaded_config.clone(),
