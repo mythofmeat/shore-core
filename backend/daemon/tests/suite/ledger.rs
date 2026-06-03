@@ -3,6 +3,10 @@ use shore_test_harness::TestHarness;
 
 /// After a successful LLM call the ledger DB must contain at least one entry
 /// with non-zero token counts.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn test_successful_call_recorded_in_ledger() {
     let mut harness = TestHarness::boot().await;

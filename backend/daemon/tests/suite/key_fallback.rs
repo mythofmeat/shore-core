@@ -112,6 +112,10 @@ async fn first_key_succeeds_no_fallback_warning() {
     harness.shutdown().await;
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn missing_first_key_rotates_to_second() {
     let budget_env = "FB_MISSING_BUDGET";
@@ -167,6 +171,10 @@ async fn missing_first_key_rotates_to_second() {
     harness.shutdown().await;
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn invalid_first_key_rotates_to_second() {
     let budget_env = "FB_INVALID_BUDGET";
@@ -217,6 +225,10 @@ async fn invalid_first_key_rotates_to_second() {
     harness.shutdown().await;
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn quota_exhausted_first_key_rotates_to_second() {
     let budget_env = "FB_QUOTA_BUDGET";
@@ -258,6 +270,10 @@ async fn quota_exhausted_first_key_rotates_to_second() {
     harness.shutdown().await;
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn budget_402_emits_budget_warning() {
     let budget_env = "FB_BUDGET402_BUDGET";

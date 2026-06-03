@@ -71,6 +71,10 @@ async fn recv_timeout(conn: &mut SWPConnection, dur: Duration) -> ServerMessage 
 }
 
 /// Helper: drain messages until we find one matching the predicate, or timeout.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "arithmetic on fixed test values (deadlines/indices) with no meaningful overflow"
+)]
 async fn recv_until<F>(conn: &mut SWPConnection, dur: Duration, pred: F) -> ServerMessage
 where
     F: Fn(&ServerMessage) -> bool,
@@ -166,6 +170,11 @@ temperature = 0.0
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    clippy::indexing_slicing,
+    reason = "long scenario kept in one readable flow; splits tracked in #109; indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 #[ignore = "Requires OPENROUTER_API_KEY"]
 async fn e2e_conversation_milestone() {
@@ -786,6 +795,11 @@ impl E2EHarness {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    clippy::indexing_slicing,
+    reason = "long scenario kept in one readable flow; splits tracked in #109; indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 #[ignore = "Requires OPENROUTER_API_KEY"]
 async fn e2e_generate_image() {
@@ -932,6 +946,11 @@ async fn e2e_generate_image() {
 
 // ── Web search E2E test ───────────────────────────────────────────────────
 
+#[expect(
+    clippy::too_many_lines,
+    clippy::indexing_slicing,
+    reason = "long scenario kept in one readable flow; splits tracked in #109; indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 #[ignore = "Requires OPENROUTER_API_KEY and TAVILY_API_KEY"]
 async fn e2e_web_search() {

@@ -233,6 +233,10 @@ async fn test_messages_still_work_after_compaction() {
 /// the actual daemon flow end-to-end: a regression at the `summarize`
 /// caller in `compaction/mod.rs` (e.g. constructing a 2-item `llm_messages`
 /// for the cached path) would pass the shore-llm tests but fail here.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn test_compaction_cached_path_appends_exactly_one_tail() {
     // Use a high max_turns so the daemon doesn't fire inline compaction

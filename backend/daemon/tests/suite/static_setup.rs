@@ -46,6 +46,10 @@ fn extract_command_output(messages: &[ServerMessage], expected_cmd: &str) -> Val
     output
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn static_only_setup_resolves_lists_and_sends() {
     let mut harness = TestHarness::boot().await;

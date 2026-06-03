@@ -5,6 +5,10 @@ use shore_test_harness::{AnthropicStreamBuilder, TestHarness};
 /// Verify that a multi-turn conversation with tool calls maintains structural
 /// integrity: every tool_use block in the final LLM request has a matching
 /// tool_result, and the message array alternates user/assistant correctly.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn test_multi_turn_tool_conversation_valid() {
     let mut harness = TestHarness::boot().await;
@@ -245,6 +249,10 @@ async fn test_system_prompt_always_array_format() {
 
 /// Verify that when the LLM returns two tool_use blocks in a single response,
 /// the follow-up request carries two tool_result blocks with unique IDs.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
 #[tokio::test]
 async fn test_multiple_tool_calls_have_unique_ids() {
     let mut harness = TestHarness::boot().await;

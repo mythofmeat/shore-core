@@ -1,11 +1,8 @@
 #![expect(
-    clippy::arithmetic_side_effects,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
-    clippy::too_many_lines,
     clippy::unwrap_used,
-    reason = "integration tests fail fast on setup/assertion failures; long scenario splits are tracked in #109"
+    reason = "integration tests fail fast on setup/assertion failures (mirrors clippy.toml's allow-unwrap/expect/panic-in-tests, which does not reach helper code outside #[test] fns)"
 )]
 
 mod helpers;
