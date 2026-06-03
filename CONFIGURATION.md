@@ -360,9 +360,11 @@ Merge order (lowest to highest precedence):
 
 `reasoning_effort` accepts `low`/`medium`/`high` or `off`. On OpenRouter
 models `off` is an explicit **disable** — it is sent as
-`reasoning: { effort: "none" }`, which turns reasoning off even on
-always-on reasoning models (where merely omitting the field would leave
-the model reasoning by default); on other sdks it simply omits reasoning.
+`reasoning: { effort: "none" }` (rather than merely omitting the field), so a
+reasoning-by-default model that supports toggling actually stops reasoning.
+Dedicated thinking-only endpoints (e.g. `moonshotai/kimi-k2-thinking`) reject
+disabling with a provider 400 — they cannot be turned off. On other sdks `off`
+simply omits reasoning.
 The legacy `shore reasoning ...` command writes through the same
 store. One-shot overrides — `shore model --all <name>`, `:model all
 <name>`, `shore provider refresh <name>` — apply to a single call and
@@ -400,8 +402,9 @@ OpenRouter) via `sdk = "deepseek"` / `sdk = "moonshot"` — the built-in `deepse
 and `moonshot` providers default to these. They use the Vercel AI SDK providers
 and expose native reasoning control: DeepSeek a graded `reasoning_effort`
 (`low|medium|high|xhigh|max`), Moonshot a thinking on/off toggle driven by
-`budget_tokens`. On both, `reasoning_effort = "off"` disables thinking outright
-(`thinking.type = "disabled"`).
+`budget_tokens`. On both, `reasoning_effort = "off"` requests a disable
+(`thinking.type = "disabled"`); models that can toggle stop reasoning, while
+dedicated thinking-only variants (e.g. `kimi-k2-thinking`) reject it upstream.
 
 In addition to the sampler knobs, the **vendor knobs** are settable per-model
 through the same store: `openrouter_provider` (a routing object, e.g.
