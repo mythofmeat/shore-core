@@ -39,13 +39,19 @@ domain = []
 
 # Optional per-model overrides of the accepted set. First whose `match` is a
 # (case-insensitive) substring of the model_id wins; otherwise the sdk default
-# applies. Intentionally EMPTY today — the per-sdk domains above are already
-# grounded in the provider docs (OpenAI/OpenRouter top out at `xhigh`; `max` is
-# Anthropic-only). Add an override only when a specific model's accepted set
-# genuinely differs from its sdk default, with a provider-doc reason. Shape:
+# applies. Add an override only when a specific model's accepted set genuinely
+# differs from its sdk default, with a provider-doc reason. Shape:
 #   [[reasoning_effort.model_override]]
 #   match  = "some-model-id"
 #   domain = ["minimal", "low", "medium", "high"]
+
+# Gemini 3.x Pro exposes thinkingLevel low|medium|high only; `minimal` is a
+# Flash / Flash-Lite-only level, so the sdk default (which keeps `minimal` for
+# the Flash tier) over-reports for Pro. Verified against the Gemini 3 developer
+# guide: https://ai.google.dev/gemini-api/docs/gemini-3 (issue #166).
+[[reasoning_effort.model_override]]
+match  = "gemini-3.1"
+domain = ["low", "medium", "high"]
 
 # ── Claude version rules ─────────────────────────────────────────────────────
 # A shared parser yields {family, major, minor} from a Claude model id (handling

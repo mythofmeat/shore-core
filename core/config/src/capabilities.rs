@@ -999,4 +999,33 @@ mod tests {
             Err(CapabilityError::Inapplicable { .. })
         ));
     }
+
+    #[test]
+    fn gemini_3_1_pro_rejects_minimal_via_model_override() {
+        // Gemini 3.1 Pro exposes thinkingLevel low|medium|high only; `minimal` is
+        // a Flash / Flash-Lite-only level (issue #166, grounded in the Gemini 3
+        // developer guide). The per-model override drops it from the sdk default.
+        let eff = |v: &str| toml::Value::String(v.into());
+        let domain = reasoning_effort_domain(&Sdk::Gemini, "gemini-3.1");
+        assert!(!domain.iter().any(|v| v == "minimal"));
+        for v in ["low", "medium", "high"] {
+            assert!(
+                validate(&Sdk::Gemini, "gemini-3.1", Field::ReasoningEffort, &eff(v)).is_ok(),
+                "gemini-3.1 should accept {v}"
+            );
+        }
+        assert!(matches!(
+            validate(
+                &Sdk::Gemini,
+                "gemini-3.1",
+                Field::ReasoningEffort,
+                &eff("minimal")
+            ),
+            Err(CapabilityError::OutOfDomain { .. })
+        ));
+        // The sdk default (Flash tier) still keeps `minimal`.
+        assert!(reasoning_effort_domain(&Sdk::Gemini, "gemini-3.5-flash")
+            .iter()
+            .any(|v| v == "minimal"));
+    }
 }
