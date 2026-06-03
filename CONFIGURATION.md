@@ -158,8 +158,10 @@ max_output_tokens = 8192
 > catalog still loads this release but emits a deprecation warning on parse.
 > Migrate each entry to a `[providers.*]` provider plus a `provider:model_id`
 > reference (move behavioral fields to `[providers.*.defaults]` or
-> `[models."<provider>:<model_id>"]`). A disabled provider is unreferenceable,
-> including by any legacy `[chat.*]` entry under it.
+> `[models."<provider>:<model_id>"]`). Disabling a provider blocks the
+> `provider:model_id` and bare-upstream-id forms (including for any legacy
+> `[chat.*]` entry under it); a legacy static alias's short/qualified-name
+> lookup still resolves this release.
 
 ### Embedding
 
@@ -239,8 +241,10 @@ Provider entries are the single home for transport (`sdk` / `base_url` /
 credentials) and unlock runtime model discovery. Every model is referenced as
 `provider:model_id` against a registered, enabled provider. A deprecated
 `[chat.<provider>.<alias>]` entry still resolves by its short/qualified name
-this release, but a disabled provider is unreferenceable (including any legacy
-`[chat.*]` entry under it).
+this release — even under a disabled provider. Disabling a provider only blocks
+the `provider:model_id` and bare-upstream-id forms (so a disabled provider's
+models, including any legacy `[chat.*]` entry, are unreferenceable by those
+forms).
 
 ### Single-key form (compact)
 

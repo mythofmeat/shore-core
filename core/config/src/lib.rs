@@ -839,12 +839,17 @@ fn validate_cron_schedule(expr: &str) -> Result<(), ConfigError> {
 ///
 /// Resolves successfully (no warning) for:
 /// - names present in the static `[chat.*]` / `[tools.*]` catalog; or
-/// - `provider:model_id` syntax where the provider exists, is enabled, and
-///   has discovery enabled — the actual cache lookup is the runtime
-///   resolver's job (`backend/daemon/src/effective_catalog.rs`).
+/// - `provider:model_id` syntax where the provider exists and is **enabled**.
+///   Discovery need not be on: an enabled provider resolves a fully-qualified
+///   ref via the trusted path even with discovery off (#136), so the
+///   trusted-path override suppresses the warning regardless. The actual
+///   lookup is the runtime resolver's job
+///   (`backend/daemon/src/effective_catalog.rs`).
 ///
-/// All other shapes log a `warn!` and return — the daemon still loads,
-/// because per-character preferences can override these defaults at runtime.
+/// All other shapes (a disabled provider, an unregistered provider, or a
+/// non-`provider:model_id` name absent from the catalog) log a `warn!` and
+/// return — the daemon still loads, because per-character preferences can
+/// override these defaults at runtime.
 fn warn_on_unresolvable_model_ref(
     catalog: &ModelCatalog,
     providers: &ProviderRegistry,

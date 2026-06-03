@@ -717,4 +717,57 @@ model_id = "minimax-tool"
         );
         assert!(resolve(&config).is_none());
     }
+
+    #[test]
+    fn compaction_pin_resolves_provider_prefixed_with_zero_statics() {
+        // #139: a `defaults.background.*` pin written as `provider:model_id`
+        // must resolve through the effective catalog's trusted path even with
+        // no static `[chat.*]` entry — mirroring `app.defaults.model`.
+        use shore_config::providers::ProviderRegistry;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app = AppConfig {
+            defaults: DefaultsConfig {
+                background: BackgroundDefaultsConfig {
+                    compaction: Some("openrouter:anthropic/claude-sonnet-4.5".to_string()),
+                    ..BackgroundDefaultsConfig::default()
+                },
+                ..DefaultsConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        let mut config = LoadedConfig::new_for_test(
+            app,
+            ModelCatalog::default(),
+            ShoreDirs {
+                config: tmp.path().join("config"),
+                data: tmp.path().join("data"),
+                runtime: tmp.path().join("runtime"),
+                cache: tmp.path().join("cache"),
+            },
+        );
+        let providers_table: toml::Table = toml::from_str(
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+
+[providers.openrouter.discovery]
+enabled = false
+"#,
+        )
+        .unwrap();
+        config.providers = ProviderRegistry::from_section(
+            providers_table.get("providers").and_then(|v| v.as_table()),
+        )
+        .unwrap();
+
+        let model = resolve(&config).expect("provider:model_id pin resolves with zero statics");
+        assert_eq!(model.provider_key, "openrouter");
+        assert_eq!(model.model_id, "anthropic/claude-sonnet-4.5");
+        assert_eq!(
+            model.qualified_name,
+            "openrouter:anthropic/claude-sonnet-4.5"
+        );
+    }
 }

@@ -858,12 +858,21 @@ pub fn resolve_background_model(
         shore_config::app::BackgroundTask::Dreaming => "dreaming",
     };
     if let Some(name) = config.app.defaults.resolve_background_model_name(task) {
-        let base = match config.models.find_model(name) {
-            Ok(m) => m.clone(),
+        // Resolve through the effective catalog so a background pin written as
+        // `provider:model_id` resolves with no static `[chat.*]` entry (#139),
+        // mirroring how `app.defaults.model` is handled in
+        // `resolve_active_for_character`.
+        let base = match crate::effective_catalog::find_effective_model(
+            config,
+            &config.dirs.cache,
+            name,
+            true,
+        ) {
+            Ok(m) => m,
             // The user *explicitly* configured a model for this task (or for
-            // `defaults.background.model`) but the catalog doesn't know it —
-            // almost always a typo. Warn loudly and fall back to the
-            // character's chat model so the daemon stays up.
+            // `defaults.background.model`) but it doesn't resolve — almost
+            // always a typo. Warn loudly and fall back to the character's chat
+            // model so the daemon stays up.
             Err(e) => {
                 tracing::warn!(
                     op,
