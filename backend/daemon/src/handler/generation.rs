@@ -15,6 +15,11 @@ fn thinking_enabled_from_provider_options(opts: Option<&serde_json::Value>) -> b
     let Some(opts) = opts else {
         return false;
     };
+    // An explicit disable (`reasoning_effort = "off"` → `thinking_enabled =
+    // false`, issue #164) means no reasoning regardless of any other key.
+    if opts.get("thinking_enabled") == Some(&serde_json::Value::Bool(false)) {
+        return false;
+    }
     let budget_on = opts
         .get("budget_tokens")
         .and_then(serde_json::Value::as_u64)
@@ -273,6 +278,17 @@ mod tests {
     #[test]
     fn thinking_enabled_unrelated_keys_only() {
         let v = json!({ "cache_ttl": "1h", "vertex_project": "x" });
+        assert!(!thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_explicit_disable_wins() {
+        // Issue #164: an explicit `thinking_enabled = false` (from
+        // `reasoning_effort = "off"`) means no reasoning for accounting,
+        // even if some other knob is present.
+        let v = json!({ "thinking_enabled": false });
+        assert!(!thinking_enabled_from_provider_options(Some(&v)));
+        let v = json!({ "thinking_enabled": false, "budget_tokens": 4096 });
         assert!(!thinking_enabled_from_provider_options(Some(&v)));
     }
 }

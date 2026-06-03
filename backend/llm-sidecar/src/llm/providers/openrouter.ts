@@ -202,7 +202,7 @@ export async function* openRouterStreamEvents(
 
 // ── request construction ────────────────────────────────────────────────────
 
-function buildCall(
+export function buildCall(
   req: SidecarRequest,
   streaming: boolean,
 ): { client: OpenRouter; chatRequest: ChatRequest } {
@@ -224,12 +224,21 @@ function buildCall(
   if (req.temperature !== undefined) chatRequest.temperature = req.temperature;
   if (req.top_p !== undefined) chatRequest.topP = req.top_p;
 
-  const effortRaw = req.provider_options?.["reasoning_effort"];
-  if (typeof effortRaw === "string") {
-    // foldEffort only ever returns an in-domain OpenRouter value (minimal/low/medium/high).
-    const effort = foldEffort("openrouter", effortRaw, req.model);
-    if (effort) {
-      chatRequest.reasoning = { effort: effort as NonNullable<ChatRequest["reasoning"]>["effort"] };
+  // Explicit disable (`reasoning_effort = "off"` → `thinking_enabled = false` in
+  // the daemon, issue #164): OpenRouter's `reasoning.effort = "none"` turns
+  // reasoning OFF even for always-on reasoning models (GLM/Kimi/DeepSeek), where
+  // simply omitting effort would leave them reasoning by default. `"none"` is a
+  // first-class value of the SDK's effort enum, so this rides the typed path.
+  if (req.provider_options?.["thinking_enabled"] === false) {
+    chatRequest.reasoning = { effort: "none" as NonNullable<ChatRequest["reasoning"]>["effort"] };
+  } else {
+    const effortRaw = req.provider_options?.["reasoning_effort"];
+    if (typeof effortRaw === "string") {
+      // foldEffort only ever returns an in-domain OpenRouter value (minimal/low/medium/high).
+      const effort = foldEffort("openrouter", effortRaw, req.model);
+      if (effort) {
+        chatRequest.reasoning = { effort: effort as NonNullable<ChatRequest["reasoning"]>["effort"] };
+      }
     }
   }
 
