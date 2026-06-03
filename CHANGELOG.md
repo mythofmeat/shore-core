@@ -19,6 +19,10 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   before the wire), while GPT-5 keeps sampling. No-tier / budget-mapped vendors
   (Kimi, DeepSeek, Z.AI, MiniMax) intentionally keep the generic OpenRouter effort
   set, since OpenRouter maps any effort to a token-budget ratio for them.
+  Relatedly, `reasoning_effort = "off"` now genuinely **disables** reasoning on
+  OpenRouter models: it is sent as `reasoning: { effort: "none" }`, which turns
+  thinking off even on always-on reasoning models (GLM/Kimi/DeepSeek/MiniMax),
+  where previously the field was merely omitted and the model kept reasoning.
 - The **vendor knobs** (`openrouter_provider`, `vertex_project`,
   `vertex_location`, `gemini_generation`, `gemini_web_search`,
   `zai_clear_thinking`, `zai_subscription`) are now settable per-model at runtime

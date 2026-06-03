@@ -722,9 +722,14 @@ pub fn apply_sampler_overlay(
         patched.top_p = Some(p);
     }
     if let Some(ref e) = overlay.reasoning_effort {
-        // "off" is the explicit-disable sentinel — store None so the
-        // request builder omits the reasoning_effort field entirely.
-        patched.reasoning_effort = if e == "off" { None } else { Some(e.clone()) };
+        // "off" is the explicit-disable sentinel; it is PRESERVED here (not
+        // collapsed to None) and translated by the request builder into an
+        // explicit thinking-off signal (`provider_options.thinking_enabled =
+        // false`). That lets the OpenRouter adapter send `reasoning.effort =
+        // "none"`, so always-on reasoning models (OR-routed GLM/Kimi/DeepSeek)
+        // actually get reasoning disabled on the wire — merely omitting the
+        // field would leave them reasoning by default.
+        patched.reasoning_effort = Some(e.clone());
     }
     if let Some(b) = overlay.budget_tokens {
         patched.budget_tokens = Some(b);
@@ -1824,10 +1829,11 @@ model_id = "claude-opus-4-6"
     }
 
     #[test]
-    fn apply_sampler_overlay_off_clears_reasoning_effort() {
-        // Phase 3 invariant: setting reasoning_effort = "off" in
-        // preferences clears the field on the resolved model so the
-        // request builder omits it entirely.
+    fn apply_sampler_overlay_preserves_off_sentinel() {
+        // The "off" disable sentinel is now PRESERVED on the resolved model
+        // (issue #164): the request builder translates it into an explicit
+        // `thinking_enabled = false` so the OpenRouter adapter can send
+        // `reasoning.enabled = false` for always-on reasoning models.
         let catalog = make_catalog(
             r#"
 [chat.anthropic.opus]
@@ -1841,7 +1847,7 @@ reasoning_effort = "high"
             ..Default::default()
         };
         let patched = apply_sampler_overlay(base, &overlay);
-        assert!(patched.reasoning_effort.is_none(), "off → None");
+        assert_eq!(patched.reasoning_effort.as_deref(), Some("off"));
     }
 
     #[test]

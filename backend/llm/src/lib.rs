@@ -281,8 +281,18 @@ impl LlmClient {
         // Build provider_options from V1-style fields if not explicitly provided.
         let opts = provider_options.unwrap_or_else(|| {
             let mut map = serde_json::Map::new();
+            // `reasoning_effort = "off"` is the explicit-disable sentinel: emit
+            // it as `thinking_enabled = false` (NOT a reasoning_effort value),
+            // so the OpenRouter adapter sends `reasoning: { effort: "none" }`
+            // (turning thinking off even on always-on reasoning models) while
+            // every other adapter simply ignores the key and omits reasoning —
+            // matching prior behavior. A real effort passes through unchanged.
             if let Some(ref effort) = model.reasoning_effort {
-                let _ignored = map.insert("reasoning_effort".into(), serde_json::json!(effort));
+                if effort == "off" {
+                    let _ignored = map.insert("thinking_enabled".into(), serde_json::json!(false));
+                } else {
+                    let _ignored = map.insert("reasoning_effort".into(), serde_json::json!(effort));
+                }
             }
             if let Some(budget) = model.budget_tokens {
                 let _ignored = map.insert("budget_tokens".into(), serde_json::json!(budget));
@@ -555,6 +565,37 @@ mod tests {
         assert_eq!(req.provider_key.as_deref(), Some("anthropic"));
 
         std::env::remove_var("TEST_API_KEY_015");
+    }
+
+    #[test]
+    fn build_request_translates_reasoning_off_to_thinking_disabled() {
+        // Issue #164: `reasoning_effort = "off"` becomes a `thinking_enabled =
+        // false` provider option (NOT a reasoning_effort value), which the
+        // OpenRouter adapter turns into `reasoning.effort = "none"`.
+        std::env::set_var("TEST_API_KEY_164", "sk-test-key");
+        let mut model = test_model("or-model", "openrouter", Sdk::Openrouter);
+        model.api_key_env = Some("TEST_API_KEY_164".into());
+
+        model.reasoning_effort = Some("off".into());
+        let req = LlmClient::build_request(&model, vec![], None, None, None).unwrap();
+        let opts = req.provider_options.expect("provider_options present");
+        assert_eq!(
+            opts.get("thinking_enabled"),
+            Some(&serde_json::json!(false))
+        );
+        assert!(opts.get("reasoning_effort").is_none());
+
+        // A real effort passes through unchanged.
+        model.reasoning_effort = Some("high".into());
+        let req = LlmClient::build_request(&model, vec![], None, None, None).unwrap();
+        let opts = req.provider_options.expect("provider_options present");
+        assert_eq!(
+            opts.get("reasoning_effort"),
+            Some(&serde_json::json!("high"))
+        );
+        assert!(opts.get("thinking_enabled").is_none());
+
+        std::env::remove_var("TEST_API_KEY_164");
     }
 
     #[test]

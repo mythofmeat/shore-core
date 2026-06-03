@@ -358,7 +358,11 @@ Merge order (lowest to highest precedence):
 5. Saved global preferences (`preferences/global.toml`).
 6. Saved per-character preferences (`characters/<C>/preferences/models.toml`).
 
-`reasoning_effort` accepts `low`/`medium`/`high` or `off` (cleared).
+`reasoning_effort` accepts `low`/`medium`/`high` or `off`. On OpenRouter
+models `off` is an explicit **disable** — it is sent as
+`reasoning: { effort: "none" }`, which turns reasoning off even on
+always-on reasoning models (where merely omitting the field would leave
+the model reasoning by default); on other sdks it simply omits reasoning.
 The legacy `shore reasoning ...` command writes through the same
 store. One-shot overrides — `shore model --all <name>`, `:model all
 <name>`, `shore provider refresh <name>` — apply to a single call and
