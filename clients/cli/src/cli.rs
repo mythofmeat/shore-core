@@ -450,8 +450,8 @@ pub(crate) enum LogCommand {
 #[derive(Subcommand, Debug)]
 pub(crate) enum ModelCommand {
     /// Show, set, or reset saved sampler settings (temperature, top_p,
-    /// reasoning_effort, thinking_enabled, budget_tokens, max_output_tokens,
-    /// cache_ttl, sdk, preserve_prior_turns) for the active model.
+    /// reasoning_effort, budget_tokens, max_output_tokens, cache_ttl, sdk,
+    /// preserve_prior_turns) for the active model.
     ///
     /// `shore model setting`                          show effective sampler
     /// `shore model setting <key>`                    show one key
@@ -608,8 +608,7 @@ complete -c shore -n \"__fish_shore_using_subcommand provider; and __fish_seen_s
 ///   sentinel "off"; the daemon's overlay then explicitly suppresses
 ///   `reasoning_effort` on the resolved model. JSON null is reserved
 ///   for *clearing* a saved preference (handled by `unset` flows).
-/// - `thinking_enabled`, `preserve_prior_turns`: parse
-///   "true"/"false"/"yes"/"no"/"on"/"off".
+/// - `preserve_prior_turns`: parse "true"/"false"/"yes"/"no"/"on"/"off".
 /// - `temperature`, `top_p`: parse as f64.
 /// - `budget_tokens`, `max_output_tokens`: parse as integer.
 /// - `cache_ttl`: pass through as a string.
@@ -617,8 +616,7 @@ fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
     use serde_json::Value;
     let trimmed = raw.trim();
     match key {
-        "thinking_enabled"
-        | "preserve_prior_turns"
+        "preserve_prior_turns"
         | "gemini_web_search"
         | "zai_clear_thinking"
         | "zai_subscription" => match trimmed.to_ascii_lowercase().as_str() {

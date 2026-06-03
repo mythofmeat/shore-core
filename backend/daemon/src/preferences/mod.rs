@@ -82,9 +82,6 @@ pub struct SamplerSettings {
     /// `"off"` to explicitly disable reasoning. `None` means "inherit"
     /// (no opinion at this layer).
     pub reasoning_effort: Option<String>,
-    /// Forward-compat: explicit toggle for extended thinking. Phase 3+
-    /// will wire this into request building. Skipped by callers today.
-    pub thinking_enabled: Option<bool>,
     /// Token budget for extended thinking / reasoning. Mirrors
     /// `ResolvedModel.budget_tokens` in the static catalog.
     pub budget_tokens: Option<u32>,
@@ -136,7 +133,6 @@ impl SamplerSettings {
         merge!(temperature);
         merge!(top_p);
         merge!(reasoning_effort);
-        merge!(thinking_enabled);
         merge!(budget_tokens);
         merge!(max_output_tokens);
         merge!(cache_ttl);
@@ -156,7 +152,6 @@ impl SamplerSettings {
         self.temperature.is_none()
             && self.top_p.is_none()
             && self.reasoning_effort.is_none()
-            && self.thinking_enabled.is_none()
             && self.budget_tokens.is_none()
             && self.max_output_tokens.is_none()
             && self.cache_ttl.is_none()
@@ -171,15 +166,12 @@ impl SamplerSettings {
             && self.zai_subscription.is_none()
     }
 
-    /// Extract the sampler-shaped fields from a resolved static-catalog
-    /// model. `thinking_enabled` has no catalog counterpart and stays
-    /// `None`.
+    /// Extract the sampler-shaped fields from a resolved static-catalog model.
     pub fn from_resolved_model(model: &shore_config::models::ResolvedModel) -> Self {
         Self {
             temperature: model.temperature,
             top_p: model.top_p,
             reasoning_effort: model.reasoning_effort.clone(),
-            thinking_enabled: None,
             budget_tokens: model.budget_tokens,
             max_output_tokens: model.max_output_tokens,
             cache_ttl: model.cache_ttl.clone(),
@@ -461,7 +453,6 @@ pub struct SamplerScopes {
     pub temperature: Option<PreferenceScope>,
     pub top_p: Option<PreferenceScope>,
     pub reasoning_effort: Option<PreferenceScope>,
-    pub thinking_enabled: Option<PreferenceScope>,
     pub budget_tokens: Option<PreferenceScope>,
     pub max_output_tokens: Option<PreferenceScope>,
     pub cache_ttl: Option<PreferenceScope>,
@@ -495,7 +486,6 @@ pub fn resolve_sampler_scopes(
         note!(temperature);
         note!(top_p);
         note!(reasoning_effort);
-        note!(thinking_enabled);
         note!(budget_tokens);
         note!(max_output_tokens);
         note!(cache_ttl);
@@ -1109,7 +1099,6 @@ typo_setting = "x"
                     temperature: Some(0.7),
                     top_p: Some(0.95),
                     reasoning_effort: Some("high".into()),
-                    thinking_enabled: Some(true),
                     budget_tokens: Some(8192),
                     max_output_tokens: Some(4096),
                     cache_ttl: Some("5m".into()),

@@ -624,7 +624,6 @@ fn print_model_settings(data: &serde_json::Value) {
         "temperature",
         "top_p",
         "reasoning_effort",
-        "thinking_enabled",
         "budget_tokens",
         "max_output_tokens",
         "cache_ttl",
