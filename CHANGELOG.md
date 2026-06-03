@@ -8,6 +8,29 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- The **vendor knobs** (`openrouter_provider`, `vertex_project`,
+  `vertex_location`, `gemini_generation`, `gemini_web_search`,
+  `zai_clear_thinking`, `zai_subscription`) are now settable per-model at runtime
+  via `shore model setting` and the `preferences/models.toml` overlay, resolving
+  **model > sdk > provider**. Combined with the capability gating below,
+  `shore model setting` shows and accepts exactly the knobs each model's resolved
+  sdk honors — e.g. `zai_clear_thinking` appears for Z.AI models and is rejected
+  on others. Also: `budget_tokens` is now `Ignored` on OpenAI/OpenRouter/Z.AI
+  (only the Anthropic and Gemini wires consume it), so it no longer shows as a
+  no-op setting there.
+- `shore model setting` is now **capability-aware** (issue #162). It consumes the
+  per-sdk capability matrix (#138): setting a key the active model's resolved sdk
+  ignores or rejects (e.g. `cache_ttl` on a non-Anthropic model, a sampler knob on
+  a Claude ≥ 4.7 model) is refused at the boundary instead of silently misbehaving
+  on the wire, and a `reasoning_effort` value outside the sdk's accepted set is
+  rejected with the allowed set shown. `shore model setting` with no key now lists
+  only the keys the model honors and shows the accepted `reasoning_effort` domain.
+  The accepted `reasoning_effort` values are grounded in the provider docs:
+  Anthropic accepts `low/medium/high/xhigh/max` (`output_config.effort`); OpenAI and
+  OpenRouter accept `minimal/low/medium/high/xhigh` (`xhigh` is their ceiling — `max`
+  is Anthropic-only and is rejected on those sdks). This fixes #130: the prior code
+  folded both `xhigh` **and** `max` down to `high`, so the top reasoning tier could
+  never reach the OpenAI/OpenRouter wire.
 - `[behavior.tool_use] max_result_chars` caps how many characters a single tool
   result may contribute to the conversation. Defaults to `20000` (~5k tokens of
   code-like output); set to `0` to disable. Longer results are cut at a
@@ -41,6 +64,30 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   - A legacy `budget_tokens`/`thinking` request against Opus 4.7/4.8 (which
     reject `type: "enabled"`) now upgrades to adaptive thinking instead of 400ing.
   Unknown/future model ids stay permissive and honor the requested mode.
+- The Claude version parser (`parse_claude_version`, capabilities matrix #138) no
+  longer misreads the `YYYYMMDD` date in a dated `X.0` model id as the minor
+  version. `claude-sonnet-4-20250514` (Sonnet **4.0**) parsed as minor `20250514`,
+  wrongly tripping the ≥ 4.7 sampler-rejection cutoff — so `temperature`/`top_p`/
+  `budget_tokens` were dropped (in `from_parts`) or refused (now in `shore model
+  setting`) for a model that actually honors them. A date-shaped segment is now
+  treated as the `.0` release; a real minor plus a date (`claude-opus-4-1-20250805`
+  → `1`) still parses correctly.
+- The **sidecar** had the same dated-id parse bug in its Anthropic thinking-mode
+  classifier (`parseAnthropicModel`). It is gone now that the daemon and sidecar
+  share one model parser + rule table (see *Changed*), so dated Claude `X.0` ids
+  get the correct adaptive/enabled thinking mode.
+
+### Changed
+- Per-sdk/per-model reasoning-effort, Anthropic thinking-mode, and Claude
+  sampler-rejection tables are now a **single compiled-in source of truth**,
+  `core/config/capabilities.toml` — consumed by both the Rust daemon
+  (`include_str!`) and the TS sidecar (a `bun build`-inlined `.toml` import),
+  replacing five hand-synced copies across the two languages (the duplicated
+  `mapReasoningEffort`, `effortToBudget`, `thinkingCaps`/`thinkingLevel`, and the
+  Rust `reasoning_effort_domain`/sampler cutoff). The file is baked into the
+  binaries — not runtime- or user-editable. A cross-language parity fixture keeps
+  the two implementations in lockstep. No behavior change beyond the parser fix
+  above.
 
 ### Removed
 - `clients/gui-godot/` moved to its own repository at

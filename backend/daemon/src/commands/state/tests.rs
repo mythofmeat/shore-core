@@ -1027,6 +1027,231 @@ fn set_model_setting_reasoning_effort_off_stored_as_off_sentinel() {
 }
 
 #[test]
+fn set_model_setting_rejects_inapplicable_key() {
+    // `cache_ttl` only means anything on the Anthropic sdk; gpt-4o resolves to
+    // the openrouter sdk, which ignores it → boundary rejection (#162).
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    let err = set_model_setting(&mut ctx, &json!({"key": "cache_ttl", "value": "1h"})).unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+    assert!(
+        err.1.contains("cache_ttl") && err.1.contains("not applicable"),
+        "expected Inapplicable message, got {:?}",
+        err.1
+    );
+
+    // Nothing should have been persisted.
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    assert!(crate::preferences::load_preferences(&path)
+        .unwrap()
+        .model("openrouter", "gpt-4o")
+        .is_none());
+}
+
+#[test]
+fn set_model_setting_accepts_applicable_key() {
+    // `cache_ttl` on the anthropic sdk is honored.
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("claude-sonnet".into());
+
+    set_model_setting(&mut ctx, &json!({"key": "cache_ttl", "value": "5m"})).unwrap();
+
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert_eq!(
+        prefs
+            .model("anthropic", "claude-sonnet-4-20250514")
+            .unwrap()
+            .sampler
+            .cache_ttl
+            .as_deref(),
+        Some("5m")
+    );
+}
+
+#[test]
+fn set_model_setting_rejects_out_of_domain_reasoning_effort() {
+    // A bogus reasoning_effort is out of the openrouter sdk's value domain (#162).
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    let err = set_model_setting(
+        &mut ctx,
+        &json!({"key": "reasoning_effort", "value": "turbo"}),
+    )
+    .unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+    assert!(
+        err.1.contains("out of domain"),
+        "expected OutOfDomain message, got {:?}",
+        err.1
+    );
+}
+
+#[test]
+fn set_model_setting_reasoning_off_sentinel_is_exempt_from_domain() {
+    // "off" is the disable sentinel, intentionally absent from every domain;
+    // it must still be accepted on an sdk that honors reasoning_effort.
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    set_model_setting(
+        &mut ctx,
+        &json!({"key": "reasoning_effort", "value": "off"}),
+    )
+    .unwrap();
+}
+
+#[test]
+fn model_settings_surfaces_applicability_and_domain() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    let out = model_settings(&ctx, &json!({})).unwrap();
+    // openrouter sdk: cache_ttl is ignored, reasoning_effort honored, Shore-only
+    // keys are always applicable.
+    assert_eq!(out["applicability"]["cache_ttl"], "ignored");
+    assert_eq!(out["applicability"]["reasoning_effort"], "honored");
+    assert_eq!(out["applicability"]["sdk"], "always");
+    // The accepted reasoning_effort value set for the sdk is surfaced. `xhigh`
+    // is the real OpenRouter ceiling; `max` is Anthropic-only (absent here).
+    let domain = out["reasoning_effort_domain"].as_array().unwrap();
+    assert!(domain.iter().any(|v| v == "high"));
+    assert!(domain.iter().any(|v| v == "xhigh"));
+    assert!(!domain.iter().any(|v| v == "max"));
+}
+
+/// A catalog with Z.AI and Gemini models (their providers resolve to the Zai /
+/// Gemini sdks) for exercising the vendor knobs.
+fn vendor_models() -> ModelCatalog {
+    let toml_str = r#"
+[zai.glm]
+model_id = "glm-4.6"
+
+[gemini.flash]
+model_id = "gemini-2.5-flash"
+
+[openrouter.gpt-4o]
+model_id = "gpt-4o"
+"#;
+    let table: toml::Table = toml_str.parse().unwrap();
+    ModelCatalog::from_sections(Some(&table), None, None, None).unwrap()
+}
+
+#[test]
+fn set_model_setting_zai_clear_thinking_persists_on_zai_model() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());
+    ctx.active_model = Some("glm".into());
+
+    set_model_setting(
+        &mut ctx,
+        &json!({"key": "zai_clear_thinking", "value": false}),
+    )
+    .unwrap();
+
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert_eq!(
+        prefs
+            .model("zai", "glm-4.6")
+            .unwrap()
+            .sampler
+            .zai_clear_thinking,
+        Some(false)
+    );
+}
+
+#[test]
+fn set_model_setting_zai_clear_thinking_rejected_on_non_zai_model() {
+    // gpt-4o resolves to the openrouter sdk, which ignores zai_clear_thinking.
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    let err = set_model_setting(
+        &mut ctx,
+        &json!({"key": "zai_clear_thinking", "value": true}),
+    )
+    .unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+    assert!(
+        err.1.contains("zai_clear_thinking") && err.1.contains("not applicable"),
+        "expected Inapplicable, got {:?}",
+        err.1
+    );
+}
+
+#[test]
+fn set_model_setting_openrouter_provider_rejects_scalar() {
+    // The routing value must be an object, not a scalar.
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    let err = set_model_setting(
+        &mut ctx,
+        &json!({"key": "openrouter_provider", "value": "Anthropic"}),
+    )
+    .unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+    assert!(
+        err.1.contains("routing object"),
+        "expected object-required message, got {:?}",
+        err.1
+    );
+
+    // An object is accepted.
+    set_model_setting(
+        &mut ctx,
+        &json!({"key": "openrouter_provider", "value": {"order": ["Anthropic"]}}),
+    )
+    .unwrap();
+}
+
+#[test]
+fn set_model_setting_gemini_generation_persists_on_gemini_model() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());
+    ctx.active_model = Some("flash".into());
+
+    set_model_setting(&mut ctx, &json!({"key": "gemini_generation", "value": 3})).unwrap();
+
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert_eq!(
+        prefs
+            .model("gemini", "gemini-2.5-flash")
+            .unwrap()
+            .sampler
+            .gemini_generation,
+        Some(3)
+    );
+}
+
+#[test]
+fn model_settings_vendor_knob_applicability_per_sdk() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());
+    ctx.active_model = Some("glm".into());
+
+    let out = model_settings(&ctx, &json!({})).unwrap();
+    // Z.AI sdk: its own knob is honored; another vendor's knob is ignored;
+    // budget_tokens is ignored (only anthropic/gemini consume it).
+    assert_eq!(out["applicability"]["zai_clear_thinking"], "honored");
+    assert_eq!(out["applicability"]["gemini_generation"], "ignored");
+    assert_eq!(out["applicability"]["budget_tokens"], "ignored");
+    // Shore-only keys stay always-applicable.
+    assert_eq!(out["applicability"]["preserve_prior_turns"], "always");
+}
+
+#[test]
 fn model_info_includes_effective_sampler_for_active_character() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());

@@ -19,6 +19,15 @@ const SAMPLER_KEYS: &[&str] = &[
     "cache_ttl",
     "sdk",
     "preserve_prior_turns",
+    // Vendor knobs (per-model). The capability matrix gates which of these a
+    // given model's resolved sdk actually honors — see `capability_check`.
+    "openrouter_provider",
+    "vertex_project",
+    "vertex_location",
+    "gemini_generation",
+    "gemini_web_search",
+    "zai_clear_thinking",
+    "zai_subscription",
 ];
 
 /// Resolve the character whose preferences should be loaded/saved.
@@ -93,6 +102,28 @@ fn load_char_prefs(
             format!("Failed to load preferences: {e}"),
         )
     })
+}
+
+/// Map each settable sampler key to how the resolved `sdk` treats it (#162):
+/// `"honored"` / `"ignored"` / `"rejected"` from the capability matrix, or
+/// `"always"` for Shore-only keys (`thinking_enabled`, `sdk`,
+/// `preserve_prior_turns`) that name no matrix field. Clients show only
+/// `honored` / `always` keys.
+fn key_applicability(sdk: &shore_config::models::Sdk, model_id: &str) -> Value {
+    use shore_config::capabilities::{applicability, Applicability, Field};
+    let mut map = serde_json::Map::new();
+    for key in SAMPLER_KEYS {
+        let label = match Field::from_key(key) {
+            None => "always",
+            Some(field) => match applicability(sdk, model_id, field) {
+                Applicability::Honored => "honored",
+                Applicability::Ignored => "ignored",
+                Applicability::Rejected => "rejected",
+            },
+        };
+        let _ignored = map.insert((*key).to_string(), json!(label));
+    }
+    Value::Object(map)
 }
 
 fn scope_str(scope: PreferenceScope) -> &'static str {
@@ -417,6 +448,12 @@ pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResul
     let model_id = active.model_id.clone();
     let qualified = active.qualified_name.clone();
 
+    // Capability boundary (#162): reject keys the resolved sdk ignores/rejects
+    // and out-of-domain values *before* they reach the preference file (and
+    // later the wire). Keys with no matrix field — `thinking_enabled`, `sdk`,
+    // `preserve_prior_turns` — are Shore behaviors / transport and skip this.
+    capability_check(&active.sdk, &model_id, &key, &value)?;
+
     // Load the appropriate preferences file.
     let mut prefs = if scope == "global" {
         preferences::load_preferences(&preferences::global_preferences_path(&ctx.data_dir))
@@ -466,6 +503,42 @@ pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResul
         "key": key,
         "value": value,
     }))
+}
+
+/// Reject a setting the model's resolved `sdk` cannot honor, sourcing the
+/// message from [`shore_config::capabilities`] (#162). Returns `Ok(())` for
+/// keys outside the capability matrix (`thinking_enabled`, `sdk`,
+/// `preserve_prior_turns`) and for clearing a value (`null`).
+fn capability_check(
+    sdk: &shore_config::models::Sdk,
+    model_id: &str,
+    key: &str,
+    value: &Value,
+) -> Result<(), (ErrorCode, String)> {
+    use shore_config::capabilities::{self, Field};
+
+    // Clearing (`--reset`) is always allowed — there is no value to validate.
+    if value.is_null() {
+        return Ok(());
+    }
+    let Some(field) = Field::from_key(key) else {
+        return Ok(());
+    };
+
+    // The reasoning-effort disable sentinel ("off") is not a wire value — the
+    // overlay suppresses reasoning rather than sending it — so it is
+    // intentionally absent from every domain. Gate only its applicability.
+    let reasoning_off = field == Field::ReasoningEffort && value.as_str() == Some("off");
+
+    // `validate` only inspects the value for `reasoning_effort` (a string
+    // domain); for every other field a placeholder is sufficient, since the
+    // check there is pure applicability.
+    let probe = match value.as_str() {
+        Some(s) if !reasoning_off => toml::Value::String(s.to_string()),
+        _ => toml::Value::Boolean(true),
+    };
+    capabilities::validate(sdk, model_id, field, &probe)
+        .map_err(|e| (ErrorCode::InvalidRequest, e.to_string()))
 }
 
 fn apply_sampler_value(
@@ -561,9 +634,78 @@ fn apply_sampler_value(
         "preserve_prior_turns" => {
             sampler.preserve_prior_turns = parse_bool_value(value, "preserve_prior_turns")?;
         }
+        _ => return apply_vendor_sampler_value(sampler, key, value),
+    }
+    Ok(())
+}
+
+/// Parse/store the vendor knobs (`openrouter_provider`, `vertex_*`, `gemini_*`,
+/// `zai_*`). Split out of [`apply_sampler_value`] to keep each function small.
+fn apply_vendor_sampler_value(
+    sampler: &mut SamplerSettings,
+    key: &str,
+    value: &Value,
+) -> Result<(), (ErrorCode, String)> {
+    let invalid = |msg: String| (ErrorCode::InvalidRequest, msg);
+    match key {
+        "openrouter_provider" => {
+            sampler.openrouter_provider = if value.is_null() {
+                None
+            } else {
+                // Routing is an object (`{ order, allow_fallbacks, ... }`); a
+                // scalar would be stored verbatim but mean nothing on the wire.
+                if !value.is_object() {
+                    return Err(invalid(format!(
+                        "openrouter_provider must be a routing object, got {value}"
+                    )));
+                }
+                // The object arrives as JSON over SWP; store it as the
+                // `toml::Value` the catalog/overlay expects.
+                Some(toml::Value::try_from(value).map_err(|e| {
+                    invalid(format!(
+                        "openrouter_provider must be a TOML-compatible object: {e}"
+                    ))
+                })?)
+            };
+        }
+        "vertex_project" => {
+            sampler.vertex_project = parse_string_value(value, "vertex_project")?;
+        }
+        "vertex_location" => {
+            sampler.vertex_location = parse_string_value(value, "vertex_location")?;
+        }
+        "gemini_generation" => {
+            sampler.gemini_generation = if value.is_null() {
+                None
+            } else {
+                Some(parse_u32_value(value, "gemini_generation")?)
+            };
+        }
+        "gemini_web_search" => {
+            sampler.gemini_web_search = parse_bool_value(value, "gemini_web_search")?;
+        }
+        "zai_clear_thinking" => {
+            sampler.zai_clear_thinking = parse_bool_value(value, "zai_clear_thinking")?;
+        }
+        "zai_subscription" => {
+            sampler.zai_subscription = parse_bool_value(value, "zai_subscription")?;
+        }
         _ => return Err(invalid(format!("unknown setting key: {key}"))),
     }
     Ok(())
+}
+
+/// Parse an optional string setting value. `null` clears the field.
+fn parse_string_value(value: &Value, name: &str) -> Result<Option<String>, (ErrorCode, String)> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    value.as_str().map(|s| Some(s.to_string())).ok_or_else(|| {
+        (
+            ErrorCode::InvalidRequest,
+            format!("{name} must be a string, got {value}"),
+        )
+    })
 }
 
 /// Parse an optional boolean setting value. `null` clears the field
@@ -645,6 +787,11 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
         "effective_sampler": sampler,
         "saved_global": saved_global.map(|p| p.sampler),
         "saved_character": saved_character.map(|p| p.sampler),
+        // Capability matrix (#162): how the resolved sdk treats each key, so
+        // clients can hide keys the model ignores/rejects, plus the accepted
+        // `reasoning_effort` value set for the sdk.
+        "applicability": key_applicability(&active.sdk, &active.model_id),
+        "reasoning_effort_domain": shore_config::capabilities::reasoning_effort_domain(&active.sdk, &active.model_id),
         "scopes": {
             "temperature": scopes.temperature.map(scope_str),
             "top_p": scopes.top_p.map(scope_str),
@@ -655,6 +802,13 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
             "cache_ttl": scopes.cache_ttl.map(scope_str),
             "sdk": scopes.sdk.map(scope_str),
             "preserve_prior_turns": scopes.preserve_prior_turns.map(scope_str),
+            "openrouter_provider": scopes.openrouter_provider.map(scope_str),
+            "vertex_project": scopes.vertex_project.map(scope_str),
+            "vertex_location": scopes.vertex_location.map(scope_str),
+            "gemini_generation": scopes.gemini_generation.map(scope_str),
+            "gemini_web_search": scopes.gemini_web_search.map(scope_str),
+            "zai_clear_thinking": scopes.zai_clear_thinking.map(scope_str),
+            "zai_subscription": scopes.zai_subscription.map(scope_str),
         },
     }))
 }

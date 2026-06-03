@@ -462,6 +462,11 @@ pub(crate) enum ModelCommand {
     /// `sdk` accepts `anthropic`, `openai`, `gemini`, or `zai` — useful
     /// for forcing a wire shape on a discovered model whose provider
     /// catalog labelled it incorrectly.
+    ///
+    /// Vendor knobs (`openrouter_provider`, `vertex_project`, `vertex_location`,
+    /// `gemini_generation`, `gemini_web_search`, `zai_clear_thinking`,
+    /// `zai_subscription`) are also settable per-model; the list shown for a
+    /// model includes only the knobs its resolved sdk honors.
     Setting {
         /// Setting key (temperature, top_p, reasoning_effort, sdk, ...)
         key: Option<String>,
@@ -612,26 +617,36 @@ fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
     use serde_json::Value;
     let trimmed = raw.trim();
     match key {
-        "thinking_enabled" | "preserve_prior_turns" => {
-            match trimmed.to_ascii_lowercase().as_str() {
-                "true" | "yes" | "on" => Value::Bool(true),
-                "false" | "no" | "off" => Value::Bool(false),
-                _ => Value::String(trimmed.to_string()),
-            }
-        }
+        "thinking_enabled"
+        | "preserve_prior_turns"
+        | "gemini_web_search"
+        | "zai_clear_thinking"
+        | "zai_subscription" => match trimmed.to_ascii_lowercase().as_str() {
+            "true" | "yes" | "on" => Value::Bool(true),
+            "false" | "no" | "off" => Value::Bool(false),
+            _ => Value::String(trimmed.to_string()),
+        },
         "temperature" | "top_p" => trimmed
             .parse::<f64>()
             .ok()
             .and_then(serde_json::Number::from_f64)
             .map_or_else(|| Value::String(trimmed.to_string()), Value::Number),
-        "budget_tokens" | "max_output_tokens" => trimmed.parse::<u64>().map_or_else(
-            |_| Value::String(trimmed.to_string()),
-            |n| Value::Number(n.into()),
-        ),
+        "budget_tokens" | "max_output_tokens" | "gemini_generation" => {
+            trimmed.parse::<u64>().map_or_else(
+                |_| Value::String(trimmed.to_string()),
+                |n| Value::Number(n.into()),
+            )
+        }
         "reasoning_effort" => match trimmed.to_ascii_lowercase().as_str() {
             "off" | "none" | "disable" | "disabled" | "unset" | "" => Value::String("off".into()),
             _ => Value::String(trimmed.to_string()),
         },
+        // `openrouter_provider` is a routing object — accept a JSON object string
+        // (e.g. `{"order":["Anthropic"]}`); fall through to a string otherwise so
+        // the daemon reports a clear type error.
+        "openrouter_provider" => serde_json::from_str::<Value>(trimmed)
+            .unwrap_or_else(|_| Value::String(trimmed.to_string())),
+        // vertex_project / vertex_location and any unknown key: raw string.
         _ => Value::String(trimmed.to_string()),
     }
 }
@@ -2051,6 +2066,35 @@ mod tests {
             let (_, args) = to_swp_command(&cmd).unwrap();
             assert_eq!(arg(&args, "value"), "off", "synonym {synonym:?}");
         }
+    }
+
+    #[test]
+    fn parse_setting_value_coerces_vendor_knobs() {
+        use serde_json::json;
+        // bool-typed vendor knobs.
+        assert_eq!(
+            parse_setting_value("zai_clear_thinking", "false"),
+            json!(false)
+        );
+        assert_eq!(parse_setting_value("gemini_web_search", "on"), json!(true));
+        assert_eq!(parse_setting_value("zai_subscription", "yes"), json!(true));
+        // u64-typed.
+        assert_eq!(parse_setting_value("gemini_generation", "3"), json!(3));
+        // string-typed.
+        assert_eq!(
+            parse_setting_value("vertex_project", "my-proj"),
+            json!("my-proj")
+        );
+        // openrouter_provider parses a JSON object.
+        assert_eq!(
+            parse_setting_value("openrouter_provider", r#"{"order":["Anthropic"]}"#),
+            json!({"order": ["Anthropic"]})
+        );
+        // non-JSON falls back to a string (daemon then reports a type error).
+        assert_eq!(
+            parse_setting_value("openrouter_provider", "Anthropic"),
+            json!("Anthropic")
+        );
     }
 
     #[test]

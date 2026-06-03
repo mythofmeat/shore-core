@@ -1,0 +1,111 @@
+# Model capability matrix — the SINGLE SOURCE OF TRUTH for per-sdk / per-model
+# reasoning, thinking, and sampler behavior.
+#
+# Compiled into BOTH:
+#   * the Rust daemon  — `core/config/src/capabilities.rs` via `include_str!`
+#   * the TS sidecar   — `backend/llm-sidecar/src/llm/capabilities.ts` via a
+#                        `.toml` import that `bun build` inlines into the bundle.
+#
+# It is therefore NOT runtime- or user-editable: edit this file and rebuild.
+# Each consumer reads the slice it needs (Rust: domain + sampler_rule; TS: fold,
+# budget, gemini levels, thinking_rule). Keep both green via the cross-language
+# parity fixtures in capabilities.rs tests and the sidecar `*_adapter.test.ts`.
+
+# ── reasoning_effort: accepted value set + wire mapping, per sdk ──────────────
+# `domain`  — accepted values (Rust validates `shore model setting` against it).
+# `fold`    — named effort → the value actually sent (unlisted = passthrough).
+# `budget`  — effort → budget_tokens for Anthropic "enabled" thinking mode.
+
+[reasoning_effort.anthropic]
+domain = ["adaptive", "low", "medium", "high", "xhigh", "max"]
+budget = { low = 4096, medium = 8192, high = 12288, xhigh = 16384, max = 24576 }
+
+# OpenAI / OpenRouter `reasoning.effort` accept none|minimal|low|medium|high|xhigh.
+# `xhigh` is the real ceiling — passed through, NOT folded. `max` is intentionally
+# absent: it is an Anthropic-only effort, so it is not a valid option here.
+[reasoning_effort.openai]
+domain = ["minimal", "low", "medium", "high", "xhigh"]
+
+[reasoning_effort.openrouter]
+domain = ["minimal", "low", "medium", "high", "xhigh"]
+
+[reasoning_effort.gemini]
+# Gemini maps each accepted effort to a thinkingLevel of the same name.
+domain = ["minimal", "low", "medium", "high"]
+
+[reasoning_effort.zai]
+# Z.AI ignores reasoning_effort (thinking is driven by zai_clear_thinking).
+domain = []
+
+# Optional per-model overrides of the accepted set. First whose `match` is a
+# (case-insensitive) substring of the model_id wins; otherwise the sdk default
+# applies. Intentionally EMPTY today — the per-sdk domains above are already
+# grounded in the provider docs (OpenAI/OpenRouter top out at `xhigh`; `max` is
+# Anthropic-only). Add an override only when a specific model's accepted set
+# genuinely differs from its sdk default, with a provider-doc reason. Shape:
+#   [[reasoning_effort.model_override]]
+#   match  = "some-model-id"
+#   domain = ["minimal", "low", "medium", "high"]
+
+# ── Claude version rules ─────────────────────────────────────────────────────
+# A shared parser yields {family, major, minor} from a Claude model id (handling
+# `claude-opus-4-8`, `claude-opus-4.8`, family-after-version `claude-3-opus`, an
+# optional `<gateway>/` prefix, and a trailing `YYYYMMDD` date that must NOT be
+# read as the minor). Non-Claude ids yield nothing and match no rule.
+#
+# Each rule is matched top-to-bottom, first match wins, else the `default_*`
+# below. A rule matches when EVERY present condition holds:
+#   contains   — case-insensitive substring of the id
+#   family     — pipe-separated set, e.g. "opus|sonnet"
+#   min_major/min_minor — inclusive lower bound (missing minor → 0)
+#   max_major/max_minor — inclusive upper bound (missing minor → unbounded)
+#
+# Two independent lists: the thinking-mode and sampler-rejection cutoffs do NOT
+# share boundaries (e.g. Sonnet 4.7 rejects sampling but is thinking-permissive;
+# Opus 5.x is thinking-permissive but rejects sampling).
+
+[claude]
+default_adaptive = true
+default_enabled = true
+default_rejects_sampling = false
+
+# adaptive-vs-enabled thinking mode (Anthropic buildThinkingParams).
+[[claude.thinking_rule]]
+contains = "mythos"
+adaptive = true
+enabled = false
+[[claude.thinking_rule]]
+# Opus 4.7..4.x — adaptive-only.
+family = "opus"
+min_major = 4
+min_minor = 7
+max_major = 4
+adaptive = true
+enabled = false
+[[claude.thinking_rule]]
+# Opus 4.5 / Sonnet 4.5 — enabled-only.
+family = "opus|sonnet"
+min_major = 4
+min_minor = 5
+max_major = 4
+max_minor = 5
+adaptive = false
+enabled = true
+[[claude.thinking_rule]]
+# Haiku (any version) — enabled-only.
+family = "haiku"
+adaptive = false
+enabled = true
+[[claude.thinking_rule]]
+# Claude 3.x and earlier — enabled-only.
+max_major = 3
+adaptive = false
+enabled = true
+
+# sampler rejection (temperature / top_p / budget_tokens 400 on these).
+[[claude.sampler_rule]]
+# Opus/Sonnet 4.7 and later (including 5.x) reject sampler knobs.
+family = "opus|sonnet"
+min_major = 4
+min_minor = 7
+rejects_sampling = true

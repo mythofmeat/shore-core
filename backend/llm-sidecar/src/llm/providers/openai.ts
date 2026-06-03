@@ -28,6 +28,7 @@ import type {
 } from "openai/resources/chat/completions";
 
 import type { ContentBlock, ImageRef } from "../../engine/types.ts";
+import { foldEffort } from "../capabilities.ts";
 import { resolveImage } from "../images.ts";
 import type {
   GenerateResponse,
@@ -226,8 +227,11 @@ function buildOpenAICall(
   // models that accept it). Map to the OpenAI-valid set; unknown → omit.
   const effortRaw = req.provider_options?.["reasoning_effort"];
   if (typeof effortRaw === "string") {
-    const effort = mapReasoningEffort(effortRaw);
-    if (effort) params.reasoning_effort = effort;
+    // foldEffort only ever returns an in-domain OpenAI value (minimal/low/medium/high).
+    const effort = foldEffort("openai", effortRaw, req.model);
+    if (effort) {
+      params.reasoning_effort = effort as NonNullable<ChatCompletionCreateParams["reasoning_effort"]>;
+    }
   }
 
   return { client, params };
@@ -383,24 +387,6 @@ function parseArgs(argsJson: string): unknown {
   }
 }
 
-function mapReasoningEffort(
-  effort: string,
-): "low" | "medium" | "high" | "minimal" | undefined {
-  switch (effort) {
-    case "minimal":
-      return "minimal";
-    case "low":
-      return "low";
-    case "medium":
-      return "medium";
-    case "high":
-    case "xhigh":
-    case "max":
-      return "high";
-    default:
-      return undefined;
-  }
-}
 
 function mapStopReason(finish: string): string {
   switch (finish) {

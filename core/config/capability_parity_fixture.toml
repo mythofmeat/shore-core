@@ -1,0 +1,109 @@
+# Cross-language parity fixture for the Claude model classifier.
+#
+# Loaded by BOTH the Rust tests (`capabilities.rs`) and the TS sidecar tests
+# (`tests/capabilities_parity.test.ts`). Each side asserts its `parse` +
+# `claude_rejects_sampling` + `claude_thinking_caps` agree with these expected
+# values — so the two reimplementations of the parser/rule-evaluator (driven by
+# `capabilities.toml`) cannot silently diverge.
+#
+# `adaptive`/`enabled` omitted ⇒ a non-Claude id (parser yields nothing).
+
+[[case]]
+model = "claude-opus-4-8"
+is_claude = true
+rejects_sampling = true
+adaptive = true
+enabled = false
+
+[[case]]
+model = "anthropic/claude-opus-4.8"
+is_claude = true
+rejects_sampling = true
+adaptive = true
+enabled = false
+
+[[case]]
+model = "claude-opus-4-5"
+is_claude = true
+rejects_sampling = false
+adaptive = false
+enabled = true
+
+[[case]]
+model = "claude-sonnet-4-5"
+is_claude = true
+rejects_sampling = false
+adaptive = false
+enabled = true
+
+[[case]]
+model = "claude-sonnet-4-7"
+is_claude = true
+rejects_sampling = true
+adaptive = true
+enabled = true
+
+[[case]]
+model = "claude-haiku-4-8"
+is_claude = true
+rejects_sampling = false
+adaptive = false
+enabled = true
+
+[[case]]
+model = "claude-haiku-3-5"
+is_claude = true
+rejects_sampling = false
+adaptive = false
+enabled = true
+
+[[case]]
+model = "claude-3-opus-20240229"
+is_claude = true
+rejects_sampling = false
+adaptive = false
+enabled = true
+
+[[case]]
+model = "claude-3-5-sonnet-20241022"
+is_claude = true
+rejects_sampling = false
+adaptive = false
+enabled = true
+
+[[case]]
+# Sonnet 4.0 (dated): the YYYYMMDD must not be read as minor; below the cutoff.
+model = "claude-sonnet-4-20250514"
+is_claude = true
+rejects_sampling = false
+adaptive = true
+enabled = true
+
+[[case]]
+model = "claude-opus-4-6"
+is_claude = true
+rejects_sampling = false
+adaptive = true
+enabled = true
+
+[[case]]
+# Opus 5.x: thinking-permissive but rejects sampling (above the cutoff).
+model = "claude-opus-5-20260101"
+is_claude = true
+rejects_sampling = true
+adaptive = true
+enabled = true
+
+[[case]]
+# `mythos` special-case forces adaptive-only regardless of version.
+model = "claude-opus-4-8-mythos"
+is_claude = true
+rejects_sampling = true
+adaptive = true
+enabled = false
+
+[[case]]
+# Non-Claude id: no family token, parser yields nothing, honors sampling.
+model = "gpt-4o"
+is_claude = false
+rejects_sampling = false

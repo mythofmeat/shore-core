@@ -39,7 +39,102 @@
 //! [`crate::models::ResolvedModel::from_parts`], which only fills a field from
 //! [`default_value`] when it is still `None`.
 
+use std::sync::LazyLock;
+
+use serde::Deserialize;
+
 use crate::models::Sdk;
+
+// ── Compiled-in capability data ──────────────────────────────────────────
+//
+// The matrix's value tables live in `capabilities.toml`, baked into the binary
+// via `include_str!` (and into the TS sidecar via a bun `.toml` import). It is
+// the single source of truth; the `pub fn`s below read from it. See that file's
+// header for the schema and the cross-language parity contract.
+//
+// Rust deliberately models only the fields it consumes (`domain` /
+// `model_override` / the claude rules); serde ignores the TS-only keys (`fold`,
+// `budget`) by default.
+
+#[expect(
+    clippy::expect_used,
+    reason = "capabilities.toml is compiled in via include_str!; a parse failure \
+              is a build-time programmer error with no sensible runtime fallback"
+)]
+static CAPS: LazyLock<CapabilitiesDoc> = LazyLock::new(|| {
+    toml::from_str(include_str!("../capabilities.toml"))
+        .expect("baked-in capabilities.toml must parse")
+});
+
+#[derive(Debug, Deserialize)]
+struct CapabilitiesDoc {
+    reasoning_effort: ReasoningEffortDoc,
+    claude: ClaudeDoc,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReasoningEffortDoc {
+    anthropic: SdkEffort,
+    openai: SdkEffort,
+    openrouter: SdkEffort,
+    gemini: SdkEffort,
+    zai: SdkEffort,
+    #[serde(default)]
+    model_override: Vec<ModelOverride>,
+}
+
+impl ReasoningEffortDoc {
+    fn for_sdk(&self, sdk: &Sdk) -> &SdkEffort {
+        match sdk {
+            Sdk::Anthropic => &self.anthropic,
+            Sdk::Openai => &self.openai,
+            Sdk::Openrouter => &self.openrouter,
+            Sdk::Gemini => &self.gemini,
+            Sdk::Zai => &self.zai,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SdkEffort {
+    #[serde(default)]
+    domain: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelOverride {
+    #[serde(rename = "match")]
+    match_substr: String,
+    domain: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeDoc {
+    default_adaptive: bool,
+    default_enabled: bool,
+    default_rejects_sampling: bool,
+    #[serde(default)]
+    thinking_rule: Vec<ClaudeRule>,
+    #[serde(default)]
+    sampler_rule: Vec<ClaudeRule>,
+}
+
+/// One ordered Claude classification rule. All present conditions must hold for
+/// a match; the first matching rule in a list wins. Result fields are read per
+/// list (`adaptive`/`enabled` for `thinking_rule`, `rejects_sampling` for
+/// `sampler_rule`).
+#[derive(Debug, Deserialize)]
+struct ClaudeRule {
+    contains: Option<String>,
+    family: Option<String>,
+    min_major: Option<u32>,
+    min_minor: Option<u32>,
+    max_major: Option<u32>,
+    max_minor: Option<u32>,
+    adaptive: Option<bool>,
+    enabled: Option<bool>,
+    rejects_sampling: Option<bool>,
+}
 
 // ── Applicability ───────────────────────────────────────────────────────
 
@@ -106,6 +201,36 @@ impl Field {
             Field::ZaiSubscription => "zai_subscription",
         }
     }
+
+    /// Parse a TOML key back into its [`Field`] — the inverse of [`key`]. Keys
+    /// that name no matrix field (Shore-only behaviors like `thinking_enabled`
+    /// / `preserve_prior_turns`, or transport like `sdk`) return `None`, which
+    /// callers treat as "no capability opinion — always applicable".
+    ///
+    /// [`key`]: Field::key
+    pub fn from_key(key: &str) -> Option<Field> {
+        let field = match key {
+            "max_context_tokens" => Field::MaxContextTokens,
+            "max_output_tokens" => Field::MaxOutputTokens,
+            "temperature" => Field::Temperature,
+            "top_p" => Field::TopP,
+            "reasoning_effort" => Field::ReasoningEffort,
+            "budget_tokens" => Field::BudgetTokens,
+            "cache_ttl" => Field::CacheTtl,
+            "keepalive_enabled" => Field::KeepaliveEnabled,
+            "keepalive_ttl" => Field::KeepaliveTtl,
+            "keepalive_max_pings" => Field::KeepaliveMaxPings,
+            "openrouter_provider" => Field::OpenrouterProvider,
+            "vertex_project" => Field::VertexProject,
+            "vertex_location" => Field::VertexLocation,
+            "gemini_generation" => Field::GeminiGeneration,
+            "gemini_web_search" => Field::GeminiWebSearch,
+            "zai_clear_thinking" => Field::ZaiClearThinking,
+            "zai_subscription" => Field::ZaiSubscription,
+            _ => return None,
+        };
+        Some(field)
+    }
 }
 
 impl std::fmt::Display for Field {
@@ -132,51 +257,141 @@ pub struct ClaudeVersion {
     pub minor: u32,
 }
 
-impl ClaudeVersion {
-    /// Whether this version rejects the sampler knobs (`temperature` / `top_p`
-    /// / `budget_tokens`). True for opus & sonnet at **4.7 or later**; haiku and
-    /// everything older still honor them.
-    pub fn rejects_sampling(self) -> bool {
-        let at_least_4_7 = self.major > 4 || (self.major == 4 && self.minor >= 7);
-        matches!(self.family, ClaudeFamily::Opus | ClaudeFamily::Sonnet) && at_least_4_7
-    }
-}
-
-/// Parse a Claude `major.minor` version out of a model id, if it is a Claude 4+
-/// id of the shape `claude-<family>-<major><sep><minor>` (where `<sep>` is `-`
-/// or `.`). An optional `<gateway>/` prefix (e.g. `anthropic/`) is stripped
-/// first. Returns `None` for non-Claude ids and the pre-4 `claude-3.5-sonnet`
-/// shape (family-after-version) — neither hits the cutoff.
+/// Parse `{family, major, minor}` from a Claude model id, or `None` for
+/// non-Claude ids. Handles both orderings (`claude-opus-4-8` and the older
+/// family-after-version `claude-3-opus`), the `<gateway>/` prefix, `-`/`.`
+/// separators, and a trailing `YYYYMMDD` date that must **not** be read as the
+/// minor (`claude-sonnet-4-20250514` = Sonnet 4.0). A recognized family token is
+/// required, so non-Claude ids (`gpt-4o`) return `None`.
+///
+/// This is the shared parser the [`CAPS`] Claude rules evaluate against; the TS
+/// sidecar's `parseClaudeModel` mirrors it (kept in lockstep by the parity
+/// fixtures).
 pub fn parse_claude_version(model_id: &str) -> Option<ClaudeVersion> {
-    // Drop a single leading `<gateway>/` segment if present.
+    // Drop a single leading `<gateway>/` segment if present, then lowercase.
     let bare = match model_id.rsplit_once('/') {
         Some((_, tail)) => tail,
         None => model_id,
     };
-    let rest = bare.strip_prefix("claude-")?;
+    let lower = bare.to_ascii_lowercase();
 
-    // Split into family + version remainder on the first `-`.
-    let (family_str, version_str) = rest.split_once('-')?;
-    let family = match family_str {
-        "opus" => ClaudeFamily::Opus,
-        "sonnet" => ClaudeFamily::Sonnet,
-        "haiku" => ClaudeFamily::Haiku,
-        // Anything else (incl. the `claude-3.5-sonnet` shape, where this
-        // segment is "3.5") is not a recognized 4+ family id.
-        _ => return None,
+    // Tokenize on non-alphanumeric boundaries so we match whole words, not
+    // substrings: require a distinct `claude` token (an unrelated id that merely
+    // *contains* "opus"/"sonnet"/"haiku" is not a Claude model) plus a family
+    // token.
+    let tokens: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if !tokens.contains(&"claude") {
+        return None;
+    }
+    let family = if tokens.contains(&"opus") {
+        ClaudeFamily::Opus
+    } else if tokens.contains(&"sonnet") {
+        ClaudeFamily::Sonnet
+    } else if tokens.contains(&"haiku") {
+        ClaudeFamily::Haiku
+    } else {
+        return None;
     };
 
-    // `version_str` is `<major><sep><minor>[-<suffix>...]`; take the leading
-    // `major` and `minor` numbers, ignoring any trailing date/suffix segments.
-    let mut nums = version_str.splitn(3, ['-', '.']);
-    let major: u32 = nums.next()?.parse().ok()?;
-    let minor: u32 = nums.next()?.parse().ok()?;
+    // major = first 1–2 digit numeric token; minor = the next such token. A run
+    // of 3+ digits is a date/build stamp, not a version part — skip it.
+    let mut major: Option<u32> = None;
+    let mut minor: u32 = 0;
+    for tok in &tokens {
+        if tok.len() > 2 || !tok.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(n) = tok.parse::<u32>() else { continue };
+        if major.is_none() {
+            major = Some(n);
+        } else {
+            minor = n;
+            break;
+        }
+    }
 
     Some(ClaudeVersion {
         family,
-        major,
+        major: major?,
         minor,
     })
+}
+
+/// Whether `family` is in a `|`-separated rule set such as `"opus|sonnet"`.
+fn family_in_set(set: &str, family: ClaudeFamily) -> bool {
+    let want = match family {
+        ClaudeFamily::Opus => "opus",
+        ClaudeFamily::Sonnet => "sonnet",
+        ClaudeFamily::Haiku => "haiku",
+    };
+    set.split('|').any(|f| f == want)
+}
+
+/// Evaluate one [`ClaudeRule`] against a model's lowercased id + parsed version.
+/// Every present condition must hold; a rule with no conditions never matches.
+fn rule_matches(rule: &ClaudeRule, id_lower: &str, version: Option<ClaudeVersion>) -> bool {
+    if let Some(sub) = rule.contains.as_deref() {
+        if !id_lower.contains(sub) {
+            return false;
+        }
+    }
+    let needs_version =
+        rule.family.is_some() || rule.min_major.is_some() || rule.max_major.is_some();
+    if needs_version {
+        let Some(v) = version else { return false };
+        if let Some(fam) = rule.family.as_deref() {
+            if !family_in_set(fam, v.family) {
+                return false;
+            }
+        }
+        if let Some(maj) = rule.min_major {
+            if (v.major, v.minor) < (maj, rule.min_minor.unwrap_or(0)) {
+                return false;
+            }
+        }
+        if let Some(maj) = rule.max_major {
+            if (v.major, v.minor) > (maj, rule.max_minor.unwrap_or(u32::MAX)) {
+                return false;
+            }
+        }
+    }
+    rule.contains.is_some() || needs_version
+}
+
+/// Whether `model_id` is a Claude model whose wire rejects the sampler knobs
+/// (`temperature` / `top_p` / `budget_tokens`). Driven by `[[claude.sampler_rule]]`.
+pub fn claude_rejects_sampling(model_id: &str) -> bool {
+    let lower = model_id.to_ascii_lowercase();
+    let version = parse_claude_version(model_id);
+    for rule in &CAPS.claude.sampler_rule {
+        if rule_matches(rule, &lower, version) {
+            return rule
+                .rejects_sampling
+                .unwrap_or(CAPS.claude.default_rejects_sampling);
+        }
+    }
+    CAPS.claude.default_rejects_sampling
+}
+
+/// Anthropic per-model thinking-mode capability `(adaptive, enabled)`, driven by
+/// `[[claude.thinking_rule]]`. No Rust production code consumes this today — it
+/// is the parity twin of the sidecar's `claudeThinkingCaps`, kept here so the
+/// shared parser + rule table cannot silently diverge across the two languages.
+pub fn claude_thinking_caps(model_id: &str) -> (bool, bool) {
+    let lower = model_id.to_ascii_lowercase();
+    let version = parse_claude_version(model_id);
+    for rule in &CAPS.claude.thinking_rule {
+        if rule_matches(rule, &lower, version) {
+            return (
+                rule.adaptive.unwrap_or(CAPS.claude.default_adaptive),
+                rule.enabled.unwrap_or(CAPS.claude.default_enabled),
+            );
+        }
+    }
+    (CAPS.claude.default_adaptive, CAPS.claude.default_enabled)
 }
 
 // ── The matrix ──────────────────────────────────────────────────────────
@@ -205,13 +420,31 @@ pub fn applicability(sdk: &Sdk, model_id: &str, field: Field) -> Applicability {
 
         // Sampler knobs: rejected on Claude opus/sonnet >= 4.7, honored
         // otherwise. The cutoff is sdk-independent — it follows the model id,
-        // since the same Claude model can be reached via several sdks.
-        Field::Temperature | Field::TopP | Field::BudgetTokens => {
-            match parse_claude_version(model_id) {
-                Some(v) if v.rejects_sampling() => Applicability::Rejected,
-                Some(_) | None => Applicability::Honored,
+        // since the same Claude model can be reached via several sdks (every
+        // adapter forwards temperature/top_p verbatim).
+        Field::Temperature | Field::TopP => {
+            if claude_rejects_sampling(model_id) {
+                Applicability::Rejected
+            } else {
+                Applicability::Honored
             }
         }
+
+        // `budget_tokens` is only consumed by the Anthropic and Gemini wires
+        // (`anthropic.ts` thinking budget / `gemini.ts` thinkingBudget). On
+        // Anthropic it follows the same Claude >=4.7 sampler cutoff; the
+        // OpenAI/OpenRouter/Z.AI adapters never read it, so it is `Ignored`.
+        Field::BudgetTokens => match sdk {
+            Sdk::Anthropic => {
+                if claude_rejects_sampling(model_id) {
+                    Applicability::Rejected
+                } else {
+                    Applicability::Honored
+                }
+            }
+            Sdk::Gemini => Applicability::Honored,
+            Sdk::Openai | Sdk::Openrouter | Sdk::Zai => Applicability::Ignored,
+        },
 
         // `cache_ttl` only produces `cache_control` on the Anthropic sdk.
         Field::CacheTtl => vendor_field(sdk, &Sdk::Anthropic),
@@ -267,15 +500,16 @@ pub fn default_value(sdk: &Sdk, field: Field) -> Option<&'static str> {
 /// * **Z.AI** — ignores `reasoning_effort` entirely (empty set; also `Ignored`
 ///   in [`applicability`], so [`validate`] returns `Inapplicable` before this).
 ///
-/// Per-**model** refinement (e.g. a single model's narrower subset) is a #162
-/// follow-up; this is the per-sdk truth.
-pub fn reasoning_effort_domain(sdk: &Sdk) -> &'static [&'static str] {
-    match sdk {
-        Sdk::Anthropic => &["adaptive", "low", "medium", "high", "xhigh", "max"],
-        Sdk::Openai | Sdk::Openrouter => &["minimal", "low", "medium", "high", "xhigh", "max"],
-        Sdk::Gemini => &["minimal", "low", "medium", "high"],
-        Sdk::Zai => &[],
+/// A per-model override (first whose `match` is a substring of `model_id`) wins
+/// over the per-sdk default; see `[[reasoning_effort.model_override]]`.
+pub fn reasoning_effort_domain(sdk: &Sdk, model_id: &str) -> &'static [String] {
+    let lower = model_id.to_ascii_lowercase();
+    for ov in &CAPS.reasoning_effort.model_override {
+        if lower.contains(&ov.match_substr.to_ascii_lowercase()) {
+            return &ov.domain;
+        }
     }
+    &CAPS.reasoning_effort.for_sdk(sdk).domain
 }
 
 /// Why a setting was rejected at the boundary.
@@ -320,8 +554,8 @@ pub fn validate(
     // value.
     if field == Field::ReasoningEffort {
         if let Some(effort) = value.as_str() {
-            let domain = reasoning_effort_domain(sdk);
-            if !domain.contains(&effort) {
+            let domain = reasoning_effort_domain(sdk, model_id);
+            if !domain.iter().any(|v| v == effort) {
                 return Err(CapabilityError::OutOfDomain {
                     field,
                     value: effort.to_string(),
@@ -342,6 +576,45 @@ mod tests {
 
     fn ver(id: &str) -> Option<ClaudeVersion> {
         parse_claude_version(id)
+    }
+
+    #[test]
+    fn from_key_round_trips_every_field() {
+        for field in [
+            Field::MaxContextTokens,
+            Field::MaxOutputTokens,
+            Field::Temperature,
+            Field::TopP,
+            Field::ReasoningEffort,
+            Field::BudgetTokens,
+            Field::CacheTtl,
+            Field::KeepaliveEnabled,
+            Field::KeepaliveTtl,
+            Field::KeepaliveMaxPings,
+            Field::OpenrouterProvider,
+            Field::VertexProject,
+            Field::VertexLocation,
+            Field::GeminiGeneration,
+            Field::GeminiWebSearch,
+            Field::ZaiClearThinking,
+            Field::ZaiSubscription,
+        ] {
+            assert_eq!(Field::from_key(field.key()), Some(field), "{field}");
+        }
+    }
+
+    #[test]
+    fn from_key_is_none_for_non_matrix_keys() {
+        // Shore-only behaviors and transport name no capability field — callers
+        // treat `None` as "always applicable".
+        for key in [
+            "thinking_enabled",
+            "preserve_prior_turns",
+            "sdk",
+            "nonsense",
+        ] {
+            assert_eq!(Field::from_key(key), None, "{key}");
+        }
     }
 
     #[test]
@@ -385,29 +658,144 @@ mod tests {
     }
 
     #[test]
+    fn requires_a_claude_token_not_a_substring() {
+        // An unrelated id that merely *contains* a family word is not Claude.
+        assert_eq!(ver("opus-writer-v2"), None);
+        assert_eq!(ver("some-haiku-poet"), None);
+        assert_eq!(ver("sonnet-composer-3"), None);
+        // A real Claude id (either ordering) still parses.
+        assert!(ver("claude-opus-4-8").is_some());
+        assert!(ver("claude-3-opus-20240229").is_some());
+    }
+
+    #[test]
     fn rejects_non_claude_and_pre_4_ids() {
+        // Non-Claude ids have no recognized family token.
         assert_eq!(ver("gpt-5.5"), None);
         assert_eq!(ver("deepseek-chat"), None);
-        // Pre-4 family-after-version shape is not a recognized 4+ id.
-        assert_eq!(ver("anthropic/claude-3.5-sonnet"), None);
-        assert_eq!(ver("anthropic/claude-3-haiku"), None);
+        // Pre-4 Claude ids (both orderings) now parse, but stay below the
+        // sampler cutoff — they still honor sampling.
+        assert_eq!(
+            ver("anthropic/claude-3.5-sonnet"),
+            Some(ClaudeVersion {
+                family: ClaudeFamily::Sonnet,
+                major: 3,
+                minor: 5
+            })
+        );
+        assert_eq!(
+            ver("anthropic/claude-3-haiku"),
+            Some(ClaudeVersion {
+                family: ClaudeFamily::Haiku,
+                major: 3,
+                minor: 0
+            })
+        );
+        assert!(!claude_rejects_sampling("anthropic/claude-3.5-sonnet"));
+        assert!(!claude_rejects_sampling("anthropic/claude-3-haiku"));
     }
 
     #[test]
     fn sampling_cutoff_boundary() {
-        assert!(ver("claude-opus-4-7").unwrap().rejects_sampling());
-        assert!(ver("claude-opus-4.8").unwrap().rejects_sampling());
-        assert!(ver("claude-sonnet-4-7").unwrap().rejects_sampling());
+        assert!(claude_rejects_sampling("claude-opus-4-7"));
+        assert!(claude_rejects_sampling("claude-opus-4.8"));
+        assert!(claude_rejects_sampling("claude-sonnet-4-7"));
         // Below the cutoff.
-        assert!(!ver("claude-sonnet-4-6").unwrap().rejects_sampling());
-        assert!(!ver("claude-opus-4-6").unwrap().rejects_sampling());
+        assert!(!claude_rejects_sampling("claude-sonnet-4-6"));
+        assert!(!claude_rejects_sampling("claude-opus-4-6"));
         // Haiku is exempt at every version.
-        assert!(!ver("claude-haiku-4-8").unwrap().rejects_sampling());
+        assert!(!claude_rejects_sampling("claude-haiku-4-8"));
+    }
+
+    #[test]
+    fn dated_dot_zero_release_is_not_misread_as_a_minor() {
+        // `claude-sonnet-4-20250514` is Sonnet *4.0* with a `YYYYMMDD` stamp —
+        // the date must NOT be parsed as minor `20250514` (which would wrongly
+        // trip the >=4.7 cutoff). It is below the cutoff and honors sampling.
+        assert_eq!(ver("claude-sonnet-4-20250514").unwrap().minor, 0);
+        assert!(!claude_rejects_sampling("claude-sonnet-4-20250514"));
+        // A real minor *plus* a date still parses the minor correctly.
+        assert_eq!(ver("claude-opus-4-1-20250805").unwrap().minor, 1);
+        // A dated major-5 release still rejects (above the cutoff).
+        assert!(claude_rejects_sampling("claude-opus-5-20260101"));
+    }
+
+    #[test]
+    fn thinking_caps_match_legacy_classification() {
+        // Parity twin of the sidecar `claudeThinkingCaps`: (adaptive, enabled).
+        assert_eq!(claude_thinking_caps("claude-opus-4-8"), (true, false)); // adaptive-only
+        assert_eq!(claude_thinking_caps("claude-opus-4-5"), (false, true)); // enabled-only
+        assert_eq!(claude_thinking_caps("claude-sonnet-4-5"), (false, true));
+        assert_eq!(claude_thinking_caps("claude-haiku-4-8"), (false, true));
+        assert_eq!(
+            claude_thinking_caps("claude-3-opus-20240229"),
+            (false, true)
+        ); // <=3
+        assert_eq!(claude_thinking_caps("claude-opus-4-6"), (true, true)); // permissive
+        assert_eq!(claude_thinking_caps("claude-sonnet-4-7"), (true, true)); // permissive (sonnet, not opus)
+        assert_eq!(claude_thinking_caps("claude-opus-5-20260101"), (true, true)); // permissive (major 5)
+        assert_eq!(
+            claude_thinking_caps("claude-opus-4-8-mythos"),
+            (true, false)
+        ); // mythos special-case
+    }
+
+    #[test]
+    fn cross_language_parity_fixture() {
+        // Shared with the TS sidecar (`tests/capabilities_parity.test.ts`): both
+        // must agree with these expected values, keeping the two parser + rule
+        // reimplementations in lockstep.
+        #[derive(Deserialize)]
+        struct Doc {
+            case: Vec<Case>,
+        }
+        #[derive(Deserialize)]
+        struct Case {
+            model: String,
+            is_claude: bool,
+            rejects_sampling: bool,
+            adaptive: Option<bool>,
+            enabled: Option<bool>,
+        }
+        let doc: Doc = toml::from_str(include_str!("../capability_parity_fixture.toml")).unwrap();
+        for c in doc.case {
+            assert_eq!(
+                parse_claude_version(&c.model).is_some(),
+                c.is_claude,
+                "is_claude mismatch for {}",
+                c.model
+            );
+            assert_eq!(
+                claude_rejects_sampling(&c.model),
+                c.rejects_sampling,
+                "rejects_sampling mismatch for {}",
+                c.model
+            );
+            if let (Some(a), Some(e)) = (c.adaptive, c.enabled) {
+                assert_eq!(
+                    claude_thinking_caps(&c.model),
+                    (a, e),
+                    "thinking_caps mismatch for {}",
+                    c.model
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn capabilities_toml_loads() {
+        // The baked-in file must parse and carry the expected sdk domains.
+        assert!(reasoning_effort_domain(&Sdk::Anthropic, "claude-opus-4-8")
+            .iter()
+            .any(|v| v == "adaptive"));
+        assert!(reasoning_effort_domain(&Sdk::Zai, "glm-5").is_empty());
     }
 
     #[test]
     fn sampler_fields_rejected_only_past_cutoff() {
-        for field in [Field::Temperature, Field::TopP, Field::BudgetTokens] {
+        // temperature/top_p are forwarded by every adapter, so the Claude >=4.7
+        // cutoff applies regardless of sdk.
+        for field in [Field::Temperature, Field::TopP] {
             assert_eq!(
                 applicability(&Sdk::Anthropic, "claude-opus-4-8", field),
                 Applicability::Rejected
@@ -416,10 +804,35 @@ mod tests {
                 applicability(&Sdk::Anthropic, "claude-sonnet-4-6", field),
                 Applicability::Honored
             );
-            // Same model via a different sdk is still gated by the model id.
             assert_eq!(
                 applicability(&Sdk::Openrouter, "anthropic/claude-opus-4.8", field),
                 Applicability::Rejected
+            );
+        }
+    }
+
+    #[test]
+    fn budget_tokens_only_on_anthropic_and_gemini() {
+        // Anthropic: follows the same >=4.7 cutoff.
+        assert_eq!(
+            applicability(&Sdk::Anthropic, "claude-opus-4-8", Field::BudgetTokens),
+            Applicability::Rejected
+        );
+        assert_eq!(
+            applicability(&Sdk::Anthropic, "claude-sonnet-4-6", Field::BudgetTokens),
+            Applicability::Honored
+        );
+        // Gemini honors it (thinkingBudget).
+        assert_eq!(
+            applicability(&Sdk::Gemini, "gemini-2.5-pro", Field::BudgetTokens),
+            Applicability::Honored
+        );
+        // OpenAI/OpenRouter/Z.AI adapters never read budget_tokens → Ignored.
+        for sdk in [Sdk::Openai, Sdk::Openrouter, Sdk::Zai] {
+            assert_eq!(
+                applicability(&sdk, "anthropic/claude-opus-4.8", Field::BudgetTokens),
+                Applicability::Ignored,
+                "{sdk:?} should ignore budget_tokens"
             );
         }
     }
@@ -526,12 +939,21 @@ mod tests {
     fn reasoning_effort_domain_is_sdk_specific() {
         let eff = |v: &str| toml::Value::String(v.into());
 
-        // OpenAI/OpenRouter accept the full named set incl. minimal/xhigh/max
-        // (the adapters fold xhigh/max to high).
-        for v in ["minimal", "low", "medium", "high", "xhigh", "max"] {
+        // OpenAI/OpenRouter accept minimal..xhigh; `xhigh` is the real ceiling.
+        // `max` is Anthropic-only — out of domain here (not a valid option).
+        for v in ["minimal", "low", "medium", "high", "xhigh"] {
             assert!(
                 validate(&Sdk::Openai, "gpt-5.5", Field::ReasoningEffort, &eff(v)).is_ok(),
                 "openai should accept {v}"
+            );
+        }
+        for sdk in [Sdk::Openai, Sdk::Openrouter] {
+            assert!(
+                matches!(
+                    validate(&sdk, "gpt-5.5", Field::ReasoningEffort, &eff("max")),
+                    Err(CapabilityError::OutOfDomain { .. })
+                ),
+                "{sdk:?} must reject `max` (Anthropic-only)"
             );
         }
 

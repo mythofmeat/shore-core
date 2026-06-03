@@ -36,6 +36,7 @@ import type {
   ToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages";
 
+import { claudeThinkingCaps, effortBudget } from "../capabilities.ts";
 import type { ContentBlock, ImageRef } from "../../engine/types.ts";
 import { resolveImage } from "../images.ts";
 import type {
@@ -520,67 +521,6 @@ function isEffortValue(s: string | undefined): s is NamedEffort {
   return s !== undefined && (NAMED_EFFORT_VALUES as readonly string[]).includes(s);
 }
 
-interface ThinkingCaps {
-  adaptive: boolean;
-  enabled: boolean;
-}
-
-/** Best-effort (family, major, minor) parse. */
-function parseAnthropicModel(model: string): {
-  family: "opus" | "sonnet" | "haiku" | undefined;
-  major: number | undefined;
-  minor: number | undefined;
-} {
-  let m = model.toLowerCase();
-  m = (m.split("/").pop() ?? m).replace(/\./g, "-");
-  const family = m.includes("opus")
-    ? "opus"
-    : m.includes("sonnet")
-      ? "sonnet"
-      : m.includes("haiku")
-        ? "haiku"
-        : undefined;
-  const nums = m.split("-").map((s) => Number.parseInt(s, 10)).filter((n) => !Number.isNaN(n));
-  return { family, major: nums[0], minor: nums[1] };
-}
-
-/** Per-model thinking-mode classification. Mirrors Rust `thinking_caps`. */
-function thinkingCaps(model: string): ThinkingCaps {
-  const m = model.toLowerCase();
-  if (m.includes("mythos")) return { adaptive: true, enabled: false };
-
-  const { family, major, minor } = parseAnthropicModel(model);
-  // Opus 4.7/4.8 (and later 4.x): adaptive-only.
-  if (family === "opus" && major === 4 && minor !== undefined && minor >= 7) {
-    return { adaptive: true, enabled: false };
-  }
-  // Sonnet 4.5 / Opus 4.5 / Haiku (any) / 3.x and earlier: enabled-only.
-  if (
-    ((family === "sonnet" || family === "opus") && major === 4 && minor === 5) ||
-    family === "haiku" ||
-    (major !== undefined && major <= 3)
-  ) {
-    return { adaptive: false, enabled: true };
-  }
-  // Opus 4.6, Sonnet 4.6+, newer/unknown: permissive.
-  return { adaptive: true, enabled: true };
-}
-
-function effortToBudget(effort: string): number {
-  switch (effort) {
-    case "low":
-      return 4096;
-    case "high":
-      return 12288;
-    case "xhigh":
-      return 16384;
-    case "max":
-      return 24576;
-    default:
-      return 8192; // medium / adaptive / anything else
-  }
-}
-
 /** Clamp into `1024 <= budget < max_tokens`; undefined if no valid room. */
 function clampEnabledBudget(requested: number, maxTokens: number): number | undefined {
   const ceiling = maxTokens - 1;
@@ -610,7 +550,7 @@ export function buildThinkingParams(
 
   if (!wantsAdaptive && !wantsEnabled) return {};
 
-  const caps = thinkingCaps(model);
+  const caps = claudeThinkingCaps(model);
   const requestedBudget = budget;
 
   if (wantsAdaptive) {
@@ -621,7 +561,7 @@ export function buildThinkingParams(
       };
     }
     // adaptive-incapable: map effort → budget.
-    const derived = requestedBudget ?? effortToBudget(effort ?? "medium");
+    const derived = requestedBudget ?? effortBudget(effort ?? "medium");
     const b = clampEnabledBudget(derived, maxTokens);
     return b !== undefined ? { thinking: { type: "enabled", budget_tokens: b } } : {};
   }
