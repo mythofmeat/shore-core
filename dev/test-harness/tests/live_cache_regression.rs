@@ -22,10 +22,6 @@
 //! The test holds an `ENV_LOCK` `std::sync::Mutex` across its `.await`s
 //! to pin `SHORE_CACHE_PINNED_POSITION` for the entire request lifecycle;
 //! the lint correctly notices, but the pattern is load-bearing here.
-#![expect(
-    clippy::await_holding_lock,
-    reason = "live cache probe holds an env mutex across provider awaits to pin process-global cache settings"
-)]
 #![deny(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
 use std::env;
@@ -431,6 +427,10 @@ async fn run_tool_loop(
 #[expect(
     clippy::too_many_lines,
     reason = "live provider regression keeps the probe phases in one readable flow"
+)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "holds ENV_LOCK across provider awaits to pin process-global SHORE_CACHE_PINNED_POSITION for the whole request lifecycle"
 )]
 async fn cache_holds_through_adaptive_tool_loop_and_followup() {
     // shore-llm reads SHORE_CACHE_PINNED_POSITION at request time — keep

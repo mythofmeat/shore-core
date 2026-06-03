@@ -28,10 +28,6 @@
 //!     cargo test -p shore-test-harness --test live_compaction_cache \
 //!     -- --ignored --nocapture
 //! ```
-#![expect(
-    clippy::await_holding_lock,
-    reason = "live cache probe holds an env mutex across provider awaits to pin process-global cache settings"
-)]
 #![deny(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
 use std::env;
@@ -420,6 +416,10 @@ fn print_table(stats: &[CallStat]) {
 #[expect(
     clippy::too_many_lines,
     reason = "live compaction cache probe is deliberately phase-oriented"
+)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "holds ENV_LOCK across provider awaits to pin process-global SHORE_CACHE_PINNED_POSITION for the whole request lifecycle"
 )]
 async fn compaction_tool_loop_preserves_cache_prefix() {
     let _guard = ENV_LOCK.lock().unwrap();
