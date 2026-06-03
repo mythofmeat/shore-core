@@ -218,20 +218,19 @@ function buildMessages(req: SidecarRequest): ModelMessage[] {
   if (systemText) messages.push({ role: "system", content: systemText });
   // AI SDK tool-result parts require the tool NAME, but Shore's tool_result
   // block carries only the id — recover names from prior assistant tool_use.
-  const toolNames = collectToolNames(req.messages);
-  for (const turn of req.messages) messages.push(...turnToVercel(normalizeTurn(turn), toolNames));
-  return messages;
-}
-
-function collectToolNames(messages: WireMessage[]): Map<string, string> {
-  const names = new Map<string, string>();
-  for (const turn of messages) {
-    if (typeof turn.content === "string") continue;
-    for (const b of turn.content) {
-      if (b.type === "tool_use") names.set(b.id, b.name);
+  // The name map is built incrementally as turns are processed, so a turn's
+  // tool_result can only resolve a tool_use from an EARLIER turn: this enforces
+  // causality (a result pointing at a later call is rejected), not just
+  // existence anywhere in the transcript.
+  const toolNames = new Map<string, string>();
+  for (const turn of req.messages) {
+    const norm = normalizeTurn(turn);
+    messages.push(...turnToVercel(norm, toolNames));
+    for (const b of norm.content) {
+      if (b.type === "tool_use") toolNames.set(b.id, b.name);
     }
   }
-  return names;
+  return messages;
 }
 
 function normalizeTurn(turn: WireMessage): TurnMessage {

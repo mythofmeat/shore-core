@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { buildProviderOptions, turnToVercel } from "../src/llm/providers/vercel.ts";
+import { buildCall, buildProviderOptions, turnToVercel } from "../src/llm/providers/vercel.ts";
 import type { SidecarRequest, TurnMessage } from "../src/llm/types.ts";
 
 function req(sdk: "deepseek" | "moonshot", provider_options?: Record<string, unknown>): SidecarRequest {
@@ -107,5 +107,36 @@ describe("turnToVercel", () => {
 
   test("empty assistant turn → no message", () => {
     expect(conv({ role: "assistant", content: [] })).toEqual([]);
+  });
+});
+
+describe("buildMessages tool-name causality", () => {
+  const withMessages = (messages: SidecarRequest["messages"]): SidecarRequest => ({
+    ...req("deepseek"),
+    messages,
+  });
+
+  test("tool_result resolves a tool_use from an earlier turn", () => {
+    const call = buildCall(
+      withMessages([
+        { role: "assistant", content: [{ type: "tool_use", id: "tc_1", name: "search", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "tc_1", content: "ok" }] },
+      ]),
+    );
+    const toolMsg = call.messages?.find((m) => m.role === "tool");
+    expect(toolMsg?.content).toEqual([
+      { type: "tool-result", toolCallId: "tc_1", toolName: "search", output: { type: "text", value: "ok" } },
+    ]);
+  });
+
+  test("tool_result pointing at a LATER tool_use throws (causality)", () => {
+    expect(() =>
+      buildCall(
+        withMessages([
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "tc_1", content: "ok" }] },
+          { role: "assistant", content: [{ type: "tool_use", id: "tc_1", name: "search", input: {} }] },
+        ]),
+      ),
+    ).toThrow(/unknown tool_use_id: tc_1/);
   });
 });
