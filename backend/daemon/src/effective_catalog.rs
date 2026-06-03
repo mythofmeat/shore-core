@@ -614,6 +614,41 @@ base_url = "https://example.test/v1"
     }
 
     #[test]
+    fn discovered_claude_4_7_plus_drops_rejected_sampler() {
+        // The sampler cutoff (#138) also fires on the discovered path, since it
+        // converges on ResolvedModel::from_parts. A `temperature` pinned via
+        // `[providers.*.defaults]` is dropped for a Claude >=4.7 model id but
+        // kept for one below the cutoff.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+sdk = "anthropic"
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+
+[providers.openrouter.defaults]
+temperature = 0.5
+"#,
+            "",
+        );
+        write_cache_for(
+            &tmp,
+            "openrouter",
+            &["anthropic/claude-opus-4.8", "anthropic/claude-sonnet-4.6"],
+        );
+
+        let opus =
+            find_effective_model(&loaded, tmp.path(), "anthropic/claude-opus-4.8", false).unwrap();
+        assert_eq!(opus.temperature, None, "rejected for opus >=4.7");
+
+        let sonnet =
+            find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.6", false).unwrap();
+        assert_eq!(sonnet.temperature, Some(0.5), "kept below the 4.7 cutoff");
+    }
+
+    #[test]
     fn discovered_model_inherits_provider_level_defaults() {
         // `[providers.<provider>.defaults]` fields must cascade onto discovered
         // models the same way they fold into static `[chat.<provider>.<model>]`

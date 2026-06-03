@@ -37,6 +37,7 @@
 )]
 
 pub mod app;
+pub mod capabilities;
 pub mod cron;
 pub mod duration;
 pub mod models;

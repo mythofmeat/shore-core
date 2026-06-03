@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
+use crate::capabilities;
 use crate::duration::ConfigDuration;
 
 // ── SDK enum ────────────────────────────────────────────────────────────
@@ -298,7 +299,7 @@ impl ResolvedModel {
         provider_key: String,
         model_id: String,
         sdk_fallback: Sdk,
-        fields: ModelConfigFields,
+        mut fields: ModelConfigFields,
     ) -> Self {
         // Anthropic-slug auto-promotion: OpenRouter (and similar gateways)
         // accept Anthropic-shape `/v1/messages` for `anthropic/*` models, and
@@ -313,13 +314,48 @@ impl ResolvedModel {
 
         // Anthropic prompt caching is opt-in on the wire — `cache_control`
         // blocks are only added when `cache_ttl` is `Some` and non-empty.
-        // Default to "1h" for the Anthropic SDK so users get caching without
-        // explicit config, matching the billing-side default in
-        // backend/ledger/src/pricing.rs. Set `cache_ttl = ""` to disable.
-        let cache_ttl = match (&sdk, fields.cache_ttl) {
-            (Sdk::Anthropic, None) => Some("1h".to_string()),
-            (_, other) => other,
-        };
+        // The "1h" Anthropic default now lives in the capability layer (#138);
+        // fill only when unset so user / provider config wins (set
+        // `cache_ttl = ""` to disable). Matches the billing-side default in
+        // backend/ledger/src/pricing.rs.
+        if fields.cache_ttl.is_none() {
+            fields.cache_ttl =
+                capabilities::default_value(&sdk, capabilities::Field::CacheTtl).map(str::to_string);
+        }
+
+        // Drop sampler knobs the model's wire rejects (Claude >=4.7 cutoff,
+        // #138) so a baked-in default never 400s. The `temperature = 1.0`
+        // baseline from `base_provider_defaults` is dropped silently; an
+        // explicit non-default value is dropped with a warn. `top_p` /
+        // `budget_tokens` have no code default, so any present value is
+        // user-set and warns.
+        strip_rejected_sampler(
+            &sdk,
+            &model_id,
+            capabilities::Field::Temperature,
+            &mut fields.temperature,
+            Some(&1.0),
+        );
+        strip_rejected_sampler(
+            &sdk,
+            &model_id,
+            capabilities::Field::TopP,
+            &mut fields.top_p,
+            None,
+        );
+        strip_rejected_sampler(
+            &sdk,
+            &model_id,
+            capabilities::Field::BudgetTokens,
+            &mut fields.budget_tokens,
+            None,
+        );
+
+        // Warn (but keep) settings the resolved sdk silently ignores — harmless
+        // on the wire, but a likely misconfiguration worth surfacing.
+        warn_ignored_fields(&sdk, &model_id, &fields);
+
+        let cache_ttl = fields.cache_ttl;
 
         Self {
             name,
@@ -351,6 +387,65 @@ impl ResolvedModel {
             // value is supplied later by the runtime preference overlay
             // (issue #129). `None` here means "inherit the global default".
             preserve_prior_turns: None,
+        }
+    }
+}
+
+/// Drop a sampler field the resolved `(sdk, model_id)` wire rejects (#138).
+/// A value equal to `silent_default` (the baked-in code default) is dropped
+/// silently; any other present value is dropped with a `warn!`, since sending it
+/// would be an upstream 400.
+fn strip_rejected_sampler<T: PartialEq>(
+    sdk: &Sdk,
+    model_id: &str,
+    field: capabilities::Field,
+    slot: &mut Option<T>,
+    silent_default: Option<&T>,
+) {
+    if slot.is_none()
+        || capabilities::applicability(sdk, model_id, field)
+            != capabilities::Applicability::Rejected
+    {
+        return;
+    }
+    if slot.as_ref() != silent_default {
+        warn!(
+            model = model_id,
+            sdk = sdk.as_str(),
+            "dropping `{}`: the `{}` wire rejects it (Claude >=4.7 sampler cutoff)",
+            field,
+            model_id,
+        );
+    }
+    *slot = None;
+}
+
+/// Warn (but keep) every present field the resolved sdk silently ignores
+/// (#138) — harmless on the wire, but a likely misconfiguration worth
+/// surfacing (e.g. `cache_ttl` on a non-Anthropic sdk, `vertex_*` off Gemini).
+fn warn_ignored_fields(sdk: &Sdk, model_id: &str, fields: &ModelConfigFields) {
+    use capabilities::Field;
+    let checks: [(Field, bool); 8] = [
+        (Field::CacheTtl, fields.cache_ttl.is_some()),
+        (Field::OpenrouterProvider, fields.openrouter_provider.is_some()),
+        (Field::VertexProject, fields.vertex_project.is_some()),
+        (Field::VertexLocation, fields.vertex_location.is_some()),
+        (Field::GeminiGeneration, fields.gemini_generation.is_some()),
+        (Field::GeminiWebSearch, fields.gemini_web_search.is_some()),
+        (Field::ZaiClearThinking, fields.zai_clear_thinking.is_some()),
+        (Field::ZaiSubscription, fields.zai_subscription.is_some()),
+    ];
+    for (field, present) in checks {
+        if present
+            && capabilities::applicability(sdk, model_id, field)
+                == capabilities::Applicability::Ignored
+        {
+            warn!(
+                model = model_id,
+                "ignoring `{}`: the `{}` sdk does not honor it",
+                field,
+                sdk.as_str(),
+            );
         }
     }
 }
@@ -998,6 +1093,78 @@ cache_ttl = "5m"
         let models = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus"];
         assert_eq!(opus.cache_ttl.as_deref(), Some("5m"));
+    }
+
+    #[test]
+    fn claude_4_7_plus_drops_baked_temperature_default() {
+        // `base_provider_defaults` bakes `temperature = 1.0` into every
+        // anthropic model; for Claude >=4.7 it must not reach the wire (#138).
+        let table = parse_table(
+            r#"
+[anthropic.opus]
+model_id = "claude-opus-4-8"
+"#,
+        );
+        let models = parse_category("chat", &table, None).unwrap();
+        let opus = &models["chat.anthropic.opus"];
+        assert_eq!(opus.temperature, None, "baked 1.0 dropped silently");
+        assert_eq!(opus.top_p, None);
+        assert_eq!(opus.budget_tokens, None);
+    }
+
+    #[test]
+    fn claude_4_7_plus_drops_explicit_sampler_values() {
+        let table = parse_table(
+            r#"
+[anthropic.opus]
+model_id = "claude-opus-4-8"
+temperature = 0.5
+top_p = 0.9
+budget_tokens = 2048
+"#,
+        );
+        let models = parse_category("chat", &table, None).unwrap();
+        let opus = &models["chat.anthropic.opus"];
+        assert_eq!(opus.temperature, None, "explicit value dropped (would 400)");
+        assert_eq!(opus.top_p, None);
+        assert_eq!(opus.budget_tokens, None);
+    }
+
+    #[test]
+    fn claude_below_cutoff_keeps_sampler_values() {
+        // sonnet-4.6 is below the 4.7 cutoff: the baked temperature default and
+        // an explicit top_p both survive.
+        let table = parse_table(
+            r#"
+[anthropic.sonnet]
+model_id = "claude-sonnet-4-6"
+top_p = 0.9
+"#,
+        );
+        let models = parse_category("chat", &table, None).unwrap();
+        let sonnet = &models["chat.anthropic.sonnet"];
+        assert_eq!(sonnet.temperature, Some(1.0), "baked default kept below cutoff");
+        assert_eq!(sonnet.top_p, Some(0.9));
+    }
+
+    #[test]
+    fn sampler_cutoff_follows_model_id_across_sdks() {
+        // An `anthropic/*` slug under a non-Anthropic provider is still gated by
+        // the model id, not the sdk.
+        let table = parse_table(
+            r#"
+[openrouter.opus]
+model_id = "anthropic/claude-opus-4-8"
+temperature = 0.3
+"#,
+        );
+        let models = parse_category("chat", &table, None).unwrap();
+        let opus = &models["chat.openrouter.opus"];
+        // openrouter's hardcoded default pins `Sdk::Openrouter` (so the
+        // `anthropic/*` auto-promotion doesn't fire), yet the sampler cutoff
+        // still applies: it follows the model id, not the sdk.
+        assert_eq!(opus.sdk, Sdk::Openrouter);
+        assert_eq!(opus.temperature, None);
     }
 
     #[test]
