@@ -194,7 +194,10 @@ impl HeartbeatClock {
             if self.is_abandoned(now) {
                 return HeartbeatAction::None;
             }
-            let target = self.last_anchor + self.default_interval;
+            let target = self
+                .last_anchor
+                .checked_add(self.default_interval)
+                .unwrap_or(self.last_anchor);
             self.next_wake_at = Some(target);
             debug!(
                 default_interval_secs = self.default_interval.as_secs(),
@@ -232,7 +235,7 @@ impl HeartbeatClock {
         }
 
         // Step 4: guard passes — fire the tick.
-        self.ticks_without_user += 1;
+        self.ticks_without_user = self.ticks_without_user.saturating_add(1);
         self.next_wake_at = None;
         self.last_anchor = now;
         debug!(
@@ -260,7 +263,7 @@ impl HeartbeatClock {
             );
         }
 
-        let target = now + clamped;
+        let target = now.checked_add(clamped).unwrap_or(now);
         self.next_wake_at = Some(target);
         self.last_anchor = now;
         debug!(
@@ -282,7 +285,7 @@ impl HeartbeatClock {
         self.ticks_without_user = 0;
         self.last_user_at = Some(now);
 
-        let min_wake = now + self.min_wake_interval;
+        let min_wake = now.checked_add(self.min_wake_interval).unwrap_or(now);
         let wake_at = match self.next_wake_at {
             Some(existing) if existing > min_wake => existing,
             _ => min_wake,

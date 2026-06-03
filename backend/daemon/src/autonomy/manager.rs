@@ -212,9 +212,9 @@ fn rfc3339_to_instant(s: &str) -> Option<Instant> {
     let delta = parsed.signed_duration_since(now_utc);
     if delta >= chrono::Duration::zero() {
         let std_delta = delta.to_std().ok()?;
-        Some(now_instant + std_delta)
+        now_instant.checked_add(std_delta)
     } else {
-        let std_delta = (-delta).to_std().ok()?;
+        let std_delta = delta.abs().to_std().ok()?;
         now_instant.checked_sub(std_delta)
     }
 }
@@ -228,9 +228,9 @@ fn naive_local_to_instant(naive: chrono::NaiveDateTime) -> Option<Instant> {
     let now_instant = Instant::now();
     let delta = dt.signed_duration_since(now_local);
     if delta >= chrono::Duration::zero() {
-        Some(now_instant + delta.to_std().ok()?)
+        now_instant.checked_add(delta.to_std().ok()?)
     } else {
-        now_instant.checked_sub((-delta).to_std().ok()?)
+        now_instant.checked_sub(delta.abs().to_std().ok()?)
     }
 }
 
@@ -794,7 +794,7 @@ impl AutonomyManager {
                 if w >= now {
                     duration_secs_i64(w.duration_since(now))
                 } else {
-                    -duration_secs_i64(now.duration_since(w))
+                    duration_secs_i64(now.duration_since(w)).saturating_neg()
                 }
             });
             let last_user_at = s.heartbeat.last_user_at().map(instant_to_rfc3339);
@@ -944,7 +944,9 @@ fn schedule_next_wake_in_state(state: &Mutex<AutonomyState>, input: &Value) -> V
         .to_string();
     let clamped = hours.clamp(1.0, 48.0);
     let now = Instant::now();
-    let when = now + Duration::from_secs_f64(clamped * 3600.0);
+    let when = now
+        .checked_add(Duration::from_secs_f64(clamped * 3600.0))
+        .unwrap_or(now);
 
     let mut s = lock_state(state);
     s.heartbeat.schedule(when, now);
@@ -1377,7 +1379,7 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
             let mut s = lock_state(&ctx.state);
             s.dream_failure_count = s.dream_failure_count.saturating_add(1);
             let delay = background_retry_delay(s.dream_failure_count);
-            s.next_dream_attempt_at = Some(now + delay);
+            s.next_dream_attempt_at = Some(now.checked_add(delay).unwrap_or(now));
             s.mark_dirty();
             return;
         }
@@ -1426,7 +1428,7 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
             let mut s = lock_state(&ctx.state);
             s.dream_failure_count = s.dream_failure_count.saturating_add(1);
             let delay = background_retry_delay(s.dream_failure_count);
-            s.next_dream_attempt_at = Some(now + delay);
+            s.next_dream_attempt_at = Some(now.checked_add(delay).unwrap_or(now));
             s.mark_dirty();
             debug!(
                 character,
@@ -1885,7 +1887,10 @@ async fn execute_heartbeat_tick(
     let mut send_message_text: Option<String> = None;
     let mut cache_warmed = false;
 
-    let loop_deadline = std::time::Instant::now() + HEARTBEAT_LOOP_DEADLINE;
+    let loop_start = std::time::Instant::now();
+    let loop_deadline = loop_start
+        .checked_add(HEARTBEAT_LOOP_DEADLINE)
+        .unwrap_or(loop_start);
     let mut wrap_up_nudged = false;
 
     for iteration in 0..total_iterations {
@@ -2220,13 +2225,17 @@ fn extract_tag(content: &str, start_tag: &str, end_tag: &str) -> Option<String> 
     let mut result = None;
     let mut search_from = 0;
     while let Some(start_pos) = content[search_from..].find(start_tag) {
-        let abs_start = search_from + start_pos + start_tag.len();
+        let abs_start = search_from
+            .saturating_add(start_pos)
+            .saturating_add(start_tag.len());
         if let Some(end_pos) = content[abs_start..].find(end_tag) {
-            let inner = content[abs_start..abs_start + end_pos].trim();
+            let inner = content[abs_start..abs_start.saturating_add(end_pos)].trim();
             if !inner.is_empty() {
                 result = Some(inner.to_string());
             }
-            search_from = abs_start + end_pos + end_tag.len();
+            search_from = abs_start
+                .saturating_add(end_pos)
+                .saturating_add(end_tag.len());
         } else {
             break;
         }

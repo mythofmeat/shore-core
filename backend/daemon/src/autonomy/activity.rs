@@ -133,7 +133,9 @@ impl ActivityTracker {
             let weekday = wall_clock.weekday();
             let offset = u64::try_from(i).unwrap_or(u64::MAX);
             self.timestamps.push(MessageTimestamp {
-                monotonic: monotonic_base + std::time::Duration::from_nanos(offset),
+                monotonic: monotonic_base
+                    .checked_add(std::time::Duration::from_nanos(offset))
+                    .unwrap_or(monotonic_base),
                 wall_clock: *wall_clock,
                 weekday,
             });
@@ -266,7 +268,10 @@ impl ActivityTracker {
         };
         let first = first.wall_clock.date();
         let last = last.wall_clock.date();
-        let span_days = (last - first).num_days() + 1;
+        let span_days = last
+            .signed_duration_since(first)
+            .num_days()
+            .saturating_add(1);
         if span_days <= 0 {
             return 1.0;
         }
@@ -286,8 +291,11 @@ impl ActivityTracker {
         let mut current_session = vec![0usize];
 
         for i in 1..self.timestamps.len() {
-            let gap = match (self.timestamps.get(i), self.timestamps.get(i - 1)) {
-                (Some(cur), Some(prev)) => (cur.wall_clock - prev.wall_clock)
+            let prev = i.checked_sub(1).and_then(|j| self.timestamps.get(j));
+            let gap = match (self.timestamps.get(i), prev) {
+                (Some(cur), Some(prev)) => cur
+                    .wall_clock
+                    .signed_duration_since(prev.wall_clock)
                     .num_seconds()
                     .unsigned_abs(),
                 _ => continue,
@@ -301,7 +309,7 @@ impl ActivityTracker {
 
         // Limit to last SESSION_MEDIANS_WINDOW sessions.
         if sessions.len() > SESSION_MEDIANS_WINDOW {
-            let _ignored = sessions.drain(..sessions.len() - SESSION_MEDIANS_WINDOW);
+            let _ignored = sessions.drain(..sessions.len().saturating_sub(SESSION_MEDIANS_WINDOW));
         }
 
         sessions
@@ -314,7 +322,7 @@ impl ActivityTracker {
             return Vec::new();
         }
 
-        let mut gaps = Vec::with_capacity(sessions.len() - 1);
+        let mut gaps = Vec::with_capacity(sessions.len().saturating_sub(1));
         for pair in sessions.windows(2) {
             let [prev_session, next_session] = pair else {
                 continue;
@@ -331,7 +339,9 @@ impl ActivityTracker {
                 continue;
             };
             let gap = u64_to_f64(
-                (next_ts.wall_clock - prev_ts.wall_clock)
+                next_ts
+                    .wall_clock
+                    .signed_duration_since(prev_ts.wall_clock)
                     .num_seconds()
                     .unsigned_abs(),
             );
@@ -354,7 +364,8 @@ impl ActivityTracker {
                     continue;
                 };
                 let gap = u64_to_f64(
-                    (ts_b.wall_clock - ts_a.wall_clock)
+                    ts_b.wall_clock
+                        .signed_duration_since(ts_a.wall_clock)
                         .num_seconds()
                         .unsigned_abs(),
                 );
@@ -363,7 +374,7 @@ impl ActivityTracker {
         }
         // Keep only the last SESSION_TEMPO_WINDOW gaps.
         if all_gaps.len() > SESSION_TEMPO_WINDOW {
-            let _ignored = all_gaps.drain(..all_gaps.len() - SESSION_TEMPO_WINDOW);
+            let _ignored = all_gaps.drain(..all_gaps.len().saturating_sub(SESSION_TEMPO_WINDOW));
         }
         all_gaps
     }
@@ -480,7 +491,8 @@ fn median(values: &[f64]) -> Option<f64> {
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = sorted.len() / 2;
     if sorted.len().is_multiple_of(2) {
-        let (Some(lo), Some(hi)) = (sorted.get(mid - 1), sorted.get(mid)) else {
+        let lo = mid.checked_sub(1).and_then(|i| sorted.get(i));
+        let (Some(lo), Some(hi)) = (lo, sorted.get(mid)) else {
             return None;
         };
         Some(lo.midpoint(*hi))

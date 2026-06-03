@@ -90,7 +90,7 @@ impl CompactionManager {
         let mut turns_seen = 0usize;
         for (i, msg) in messages.iter().enumerate().rev() {
             if msg.role == "user" && !Self::is_tool_loop_message(msg) {
-                turns_seen += 1;
+                turns_seen = turns_seen.saturating_add(1);
                 if turns_seen >= keep_turns {
                     return i;
                 }
@@ -153,7 +153,7 @@ impl CompactionManager {
             final_msg = format!(
                 "{}{}",
                 &final_msg[..if_start],
-                &final_msg[endif_pos + "{{/if}}".len()..],
+                &final_msg[endif_pos.saturating_add("{{/if}}".len())..],
             );
         }
         final_msg.replace("{{recap}}", "")
@@ -323,7 +323,7 @@ impl CompactionManager {
         let compacted_part = messages.get(..split_at).unwrap_or(messages);
         debug!(
             compacted = split_at,
-            retained = messages.len() - split_at,
+            retained = messages.len().saturating_sub(split_at),
             "Conversation split for compaction"
         );
 
@@ -381,7 +381,7 @@ impl CompactionManager {
                 break;
             }
 
-            loop_state.tool_rounds += 1;
+            loop_state.tool_rounds = loop_state.tool_rounds.saturating_add(1);
             let mut tool_results = Vec::with_capacity(tool_uses.len());
             for (id, name, input) in tool_uses {
                 loop_state.tools_called.push(name.clone());
@@ -427,7 +427,7 @@ impl CompactionManager {
                 file_ops_preview: loop_state.dry_run_previews,
                 message_count: split_at,
                 compacted_turns,
-                retained_count: messages.len() - split_at,
+                retained_count: messages.len().saturating_sub(split_at),
                 retained_turns,
                 markdown_preview,
                 tool_rounds: loop_state.tool_rounds,
@@ -460,7 +460,7 @@ impl CompactionManager {
         }
 
         // Archive compacted messages and retain recent context.
-        let retained = messages.len() - split_at;
+        let retained = messages.len().saturating_sub(split_at);
         let archive_started = std::time::Instant::now();
         let new_conversation_id = match conversation_mgr
             .archive_and_retain(

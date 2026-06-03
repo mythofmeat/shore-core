@@ -206,10 +206,10 @@ impl QueryMatcher {
             .unwrap_or(i64::MAX / TERM_HIT)
             .saturating_mul(TERM_HIT);
         if hits == self.terms.len() {
-            score += FULL_COVERAGE_BONUS;
+            score = score.saturating_add(FULL_COVERAGE_BONUS);
         }
         if self.terms.len() > 1 && content_lower.contains(&self.raw_lower) {
-            score += PHRASE_BONUS;
+            score = score.saturating_add(PHRASE_BONUS);
         }
         Some(score)
     }
@@ -252,7 +252,7 @@ fn excerpt_for(content: &str, matcher: Option<&QueryMatcher>) -> String {
     if start_char > 0 {
         excerpt = format!("...{excerpt}");
     }
-    if content.chars().count() > start_char + EXCERPT_CHARS {
+    if content.chars().count() > start_char.saturating_add(EXCERPT_CHARS) {
         excerpt.push_str("...");
     }
     excerpt
@@ -288,7 +288,7 @@ fn matches_time_range(
     if let Ok(parsed) = DateTime::parse_from_rfc3339(timestamp) {
         range.contains(parsed)
     } else {
-        *skipped_invalid_timestamps += 1;
+        *skipped_invalid_timestamps = skipped_invalid_timestamps.saturating_add(1);
         false
     }
 }
@@ -393,7 +393,7 @@ fn combined_score(
 ) -> f64 {
     let recency = match (candidate.parsed_ts, min_ts) {
         (Some(ts), Some(min)) if span_secs > 0.0 => {
-            (i64_to_f64((ts - min).num_seconds()) / span_secs) * RECENCY_WEIGHT
+            (i64_to_f64(ts.signed_duration_since(min).num_seconds()) / span_secs) * RECENCY_WEIGHT
         }
         _ => 0.0,
     };
@@ -412,7 +412,7 @@ fn rank_candidates(candidates: &mut [ScoredCandidate]) {
         }
     }
     let span_secs = match (min_ts, max_ts) {
-        (Some(min), Some(max)) => i64_to_f64((max - min).num_seconds().max(0)),
+        (Some(min), Some(max)) => i64_to_f64(max.signed_duration_since(min).num_seconds().max(0)),
         _ => 0.0,
     };
 
@@ -448,7 +448,7 @@ pub fn handle_search_history(input: &Value, ctx: &dyn ToolContext) -> Result<Val
         let messages = segments
             .read_segment(index)
             .map_err(|e| ToolError::Io(e.to_string()))?;
-        searched_messages += messages.len();
+        searched_messages = searched_messages.saturating_add(messages.len());
         collect_matches(
             &mut candidates,
             &messages,
@@ -461,7 +461,7 @@ pub fn handle_search_history(input: &Value, ctx: &dyn ToolContext) -> Result<Val
 
     let active_path = character_dir.join(shore_config::ACTIVE_JSONL_FILE);
     let active = MessageStore::load(active_path).map_err(|e| ToolError::Io(e.to_string()))?;
-    searched_messages += active.message_count();
+    searched_messages = searched_messages.saturating_add(active.message_count());
     collect_matches(
         &mut candidates,
         active.messages(),

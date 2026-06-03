@@ -341,26 +341,26 @@ fn entry_search_score(entry: &MarkdownEntry, query: &str, terms: &[&str]) -> usi
         .unwrap_or_default()
         .to_lowercase();
 
-    let mut score = 0;
+    let mut score: usize = 0;
     if path.contains(query) {
-        score += 50;
+        score = score.saturating_add(50);
     }
     if title.contains(query) {
-        score += 40;
+        score = score.saturating_add(40);
     }
     if content.contains(query) {
-        score += 30;
+        score = score.saturating_add(30);
     }
 
     for term in terms {
         if path.contains(term) {
-            score += 12;
+            score = score.saturating_add(12);
         }
         if title.contains(term) {
-            score += 10;
+            score = score.saturating_add(10);
         }
         if content.contains(term) {
-            score += 4;
+            score = score.saturating_add(4);
         }
     }
 

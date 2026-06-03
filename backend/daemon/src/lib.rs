@@ -23,6 +23,7 @@
     clippy::match_wildcard_for_single_variants,
     clippy::wildcard_enum_match_arm,
     clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
     clippy::undocumented_unsafe_blocks,
     unsafe_code,
     elided_lifetimes_in_paths,
@@ -44,6 +45,17 @@
     expect(
         clippy::indexing_slicing,
         reason = "out-of-bounds indexing in tests is an assertion failure, not a service panic"
+    )
+)]
+// Tests do arithmetic on fixture values freely: an overflow panic in a test is
+// an assertion failure, not a service panic (same rationale as the
+// `indexing_slicing` exemption above). Production code stays locked by the
+// `#![deny(...)]` above.
+#![cfg_attr(
+    test,
+    expect(
+        clippy::arithmetic_side_effects,
+        reason = "overflow in tests is an assertion failure, not a service panic"
     )
 )]
 

@@ -35,7 +35,7 @@ pub(crate) fn build_content(
         return json!(text);
     }
 
-    let mut blocks: Vec<Value> = Vec::with_capacity(images.len() + 1);
+    let mut blocks: Vec<Value> = Vec::with_capacity(images.len().saturating_add(1));
 
     for img in images {
         let Some(media_type) = media_type_for_path(&img.path) else {
@@ -95,7 +95,8 @@ pub(super) fn ingest_images(
 
     let character_data_dir = character_data_dir(data_dir, char_name);
     let attachments_dir = character_data_dir.join("images").join("attachments");
-    let mut images: Vec<ImageRef> = Vec::with_capacity(image_data.len() + image_paths.len());
+    let mut images: Vec<ImageRef> =
+        Vec::with_capacity(image_data.len().saturating_add(image_paths.len()));
 
     // Preferred path: base64-encoded uploads (works across machines).
     for upload in image_data {

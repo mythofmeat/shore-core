@@ -324,17 +324,17 @@ fn display_path_for(workspace_dir: &str, path: &Path) -> String {
 fn find_case_insensitive_match(line: &str, query_lower: &str) -> Option<(usize, usize)> {
     let folded = line.to_lowercase();
     let folded_start = folded.find(query_lower)?;
-    let folded_end = folded_start + query_lower.len();
+    let folded_end = folded_start.saturating_add(query_lower.len());
 
     let mut folded_pos = 0usize;
     let mut original_start = None;
     let mut original_end = None;
 
     for (original_idx, ch) in line.char_indices() {
-        let original_next = original_idx + ch.len_utf8();
+        let original_next = original_idx.saturating_add(ch.len_utf8());
         let char_folded_start = folded_pos;
         for folded_ch in ch.to_lowercase() {
-            folded_pos += folded_ch.len_utf8();
+            folded_pos = folded_pos.saturating_add(folded_ch.len_utf8());
         }
         let char_folded_end = folded_pos;
 
@@ -370,14 +370,14 @@ fn byte_index_after_chars(text: &str, start: usize, count: usize) -> usize {
         let Some((offset, ch)) = text[end..].char_indices().next() else {
             return text.len();
         };
-        end += offset + ch.len_utf8();
+        end = end.saturating_add(offset).saturating_add(ch.len_utf8());
     }
     end
 }
 
 fn excerpt_line(line: &str, match_start: usize, match_end: usize) -> String {
     let trimmed_start = line.trim_start();
-    let leading_trimmed_bytes = line.len() - trimmed_start.len();
+    let leading_trimmed_bytes = line.len().saturating_sub(trimmed_start.len());
     let trimmed = trimmed_start.trim_end();
 
     let match_start = match_start
@@ -393,18 +393,24 @@ fn excerpt_line(line: &str, match_start: usize, match_end: usize) -> String {
     let available_after = trimmed[match_end..].chars().count();
     let context_chars = SEARCH_EXCERPT_CHARS.saturating_sub(match_chars);
     let mut before_chars = (context_chars / 2).min(available_before);
-    let mut after_chars = (context_chars - before_chars).min(available_after);
+    let mut after_chars = context_chars
+        .saturating_sub(before_chars)
+        .min(available_after);
 
-    let unused_after = context_chars.saturating_sub(before_chars + after_chars);
+    let unused_after = context_chars.saturating_sub(before_chars.saturating_add(after_chars));
     if unused_after > 0 {
-        let extra_before = (available_before - before_chars).min(unused_after);
-        before_chars += extra_before;
+        let extra_before = available_before
+            .saturating_sub(before_chars)
+            .min(unused_after);
+        before_chars = before_chars.saturating_add(extra_before);
     }
 
-    let unused_before = context_chars.saturating_sub(before_chars + after_chars);
+    let unused_before = context_chars.saturating_sub(before_chars.saturating_add(after_chars));
     if unused_before > 0 {
-        let extra_after = (available_after - after_chars).min(unused_before);
-        after_chars += extra_after;
+        let extra_after = available_after
+            .saturating_sub(after_chars)
+            .min(unused_before);
+        after_chars = after_chars.saturating_add(extra_after);
     }
 
     let excerpt_start = byte_index_before_chars(trimmed, match_start, before_chars);
@@ -459,11 +465,11 @@ pub async fn handle_read(input: Value, workspace_dir: &str) -> Result<Value, Too
         .and_then(Value::as_u64)
         .map_or(total_lines, u64_to_usize);
 
-    let end = (offset + limit).min(total_lines);
+    let end = offset.saturating_add(limit).min(total_lines);
     let selected: Vec<&str> = lines
         .iter()
         .skip(offset)
-        .take(end - offset)
+        .take(end.saturating_sub(offset))
         .copied()
         .collect();
     let result_text = selected.join("\n");
@@ -476,17 +482,17 @@ pub async fn handle_read(input: Value, workspace_dir: &str) -> Result<Value, Too
 
     if offset > 0 || end < total_lines {
         if let Some(obj) = result.as_object_mut() {
-            let _ignored = obj.insert("offset".into(), json!(offset + 1));
-            let _ignored = obj.insert("returned_lines".into(), json!(end - offset));
+            let _ignored = obj.insert("offset".into(), json!(offset.saturating_add(1)));
+            let _ignored = obj.insert("returned_lines".into(), json!(end.saturating_sub(offset)));
             if end < total_lines {
                 let _ignored = obj.insert(
                     "note".into(),
                     json!(format!(
                         "Showing lines {}–{} of {}. Use offset={} to continue.",
-                        offset + 1,
+                        offset.saturating_add(1),
                         end,
                         total_lines,
-                        end + 1
+                        end.saturating_add(1)
                     )),
                 );
             }
@@ -583,7 +589,7 @@ pub async fn handle_edit(input: Value, workspace_dir: &str) -> Result<Value, Too
         // Replace ALL occurrences
         let count = content.matches(old_str).count();
         content = content.replace(old_str, new_str);
-        replacements_made += count;
+        replacements_made = replacements_made.saturating_add(count);
     }
 
     tokio::fs::write(&path, content)
@@ -797,7 +803,7 @@ async fn handle_search_lexical(
         }
 
         if meta.len() > retrieval_config.max_file_bytes {
-            skipped_binary_or_large += 1;
+            skipped_binary_or_large = skipped_binary_or_large.saturating_add(1);
             continue;
         }
 
@@ -818,11 +824,11 @@ async fn handle_search_lexical(
             continue;
         };
         let Ok(content) = String::from_utf8(bytes) else {
-            skipped_binary_or_large += 1;
+            skipped_binary_or_large = skipped_binary_or_large.saturating_add(1);
             continue;
         };
 
-        searched_files += 1;
+        searched_files = searched_files.saturating_add(1);
         let display = display_path_for(workspace_dir, &path);
         let mut file_hits = 0usize;
         for (line_idx, line) in content.lines().enumerate() {
@@ -832,10 +838,10 @@ async fn handle_search_lexical(
             };
             results.push(json!({
                 "path": display.clone(),
-                "line": line_idx + 1,
+                "line": line_idx.saturating_add(1),
                 "excerpt": excerpt_line(line, match_start, match_end),
             }));
-            file_hits += 1;
+            file_hits = file_hits.saturating_add(1);
             if results.len() >= max_results {
                 break;
             }
@@ -960,7 +966,7 @@ async fn handle_search_hybrid(
 fn best_line_excerpt(content: &str, q_lower: &str) -> (usize, String) {
     for (i, line) in content.lines().enumerate() {
         if let Some((s, e)) = find_case_insensitive_match(line, q_lower) {
-            return (i + 1, excerpt_line(line, s, e));
+            return (i.saturating_add(1), excerpt_line(line, s, e));
         }
     }
 
@@ -981,13 +987,13 @@ fn best_line_excerpt(content: &str, q_lower: &str) -> (usize, String) {
     for (i, line) in content.lines().enumerate() {
         let trimmed = line.trim();
         if !trimmed.is_empty() && !trimmed.starts_with('#') {
-            return (i + 1, truncate_excerpt_line(trimmed));
+            return (i.saturating_add(1), truncate_excerpt_line(trimmed));
         }
     }
     for (i, line) in content.lines().enumerate() {
         let trimmed = line.trim();
         if !trimmed.is_empty() {
-            return (i + 1, truncate_excerpt_line(trimmed));
+            return (i.saturating_add(1), truncate_excerpt_line(trimmed));
         }
     }
     (1, String::new())
@@ -1037,9 +1043,12 @@ fn best_term_matched_line<'a>(
             let mut line_score = 0usize;
             for (idx, term) in terms.iter().enumerate() {
                 if lower.contains(term) {
-                    let term_score =
-                        100 / frequencies.get(idx).copied().unwrap_or(1).max(1) + term.len();
-                    line_score += term_score;
+                    let denom = frequencies.get(idx).copied().unwrap_or(1).max(1);
+                    let term_score = 100usize
+                        .checked_div(denom)
+                        .unwrap_or(0)
+                        .saturating_add(term.len());
+                    line_score = line_score.saturating_add(term_score);
                     let replace_best = match best_term {
                         Some((_, score)) => term_score > score,
                         None => true,
@@ -1050,7 +1059,7 @@ fn best_term_matched_line<'a>(
                 }
             }
 
-            best_term.map(|(term, _)| (line_idx + 1, line, term, line_score))
+            best_term.map(|(term, _)| (line_idx.saturating_add(1), line, term, line_score))
         })
         .max_by(|a, b| a.3.cmp(&b.3).then_with(|| b.0.cmp(&a.0)))
         .map(|(line_no, line, term, _)| (line_no, line, term))

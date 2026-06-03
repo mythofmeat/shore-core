@@ -25,6 +25,7 @@
     clippy::match_wildcard_for_single_variants,
     clippy::wildcard_enum_match_arm,
     clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
     clippy::undocumented_unsafe_blocks,
     unsafe_code,
     elided_lifetimes_in_paths,

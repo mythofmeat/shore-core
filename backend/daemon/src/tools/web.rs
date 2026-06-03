@@ -224,9 +224,9 @@ fn strip_html(html: &str) -> String {
                 let rest_lower = html[i..].to_ascii_lowercase();
                 if let Some(end_pos) = rest_lower.find(&close) {
                     // Skip past the closing tag's '>'
-                    let after_close = i + end_pos + close.len();
+                    let after_close = i.saturating_add(end_pos).saturating_add(close.len());
                     if let Some(gt) = html[after_close..].find('>') {
-                        i = after_close + gt + 1;
+                        i = after_close.saturating_add(gt).saturating_add(1);
                         continue;
                     }
                 }
@@ -237,7 +237,7 @@ fn strip_html(html: &str) -> String {
             // Regular tag — skip it but add a space (block elements create breaks)
             if let Some(gt) = html[i..].find('>') {
                 cleaned.push(' ');
-                i += gt + 1;
+                i = i.saturating_add(gt).saturating_add(1);
                 continue;
             }
         }
@@ -245,7 +245,7 @@ fn strip_html(html: &str) -> String {
         // Consume one character
         if let Some(ch) = html[i..].chars().next() {
             cleaned.push(ch);
-            i += ch.len_utf8();
+            i = i.saturating_add(ch.len_utf8());
         } else {
             break;
         }

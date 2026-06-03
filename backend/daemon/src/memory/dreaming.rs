@@ -380,7 +380,7 @@ pub async fn run_librarian_sweep(
 
     let mut next_state = state;
     next_state.last_run_at = Some(ran_at.clone());
-    next_state.runs += 1;
+    next_state.runs = next_state.runs.saturating_add(1);
     next_state.last_candidates_path = None;
     next_state.last_signals_path = None;
     next_state.last_promotions_path = None;
@@ -604,7 +604,7 @@ pub async fn run_legacy_diagnostic_sweep(
 
     let mut next_state = state;
     next_state.last_run_at = Some(ran_at.clone());
-    next_state.runs += 1;
+    next_state.runs = next_state.runs.saturating_add(1);
     next_state.last_candidates_path = Some(candidates_rel.clone());
     next_state.last_signals_path = Some(signals_rel.clone());
     next_state.last_promotions_path = Some(promotions_rel.clone());
@@ -914,7 +914,7 @@ async fn run_private_librarian_loop(
             return Ok(loop_result);
         }
 
-        loop_result.tool_rounds += 1;
+        loop_result.tool_rounds = loop_result.tool_rounds.saturating_add(1);
         let mut tool_results = Vec::new();
         for (id, name, input) in tool_uses {
             loop_result.tools_used.push(name.clone());
@@ -1192,17 +1192,23 @@ fn is_due_at(
         .map_err(|e| DreamingError::Schedule(format!("{}: {e}", cfg.frequency)))?;
     let max_lateness = Duration::from_std(cfg.max_lateness.as_duration())
         .map_err(|e| DreamingError::Schedule(format!("max_lateness out of range: {e}")))?;
+    let window_start = schedule.initial_due_window_start(now);
     let mut after = match last_run_at {
         Some(last) => DateTime::parse_from_rfc3339(last)
             .map_err(|e| DreamingError::Schedule(format!("invalid last_run_at {last:?}: {e}")))?
             .with_timezone(&Local),
-        None => schedule.initial_due_window_start(now) - Duration::minutes(1),
+        None => window_start
+            .checked_sub_signed(Duration::minutes(1))
+            .unwrap_or(window_start),
     };
     // Clamp the search start to the lateness window so a far-in-the-past
     // last_run_at (with a frequent cron) doesn't trigger a long occurrence
     // walk. Anything older than `now - max_lateness` is out-of-window anyway;
     // the one-tick margin keeps the boundary occurrence reachable.
-    let min_search_after = now - max_lateness - Duration::minutes(1);
+    let min_search_after = now
+        .checked_sub_signed(max_lateness)
+        .and_then(|t| t.checked_sub_signed(Duration::minutes(1)))
+        .unwrap_or(now);
     if after < min_search_after {
         after = min_search_after;
     }
@@ -1216,7 +1222,7 @@ fn is_due_at(
         if next_due > now {
             return Ok(false);
         }
-        if now - next_due <= max_lateness {
+        if now.signed_duration_since(next_due) <= max_lateness {
             return Ok(true);
         }
         // Occurrence is in the past but older than max_lateness — skip it and
@@ -1362,19 +1368,19 @@ fn run_light_phase(
     ran_at: &str,
 ) -> LightPhaseOutput {
     let mut by_key: BTreeMap<String, DreamCandidate> = BTreeMap::new();
-    let mut sources_reviewed = 0;
-    let mut duplicates_ignored = 0;
-    let mut generated_sources_ignored = 0;
+    let mut sources_reviewed: usize = 0;
+    let mut duplicates_ignored: usize = 0;
+    let mut generated_sources_ignored: usize = 0;
 
     for entry in entries {
         if is_generated_dreaming_path(&entry.path) {
-            generated_sources_ignored += 1;
+            generated_sources_ignored = generated_sources_ignored.saturating_add(1);
             continue;
         }
         if !is_candidate_source_path(&entry.path) {
             continue;
         }
-        sources_reviewed += 1;
+        sources_reviewed = sources_reviewed.saturating_add(1);
         for (idx, line) in entry.content.lines().enumerate() {
             let Some(text) = candidate_text_from_line(line) else {
                 continue;
@@ -1385,17 +1391,17 @@ fn run_light_phase(
             }
             let evidence = DreamEvidence {
                 source: entry.path.clone(),
-                line: Some(idx + 1),
+                line: Some(idx.saturating_add(1)),
                 source_kind: source_kind(&entry.path).to_string(),
                 snippet: text.clone(),
             };
             if let Some(existing) = by_key.get_mut(&key) {
                 if !existing.evidence.iter().any(|seen| seen == &evidence) {
                     existing.evidence.push(evidence);
-                    existing.recall_count += 1;
+                    existing.recall_count = existing.recall_count.saturating_add(1);
                     existing.unique_source_count = unique_source_count(&existing.evidence);
                 }
-                duplicates_ignored += 1;
+                duplicates_ignored = duplicates_ignored.saturating_add(1);
                 continue;
             }
 
@@ -1420,7 +1426,7 @@ fn run_light_phase(
                 id: candidate_id(&key),
                 text: text.clone(),
                 source: entry.path.clone(),
-                line: Some(idx + 1),
+                line: Some(idx.saturating_add(1)),
                 source_kind: source_kind(&entry.path).to_string(),
                 first_seen_at,
                 last_seen_at: ran_at.to_string(),
@@ -1983,7 +1989,7 @@ async fn write_memory_index(
             let _ignored = writeln!(
                 body,
                 "- {} additional memory files omitted from this index.",
-                entries.len() - MAX_INDEX_FILES
+                entries.len().saturating_sub(MAX_INDEX_FILES)
             );
         }
     }

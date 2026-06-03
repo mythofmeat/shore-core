@@ -295,22 +295,23 @@ pub fn render_template<S: BuildHasher>(
 
     // Process all conditional blocks.
     while let Some(if_start) = result.find("{{#if ") {
-        let Some(name_end) = result[if_start + 6..].find("}}") else {
+        let name_start = if_start.saturating_add(6);
+        let Some(name_end) = result[name_start..].find("}}") else {
             break;
         };
-        let name = result[if_start + 6..if_start + 6 + name_end]
+        let name = result[name_start..name_start.saturating_add(name_end)]
             .trim()
             .to_string();
-        let open_tag_end = if_start + 6 + name_end + 2;
+        let open_tag_end = name_start.saturating_add(name_end).saturating_add(2);
 
         let close_tag = "{{/if}}";
         let Some(close_pos) = result[open_tag_end..].find(close_tag) else {
             break;
         };
-        let close_abs = open_tag_end + close_pos;
+        let close_abs = open_tag_end.saturating_add(close_pos);
 
         let block_content = &result[open_tag_end..close_abs];
-        let after = &result[close_abs + close_tag.len()..];
+        let after = &result[close_abs.saturating_add(close_tag.len())..];
 
         let value = vars.get(&name).filter(|v| !v.is_empty());
         if let Some(v) = value {
@@ -378,7 +379,7 @@ fn estimate_message_tokens(msg: &Message) -> usize {
             ContentBlock::Text { text } => estimate_tokens(text),
             ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking),
             ContentBlock::ToolUse { input, name, .. } => {
-                estimate_tokens(name) + estimate_tokens(&input.to_string())
+                estimate_tokens(name).saturating_add(estimate_tokens(&input.to_string()))
             }
             ContentBlock::RedactedThinking { .. } => 0,
             ContentBlock::ToolResult { content, .. } => estimate_tokens(content),
@@ -437,15 +438,15 @@ fn trim_messages(
 ) -> Vec<PromptMessage> {
     // Build from the end (most recent first), accumulating token cost.
     let mut selected: Vec<(PromptMessage, &str)> = Vec::new();
-    let mut used_tokens = 0;
+    let mut used_tokens: usize = 0;
 
     for msg in messages.iter().rev() {
         let msg_tokens = estimate_message_tokens(msg);
-        if used_tokens + msg_tokens > token_budget && !selected.is_empty() {
+        if used_tokens.saturating_add(msg_tokens) > token_budget && !selected.is_empty() {
             // Budget exhausted — stop adding older messages.
             break;
         }
-        used_tokens += msg_tokens;
+        used_tokens = used_tokens.saturating_add(msg_tokens);
         selected.push((
             PromptMessage {
                 role: msg.role.clone(),
@@ -497,9 +498,10 @@ fn trim_messages(
 
         if pm.role == Role::User {
             if let Some(cur) = current_ts {
-                let gap_secs = prev_ts.map(|p| i64_to_f64((cur - p).num_seconds()));
+                let gap_secs =
+                    prev_ts.map(|p| i64_to_f64(cur.signed_duration_since(p).num_seconds()));
                 let elapsed_since_marker =
-                    last_marker_ts.map(|m| i64_to_f64((cur - m).num_seconds()));
+                    last_marker_ts.map(|m| i64_to_f64(cur.signed_duration_since(m).num_seconds()));
 
                 let big_gap = matches!(gap_secs, Some(g) if g >= TIME_GAP_THRESHOLD_SECS);
                 let hourly_tick =

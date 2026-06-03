@@ -22,13 +22,13 @@ pub async fn memory_status(
     };
 
     for entry in files {
-        status.total_files += 1;
+        status.total_files = status.total_files.saturating_add(1);
         if entry.path.starts_with("daily/") {
-            status.daily_files += 1;
+            status.daily_files = status.daily_files.saturating_add(1);
         } else if entry.path.starts_with("images/") {
-            status.image_files += 1;
+            status.image_files = status.image_files.saturating_add(1);
         } else {
-            status.topic_files += 1;
+            status.topic_files = status.topic_files.saturating_add(1);
         }
     }
 
@@ -78,7 +78,7 @@ pub fn excerpt_for_query(text: &str, query: &str, limit: usize) -> String {
         }
 
         let start = idx.saturating_sub(1);
-        let end = (idx + 2).min(lines.len());
+        let end = idx.saturating_add(2).min(lines.len());
         let window = lines
             .get(start..end)
             .unwrap_or(&[])

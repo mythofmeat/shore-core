@@ -95,7 +95,7 @@ pub(super) async fn stream_with_retry(
         match stream_result {
             Ok(r) => {
                 debug!(
-                    attempts = attempt + 1,
+                    attempts = attempt.saturating_add(1),
                     finish_reason = %r.finish_reason,
                     input_tokens = r.usage.input_tokens,
                     output_tokens = r.usage.output_tokens,
@@ -110,7 +110,9 @@ pub(super) async fn stream_with_retry(
                         .advanced
                         .retry_backoff
                         .map_or(500, |d| d.as_millis());
-                    let delay = std::time::Duration::from_millis(base_ms * 2u64.pow(attempt));
+                    let delay = std::time::Duration::from_millis(
+                        base_ms.saturating_mul(2u64.saturating_pow(attempt)),
+                    );
                     warn!(
                         attempt,
                         delay_ms = elapsed_ms_u64(delay),
@@ -118,14 +120,14 @@ pub(super) async fn stream_with_retry(
                         "Retrying after transient LLM error"
                     );
                     tokio::time::sleep(delay).await;
-                    attempt += 1;
+                    attempt = attempt.saturating_add(1);
                 }
                 RetryDecision::FallbackModel(_model) => {
                     error!(error = %e, "stream_with_retry failed — fallback model requested");
                     return Err(e);
                 }
                 RetryDecision::Fail => {
-                    error!(attempts = attempt + 1, error = %e, "stream_with_retry exhausted retries");
+                    error!(attempts = attempt.saturating_add(1), error = %e, "stream_with_retry exhausted retries");
                     return Err(e);
                 }
             },

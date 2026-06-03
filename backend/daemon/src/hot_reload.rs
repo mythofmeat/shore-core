@@ -74,7 +74,10 @@ pub fn spawn_config_watcher(
                             }
                             if !pending.is_empty() {
                                 armed = true;
-                                debounce.as_mut().reset(Instant::now() + DEBOUNCE);
+                                let deadline = Instant::now()
+                                    .checked_add(DEBOUNCE)
+                                    .unwrap_or_else(Instant::now);
+                                debounce.as_mut().reset(deadline);
                             }
                         }
                         Err(e) => {
@@ -86,7 +89,10 @@ pub fn spawn_config_watcher(
                     let changed_paths = pending.iter().cloned().collect::<Vec<_>>();
                     pending.clear();
                     armed = false;
-                    debounce.as_mut().reset(Instant::now() + FAR_FUTURE);
+                    let deadline = Instant::now()
+                        .checked_add(FAR_FUTURE)
+                        .unwrap_or_else(Instant::now);
+                    debounce.as_mut().reset(deadline);
                     debug!(changed_paths = ?changed_paths, "Config hot reload debounce elapsed");
                     if control_tx
                         .send(HandlerControl::ReloadConfig { changed_paths })

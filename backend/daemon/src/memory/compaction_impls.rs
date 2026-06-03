@@ -329,7 +329,7 @@ impl RealConversationManager {
             .collect();
 
         let keep = params.keep_last_n.min(lines.len());
-        let split_at = lines.len() - keep;
+        let split_at = lines.len().saturating_sub(keep);
 
         let archive_lines = lines.get(..split_at).unwrap_or(&[]);
         let retained_lines = lines.get(split_at..).unwrap_or(&[]);
@@ -354,7 +354,7 @@ impl RealConversationManager {
                 CompactionManifest::default()
             };
 
-            let segment_index = manifest.segments.len() + 1;
+            let segment_index = manifest.segments.len().saturating_add(1);
             let segment_file = format!("{segment_index:04}.jsonl");
             let segments_dir = self.character_dir.join(shore_config::SEGMENTS_DIR);
 
@@ -373,7 +373,9 @@ impl RealConversationManager {
                 message_count: archive_lines.len(),
                 compacted_at: Local::now().to_rfc3339(),
             });
-            manifest.total_compacted_messages += archive_lines.len();
+            manifest.total_compacted_messages = manifest
+                .total_compacted_messages
+                .saturating_add(archive_lines.len());
 
             let manifest_json = serde_json::to_string_pretty(&manifest).map_err(|e| {
                 CompactionError::ConversationManager(format!("failed to serialize manifest: {e}"))

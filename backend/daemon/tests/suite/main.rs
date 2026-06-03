@@ -1,4 +1,5 @@
 #![expect(
+    clippy::arithmetic_side_effects,
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::panic,
