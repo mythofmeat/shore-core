@@ -69,13 +69,18 @@ pub struct EffectiveModel {
 ///
 /// 1. Static catalog by short or qualified name (existing behavior).
 /// 2. Provider-prefixed form `provider:model_id`. The provider must be in
-///    the registry and enabled. A static entry sharing the same
-///    `(provider, model_id)` wins; otherwise a discovery-cache record is used
-///    when available, and failing that the `model_id` is trusted as-given and
-///    routed via the provider's transport (no discovery required — #136).
-/// 3. Bare upstream `model_id`. Searched across every registered provider's
-///    cache. If multiple providers carry the same id, returns
+///    the registry and enabled. For an enabled provider, a legacy static
+///    `[chat.*]` entry sharing the same `(provider, model_id)` still wins this
+///    cycle (deprecation window — #139); otherwise a discovery-cache record is
+///    used when available, and failing that the `model_id` is trusted as-given
+///    and routed via the provider's transport (no discovery required — #136).
+/// 3. Bare upstream `model_id`. Searched across every registered *enabled*
+///    provider's cache. If multiple providers carry the same id, returns
 ///    `Ambiguous` so the caller can disambiguate with `provider:id`.
+///
+/// A disabled provider is *uniformly* unreferenceable (#139): neither its
+/// trusted/discovered models nor its legacy static `[chat.*]` entries resolve
+/// through paths 2 or 3.
 ///
 /// `include_hidden = true` permits resolving discovered models matched by
 /// `discovery.ignore` patterns. Static entries are never hidden.
@@ -102,11 +107,16 @@ pub fn find_effective_model(
     // provider.enabled and discovery.enabled.
     let mut hits: Vec<(String, ResolvedModel, bool)> = Vec::new();
     for (provider_key, entry) in config.providers.iter() {
+        // A disabled provider is uniformly unreferenceable (#139), including by
+        // its legacy static `[chat.*]` entries — gate before the static check.
+        if !entry.enabled {
+            continue;
+        }
         if let Some(static_match) = find_static_by_upstream(&config.models, provider_key, name) {
             hits.push((provider_key.into(), static_match.clone(), false));
             continue;
         }
-        if !entry.enabled || !entry.discovery.enabled {
+        if !entry.discovery.enabled {
             continue;
         }
         let Some(disc) = read_provider_discovery(cache_dir, provider_key, name) else {
@@ -248,15 +258,20 @@ fn resolve_provider_prefixed(
     }
     let entry = config.providers.get(provider)?;
 
-    // Static-by-upstream wins regardless of discovery state.
-    if let Some(static_match) = find_static_by_upstream(&config.models, provider, model_id) {
-        return Some(Ok(static_match.clone()));
-    }
-
-    // A disabled provider is unreferenceable — never trust a stale cache or
-    // route to a provider the user has turned off.
+    // A disabled provider is *uniformly* unreferenceable (#139) — never trust a
+    // stale cache, route to a provider the user turned off, or resolve a legacy
+    // static `[chat.*]` entry sitting under it. This gate runs before the
+    // static-by-upstream check so disabling a provider hides its statics too.
     if !entry.enabled {
         return None;
+    }
+
+    // For an enabled provider, a legacy static `[chat.<provider>.*]` entry that
+    // shares this `(provider, model_id)` still wins this cycle, so its
+    // hand-configured fields are honored over the trusted/discovered build
+    // (deprecation window — see `parse_category`).
+    if let Some(static_match) = find_static_by_upstream(&config.models, provider, model_id) {
+        return Some(Ok(static_match.clone()));
     }
 
     let hidden_err = || {
@@ -369,7 +384,11 @@ fn build_resolved_from_provider(
         .and_then(|v| u32::try_from(v).ok())
         .or(provider_defaults.max_output_tokens);
 
-    let qualified_name = format!("chat.{provider_key}.{model_id}");
+    // Canonical identity for a discovered/trusted model is `provider:model_id`
+    // (#139) — not the retired `chat.<provider>.<model_id>` static-catalog
+    // cosplay. Unlike that synthetic name, this round-trips back through
+    // `find_effective_model` cleanly.
+    let qualified_name = format!("{provider_key}:{model_id}");
 
     let mut fields = ModelConfigFields {
         sdk: Some(sdk.clone()),
@@ -544,27 +563,21 @@ base_url = "https://openrouter.ai/api/v1"
             .unwrap();
         assert_eq!(m.provider_key, "openrouter");
         assert_eq!(m.model_id, "anthropic/claude-sonnet-4.5");
-        assert_eq!(
-            m.qualified_name,
-            "chat.openrouter.anthropic/claude-sonnet-4.5"
-        );
+        assert_eq!(m.qualified_name, "openrouter:anthropic/claude-sonnet-4.5");
         assert_eq!(m.max_context_tokens, Some(200_000));
         // Discovered models inherit the registry's base_url.
         assert_eq!(m.base_url.as_deref(), Some("https://openrouter.ai/api/v1"));
     }
 
     #[test]
-    fn synthetic_discovered_qualified_name_is_not_a_resolver_input() {
-        // Regression pin: discovered models receive a synthetic
-        // `qualified_name` of the form `chat.<provider>.<model_id>`,
-        // which is *not* a valid input to `find_effective_model` — it
-        // is purely a presentation/identification field. Callers must
-        // pass the bare upstream id, the `provider:model_id` form, or
-        // a static alias. This test exists so future code that tries
-        // to round-trip a `ResolvedModel.qualified_name` back into the
-        // resolver fails loudly rather than silently NotFound-ing on
-        // discovered-only selections (the regression that broke chat
-        // after `switch_model` to a discovered model).
+    fn discovered_qualified_name_round_trips_through_resolver() {
+        // A discovered/trusted model's `qualified_name` is now the canonical
+        // `provider:model_id` identity (#139), not the retired
+        // `chat.<provider>.<model_id>` cosplay. Unlike that synthetic name,
+        // feeding it back into `find_effective_model` resolves cleanly — this
+        // pins the round-trip so the old footgun (a qualified_name that
+        // silently NotFound-ed when re-resolved, breaking chat after
+        // `switch_model` to a discovered model) cannot return.
         let tmp = tempfile::tempdir().unwrap();
         let loaded = make_loaded(
             &tmp,
@@ -577,14 +590,18 @@ base_url = "https://openrouter.ai/api/v1"
         );
         write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
 
-        // Sanity: the synthetic qualified_name has no `:` and is not a
-        // bare upstream id (it carries the `chat.<provider>.` prefix).
-        let synthetic = "chat.openrouter.anthropic/claude-sonnet-4.5";
-        let err = find_effective_model(&loaded, tmp.path(), synthetic, true).unwrap_err();
-        assert!(
-            matches!(err, EffectiveCatalogError::NotFound { .. }),
-            "expected NotFound for synthetic qualified_name, got {err:?}"
-        );
+        let m = find_effective_model(
+            &loaded,
+            tmp.path(),
+            "openrouter:anthropic/claude-sonnet-4.5",
+            true,
+        )
+        .unwrap();
+        assert_eq!(m.qualified_name, "openrouter:anthropic/claude-sonnet-4.5");
+        // Round-trip: re-resolving the qualified_name yields the same model.
+        let again = find_effective_model(&loaded, tmp.path(), &m.qualified_name, true).unwrap();
+        assert_eq!(again.qualified_name, m.qualified_name);
+        assert_eq!(again.model_id, "anthropic/claude-sonnet-4.5");
     }
 
     #[test]
@@ -1288,6 +1305,57 @@ base_url = "https://openrouter.ai/api/v1"
         )
         .unwrap_err();
         assert!(matches!(err, EffectiveCatalogError::NotFound { .. }));
+    }
+
+    #[test]
+    fn disabled_provider_static_entry_is_unreferenceable() {
+        // #139 end state: a disabled provider is *uniformly* unreferenceable —
+        // even a legacy static `[chat.*]` entry sitting under it must not
+        // resolve, by either the `provider:model_id` form or the bare id. This
+        // drops the old static carve-out that resolved statics regardless of
+        // `enabled`.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+enabled = false
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            r#"
+[chat.openrouter.sonnet]
+model_id = "anthropic/claude-sonnet-4.5"
+cache_ttl = "1h"
+"#,
+        );
+
+        // Qualified `provider:model_id` form.
+        let err = find_effective_model(
+            &loaded,
+            tmp.path(),
+            "openrouter:anthropic/claude-sonnet-4.5",
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, EffectiveCatalogError::NotFound { .. }),
+            "static under a disabled provider must not resolve by provider:model_id, got {err:?}"
+        );
+
+        // Bare upstream id.
+        let err = find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false)
+            .unwrap_err();
+        assert!(
+            matches!(err, EffectiveCatalogError::NotFound { .. }),
+            "static under a disabled provider must not resolve by bare id, got {err:?}"
+        );
+
+        // The static short alias still resolves through the static catalog
+        // (`find_model`), which is provider-enabled-agnostic — selection
+        // durability is separate from the disabled-provider gate.
+        let m = find_effective_model(&loaded, tmp.path(), "sonnet", false).unwrap();
+        assert_eq!(m.qualified_name, "chat.openrouter.sonnet");
     }
 
     // ── Trusted `provider:model_id` without discovery (#136) ────────────

@@ -651,7 +651,9 @@ fn synthesize_selected_provider_model(
 
     Some(shore_config::models::ResolvedModel::from_parts(
         model_id.to_string(),
-        format!("chat.{provider}.{model_id}"),
+        // Canonical `provider:model_id` identity (#139), not the retired
+        // `chat.<provider>.<model_id>` cosplay.
+        format!("{provider}:{model_id}"),
         "chat".to_string(),
         provider.to_string(),
         model_id.to_string(),
@@ -672,8 +674,10 @@ fn synthesize_selected_provider_model(
 /// 3. Legacy `runtime_state.json::active_model` (string name) →
 ///    catalog `find_model` by name. Migration fallback for installs
 ///    that haven't written preferences yet.
-/// 4. `app.defaults.model` from config.
-/// 5. First chat model in the catalog.
+/// 4. `app.defaults.model` from config — resolved through the effective
+///    catalog, so it accepts a static alias *or* a `provider:model_id` ref.
+/// 5. First chat model in the static catalog (legacy fallback; `None` for a
+///    zero-`[chat.*]` config).
 ///
 /// The legacy `runtime_state.json` is read but never written by Phase 3+
 /// code — preferences are now authoritative.
@@ -701,8 +705,13 @@ pub fn resolve_active_for_character(
         }
     }
     if let Some(name) = app_default_model {
-        if let Ok(rm) = config.models.find_model(name) {
-            return Some(rm.clone());
+        // `defaults.model` may be a static alias *or* a `provider:model_id`
+        // reference (#139). Route through the effective catalog so a config
+        // with zero `[chat.*]` entries can still name its default model.
+        if let Ok(rm) =
+            crate::effective_catalog::find_effective_model(config, &config.dirs.cache, name, true)
+        {
+            return Some(rm);
         }
     }
     config.models.first_chat_model().cloned()
@@ -1679,6 +1688,54 @@ enabled = true
             Some("https://openrouter.ai/api/v1")
         );
         assert_ne!(active.qualified_name, "chat.anthropic.opus");
+    }
+
+    #[test]
+    fn resolve_active_default_model_accepts_provider_prefixed_with_zero_statics() {
+        // #139: with no `[chat.*]` catalog at all, `app.defaults.model` written
+        // as `provider:model_id` must still resolve the active model through the
+        // effective catalog's trusted path (transport from `[providers.*]`).
+        use shore_config::providers::ProviderRegistry;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut loaded = make_loaded_config(&tmp, shore_config::models::ModelCatalog::default());
+        let providers_table: toml::Table = r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+
+[providers.openrouter.discovery]
+enabled = false
+"#
+        .parse()
+        .unwrap();
+        loaded.providers = ProviderRegistry::from_section(
+            providers_table.get("providers").and_then(|v| v.as_table()),
+        )
+        .unwrap();
+
+        let g = ModelPreferences::default();
+        let c = ModelPreferences::default();
+        // No preferences, no legacy state — only the `provider:model_id` default.
+        let active = resolve_active_for_character(
+            &loaded,
+            tmp.path(),
+            &g,
+            &c,
+            None,
+            Some("openrouter:anthropic/claude-sonnet-4.5"),
+        )
+        .expect("provider:model_id default resolves with zero statics");
+        assert_eq!(active.provider_key, "openrouter");
+        assert_eq!(active.model_id, "anthropic/claude-sonnet-4.5");
+        assert_eq!(
+            active.qualified_name,
+            "openrouter:anthropic/claude-sonnet-4.5"
+        );
+        assert_eq!(
+            active.base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
     }
 
     #[test]

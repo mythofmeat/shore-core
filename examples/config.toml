@@ -1,7 +1,10 @@
 # Shore V2 — Example Configuration
 # All values shown are defaults unless noted otherwise.
 #
-# Models are configured inline under [chat.<provider>.<model>].
+# Models are identified by `provider:model_id`. Configure a provider's
+# transport once under [providers.<name>], then reference any of its models as
+# `provider:model_id` (e.g. defaults.model below). The legacy inline
+# [chat.<provider>.<model>] catalog is deprecated (still honored this release).
 # You can also split config with `include = ["extra.toml"]` or conf.d/*.toml.
 
 # include = ["models.toml"]   # Optional explicit includes
@@ -17,7 +20,7 @@
 # ── Defaults ─────────────────────────────────────────────────────────────
 
 [defaults]
-model = "claude-sonnet"            # Chat default; also fallback for background tasks
+model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; also fallback for background tasks
 # embedding = "openai:text-embedding-3-large"           # Embedding model (provider:model_id)
 # image_generation = "gemini:gemini-2.5-flash-image"    # Image model (provider:model_id)
 # display_name = "Your Name"        # {{user}} in templates; falls back to $USER
@@ -240,8 +243,12 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 # socket_path = "/path/to/llm.sock" # Override; defaults to <runtime_dir>/llm.sock when unset
 
 # ── Chat models ──────────────────────────────────────────────────────────
-# Provider-level settings cascade into all models under that provider.
-# Model-level values take precedence over provider-level values.
+# Declare a provider once under [providers.<name>] (transport: sdk + base_url
+# + keys), then reference its models anywhere as `provider:model_id`. Behavioral
+# defaults for every model a provider resolves go under
+# [providers.<name>.defaults]; per-model overrides go under
+# [models."<provider>:<model_id>"]. The legacy inline [chat.<provider>.<model>]
+# catalog below is deprecated — still honored this release, but it warns on load.
 #
 # Known providers with hardcoded defaults:
 #   anthropic  — sdk: anthropic, api_key_env: ANTHROPIC_API_KEY,  temp: 1.0, max_output_tokens: 8192, max_context: 200000
@@ -289,33 +296,37 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 #   zai_clear_thinking = false              # false = preserve reasoning across turns (Z.AI)
 #   zai_subscription = false                # true = use Z.AI coding subscription endpoint
 
-[chat.anthropic.claude-sonnet]
-model_id = "claude-sonnet-4-6"
+# Recommended: declare the provider, then reference models as provider:model_id
+# (see [defaults].model above). `anthropic` has hardcoded transport defaults
+# (sdk + ANTHROPIC_API_KEY), so an empty block is enough to register it.
+[providers.anthropic]
+# api_key_env = "ANTHROPIC_API_KEY"   # Override the hardcoded default if needed
 
-# [chat.anthropic.claude-opus]
-# model_id = "claude-opus-4-6"
+# Behavioral / vendor defaults for every anthropic model (optional):
+# [providers.anthropic.defaults]
+# cache_ttl = "1h"
 # max_output_tokens = 16384
 
-# [chat.openai.gpt-4o]
-# model_id = "gpt-4o"
+# Per-model overrides keyed by the canonical provider:model_id (optional):
+# [models."anthropic:claude-sonnet-4-6"]
+# temperature = 0.8
+# reasoning_effort = "high"
 
-# [chat.gemini.gemini-pro]
-# model_id = "gemini-2.5-pro"
-
+# DEPRECATED — the inline [chat.<provider>.<model>] catalog still loads this
+# release but warns on parse. Prefer [providers.*] + provider:model_id above.
+# [chat.anthropic.claude-sonnet]
+# model_id = "claude-sonnet-4-6"
+#
 # [chat.zai.glm-5]
 # model_id = "glm-5"
 # zai_clear_thinking = false    # Preserve reasoning across turns
-# zai_subscription = false      # Set true to use the coding subscription endpoint
-
-# [chat.nanogpt.claude-opus]
-# model_id = "anthropic/claude-opus-4.6"   # NanoGPT uses provider/model format
 
 # ── Provider registry & discovery ────────────────────────────────────────
-# Optional. A `[providers.<name>]` block configures a provider once
-# (sdk + base_url + ordered keys + /v1/models discovery) so you don't have
-# to define every model inline. Manual `[chat.<provider>.<alias>]` entries
-# above keep working alongside discovered models — they win on conflict
-# and are never hidden by `discovery.ignore` rules.
+# A `[providers.<name>]` block configures a provider once (sdk + base_url +
+# ordered keys + /v1/models discovery). Reference its models as
+# `provider:model_id`; with discovery on, `shore model` also lists everything
+# the provider advertises. Any legacy `[chat.<provider>.<alias>]` entry wins on
+# conflict this release and is never hidden by `discovery.ignore`.
 #
 # Use `shore provider` and `shore model` to inspect, refresh, and switch.
 
@@ -364,15 +375,16 @@ model_id = "claude-sonnet-4-6"
 # cache_ttl = "1h"
 # openrouter_provider = { order = ["anthropic"] }   # routing pin for anthropic/*
 
-# ── Manual alias for the default model ───────────────────────────────────
-# [defaults].model must reference a static `[chat.*.*]` alias, so define
-# one even when discovery is enabled. The alias's overrides (cache_ttl,
-# temperature, ...) win over both discovered metadata and saved sampler
-# preferences for that (provider, model_id).
-# [chat.openrouter.sonnet]
-# model_id = "anthropic/claude-sonnet-4.5"
-# cache_ttl = "1h"
-# max_output_tokens = 16384
+# ── Default model on a discovery provider ────────────────────────────────
+# [defaults].model takes a `provider:model_id` directly — no static alias
+# needed. It resolves on any enabled provider even with discovery off (the
+# model_id is trusted as-given). Per-model overrides live under
+# [models."<provider>:<model_id>"]; provider-wide ones under [.defaults] above.
+# In [defaults] at the top of this file:
+#   model = "openrouter:anthropic/claude-sonnet-4.5"
+#
+# [models."openrouter:anthropic/claude-sonnet-4.5"]
+# temperature = 0.8
 
 # ── Thinking / reasoning ─────────────────────────────────────────────────
 #

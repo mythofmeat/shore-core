@@ -859,7 +859,7 @@ fn mock_model_catalog(base_url: &str) -> shore_config::models::ModelCatalog {
 
     let model = ResolvedModel {
         name: "test".into(),
-        qualified_name: "chat.anthropic.test".into(),
+        qualified_name: "anthropic:claude-test".into(),
         category: "chat".into(),
         provider_key: "anthropic".into(),
         sdk: Sdk::Anthropic,

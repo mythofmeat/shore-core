@@ -69,12 +69,13 @@ compaction/reload activation boundary described below.
 
 ```toml
 [defaults]
-model = "claude-sonnet"
+model = "anthropic:claude-sonnet-4-6"   # provider:model_id
 display_name = "Ren"
 
-[chat.anthropic.claude-sonnet]
-model_id = "claude-sonnet-4-6"
+[providers.anthropic]
 api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.anthropic.defaults]
 cache_ttl = "1h"
 ```
 
@@ -93,7 +94,7 @@ Non-loopback binds require `unsafe_allow_remote_access = true`. `allowed_hosts` 
 
 ```toml
 [defaults]
-model = "claude-sonnet"           # initial chat model when a character has none selected
+model = "anthropic:claude-sonnet-4-6"   # initial chat model when a character has none selected
 embedding = "openai:text-embedding-3-large"
 image_generation = "openai:dall-e-3"
 display_name = "Ren"
@@ -103,19 +104,21 @@ stream = true
 # specific model. When this section is omitted, background tasks follow
 # whichever model the character is currently using for chat.
 [defaults.background]
-model = "haiku"                   # blanket model for every background task
-# heartbeat = "haiku-fast"        # per-task overrides (optional)
-# compaction = "claude-sonnet"
-# dreaming = "claude-sonnet"
+model = "anthropic:claude-haiku-4-5"   # blanket model for every background task
+# heartbeat = "openrouter:..."         # per-task overrides (optional)
+# compaction = "anthropic:claude-sonnet-4-6"
+# dreaming = "anthropic:claude-sonnet-4-6"
 ```
 
-Chat/tool selectors are aliases declared under `[chat.*]` or `[tools.*]`.
-`embedding` and `image_generation` are bare `provider:model_id` identities
-(see [Embedding](#embedding) and [Image generation](#image-generation)).
+Chat/tool selectors are `provider:model_id` references resolved through the
+`[providers.*]` registry. `embedding` and `image_generation` use the same
+`provider:model_id` identity (see [Embedding](#embedding) and
+[Image generation](#image-generation)). A legacy `[chat.*]` / `[tools.*]` alias
+(deprecated) also still resolves by its short or qualified name this release.
 
 Important slots:
 
-- `model` — chat default. Optional: if unset, chat starts on the first chat model declared in the catalog. Also acts as a late-stage fallback for background tasks (see below).
+- `model` — chat default, as `provider:model_id`. Optional: if unset, chat starts on the first model in the catalog (now empty unless a deprecated `[chat.*]` entry is present), so set this. Also acts as a late-stage fallback for background tasks (see below).
 - `[defaults.background]` — heartbeat, compaction, and dreaming selectors. Each task chains `background.<task> → background.model → active chat model → defaults.model → first chat model`. When no background-specific model is configured, background work tracks the character's current chat selection, so `shore model <name>` moves heartbeat/compaction/dreaming alongside chat. Set `background.model` (or a per-task key) to pin background to a different model regardless of chat selection.
 - `embedding` — optional hybrid retrieval model, as `provider:model_id` (e.g. `openai:text-embedding-3-small`)
 - `image_generation` — image generation model, as `provider:model_id`
@@ -124,21 +127,39 @@ Important slots:
 
 ## Model Sections
 
-Chat/tool models:
+Models are identified by `provider:model_id`. Declare the provider's transport
+once under `[providers.<name>]`, set provider-wide behavioral defaults under
+`[providers.<name>.defaults]`, and override individual models under
+`[models."<provider>:<model_id>"]`. There is no separate model-catalog table to
+maintain — any `model_id` the provider serves is referenceable as
+`provider:model_id`.
 
 ```toml
-[chat.anthropic.claude-sonnet]
-model_id = "claude-sonnet-4-6"
+# Built-in provider: hardcoded transport defaults, so only the key is needed.
+[providers.anthropic]
 api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.anthropic.defaults]
 cache_ttl = "1h"
 max_output_tokens = 4096
-max_context_tokens = 200000
 
-[chat.openrouter.haiku]
-model_id = "anthropic/claude-haiku-4-5"
+# Custom OpenAI-compatible provider: transport on the entry.
+[providers.openrouter]
+sdk = "openai"
 api_key_env = "OPENROUTER_API_KEY"
 base_url = "https://openrouter.ai/api/v1"
+
+# Per-model override, keyed by the canonical provider:model_id.
+[models."openrouter:anthropic/claude-haiku-4-5"]
+max_output_tokens = 8192
 ```
+
+> **Deprecated:** the inline `[chat.<provider>.<model>]` / `[tools.<provider>.<model>]`
+> catalog still loads this release but emits a deprecation warning on parse.
+> Migrate each entry to a `[providers.*]` provider plus a `provider:model_id`
+> reference (move behavioral fields to `[providers.*.defaults]` or
+> `[models."<provider>:<model_id>"]`). A disabled provider is unreferenceable,
+> including by any legacy `[chat.*]` entry under it.
 
 ### Embedding
 
@@ -214,9 +235,12 @@ quality = "hd"
 
 ## Providers
 
-Provider entries replace per-model `api_key_env` duplication and unlock
-runtime model discovery. Static `[chat.<provider>.<alias>]` entries keep
-working unchanged alongside the registry — they never require migration.
+Provider entries are the single home for transport (`sdk` / `base_url` /
+credentials) and unlock runtime model discovery. Every model is referenced as
+`provider:model_id` against a registered, enabled provider. A deprecated
+`[chat.<provider>.<alias>]` entry still resolves by its short/qualified name
+this release, but a disabled provider is unreferenceable (including any legacy
+`[chat.*]` entry under it).
 
 ### Single-key form (compact)
 
@@ -275,14 +299,15 @@ This is the same field set as the per-model overlay (`[models."provider:model_id
 in `preferences/`), applied provider-wide as the lowest user-config tier. It carries
 behavioral defaults (`max_output_tokens`, `cache_ttl`, sampler knobs) and vendor knobs
 (`openrouter_provider`, `vertex_*`, `gemini_*`, `zai_*`) onto every model the provider
-resolves — discovered, trusted (`provider:model_id`), or static. Transport
-(`sdk`/`base_url`/`api_key_env`/`keys`) belongs on the provider entry itself and is
-rejected inside `[.defaults]`.
+resolves — discovered, trusted (`provider:model_id`), or a legacy static entry.
+Transport (`sdk`/`base_url`/`api_key_env`/`keys`) belongs on the provider entry
+itself and is rejected inside `[.defaults]`.
 
 > Provider-level scalars under `[chat.<provider>]` were retired — move behavioral
 > defaults to `[providers.<provider>.defaults]` and transport to
-> `[providers.<provider>]`. Per-model `[chat.<provider>.<alias>]` fields are
-> unaffected.
+> `[providers.<provider>]`. The whole `[chat.<provider>.<alias>]` /
+> `[tools.<provider>.<alias>]` catalog is now deprecated too (honored this
+> release, warns on load); migrate each model to a `provider:model_id` reference.
 
 ### Discovery and filtering
 
@@ -311,15 +336,15 @@ shape. Well-known provider keys with default base URLs, including
 providers need it.
 Hidden models stay in the cache but are filtered out of `shore model` and
 `shore provider models <name>` until `--all` (CLI) or `:model all` (TUI)
-is used. Manual `[chat.<provider>.<alias>]` entries are never filtered —
-they are intentional.
+is used. A legacy `[chat.<provider>.<alias>]` entry is never filtered —
+it is intentional.
 
 ### Effective catalog and merge order
 
 At runtime the daemon resolves models against an effective catalog
-that merges three sources:
+that merges these sources (a disabled provider contributes nothing):
 
-1. Static `[chat.<provider>.<alias>]` entries (this file).
+1. Deprecated static `[chat.<provider>.<alias>]` entries (this file), honored this release.
 2. Discovered `[providers.<name>]` cache rows.
 3. Trusted `provider:model_id` refs (routed via `[providers.<name>]` transport).
 4. `[providers.<name>.defaults]` provider-wide behavioral/vendor defaults.
@@ -334,10 +359,11 @@ Conflict rules:
   row is hidden from listings (no duplicate row).
 - Discovered models can be selected at runtime via the bare upstream
   id (`anthropic/claude-sonnet-4.5`) or the disambiguated form
-  (`openrouter:anthropic/claude-sonnet-4.5`). `[defaults].model` must
-  still reference a static alias — define one (see
-  `examples/config.toml`) when you want a discovered model to be the
-  startup default.
+  (`openrouter:anthropic/claude-sonnet-4.5`). `[defaults].model` accepts a
+  `provider:model_id` reference directly — no static alias needed — and
+  resolves on any enabled provider even with discovery off (the model_id is
+  trusted as-given). A disabled provider's `provider:model_id` does not
+  resolve.
 
 ## Sampler Preferences
 
@@ -354,7 +380,7 @@ Merge order (lowest to highest precedence):
 1. Hardcoded provider defaults.
 2. Discovered model metadata.
 3. `[providers.<provider>.defaults]` provider-wide defaults.
-4. Static `[chat.<provider>.<alias>]` overrides.
+4. Deprecated static `[chat.<provider>.<alias>]` overrides (honored this release).
 5. Saved global preferences (`preferences/global.toml`).
 6. Saved per-character preferences (`characters/<C>/preferences/models.toml`).
 

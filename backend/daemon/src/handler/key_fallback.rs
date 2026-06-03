@@ -477,7 +477,7 @@ mod tests {
     fn provider_key_field_is_used() {
         let m = ResolvedModel {
             name: "m".into(),
-            qualified_name: "chat.x.m".into(),
+            qualified_name: "x:m1".into(),
             category: "chat".into(),
             provider_key: "x".into(),
             sdk: Sdk::Openai,

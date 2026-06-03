@@ -38,7 +38,24 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   truncated. The truncation is persisted, so the shortened result is what later
   turns replay.
 
+### Deprecated
+- The inline `[chat.<provider>.<model>]` / `[tools.<provider>.<model>]` model
+  catalog is deprecated (issue #139). With identity now `provider:model_id`,
+  transport on `[providers.<provider>]`, provider-wide defaults on
+  `[providers.<provider>.defaults]`, and per-model behavior on
+  `[models."<provider>:<model_id>"]`, the static catalog's last job is gone.
+  Legacy `[chat.*]` / `[tools.*]` entries **still load and resolve this release**
+  but emit a deprecation warning on parse — migrate each model to a
+  `provider:model_id` reference. `[defaults].model` (and the background-task
+  selectors) now accept a `provider:model_id` value directly, resolving on any
+  enabled provider even with discovery off; no static alias is required.
+
 ### Changed (BREAKING)
+- A **disabled provider is now uniformly unreferenceable** (issue #139). Models
+  under `providers.<name>.enabled = false` no longer resolve by `provider:model_id`
+  or bare upstream id — including any legacy `[chat.*]` entry under that provider,
+  which previously resolved regardless of the provider's `enabled` flag. The
+  short/qualified-name lookup of a legacy static alias is unaffected this release.
 - Unified `[embedding]` and `[image_generation]` onto the `provider:model_id`
   model shape (matches chat). Identity is now a bare `provider:model_id` set via
   `defaults.embedding` / `defaults.image_generation`; transport

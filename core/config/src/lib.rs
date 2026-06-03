@@ -860,25 +860,18 @@ fn warn_on_unresolvable_model_ref(
     if let Some((provider_key, model_id)) = name.split_once(':') {
         if !provider_key.is_empty() && !model_id.is_empty() {
             match providers.get(provider_key) {
-                Some(entry) if entry.enabled && entry.discovery.enabled => return,
-                Some(entry) if !entry.enabled => {
-                    warn!(
-                        field,
-                        name,
-                        provider = provider_key,
-                        "configured default model references a disabled provider; \
-                         per-character preferences can override at runtime"
-                    );
-                    return;
-                }
+                // An enabled provider resolves a fully-qualified
+                // `provider:model_id` ref via the trusted path even with
+                // discovery off (#136) — no warning regardless of discovery.
+                Some(entry) if entry.enabled => return,
                 Some(_) => {
                     warn!(
                         field,
                         name,
                         provider = provider_key,
-                        "configured default model is a discovered ID but \
-                         [providers.{provider_key}.discovery] is disabled; enable \
-                         discovery or use a static [chat.{provider_key}.<alias>]"
+                        "configured default model references a disabled provider; \
+                         a disabled provider is unreferenceable, but per-character \
+                         preferences can override at runtime"
                     );
                     return;
                 }
@@ -2179,11 +2172,28 @@ api_key_env = "MY_LEGACY_KEY"
         let tmp = setup_config_dir(&[("config.toml", EXAMPLE)]);
         let loaded = load_config(Some(&tmp.path().join("config.toml")))
             .expect("examples/config.toml must parse end-to-end");
-        // The committed example defines [defaults].model = "claude-sonnet"
-        // and the matching [chat.anthropic.claude-sonnet] entry. Both
-        // sides being live is what protects users from copy/paste rot.
-        assert_eq!(loaded.app.defaults.model.as_deref(), Some("claude-sonnet"));
-        assert!(loaded.models.find_model("claude-sonnet").is_ok());
+        // The committed example is provider-first (#139): [defaults].model is a
+        // canonical `provider:model_id` ref and the matching provider is in the
+        // registry, so the default resolves without any static [chat.*] entry.
+        // Both sides being live is what protects users from copy/paste rot.
+        assert_eq!(
+            loaded.app.defaults.model.as_deref(),
+            Some("anthropic:claude-sonnet-4-6")
+        );
+        let (provider, _model_id) = loaded
+            .app
+            .defaults
+            .model
+            .as_deref()
+            .and_then(|m| m.split_once(':'))
+            .expect("default model is in provider:model_id form");
+        let entry = loaded
+            .providers
+            .get(provider)
+            .expect("default model's provider is registered");
+        assert!(entry.enabled, "default model's provider must be enabled");
+        // The example leads with the provider-first model; no static catalog.
+        assert!(loaded.models.chat.is_empty());
     }
 
     /// The Phase 9 OpenRouter budget/overflow + discovery snippet

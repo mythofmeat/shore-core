@@ -482,7 +482,7 @@ mod tests {
     fn test_model(provider_key: &str, api_key_env: Option<&str>) -> ResolvedModel {
         ResolvedModel {
             name: "m".into(),
-            qualified_name: format!("chat.{provider_key}.m"),
+            qualified_name: format!("{provider_key}:m1"),
             category: "chat".into(),
             provider_key: provider_key.into(),
             sdk: Sdk::Openai,
