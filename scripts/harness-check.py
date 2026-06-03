@@ -13,7 +13,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_FILES = [
-    "AGENTS.md",
     "CLAUDE.md",
     "README.md",
     "CONFIGURATION.md",
@@ -22,7 +21,9 @@ REQUIRED_FILES = [
     "dev/test-harness/src/lib.rs",
 ]
 
-AGENTS_REQUIRED_STRINGS = [
+# CLAUDE.md is the repo-root agent entry map (formerly AGENTS.md). Distinct
+# from the per-character workspace AGENTS.md prompt file.
+ENTRY_MAP_REQUIRED_STRINGS = [
     "README.md",
     "ARCHITECTURE.md",
     "CONFIGURATION.md",
@@ -30,7 +31,7 @@ AGENTS_REQUIRED_STRINGS = [
     "python3 scripts/harness-check.py",
 ]
 
-MAX_AGENTS_LINES = 120
+MAX_ENTRY_MAP_LINES = 120
 CONFLICT_RE = re.compile(r"^(<<<<<<<(?: .*)?|=======$|>>>>>>>(?: .*)?)$")
 MD_LINK_RE = re.compile(r"(?<!!)\[[^\]\n]+\]\(([^)\n]+)\)")
 URI_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
@@ -84,17 +85,17 @@ def check_required_files(errors: list[str]) -> None:
             fail(errors, f"required harness file is missing: {rel}")
 
 
-def check_agents_map(errors: list[str]) -> None:
-    path = ROOT / "AGENTS.md"
+def check_entry_map(errors: list[str]) -> None:
+    path = ROOT / "CLAUDE.md"
     if not path.exists():
         return
     text = read_text(path)
     line_count = len(text.splitlines())
-    if line_count > MAX_AGENTS_LINES:
-        fail(errors, f"AGENTS.md has {line_count} lines; keep it <= {MAX_AGENTS_LINES}")
-    for needle in AGENTS_REQUIRED_STRINGS:
+    if line_count > MAX_ENTRY_MAP_LINES:
+        fail(errors, f"CLAUDE.md has {line_count} lines; keep it <= {MAX_ENTRY_MAP_LINES}")
+    for needle in ENTRY_MAP_REQUIRED_STRINGS:
         if needle not in text:
-            fail(errors, f"AGENTS.md must link or mention {needle}")
+            fail(errors, f"CLAUDE.md must link or mention {needle}")
 
 
 def check_conflict_markers(errors: list[str]) -> None:
@@ -183,7 +184,7 @@ def check_prompt_tool_names(errors: list[str]) -> None:
 def main() -> int:
     errors: list[str] = []
     check_required_files(errors)
-    check_agents_map(errors)
+    check_entry_map(errors)
     check_conflict_markers(errors)
     check_architecture_workspace_members(errors)
     check_markdown_links(errors)
