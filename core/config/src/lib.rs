@@ -739,19 +739,41 @@ fn validate_budget_anchors(idx: usize, budget: &app::UsageBudgetConfig) -> Resul
     Ok(())
 }
 
-/// Validate the `provider_key` portion of a `provider:model_id` ref, warning
-/// (advisory, not fatal) when the provider is not configured under
-/// `[providers.<provider_key>]` — transport defaults are used for well-known
-/// keys and discovery/runtime can otherwise fill in.
-fn warn_unconfigured_aux_provider(providers: &ProviderRegistry, field: &str, provider_key: &str) {
-    if providers.get(provider_key).is_none() {
-        warn!(
-            field,
-            provider = provider_key,
-            "{field} references provider \"{provider_key}\" not configured under \
-             [providers.{provider_key}]; built-in transport defaults are used for \
-             well-known providers, otherwise set base_url/api_key_env there"
-        );
+/// Validate the `provider_key` of an aux (`embedding` / `image_generation`)
+/// `provider:model_id` ref against the registry.
+///
+/// A **disabled** provider is a hard error: it yields zero key candidates, so
+/// the aux resolver (`resolve_embedder` / `resolve_image_gen_config`) can never
+/// succeed — failing here keeps config load in lockstep with runtime instead of
+/// passing validation and then dying at resolve time. Unlike chat refs (which
+/// `warn_on_unresolvable_model_ref` only warns on, since per-character
+/// preferences can override at runtime), these globals have no such override.
+///
+/// An **absent** provider is advisory (warn only): well-known keys resolve via
+/// built-in transport defaults + the default env var, and the credential check
+/// happens at runtime.
+fn validate_aux_provider(
+    providers: &ProviderRegistry,
+    field: &str,
+    provider_key: &str,
+) -> Result<(), ConfigError> {
+    match providers.get(provider_key) {
+        Some(entry) if !entry.enabled => Err(ConfigError::Validation(format!(
+            "{field} references provider \"{provider_key}\" which is disabled in \
+             [providers.{provider_key}] (enabled = false); a disabled provider yields no \
+             credentials, so {field} cannot resolve. Enable the provider or change {field}."
+        ))),
+        Some(_) => Ok(()),
+        None => {
+            warn!(
+                field,
+                provider = provider_key,
+                "{field} references provider \"{provider_key}\" not configured under \
+                 [providers.{provider_key}]; built-in transport defaults are used for \
+                 well-known providers, otherwise set base_url/api_key_env there"
+            );
+            Ok(())
+        }
     }
 }
 
@@ -778,8 +800,7 @@ fn validate_default_embedding(
             "defaults.embedding \"{name}\" is not a valid `provider:model_id` identity"
         )));
     }
-    warn_unconfigured_aux_provider(providers, "defaults.embedding", provider_key);
-    Ok(())
+    validate_aux_provider(providers, "defaults.embedding", provider_key)
 }
 
 /// Validate `defaults.image_generation`: must be a `provider:model_id` identity
@@ -800,8 +821,7 @@ fn validate_default_image_generation(
             "defaults.image_generation \"{name}\" is not a valid `provider:model_id` identity"
         )));
     }
-    warn_unconfigured_aux_provider(providers, "defaults.image_generation", provider_key);
-    Ok(())
+    validate_aux_provider(providers, "defaults.image_generation", provider_key)
 }
 
 fn validate_cron_schedule(expr: &str) -> Result<(), ConfigError> {
@@ -1339,6 +1359,27 @@ api_key_env = "OPENAI_API_KEY"
         )]);
         let _ignored = load_config(Some(&tmp.path().join("config.toml")))
             .expect("provider:model_id embedding default should validate");
+    }
+
+    #[test]
+    fn embedding_default_on_disabled_provider_is_rejected() {
+        // A disabled provider yields no credentials, so the embedder can never
+        // resolve — config load must fail rather than drift from runtime.
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults]
+embedding = "openai:text-embedding-3-large"
+
+[providers.openai]
+enabled = false
+api_key_env = "OPENAI_API_KEY"
+"#,
+        )]);
+        let err = load_config(Some(&tmp.path().join("config.toml"))).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("defaults.embedding"), "{msg}");
+        assert!(msg.contains("disabled"), "{msg}");
     }
 
     #[test]
