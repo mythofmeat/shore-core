@@ -14,7 +14,7 @@ use dashmap::DashMap;
 use serde_json::{json, Value};
 use shore_config::character_data_dir;
 use shore_llm::types::GenerateResponse;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, Notify, OwnedMutexGuard};
 use tokio::time::Duration;
@@ -203,6 +203,20 @@ impl CompactionManager {
 
     pub(crate) fn write_allowed_path(path: &str) -> bool {
         let normalized = path.trim().trim_start_matches("./").replace('\\', "/");
+
+        // Defense-in-depth: reject absolute paths and any `..` traversal
+        // component outright. A path like `memory/../../SOUL.md` would
+        // otherwise satisfy the `memory/` prefix check below yet escape the
+        // memory root. resolve_path enforces this again at write time, but
+        // rejecting here keeps this documented compaction guard self-contained
+        // and fails closed at the layer meant to protect workspace-root files.
+        for component in Path::new(&normalized).components() {
+            match component {
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => return false,
+                Component::CurDir | Component::Normal(_) => {}
+            }
+        }
+
         let lower = normalized.to_lowercase();
 
         // MEMORY.md (workspace root) is intentionally allowed: compaction's
@@ -1302,6 +1316,45 @@ mod tests {
     }
 
     // -- Tests: helper methods -----------------------------------------------
+
+    #[test]
+    fn test_write_allowed_path_accepts_memory_and_index() {
+        assert!(CompactionManager::write_allowed_path("MEMORY.md"));
+        assert!(CompactionManager::write_allowed_path("./MEMORY.md"));
+        assert!(CompactionManager::write_allowed_path(
+            "memory/daily/2026-03-25.md"
+        ));
+        assert!(CompactionManager::write_allowed_path(
+            "memory/preferences/tea.md"
+        ));
+    }
+
+    #[test]
+    fn test_write_allowed_path_rejects_traversal_and_absolute() {
+        // `..` escapes that would otherwise satisfy the memory/ prefix.
+        assert!(!CompactionManager::write_allowed_path(
+            "memory/../../SOUL.md"
+        ));
+        assert!(!CompactionManager::write_allowed_path("memory/../USER.md"));
+        assert!(!CompactionManager::write_allowed_path("../SOUL.md"));
+        assert!(!CompactionManager::write_allowed_path(
+            "memory/sub/../../escape.md"
+        ));
+        // Backslash-normalized traversal.
+        assert!(!CompactionManager::write_allowed_path(
+            "memory\\..\\..\\SOUL.md"
+        ));
+        // Absolute paths.
+        assert!(!CompactionManager::write_allowed_path("/etc/passwd"));
+        assert!(!CompactionManager::write_allowed_path("/SOUL.md"));
+    }
+
+    #[test]
+    fn test_write_allowed_path_rejects_outside_memory() {
+        assert!(!CompactionManager::write_allowed_path("SOUL.md"));
+        assert!(!CompactionManager::write_allowed_path("memory/dreams.md"));
+        assert!(!CompactionManager::write_allowed_path("memory/"));
+    }
 
     #[test]
     fn test_should_force_compact() {
