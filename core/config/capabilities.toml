@@ -20,13 +20,14 @@
 domain = ["adaptive", "low", "medium", "high", "xhigh", "max"]
 budget = { low = 4096, medium = 8192, high = 12288, xhigh = 16384, max = 24576 }
 
+# OpenAI / OpenRouter `reasoning.effort` accept none|minimal|low|medium|high|xhigh.
+# `xhigh` is the real ceiling — passed through, NOT folded. `max` is intentionally
+# absent: it is an Anthropic-only effort, so it is not a valid option here.
 [reasoning_effort.openai]
-domain = ["minimal", "low", "medium", "high", "xhigh", "max"]
-fold = { xhigh = "high", max = "high" }
+domain = ["minimal", "low", "medium", "high", "xhigh"]
 
 [reasoning_effort.openrouter]
-domain = ["minimal", "low", "medium", "high", "xhigh", "max"]
-fold = { xhigh = "high", max = "high" }
+domain = ["minimal", "low", "medium", "high", "xhigh"]
 
 [reasoning_effort.gemini]
 # Gemini maps each accepted effort to a thinkingLevel of the same name.

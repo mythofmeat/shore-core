@@ -873,12 +873,21 @@ mod tests {
     fn reasoning_effort_domain_is_sdk_specific() {
         let eff = |v: &str| toml::Value::String(v.into());
 
-        // OpenAI/OpenRouter accept the full named set incl. minimal/xhigh/max
-        // (the adapters fold xhigh/max to high).
-        for v in ["minimal", "low", "medium", "high", "xhigh", "max"] {
+        // OpenAI/OpenRouter accept minimal..xhigh; `xhigh` is the real ceiling.
+        // `max` is Anthropic-only — out of domain here (not a valid option).
+        for v in ["minimal", "low", "medium", "high", "xhigh"] {
             assert!(
                 validate(&Sdk::Openai, "gpt-5.5", Field::ReasoningEffort, &eff(v)).is_ok(),
                 "openai should accept {v}"
+            );
+        }
+        for sdk in [Sdk::Openai, Sdk::Openrouter] {
+            assert!(
+                matches!(
+                    validate(&sdk, "gpt-5.5", Field::ReasoningEffort, &eff("max")),
+                    Err(CapabilityError::OutOfDomain { .. })
+                ),
+                "{sdk:?} must reject `max` (Anthropic-only)"
             );
         }
 

@@ -15,10 +15,12 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   on the wire, and a `reasoning_effort` value outside the sdk's accepted set is
   rejected with the allowed set shown. `shore model setting` with no key now lists
   only the keys the model honors and shows the accepted `reasoning_effort` domain.
-  Note: `reasoning_effort=max` remains **valid** on OpenAI/OpenRouter models (it is
-  an accepted alias that folds to `high`), so the boundary accepts it — issue #130's
-  "no reasoning produced" symptom is a separate adapter wire-mapping bug (`max`
-  forwarded raw instead of folded), not something this validation should reject.
+  The accepted `reasoning_effort` values are grounded in the provider docs:
+  Anthropic accepts `low/medium/high/xhigh/max` (`output_config.effort`); OpenAI and
+  OpenRouter accept `minimal/low/medium/high/xhigh` (`xhigh` is their ceiling — `max`
+  is Anthropic-only and is rejected on those sdks). This fixes #130: the prior code
+  folded both `xhigh` **and** `max` down to `high`, so the top reasoning tier could
+  never reach the OpenAI/OpenRouter wire.
 - `[behavior.tool_use] max_result_chars` caps how many characters a single tool
   result may contribute to the conversation. Defaults to `20000` (~5k tokens of
   code-like output); set to `0` to disable. Longer results are cut at a

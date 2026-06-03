@@ -1119,10 +1119,12 @@ fn model_settings_surfaces_applicability_and_domain() {
     assert_eq!(out["applicability"]["cache_ttl"], "ignored");
     assert_eq!(out["applicability"]["reasoning_effort"], "honored");
     assert_eq!(out["applicability"]["sdk"], "always");
-    // The accepted reasoning_effort value set for the sdk is surfaced.
+    // The accepted reasoning_effort value set for the sdk is surfaced. `xhigh`
+    // is the real OpenRouter ceiling; `max` is Anthropic-only (absent here).
     let domain = out["reasoning_effort_domain"].as_array().unwrap();
     assert!(domain.iter().any(|v| v == "high"));
-    assert!(domain.iter().any(|v| v == "max"));
+    assert!(domain.iter().any(|v| v == "xhigh"));
+    assert!(!domain.iter().any(|v| v == "max"));
 }
 
 #[test]
