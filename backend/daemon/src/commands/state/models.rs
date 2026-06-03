@@ -526,8 +526,10 @@ fn capability_check(
     };
 
     // The reasoning-effort disable sentinel ("off") is not a wire value — the
-    // overlay suppresses reasoning rather than sending it — so it is
-    // intentionally absent from every domain. Gate only its applicability.
+    // overlay suppresses reasoning rather than sending it — so it is absent from
+    // the graded sdk domains (Moonshot, whose only accepted value IS `off`, lists
+    // it explicitly). Skip the value-domain check for it and gate only
+    // applicability, so `off` is settable wherever reasoning applies.
     let reasoning_off = field == Field::ReasoningEffort && value.as_str() == Some("off");
 
     // `validate` only inspects the value for `reasoning_effort` (a string

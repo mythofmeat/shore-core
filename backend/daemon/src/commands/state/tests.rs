@@ -786,6 +786,48 @@ fn set_model_setting_rejects_unknown_key() {
 }
 
 #[test]
+fn set_model_setting_moonshot_reasoning_off_vs_graded() {
+    // Issue #164: Kimi/moonshot reasoning is on/off. `reasoning_effort = "off"`
+    // disables thinking and must be accepted; a graded level is out of domain.
+    let tmp = TempDir::new().unwrap();
+    let toml_str = r#"
+[moonshot.kimi]
+model_id = "kimi-k2-thinking"
+"#;
+    let table: toml::Table = toml_str.parse().unwrap();
+    let catalog = ModelCatalog::from_sections(Some(&table), None, None, None).unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, catalog);
+    ctx.active_model = Some("kimi".into());
+
+    // `off` is accepted and persisted.
+    let result = set_model_setting(
+        &mut ctx,
+        &json!({"key": "reasoning_effort", "value": "off"}),
+    )
+    .unwrap();
+    assert_eq!(result["changed"], true);
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert_eq!(
+        prefs
+            .model("moonshot", "kimi-k2-thinking")
+            .unwrap()
+            .sampler
+            .reasoning_effort
+            .as_deref(),
+        Some("off")
+    );
+
+    // A graded level is rejected at the capability boundary.
+    let err = set_model_setting(
+        &mut ctx,
+        &json!({"key": "reasoning_effort", "value": "high"}),
+    )
+    .unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+}
+
+#[test]
 fn set_model_setting_validates_value_type() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
