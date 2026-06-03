@@ -1,8 +1,3 @@
-#![expect(
-    unused_results,
-    reason = "test module: command helpers return a JSON Value that assertions ignore"
-)]
-
 use super::*;
 use crate::commands::CommandContext;
 use crate::engine::ConversationEngine;
@@ -199,7 +194,7 @@ fn status_returns_state() {
     rt.block_on(async {
         let (engine, mut ctx, _rx) = make_ctx(&tmp);
         ctx.active_model = Some("claude-sonnet".into());
-        ctx.autonomy.ensure_state(engine.character_name());
+        let _ = ctx.autonomy.ensure_state(engine.character_name());
 
         let result = status(&engine, &ctx).unwrap();
         assert_eq!(result["character"], "TestChar");
@@ -220,7 +215,7 @@ fn status_reports_dormant_heartbeat() {
     rt.block_on(async {
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
-        ctx.autonomy.ensure_state(engine.character_name());
+        let _ = ctx.autonomy.ensure_state(engine.character_name());
         assert!(ctx.autonomy.heartbeat_set_dormant(engine.character_name()));
 
         let result = status(&engine, &ctx).unwrap();
@@ -697,14 +692,14 @@ fn reset_model_clears_selection_in_preferences() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
-    switch_model(&mut ctx, &json!({"name": "gpt-4o"})).unwrap();
+    let _ = switch_model(&mut ctx, &json!({"name": "gpt-4o"})).unwrap();
     let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
     assert!(crate::preferences::load_preferences(&path)
         .unwrap()
         .selected
         .is_set());
 
-    reset_model(&mut ctx).unwrap();
+    let _ = reset_model(&mut ctx).unwrap();
     let prefs = crate::preferences::load_preferences(&path).unwrap();
     assert!(!prefs.selected.is_set(), "[selected] should be cleared");
     assert!(ctx.active_model.is_none());
@@ -734,7 +729,7 @@ fn set_model_setting_global_scope_writes_global_file() {
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
     ctx.active_model = Some("gpt-4o".into());
 
-    set_model_setting(
+    let _ = set_model_setting(
         &mut ctx,
         &json!({"key": "top_p", "value": 0.9, "scope": "global"}),
     )
@@ -763,8 +758,8 @@ fn set_model_setting_null_value_clears_field() {
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
     ctx.active_model = Some("gpt-4o".into());
 
-    set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.7})).unwrap();
-    set_model_setting(&mut ctx, &json!({"key": "temperature", "value": null})).unwrap();
+    let _ = set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.7})).unwrap();
+    let _ = set_model_setting(&mut ctx, &json!({"key": "temperature", "value": null})).unwrap();
 
     // Empty entries get pruned so the file stays tidy.
     let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
@@ -882,11 +877,11 @@ fn sticky_sampler_per_model_across_switches() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
-    switch_model(&mut ctx, &json!({"name": "claude-sonnet"})).unwrap();
-    set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.7})).unwrap();
+    let _ = switch_model(&mut ctx, &json!({"name": "claude-sonnet"})).unwrap();
+    let _ = set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.7})).unwrap();
 
-    switch_model(&mut ctx, &json!({"name": "gpt-4o"})).unwrap();
-    set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 1.2})).unwrap();
+    let _ = switch_model(&mut ctx, &json!({"name": "gpt-4o"})).unwrap();
+    let _ = set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 1.2})).unwrap();
 
     // Both samplers saved independently.
     let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
@@ -919,7 +914,7 @@ fn model_settings_returns_effective_sampler_with_scopes() {
     let mut global = crate::preferences::ModelPreferences::default();
     global.defaults.sampler.temperature = Some(1.0);
     crate::preferences::save_global_preferences(&ctx.data_dir, &global).unwrap();
-    set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.8})).unwrap();
+    let _ = set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.8})).unwrap();
 
     let result = model_settings(&ctx, &json!({})).unwrap();
     assert_eq!(result["model"], "chat.openrouter.gpt-4o");
@@ -933,7 +928,7 @@ fn set_model_setting_sdk_persists_to_preferences() {
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
     ctx.active_model = Some("gpt-4o".into());
 
-    set_model_setting(&mut ctx, &json!({"key": "sdk", "value": "anthropic"})).unwrap();
+    let _ = set_model_setting(&mut ctx, &json!({"key": "sdk", "value": "anthropic"})).unwrap();
 
     let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
     let prefs = crate::preferences::load_preferences(&path).unwrap();
@@ -962,7 +957,7 @@ fn set_model_setting_preserve_prior_turns_persists_and_surfaces() {
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
     ctx.active_model = Some("gpt-4o".into());
 
-    set_model_setting(
+    let _ = set_model_setting(
         &mut ctx,
         &json!({"key": "preserve_prior_turns", "value": false}),
     )
@@ -1031,8 +1026,8 @@ fn set_model_setting_sdk_null_clears_override() {
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
     ctx.active_model = Some("gpt-4o".into());
 
-    set_model_setting(&mut ctx, &json!({"key": "sdk", "value": "anthropic"})).unwrap();
-    set_model_setting(
+    let _ = set_model_setting(&mut ctx, &json!({"key": "sdk", "value": "anthropic"})).unwrap();
+    let _ = set_model_setting(
         &mut ctx,
         &json!({"key": "sdk", "value": serde_json::Value::Null}),
     )
@@ -1056,7 +1051,7 @@ fn set_model_setting_reasoning_effort_persists_to_preferences() {
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
     ctx.active_model = Some("gpt-4o".into());
 
-    set_model_setting(
+    let _ = set_model_setting(
         &mut ctx,
         &json!({"key": "reasoning_effort", "value": "high"}),
     )
@@ -1084,7 +1079,7 @@ fn set_model_setting_reasoning_effort_off_stored_as_off_sentinel() {
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
     ctx.active_model = Some("gpt-4o".into());
 
-    set_model_setting(
+    let _ = set_model_setting(
         &mut ctx,
         &json!({"key": "reasoning_effort", "value": "off"}),
     )
@@ -1134,7 +1129,7 @@ fn set_model_setting_accepts_applicable_key() {
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
     ctx.active_model = Some("claude-sonnet".into());
 
-    set_model_setting(&mut ctx, &json!({"key": "cache_ttl", "value": "5m"})).unwrap();
+    let _ = set_model_setting(&mut ctx, &json!({"key": "cache_ttl", "value": "5m"})).unwrap();
 
     let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
     let prefs = crate::preferences::load_preferences(&path).unwrap();
@@ -1177,7 +1172,7 @@ fn set_model_setting_reasoning_off_sentinel_is_exempt_from_domain() {
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
     ctx.active_model = Some("gpt-4o".into());
 
-    set_model_setting(
+    let _ = set_model_setting(
         &mut ctx,
         &json!({"key": "reasoning_effort", "value": "off"}),
     )
@@ -1227,7 +1222,7 @@ fn set_model_setting_zai_clear_thinking_persists_on_zai_model() {
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());
     ctx.active_model = Some("glm".into());
 
-    set_model_setting(
+    let _ = set_model_setting(
         &mut ctx,
         &json!({"key": "zai_clear_thinking", "value": false}),
     )
@@ -1285,7 +1280,7 @@ fn set_model_setting_openrouter_provider_rejects_scalar() {
     );
 
     // An object is accepted.
-    set_model_setting(
+    let _ = set_model_setting(
         &mut ctx,
         &json!({"key": "openrouter_provider", "value": {"order": ["Anthropic"]}}),
     )
@@ -1298,7 +1293,7 @@ fn set_model_setting_gemini_generation_persists_on_gemini_model() {
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, vendor_models());
     ctx.active_model = Some("flash".into());
 
-    set_model_setting(&mut ctx, &json!({"key": "gemini_generation", "value": 3})).unwrap();
+    let _ = set_model_setting(&mut ctx, &json!({"key": "gemini_generation", "value": 3})).unwrap();
 
     let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
     let prefs = crate::preferences::load_preferences(&path).unwrap();
@@ -1333,7 +1328,7 @@ fn model_info_includes_effective_sampler_for_active_character() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
     ctx.active_model = Some("gpt-4o".into());
-    set_model_setting(&mut ctx, &json!({"key": "top_p", "value": 0.95})).unwrap();
+    let _ = set_model_setting(&mut ctx, &json!({"key": "top_p", "value": 0.95})).unwrap();
 
     let result = model_info(&ctx, &json!({})).unwrap();
     assert_eq!(result["effective_sampler"]["top_p"], 0.95);
@@ -1543,8 +1538,8 @@ base_url = "https://openrouter.ai/api/v1"
             None,
         );
         // Select the discovered model, then set a sampler value.
-        switch_model(&mut ctx, &json!({"name": "anthropic/claude-sonnet-4.5"})).unwrap();
-        set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.4})).unwrap();
+        let _ = switch_model(&mut ctx, &json!({"name": "anthropic/claude-sonnet-4.5"})).unwrap();
+        let _ = set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.4})).unwrap();
 
         // Verify model_settings reflects the saved value via preference resolution.
         let out = model_settings(&ctx, &json!({})).unwrap();
@@ -1571,15 +1566,15 @@ base_url = "https://openrouter.ai/api/v1"
             &["anthropic/claude-sonnet-4.5"],
             None,
         );
-        switch_model(&mut ctx, &json!({"name": "anthropic/claude-sonnet-4.5"})).unwrap();
+        let _ = switch_model(&mut ctx, &json!({"name": "anthropic/claude-sonnet-4.5"})).unwrap();
         // Global value first.
-        set_model_setting(
+        let _ = set_model_setting(
             &mut ctx,
             &json!({"key": "temperature", "value": 0.9, "scope": "global"}),
         )
         .unwrap();
         // Character-scope override.
-        set_model_setting(
+        let _ = set_model_setting(
             &mut ctx,
             &json!({"key": "temperature", "value": 0.2, "scope": "character"}),
         )
@@ -1618,7 +1613,7 @@ base_url = "https://openrouter.ai/api/v1"
             None,
         );
         // First connection: user picks the discovered model.
-        switch_model(&mut ctx, &json!({"name": "anthropic/claude-opus-4.6"})).unwrap();
+        let _ = switch_model(&mut ctx, &json!({"name": "anthropic/claude-opus-4.6"})).unwrap();
 
         // Simulate a fresh connection: dispatcher rebuilds ctx from
         // preferences. `active_model` becomes the canonical
@@ -1647,7 +1642,7 @@ base_url = "https://openrouter.ai/api/v1"
 
         // `set_model_setting` exercises the same resolver path; it
         // also failed before the fix.
-        set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.5})).unwrap();
+        let _ = set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.5})).unwrap();
         let out = model_settings(&ctx, &json!({})).unwrap();
         assert_eq!(out["effective_sampler"]["temperature"], 0.5);
     }
