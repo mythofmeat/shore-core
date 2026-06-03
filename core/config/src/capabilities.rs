@@ -191,10 +191,17 @@ pub fn applicability(sdk: &Sdk, model_id: &str, field: Field) -> Applicability {
         // Generic knobs every sdk understands.
         Field::MaxContextTokens
         | Field::MaxOutputTokens
-        | Field::ReasoningEffort
         | Field::KeepaliveEnabled
         | Field::KeepaliveTtl
         | Field::KeepaliveMaxPings => Applicability::Honored,
+
+        // Every sidecar adapter maps `reasoning_effort` except Z.AI, which
+        // drives thinking via `zai_clear_thinking` / `thinking.type` instead.
+        // The accepted value set is sdk-specific — see `reasoning_effort_domain`.
+        Field::ReasoningEffort => match sdk {
+            Sdk::Anthropic | Sdk::Openai | Sdk::Openrouter | Sdk::Gemini => Applicability::Honored,
+            Sdk::Zai => Applicability::Ignored,
+        },
 
         // Sampler knobs: rejected on Claude opus/sonnet >= 4.7, honored
         // otherwise. The cutoff is sdk-independent — it follows the model id,
@@ -248,11 +255,28 @@ pub fn default_value(sdk: &Sdk, field: Field) -> Option<&'static str> {
 
 // ── Boundary validation (for #130) ──────────────────────────────────────
 
-/// The accepted `reasoning_effort` values. The motivating bug is gpt-5.5
-/// silently dropping thinking when handed `reasoning_effort = "max"` — `"max"`
-/// is not in this set, so the boundary catches it. Per-model refinement of this
-/// domain is a #130 follow-up.
-pub const REASONING_EFFORT_DOMAIN: [&str; 4] = ["minimal", "low", "medium", "high"];
+/// The accepted `reasoning_effort` values for `sdk`, mirroring exactly what the
+/// sidecar adapters accept (anything outside the set is dropped/normalized to
+/// nothing on the wire, so the boundary should reject it):
+///
+/// * **Anthropic** — `buildThinkingParams` named efforts `max|xhigh|high|medium|low`
+///   plus `adaptive` (`providers/anthropic.ts`). Note: no `minimal`.
+/// * **OpenAI / OpenRouter** — `mapReasoningEffort` accepts
+///   `minimal|low|medium|high|xhigh|max` (`xhigh`/`max` fold to `high`).
+/// * **Gemini** — `thinkingLevel` accepts `minimal|low|medium|high`.
+/// * **Z.AI** — ignores `reasoning_effort` entirely (empty set; also `Ignored`
+///   in [`applicability`], so [`validate`] returns `Inapplicable` before this).
+///
+/// Per-**model** refinement (e.g. a single model's narrower subset) is a #162
+/// follow-up; this is the per-sdk truth.
+pub fn reasoning_effort_domain(sdk: &Sdk) -> &'static [&'static str] {
+    match sdk {
+        Sdk::Anthropic => &["adaptive", "low", "medium", "high", "xhigh", "max"],
+        Sdk::Openai | Sdk::Openrouter => &["minimal", "low", "medium", "high", "xhigh", "max"],
+        Sdk::Gemini => &["minimal", "low", "medium", "high"],
+        Sdk::Zai => &[],
+    }
+}
 
 /// Why a setting was rejected at the boundary.
 #[derive(Debug, thiserror::Error)]
@@ -292,14 +316,16 @@ pub fn validate(
     }
 
     // Value-domain checks. Only `reasoning_effort` has a closed string domain
-    // today; other honored fields accept any well-typed value.
+    // today, and it is sdk-specific; other honored fields accept any well-typed
+    // value.
     if field == Field::ReasoningEffort {
         if let Some(effort) = value.as_str() {
-            if !REASONING_EFFORT_DOMAIN.contains(&effort) {
+            let domain = reasoning_effort_domain(sdk);
+            if !domain.contains(&effort) {
                 return Err(CapabilityError::OutOfDomain {
                     field,
                     value: effort.to_string(),
-                    allowed: REASONING_EFFORT_DOMAIN.join(", "),
+                    allowed: domain.join(", "),
                 });
             }
         }
@@ -485,13 +511,70 @@ mod tests {
 
     #[test]
     fn validate_rejects_out_of_domain_reasoning_effort() {
+        // A genuinely-bogus value is rejected on every honored sdk.
         let err = validate(
             &Sdk::Openai,
             "gpt-5.5",
             Field::ReasoningEffort,
-            &toml::Value::String("max".into()),
+            &toml::Value::String("turbo".into()),
         )
         .unwrap_err();
         assert!(matches!(err, CapabilityError::OutOfDomain { .. }));
+    }
+
+    #[test]
+    fn reasoning_effort_domain_is_sdk_specific() {
+        let eff = |v: &str| toml::Value::String(v.into());
+
+        // OpenAI/OpenRouter accept the full named set incl. minimal/xhigh/max
+        // (the adapters fold xhigh/max to high).
+        for v in ["minimal", "low", "medium", "high", "xhigh", "max"] {
+            assert!(
+                validate(&Sdk::Openai, "gpt-5.5", Field::ReasoningEffort, &eff(v)).is_ok(),
+                "openai should accept {v}"
+            );
+        }
+
+        // Anthropic accepts adaptive/xhigh/max but NOT minimal.
+        assert!(validate(
+            &Sdk::Anthropic,
+            "claude-opus-4-8",
+            Field::ReasoningEffort,
+            &eff("adaptive")
+        )
+        .is_ok());
+        assert!(validate(
+            &Sdk::Anthropic,
+            "claude-opus-4-8",
+            Field::ReasoningEffort,
+            &eff("max")
+        )
+        .is_ok());
+        assert!(matches!(
+            validate(
+                &Sdk::Anthropic,
+                "claude-opus-4-8",
+                Field::ReasoningEffort,
+                &eff("minimal")
+            ),
+            Err(CapabilityError::OutOfDomain { .. })
+        ));
+
+        // Gemini's set stops at high.
+        assert!(matches!(
+            validate(
+                &Sdk::Gemini,
+                "gemini-2.5-pro",
+                Field::ReasoningEffort,
+                &eff("max")
+            ),
+            Err(CapabilityError::OutOfDomain { .. })
+        ));
+
+        // Z.AI ignores reasoning_effort entirely → Inapplicable, not a domain check.
+        assert!(matches!(
+            validate(&Sdk::Zai, "glm-5", Field::ReasoningEffort, &eff("high")),
+            Err(CapabilityError::Inapplicable { .. })
+        ));
     }
 }
