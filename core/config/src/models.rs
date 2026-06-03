@@ -32,6 +32,15 @@ pub enum Sdk {
     Openrouter,
     Gemini,
     Zai,
+    /// DeepSeek's direct API via the Vercel AI SDK provider (`@ai-sdk/deepseek`).
+    /// Distinct from routing DeepSeek through OpenRouter: this hits
+    /// `api.deepseek.com` directly and exposes native reasoning control
+    /// (`thinking.type` enable/disable/adaptive + `reasoningEffort`).
+    Deepseek,
+    /// Moonshot (Kimi) direct API via the Vercel AI SDK provider
+    /// (`@ai-sdk/moonshotai`). Native thinking on/off (`thinking.type` +
+    /// `budgetTokens`) and cross-turn `reasoningHistory`.
+    Moonshot,
 }
 
 impl<'de> Deserialize<'de> for Sdk {
@@ -46,7 +55,9 @@ impl<'de> Deserialize<'de> for Sdk {
             "openrouter" => Ok(Sdk::Openrouter),
             "gemini" => Ok(Sdk::Gemini),
             "zai" => Ok(Sdk::Zai),
-            "deepseek" | "zhipuai" => {
+            "deepseek" => Ok(Sdk::Deepseek),
+            "moonshot" | "moonshotai" => Ok(Sdk::Moonshot),
+            "zhipuai" => {
                 warn!(
                     "sdk = \"{s}\" is deprecated and now maps to \"openai\". \
                      Update your config to use sdk = \"openai\" instead."
@@ -55,7 +66,15 @@ impl<'de> Deserialize<'de> for Sdk {
             }
             other => Err(serde::de::Error::unknown_variant(
                 other,
-                &["anthropic", "openai", "openrouter", "gemini", "zai"],
+                &[
+                    "anthropic",
+                    "openai",
+                    "openrouter",
+                    "gemini",
+                    "zai",
+                    "deepseek",
+                    "moonshot",
+                ],
             )),
         }
     }
@@ -70,6 +89,8 @@ impl Sdk {
             Sdk::Openrouter => "openrouter",
             Sdk::Gemini => "gemini",
             Sdk::Zai => "zai",
+            Sdk::Deepseek => "deepseek",
+            Sdk::Moonshot => "moonshot",
         }
     }
 
@@ -84,6 +105,8 @@ impl Sdk {
             "openrouter" => Some(Sdk::Openrouter),
             "gemini" => Some(Sdk::Gemini),
             "zai" => Some(Sdk::Zai),
+            "deepseek" => Some(Sdk::Deepseek),
+            "moonshot" | "moonshotai" => Some(Sdk::Moonshot),
             _ => None,
         }
     }
@@ -101,7 +124,10 @@ impl Sdk {
     /// `match` at each call site was the kind of drift surface the
     /// 2026-05-14 refactor was set up to eliminate.
     pub fn echoes_unsigned_thinking(&self) -> bool {
-        matches!(self, Sdk::Openai | Sdk::Zai)
+        // DeepSeek/Moonshot (Kimi) hard-require prior `reasoning_content` to
+        // round-trip during a tool loop; the Vercel AI SDK adapter replays it as
+        // an assistant `reasoning` content part.
+        matches!(self, Sdk::Openai | Sdk::Zai | Sdk::Deepseek | Sdk::Moonshot)
     }
 
     /// Whether requests for this SDK ultimately hit Anthropic's prompt-cache
@@ -950,9 +976,20 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
             ..base_provider_defaults()
         },
         "deepseek" => ModelConfigFields {
-            sdk: Some(Sdk::Openai),
+            // Native DeepSeek via the Vercel AI SDK provider (`@ai-sdk/deepseek`),
+            // which adds reasoning control (thinking on/off/adaptive +
+            // reasoningEffort) over the old plain OpenAI-compatible path.
+            sdk: Some(Sdk::Deepseek),
             api_key_env: Some("DEEPSEEK_API_KEY".into()),
             base_url: Some("https://api.deepseek.com/v1".into()),
+            ..base_provider_defaults()
+        },
+        "moonshot" | "moonshotai" => ModelConfigFields {
+            // Native Moonshot (Kimi) via the Vercel AI SDK provider
+            // (`@ai-sdk/moonshotai`): native thinking on/off + reasoningHistory.
+            sdk: Some(Sdk::Moonshot),
+            api_key_env: Some("MOONSHOT_API_KEY".into()),
+            base_url: Some("https://api.moonshot.ai/v1".into()),
             ..base_provider_defaults()
         },
         "gemini" => ModelConfigFields {
@@ -999,8 +1036,10 @@ pub fn default_sdk(provider_key: &str) -> Sdk {
         "openrouter" => Sdk::Openrouter,
         "gemini" => Sdk::Gemini,
         "zai" => Sdk::Zai,
-        // Everything else (xai, deepseek, zhipuai, custom) defaults to the
-        // direct OpenAI-compatible path.
+        "deepseek" => Sdk::Deepseek,
+        "moonshot" | "moonshotai" => Sdk::Moonshot,
+        // Everything else (xai, zhipuai, custom) defaults to the direct
+        // OpenAI-compatible path.
         _ => Sdk::Openai,
     }
 }
@@ -1864,22 +1903,55 @@ model_id = "anthropic/claude-opus-4.6"
         assert_eq!(Sdk::Openai.as_str(), "openai");
         assert_eq!(Sdk::Gemini.as_str(), "gemini");
         assert_eq!(Sdk::Zai.as_str(), "zai");
+        assert_eq!(Sdk::Deepseek.as_str(), "deepseek");
+        assert_eq!(Sdk::Moonshot.as_str(), "moonshot");
+        // parse_wire round-trips every as_str form.
+        for sdk in [
+            Sdk::Anthropic,
+            Sdk::Openai,
+            Sdk::Openrouter,
+            Sdk::Gemini,
+            Sdk::Zai,
+            Sdk::Deepseek,
+            Sdk::Moonshot,
+        ] {
+            assert_eq!(Sdk::parse_wire(sdk.as_str()), Some(sdk));
+        }
     }
 
     #[test]
     fn sdk_deserialize_legacy_variants() {
-        // "deepseek" and "zhipuai" should deserialize to Openai with a deprecation warning.
-        let sdk: Sdk = toml::from_str::<ModelConfigFields>("sdk = \"deepseek\"")
-            .unwrap()
-            .sdk
-            .unwrap();
-        assert_eq!(sdk, Sdk::Openai);
-
+        // "zhipuai" is still a legacy alias → Openai with a deprecation warning.
         let sdk: Sdk = toml::from_str::<ModelConfigFields>("sdk = \"zhipuai\"")
             .unwrap()
             .sdk
             .unwrap();
         assert_eq!(sdk, Sdk::Openai);
+    }
+
+    #[test]
+    fn sdk_deserialize_native_deepseek_moonshot() {
+        // Issue #164: "deepseek" is now a first-class sdk (Vercel AI SDK
+        // adapter), no longer the deprecated alias for Openai. "moonshot" /
+        // "moonshotai" both resolve to the Moonshot sdk.
+        let sdk = |s: &str| toml::from_str::<ModelConfigFields>(s).unwrap().sdk.unwrap();
+        assert_eq!(sdk("sdk = \"deepseek\""), Sdk::Deepseek);
+        assert_eq!(sdk("sdk = \"moonshot\""), Sdk::Moonshot);
+        assert_eq!(sdk("sdk = \"moonshotai\""), Sdk::Moonshot);
+    }
+
+    #[test]
+    fn deepseek_moonshot_provider_defaults() {
+        // The hardcoded provider defaults route both vendors to their native
+        // Vercel AI SDK adapters (not the old OpenAI-compatible path).
+        assert_eq!(default_sdk("deepseek"), Sdk::Deepseek);
+        assert_eq!(default_sdk("moonshot"), Sdk::Moonshot);
+        let ds = hardcoded_provider_defaults("deepseek").fields;
+        assert_eq!(ds.sdk, Some(Sdk::Deepseek));
+        assert_eq!(ds.api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
+        let ms = hardcoded_provider_defaults("moonshot").fields;
+        assert_eq!(ms.sdk, Some(Sdk::Moonshot));
+        assert_eq!(ms.api_key_env.as_deref(), Some("MOONSHOT_API_KEY"));
     }
 
     #[test]

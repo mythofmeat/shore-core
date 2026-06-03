@@ -182,7 +182,7 @@ pub(crate) async fn refresh_one(
         Sdk::Anthropic => {
             shore_llm::discovery::discover_anthropic(http, provider, &base_url, &key_value).await
         }
-        Sdk::Openai | Sdk::Gemini | Sdk::Zai | Sdk::Openrouter => {
+        Sdk::Openai | Sdk::Gemini | Sdk::Zai | Sdk::Openrouter | Sdk::Deepseek | Sdk::Moonshot => {
             shore_llm::discovery::discover_openai_compatible(http, provider, &base_url, &key_value)
                 .await
         }

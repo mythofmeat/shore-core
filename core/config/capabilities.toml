@@ -38,6 +38,18 @@ domain = ["minimal", "low", "medium", "high"]
 # Z.AI ignores reasoning_effort (thinking is driven by zai_clear_thinking).
 domain = []
 
+# Native DeepSeek via the Vercel AI SDK provider (`@ai-sdk/deepseek`): its
+# `reasoningEffort` enum is low|medium|high|xhigh|max. Disable thinking with the
+# `off` sentinel (→ thinking.type=disabled), not a domain value.
+[reasoning_effort.deepseek]
+domain = ["low", "medium", "high", "xhigh", "max"]
+
+# Native Moonshot/Kimi via the Vercel AI SDK provider (`@ai-sdk/moonshotai`):
+# reasoning is an on/off toggle (`thinking.type` + `budgetTokens`), not a graded
+# effort — so no reasoning_effort domain. Disable with the `off` sentinel.
+[reasoning_effort.moonshot]
+domain = []
+
 # ── Per-model capability overrides ───────────────────────────────────────────
 # A model-id dimension on top of the per-sdk matrix, for the OpenRouter
 # passthrough case (issue #164): the `openrouter` sdk fronts many different

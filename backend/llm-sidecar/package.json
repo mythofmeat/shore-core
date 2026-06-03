@@ -9,9 +9,12 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@ai-sdk/deepseek": "^2.0.35",
+    "@ai-sdk/moonshotai": "^2.0.23",
     "@anthropic-ai/sdk": "^0.100.1",
     "@google/genai": "^2.7.0",
     "@openrouter/sdk": "^0.12.79",
+    "ai": "^6.0.195",
     "openai": "^6.39.0"
   },
   "devDependencies": {

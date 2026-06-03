@@ -454,6 +454,7 @@ pub fn default_api_key_env(provider_key: &str) -> &'static str {
         "openrouter" => "OPENROUTER_API_KEY",
         "zhipuai" => "ZHIPUAI_API_KEY",
         "deepseek" => "DEEPSEEK_API_KEY",
+        "moonshot" | "moonshotai" => "MOONSHOT_API_KEY",
         "xai" => "XAI_API_KEY",
         "zai" => "ZAI_API_KEY",
         "nanogpt" => "NANOGPT_API_KEY",
@@ -475,6 +476,7 @@ pub fn default_base_url(provider_key: &str) -> Option<&'static str> {
         "openai" => Some("https://api.openai.com/v1"),
         "openrouter" => Some("https://openrouter.ai/api/v1"),
         "deepseek" => Some("https://api.deepseek.com"),
+        "moonshot" | "moonshotai" => Some("https://api.moonshot.ai/v1"),
         "xai" => Some("https://api.x.ai/v1"),
         _ => None,
     }

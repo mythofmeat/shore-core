@@ -8,6 +8,18 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **Native DeepSeek and Moonshot (Kimi) providers** via the Vercel AI SDK
+  (issue #164). New `sdk = "deepseek"` / `sdk = "moonshot"` wires hit
+  `api.deepseek.com` / `api.moonshot.ai` directly (not through OpenRouter) using
+  the first-party `@ai-sdk/deepseek` and `@ai-sdk/moonshotai` providers, which
+  expose native reasoning control: DeepSeek a graded `reasoning_effort`
+  (low/medium/high/xhigh/max) plus thinking on/off/adaptive, Moonshot a thinking
+  on/off toggle with `budget_tokens` and cross-turn reasoning history. Thinking
+  is disabled with `reasoning_effort = "off"` on either. **Behavior change:** the
+  built-in `deepseek` provider now defaults to `sdk = "deepseek"` (was the plain
+  OpenAI-compatible path), so existing DeepSeek users transparently gain reasoning
+  control against the same API. The sidecar gains an `ai` + `@ai-sdk/deepseek` +
+  `@ai-sdk/moonshotai` dependency.
 - **Per-model capability resolution for OpenRouter models** (issue #164). Because
   the OpenRouter sdk fronts many different underlying vendors, `shore model setting`
   now resolves a model's capability surface from its **model id**, not just the sdk,

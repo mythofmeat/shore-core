@@ -13,7 +13,14 @@
 // Bun resolves this `.toml` import at build time and inlines the parsed object.
 import rawCaps from "../../../../core/config/capabilities.toml";
 
-export type Sdk = "anthropic" | "openai" | "openrouter" | "gemini" | "zai";
+export type Sdk =
+  | "anthropic"
+  | "openai"
+  | "openrouter"
+  | "gemini"
+  | "zai"
+  | "deepseek"
+  | "moonshot";
 type ClaudeFamily = "opus" | "sonnet" | "haiku";
 
 interface SdkEffort {
@@ -47,6 +54,8 @@ interface CapabilitiesDoc {
     openrouter: SdkEffort;
     gemini: SdkEffort;
     zai: SdkEffort;
+    deepseek: SdkEffort;
+    moonshot: SdkEffort;
   };
   claude: {
     default_adaptive: boolean;
@@ -73,6 +82,10 @@ function sdkEffort(sdk: Sdk): SdkEffort {
       return caps.reasoning_effort.gemini;
     case "zai":
       return caps.reasoning_effort.zai;
+    case "deepseek":
+      return caps.reasoning_effort.deepseek;
+    case "moonshot":
+      return caps.reasoning_effort.moonshot;
   }
 }
 
