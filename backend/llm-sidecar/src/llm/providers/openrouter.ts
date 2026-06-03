@@ -38,6 +38,7 @@ import type {
 } from "@openrouter/sdk/models";
 
 import type { ContentBlock, ImageRef } from "../../engine/types.ts";
+import { foldEffort } from "../capabilities.ts";
 import { resolveImage } from "../images.ts";
 import type {
   GenerateResponse,
@@ -225,8 +226,11 @@ function buildCall(
 
   const effortRaw = req.provider_options?.["reasoning_effort"];
   if (typeof effortRaw === "string") {
-    const effort = mapReasoningEffort(effortRaw);
-    if (effort) chatRequest.reasoning = { effort };
+    // foldEffort only ever returns an in-domain OpenRouter value (minimal/low/medium/high).
+    const effort = foldEffort("openrouter", effortRaw, req.model);
+    if (effort) {
+      chatRequest.reasoning = { effort: effort as NonNullable<ChatRequest["reasoning"]>["effort"] };
+    }
   }
 
   // Provider routing is config-owned (the daemon sets openrouter_provider); pass
@@ -397,23 +401,6 @@ function parseArgs(argsJson: string): unknown {
     return JSON.parse(argsJson);
   } catch {
     return {};
-  }
-}
-
-function mapReasoningEffort(effort: string): "low" | "medium" | "high" | "minimal" | undefined {
-  switch (effort) {
-    case "minimal":
-      return "minimal";
-    case "low":
-      return "low";
-    case "medium":
-      return "medium";
-    case "high":
-    case "xhigh":
-    case "max":
-      return "high";
-    default:
-      return undefined;
   }
 }
 

@@ -60,6 +60,22 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   setting`) for a model that actually honors them. A date-shaped segment is now
   treated as the `.0` release; a real minor plus a date (`claude-opus-4-1-20250805`
   → `1`) still parses correctly.
+- The **sidecar** had the same dated-id parse bug in its Anthropic thinking-mode
+  classifier (`parseAnthropicModel`). It is gone now that the daemon and sidecar
+  share one model parser + rule table (see *Changed*), so dated Claude `X.0` ids
+  get the correct adaptive/enabled thinking mode.
+
+### Changed
+- Per-sdk/per-model reasoning-effort, Anthropic thinking-mode, and Claude
+  sampler-rejection tables are now a **single compiled-in source of truth**,
+  `core/config/capabilities.toml` — consumed by both the Rust daemon
+  (`include_str!`) and the TS sidecar (a `bun build`-inlined `.toml` import),
+  replacing five hand-synced copies across the two languages (the duplicated
+  `mapReasoningEffort`, `effortToBudget`, `thinkingCaps`/`thinkingLevel`, and the
+  Rust `reasoning_effort_domain`/sampler cutoff). The file is baked into the
+  binaries — not runtime- or user-editable. A cross-language parity fixture keeps
+  the two implementations in lockstep. No behavior change beyond the parser fix
+  above.
 
 ### Removed
 - `clients/gui-godot/` moved to its own repository at

@@ -713,7 +713,7 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
         // clients can hide keys the model ignores/rejects, plus the accepted
         // `reasoning_effort` value set for the sdk.
         "applicability": key_applicability(&active.sdk, &active.model_id),
-        "reasoning_effort_domain": shore_config::capabilities::reasoning_effort_domain(&active.sdk),
+        "reasoning_effort_domain": shore_config::capabilities::reasoning_effort_domain(&active.sdk, &active.model_id),
         "scopes": {
             "temperature": scopes.temperature.map(scope_str),
             "top_p": scopes.top_p.map(scope_str),

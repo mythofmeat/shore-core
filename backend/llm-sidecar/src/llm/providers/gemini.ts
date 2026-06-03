@@ -24,6 +24,7 @@ import {
   type Tool,
 } from "@google/genai";
 
+import { geminiLevelName } from "../capabilities.ts";
 import type { ContentBlock } from "../../engine/types.ts";
 import type {
   GenerateResponse,
@@ -370,8 +371,10 @@ export function detectGeminiGeneration(model: string): number {
   return digits === undefined ? 0 : Number.parseInt(digits, 10);
 }
 
+// The accepted Gemini effort set lives in capabilities.toml (via geminiLevelName);
+// this only binds each accepted name to the genai SDK's ThinkingLevel enum.
 function thinkingLevel(effort: string): ThinkingLevel | undefined {
-  switch (effort.toLowerCase()) {
+  switch (geminiLevelName(effort)) {
     case "minimal":
       return ThinkingLevel.MINIMAL;
     case "low":
