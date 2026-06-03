@@ -136,8 +136,7 @@ from crates.io):
 - [ARCHITECTURE.md](ARCHITECTURE.md) — runtime model, invariants, security,
   observability, and validation guidance.
 - [CONFIGURATION.md](CONFIGURATION.md) — config reference and examples.
-- [AGENTS.md](AGENTS.md) — short entry map for coding agents.
-- [CLAUDE.md](CLAUDE.md) — shim for tools that look for a Claude-specific entry.
+- [CLAUDE.md](CLAUDE.md) — short entry map for coding agents.
 - [CHANGELOG.md](CHANGELOG.md) — release history.
 
 Markdown under `backend/daemon/prompts/**` is runtime prompt text, not ordinary
