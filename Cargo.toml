@@ -59,10 +59,10 @@ shore-protocol = { path = "core/protocol", version = "0.7.0" }
 shore-config = { path = "core/config", version = "0.10.0" }
 shore-swp-client = { path = "core/swp-client", version = "0.2.11" }
 shore-diagnostics = { path = "backend/diagnostics", version = "0.2.2" }
-shore-llm = { path = "backend/llm", version = "7.0.2" }
-shore-ledger = { path = "backend/ledger", version = "3.0.2" }
+shore-llm = { path = "backend/llm", version = "8.0.0" }
+shore-ledger = { path = "backend/ledger", version = "3.0.3" }
 shore-swp-server = { path = "backend/swp-server", version = "1.8.15" }
-shore-daemon = { path = "backend/daemon", version = "12.0.0" }
+shore-daemon = { path = "backend/daemon", version = "12.0.1" }
 # Intentionally path-only (no `version`). shore-test-harness is a dev-only
 # crate that shore-daemon pulls in as a dev-dependency, and it depends
 # back on shore-daemon — a versioned cycle there causes
