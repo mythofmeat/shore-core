@@ -550,6 +550,28 @@ pub fn reasoning_effort_domain(sdk: &Sdk, model_id: &str) -> &'static [String] {
     &CAPS.reasoning_effort.for_sdk(sdk).domain
 }
 
+/// Whether the `reasoning_effort = "off"` disable sentinel is HONORED for this
+/// sdk — i.e. some adapter actually suppresses reasoning when it sees it. This
+/// mirrors the sidecar request layer (issue #164):
+///   * `deepseek` / `moonshot` (Vercel AI SDK) — `thinking.type = "disabled"`.
+///   * `openrouter` — `reasoning.effort = "none"` (a real off-switch for the
+///     always-on vendors it fronts; a few thinking-only endpoints, e.g.
+///     `kimi-k2-thinking`, reject it at runtime — a documented limitation).
+///   * `anthropic` — omitting thinking params yields a non-thinking request.
+///
+/// For `openai` and `gemini` the native adapters have NO disable path (reasoning
+/// is model-mandatory / left at the model default), and `zai` ignores
+/// `reasoning_effort` entirely, so `"off"` is not honored there. `shore model
+/// setting` uses this to reject `"off"` where it would be a silent no-op rather
+/// than letting it persist (the `"off"` sentinel is otherwise absent from the
+/// graded domains, so the plain value-domain check cannot gate it).
+pub fn supports_reasoning_off(sdk: &Sdk) -> bool {
+    matches!(
+        sdk,
+        Sdk::Anthropic | Sdk::Deepseek | Sdk::Moonshot | Sdk::Openrouter
+    )
+}
+
 /// Whether a `[[model_override]]` marks `model_id`'s underlying model as
 /// rejecting sampler knobs (`temperature` / `top_p`). This is the OpenRouter
 /// passthrough analogue of the Claude version cutoff (issue #164): the
@@ -1201,6 +1223,24 @@ mod tests {
             applicability(&Sdk::Deepseek, "deepseek-reasoner", Field::BudgetTokens),
             Applicability::Ignored
         );
+    }
+
+    #[test]
+    fn supports_reasoning_off_only_for_disable_capable_sdks() {
+        // Issue #164 (CodeRabbit): the `off` sentinel is honored only where an
+        // adapter actually suppresses reasoning. Native openai/gemini and zai
+        // have no disable path, so `off` must NOT slip past validation there.
+        for sdk in [
+            Sdk::Anthropic,
+            Sdk::Deepseek,
+            Sdk::Moonshot,
+            Sdk::Openrouter,
+        ] {
+            assert!(supports_reasoning_off(&sdk), "{sdk:?} should honor off");
+        }
+        for sdk in [Sdk::Openai, Sdk::Gemini, Sdk::Zai] {
+            assert!(!supports_reasoning_off(&sdk), "{sdk:?} must not honor off");
+        }
     }
 
     #[test]

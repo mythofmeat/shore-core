@@ -526,8 +526,14 @@ fn capability_check(
     // overlay suppresses reasoning rather than sending it — so it is absent from
     // the graded sdk domains (Moonshot, whose only accepted value IS `off`, lists
     // it explicitly). Skip the value-domain check for it and gate only
-    // applicability, so `off` is settable wherever reasoning applies.
-    let reasoning_off = field == Field::ReasoningEffort && value.as_str() == Some("off");
+    // applicability — BUT only for sdks whose adapter actually honors the
+    // off-switch (`capabilities::supports_reasoning_off`). On sdks without a
+    // disable path (native openai/gemini), `"off"` would silently no-op, so we
+    // let it fall through to the value-domain check, which rejects it as
+    // out-of-domain (#164, CodeRabbit review).
+    let reasoning_off = field == Field::ReasoningEffort
+        && value.as_str() == Some("off")
+        && capabilities::supports_reasoning_off(sdk);
 
     // `validate` only inspects the value for `reasoning_effort` (a string
     // domain); for every other field a placeholder is sufficient, since the

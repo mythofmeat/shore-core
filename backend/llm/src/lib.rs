@@ -492,7 +492,7 @@ pub fn default_base_url(provider_key: &str) -> Option<&'static str> {
 /// sidecar adapters own provider request conversion and do not replay prior
 /// thinking into output-only fields.
 pub fn requires_reasoning_replay(provider_key: &str) -> bool {
-    matches!(provider_key, "deepseek" | "moonshot")
+    matches!(provider_key, "deepseek" | "moonshot" | "moonshotai")
 }
 
 #[cfg(test)]
@@ -791,6 +791,9 @@ sdk = "openai"
     fn requires_reasoning_replay_for_thinking_mode_providers() {
         assert!(requires_reasoning_replay("deepseek"));
         assert!(requires_reasoning_replay("moonshot"));
+        // `moonshotai` is an accepted provider-key alias (cf. default_api_key_env
+        // / default_base_url) and must gate replay the same as `moonshot`.
+        assert!(requires_reasoning_replay("moonshotai"));
         // Anthropic Claude 4.x doesn't replay prior-turn thinking.
         assert!(!requires_reasoning_replay("anthropic"));
         // OpenAI reasoning models surface a summary, not raw reasoning.
