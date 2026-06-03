@@ -46,9 +46,14 @@ domain = ["low", "medium", "high", "xhigh", "max"]
 
 # Native Moonshot/Kimi via the Vercel AI SDK provider (`@ai-sdk/moonshotai`):
 # reasoning is an on/off toggle (`thinking.type` + `budgetTokens`), not a graded
-# effort — so no reasoning_effort domain. Disable with the `off` sentinel.
+# effort. The only accepted `reasoning_effort` value is therefore `off` (which
+# disables thinking → `thinking.type = "disabled"`); a graded level is rejected
+# at the CLI boundary. `off` is normally the cross-sdk disable *sentinel* (absent
+# from graded domains, handled specially), but here it is the model's ONLY valid
+# value, so it is listed explicitly — that lets `shore model setting` show it and
+# message a clear "allowed: off" on a bad value. To re-enable, clear the setting.
 [reasoning_effort.moonshot]
-domain = []
+domain = ["off"]
 
 # ── Per-model capability overrides ───────────────────────────────────────────
 # A model-id dimension on top of the per-sdk matrix, for the OpenRouter

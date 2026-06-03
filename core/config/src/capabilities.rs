@@ -425,17 +425,20 @@ pub fn applicability(sdk: &Sdk, model_id: &str, field: Field) -> Applicability {
         | Field::KeepaliveTtl
         | Field::KeepaliveMaxPings => Applicability::Honored,
 
-        // Most sidecar adapters map `reasoning_effort` to a graded value. Z.AI
-        // and Moonshot (Kimi) instead drive thinking via an on/off toggle (no
-        // graded effort), so the knob is `Ignored` there — disable with
-        // `reasoning_effort = "off"` (→ `thinking_enabled = false`). DeepSeek's
-        // Vercel provider does expose a graded `reasoningEffort`. The accepted
-        // value set is sdk-specific — see `reasoning_effort_domain`.
+        // Most sidecar adapters map `reasoning_effort` to a graded value.
+        // DeepSeek's Vercel provider exposes a graded `reasoningEffort`; Moonshot
+        // (Kimi) only an on/off toggle, so it is still `Honored` but its domain
+        // is just `["off"]` (disable). Z.AI thinks compulsorily (no off), so the
+        // knob is genuinely `Ignored` there. The accepted value set is
+        // sdk-specific — see `reasoning_effort_domain`.
         Field::ReasoningEffort => match sdk {
-            Sdk::Anthropic | Sdk::Openai | Sdk::Openrouter | Sdk::Gemini | Sdk::Deepseek => {
-                Applicability::Honored
-            }
-            Sdk::Zai | Sdk::Moonshot => Applicability::Ignored,
+            Sdk::Anthropic
+            | Sdk::Openai
+            | Sdk::Openrouter
+            | Sdk::Gemini
+            | Sdk::Deepseek
+            | Sdk::Moonshot => Applicability::Honored,
+            Sdk::Zai => Applicability::Ignored,
         },
 
         // Sampler knobs: rejected on Claude opus/sonnet >= 4.7 OR on a model a
@@ -1167,13 +1170,33 @@ mod tests {
             applicability(&Sdk::Deepseek, "deepseek-reasoner", Field::ReasoningEffort),
             Applicability::Honored
         );
-        // Moonshot reasoning is an on/off toggle (no graded effort): the knob is
-        // Ignored and the domain is empty (disable via the "off" sentinel).
-        assert!(reasoning_effort_domain(&Sdk::Moonshot, "kimi-k2-thinking").is_empty());
+        // Moonshot reasoning is on/off: Honored with the single accepted value
+        // `off` (disable). `off` validates; a graded level is out of domain.
+        assert_eq!(
+            reasoning_effort_domain(&Sdk::Moonshot, "kimi-k2-thinking"),
+            ["off"]
+        );
         assert_eq!(
             applicability(&Sdk::Moonshot, "kimi-k2-thinking", Field::ReasoningEffort),
-            Applicability::Ignored
+            Applicability::Honored
         );
+        let eff = |v: &str| toml::Value::String(v.into());
+        assert!(validate(
+            &Sdk::Moonshot,
+            "kimi-k2-thinking",
+            Field::ReasoningEffort,
+            &eff("off")
+        )
+        .is_ok());
+        assert!(matches!(
+            validate(
+                &Sdk::Moonshot,
+                "kimi-k2-thinking",
+                Field::ReasoningEffort,
+                &eff("high")
+            ),
+            Err(CapabilityError::OutOfDomain { .. })
+        ));
         // Moonshot consumes budget_tokens (thinking.budgetTokens); DeepSeek does not.
         assert_eq!(
             applicability(&Sdk::Moonshot, "kimi-k2-thinking", Field::BudgetTokens),
