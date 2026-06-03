@@ -118,6 +118,7 @@ fn arb_message_alternative() -> impl Strategy<Value = MessageAlternative> {
                 images,
                 content_blocks,
                 timestamp,
+                provider_key: None,
             },
         )
 }

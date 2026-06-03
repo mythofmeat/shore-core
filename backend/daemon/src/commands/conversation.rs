@@ -1015,6 +1015,7 @@ mod tests {
                     text: "First answer".into(),
                 }],
                 timestamp: "2026-01-01T00:00:00Z".into(),
+                provider_key: None,
             },
             shore_protocol::types::MessageAlternative {
                 content: "Second answer".into(),
@@ -1023,6 +1024,7 @@ mod tests {
                     text: "Second answer".into(),
                 }],
                 timestamp: "2026-01-01T00:00:01Z".into(),
+                provider_key: None,
             },
         ];
         engine.append_message(msg).unwrap();
@@ -1053,6 +1055,7 @@ mod tests {
                     text: "First answer".into(),
                 }],
                 timestamp: "2026-01-01T00:00:00Z".into(),
+                provider_key: None,
             },
             shore_protocol::types::MessageAlternative {
                 content: "Second answer".into(),
@@ -1061,6 +1064,7 @@ mod tests {
                     text: "Second answer".into(),
                 }],
                 timestamp: "2026-01-01T00:00:01Z".into(),
+                provider_key: None,
             },
         ];
         engine.append_message(msg).unwrap();

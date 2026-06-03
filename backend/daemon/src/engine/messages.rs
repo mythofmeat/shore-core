@@ -439,6 +439,7 @@ fn alternative_from_message(msg: &Message) -> MessageAlternative {
         images: msg.images.clone(),
         content_blocks,
         timestamp: msg.timestamp.clone(),
+        provider_key: msg.provider_key.clone(),
     }
 }
 
@@ -454,7 +455,15 @@ fn message_from_alternative(template: &Message, index: u32) -> Option<Message> {
         alt_index: Some(index),
         alt_count: Some(usize_to_u32(template.alternatives.len())),
         alternatives: template.alternatives.clone(),
-        provider_key: template.provider_key.clone(),
+        // Prefer the selected alternative's own provenance; fall back to the
+        // template for legacy alternatives stamped before per-alternative
+        // provider tracking. This keeps the replay portability filter aligned
+        // with the provider that actually minted the selected body, even when
+        // it differs from the template or a sibling alternative.
+        provider_key: alt
+            .provider_key
+            .clone()
+            .or_else(|| template.provider_key.clone()),
         timestamp: if alt.timestamp.is_empty() {
             template.timestamp.clone()
         } else {
@@ -650,6 +659,90 @@ mod tests {
         assert_eq!(reloaded.messages()[1].content, "First answer");
         assert_eq!(reloaded.messages()[1].alternatives.len(), 2);
         assert_eq!(reloaded.messages()[1].alt_index, Some(0));
+    }
+
+    #[test]
+    fn alternatives_track_their_own_provider_provenance() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+        let mut store = MessageStore::new(path.clone());
+
+        store.append(make_msg("u1", Role::User, "Prompt")).unwrap();
+        // Original answer minted by Anthropic.
+        let mut first = make_msg("a1", Role::Assistant, "First answer");
+        first.provider_key = Some("anthropic".to_string());
+        store.append(first).unwrap();
+
+        let pending = store.pending_regen_alt().unwrap();
+        assert_eq!(
+            pending.alternatives[0].provider_key.as_deref(),
+            Some("anthropic"),
+            "captured prior alternative should carry the minting provider"
+        );
+
+        // Regenerate under a different provider.
+        let mut second = make_msg("a2", Role::Assistant, "Second answer");
+        second.provider_key = Some("openrouter".to_string());
+        let mut regenerated = vec![second];
+        let _ = MessageStore::attach_generated_alt(&mut regenerated, pending.alternatives).unwrap();
+        let _ = store.replace_after_last_user_turn(regenerated).unwrap();
+
+        let active = &store.messages()[1];
+        assert_eq!(active.provider_key.as_deref(), Some("openrouter"));
+        assert_eq!(
+            active.alternatives[0].provider_key.as_deref(),
+            Some("anthropic")
+        );
+        assert_eq!(
+            active.alternatives[1].provider_key.as_deref(),
+            Some("openrouter")
+        );
+
+        // Selecting the Anthropic-minted alternative must tag the resulting
+        // active message with *its* provenance, not the openrouter template's.
+        let _ = store.select_alt("a2", 0).unwrap();
+        assert_eq!(store.messages()[1].content, "First answer");
+        assert_eq!(
+            store.messages()[1].provider_key.as_deref(),
+            Some("anthropic")
+        );
+
+        let reloaded = MessageStore::load(path).unwrap();
+        assert_eq!(
+            reloaded.messages()[1].provider_key.as_deref(),
+            Some("anthropic")
+        );
+        assert_eq!(
+            reloaded.messages()[1].alternatives[1]
+                .provider_key
+                .as_deref(),
+            Some("openrouter")
+        );
+    }
+
+    #[test]
+    fn legacy_alternative_without_provenance_falls_back_to_template() {
+        // An alternative persisted before per-alternative provenance tracking
+        // has `provider_key: None`; selecting it should inherit the message's
+        // `provider_key` rather than dropping provenance entirely.
+        let mut template = make_msg("a1", Role::Assistant, "Active answer");
+        template.provider_key = Some("anthropic".to_string());
+        template.alternatives = vec![
+            MessageAlternative {
+                content: "Legacy answer".to_string(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "Legacy answer".to_string(),
+                }],
+                timestamp: String::new(),
+                provider_key: None,
+            },
+            alternative_from_message(&template),
+        ];
+
+        let selected = message_from_alternative(&template, 0).unwrap();
+        assert_eq!(selected.content, "Legacy answer");
+        assert_eq!(selected.provider_key.as_deref(), Some("anthropic"));
     }
 
     #[test]
