@@ -147,10 +147,11 @@ fn budget_payload(ctx: &CommandContext) -> CommandResult {
     }))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "usage command mode dispatcher split is tracked in #109"
-)]
+/// `true` when boolean arg `key` is explicitly set to `true`.
+fn flag(args: &serde_json::Value, key: &str) -> bool {
+    args.get(key).and_then(serde_json::Value::as_bool) == Some(true)
+}
+
 pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
     let ledger = ctx.llm_client.ledger();
 
@@ -158,231 +159,278 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     let (filter, last) = build_filter(args, timezone);
     debug!(period = %last, "Usage query started");
 
-    if args.get("budget").and_then(serde_json::Value::as_bool) == Some(true) {
+    if flag(args, "budget") {
         return budget_payload(ctx);
     }
-
-    if args.get("export_tsv").and_then(serde_json::Value::as_bool) == Some(true) {
-        let output = shore_ledger::query::export_tsv(ledger, &filter)
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-        return Ok(json!({ "mode": "tsv", "data": output }));
+    if flag(args, "export_tsv") {
+        return usage_export_tsv(ledger, &filter);
+    }
+    if flag(args, "export_csv") {
+        return usage_export_csv(ledger, &filter);
+    }
+    if flag(args, "by_kind") {
+        return usage_summary_by_kind(ledger, &filter, &last);
+    }
+    if flag(args, "by_api_key") {
+        return usage_summary_by_api_key(ledger, &filter, &last);
+    }
+    if flag(args, "by_call_type") {
+        return usage_summary_by_call_type(ledger, &filter, &last);
+    }
+    if flag(args, "anomalies") {
+        return usage_anomalies(ledger, filter, &last, timezone);
+    }
+    if flag(args, "refresh_pricing") {
+        return usage_refresh_pricing(ctx);
+    }
+    if flag(args, "recalculate") {
+        return usage_recalculate(ctx, ledger, args).await;
     }
 
-    if args.get("export_csv").and_then(serde_json::Value::as_bool) == Some(true) {
-        let tsv = shore_ledger::query::export_tsv(ledger, &filter)
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-        let mut csv_lines = Vec::new();
-        for line in tsv.lines() {
-            let fields: Vec<&str> = line.split('\t').collect();
-            let csv_fields: Vec<String> = fields
-                .iter()
-                .map(|f| {
-                    if f.contains(',') || f.contains('"') || f.contains('\n') {
-                        format!("\"{}\"", f.replace('"', "\"\""))
-                    } else {
-                        f.to_string()
-                    }
-                })
-                .collect();
-            csv_lines.push(csv_fields.join(","));
-        }
-        return Ok(json!({ "mode": "csv", "data": csv_lines.join("\n") }));
-    }
+    usage_summary_default(ctx, ledger, &filter, &last, timezone)
+}
 
-    if args.get("by_kind").and_then(serde_json::Value::as_bool) == Some(true) {
-        let summary = shore_ledger::query::usage_summary_by_usage_kind(ledger, &filter)
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-        let rows: Vec<serde_json::Value> = summary
+fn usage_export_tsv(ledger: &shore_ledger::Ledger, filter: &QueryFilter) -> CommandResult {
+    let output = shore_ledger::query::export_tsv(ledger, filter)
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    Ok(json!({ "mode": "tsv", "data": output }))
+}
+
+fn usage_export_csv(ledger: &shore_ledger::Ledger, filter: &QueryFilter) -> CommandResult {
+    let tsv = shore_ledger::query::export_tsv(ledger, filter)
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    let mut csv_lines = Vec::new();
+    for line in tsv.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let csv_fields: Vec<String> = fields
             .iter()
-            .map(|s| {
-                json!({
-                    "usage_kind": s.usage_kind,
-                    "call_count": s.call_count,
-                    "total_input": s.total_input,
-                    "total_output": s.total_output,
-                    "total_cache_read": s.total_cache_read,
-                    "total_cache_write": s.total_cache_write,
-                    "total_cost": s.total_cost,
-                })
-            })
-            .collect();
-        return Ok(json!({
-            "mode": "summary_by_usage_kind",
-            "period": last,
-            "summary": rows,
-        }));
-    }
-
-    if args.get("by_api_key").and_then(serde_json::Value::as_bool) == Some(true) {
-        let summary = shore_ledger::query::usage_summary_by_api_key(ledger, &filter)
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-        let rows: Vec<serde_json::Value> = summary
-            .iter()
-            .map(|s| {
-                json!({
-                    "provider": s.provider,
-                    "api_key_name": s.api_key_name,
-                    "call_count": s.call_count,
-                    "total_input": s.total_input,
-                    "total_output": s.total_output,
-                    "total_cache_read": s.total_cache_read,
-                    "total_cache_write": s.total_cache_write,
-                    "total_cost": s.total_cost,
-                })
-            })
-            .collect();
-        return Ok(json!({
-            "mode": "summary_by_api_key",
-            "period": last,
-            "summary": rows,
-        }));
-    }
-
-    if args
-        .get("by_call_type")
-        .and_then(serde_json::Value::as_bool)
-        == Some(true)
-    {
-        let summary = shore_ledger::query::usage_summary_by_call_type(ledger, &filter)
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-        let rows: Vec<serde_json::Value> = summary
-            .iter()
-            .map(|s| {
-                json!({
-                    "call_type": s.call_type,
-                    "call_count": s.call_count,
-                    "total_input": s.total_input,
-                    "total_output": s.total_output,
-                    "total_cache_read": s.total_cache_read,
-                    "total_cache_write": s.total_cache_write,
-                    "total_cost": s.total_cost,
-                })
-            })
-            .collect();
-        return Ok(json!({
-            "mode": "summary_by_call_type",
-            "period": last,
-            "summary": rows,
-        }));
-    }
-
-    if args.get("anomalies").and_then(serde_json::Value::as_bool) == Some(true) {
-        let anomaly_filter = if last == "today" {
-            QueryFilter {
-                since: parse_last_period("7d", timezone),
-                ..filter.clone()
-            }
-        } else {
-            filter
-        };
-        let rows = shore_ledger::query::query_anomalies(ledger, &anomaly_filter)
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-        let anomalies: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|r| {
-                json!({
-                    "ts": r.ts,
-                    "character": r.character,
-                    "model": r.model,
-                    "call_type": r.call_type,
-                    "anomaly": r.cache_anomaly,
-                    "cache_read_tokens": r.cache_read_tokens,
-                    "cache_write_tokens": r.cache_write_tokens,
-                })
-            })
-            .collect();
-        return Ok(json!({ "mode": "anomalies", "anomalies": anomalies }));
-    }
-
-    if args
-        .get("refresh_pricing")
-        .and_then(serde_json::Value::as_bool)
-        == Some(true)
-    {
-        let pricing = ctx.llm_client.pricing();
-        pricing
-            .clear_cache()
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-        return Ok(json!({ "mode": "refresh_pricing" }));
-    }
-
-    if args.get("recalculate").and_then(serde_json::Value::as_bool) == Some(true) {
-        let force = args.get("force").and_then(serde_json::Value::as_bool) == Some(true);
-        let rows = if force {
-            shore_ledger::query::all_cost_rows(ledger)
-                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
-        } else {
-            shore_ledger::query::null_cost_rows(ledger)
-                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
-        };
-        if rows.is_empty() {
-            return Ok(json!({ "mode": "recalculate", "updated": 0, "total": 0, "failures": [] }));
-        }
-
-        let pricing = ctx.llm_client.pricing();
-        let mut models_fetched = std::collections::HashSet::new();
-        let mut fetch_results: std::collections::HashMap<String, Option<String>> =
-            std::collections::HashMap::new();
-
-        for row in &rows {
-            let key = format!("{}/{}", row.provider, row.model);
-            if models_fetched.insert(key.clone()) {
-                let model_id = shore_ledger::pricing::to_openrouter_id(&row.provider, &row.model);
-                if pricing
-                    .get_or_fetch(&row.provider, &row.model)
-                    .await
-                    .is_some()
-                {
-                    let _ignored = fetch_results.insert(key, None);
+            .map(|f| {
+                if f.contains(',') || f.contains('"') || f.contains('\n') {
+                    format!("\"{}\"", f.replace('"', "\"\""))
                 } else {
-                    tracing::warn!(model_id, "Pricing fetch returned no data for model");
-                    let _ignored =
-                        fetch_results.insert(key, Some(format!("no pricing data for {model_id}")));
+                    f.to_string()
                 }
-            }
-        }
-
-        let mut updated = 0_u32;
-        for row in &rows {
-            if let Ok(Some(cost)) = pricing.calculate_cost(shore_ledger::pricing::CostRequest {
-                provider: &row.provider,
-                model: &row.model,
-                input_tokens: row.input_tokens,
-                output_tokens: row.output_tokens,
-                cache_read_tokens: row.cache_read_tokens,
-                cache_write_tokens: row.cache_write_tokens,
-                cache_ttl: row.cache_ttl.as_deref(),
-            }) {
-                if shore_ledger::query::update_costs(ledger, row.id, &cost).is_ok() {
-                    updated = updated.saturating_add(1);
-                }
-            }
-        }
-
-        let failures: Vec<serde_json::Value> = fetch_results
-            .iter()
-            .filter_map(|(key, reason)| {
-                reason
-                    .as_ref()
-                    .map(|r| json!({ "model": key, "reason": r }))
             })
             .collect();
+        csv_lines.push(csv_fields.join(","));
+    }
+    Ok(json!({ "mode": "csv", "data": csv_lines.join("\n") }))
+}
 
-        debug!(
-            updated,
-            total = rows.len(),
-            failures = failures.len(),
-            "Recalculation complete"
-        );
-        return Ok(json!({
-            "mode": "recalculate",
-            "updated": updated,
-            "total": rows.len(),
-            "failures": failures,
-        }));
+fn usage_summary_by_kind(
+    ledger: &shore_ledger::Ledger,
+    filter: &QueryFilter,
+    last: &str,
+) -> CommandResult {
+    let summary = shore_ledger::query::usage_summary_by_usage_kind(ledger, filter)
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    let rows: Vec<serde_json::Value> = summary
+        .iter()
+        .map(|s| {
+            json!({
+                "usage_kind": s.usage_kind,
+                "call_count": s.call_count,
+                "total_input": s.total_input,
+                "total_output": s.total_output,
+                "total_cache_read": s.total_cache_read,
+                "total_cache_write": s.total_cache_write,
+                "total_cost": s.total_cost,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "mode": "summary_by_usage_kind",
+        "period": last,
+        "summary": rows,
+    }))
+}
+
+fn usage_summary_by_api_key(
+    ledger: &shore_ledger::Ledger,
+    filter: &QueryFilter,
+    last: &str,
+) -> CommandResult {
+    let summary = shore_ledger::query::usage_summary_by_api_key(ledger, filter)
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    let rows: Vec<serde_json::Value> = summary
+        .iter()
+        .map(|s| {
+            json!({
+                "provider": s.provider,
+                "api_key_name": s.api_key_name,
+                "call_count": s.call_count,
+                "total_input": s.total_input,
+                "total_output": s.total_output,
+                "total_cache_read": s.total_cache_read,
+                "total_cache_write": s.total_cache_write,
+                "total_cost": s.total_cost,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "mode": "summary_by_api_key",
+        "period": last,
+        "summary": rows,
+    }))
+}
+
+fn usage_summary_by_call_type(
+    ledger: &shore_ledger::Ledger,
+    filter: &QueryFilter,
+    last: &str,
+) -> CommandResult {
+    let summary = shore_ledger::query::usage_summary_by_call_type(ledger, filter)
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    let rows: Vec<serde_json::Value> = summary
+        .iter()
+        .map(|s| {
+            json!({
+                "call_type": s.call_type,
+                "call_count": s.call_count,
+                "total_input": s.total_input,
+                "total_output": s.total_output,
+                "total_cache_read": s.total_cache_read,
+                "total_cache_write": s.total_cache_write,
+                "total_cost": s.total_cost,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "mode": "summary_by_call_type",
+        "period": last,
+        "summary": rows,
+    }))
+}
+
+fn usage_anomalies(
+    ledger: &shore_ledger::Ledger,
+    filter: QueryFilter,
+    last: &str,
+    timezone: &str,
+) -> CommandResult {
+    let anomaly_filter = if last == "today" {
+        QueryFilter {
+            since: parse_last_period("7d", timezone),
+            ..filter.clone()
+        }
+    } else {
+        filter
+    };
+    let rows = shore_ledger::query::query_anomalies(ledger, &anomaly_filter)
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    let anomalies: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "ts": r.ts,
+                "character": r.character,
+                "model": r.model,
+                "call_type": r.call_type,
+                "anomaly": r.cache_anomaly,
+                "cache_read_tokens": r.cache_read_tokens,
+                "cache_write_tokens": r.cache_write_tokens,
+            })
+        })
+        .collect();
+    Ok(json!({ "mode": "anomalies", "anomalies": anomalies }))
+}
+
+fn usage_refresh_pricing(ctx: &CommandContext) -> CommandResult {
+    let pricing = ctx.llm_client.pricing();
+    pricing
+        .clear_cache()
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    Ok(json!({ "mode": "refresh_pricing" }))
+}
+
+async fn usage_recalculate(
+    ctx: &CommandContext,
+    ledger: &shore_ledger::Ledger,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let force = flag(args, "force");
+    let rows = if force {
+        shore_ledger::query::all_cost_rows(ledger)
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
+    } else {
+        shore_ledger::query::null_cost_rows(ledger)
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
+    };
+    if rows.is_empty() {
+        return Ok(json!({ "mode": "recalculate", "updated": 0, "total": 0, "failures": [] }));
     }
 
-    let summary = shore_ledger::query::usage_summary(ledger, &filter)
+    let pricing = ctx.llm_client.pricing();
+    let mut models_fetched = std::collections::HashSet::new();
+    let mut fetch_results: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+
+    for row in &rows {
+        let key = format!("{}/{}", row.provider, row.model);
+        if models_fetched.insert(key.clone()) {
+            let model_id = shore_ledger::pricing::to_openrouter_id(&row.provider, &row.model);
+            if pricing
+                .get_or_fetch(&row.provider, &row.model)
+                .await
+                .is_some()
+            {
+                let _ignored = fetch_results.insert(key, None);
+            } else {
+                tracing::warn!(model_id, "Pricing fetch returned no data for model");
+                let _ignored =
+                    fetch_results.insert(key, Some(format!("no pricing data for {model_id}")));
+            }
+        }
+    }
+
+    let mut updated = 0_u32;
+    for row in &rows {
+        if let Ok(Some(cost)) = pricing.calculate_cost(shore_ledger::pricing::CostRequest {
+            provider: &row.provider,
+            model: &row.model,
+            input_tokens: row.input_tokens,
+            output_tokens: row.output_tokens,
+            cache_read_tokens: row.cache_read_tokens,
+            cache_write_tokens: row.cache_write_tokens,
+            cache_ttl: row.cache_ttl.as_deref(),
+        }) {
+            if shore_ledger::query::update_costs(ledger, row.id, &cost).is_ok() {
+                updated = updated.saturating_add(1);
+            }
+        }
+    }
+
+    let failures: Vec<serde_json::Value> = fetch_results
+        .iter()
+        .filter_map(|(key, reason)| {
+            reason
+                .as_ref()
+                .map(|r| json!({ "model": key, "reason": r }))
+        })
+        .collect();
+
+    debug!(
+        updated,
+        total = rows.len(),
+        failures = failures.len(),
+        "Recalculation complete"
+    );
+    Ok(json!({
+        "mode": "recalculate",
+        "updated": updated,
+        "total": rows.len(),
+        "failures": failures,
+    }))
+}
+
+fn usage_summary_default(
+    ctx: &CommandContext,
+    ledger: &shore_ledger::Ledger,
+    filter: &QueryFilter,
+    last: &str,
+    timezone: &str,
+) -> CommandResult {
+    let summary = shore_ledger::query::usage_summary(ledger, filter)
         .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
 
     let summary_rows: Vec<serde_json::Value> = summary
@@ -401,7 +449,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         })
         .collect();
 
-    let characters = shore_ledger::query::active_anthropic_characters(ledger, &filter)
+    let characters = shore_ledger::query::active_anthropic_characters(ledger, filter)
         .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
 
     let cache_health: Vec<serde_json::Value> = characters
