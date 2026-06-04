@@ -28,12 +28,12 @@ use crate::engine::prompt::{self, AssembledPrompt, PromptParams};
 /// Inputs for [`prepare_chat_context`]. Callers fill this in instead of
 /// passing seven parallel arguments.
 #[derive(Clone, Copy)]
-pub(crate) struct PrepareChatContextParams<'a> {
-    pub character: &'a str,
-    pub character_data_dir: &'a Path,
-    pub config: &'a LoadedConfig,
-    pub resolved: &'a shore_config::models::ResolvedModel,
-    pub messages: &'a [Message],
+pub(crate) struct PrepareChatContextParams<'ctx> {
+    pub character: &'ctx str,
+    pub character_data_dir: &'ctx Path,
+    pub config: &'ctx LoadedConfig,
+    pub resolved: &'ctx shore_config::models::ResolvedModel,
+    pub messages: &'ctx [Message],
     pub has_prior_context: bool,
     pub is_private: bool,
     /// Whether to emit unsigned `thinking` blocks back to the provider.

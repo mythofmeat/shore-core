@@ -22,6 +22,9 @@
     clippy::mem_forget,
     clippy::match_wildcard_for_single_variants,
     clippy::wildcard_enum_match_arm,
+    clippy::wildcard_imports,
+    clippy::unseparated_literal_suffix,
+    clippy::single_char_lifetime_names,
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
     clippy::undocumented_unsafe_blocks,
@@ -550,14 +553,14 @@ where
 }
 
 /// Main message loop: reads client messages and forwards push messages.
-struct MessageLoopContext<'a> {
+struct MessageLoopContext<'ctx> {
     client_id: u64,
-    clients: &'a Arc<RwLock<HashMap<u64, ClientInfo>>>,
-    event_rx: &'a mut broadcast::Receiver<ServerMessage>,
-    direct_rx: &'a mut mpsc::Receiver<ServerMessage>,
-    route_tx: &'a mpsc::Sender<RoutedMessage>,
-    session: &'a SessionMeta,
-    shutdown: &'a mut tokio::sync::watch::Receiver<()>,
+    clients: &'ctx Arc<RwLock<HashMap<u64, ClientInfo>>>,
+    event_rx: &'ctx mut broadcast::Receiver<ServerMessage>,
+    direct_rx: &'ctx mut mpsc::Receiver<ServerMessage>,
+    route_tx: &'ctx mpsc::Sender<RoutedMessage>,
+    session: &'ctx SessionMeta,
+    shutdown: &'ctx mut tokio::sync::watch::Receiver<()>,
 }
 
 async fn message_loop<R, W>(

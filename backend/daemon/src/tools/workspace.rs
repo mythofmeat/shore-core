@@ -326,7 +326,7 @@ fn find_case_insensitive_match(line: &str, query_lower: &str) -> Option<(usize, 
     let folded_start = folded.find(query_lower)?;
     let folded_end = folded_start.saturating_add(query_lower.len());
 
-    let mut folded_pos = 0usize;
+    let mut folded_pos = 0_usize;
     let mut original_start = None;
     let mut original_end = None;
 
@@ -552,7 +552,7 @@ pub async fn handle_edit(input: Value, workspace_dir: &str) -> Result<Value, Too
         .await
         .map_err(|e| ToolError::Io(e.to_string()))?;
 
-    let mut replacements_made = 0usize;
+    let mut replacements_made = 0_usize;
 
     for edit in edits {
         let old_str = edit
@@ -775,7 +775,7 @@ async fn handle_search_lexical(
     // → /etc/passwd) would otherwise be read like any regular file.
     let mut pending = vec![root];
     let mut candidates: Vec<(PathBuf, SystemTime)> = Vec::new();
-    let mut skipped_binary_or_large = 0usize;
+    let mut skipped_binary_or_large = 0_usize;
 
     while let Some(path) = pending.pop() {
         let Ok(meta) = tokio::fs::symlink_metadata(&path).await else {
@@ -817,7 +817,7 @@ async fn handle_search_lexical(
 
     let mut results = Vec::new();
     let mut files_summary: Vec<Value> = Vec::new();
-    let mut searched_files = 0usize;
+    let mut searched_files = 0_usize;
 
     for (path, _) in candidates {
         let Ok(bytes) = tokio::fs::read(&path).await else {
@@ -830,7 +830,7 @@ async fn handle_search_lexical(
 
         searched_files = searched_files.saturating_add(1);
         let display = display_path_for(workspace_dir, &path);
-        let mut file_hits = 0usize;
+        let mut file_hits = 0_usize;
         for (line_idx, line) in content.lines().enumerate() {
             let Some((match_start, match_end)) = find_case_insensitive_match(line, &query_lower)
             else {
@@ -1020,12 +1020,12 @@ fn term_line_frequencies(content: &str, terms: &[String]) -> Vec<usize> {
         .collect()
 }
 
-fn best_term_matched_line<'a>(
-    content: &'a str,
-    terms: &'a [String],
+fn best_term_matched_line<'val>(
+    content: &'val str,
+    terms: &'val [String],
     frequencies: &[usize],
     allow_heading: bool,
-) -> Option<(usize, &'a str, &'a str)> {
+) -> Option<(usize, &'val str, &'val str)> {
     content
         .lines()
         .enumerate()
@@ -1040,11 +1040,11 @@ fn best_term_matched_line<'a>(
 
             let lower = trimmed.to_lowercase();
             let mut best_term: Option<(&str, usize)> = None;
-            let mut line_score = 0usize;
+            let mut line_score = 0_usize;
             for (idx, term) in terms.iter().enumerate() {
                 if lower.contains(term) {
                     let denom = frequencies.get(idx).copied().unwrap_or(1).max(1);
-                    let term_score = 100usize
+                    let term_score = 100_usize
                         .checked_div(denom)
                         .unwrap_or(0)
                         .saturating_add(term.len());

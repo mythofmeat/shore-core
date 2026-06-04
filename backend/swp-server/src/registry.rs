@@ -232,7 +232,7 @@ mod tests {
     }
 
     fn sample_instance(id: &str) -> InstanceInfo {
-        let port = 7320usize.saturating_add(id.len());
+        let port = 7320_usize.saturating_add(id.len());
         InstanceInfo {
             id: id.into(),
             pid: std::process::id(),

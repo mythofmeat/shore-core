@@ -99,7 +99,7 @@ fn probe_kitty_graphics() -> bool {
         if remaining.is_zero() {
             break;
         }
-        let mut buf = [0u8; 64];
+        let mut buf = [0_u8; 64];
         let n = read_with_timeout(&mut tty, &mut buf, remaining);
         if n == 0 {
             break;

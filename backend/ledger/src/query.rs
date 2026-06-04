@@ -487,7 +487,7 @@ pub fn warm_streak(ledger: &Ledger, character: &str) -> Result<u32, rusqlite::Er
         )?;
         let mut rows = stmt.query_map([character], |row| row.get::<_, Option<String>>(0))?;
 
-        let mut count = 0u32;
+        let mut count = 0_u32;
         while let Some(Ok(state)) = rows.next() {
             if state.as_deref() == Some("warm") {
                 count = count.saturating_add(1);

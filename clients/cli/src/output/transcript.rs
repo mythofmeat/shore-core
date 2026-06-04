@@ -32,7 +32,7 @@ const CHARACTER_PALETTE: &[Color] = &[
 
 /// Deterministic color derived from a character name.
 pub(crate) fn character_color(name: &str) -> Color {
-    let hash = name.bytes().fold(0u32, |acc, b| {
+    let hash = name.bytes().fold(0_u32, |acc, b| {
         acc.wrapping_mul(31).wrapping_add(u32::from(b))
     });
     let hash = usize::try_from(hash).unwrap_or(usize::MAX);

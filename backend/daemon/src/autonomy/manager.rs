@@ -154,7 +154,7 @@ impl AutonomyState {
 
 fn background_retry_delay(failure_count: u32) -> Duration {
     let exponent = failure_count.saturating_sub(1).min(6);
-    let secs = 60u64.saturating_mul(1u64 << exponent);
+    let secs = 60_u64.saturating_mul(1_u64 << exponent);
     Duration::from_secs(secs.min(3_600))
 }
 

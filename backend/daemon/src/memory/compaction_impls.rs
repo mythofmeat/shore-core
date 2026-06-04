@@ -287,10 +287,11 @@ impl CompactionLlm for RealCompactionLlm {
         Ok(request)
     }
 
-    fn generate<'a>(
-        &'a self,
-        request: &'a mut LlmRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<GenerateResponse, CompactionError>> + Send + 'a>> {
+    fn generate<'src>(
+        &'src self,
+        request: &'src mut LlmRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<GenerateResponse, CompactionError>> + Send + 'src>>
+    {
         Box::pin(async move {
             let t0 = std::time::Instant::now();
             let (resp, _fallback_events) = self

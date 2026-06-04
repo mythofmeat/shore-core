@@ -22,6 +22,9 @@
     clippy::mem_forget,
     clippy::match_wildcard_for_single_variants,
     clippy::wildcard_enum_match_arm,
+    clippy::wildcard_imports,
+    clippy::unseparated_literal_suffix,
+    clippy::single_char_lifetime_names,
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
     clippy::print_stdout,
@@ -494,7 +497,7 @@ mod tests {
         }
 
         let started = Arc::new(Mutex::new(false));
-        let chunk_count = Arc::new(Mutex::new(0u32));
+        let chunk_count = Arc::new(Mutex::new(0_u32));
         let ended = Arc::new(Mutex::new(false));
 
         let mut cb = TestCallbacks {

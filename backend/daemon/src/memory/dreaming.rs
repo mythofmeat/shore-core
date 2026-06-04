@@ -217,7 +217,7 @@ struct DeepPhaseOutput {
     rejected: Vec<DreamRejection>,
 }
 
-type PhaseReportPaths<'a> = (&'a Path, &'a Path, &'a Path);
+type PhaseReportPaths<'path> = (&'path Path, &'path Path, &'path Path);
 
 pub async fn dream_status(
     data_dir: &Path,

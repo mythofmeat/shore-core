@@ -70,15 +70,15 @@ pub struct CredentialFallbackEvent {
 
 // ── record_call ─────────────────────────────────────────────────────────────
 
-pub(crate) struct RecordCall<'a> {
-    pub(crate) provider: &'a str,
+pub(crate) struct RecordCall<'ctx> {
+    pub(crate) provider: &'ctx str,
     pub(crate) api_key_name: Option<String>,
-    pub(crate) model: &'a str,
+    pub(crate) model: &'ctx str,
     pub(crate) call_type: CallType,
-    pub(crate) character: &'a str,
-    pub(crate) usage: &'a Usage,
-    pub(crate) timing: &'a Timing,
-    pub(crate) finish_reason: &'a str,
+    pub(crate) character: &'ctx str,
+    pub(crate) usage: &'ctx Usage,
+    pub(crate) timing: &'ctx Timing,
+    pub(crate) finish_reason: &'ctx str,
     pub(crate) thinking_enabled: bool,
     pub(crate) cache_ttl: Option<String>,
 }
@@ -767,10 +767,10 @@ impl LedgerClient {
     }
 }
 
-fn resolve_model_for_request<'a>(
+fn resolve_model_for_request<'ctx>(
     request: &LlmRequest,
-    config: &'a LoadedConfig,
-) -> Option<&'a ResolvedModel> {
+    config: &'ctx LoadedConfig,
+) -> Option<&'ctx ResolvedModel> {
     let provider = request.provider_key.as_deref();
     config
         .models
@@ -786,11 +786,11 @@ fn resolve_model_for_request<'a>(
 
 /// Loop-invariant context for a credential-fallback attempt.
 #[derive(Clone, Copy)]
-struct FallbackContext<'a> {
-    request: &'a LlmRequest,
-    resolved: &'a ResolvedModel,
+struct FallbackContext<'ctx> {
+    request: &'ctx LlmRequest,
+    resolved: &'ctx ResolvedModel,
     call_type: CallType,
-    character: &'a str,
+    character: &'ctx str,
 }
 
 fn record_generate_fallback_event(

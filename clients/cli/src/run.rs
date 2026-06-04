@@ -859,7 +859,10 @@ fn should_notify_message(
     }
 }
 
-fn notify_character<'a>(msg: &'a NewMessage, requested_character: Option<&'a str>) -> &'a str {
+fn notify_character<'msg>(
+    msg: &'msg NewMessage,
+    requested_character: Option<&'msg str>,
+) -> &'msg str {
     msg.character
         .as_deref()
         .or(requested_character)
@@ -1353,7 +1356,7 @@ mod tests {
         }};
     }
 
-    fn arg<'a>(args: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+    fn arg<'val>(args: &'val serde_json::Value, key: &str) -> &'val serde_json::Value {
         args.get(key).expect("expected command argument")
     }
 

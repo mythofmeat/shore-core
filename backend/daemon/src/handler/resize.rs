@@ -120,7 +120,7 @@ fn resize_transparent(
 }
 
 fn resize_quality_only(img: &DynamicImage, max_bytes: u64) -> Option<(Vec<u8>, &'static str)> {
-    for quality in [90u8, 75] {
+    for quality in [90_u8, 75] {
         if let Some(buf) = encode_jpeg_from_dynamic(img, img.width(), img.height(), quality) {
             if usize_to_u64(buf.len()) <= max_bytes {
                 info!(
@@ -438,7 +438,7 @@ mod tests {
     }
 
     fn make_noisy_jpeg(w: u32, h: u32) -> Vec<u8> {
-        let mut pixels = vec![0u8; rgb_len(w, h)];
+        let mut pixels = vec![0_u8; rgb_len(w, h)];
         fill_noise(&mut pixels, 0xdead_beef_cafe_babe);
         let img = image::RgbImage::from_raw(w, h, pixels).unwrap();
         let mut buf = Vec::new();
@@ -450,7 +450,7 @@ mod tests {
     }
 
     fn make_noisy_png_rgb(w: u32, h: u32) -> Vec<u8> {
-        let mut pixels = vec![0u8; rgb_len(w, h)];
+        let mut pixels = vec![0_u8; rgb_len(w, h)];
         fill_noise(&mut pixels, 0xcafe_f00d_1234_5678);
         let img = image::RgbImage::from_raw(w, h, pixels).unwrap();
         let mut buf = Vec::new();
@@ -462,7 +462,7 @@ mod tests {
     }
 
     fn make_noisy_transparent_png(w: u32, h: u32) -> Vec<u8> {
-        let mut pixels = vec![0u8; rgba_len(w, h)];
+        let mut pixels = vec![0_u8; rgba_len(w, h)];
         fill_noise(&mut pixels, 0xbabe_cafe_dead_f00d);
         for chunk in pixels.chunks_mut(4) {
             if chunk[0] < 64 {
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn smart_resize_passes_through_gif() {
-        let fake_gif = vec![0u8; 1_000_000];
+        let fake_gif = vec![0_u8; 1_000_000];
         assert!(smart_resize(&fake_gif, "image/gif", 100).is_none());
     }
 

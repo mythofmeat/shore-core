@@ -184,13 +184,13 @@ mod tests {
     use tempfile::TempDir;
     use tokio::sync::broadcast;
 
-    fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
+    fn field<'val>(value: &'val Value, key: &str) -> &'val Value {
         value
             .get(key)
             .unwrap_or_else(|| panic!("missing field {key}"))
     }
 
-    fn array_field<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+    fn array_field<'val>(value: &'val Value, key: &str) -> &'val [Value] {
         field(value, key).as_array().expect("array field")
     }
 

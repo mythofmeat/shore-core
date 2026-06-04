@@ -313,11 +313,11 @@ fn resolve_provider_prefixed(
     )))
 }
 
-fn find_static_by_upstream<'a>(
-    catalog: &'a ModelCatalog,
+fn find_static_by_upstream<'cat>(
+    catalog: &'cat ModelCatalog,
     provider: &str,
     model_id: &str,
-) -> Option<&'a ResolvedModel> {
+) -> Option<&'cat ResolvedModel> {
     catalog
         .chat
         .values()

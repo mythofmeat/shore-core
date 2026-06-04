@@ -18,8 +18,8 @@ pub struct HumanLogFormat;
 
 impl<S, N> FormatEvent<S, N> for HumanLogFormat
 where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-    N: for<'a> FormatFields<'a> + 'static,
+    S: Subscriber + for<'span> LookupSpan<'span>,
+    N: for<'span> FormatFields<'span> + 'static,
 {
     fn format_event(
         &self,
@@ -55,8 +55,8 @@ where
 
 fn span_context<S, N>(ctx: &FmtContext<'_, S, N>) -> Result<Vec<String>, fmt::Error>
 where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-    N: for<'a> FormatFields<'a> + 'static,
+    S: Subscriber + for<'span> LookupSpan<'span>,
+    N: for<'span> FormatFields<'span> + 'static,
 {
     let mut spans = Vec::new();
     ctx.visit_spans(|span| {
@@ -78,9 +78,9 @@ where
     Ok(spans)
 }
 
-fn write_field_pairs<'a>(
+fn write_field_pairs<'span>(
     writer: &mut Writer<'_>,
-    fields: impl Iterator<Item = &'a (String, String)>,
+    fields: impl Iterator<Item = &'span (String, String)>,
 ) -> fmt::Result {
     let mut first = true;
     for (name, value) in fields {
@@ -218,10 +218,10 @@ mod tests {
     #[derive(Clone)]
     struct BufferWriter(Arc<Mutex<Vec<u8>>>);
 
-    impl<'a> MakeWriter<'a> for BufferWriter {
+    impl<'span> MakeWriter<'span> for BufferWriter {
         type Writer = Buffer;
 
-        fn make_writer(&'a self) -> Self::Writer {
+        fn make_writer(&'span self) -> Self::Writer {
             Buffer(Arc::clone(&self.0))
         }
     }

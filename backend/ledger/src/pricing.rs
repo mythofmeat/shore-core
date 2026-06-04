@@ -35,14 +35,14 @@ pub struct CostBreakdown {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct CostRequest<'a> {
-    pub provider: &'a str,
-    pub model: &'a str,
+pub struct CostRequest<'req> {
+    pub provider: &'req str,
+    pub model: &'req str,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
-    pub cache_ttl: Option<&'a str>,
+    pub cache_ttl: Option<&'req str>,
 }
 
 // ── PricingEngine ────────────────────────────────────────────────────────────

@@ -502,7 +502,10 @@ also locks ref-counted pointer clone style, single-variant wildcard matches,
 `dbg!`, stdout/stderr print macros, `std::process::exit`, `mem::forget`,
 undocumented unsafe blocks, `unsafe_code`, elided lifetimes in paths, unused
 qualifications, missing `Debug` implementations, and unreachable `pub` items.
-Suppressions must use `#[expect(..., reason = "...")]`.
+Import and literal hygiene is locked too: no wildcard imports (`use foo::*`),
+separated numeric-literal suffixes (`1_u64`, not `1u64`), and descriptive
+(non-single-char) lifetime names. Suppressions must use
+`#[expect(..., reason = "...")]`.
 
 Before a release, also run relevant cache tests, live provider smoke tests if
 provider behavior changed, and Matrix live verification if Matrix behavior

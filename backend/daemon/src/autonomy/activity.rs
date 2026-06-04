@@ -288,7 +288,7 @@ impl ActivityTracker {
         }
 
         let mut sessions: Vec<Vec<usize>> = Vec::new();
-        let mut current_session = vec![0usize];
+        let mut current_session = vec![0_usize];
 
         for i in 1..self.timestamps.len() {
             let prev = i.checked_sub(1).and_then(|j| self.timestamps.get(j));
@@ -400,7 +400,7 @@ impl ActivityTracker {
                 .collect()
         };
 
-        let mut histogram = [0.0f64; 24];
+        let mut histogram = [0.0_f64; 24];
         for hour in &source {
             let hour = usize::try_from(*hour).unwrap_or(0);
             if let Some(slot) = histogram.get_mut(hour) {
@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_classify_hours_peak_trough() {
-        let mut histogram = [0.0f64; 24];
+        let mut histogram = [0.0_f64; 24];
         // One heavy hour, rest light.
         histogram[10] = 0.50; // Very high density.
         histogram[14] = 0.30;
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn test_classify_hours_all_zero() {
-        let histogram = [0.0f64; 24];
+        let histogram = [0.0_f64; 24];
         let classes = classify_hours(&histogram);
         assert!(classes.iter().all(|c| *c == HourClassification::Normal));
     }
@@ -798,7 +798,7 @@ mod tests {
     fn test_session_medians_window_limit() {
         // Create 35 sessions (more than SESSION_MEDIANS_WINDOW=30).
         let mut times = Vec::new();
-        for s in 0u32..35 {
+        for s in 0_u32..35 {
             let base_hour = s % 12;
             let day = 1 + s / 12;
             // Each session: 2 messages 1 minute apart.

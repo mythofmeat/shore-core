@@ -109,25 +109,25 @@ pub(crate) async fn image_generate(
 }
 
 #[derive(Serialize)]
-struct SidecarImageRequest<'a> {
-    provider_key: &'a str,
-    model: &'a str,
-    api_key: &'a str,
+struct SidecarImageRequest<'img> {
+    provider_key: &'img str,
+    model: &'img str,
+    api_key: &'img str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    base_url: Option<&'a str>,
-    prompt: &'a str,
+    base_url: Option<&'img str>,
+    prompt: &'img str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    size: Option<&'a str>,
+    size: Option<&'img str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    quality: Option<&'a str>,
+    quality: Option<&'img str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    aspect_ratio: Option<&'a str>,
+    aspect_ratio: Option<&'img str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    image_size: Option<&'a str>,
+    image_size: Option<&'img str>,
 }
 
-impl<'a> From<&'a ImageGenerateParams<'a>> for SidecarImageRequest<'a> {
-    fn from(params: &'a ImageGenerateParams<'a>) -> Self {
+impl<'img> From<&'img ImageGenerateParams<'img>> for SidecarImageRequest<'img> {
+    fn from(params: &'img ImageGenerateParams<'img>) -> Self {
         Self {
             provider_key: params.provider_key,
             model: params.model,

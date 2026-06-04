@@ -342,7 +342,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
             }
         }
 
-        let mut updated = 0u32;
+        let mut updated = 0_u32;
         for row in &rows {
             if let Ok(Some(cost)) = pricing.calculate_cost(shore_ledger::pricing::CostRequest {
                 provider: &row.provider,

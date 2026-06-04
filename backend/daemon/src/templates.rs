@@ -245,7 +245,10 @@ mod tests {
         values.get(index).expect("value item")
     }
 
-    fn template_entry<'a>(manifest: &'a PromptManifest, name: &str) -> &'a TemplateEntry {
+    fn template_entry<'manifest>(
+        manifest: &'manifest PromptManifest,
+        name: &str,
+    ) -> &'manifest TemplateEntry {
         manifest
             .templates
             .get(name)

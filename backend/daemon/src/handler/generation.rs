@@ -116,7 +116,7 @@ pub(super) async fn stream_with_retry(
                         .retry_backoff
                         .map_or(500, |d| d.as_millis());
                     let delay = std::time::Duration::from_millis(
-                        base_ms.saturating_mul(2u64.saturating_pow(attempt)),
+                        base_ms.saturating_mul(2_u64.saturating_pow(attempt)),
                     );
                     warn!(
                         attempt,

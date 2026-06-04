@@ -190,15 +190,15 @@ fn llm_http_status(error: &LlmError) -> Option<u16> {
 /// rotation regardless, so `shore status --diagnostics` shows the full
 /// picture even when the user did not opt into a visible warning.
 #[derive(Clone, Copy)]
-struct FallbackRecord<'a> {
-    request: &'a LlmRequest,
-    resolved: &'a ResolvedModel,
-    char_name: &'a str,
-    from: &'a KeyCandidate,
-    to: Option<&'a KeyCandidate>,
+struct FallbackRecord<'rec> {
+    request: &'rec LlmRequest,
+    resolved: &'rec ResolvedModel,
+    char_name: &'rec str,
+    from: &'rec KeyCandidate,
+    to: Option<&'rec KeyCandidate>,
     kind: CredentialFailureKind,
     status: Option<u16>,
-    reason: &'a str,
+    reason: &'rec str,
 }
 
 fn record_missing_key_fallback(

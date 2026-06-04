@@ -17,26 +17,26 @@ static FORENSIC_DIR: OnceLock<PathBuf> = OnceLock::new();
 static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy)]
-pub struct RequestLog<'a> {
+pub struct RequestLog<'log> {
     pub call_id: u64,
-    pub character: Option<&'a str>,
-    pub model: &'a str,
+    pub character: Option<&'log str>,
+    pub model: &'log str,
     pub msg_count: usize,
-    pub msg_breakpoints: &'a [usize],
-    pub sys_breakpoints: &'a [usize],
+    pub msg_breakpoints: &'log [usize],
+    pub sys_breakpoints: &'log [usize],
     pub sys_blocks: usize,
     pub prefix_hash: u64,
     pub has_existing_markers: bool,
     pub cache_enabled: bool,
-    pub rid: Option<&'a str>,
+    pub rid: Option<&'log str>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ResponseLog<'a> {
+pub struct ResponseLog<'log> {
     pub call_id: u64,
-    pub model: &'a str,
-    pub character: &'a str,
-    pub call_type: &'a str,
+    pub model: &'log str,
+    pub character: &'log str,
+    pub call_type: &'log str,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,

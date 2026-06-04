@@ -315,7 +315,7 @@ mod tests {
         items.get(index).expect("expected item")
     }
 
-    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+    fn field<'val>(value: &'val serde_json::Value, key: &str) -> &'val serde_json::Value {
         value.get(key).expect("expected JSON field")
     }
 

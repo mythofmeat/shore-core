@@ -118,7 +118,7 @@ fn page_start_by_turns(messages: &[Message], end: usize, turns: usize) -> usize 
         return end;
     }
 
-    let mut seen = 0usize;
+    let mut seen = 0_usize;
     for idx in (0..end).rev() {
         if messages.get(idx).is_some_and(|msg| msg.role == Role::User) {
             seen = seen.saturating_add(1);
@@ -655,13 +655,13 @@ mod tests {
 
     use crate::test_support::write_segmented_fixture;
 
-    fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
+    fn field<'val>(value: &'val Value, key: &str) -> &'val Value {
         value
             .get(key)
             .unwrap_or_else(|| panic!("missing field {key}"))
     }
 
-    fn array_field<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+    fn array_field<'val>(value: &'val Value, key: &str) -> &'val [Value] {
         field(value, key).as_array().expect("array field")
     }
 

@@ -159,10 +159,10 @@ pub trait CompactionLlm: Send + Sync {
         chat_request: LlmRequest,
     ) -> Result<LlmRequest, CompactionError>;
 
-    fn generate<'a>(
-        &'a self,
-        request: &'a mut LlmRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<GenerateResponse, CompactionError>> + Send + 'a>>;
+    fn generate<'src>(
+        &'src self,
+        request: &'src mut LlmRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<GenerateResponse, CompactionError>> + Send + 'src>>;
 }
 
 /// Conversation lifecycle management — archive old messages and retain recent ones.

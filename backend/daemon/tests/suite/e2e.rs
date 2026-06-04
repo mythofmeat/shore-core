@@ -342,7 +342,7 @@ async fn e2e_conversation_milestone() {
 
     // Expect: History (from engine append) -> StreamStart -> StreamChunk(s) -> StreamEnd.
     let mut got_stream_start = false;
-    let mut got_stream_chunks = 0u32;
+    let mut got_stream_chunks = 0_u32;
     let stream_end_content: String;
 
     let deadline = tokio::time::Instant::now() + RECV_TIMEOUT;

@@ -244,7 +244,7 @@ pub(crate) fn wrap_line(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines = Vec::new();
     let mut cur = String::new();
-    let mut cur_len = 0usize;
+    let mut cur_len = 0_usize;
     for word in text.split_whitespace() {
         let wlen = word.chars().count();
         if cur_len == 0 {
