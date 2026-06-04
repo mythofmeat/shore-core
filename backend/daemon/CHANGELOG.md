@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [13.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v12.0.1...shore-daemon-v13.0.0) - 2026-06-04
+
+### Other
+
+- Enable import & literal hygiene lints ([#154](https://github.com/mythofmeat/shore-core/pull/154)) ([#185](https://github.com/mythofmeat/shore-core/pull/185))
+- rename `preserve_prior_turns` to `replay_prior_thinking` ([#188](https://github.com/mythofmeat/shore-core/pull/188))
+- enable string_slice + str_to_string ([#152](https://github.com/mythofmeat/shore-core/pull/152))
+- enable unsafe-block + assert-message hardening ([#156](https://github.com/mythofmeat/shore-core/pull/156))
+- suite tests: narrow blanket to per-fn indexing/arith/lines expects
+- narrow blanket expect to per-site fixes
+- replace unused_results blanket with let _ = bindings
+
 ## [12.0.1](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v12.0.0...shore-daemon-v12.0.1) - 2026-06-03
 
 ### Other

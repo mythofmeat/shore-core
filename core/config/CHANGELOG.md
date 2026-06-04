@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.10.0...shore-config-v0.11.0) - 2026-06-04
+
+### Other
+
+- Enable import & literal hygiene lints ([#154](https://github.com/mythofmeat/shore-core/pull/154)) ([#185](https://github.com/mythofmeat/shore-core/pull/185))
+- rename `preserve_prior_turns` to `replay_prior_thinking` ([#188](https://github.com/mythofmeat/shore-core/pull/188))
+- enable string_slice + str_to_string ([#152](https://github.com/mythofmeat/shore-core/pull/152))
+- enable unsafe-block + assert-message hardening ([#156](https://github.com/mythofmeat/shore-core/pull/156))
+
 ## [0.10.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.9.0...shore-config-v0.10.0) - 2026-06-03
 
 ### Other
