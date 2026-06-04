@@ -38,6 +38,8 @@
     clippy::shadow_same,
     clippy::shadow_reuse,
     clippy::shadow_unrelated,
+    clippy::else_if_without_else,
+    clippy::impl_trait_in_params,
     unsafe_code,
     elided_lifetimes_in_paths,
     unused_qualifications

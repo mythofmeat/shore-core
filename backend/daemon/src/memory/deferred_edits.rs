@@ -171,6 +171,8 @@ fn copy_prompt_visible_file(
         let _ignored = fs::copy(src, dst)?;
     } else if !seed_only && dst.exists() {
         fs::remove_file(dst)?;
+    } else {
+        // No source and nothing to remove: leave the snapshot as-is.
     }
     Ok(())
 }
@@ -411,6 +413,8 @@ fn copy_tree_if_missing(src: &Path, dst: &Path) -> io::Result<()> {
             copy_tree_if_missing(&src_path, &dst_path)?;
         } else if !dst_path.exists() {
             let _ignored = fs::copy(src_path, dst_path)?;
+        } else {
+            // Destination file already present: preserve it.
         }
     }
     Ok(())

@@ -1106,6 +1106,8 @@ fn filter_non_defaults(
                     }
                 } else if d.is_none_or(|dd| dd != v) {
                     let _ignored = out.insert(k.clone(), v.clone());
+                } else {
+                    // Value equals its default: omit it from the diff.
                 }
             }
             if out.is_empty() {

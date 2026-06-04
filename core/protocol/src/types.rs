@@ -129,6 +129,8 @@ impl MessageAlternative {
             }];
         } else if !self.content_blocks.is_empty() {
             self.content = derive_content_from_blocks(&self.content_blocks);
+        } else {
+            // Both empty: nothing to reconcile.
         }
     }
 }
@@ -148,6 +150,8 @@ impl Message {
         } else if !self.content_blocks.is_empty() {
             // Canonical: derive content from blocks.
             self.content = derive_content_from_blocks(&self.content_blocks);
+        } else {
+            // Both empty: nothing to reconcile.
         }
 
         for alt in &mut self.alternatives {
@@ -299,7 +303,7 @@ pub struct CharacterInfo {
 }
 
 impl CharacterInfo {
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new<N: Into<String>>(name: N) -> Self {
         Self {
             name: name.into(),
             avatar: None,

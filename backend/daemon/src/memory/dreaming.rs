@@ -984,6 +984,8 @@ fn push_assistant_response(request: &mut LlmRequest, resp: &GenerateResponse) {
         request
             .messages
             .push(json!({"role": "assistant", "content": resp.content}));
+    } else {
+        // Empty assistant turn: nothing to append.
     }
 }
 

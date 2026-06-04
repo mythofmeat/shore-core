@@ -66,7 +66,7 @@ pub struct MarkdownMemoryStore {
 
 impl MarkdownMemoryStore {
     /// Open (or create) the markdown memory store for a character.
-    pub async fn open(base_dir: impl AsRef<Path>) -> Result<Self, MarkdownStoreError> {
+    pub async fn open<P: AsRef<Path>>(base_dir: P) -> Result<Self, MarkdownStoreError> {
         let base = base_dir.as_ref().to_path_buf();
         if !base.exists() {
             fs::create_dir_all(&base)
@@ -82,7 +82,7 @@ impl MarkdownMemoryStore {
     }
 
     /// Synchronous version of `open` for contexts where async is unavailable.
-    pub fn open_sync(base_dir: impl AsRef<Path>) -> Result<Self, MarkdownStoreError> {
+    pub fn open_sync<P: AsRef<Path>>(base_dir: P) -> Result<Self, MarkdownStoreError> {
         let base = base_dir.as_ref().to_path_buf();
         if !base.exists() {
             std::fs::create_dir_all(&base).map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
@@ -251,6 +251,8 @@ impl MarkdownMemoryStore {
                     size: meta.len(),
                     modified_at: modified,
                 });
+            } else {
+                // Non-markdown file: skip it.
             }
         }
         Ok(())

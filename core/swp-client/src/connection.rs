@@ -55,10 +55,10 @@ impl SWPConnection {
     /// 3. Receive `ServerMessage::History`
     ///
     /// Returns the connection along with the server hello and initial history.
-    pub async fn connect(
+    pub async fn connect<T: Into<String>, N: Into<String>>(
         addr: &ServerAddr,
-        client_type: impl Into<String>,
-        client_name: impl Into<String>,
+        client_type: T,
+        client_name: N,
         character: Option<String>,
     ) -> Result<(Self, ServerHello, History)> {
         let mut conn = Self::open(addr).await?;
@@ -199,18 +199,18 @@ impl SWPConnection {
     }
 
     /// Send a user message. Returns the `rid` used.
-    pub async fn send_message(
+    pub async fn send_message<T: Into<String>>(
         &mut self,
-        text: impl Into<String>,
+        text: T,
         stream: bool,
     ) -> Result<Option<String>> {
         self.send_message_with_images(text, stream, vec![]).await
     }
 
     /// Send a user message with image attachments. Returns the `rid` used.
-    pub async fn send_message_with_images(
+    pub async fn send_message_with_images<T: Into<String>>(
         &mut self,
-        text: impl Into<String>,
+        text: T,
         stream: bool,
         images: Vec<String>,
     ) -> Result<Option<String>> {
@@ -221,9 +221,9 @@ impl SWPConnection {
     ///
     /// Reads each image path, base64-encodes the data, and sends both
     /// `images` (paths, for legacy daemons) and `image_data` (base64, preferred).
-    pub async fn send_message_full(
+    pub async fn send_message_full<T: Into<String>>(
         &mut self,
-        text: impl Into<String>,
+        text: T,
         stream: bool,
         images: Vec<String>,
         overrides: Option<shore_protocol::client_msg::MessageOverrides>,
@@ -275,9 +275,9 @@ impl SWPConnection {
     }
 
     /// Send a command. Returns the `rid` used.
-    pub async fn send_command(
+    pub async fn send_command<N: Into<String>>(
         &mut self,
-        name: impl Into<String>,
+        name: N,
         args: serde_json::Value,
     ) -> Result<Option<String>> {
         use shore_protocol::client_msg::Command;
@@ -310,10 +310,10 @@ impl SWPConnection {
     ///
     /// This is useful for testing (with `tokio::io::duplex`) or when the caller
     /// manages transport setup.
-    pub async fn connect_raw<S>(
+    pub async fn connect_raw<S, T: Into<String>, N: Into<String>>(
         stream: S,
-        client_type: impl Into<String>,
-        client_name: impl Into<String>,
+        client_type: T,
+        client_name: N,
         character: Option<String>,
     ) -> Result<(Self, ServerHello, History)>
     where

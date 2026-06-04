@@ -36,9 +36,9 @@ impl StreamConsumer {
     /// follow-up command snapshots engine state before the freshly-streamed
     /// message has been appended). Use [`emit_stream_end`] after the message
     /// is durable.
-    pub async fn consume(
+    pub async fn consume<R: AsyncRead + Unpin>(
         &self,
-        reader: &mut BufReader<impl AsyncRead + Unpin>,
+        reader: &mut BufReader<R>,
         regen: bool,
     ) -> Result<StreamResult, LlmError> {
         let mut st = ConsumeState::default();

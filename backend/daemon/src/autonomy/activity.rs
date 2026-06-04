@@ -501,6 +501,8 @@ pub fn classify_hours(histogram: &[f64; 24]) -> [HourClassification; 24] {
             *slot = HourClassification::Peak;
         } else if density < avg * TROUGH_HOUR_THRESHOLD {
             *slot = HourClassification::Trough;
+        } else {
+            *slot = HourClassification::Normal;
         }
     }
     result

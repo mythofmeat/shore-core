@@ -88,6 +88,8 @@ fn begin_block(out: &mut impl Write, state: &mut ChunkState, is_process: bool) {
         write_channel_rule(out); // keep the gutter unbroken between blocks
     } else if is_process || prev_process {
         let _ignored = writeln!(out); // channel ↔ speech boundary
+    } else {
+        // Speech ↔ speech: no separator needed.
     }
 }
 

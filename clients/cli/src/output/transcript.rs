@@ -168,6 +168,8 @@ fn render_message_content(
                         write_channel_rule(out); // keep the gutter unbroken
                     } else if prev || is_process {
                         let _ignored = writeln!(out); // channel ↔ speech boundary
+                    } else {
+                        // Speech ↔ speech: no separator needed.
                     }
                 }
                 prev_process = Some(is_process);
@@ -452,9 +454,13 @@ fn write_log_plain_with_boundary(
                 }
             } else if !content.is_empty() {
                 _ = writeln!(out, "{content}");
+            } else {
+                // No blocks and no plain content: nothing to print.
             }
         } else if !content.is_empty() {
             _ = writeln!(out, "{content}");
+        } else {
+            // No content_blocks field and no plain content: nothing to print.
         }
 
         _ = writeln!(out);

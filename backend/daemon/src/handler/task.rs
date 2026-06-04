@@ -104,6 +104,8 @@ pub(super) async fn handle_generation(
                             message: wire_msg,
                         },
                     ));
+        } else {
+            // Regen with no body content: nothing to append.
         }
     }
 

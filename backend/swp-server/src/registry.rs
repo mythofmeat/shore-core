@@ -37,7 +37,7 @@ impl Registry {
     }
 
     /// Create a registry at a specific path (useful for testing).
-    pub fn at(path: impl Into<PathBuf>) -> Self {
+    pub fn at<P: Into<PathBuf>>(path: P) -> Self {
         Self { path: path.into() }
     }
 
