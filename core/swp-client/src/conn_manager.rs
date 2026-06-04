@@ -75,10 +75,12 @@ fn resolve_addr(addr: Option<&str>, config: Option<&str>) -> crate::Result<Serve
     discover_or_default(config)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "single reconnect state machine; splitting would obscure the control flow"
-)]
+/// Whether a connected session ended for good or should trigger a reconnect.
+enum SessionOutcome {
+    Exit,
+    Reconnect,
+}
+
 async fn connection_loop(
     addr: Option<String>,
     config: Option<String>,
@@ -131,65 +133,11 @@ async fn connection_loop(
                     .await;
 
                 // Main receive/send loop
-                loop {
-                    tokio::select! {
-                        biased;
-                        cmd = cmd_rx.recv() => {
-                            match cmd {
-                                Some(ConnCommand::Send(msg)) => {
-                                    if let Err(e) = conn.send(&msg).await {
-                                        error!(error = %e, "send failed, disconnecting");
-                                        let _send_fail_sent = event_tx.send(ConnEvent::Disconnected(
-                                            "send failed".into()
-                                        )).await;
-                                        break;
-                                    }
-                                }
-                                Some(ConnCommand::Shutdown) => {
-                                    info!("shutdown requested, closing connection");
-                                    return;
-                                }
-                                None => {
-                                    info!("command channel closed, exiting connection loop");
-                                    return;
-                                }
-                            }
-                        }
-                        msg = conn.recv() => {
-                            match msg {
-                                Ok(ServerMessage::Shutdown(_)) => {
-                                    info!("server sent shutdown");
-                                    let _server_shutdown_sent = event_tx.send(ConnEvent::Disconnected(
-                                        "server shutdown".into()
-                                    )).await;
-                                    break;
-                                }
-                                Ok(ServerMessage::Ping(_)) => {
-                                    // Keepalive — ignore
-                                }
-                                Ok(server_msg) => {
-                                    if matches!(sync_state.observe(&server_msg), SyncDecision::DropStale) {
-                                        debug!(
-                                            latest_revision = sync_state.latest_revision(),
-                                            "dropping stale sync message"
-                                        );
-                                        continue;
-                                    }
-                                    if event_tx.send(ConnEvent::Message(server_msg)).await.is_err() {
-                                        debug!("event receiver dropped, exiting connection loop");
-                                        return;
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, "connection lost");
-                                    let _conn_lost_sent = event_tx.send(ConnEvent::Disconnected(
-                                        "connection lost".into()
-                                    )).await;
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                match run_connected_session(&mut conn, &event_tx, &mut cmd_rx, &mut sync_state)
+                    .await
+                {
+                    SessionOutcome::Exit => return,
+                    SessionOutcome::Reconnect => {}
                 }
             }
             Err(e) => {
@@ -207,6 +155,78 @@ async fn connection_loop(
         );
         sleep(backoff).await;
         backoff = next_backoff(backoff, max_backoff);
+    }
+}
+
+/// Drive one connected session's receive/send select loop. Returns
+/// [`SessionOutcome::Exit`] when the manager should stop entirely (shutdown or
+/// closed channels) or [`SessionOutcome::Reconnect`] when the connection
+/// dropped and a reconnect should be attempted.
+async fn run_connected_session(
+    conn: &mut SWPConnection,
+    event_tx: &mpsc::Sender<ConnEvent>,
+    cmd_rx: &mut mpsc::Receiver<ConnCommand>,
+    sync_state: &mut SyncState,
+) -> SessionOutcome {
+    loop {
+        tokio::select! {
+            biased;
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(ConnCommand::Send(msg)) => {
+                        if let Err(e) = conn.send(&msg).await {
+                            error!(error = %e, "send failed, disconnecting");
+                            let _send_fail_sent = event_tx.send(ConnEvent::Disconnected(
+                                "send failed".into()
+                            )).await;
+                            return SessionOutcome::Reconnect;
+                        }
+                    }
+                    Some(ConnCommand::Shutdown) => {
+                        info!("shutdown requested, closing connection");
+                        return SessionOutcome::Exit;
+                    }
+                    None => {
+                        info!("command channel closed, exiting connection loop");
+                        return SessionOutcome::Exit;
+                    }
+                }
+            }
+            msg = conn.recv() => {
+                match msg {
+                    Ok(ServerMessage::Shutdown(_)) => {
+                        info!("server sent shutdown");
+                        let _server_shutdown_sent = event_tx.send(ConnEvent::Disconnected(
+                            "server shutdown".into()
+                        )).await;
+                        return SessionOutcome::Reconnect;
+                    }
+                    Ok(ServerMessage::Ping(_)) => {
+                        // Keepalive — ignore
+                    }
+                    Ok(server_msg) => {
+                        if matches!(sync_state.observe(&server_msg), SyncDecision::DropStale) {
+                            debug!(
+                                latest_revision = sync_state.latest_revision(),
+                                "dropping stale sync message"
+                            );
+                            continue;
+                        }
+                        if event_tx.send(ConnEvent::Message(server_msg)).await.is_err() {
+                            debug!("event receiver dropped, exiting connection loop");
+                            return SessionOutcome::Exit;
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "connection lost");
+                        let _conn_lost_sent = event_tx.send(ConnEvent::Disconnected(
+                            "connection lost".into()
+                        )).await;
+                        return SessionOutcome::Reconnect;
+                    }
+                }
+            }
+        }
     }
 }
 
