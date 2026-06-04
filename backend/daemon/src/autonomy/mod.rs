@@ -181,7 +181,7 @@ impl HeartbeatLog {
         })
     }
 
-    pub fn push(&mut self, kind: HeartbeatEventKind, detail: impl Into<String>) {
+    pub fn push<D: Into<String>>(&mut self, kind: HeartbeatEventKind, detail: D) {
         if self.events.len() >= HEARTBEAT_LOG_CAPACITY {
             let _ignored = self.events.pop_front();
         }

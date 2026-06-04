@@ -682,6 +682,8 @@ pub(crate) fn push_assistant_response(
         request
             .messages
             .push(json!({"role": "assistant", "content": resp.content.clone()}));
+    } else {
+        // Empty assistant turn: nothing to append.
     }
 }
 

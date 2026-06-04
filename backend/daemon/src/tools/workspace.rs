@@ -1350,6 +1350,8 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
         _ = cmd.current_dir(dir);
     } else if !workspace_dir.is_empty() {
         _ = cmd.current_dir(workspace_dir);
+    } else {
+        // No workdir and no workspace root: inherit the daemon's cwd.
     }
 
     let output = cmd

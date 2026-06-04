@@ -1085,6 +1085,8 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                         "Compaction: idle trigger fired"
                     );
                 }
+            } else {
+                // Below min_turns: no compaction trigger applies.
             }
         }
 
@@ -1942,6 +1944,8 @@ async fn execute_heartbeat_tick(
                 iteration, "Heartbeat: deadline tripped during wrap-up grace, breaking"
             );
             break;
+        } else {
+            // Budget intact (or wrap-up grace still running): continue the loop.
         }
 
         let call_type = if iteration == 0 {
@@ -2132,6 +2136,8 @@ async fn execute_heartbeat_tick(
                                 message: msg.clone(),
                             },
                         ));
+                    } else {
+                        // Persisted with no push channel: nothing to broadcast.
                     }
                 }
                 Err(e) => {

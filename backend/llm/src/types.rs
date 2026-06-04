@@ -106,7 +106,7 @@ impl LlmRequest {
     /// across iterations and lost the Anthropic prefix cache. PRs #80
     /// (compaction) and #84 (dreaming + heartbeat) each fixed one
     /// caller; removing the field eliminates the bug class.
-    pub fn push_inline_system(&mut self, content: impl Into<String>) {
+    pub fn push_inline_system<C: Into<String>>(&mut self, content: C) {
         self.messages.push(serde_json::json!({
             "role": "system",
             "content": content.into(),

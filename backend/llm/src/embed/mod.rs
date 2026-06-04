@@ -54,10 +54,10 @@ impl std::fmt::Debug for OpenAIEmbedder {
 }
 
 impl OpenAIEmbedder {
-    pub fn new(
+    pub fn new<M: Into<String>, K: Into<String>>(
         http_client: reqwest::Client,
-        model: impl Into<String>,
-        api_key: impl Into<String>,
+        model: M,
+        api_key: K,
         base_url: Option<String>,
         dimensions: Option<usize>,
     ) -> Self {

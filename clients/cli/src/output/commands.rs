@@ -410,6 +410,8 @@ fn print_delete_confirmation(data: &serde_json::Value) {
         }
     } else if let Some(id) = data["deleted"].as_str() {
         cli_out!("Deleted entry {id}");
+    } else {
+        // No recognized deletion payload: nothing to report.
     }
 }
 
@@ -512,6 +514,8 @@ fn print_model_list(data: &serde_json::Value) {
                 let _ignored = crossterm::execute!(out, SetForegroundColor(Color::Cyan));
             } else if use_color() {
                 let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+            } else {
+                // No color: leave the default terminal foreground.
             }
             let _ignored = write!(out, "  {marker} ");
             if use_color() {

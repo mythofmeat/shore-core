@@ -67,9 +67,9 @@ impl ConversationEngine {
     ///
     /// `data_dir` is `$XDG_DATA_HOME/shore` (the engine derives the per-character
     /// path from `character_name`).
-    pub fn new(
+    pub fn new<P: AsRef<std::path::Path>>(
         character_name: String,
-        data_dir: impl AsRef<std::path::Path>,
+        data_dir: P,
         push_tx: broadcast::Sender<ServerMessage>,
     ) -> Result<Self, EngineError> {
         let character_dir = data_dir.as_ref().join(&character_name);

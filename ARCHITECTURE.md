@@ -511,7 +511,13 @@ indices) and `str_to_string` prefers `.to_owned()` over `.to_string()` on
 `&str`. Arithmetic discipline is locked too: `integer_division` forces
 truncating `/` to be acknowledged, `modulo_arithmetic` flags `%` sign-surprises,
 and `float_arithmetic` flags precision/NaN-prone float math (float-heavy
-functions carry a reasoned function-level `#[expect]`). Suppressions must use
+functions carry a reasoned function-level `#[expect]`). Control-flow and
+type-surface strictness is locked too: `else_if_without_else` requires every
+`else if` chain to end in a final `else` so the fall-through case is handled
+explicitly, and `impl_trait_in_params` bans `fn f(x: impl Trait)` in favor of an
+explicit named generic. (The adjacent `pattern_type_mismatch` lint is
+deliberately not enabled: it is a situational `restriction`-group lint that
+fights idiomatic match ergonomics.) Suppressions must use
 `#[expect(..., reason = "...")]`.
 
 Before a release, also run relevant cache tests, live provider smoke tests if

@@ -230,6 +230,9 @@ impl CacheTracker {
             self.clear_tool_loop_baseline();
         } else if obs.call_type == "heartbeat" {
             self.clear_tool_loop_baseline();
+        } else {
+            // Comparison skipped for a non-heartbeat call: leave the baseline
+            // untouched.
         }
         self.update_metadata(obs_ts, &obs.model, obs.thinking_enabled);
         self.last_call_type = Some(obs.call_type.clone());
