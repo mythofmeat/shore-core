@@ -478,6 +478,11 @@ pub fn default_base_url(provider_key: &str) -> Option<&'static str> {
         "deepseek" => Some("https://api.deepseek.com"),
         "moonshot" | "moonshotai" => Some("https://api.moonshot.ai/v1"),
         "xai" => Some("https://api.x.ai/v1"),
+        // Z.ai's standard OpenAI-compatible endpoint. Used for the discovery
+        // path only; chat routes through the sidecar's `ZaiProvider`, which
+        // owns its own base URL and the `zai_subscription` coding-endpoint
+        // switch — so this default never reaches a chat request.
+        "zai" => Some("https://api.z.ai/api/paas/v4"),
         _ => None,
     }
 }
@@ -782,6 +787,10 @@ sdk = "openai"
             Some("https://api.deepseek.com")
         );
         assert_eq!(default_base_url("xai"), Some("https://api.x.ai/v1"));
+        assert_eq!(
+            default_base_url("zai"),
+            Some("https://api.z.ai/api/paas/v4")
+        );
         // Custom or unknown providers must still set base_url explicitly.
         assert_eq!(default_base_url("opencode"), None);
         assert_eq!(default_base_url("unknown"), None);

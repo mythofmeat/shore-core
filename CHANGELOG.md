@@ -8,6 +8,12 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **Default discovery base URL for the `zai` provider** (`https://api.z.ai/api/paas/v4`).
+  `[providers.zai]` with `discovery.enabled = true` no longer needs an explicit
+  `base_url` — model discovery now works out of the box, matching the other
+  well-known providers. Chat is unaffected: it routes through the sidecar's
+  `ZaiProvider`, which keeps owning its base URL and the `zai_subscription`
+  coding-endpoint switch.
 - **Native DeepSeek and Moonshot (Kimi) providers** via the Vercel AI SDK
   (issue #164). New `sdk = "deepseek"` / `sdk = "moonshot"` wires hit
   `api.deepseek.com` / `api.moonshot.ai` directly (not through OpenRouter) using
