@@ -38,11 +38,14 @@ domain = ["minimal", "low", "medium", "high"]
 # Z.AI ignores reasoning_effort (thinking is driven by zai_clear_thinking).
 domain = []
 
-# Native DeepSeek via the Vercel AI SDK provider (`@ai-sdk/deepseek`): its
-# `reasoningEffort` enum is low|medium|high|xhigh|max. Disable thinking with the
-# `off` sentinel (→ thinking.type=disabled), not a domain value.
+# Native DeepSeek via the Vercel AI SDK provider (`@ai-sdk/deepseek`): only two
+# distinct effort levels exist, `high` and `max`. The docs note that, for
+# compatibility, `low`/`medium` are mapped to `high` and `xhigh` is mapped to
+# `max`, so only the two real levels are listed here (default is `high`).
+# Disable thinking with the `off` sentinel (→ thinking.type=disabled), not a
+# domain value. https://api-docs.deepseek.com/guides/thinking_mode
 [reasoning_effort.deepseek]
-domain = ["low", "medium", "high", "xhigh", "max"]
+domain = ["high", "max"]
 
 # Native Moonshot/Kimi via the Vercel AI SDK provider (`@ai-sdk/moonshotai`):
 # reasoning is an on/off toggle (`thinking.type` + `budgetTokens`), not a graded
@@ -92,7 +95,7 @@ domain = ["off"]
 # https://ai.google.dev/gemini-api/docs/gemini-3 (issue #166). Matches the
 # native Gemini id (`google/gemini-3.1-pro-preview`) and the OR-routed one.
 [[model_override]]
-match            = "gemini-3.1-pro"
+match = "gemini-3.1-pro"
 reasoning_effort = ["low", "medium", "high"]
 
 # OR-routed Gemini (`google/gemini-*`): thinkingLevel is minimal|low|medium|high
@@ -100,7 +103,7 @@ reasoning_effort = ["low", "medium", "high"]
 # over-reports here. The Pro override above is listed first and wins for Pro ids;
 # this catches the Flash tier (which keeps `minimal`). Gemini 3 developer guide.
 [[model_override]]
-match            = "google/gemini"
+match = "google/gemini"
 reasoning_effort = ["minimal", "low", "medium", "high"]
 
 # OR-routed xAI Grok (`x-ai/grok-*`): reasoning_effort is an enum
@@ -108,7 +111,7 @@ reasoning_effort = ["minimal", "low", "medium", "high"]
 # sentinel, not a domain value) — no `minimal`, no `xhigh`, which OpenRouter
 # would just fold to the nearest enum value. https://docs.x.ai (reasoning).
 [[model_override]]
-match            = "x-ai/grok"
+match = "x-ai/grok"
 reasoning_effort = ["low", "medium", "high"]
 
 # OR-routed OpenAI o-series (`openai/o1|o3|o4…`) are reasoning-only models that
@@ -116,13 +119,13 @@ reasoning_effort = ["low", "medium", "high"]
 # listed: it supports temperature (distinct from the o-series — cf. litellm
 # #16246). OpenAI API docs; cf. LibreChat #10737.
 [[model_override]]
-match            = "openai/o1"
+match = "openai/o1"
 rejects_sampling = true
 [[model_override]]
-match            = "openai/o3"
+match = "openai/o3"
 rejects_sampling = true
 [[model_override]]
-match            = "openai/o4"
+match = "openai/o4"
 rejects_sampling = true
 
 # NOTE: the no-tier / budget-mapped OpenRouter vendors — `moonshotai/kimi-*`,
