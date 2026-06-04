@@ -1,11 +1,16 @@
 name: release-plz
 
-# Manual-only: the release PR (version bumps + CHANGELOG) and publish step run
-# only when dispatched, so rapid iteration on main doesn't spawn release PRs.
-# Click "Run workflow" when a build is worth distributing. A run on an unchanged
-# main is a no-op (no new conventional commits => no bump, no PR, no publish).
+# Release cutting is an explicit decision, not a per-push reflex, so this never
+# runs on push to main (rapid iteration would otherwise spawn release PRs).
+#   - workflow_dispatch: click "Run workflow" when a build is worth distributing.
+#   - schedule: weekly safety net in case a manual run is forgotten.
+# Either trigger on an unchanged main is a no-op: no new conventional commits
+# => no version bump, no release PR, no publish.
 on:
   workflow_dispatch:
+  schedule:
+    # Mondays 00:00 UTC (Mon 10:00 AEST). Opens a release PR if commits landed.
+    - cron: "0 0 * * 1"
 
 jobs:
   release-plz:
