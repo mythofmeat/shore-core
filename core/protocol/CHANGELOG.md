@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/mythofmeat/shore-core/compare/shore-protocol-v0.7.0...shore-protocol-v0.7.1) - 2026-06-04
+
+### Other
+
+- enable unsafe-block + assert-message hardening ([#156](https://github.com/mythofmeat/shore-core/pull/156))
+
 ## [0.7.0](https://github.com/mythofmeat/shore-core/compare/shore-protocol-v0.6.1...shore-protocol-v0.7.0) - 2026-06-03
 
 ### Other
