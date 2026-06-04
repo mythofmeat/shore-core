@@ -1,21 +1,18 @@
-# Shore V2 — Example Models Include File
+# Shore — Example Models Include File
 #
-# This file can be included from config.toml via:
-#   include = ["models.toml"]
+# Include from config.toml via `include = ["models.toml"]`, or drop it in
+# conf.d/ for automatic loading.
 #
-# Or placed in conf.d/ for automatic loading.
-#
-# Models are identified by `provider:model_id` (#139). Declare each provider's
+# Models are identified by `provider:model_id`. Declare each provider's
 # transport once under [providers.<name>]; reference models as provider:model_id
-# (e.g. in [defaults].model). Behavioral defaults for every model a provider
-# resolves go under [providers.<name>.defaults]; per-model overrides go under
-# [models."<provider>:<model_id>"]. The legacy [chat.*] / [tools.*] catalogs are
-# deprecated (honored this release, with a warning on load).
+# (e.g. in [defaults].model). Provider-wide behavioral defaults go under
+# [providers.<name>.defaults]; per-model overrides under
+# [models."<provider>:<model_id>"].
 
 # ── Chat providers ───────────────────────────────────────────────────────
-# `anthropic` and `openai` have hardcoded transport defaults, so an empty block
-# (or just an api_key_env override) is enough to register them. Reference their
-# models directly, e.g. `defaults.model = "anthropic:claude-sonnet-4-6"`.
+# `anthropic` has hardcoded transport defaults, so an empty block (or an
+# api_key_env override) registers it. Reference its models directly, e.g.
+# `defaults.model = "anthropic:claude-sonnet-4-6"`.
 [providers.anthropic]
 api_key_env = "ANTHROPIC_API_KEY"
 
@@ -23,18 +20,19 @@ api_key_env = "ANTHROPIC_API_KEY"
 [providers.anthropic.defaults]
 cache_ttl = "1h"
 
-# Per-model override keyed by the canonical provider:model_id (optional):
-[models."anthropic:claude-opus-4-6"]
-max_output_tokens = 8192
+# Per-model override, keyed by the canonical provider:model_id (optional):
+[models."anthropic:claude-opus-4-8"]
+max_output_tokens = 16384
+reasoning_effort = "high"
 
 [providers.openai]
 api_key_env = "OPENAI_API_KEY"
 
-# ── Tool / background provider ───────────────────────────────────────────
-# A custom OpenAI-compatible provider (here, OpenRouter) used for cheap
-# background work. Transport lives on the entry; behavioral defaults under
-# [.defaults]. Send background tasks to it via [defaults.background].model =
-# "openrouter:mistralai/mistral-small-2603".
+# ── Background provider ──────────────────────────────────────────────────
+# A custom OpenAI-compatible provider (here OpenRouter) for cheap background
+# work. Transport lives on the entry; behavioral defaults under [.defaults].
+# Route background tasks to it via
+# [defaults.background].model = "openrouter:moonshotai/kimi-k2.6".
 [providers.openrouter]
 sdk = "openai"
 api_key_env = "OPENROUTER_API_KEY"
