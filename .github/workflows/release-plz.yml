@@ -1,9 +1,10 @@
 name: release-plz
 
+# Manual-only: the release PR (version bumps + CHANGELOG) and publish step run
+# only when dispatched, so rapid iteration on main doesn't spawn release PRs.
+# Click "Run workflow" when a build is worth distributing. A run on an unchanged
+# main is a no-op (no new conventional commits => no bump, no PR, no publish).
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:
