@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.0.6...shore-cli-v2.1.0) - 2026-06-04
+
+### Added
+
+- *(thinking)* tri-state replay_prior_thinking with last_turn mode ([#191](https://github.com/mythofmeat/shore-core/pull/191)) ([#200](https://github.com/mythofmeat/shore-core/pull/200))
+
+### Other
+
+- control-flow & type-surface strictness (else_if_without_else / impl_trait_in_params) ([#155](https://github.com/mythofmeat/shore-core/pull/155)) ([#196](https://github.com/mythofmeat/shore-core/pull/196))
+- integer & float arithmetic discipline ([#153](https://github.com/mythofmeat/shore-core/pull/153)) ([#194](https://github.com/mythofmeat/shore-core/pull/194))
+- ban variable shadowing (shadow_same/reuse/unrelated) ([#151](https://github.com/mythofmeat/shore-core/pull/151)) ([#192](https://github.com/mythofmeat/shore-core/pull/192))
+- Enable import & literal hygiene lints ([#154](https://github.com/mythofmeat/shore-core/pull/154)) ([#185](https://github.com/mythofmeat/shore-core/pull/185))
+- rename `preserve_prior_turns` to `replay_prior_thinking` ([#188](https://github.com/mythofmeat/shore-core/pull/188))
+- enable string_slice + str_to_string ([#152](https://github.com/mythofmeat/shore-core/pull/152))
+- enable unsafe-block + assert-message hardening ([#156](https://github.com/mythofmeat/shore-core/pull/156))
+- align `shore model setting` columns
+
 ## [2.0.6](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.0.5...shore-cli-v2.0.6) - 2026-06-03
 
 ### Other

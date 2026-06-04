@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.4](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v3.0.3...shore-ledger-v3.0.4) - 2026-06-04
+
+### Other
+
+- control-flow & type-surface strictness (else_if_without_else / impl_trait_in_params) ([#155](https://github.com/mythofmeat/shore-core/pull/155)) ([#196](https://github.com/mythofmeat/shore-core/pull/196))
+- integer & float arithmetic discipline ([#153](https://github.com/mythofmeat/shore-core/pull/153)) ([#194](https://github.com/mythofmeat/shore-core/pull/194))
+- ban variable shadowing (shadow_same/reuse/unrelated) ([#151](https://github.com/mythofmeat/shore-core/pull/151)) ([#192](https://github.com/mythofmeat/shore-core/pull/192))
+- Enable import & literal hygiene lints ([#154](https://github.com/mythofmeat/shore-core/pull/154)) ([#185](https://github.com/mythofmeat/shore-core/pull/185))
+- enable string_slice + str_to_string ([#152](https://github.com/mythofmeat/shore-core/pull/152))
+- enable unsafe-block + assert-message hardening ([#156](https://github.com/mythofmeat/shore-core/pull/156))
+
 ## [3.0.3](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v3.0.2...shore-ledger-v3.0.3) - 2026-06-03
 
 ### Fixed
