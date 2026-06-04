@@ -1719,10 +1719,6 @@ fn write_usage_summary_table(out: &mut impl Write, data: &serde_json::Value) -> 
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "usage output is a single command renderer with several mutually-exclusive modes"
-)]
 pub(crate) fn print_usage(data: &serde_json::Value) {
     let mode = data["mode"].as_str().unwrap_or("summary");
 
@@ -1732,140 +1728,9 @@ pub(crate) fn print_usage(data: &serde_json::Value) {
                 cli_write!("{d}");
             }
         }
-        "summary_by_call_type" => {
-            let period = data["period"].as_str().unwrap_or("today");
-            let today = usage_display_date(data);
-            cli_out!("Shore Usage by Call Type \u{2014} {today} (period: {period})\n");
-            cli_out!(
-                "{:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
-                "Call Type",
-                "Calls",
-                "Input",
-                "Output",
-                "Cache R",
-                "Cache W",
-                "Cost"
-            );
-            cli_out!("{}", "-".repeat(78));
-            let summary = data["summary"].as_array();
-            let mut grand_total = 0.0_f64;
-            if let Some(rows) = summary {
-                for s in rows {
-                    let cost_str = s["total_cost"].as_f64().map_or_else(
-                        || "\u{2014}".into(),
-                        |c| {
-                            add_display_cost(&mut grand_total, c);
-                            format!("${c:.2}")
-                        },
-                    );
-                    cli_out!(
-                        "{:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
-                        s["call_type"].as_str().unwrap_or(""),
-                        s["call_count"].as_u64().unwrap_or(0),
-                        format_k(s["total_input"].as_u64().unwrap_or(0)),
-                        format_k(s["total_output"].as_u64().unwrap_or(0)),
-                        format_k(s["total_cache_read"].as_u64().unwrap_or(0)),
-                        format_k(s["total_cache_write"].as_u64().unwrap_or(0)),
-                        cost_str,
-                    );
-                }
-                if rows.is_empty() {
-                    cli_out!("  No usage data for this period.");
-                } else {
-                    cli_out!("{:>70} ${grand_total:.2}", "Total:");
-                }
-            }
-        }
-        "summary_by_usage_kind" => {
-            let period = data["period"].as_str().unwrap_or("today");
-            let today = usage_display_date(data);
-            cli_out!("Shore Usage by Kind - {today} (period: {period})\n");
-            cli_out!(
-                "{:<20} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
-                "Usage Kind",
-                "Calls",
-                "Input",
-                "Output",
-                "Cache R",
-                "Cache W",
-                "Cost"
-            );
-            cli_out!("{}", "-".repeat(80));
-            let summary = data["summary"].as_array();
-            let mut grand_total = 0.0_f64;
-            if let Some(rows) = summary {
-                for s in rows {
-                    let cost_str = s["total_cost"].as_f64().map_or_else(
-                        || "\u{2014}".into(),
-                        |c| {
-                            add_display_cost(&mut grand_total, c);
-                            format!("${c:.2}")
-                        },
-                    );
-                    cli_out!(
-                        "{:<20} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
-                        s["usage_kind"].as_str().unwrap_or(""),
-                        s["call_count"].as_u64().unwrap_or(0),
-                        format_k(s["total_input"].as_u64().unwrap_or(0)),
-                        format_k(s["total_output"].as_u64().unwrap_or(0)),
-                        format_k(s["total_cache_read"].as_u64().unwrap_or(0)),
-                        format_k(s["total_cache_write"].as_u64().unwrap_or(0)),
-                        cost_str,
-                    );
-                }
-                if rows.is_empty() {
-                    cli_out!("  No usage data for this period.");
-                } else {
-                    cli_out!("{:>72} ${grand_total:.2}", "Total:");
-                }
-            }
-        }
-        "summary_by_api_key" => {
-            let period = data["period"].as_str().unwrap_or("today");
-            let today = usage_display_date(data);
-            cli_out!("Shore Usage by API Key - {today} (period: {period})\n");
-            cli_out!(
-                "{:<22} {:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
-                "Provider",
-                "API Key",
-                "Calls",
-                "Input",
-                "Output",
-                "Cache R",
-                "Cache W",
-                "Cost"
-            );
-            cli_out!("{}", "-".repeat(102));
-            let summary = data["summary"].as_array();
-            let mut grand_total = 0.0_f64;
-            if let Some(rows) = summary {
-                for s in rows {
-                    let cost_str = s["total_cost"].as_f64().map_or_else(
-                        || "\u{2014}".into(),
-                        |c| {
-                            add_display_cost(&mut grand_total, c);
-                            format!("${c:.2}")
-                        },
-                    );
-                    cli_out!(
-                        "{:<22} {:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
-                        s["provider"].as_str().unwrap_or(""),
-                        s["api_key_name"].as_str().unwrap_or("unknown"),
-                        s["call_count"].as_u64().unwrap_or(0),
-                        format_k(s["total_input"].as_u64().unwrap_or(0)),
-                        format_k(s["total_output"].as_u64().unwrap_or(0)),
-                        format_k(s["total_cache_read"].as_u64().unwrap_or(0)),
-                        format_k(s["total_cache_write"].as_u64().unwrap_or(0)),
-                        cost_str,
-                    );
-                }
-                if rows.is_empty() {
-                    cli_out!("  No usage data for this period.");
-                } else {
-                    cli_out!("{:>94} ${grand_total:.2}", "Total:");
-                }
-            }
-        }
+        "summary_by_call_type" => print_usage_by_call_type(data),
+        "summary_by_usage_kind" => print_usage_by_kind(data),
+        "summary_by_api_key" => print_usage_by_api_key(data),
         "budget" => {
             let today = usage_display_date(data);
             let timezone = data["timezone"].as_str().unwrap_or("local");
@@ -1873,91 +1738,240 @@ pub(crate) fn print_usage(data: &serde_json::Value) {
             print_budget_table(data);
             print_spike_warnings(data);
         }
-        "anomalies" => {
-            let Some(anomalies) = data["anomalies"].as_array() else {
-                cli_out!("No cache anomalies found.");
-                return;
-            };
-            if anomalies.is_empty() {
-                cli_out!("No cache anomalies found.");
-            } else {
-                cli_out!("Cache Anomalies:\n");
-                for r in anomalies {
-                    cli_out!(
-                        "  {} {} {} {} \u{2014} {} (read: {}, write: {})",
-                        r["ts"].as_str().unwrap_or("?"),
-                        r["character"].as_str().unwrap_or("?"),
-                        r["model"].as_str().unwrap_or("?"),
-                        r["call_type"].as_str().unwrap_or("?"),
-                        r["anomaly"].as_str().unwrap_or("?"),
-                        r["cache_read_tokens"].as_u64().unwrap_or(0),
-                        r["cache_write_tokens"].as_u64().unwrap_or(0),
-                    );
-                }
-                cli_out!("\nTotal: {} anomalies", anomalies.len());
-            }
-        }
+        "anomalies" => print_usage_anomalies(data),
         "refresh_pricing" => {
             cli_out!("Pricing cache cleared. Prices will be re-fetched on next daemon use.");
         }
-        "recalculate" => {
-            let updated = data["updated"].as_u64().unwrap_or(0);
-            let total = data["total"].as_u64().unwrap_or(0);
-            if total == 0 {
-                cli_out!("All rows already have costs calculated.");
-            } else {
-                cli_out!(
-                    "Updated {updated}/{total} rows. {} still missing pricing data.",
-                    total.saturating_sub(updated)
-                );
-                if let Some(failures) = data["failures"].as_array() {
-                    if !failures.is_empty() {
-                        cli_out!("\nFailed models:");
-                        for f in failures {
-                            cli_out!(
-                                "  {} — {}",
-                                f["model"].as_str().unwrap_or("?"),
-                                f["reason"].as_str().unwrap_or("unknown")
-                            );
-                        }
-                    }
-                }
-            }
+        "recalculate" => print_usage_recalculate(data),
+        _ => print_usage_summary(data),
+    }
+}
+
+/// Render the `usage --by-call-type` breakdown table.
+fn print_usage_by_call_type(data: &serde_json::Value) {
+    let period = data["period"].as_str().unwrap_or("today");
+    let today = usage_display_date(data);
+    cli_out!("Shore Usage by Call Type \u{2014} {today} (period: {period})\n");
+    cli_out!(
+        "{:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+        "Call Type",
+        "Calls",
+        "Input",
+        "Output",
+        "Cache R",
+        "Cache W",
+        "Cost"
+    );
+    cli_out!("{}", "-".repeat(78));
+    let summary = data["summary"].as_array();
+    let mut grand_total = 0.0_f64;
+    if let Some(rows) = summary {
+        for s in rows {
+            let cost_str = s["total_cost"].as_f64().map_or_else(
+                || "\u{2014}".into(),
+                |c| {
+                    add_display_cost(&mut grand_total, c);
+                    format!("${c:.2}")
+                },
+            );
+            cli_out!(
+                "{:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+                s["call_type"].as_str().unwrap_or(""),
+                s["call_count"].as_u64().unwrap_or(0),
+                format_k(s["total_input"].as_u64().unwrap_or(0)),
+                format_k(s["total_output"].as_u64().unwrap_or(0)),
+                format_k(s["total_cache_read"].as_u64().unwrap_or(0)),
+                format_k(s["total_cache_write"].as_u64().unwrap_or(0)),
+                cost_str,
+            );
         }
-        _ => {
-            let mut stdout = io::stdout().lock();
-            let _ignored = write_usage_summary_table(&mut stdout, data);
-            drop(stdout);
-
-            if let Some(health) = data["cache_health"].as_array() {
-                if !health.is_empty() {
-                    cli_out!("\nCache Health (anthropic):");
-                    for entry in health {
-                        let char_name = entry["character"].as_str().unwrap_or("?");
-                        let state = entry["state"].as_str().unwrap_or("cold");
-                        let streak = entry["streak"].as_u64().unwrap_or(0);
-                        let state_str = if state == "warm" {
-                            format!("Warm (streak: {streak} calls)")
-                        } else {
-                            "Cold".into()
-                        };
-                        cli_out!("  {char_name:<8} \u{2014} {state_str}");
-                    }
-                }
-            }
-
-            if let Some(budgets) = data["budgets"].as_array() {
-                if !budgets.is_empty() {
-                    cli_out!("\nBudgets:");
-                    print_budget_table(data);
-                }
-            }
-            print_spike_warnings(data);
-
-            let anomaly_count = data["anomaly_count_7d"].as_u64().unwrap_or(0);
-            cli_out!("\nAnomalies (last 7d): {anomaly_count}");
+        if rows.is_empty() {
+            cli_out!("  No usage data for this period.");
+        } else {
+            cli_out!("{:>70} ${grand_total:.2}", "Total:");
         }
     }
+}
+
+/// Render the `usage --by-kind` breakdown table.
+fn print_usage_by_kind(data: &serde_json::Value) {
+    let period = data["period"].as_str().unwrap_or("today");
+    let today = usage_display_date(data);
+    cli_out!("Shore Usage by Kind - {today} (period: {period})\n");
+    cli_out!(
+        "{:<20} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+        "Usage Kind",
+        "Calls",
+        "Input",
+        "Output",
+        "Cache R",
+        "Cache W",
+        "Cost"
+    );
+    cli_out!("{}", "-".repeat(80));
+    let summary = data["summary"].as_array();
+    let mut grand_total = 0.0_f64;
+    if let Some(rows) = summary {
+        for s in rows {
+            let cost_str = s["total_cost"].as_f64().map_or_else(
+                || "\u{2014}".into(),
+                |c| {
+                    add_display_cost(&mut grand_total, c);
+                    format!("${c:.2}")
+                },
+            );
+            cli_out!(
+                "{:<20} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+                s["usage_kind"].as_str().unwrap_or(""),
+                s["call_count"].as_u64().unwrap_or(0),
+                format_k(s["total_input"].as_u64().unwrap_or(0)),
+                format_k(s["total_output"].as_u64().unwrap_or(0)),
+                format_k(s["total_cache_read"].as_u64().unwrap_or(0)),
+                format_k(s["total_cache_write"].as_u64().unwrap_or(0)),
+                cost_str,
+            );
+        }
+        if rows.is_empty() {
+            cli_out!("  No usage data for this period.");
+        } else {
+            cli_out!("{:>72} ${grand_total:.2}", "Total:");
+        }
+    }
+}
+
+/// Render the `usage --by-api-key` breakdown table.
+fn print_usage_by_api_key(data: &serde_json::Value) {
+    let period = data["period"].as_str().unwrap_or("today");
+    let today = usage_display_date(data);
+    cli_out!("Shore Usage by API Key - {today} (period: {period})\n");
+    cli_out!(
+        "{:<22} {:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+        "Provider",
+        "API Key",
+        "Calls",
+        "Input",
+        "Output",
+        "Cache R",
+        "Cache W",
+        "Cost"
+    );
+    cli_out!("{}", "-".repeat(102));
+    let summary = data["summary"].as_array();
+    let mut grand_total = 0.0_f64;
+    if let Some(rows) = summary {
+        for s in rows {
+            let cost_str = s["total_cost"].as_f64().map_or_else(
+                || "\u{2014}".into(),
+                |c| {
+                    add_display_cost(&mut grand_total, c);
+                    format!("${c:.2}")
+                },
+            );
+            cli_out!(
+                "{:<22} {:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+                s["provider"].as_str().unwrap_or(""),
+                s["api_key_name"].as_str().unwrap_or("unknown"),
+                s["call_count"].as_u64().unwrap_or(0),
+                format_k(s["total_input"].as_u64().unwrap_or(0)),
+                format_k(s["total_output"].as_u64().unwrap_or(0)),
+                format_k(s["total_cache_read"].as_u64().unwrap_or(0)),
+                format_k(s["total_cache_write"].as_u64().unwrap_or(0)),
+                cost_str,
+            );
+        }
+        if rows.is_empty() {
+            cli_out!("  No usage data for this period.");
+        } else {
+            cli_out!("{:>94} ${grand_total:.2}", "Total:");
+        }
+    }
+}
+
+/// Render the `usage --anomalies` listing.
+fn print_usage_anomalies(data: &serde_json::Value) {
+    let Some(anomalies) = data["anomalies"].as_array() else {
+        cli_out!("No cache anomalies found.");
+        return;
+    };
+    if anomalies.is_empty() {
+        cli_out!("No cache anomalies found.");
+    } else {
+        cli_out!("Cache Anomalies:\n");
+        for r in anomalies {
+            cli_out!(
+                "  {} {} {} {} \u{2014} {} (read: {}, write: {})",
+                r["ts"].as_str().unwrap_or("?"),
+                r["character"].as_str().unwrap_or("?"),
+                r["model"].as_str().unwrap_or("?"),
+                r["call_type"].as_str().unwrap_or("?"),
+                r["anomaly"].as_str().unwrap_or("?"),
+                r["cache_read_tokens"].as_u64().unwrap_or(0),
+                r["cache_write_tokens"].as_u64().unwrap_or(0),
+            );
+        }
+        cli_out!("\nTotal: {} anomalies", anomalies.len());
+    }
+}
+
+/// Render the `usage --recalculate` summary.
+fn print_usage_recalculate(data: &serde_json::Value) {
+    let updated = data["updated"].as_u64().unwrap_or(0);
+    let total = data["total"].as_u64().unwrap_or(0);
+    if total == 0 {
+        cli_out!("All rows already have costs calculated.");
+    } else {
+        cli_out!(
+            "Updated {updated}/{total} rows. {} still missing pricing data.",
+            total.saturating_sub(updated)
+        );
+        if let Some(failures) = data["failures"].as_array() {
+            if !failures.is_empty() {
+                cli_out!("\nFailed models:");
+                for f in failures {
+                    cli_out!(
+                        "  {} — {}",
+                        f["model"].as_str().unwrap_or("?"),
+                        f["reason"].as_str().unwrap_or("unknown")
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Render the default usage summary (table + cache health + budgets + spikes).
+fn print_usage_summary(data: &serde_json::Value) {
+    let mut stdout = io::stdout().lock();
+    let _ignored = write_usage_summary_table(&mut stdout, data);
+    drop(stdout);
+
+    if let Some(health) = data["cache_health"].as_array() {
+        if !health.is_empty() {
+            cli_out!("\nCache Health (anthropic):");
+            for entry in health {
+                let char_name = entry["character"].as_str().unwrap_or("?");
+                let state = entry["state"].as_str().unwrap_or("cold");
+                let streak = entry["streak"].as_u64().unwrap_or(0);
+                let state_str = if state == "warm" {
+                    format!("Warm (streak: {streak} calls)")
+                } else {
+                    "Cold".into()
+                };
+                cli_out!("  {char_name:<8} \u{2014} {state_str}");
+            }
+        }
+    }
+
+    if let Some(budgets) = data["budgets"].as_array() {
+        if !budgets.is_empty() {
+            cli_out!("\nBudgets:");
+            print_budget_table(data);
+        }
+    }
+    print_spike_warnings(data);
+
+    let anomaly_count = data["anomaly_count_7d"].as_u64().unwrap_or(0);
+    cli_out!("\nAnomalies (last 7d): {anomaly_count}");
 }
 
 // ---------------------------------------------------------------------------
@@ -2024,10 +2038,6 @@ fn format_local_timestamp(rfc3339: &str) -> String {
 /// Render the autonomy block of `shore status`. Reads the `AutonomyStatus`
 /// JSON snapshot from the daemon and renders state, schedule, thresholds,
 /// and the most recent heartbeat events.
-#[expect(
-    clippy::too_many_lines,
-    reason = "status dashboard renderer keeps related autonomy rows in display order"
-)]
 fn write_autonomy_section(out: &mut impl Write, autonomy: &serde_json::Value, width: usize) {
     let paused = autonomy["paused"].as_bool().unwrap_or(false);
     let suffix = if paused { "paused" } else { "" };
@@ -2058,6 +2068,18 @@ fn write_autonomy_section(out: &mut impl Write, autonomy: &serde_json::Value, wi
     }
     _ = writeln!(out);
 
+    write_autonomy_schedule(out, autonomy, ticks, max_ticks);
+    write_autonomy_events(out, autonomy);
+}
+
+/// Render the autonomy schedule rows (interval, next wake, last user, idle
+/// ticks, latency thresholds).
+fn write_autonomy_schedule(
+    out: &mut impl Write,
+    autonomy: &serde_json::Value,
+    ticks: u64,
+    max_ticks: u64,
+) {
     if let Some(eff) = autonomy["effective_interval_secs"].as_u64() {
         let mins = checked_div_u64(eff, SECONDS_PER_MINUTE);
         let secs = checked_rem_u64(eff, SECONDS_PER_MINUTE);
@@ -2111,10 +2133,12 @@ fn write_autonomy_section(out: &mut impl Write, autonomy: &serde_json::Value, wi
     if let Some(secs) = autonomy["dormant_after_idle_time_secs"].as_u64() {
         write_row(out, "Idle Limit", &format_threshold(secs));
     }
+}
 
-    // Recent events. Skip silently if the daemon didn't include any —
-    // there's nothing useful to show and the schedule rows above already
-    // tell the same story.
+/// Render the recent autonomy events list. Emits nothing beyond a blank line
+/// when the daemon included no events — the schedule rows already tell the
+/// story.
+fn write_autonomy_events(out: &mut impl Write, autonomy: &serde_json::Value) {
     let events: Vec<serde_json::Value> = autonomy
         .get("recent_events")
         .and_then(|v| v.as_array())
