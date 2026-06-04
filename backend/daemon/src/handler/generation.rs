@@ -90,7 +90,7 @@ pub(super) async fn stream_with_retry(
                     Ok(result)
                 }
                 Err(e) => {
-                    ledger_stream.finalize_error();
+                    ledger_stream.finalize_error(&e);
                     Err(e)
                 }
             }

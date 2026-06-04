@@ -105,10 +105,26 @@ impl LedgerStream {
         self.finalized = true;
     }
 
-    /// Record a failed/aborted call with zero token usage so the ledger has a
-    /// trace of the attempt even when `consume()` returns an error.
-    pub fn finalize_error(&mut self) {
+    /// Record a failed/aborted call so the ledger has a trace of the attempt
+    /// even when `consume()` returns an error.
+    ///
+    /// When the provider failed mid-stream but had already reported usage
+    /// (`LlmError::StreamErrored` — e.g. the Anthropic cache write announced in
+    /// `message_start`, which the provider bills before any output), that usage
+    /// is recorded so the cost is not silently dropped. All other errors record
+    /// zero usage, since nothing was billed.
+    pub fn finalize_error(&mut self, err: &shore_llm::LlmError) {
         use shore_llm::types::{Timing, Usage};
+        let zero_usage = Usage::default();
+        let zero_timing = Timing::default();
+        // Only `StreamErrored` carries provider-reported usage (the cache write
+        // billed before the failure); every other error means nothing landed.
+        let (usage, timing) = if let shore_llm::LlmError::StreamErrored { usage, timing, .. } = err
+        {
+            (usage.as_ref(), timing)
+        } else {
+            (&zero_usage, &zero_timing)
+        };
         record_call(
             &self.ledger,
             &self.pricing,
@@ -119,8 +135,8 @@ impl LedgerStream {
                 model: &self.meta.model,
                 call_type: self.meta.call_type,
                 character: &self.meta.character,
-                usage: &Usage::default(),
-                timing: &Timing::default(),
+                usage,
+                timing,
                 finish_reason: "error",
                 thinking_enabled: self.meta.thinking_enabled,
                 cache_ttl: self.meta.cache_ttl.clone(),
@@ -207,6 +223,91 @@ mod tests {
         assert_eq!(row.input_tokens, 100);
         assert_eq!(row.cache_read_tokens, 80);
         assert_eq!(row.cache_write_tokens, 20);
+    }
+
+    /// Regression: a stream that errors *after* `message_start` (so Anthropic
+    /// already processed and billed the cache write) must record that write,
+    /// not zeros. Previously `finalize_error` always wrote `Usage::default()`,
+    /// silently dropping the most expensive event — a cold-start cache write.
+    #[test]
+    fn finalize_error_records_partial_usage_from_stream_errored() {
+        let ledger = Arc::new(Ledger::open_in_memory().unwrap());
+        let pricing = Arc::new(PricingEngine::new(Arc::clone(&ledger)));
+        let trackers = Arc::new(Mutex::new(HashMap::<String, CacheTracker>::new()));
+
+        let mut stream = LedgerStream::new_test(
+            CallMeta {
+                provider: "anthropic".into(),
+                api_key_name: None,
+                model: "claude-opus-4-6".into(),
+                call_type: CallType::Message,
+                character: "aria".into(),
+                thinking_enabled: true,
+                cache_ttl: None,
+            },
+            Arc::clone(&ledger),
+            pricing,
+            trackers,
+        );
+
+        let err = shore_llm::LlmError::StreamErrored {
+            message: "connection reset".into(),
+            usage: Box::new(Usage {
+                input_tokens: 2,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 19_188,
+                ..Default::default()
+            }),
+            timing: Timing {
+                total_ms: 800,
+                time_to_first_token_ms: 0,
+            },
+        };
+
+        stream.finalize_error(&err);
+        assert!(stream.is_finalized());
+
+        let rows = ledger.recent(1).unwrap();
+        let row = rows.first().expect("ledger row should be present");
+        assert_eq!(row.finish_reason, "error");
+        assert_eq!(
+            row.cache_write_tokens, 19_188,
+            "the cache write billed before the error must be recorded, not dropped"
+        );
+        assert_eq!(row.input_tokens, 2);
+    }
+
+    /// Errors with no carried usage (failure before any `message_start`, e.g.
+    /// `IncompleteStream`) still record zeros — nothing was billed.
+    #[test]
+    fn finalize_error_without_usage_records_zeros() {
+        let ledger = Arc::new(Ledger::open_in_memory().unwrap());
+        let pricing = Arc::new(PricingEngine::new(Arc::clone(&ledger)));
+        let trackers = Arc::new(Mutex::new(HashMap::<String, CacheTracker>::new()));
+
+        let mut stream = LedgerStream::new_test(
+            CallMeta {
+                provider: "anthropic".into(),
+                api_key_name: None,
+                model: "claude-opus-4-6".into(),
+                call_type: CallType::Message,
+                character: "aria".into(),
+                thinking_enabled: true,
+                cache_ttl: None,
+            },
+            Arc::clone(&ledger),
+            pricing,
+            trackers,
+        );
+
+        stream.finalize_error(&shore_llm::LlmError::IncompleteStream);
+
+        let rows = ledger.recent(1).unwrap();
+        let row = rows.first().expect("ledger row should be present");
+        assert_eq!(row.finish_reason, "error");
+        assert_eq!(row.cache_write_tokens, 0);
+        assert_eq!(row.input_tokens, 0);
     }
 
     #[test]

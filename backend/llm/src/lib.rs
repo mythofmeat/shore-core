@@ -89,6 +89,17 @@ pub enum LlmError {
     #[error("stream ended without done event")]
     IncompleteStream,
 
+    /// The provider stream failed mid-flight but the sidecar emitted the usage
+    /// it had already accumulated (e.g. Anthropic's `message_start` reports the
+    /// cache write before any output). Carries that partial usage so the ledger
+    /// records the tokens the provider already billed instead of zeros.
+    #[error("stream errored after partial usage: {message}")]
+    StreamErrored {
+        message: String,
+        usage: Box<types::Usage>,
+        timing: types::Timing,
+    },
+
     #[error("API key environment variable {var} is not set")]
     MissingApiKey { var: String },
 

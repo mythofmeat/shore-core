@@ -199,6 +199,7 @@ fn error_kind(err: &LlmError) -> &'static str {
         LlmError::Serialize(_) => "serialize",
         LlmError::Deserialize(_) => "deserialize",
         LlmError::IncompleteStream => "incomplete_stream",
+        LlmError::StreamErrored { .. } => "stream_errored",
         LlmError::MissingApiKey { .. } => "missing_api_key",
         LlmError::Provider { .. } => "provider",
         LlmError::Refusal => "refusal",

@@ -6,7 +6,7 @@ use tracing::{debug, info};
 
 use shore_protocol::types::ContentBlock;
 
-use super::types::{StreamEvent, StreamResult, ToolUseEvent};
+use super::types::{StreamEvent, StreamResult, Timing, ToolUseEvent, Usage};
 use super::LlmError;
 
 /// Consumes a newline-delimited JSON stream from shore-llm's /v1/stream
@@ -64,7 +64,10 @@ impl StreamConsumer {
             let event: StreamEvent =
                 serde_json::from_str(trimmed).map_err(LlmError::Deserialize)?;
 
-            if let Some(result) = self.handle_event(&mut st, event, regen).await {
+            // A mid-stream `Error` event becomes `LlmError::StreamErrored` (with
+            // its partial usage) via `?`, failing the call so retry runs while
+            // still handing the already-billed usage to the caller.
+            if let Some(result) = self.handle_event(&mut st, event, regen).await? {
                 return Ok(result);
             }
         }
@@ -72,13 +75,15 @@ impl StreamConsumer {
 
     /// Handle one decoded SSE event: relay any `StreamChunk`/`StreamStart`
     /// frame to the session, accumulate content into `st`, and return the
-    /// final `StreamResult` once the terminal `Done` event arrives.
+    /// final `StreamResult` once the terminal `Done` event arrives. A terminal
+    /// `Error` event becomes `Err(LlmError::StreamErrored)`, carrying the
+    /// partial usage the provider had already reported.
     async fn handle_event(
         &self,
         st: &mut ConsumeState,
         event: StreamEvent,
         regen: bool,
-    ) -> Option<StreamResult> {
+    ) -> Result<Option<StreamResult>, LlmError> {
         match event {
             StreamEvent::Start { model: start_model } => {
                 st.model = start_model;
@@ -161,40 +166,28 @@ impl StreamConsumer {
                 usage,
                 timing,
             } => {
-                // Flush any remaining buffers.
-                st.flush_text();
-                st.flush_thinking();
-
-                info!(
-                    model = %st.model,
-                    input_tokens = usage.input_tokens,
-                    output_tokens = usage.output_tokens,
-                    cache_read = usage.cache_read_tokens,
-                    cache_write = usage.cache_creation_tokens,
-                    total_ms = timing.total_ms,
-                    ttft_ms = timing.time_to_first_token_ms,
-                    "Stream completed"
-                );
-
                 // StreamEnd is emitted by the caller — see emit_stream_end.
+                return Ok(Some(st.finish(content, finish_reason, usage, timing)));
+            }
 
-                return Some(StreamResult {
-                    content,
-                    model: if st.started {
-                        std::mem::take(&mut st.model)
-                    } else {
-                        String::new()
-                    },
-                    finish_reason,
-                    usage,
+            // A mid-stream provider failure that still carried partial usage
+            // (e.g. the Anthropic cache write reported in `message_start`).
+            // Fail the call so retry runs, but hand the usage to the caller so
+            // the ledger records the already-billed tokens instead of zeros.
+            StreamEvent::Error {
+                message,
+                usage,
+                timing,
+            } => {
+                return Err(LlmError::StreamErrored {
+                    message,
+                    usage: Box::new(usage),
                     timing,
-                    tool_uses: std::mem::take(&mut st.tool_uses),
-                    content_blocks: std::mem::take(&mut st.content_blocks),
                 });
             }
         }
 
-        None
+        Ok(None)
     }
 }
 
@@ -236,6 +229,44 @@ impl ConsumeState {
                 thinking: std::mem::take(&mut self.thinking_buf),
                 signature: self.pending_signature.take(),
             });
+        }
+    }
+
+    /// Flush pending buffers and assemble the terminal [`StreamResult`] from a
+    /// `done` event, draining the accumulated tool-uses and content blocks.
+    fn finish(
+        &mut self,
+        content: String,
+        finish_reason: String,
+        usage: Usage,
+        timing: Timing,
+    ) -> StreamResult {
+        self.flush_text();
+        self.flush_thinking();
+
+        info!(
+            model = %self.model,
+            input_tokens = usage.input_tokens,
+            output_tokens = usage.output_tokens,
+            cache_read = usage.cache_read_tokens,
+            cache_write = usage.cache_creation_tokens,
+            total_ms = timing.total_ms,
+            ttft_ms = timing.time_to_first_token_ms,
+            "Stream completed"
+        );
+
+        StreamResult {
+            content,
+            model: if self.started {
+                std::mem::take(&mut self.model)
+            } else {
+                String::new()
+            },
+            finish_reason,
+            usage,
+            timing,
+            tool_uses: std::mem::take(&mut self.tool_uses),
+            content_blocks: std::mem::take(&mut self.content_blocks),
         }
     }
 }
@@ -317,6 +348,46 @@ mod tests {
 
     fn field<'val>(value: &'val serde_json::Value, key: &str) -> &'val serde_json::Value {
         value.get(key).expect("expected JSON field")
+    }
+
+    /// A mid-stream `error` event must surface as `LlmError::StreamErrored`
+    /// carrying the usage the provider had already accumulated (the Anthropic
+    /// cache write from `message_start`), so the ledger records it instead of
+    /// zeros. The call still fails so the normal retry path runs.
+    #[tokio::test]
+    async fn consume_error_event_carries_partial_usage() {
+        let (mut writer, mut reader, direct_tx, _direct_rx) = setup_stream_pair();
+        let consumer = StreamConsumer::new(direct_tx, None);
+
+        let events = [
+            r#"{"type":"start","model":"claude-opus-4-8"}"#,
+            r#"{"type":"error","message":"connection reset","usage":{"input_tokens":2,"output_tokens":0,"cache_read_tokens":0,"cache_creation_tokens":19188},"timing":{"total_ms":800,"time_to_first_token_ms":0}}"#,
+        ];
+
+        let server_handle = tokio::spawn(async move {
+            for event in events {
+                writer.write_all(event.as_bytes()).await.unwrap();
+                writer.write_all(b"\n").await.unwrap();
+            }
+            writer.shutdown().await.unwrap();
+        });
+
+        let err = consumer
+            .consume(&mut reader, false)
+            .await
+            .expect_err("error event must fail the call");
+
+        assert_variant!(
+            err,
+            LlmError::StreamErrored { message, usage, timing } => {
+                assert_eq!(message, "connection reset");
+                assert_eq!(usage.cache_creation_tokens, 19188);
+                assert_eq!(usage.input_tokens, 2);
+                assert_eq!(timing.total_ms, 800);
+            }
+        );
+
+        server_handle.await.unwrap();
     }
 
     #[tokio::test]

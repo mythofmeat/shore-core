@@ -143,6 +143,21 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   and any persisted per-model settings using `preserve_prior_turns` must be updated.
 
 ### Fixed
+- **Dropped cache-write cost on mid-stream errors.** When a streaming call
+  failed after the provider had already reported usage — notably the Anthropic
+  cache write announced in `message_start`, which the API bills before any
+  output — the sidecar closed the stream without a `done` event, so the daemon
+  recorded the call with **zero usage** (`finalize_error` wrote
+  `Usage::default()`). The retry then read the now-warm cache cheaply, leaving a
+  ledger row with a large `cache_read` and no preceding `cache_write` — the
+  cold-start write (the single most expensive event) silently vanished, badly
+  under-reporting `shore usage` cost. Provider stream adapters now emit a
+  terminal `error` frame carrying the usage accumulated so far; a new
+  `StreamEvent::Error` → `LlmError::StreamErrored` path records that partial
+  usage (so the cache write lands) while still failing the call so the normal
+  retry runs. The Anthropic adapter is wired up; other providers retain the
+  prior zero-usage fallback until they adopt the shared `streamErrorEvent`
+  helper.
 - Ledger cache-health tracking no longer skips OpenRouter-routed Anthropic
   calls (issue #118). Two gates keyed off the literal `provider == "anthropic"`
   instead of the routed-aware `is_anthropic_pricing(provider, model)` predicate:

@@ -79,7 +79,7 @@ pub fn should_retry_error(error: &LlmError, attempt: u32, policy: &RetryPolicy) 
 
     match error {
         // Transient network/connection errors — retry.
-        LlmError::Request(_) | LlmError::IncompleteStream => {
+        LlmError::Request(_) | LlmError::IncompleteStream | LlmError::StreamErrored { .. } => {
             warn!(attempt, error = %error, "Transient error, retrying");
             RetryDecision::Retry
         }

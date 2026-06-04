@@ -112,7 +112,43 @@ export type StreamEvent =
       finish_reason: string;
       usage: Usage;
       timing: Timing;
+    }
+  | {
+      // A mid-stream provider failure. Carries whatever usage was accumulated
+      // before the error (e.g. Anthropic reports the cache write in
+      // `message_start`, before any output) so the daemon records the
+      // already-billed tokens instead of zeros. The consumer turns this into
+      // `LlmError::StreamErrored` and still fails the call so retry runs.
+      type: "error";
+      message: string;
+      usage: Usage;
+      timing: Timing;
     };
+
+/**
+ * Build the terminal `error` frame for a stream that threw mid-flight. Carries
+ * the usage accumulated so far so the daemon records already-billed tokens —
+ * notably the Anthropic cache write announced in `message_start`, before any
+ * output — instead of zeros. Provider stream generators yield this from a
+ * `catch` around their event loop, then return.
+ */
+export function streamErrorEvent(
+  err: unknown,
+  usage: Usage,
+  startedAt: number,
+  firstTokenAt: number,
+  now: () => number,
+): StreamEvent {
+  return {
+    type: "error",
+    message: err instanceof Error ? err.message : String(err),
+    usage,
+    timing: {
+      total_ms: now() - startedAt,
+      time_to_first_token_ms: firstTokenAt === 0 ? 0 : firstTokenAt - startedAt,
+    },
+  };
+}
 
 /** Non-streaming result — mirrors Rust `GenerateResponse`. */
 export interface GenerateResponse {
