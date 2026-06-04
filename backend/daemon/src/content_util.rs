@@ -200,17 +200,17 @@ pub fn thinking_block_portable_to(
 /// Kimi-thinking — see [`shore_llm::requires_reasoning_replay`]).
 pub fn maybe_strip_prior_thinking(
     messages: &mut [Value],
-    preserve_prior_turns: bool,
+    replay_prior_thinking: bool,
     provider_key: &str,
 ) {
-    if !preserve_prior_turns && !shore_llm::requires_reasoning_replay(provider_key) {
+    if !replay_prior_thinking && !shore_llm::requires_reasoning_replay(provider_key) {
         strip_thinking_from_assistant_history(messages);
     }
 }
 
 /// Remove `thinking` and `redacted_thinking` blocks from every assistant
 /// message in an already-serialized request body. Used when
-/// `[memory.thinking] preserve_prior_turns` is false to avoid re-sending
+/// `[memory.thinking] replay_prior_thinking` is false to avoid re-sending
 /// signed thinking blocks from completed prior turns on every subsequent
 /// request — they consume input/cache tokens but Anthropic's Claude 4.x
 /// models do not attend to prior-turn thinking (only to thinking within

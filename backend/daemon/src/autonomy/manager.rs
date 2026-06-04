@@ -3292,7 +3292,7 @@ api_key_env = "{api_key_env}"
 
         let mut app = shore_config::app::AppConfig::default();
         app.behavior.tool_use.enabled = false;
-        app.memory.thinking.preserve_prior_turns = false;
+        app.memory.thinking.replay_prior_thinking = false;
         let config = LoadedConfig::new_for_test(
             app,
             catalog,
@@ -3319,7 +3319,7 @@ api_key_env = "{api_key_env}"
             blocks
                 .iter()
                 .all(|block| block.get("type").and_then(Value::as_str) != Some("thinking")),
-            "heartbeat rebuild must honor preserve_prior_turns=false"
+            "heartbeat rebuild must honor replay_prior_thinking=false"
         );
         assert!(
             blocks

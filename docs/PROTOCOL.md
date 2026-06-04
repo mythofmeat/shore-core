@@ -689,7 +689,7 @@ with that role.
 - **args:** `{ "key": "<key>", "value": <number|string|bool|null>, "scope"?: "character" | "global" }`
 - **valid keys:** `temperature`, `top_p`, `reasoning_effort`,
   `budget_tokens`, `max_output_tokens`, `cache_ttl`, `sdk`,
-  `preserve_prior_turns` (plus the vendor knobs `openrouter_provider`,
+  `replay_prior_thinking` (plus the vendor knobs `openrouter_provider`,
   `vertex_project`, `vertex_location`, `gemini_generation`,
   `gemini_web_search`, `zai_clear_thinking`, `zai_subscription`).
 - **data:** `{ "changed": true, "scope": "character", "model": "…", "provider": "…", "model_id": "…", "key": "…", "value": … }`

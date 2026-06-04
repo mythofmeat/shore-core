@@ -328,8 +328,8 @@ pub(super) async fn handle_generation(
         // Per-model override (preferences overlay) falls back to the global
         // `[memory.thinking]` default. The effect is model-dependent — see #129.
         resolved
-            .preserve_prior_turns
-            .unwrap_or(effective_config.app.memory.thinking.preserve_prior_turns),
+            .replay_prior_thinking
+            .unwrap_or(effective_config.app.memory.thinking.replay_prior_thinking),
         regen_alt,
     )
     .await?;

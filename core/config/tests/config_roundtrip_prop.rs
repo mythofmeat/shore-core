@@ -439,7 +439,7 @@ fn arb_memory_config() -> impl Strategy<Value = MemoryConfig> {
             |(
                 compaction,
                 dreaming,
-                preserve_prior_turns,
+                replay_prior_thinking,
                 mode,
                 max_file_bytes,
                 max_indexed_files,
@@ -450,7 +450,7 @@ fn arb_memory_config() -> impl Strategy<Value = MemoryConfig> {
                 compaction,
                 dreaming,
                 thinking: ThinkingConfig {
-                    preserve_prior_turns,
+                    replay_prior_thinking,
                 },
                 retrieval: RetrievalConfig {
                     mode,

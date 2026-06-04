@@ -949,8 +949,8 @@ fn set_model_setting_sdk_persists_to_preferences() {
 }
 
 #[test]
-fn set_model_setting_preserve_prior_turns_persists_and_surfaces() {
-    // #129: per-model `preserve_prior_turns` override is user-controlled,
+fn set_model_setting_replay_prior_thinking_persists_and_surfaces() {
+    // #129: per-model `replay_prior_thinking` override is user-controlled,
     // persists to the character preferences file, and surfaces through
     // model_settings at character_model scope.
     let tmp = TempDir::new().unwrap();
@@ -959,7 +959,7 @@ fn set_model_setting_preserve_prior_turns_persists_and_surfaces() {
 
     let _ = set_model_setting(
         &mut ctx,
-        &json!({"key": "preserve_prior_turns", "value": false}),
+        &json!({"key": "replay_prior_thinking", "value": false}),
     )
     .unwrap();
 
@@ -970,24 +970,24 @@ fn set_model_setting_preserve_prior_turns_persists_and_surfaces() {
             .model("openrouter", "gpt-4o")
             .unwrap()
             .sampler
-            .preserve_prior_turns,
+            .replay_prior_thinking,
         Some(false)
     );
 
     let out = model_settings(&ctx, &json!({})).unwrap();
-    assert_eq!(out["effective_sampler"]["preserve_prior_turns"], false);
-    assert_eq!(out["scopes"]["preserve_prior_turns"], "character_model");
+    assert_eq!(out["effective_sampler"]["replay_prior_thinking"], false);
+    assert_eq!(out["scopes"]["replay_prior_thinking"], "character_model");
 }
 
 #[test]
-fn set_model_setting_preserve_prior_turns_rejects_non_bool() {
+fn set_model_setting_replay_prior_thinking_rejects_non_bool() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
     ctx.active_model = Some("gpt-4o".into());
 
     let err = set_model_setting(
         &mut ctx,
-        &json!({"key": "preserve_prior_turns", "value": "yes"}),
+        &json!({"key": "replay_prior_thinking", "value": "yes"}),
     )
     .unwrap_err();
     assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
@@ -1320,7 +1320,7 @@ fn model_settings_vendor_knob_applicability_per_sdk() {
     assert_eq!(out["applicability"]["gemini_generation"], "ignored");
     assert_eq!(out["applicability"]["budget_tokens"], "ignored");
     // Shore-only keys stay always-applicable.
-    assert_eq!(out["applicability"]["preserve_prior_turns"], "always");
+    assert_eq!(out["applicability"]["replay_prior_thinking"], "always");
 }
 
 #[test]
