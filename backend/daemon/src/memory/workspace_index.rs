@@ -124,14 +124,6 @@ impl HybridMode {
 /// message) serialize through a per-path async mutex so the load → mutate →
 /// save sequence is exclusive. Different characters (different paths) do
 /// not block each other.
-#[expect(
-    clippy::too_many_lines,
-    reason = "workspace index refresh/search orchestration split is tracked in #109"
-)]
-#[expect(
-    clippy::float_arithmetic,
-    reason = "hybrid workspace search blends lexical and semantic f32 relevance weights"
-)]
 pub async fn hybrid_search(
     workspace_dir: &str,
     retrieval_config: &RetrievalConfig,
@@ -161,7 +153,72 @@ pub async fn hybrid_search(
     let model_id = embedder.model_id().to_owned();
 
     let mut candidates = enumerate_files(workspace_dir, retrieval_config).await;
-    let mut skipped_binary_or_large = 0_usize;
+
+    let mut index_dirty = prune_and_scope(&mut index, &mut candidates, path_filter);
+
+    let RefreshOutcome {
+        stale,
+        stale_docs,
+        skipped_binary_or_large,
+        dirty: refresh_dirty,
+    } = refresh_index_entries(&mut candidates, &mut index, retrieval_config, &model_id).await;
+    index_dirty = index_dirty || refresh_dirty;
+
+    // Persist prune + skip-record progress before the embed call so a
+    // transient embedder failure doesn't drop the work — the next call
+    // would otherwise repeat the same prune and re-mark the same skips.
+    if index_dirty {
+        save_index(index_path, &index);
+        index_dirty = false;
+    }
+
+    if !stale_docs.is_empty() {
+        embed_stale_entries(
+            embedder,
+            &mut index,
+            stale,
+            stale_docs,
+            &model_id,
+            retrieval_config,
+        )
+        .await?;
+        index_dirty = true;
+    }
+
+    if index_dirty {
+        save_index(index_path, &index);
+    }
+
+    let query_vector = embed_query(embedder, query).await?;
+
+    let (files, searched_files, embedded_files) =
+        score_candidates(candidates, &index, &query_vector, mode, query);
+
+    Ok(HybridSearchResult {
+        files,
+        searched_files,
+        embedded_files,
+        skipped_binary_or_large,
+    })
+}
+
+/// Outputs of [`refresh_index_entries`]: stale entries needing re-embedding,
+/// their embedding documents, the binary/oversize skip count, and whether the
+/// index changed on disk.
+struct RefreshOutcome {
+    stale: Vec<(String, u64, i64)>,
+    stale_docs: Vec<String>,
+    skipped_binary_or_large: usize,
+    dirty: bool,
+}
+
+/// Prune index entries whose files vanished or fell outside the walk, then
+/// scope `candidates` to `path_filter`. Returns whether the index changed.
+fn prune_and_scope(
+    index: &mut WorkspaceIndex,
+    candidates: &mut Vec<FileCandidate>,
+    path_filter: Option<&str>,
+) -> bool {
     let mut index_dirty = false;
 
     // Drop entries whose files vanished or now live outside the walk.
@@ -185,19 +242,31 @@ pub async fn hybrid_search(
         candidates.retain(|f| f.display_path == prefix || f.display_path.starts_with(&with_slash));
     }
 
-    // Refresh per-file content + identify stale entries.
-    //
-    // Freshness is `(size, mtime, model_id, max_embed_chars_per_file)` only —
-    // no SHA256. The narrow miss case is editors that preserve mtime on a
-    // content change; agent edits via `write` / `edit` always bump mtime so
-    // this is acceptable and self-corrects on any later real edit.
-    //
-    // `stale` captures `(path, size, mtime)` per file that needs a fresh
-    // embedding so the writeback after `embedder.embed(...)` doesn't have
-    // to re-find each candidate by path.
+    index_dirty
+}
+
+/// Refresh per-file content and identify entries that need a fresh embedding.
+///
+/// Freshness is `(size, mtime, model_id, max_embed_chars_per_file)` only —
+/// no SHA256. The narrow miss case is editors that preserve mtime on a
+/// content change; agent edits via `write` / `edit` always bump mtime so
+/// this is acceptable and self-corrects on any later real edit.
+///
+/// `stale` captures `(path, size, mtime)` per file that needs a fresh
+/// embedding so the writeback after `embedder.embed(...)` doesn't have
+/// to re-find each candidate by path.
+async fn refresh_index_entries(
+    candidates: &mut [FileCandidate],
+    index: &mut WorkspaceIndex,
+    retrieval_config: &RetrievalConfig,
+    model_id: &str,
+) -> RefreshOutcome {
     let mut stale: Vec<(String, u64, i64)> = Vec::new();
     let mut stale_docs: Vec<String> = Vec::new();
-    for file in &mut candidates {
+    let mut skipped_binary_or_large = 0_usize;
+    let mut dirty = false;
+
+    for file in candidates.iter_mut() {
         if file.skip_reason.as_deref() == Some("oversize") {
             skipped_binary_or_large = skipped_binary_or_large.saturating_add(1);
             let _ignored = index.entries.insert(
@@ -206,14 +275,14 @@ pub async fn hybrid_search(
                     hash: skip_tag(file.size, file.modified_at_secs),
                     size: file.size,
                     modified_at_secs: file.modified_at_secs,
-                    model_id: model_id.clone(),
+                    model_id: model_id.to_owned(),
                     max_embed_chars_per_file: Some(retrieval_config.max_embed_chars_per_file),
                     embedded: false,
                     reason: Some("oversize".into()),
                     embedding: Vec::new(),
                 },
             );
-            index_dirty = true;
+            dirty = true;
             continue;
         }
 
@@ -228,7 +297,7 @@ pub async fn hybrid_search(
         let Ok(bytes) = tokio::fs::read(&file.fs_path).await else {
             file.skip_reason = Some("read failed".into());
             if index.entries.remove(&file.display_path).is_some() {
-                index_dirty = true;
+                dirty = true;
             }
             continue;
         };
@@ -256,56 +325,65 @@ pub async fn hybrid_search(
                     hash: skip_tag(file.size, file.modified_at_secs),
                     size: file.size,
                     modified_at_secs: file.modified_at_secs,
-                    model_id: model_id.clone(),
+                    model_id: model_id.to_owned(),
                     max_embed_chars_per_file: Some(retrieval_config.max_embed_chars_per_file),
                     embedded: false,
                     reason: Some(reason.into()),
                     embedding: Vec::new(),
                 },
             );
-            index_dirty = true;
+            dirty = true;
         }
     }
 
-    // Persist prune + skip-record progress before the embed call so a
-    // transient embedder failure doesn't drop the work — the next call
-    // would otherwise repeat the same prune and re-mark the same skips.
-    if index_dirty {
-        save_index(index_path, &index);
-        index_dirty = false;
+    RefreshOutcome {
+        stale,
+        stale_docs,
+        skipped_binary_or_large,
+        dirty,
     }
+}
 
-    if !stale_docs.is_empty() {
-        let vectors = embed_documents(embedder, &stale_docs).await?;
-        if vectors.len() != stale.len() {
-            return Err(WorkspaceIndexError::EmbeddingCountMismatch {
-                got: vectors.len(),
-                expected: stale.len(),
-            });
-        }
-        for ((path, size, mtime), embedding) in stale.into_iter().zip(vectors) {
-            let _ignored = index.entries.insert(
-                path,
-                IndexedEntry {
-                    hash: skip_tag(size, mtime),
-                    size,
-                    modified_at_secs: mtime,
-                    model_id: model_id.clone(),
-                    max_embed_chars_per_file: Some(retrieval_config.max_embed_chars_per_file),
-                    embedded: true,
-                    reason: None,
-                    embedding,
-                },
-            );
-        }
-        index_dirty = true;
+/// Embed the stale documents and write the fresh vectors back into the index.
+async fn embed_stale_entries(
+    embedder: &dyn Embedder,
+    index: &mut WorkspaceIndex,
+    stale: Vec<(String, u64, i64)>,
+    stale_docs: Vec<String>,
+    model_id: &str,
+    retrieval_config: &RetrievalConfig,
+) -> Result<(), WorkspaceIndexError> {
+    let vectors = embed_documents(embedder, &stale_docs).await?;
+    if vectors.len() != stale.len() {
+        return Err(WorkspaceIndexError::EmbeddingCountMismatch {
+            got: vectors.len(),
+            expected: stale.len(),
+        });
     }
-
-    if index_dirty {
-        save_index(index_path, &index);
+    for ((path, size, mtime), embedding) in stale.into_iter().zip(vectors) {
+        let _ignored = index.entries.insert(
+            path,
+            IndexedEntry {
+                hash: skip_tag(size, mtime),
+                size,
+                modified_at_secs: mtime,
+                model_id: model_id.to_owned(),
+                max_embed_chars_per_file: Some(retrieval_config.max_embed_chars_per_file),
+                embedded: true,
+                reason: None,
+                embedding,
+            },
+        );
     }
+    Ok(())
+}
 
-    let query_vector = embedder
+/// Embed the query string and return its single vector.
+async fn embed_query(
+    embedder: &dyn Embedder,
+    query: &str,
+) -> Result<Vec<f32>, WorkspaceIndexError> {
+    embedder
         .embed(&[query])
         .await
         .map_err(|e| WorkspaceIndexError::Embedder(e.to_string()))?
@@ -313,8 +391,23 @@ pub async fn hybrid_search(
         .next()
         .ok_or_else(|| {
             WorkspaceIndexError::Embedder("embedding response did not include query vector".into())
-        })?;
+        })
+}
 
+/// Score candidates by blended lexical + semantic relevance, retain non-zero
+/// matches, and sort best-first. Returns `(files, searched_files,
+/// embedded_files)`.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "hybrid workspace search blends lexical and semantic f32 relevance weights"
+)]
+fn score_candidates(
+    candidates: Vec<FileCandidate>,
+    index: &WorkspaceIndex,
+    query_vector: &[f32],
+    mode: HybridMode,
+    query: &str,
+) -> (Vec<ScoredFile>, usize, usize) {
     let q_lower = query.to_lowercase();
     let terms = tokenize_query(&q_lower);
 
@@ -327,7 +420,7 @@ pub async fn hybrid_search(
             let entry = index.entries.get(&file.display_path);
             let semantic = entry
                 .filter(|e| e.embedded)
-                .map(|e| cosine_similarity(&query_vector, &e.embedding));
+                .map(|e| cosine_similarity(query_vector, &e.embedding));
             let has_embedding_entry = entry.is_some_and(|e| e.embedded);
             ScoredFile {
                 display_path: file.display_path,
@@ -367,12 +460,7 @@ pub async fn hybrid_search(
             .then_with(|| a.display_path.cmp(&b.display_path))
     });
 
-    Ok(HybridSearchResult {
-        files: scored,
-        searched_files,
-        embedded_files,
-        skipped_binary_or_large,
-    })
+    (scored, searched_files, embedded_files)
 }
 
 #[derive(Debug, Clone)]
