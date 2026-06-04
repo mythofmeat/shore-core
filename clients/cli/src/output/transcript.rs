@@ -35,8 +35,8 @@ pub(crate) fn character_color(name: &str) -> Color {
     let hash = name.bytes().fold(0_u32, |acc, b| {
         acc.wrapping_mul(31).wrapping_add(u32::from(b))
     });
-    let hash = usize::try_from(hash).unwrap_or(usize::MAX);
-    let idx = hash.checked_rem(CHARACTER_PALETTE.len()).unwrap_or(0);
+    let hash_idx = usize::try_from(hash).unwrap_or(usize::MAX);
+    let idx = hash_idx.checked_rem(CHARACTER_PALETTE.len()).unwrap_or(0);
     CHARACTER_PALETTE.get(idx).copied().unwrap_or(Color::White)
 }
 
@@ -71,9 +71,9 @@ pub(crate) fn write_header(
     }
     let _ignored = write!(out, "{prefix}{rule}");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 fn write_archive_boundary(out: &mut impl Write, width: usize, archived_turns: usize) {
@@ -96,9 +96,9 @@ fn write_archive_boundary(out: &mut impl Write, width: usize, archived_turns: us
     }
     let _ignored = writeln!(out, "{line}");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 fn is_tool_result_only_value(msg: &serde_json::Value) -> bool {
@@ -204,8 +204,8 @@ fn render_message_content(
                         };
                         write_sigil_header(out, sigil, label, color);
                         // Bodies stay dim; the colored header carries the status.
-                        let output = format_tool_output(output);
-                        write_process_body(out, &output);
+                        let formatted = format_tool_output(output);
+                        write_process_body(out, &formatted);
                     }
                     _ => {}
                 }
@@ -242,7 +242,7 @@ pub(crate) fn print_log_with_boundary(
 fn write_log_with_boundary(
     out: &mut impl Write,
     messages: &[serde_json::Value],
-    active_start: usize,
+    active_start_in: usize,
     character_name: &str,
     width: usize,
 ) {
@@ -250,7 +250,7 @@ fn write_log_with_boundary(
 
     let mut prev_date: Option<String> = None;
 
-    let active_start = active_start.min(messages.len());
+    let active_start = active_start_in.min(messages.len());
     let archived = messages.get(..active_start).unwrap_or(messages);
     let archived_turns = count_user_turn_values(archived);
     for (index, msg) in messages.iter().enumerate() {
@@ -298,7 +298,7 @@ fn write_log_with_boundary(
                     let prefix_len = prefix.chars().count();
                     let trail = width.saturating_sub(prefix_len);
                     let _ignored = write!(out, "{prefix}{}", "\u{2500}".repeat(trail));
-                    let _ignored = writeln!(out);
+                    _ = writeln!(out);
                 }
                 _ => {}
             }
@@ -325,9 +325,9 @@ fn write_log_with_boundary(
                 }
                 let _ignored = write!(out, "  \u{1f4ce} {label}");
                 if use_color() {
-                    let _ignored = crossterm::execute!(out, ResetColor);
+                    _ = crossterm::execute!(out, ResetColor);
                 }
-                let _ignored = writeln!(out);
+                _ = writeln!(out);
             }
         }
 
@@ -383,10 +383,10 @@ pub(crate) fn print_log_plain_with_boundary(
 fn write_log_plain_with_boundary(
     out: &mut impl Write,
     messages: &[serde_json::Value],
-    active_start: usize,
+    active_start_in: usize,
     character_name: &str,
 ) {
-    let active_start = active_start.min(messages.len());
+    let active_start = active_start_in.min(messages.len());
     let archived = messages.get(..active_start).unwrap_or(messages);
     let archived_turns = count_user_turn_values(archived);
     for (index, msg) in messages.iter().enumerate() {
@@ -421,19 +421,19 @@ fn write_log_plain_with_boundary(
                         "text" => {
                             let text = block["text"].as_str().unwrap_or("");
                             if !text.is_empty() {
-                                let _ignored = writeln!(out, "{text}");
+                                _ = writeln!(out, "{text}");
                             }
                         }
                         "thinking" => {
                             let t = block["thinking"].as_str().unwrap_or("");
                             if !t.is_empty() {
-                                let _ignored = writeln!(out, "[thinking] {t}");
+                                _ = writeln!(out, "[thinking] {t}");
                             }
                         }
                         // redacted_thinking is a content-free placeholder — hide it.
                         "tool_use" => {
-                            let name = block["name"].as_str().unwrap_or("?");
-                            let _ignored = writeln!(out, "[tool: {name}]");
+                            let tool_name = block["name"].as_str().unwrap_or("?");
+                            _ = writeln!(out, "[tool: {tool_name}]");
                             if let Some(input_str) = format_tool_input(&block["input"]) {
                                 write_tool_body_plain(out, &input_str);
                             }
@@ -442,21 +442,21 @@ fn write_log_plain_with_boundary(
                             let output = block["content"].as_str().unwrap_or("");
                             let is_error = block["is_error"].as_bool().unwrap_or(false);
                             let label = if is_error { "error" } else { "result" };
-                            let _ignored = writeln!(out, "[{label}]");
-                            let output = format_tool_output(output);
-                            write_tool_body_plain(out, &output);
+                            _ = writeln!(out, "[{label}]");
+                            let formatted = format_tool_output(output);
+                            write_tool_body_plain(out, &formatted);
                         }
                         _ => {}
                     }
                 }
             } else if !content.is_empty() {
-                let _ignored = writeln!(out, "{content}");
+                _ = writeln!(out, "{content}");
             }
         } else if !content.is_empty() {
-            let _ignored = writeln!(out, "{content}");
+            _ = writeln!(out, "{content}");
         }
 
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
     }
 
     if active_start > 0 && active_start == messages.len() {
@@ -485,7 +485,7 @@ pub(crate) fn print_new_message(msg: &NewMessage, character_name: &str) {
 
     write_header(&mut out, name, &time_str, color, width);
     let _ignored = writeln!(out, "{}", msg.message.content);
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 
     // Render any attached images.
     print_image_refs(&msg.message.images);
@@ -560,13 +560,13 @@ pub(crate) fn print_heartbeat_log(data: &serde_json::Value) {
         }
         let _ignored = write!(out, "  {time_str:<14}");
         if use_color() {
-            let _ignored = crossterm::execute!(out, SetForegroundColor(kind_color));
+            _ = crossterm::execute!(out, SetForegroundColor(kind_color));
         }
-        let _ignored = write!(out, "{kind:<18}");
+        _ = write!(out, "{kind:<18}");
         if use_color() {
-            let _ignored = crossterm::execute!(out, ResetColor);
+            _ = crossterm::execute!(out, ResetColor);
         }
-        let _ignored = writeln!(out, "{detail}");
+        _ = writeln!(out, "{detail}");
     }
     let _ignored = writeln!(out);
 }
@@ -604,9 +604,9 @@ mod tests {
         set_color_enabled(false);
         let mut stdout = io::stdout();
         let _ignored = stdout.write_all(b"\n----- LOG RENDER (shore log / shore get) -----\n");
-        let _ignored = stdout.write_all(&buf);
-        let _ignored = stdout.write_all(b"----- end -----\n");
-        let _ignored = stdout.flush();
+        _ = stdout.write_all(&buf);
+        _ = stdout.write_all(b"----- end -----\n");
+        _ = stdout.flush();
     }
 
     fn transcript_snapshot_messages() -> Vec<serde_json::Value> {

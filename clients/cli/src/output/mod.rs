@@ -116,7 +116,7 @@ fn write_gutter(out: &mut impl Write) {
     }
     let _ignored = write!(out, " {CHANNEL_BAR} ");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -129,7 +129,7 @@ pub(crate) fn write_channel_rule(out: &mut impl Write) {
     }
     let _ignored = writeln!(out, " {CHANNEL_BAR}");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -142,7 +142,7 @@ pub(crate) fn write_sigil_header(out: &mut impl Write, sigil: char, text: &str, 
     }
     let _ignored = writeln!(out, "{sigil} {text}");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -220,8 +220,8 @@ pub(crate) fn primary_tool_arg(input: &serde_json::Value) -> Option<String> {
     ];
     let obj = input.as_object()?;
     for key in KEYS {
-        if let Some(s) = obj.get(*key).and_then(|v| v.as_str()) {
-            let s = s.trim();
+        if let Some(raw) = obj.get(*key).and_then(|v| v.as_str()) {
+            let s = raw.trim();
             if !s.is_empty() {
                 return Some(truncate_chars(s, 60));
             }
@@ -244,8 +244,8 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// chars). Whitespace runs collapse to single spaces. A word longer than
 /// `width` is emitted on its own line rather than hard-split. An empty/blank
 /// input yields a single empty line so callers can still emit a gutter for it.
-pub(crate) fn wrap_line(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
+pub(crate) fn wrap_line(text: &str, width_in: usize) -> Vec<String> {
+    let width = width_in.max(1);
     let mut lines = Vec::new();
     let mut cur = String::new();
     let mut cur_len = 0_usize;
@@ -282,7 +282,7 @@ pub(crate) fn write_fg(out: &mut impl Write, color: Color, text: &str) {
     }
     let _ignored = write!(out, "{text}");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -298,7 +298,7 @@ pub(crate) fn print_dim_line(out: &mut impl Write, text: &str) {
     }
     let _ignored = writeln!(out, "  {text}");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
 }
 
@@ -318,9 +318,9 @@ pub(crate) fn write_section_header(out: &mut impl Write, title: &str, suffix: &s
     }
     let _ignored = write!(out, "{prefix}{rule}");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 /// Write a label-value row, optionally coloring the value.
@@ -461,8 +461,8 @@ mod tests {
     fn primary_tool_arg_picks_known_key() {
         let input = serde_json::json!({"path": "src/main.rs", "edits": []});
         assert_eq!(primary_tool_arg(&input).as_deref(), Some("src/main.rs"));
-        let input = serde_json::json!({"foo": "bar"});
-        assert_eq!(primary_tool_arg(&input), None);
+        let unknown_input = serde_json::json!({"foo": "bar"});
+        assert_eq!(primary_tool_arg(&unknown_input), None);
     }
 
     #[test]

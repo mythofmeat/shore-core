@@ -54,10 +54,10 @@ impl NotificationService {
         }
         let config = Arc::clone(&self.config);
         let client = self.http_client.clone();
-        let title = title.to_owned();
-        let body = truncate_summary(body, 200);
+        let title_owned = title.to_owned();
+        let body_summary = truncate_summary(body, 200);
         let _ignored = tokio::spawn(async move {
-            if let Err(e) = dispatch(&config, &client, &title, &body).await {
+            if let Err(e) = dispatch(&config, &client, &title_owned, &body_summary).await {
                 warn!(error = %e, "Notification dispatch failed");
             }
         });

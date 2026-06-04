@@ -109,46 +109,48 @@ fn builder() -> TestConfigBuilder {
 
 #[tokio::test]
 async fn per_model_and_per_character_sampler_persists_across_restart() {
-    let harness = TestHarness::boot_with(builder()).await;
+    let crashed = {
+        let harness = TestHarness::boot_with(builder()).await;
 
-    // ── TestChar: haiku=0.7, sonnet=1.2 ────────────────────────────────
-    let mut alice = harness.connect_as_character("TestChar").await;
-    switch_model(&mut alice, "haiku").await;
-    set_temperature(&mut alice, 0.7).await;
+        // ── TestChar: haiku=0.7, sonnet=1.2 ────────────────────────────────
+        let mut alice = harness.connect_as_character("TestChar").await;
+        switch_model(&mut alice, "haiku").await;
+        set_temperature(&mut alice, 0.7).await;
 
-    switch_model(&mut alice, "sonnet").await;
-    set_temperature(&mut alice, 1.2).await;
+        switch_model(&mut alice, "sonnet").await;
+        set_temperature(&mut alice, 1.2).await;
 
-    // Switch back to haiku — must still see 0.7, not 1.2.
-    switch_model(&mut alice, "haiku").await;
-    assert_eq!(
-        read_temperature(&mut alice).await,
-        Some(0.7),
-        "haiku must keep its own temperature after toggling to sonnet and back"
-    );
-    switch_model(&mut alice, "sonnet").await;
-    assert_eq!(read_temperature(&mut alice).await, Some(1.2));
+        // Switch back to haiku — must still see 0.7, not 1.2.
+        switch_model(&mut alice, "haiku").await;
+        assert_eq!(
+            read_temperature(&mut alice).await,
+            Some(0.7),
+            "haiku must keep its own temperature after toggling to sonnet and back"
+        );
+        switch_model(&mut alice, "sonnet").await;
+        assert_eq!(read_temperature(&mut alice).await, Some(1.2));
 
-    // ── Bob: haiku=0.5 (independent from TestChar.haiku=0.7) ────────────
-    let mut bob = harness.connect_as_character("Bob").await;
-    switch_model(&mut bob, "haiku").await;
-    set_temperature(&mut bob, 0.5).await;
-    assert_eq!(read_temperature(&mut bob).await, Some(0.5));
+        // ── Bob: haiku=0.5 (independent from TestChar.haiku=0.7) ────────────
+        let mut bob = harness.connect_as_character("Bob").await;
+        switch_model(&mut bob, "haiku").await;
+        set_temperature(&mut bob, 0.5).await;
+        assert_eq!(read_temperature(&mut bob).await, Some(0.5));
 
-    // Sanity: TestChar.haiku is still 0.7 after Bob's writes.
-    switch_model(&mut alice, "haiku").await;
-    assert_eq!(
-        read_temperature(&mut alice).await,
-        Some(0.7),
-        "TestChar.haiku must not be overwritten by writes against Bob"
-    );
+        // Sanity: TestChar.haiku is still 0.7 after Bob's writes.
+        switch_model(&mut alice, "haiku").await;
+        assert_eq!(
+            read_temperature(&mut alice).await,
+            Some(0.7),
+            "TestChar.haiku must not be overwritten by writes against Bob"
+        );
 
-    // Drop both connections so the SWP server doesn't trip on aborted reads.
-    drop(alice);
-    drop(bob);
+        // Drop both connections so the SWP server doesn't trip on aborted reads.
+        drop(alice);
+        drop(bob);
 
-    // ── crash + reboot ──────────────────────────────────────────────────
-    let crashed = harness.crash().await;
+        // ── crash + reboot ──────────────────────────────────────────────────
+        harness.crash().await
+    };
     let harness = crashed.reboot_with(builder()).await;
 
     // ── verify all three (character, model) values survived restart ────

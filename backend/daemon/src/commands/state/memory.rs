@@ -37,11 +37,11 @@ pub fn memory_changelog(
     ctx: &CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let limit = args
+    let limit_raw = args
         .get("limit")
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(20);
-    let limit = usize::try_from(limit.max(0)).unwrap_or(usize::MAX);
+    let limit = usize::try_from(limit_raw.max(0)).unwrap_or(usize::MAX);
 
     let char_name = engine.character_name();
     let dreams_path = crate::memory::dreams_log::dreams_log_path(&ctx.config.dirs.data, char_name);
@@ -167,7 +167,7 @@ pub async fn memory_dream(
     let cfg = &ctx.config.app.memory.dreaming;
 
     if status {
-        let status = crate::memory::dreaming::dream_status(
+        let status_report = crate::memory::dreaming::dream_status(
             &ctx.data_dir,
             &ctx.config.dirs.config,
             char_name,
@@ -175,7 +175,7 @@ pub async fn memory_dream(
         )
         .await
         .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-        return Ok(json!(status));
+        return Ok(json!(status_report));
     }
 
     let cached_request = ctx.autonomy.cached_last_request(char_name);
@@ -206,7 +206,7 @@ pub async fn memory_dream(
         Err(e) => return Err((ErrorCode::InternalError, e.to_string())),
     };
     match result {
-        Some(result) => Ok(json!(result)),
+        Some(report) => Ok(json!(report)),
         None => Ok(json!({
             "character": char_name,
             "status": "not_due",

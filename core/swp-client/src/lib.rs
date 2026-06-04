@@ -34,6 +34,9 @@
     clippy::undocumented_unsafe_blocks,
     clippy::multiple_unsafe_ops_per_block,
     clippy::missing_assert_message,
+    clippy::shadow_same,
+    clippy::shadow_reuse,
+    clippy::shadow_unrelated,
     unsafe_code,
     elided_lifetimes_in_paths,
     unused_qualifications
@@ -257,20 +260,20 @@ mod tests {
             let mut reader = tokio::io::BufReader::new(r);
 
             // Read regen
-            let msg: ClientMessage = read_json_line(&mut reader).await;
-            assert!(matches!(msg, ClientMessage::Regen(_)));
+            let regen_msg: ClientMessage = read_json_line(&mut reader).await;
+            assert!(matches!(regen_msg, ClientMessage::Regen(_)));
 
             // Read command
-            let msg: ClientMessage = read_json_line(&mut reader).await;
-            let ClientMessage::Command(c) = msg else {
+            let command_msg: ClientMessage = read_json_line(&mut reader).await;
+            let ClientMessage::Command(c) = command_msg else {
                 panic!("expected command");
             };
             assert_eq!(c.name, "switch_character");
         });
 
         let mut conn = SWPConnection::from_raw_stream(client_stream);
-        let _ignored = conn.send_regen(true, None).await.unwrap();
-        let _ignored = conn
+        let _regen_sent = conn.send_regen(true, None).await.unwrap();
+        let _command_sent = conn
             .send_command("switch_character", serde_json::json!({"name": "alice"}))
             .await
             .unwrap();
@@ -516,7 +519,7 @@ mod tests {
             rid: None,
             regen: false,
         });
-        let _ignored = handler.feed(&start, Some(&mut cb)).unwrap();
+        let _fed_start = handler.feed(&start, Some(&mut cb)).unwrap();
         assert!(*started.lock().unwrap());
 
         let chunk = ServerMessage::StreamChunk(StreamChunk {
@@ -524,8 +527,8 @@ mod tests {
             text: "hi".into(),
             content_type: "text".into(),
         });
-        let _ignored = handler.feed(&chunk, Some(&mut cb)).unwrap();
-        let _ignored = handler.feed(&chunk, Some(&mut cb)).unwrap();
+        let _fed_chunk = handler.feed(&chunk, Some(&mut cb)).unwrap();
+        let _fed_chunk_again = handler.feed(&chunk, Some(&mut cb)).unwrap();
         assert_eq!(*chunk_count.lock().unwrap(), 2);
 
         let end = ServerMessage::StreamEnd(StreamEnd {
@@ -549,7 +552,7 @@ mod tests {
             finish_reason: "end_turn".into(),
             is_final: true,
         });
-        let _ignored = handler.feed(&end, Some(&mut cb)).unwrap();
+        let _fed_end = handler.feed(&end, Some(&mut cb)).unwrap();
         assert!(*ended.lock().unwrap());
     }
 
@@ -562,13 +565,13 @@ mod tests {
             rid: None,
             regen: false,
         });
-        let _ignored = handler.feed(&start, None).unwrap();
+        let _fed_start = handler.feed(&start, None).unwrap();
         let chunk = ServerMessage::StreamChunk(StreamChunk {
             rid: None,
             text: "first".into(),
             content_type: "text".into(),
         });
-        let _ignored = handler.feed(&chunk, None).unwrap();
+        let _fed_chunk = handler.feed(&chunk, None).unwrap();
         let end = ServerMessage::StreamEnd(StreamEnd {
             rid: None,
             msg_id: None,
@@ -590,14 +593,14 @@ mod tests {
             finish_reason: "end_turn".into(),
             is_final: true,
         });
-        let _ignored = handler.feed(&end, None).unwrap();
+        let _fed_end = handler.feed(&end, None).unwrap();
 
         // Second stream — feed automatically resets on stream_start
         let start2 = ServerMessage::StreamStart(StreamStart {
             rid: None,
             regen: true,
         });
-        let _ignored = handler.feed(&start2, None).unwrap();
+        let _fed_start2 = handler.feed(&start2, None).unwrap();
         assert!(handler.is_active());
         assert!(handler.is_regen());
         assert_eq!(handler.assembled_text(), "");

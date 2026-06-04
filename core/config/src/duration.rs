@@ -12,8 +12,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct ConfigDuration(u64);
 
 impl ConfigDuration {
-    pub fn parse(s: &str) -> Result<Self, String> {
-        let s = s.trim();
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let s = raw.trim();
         if s.is_empty() {
             return Err("duration string is empty".into());
         }

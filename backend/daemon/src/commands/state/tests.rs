@@ -1643,8 +1643,8 @@ base_url = "https://openrouter.ai/api/v1"
         // `set_model_setting` exercises the same resolver path; it
         // also failed before the fix.
         let _ = set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.5})).unwrap();
-        let out = model_settings(&ctx, &json!({})).unwrap();
-        assert_eq!(out["effective_sampler"]["temperature"], 0.5);
+        let out_after = model_settings(&ctx, &json!({})).unwrap();
+        assert_eq!(out_after["effective_sampler"]["temperature"], 0.5);
     }
 
     // ── Validation: hidden discovered models gated ──────────────────────

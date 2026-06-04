@@ -1786,10 +1786,10 @@ model_id = "claude-opus-4-6"
         struct T {
             sdk: Sdk,
         }
-        let t: T = toml::from_str("sdk = \"anthropic\"").unwrap();
-        assert_eq!(t.sdk, Sdk::Anthropic);
-        let t: T = toml::from_str("sdk = \"openai\"").unwrap();
-        assert_eq!(t.sdk, Sdk::Openai);
+        let anthropic: T = toml::from_str("sdk = \"anthropic\"").unwrap();
+        assert_eq!(anthropic.sdk, Sdk::Anthropic);
+        let openai: T = toml::from_str("sdk = \"openai\"").unwrap();
+        assert_eq!(openai.sdk, Sdk::Openai);
     }
 
     // ── ModelConfigFields ────────────────────────────────────────────

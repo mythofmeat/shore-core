@@ -14,14 +14,14 @@ use crate::runtime_state::load_active_model;
 pub fn build_handshake_provider(registry: Arc<Mutex<CharacterRegistry>>) -> HandshakeProvider {
     HandshakeProvider {
         hello: {
-            let registry = Arc::clone(&registry);
+            let hello_registry = Arc::clone(&registry);
             Arc::new(move || {
-                let registry = Arc::clone(&registry);
+                let per_call = Arc::clone(&hello_registry);
                 Box::pin(async move {
-                    let registry = registry.lock().await;
-                    let config_dir = registry.global_config().dirs.config.clone();
+                    let locked = per_call.lock().await;
+                    let config_dir = locked.global_config().dirs.config.clone();
                     HelloSnapshot {
-                        characters: registry
+                        characters: locked
                             .available_characters()
                             .iter()
                             .map(|name| character_metadata(&config_dir, name))
@@ -32,9 +32,9 @@ pub fn build_handshake_provider(registry: Arc<Mutex<CharacterRegistry>>) -> Hand
         },
         history: {
             Arc::new(move |selected_character| {
-                let registry = Arc::clone(&registry);
+                let per_call = Arc::clone(&registry);
                 Box::pin(async move {
-                    build_session_history_snapshot(registry, selected_character, None).await
+                    build_session_history_snapshot(per_call, selected_character, None).await
                 })
             })
         },
@@ -47,42 +47,42 @@ pub async fn build_session_history_snapshot(
     active_model: Option<String>,
 ) -> HistorySnapshot {
     let (engine, config) = {
-        let mut registry = registry.lock().await;
+        let mut guard = registry.lock().await;
         let effective_config = if let Some(name) = selected_character.as_deref() {
-            registry.effective_config(name).clone()
+            guard.effective_config(name).clone()
         } else {
-            registry.global_config().clone()
+            guard.global_config().clone()
         };
-        let active_model = resolve_snapshot_active_model(
+        let resolved_model = resolve_snapshot_active_model(
             &effective_config,
             selected_character.as_deref(),
             active_model,
         );
         let engine = selected_character
             .as_deref()
-            .and_then(|name| registry.get_or_create(name).ok());
+            .and_then(|name| guard.get_or_create(name).ok());
         (
             engine,
-            history_config_snapshot(&effective_config, active_model.clone()),
+            history_config_snapshot(&effective_config, resolved_model.clone()),
         )
     };
 
     match engine {
-        Some(engine) => {
-            let engine = engine.lock().await;
+        Some(engine_arc) => {
+            let engine_guard = engine_arc.lock().await;
             let History {
                 messages,
                 active_start,
                 config: _,
-                selected_character,
+                selected_character: snapshot_character,
                 revision,
                 ..
-            } = engine.history_snapshot(serde_json::json!({}));
+            } = engine_guard.history_snapshot(serde_json::json!({}));
             HistorySnapshot {
                 messages,
                 active_start,
                 config,
-                selected_character,
+                selected_character: snapshot_character,
                 revision,
             }
         }

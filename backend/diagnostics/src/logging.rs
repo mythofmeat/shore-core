@@ -184,11 +184,11 @@ mod tests {
             );
         });
 
-        let rendered = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        let raw = String::from_utf8(output.lock().unwrap().clone()).unwrap();
         // tracing-subscriber's DefaultFields formatter emits ANSI escapes around
         // span field names regardless of writer TTY-ness; strip them so the
         // assertions are stable across environments.
-        let rendered = strip_ansi(&rendered);
+        let rendered = strip_ansi(&raw);
         assert!(rendered
             .starts_with("WARN  shore_diagnostics::logging::tests: LLM API returned error status"));
         assert!(rendered.contains("fields: status=403 body_len=196 body_preview="));

@@ -984,24 +984,27 @@ mod tests {
 
     #[test]
     fn validate_rejects_inapplicable() {
-        let err = validate(
+        let cache_ttl_err = validate(
             &Sdk::Openai,
             "gpt-5.5",
             Field::CacheTtl,
             &toml::Value::String("1h".into()),
         )
         .unwrap_err();
-        assert!(matches!(err, CapabilityError::Inapplicable { .. }));
+        assert!(matches!(
+            cache_ttl_err,
+            CapabilityError::Inapplicable { .. }
+        ));
 
         // Sampler on a past-cutoff Claude model is Rejected → Inapplicable.
-        let err = validate(
+        let sampler_err = validate(
             &Sdk::Anthropic,
             "claude-opus-4-8",
             Field::Temperature,
             &toml::Value::Float(0.5),
         )
         .unwrap_err();
-        assert!(matches!(err, CapabilityError::Inapplicable { .. }));
+        assert!(matches!(sampler_err, CapabilityError::Inapplicable { .. }));
     }
 
     #[test]

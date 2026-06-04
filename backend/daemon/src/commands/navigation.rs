@@ -111,7 +111,7 @@ pub fn character_info(
         HEARTBEAT_FILE,
     ]
     .into_iter()
-    .filter(|name| workspace_dir.join(name).exists())
+    .filter(|file| workspace_dir.join(file).exists())
     .map(str::to_owned)
     .collect::<Vec<_>>();
 

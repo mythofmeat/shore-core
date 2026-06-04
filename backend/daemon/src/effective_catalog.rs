@@ -475,8 +475,7 @@ mod tests {
                             let mut disc = toml::Table::new();
                             let _ignored =
                                 disc.insert("enabled".into(), toml::Value::Boolean(true));
-                            let _ignored =
-                                provider_entry.insert("discovery".into(), toml::Value::Table(disc));
+                            _ = provider_entry.insert("discovery".into(), toml::Value::Table(disc));
                         }
                     }
                 }
@@ -1344,11 +1343,12 @@ cache_ttl = "1h"
         );
 
         // Bare upstream id.
-        let err = find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false)
-            .unwrap_err();
+        let bare_err =
+            find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false)
+                .unwrap_err();
         assert!(
-            matches!(err, EffectiveCatalogError::NotFound { .. }),
-            "static under a disabled provider must not resolve by bare id, got {err:?}"
+            matches!(bare_err, EffectiveCatalogError::NotFound { .. }),
+            "static under a disabled provider must not resolve by bare id, got {bare_err:?}"
         );
 
         // The static short alias still resolves through the static catalog

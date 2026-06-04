@@ -366,8 +366,8 @@ fn parse_list_item(
     }
 
     let start = parse_value(base, spec)?;
-    if let Some(step) = step {
-        insert_range(values, spec, start, spec.max, step);
+    if let Some(stride) = step {
+        insert_range(values, spec, start, spec.max, stride);
     } else {
         let _ignored = values.insert(spec.normalize(start));
     }
@@ -375,10 +375,10 @@ fn parse_list_item(
 }
 
 fn insert_range(values: &mut BTreeSet<u32>, spec: FieldSpec, start: u32, end: u32, step: u32) {
-    let Ok(step) = usize::try_from(step) else {
+    let Ok(stride) = usize::try_from(step) else {
         return;
     };
-    for value in (start..=end).step_by(step) {
+    for value in (start..=end).step_by(stride) {
         let _ignored = values.insert(spec.normalize(value));
     }
 }
@@ -416,7 +416,7 @@ fn parse_value(raw: &str, spec: FieldSpec) -> Result<u32, CronError> {
 
 fn floor_to_minute(dt: DateTime<Local>) -> DateTime<Local> {
     dt.with_second(0)
-        .and_then(|dt| dt.with_nanosecond(0))
+        .and_then(|t| t.with_nanosecond(0))
         .unwrap_or(dt)
 }
 

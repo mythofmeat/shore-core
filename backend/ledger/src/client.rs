@@ -628,8 +628,8 @@ impl LedgerClient {
         character: &str,
         thinking_enabled: bool,
     ) -> Result<(GenerateResponse, Vec<CredentialFallbackEvent>), LlmError> {
-        let resolved = resolve_model_for_request(request, config).cloned();
-        if let Some(resolved) = resolved {
+        let resolved_model = resolve_model_for_request(request, config).cloned();
+        if let Some(resolved) = resolved_model {
             self.generate_with_credential_fallback(
                 request,
                 &resolved,

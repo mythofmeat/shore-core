@@ -91,7 +91,7 @@ async fn test_new_message_during_generation_aborts_previous() {
 
     harness.mock_llm.enqueue_text("second response").await;
 
-    let _ignored = harness
+    _ = harness
         .conn
         .send_message("second message", true)
         .await

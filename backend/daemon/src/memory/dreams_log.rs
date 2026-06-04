@@ -46,9 +46,9 @@ pub async fn append_dream_entry(
     if !updated.is_empty() {
         updated.push_str("\n\n");
     }
-    let timestamp = timestamp.format("%Y-%m-%d %H:%M");
-    let body = body.trim();
-    write!(updated, "## {timestamp} - {title}\n\n{body}\n").map_err(io::Error::other)?;
+    let formatted_ts = timestamp.format("%Y-%m-%d %H:%M");
+    let trimmed_body = body.trim();
+    write!(updated, "## {formatted_ts} - {title}\n\n{trimmed_body}\n").map_err(io::Error::other)?;
 
     fs::write(&path, updated).await
 }

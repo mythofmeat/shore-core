@@ -173,8 +173,8 @@ pub fn render_tool_defs(
     use std::collections::HashMap;
     let mut vars: HashMap<String, String> = HashMap::new();
     let _ignored = vars.insert("char".into(), char_name.to_owned());
-    let _ignored = vars.insert("character_name".into(), char_name.to_owned());
-    let _ignored = vars.insert("user".into(), user_name.to_owned());
+    _ = vars.insert("character_name".into(), char_name.to_owned());
+    _ = vars.insert("user".into(), user_name.to_owned());
     available_tools(is_private, toggles)
         .iter()
         .map(|t| {
@@ -233,7 +233,7 @@ fn apply_default_search_mode(input: &mut Value, ctx: &dyn ToolContext, index_pat
 /// Dispatch a tool call by name to its handler.
 pub fn dispatch_tool<'ctx>(
     name: &'ctx str,
-    input: Value,
+    mut input: Value,
     ctx: &'ctx dyn ToolContext,
 ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'ctx>> {
     Box::pin(async move {
@@ -266,15 +266,11 @@ pub fn dispatch_tool<'ctx>(
                             obj.insert("prompt_visible_file".into(), serde_json::json!(true));
                         if crate::memory::deferred_edits::normalize_protected_path(&path).is_some()
                         {
-                            let _ignored =
-                                obj.insert("protected_file".into(), serde_json::json!(true));
+                            _ = obj.insert("protected_file".into(), serde_json::json!(true));
                         }
-                        let _ignored =
-                            obj.insert("deferred_until_compaction".into(), serde_json::json!(true));
-                        let _ignored =
-                            obj.insert("deferred_path".into(), serde_json::json!(deferred_path));
-                        let _ignored =
-                            obj.insert("prompt_reload_required".into(), serde_json::json!(true));
+                        _ = obj.insert("deferred_until_compaction".into(), serde_json::json!(true));
+                        _ = obj.insert("deferred_path".into(), serde_json::json!(deferred_path));
+                        _ = obj.insert("prompt_reload_required".into(), serde_json::json!(true));
                     }
                 }
                 Ok(result)
@@ -295,15 +291,11 @@ pub fn dispatch_tool<'ctx>(
                             obj.insert("prompt_visible_file".into(), serde_json::json!(true));
                         if crate::memory::deferred_edits::normalize_protected_path(&path).is_some()
                         {
-                            let _ignored =
-                                obj.insert("protected_file".into(), serde_json::json!(true));
+                            _ = obj.insert("protected_file".into(), serde_json::json!(true));
                         }
-                        let _ignored =
-                            obj.insert("deferred_until_compaction".into(), serde_json::json!(true));
-                        let _ignored =
-                            obj.insert("deferred_path".into(), serde_json::json!(deferred_path));
-                        let _ignored =
-                            obj.insert("prompt_reload_required".into(), serde_json::json!(true));
+                        _ = obj.insert("deferred_until_compaction".into(), serde_json::json!(true));
+                        _ = obj.insert("deferred_path".into(), serde_json::json!(deferred_path));
+                        _ = obj.insert("prompt_reload_required".into(), serde_json::json!(true));
                     }
                 }
                 Ok(result)
@@ -311,7 +303,6 @@ pub fn dispatch_tool<'ctx>(
             "list_files" => workspace::handle_list_files(input, ctx.workspace_dir()).await,
             "search" => {
                 let index_path = ctx.memory_index_path();
-                let mut input = input;
                 apply_default_search_mode(&mut input, ctx, index_path.is_some());
                 workspace::handle_search(
                     input,
@@ -594,13 +585,13 @@ mod tests {
         .unwrap();
         assert_eq!(result["bytes_written"], 14);
 
-        let result = dispatch_tool(
+        let read_result = dispatch_tool(
             "read",
             serde_json::json!({"path": "memory/people/ren.md"}),
             &ctx,
         )
         .await;
-        assert!(result.is_ok());
+        assert!(read_result.is_ok());
     }
 
     #[tokio::test]

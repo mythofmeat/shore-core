@@ -70,19 +70,23 @@ fn load_env_file() {
     let Ok(contents) = fs::read_to_string(path) else {
         return;
     };
-    for line in contents.lines() {
-        let line = line.trim();
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with("export ") {
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else {
+        let Some((raw_key, raw_value)) = line.split_once('=') else {
             continue;
         };
-        let key = key.trim();
+        let key = raw_key.trim();
         if key.is_empty() {
             continue;
         }
-        let value = value.trim().trim_matches('"').trim_matches('\'').to_owned();
+        let value = raw_value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_owned();
         env::set_var(key, value);
     }
 }

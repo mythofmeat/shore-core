@@ -34,6 +34,9 @@
     clippy::undocumented_unsafe_blocks,
     clippy::multiple_unsafe_ops_per_block,
     clippy::missing_assert_message,
+    clippy::shadow_same,
+    clippy::shadow_reuse,
+    clippy::shadow_unrelated,
     unsafe_code,
     elided_lifetimes_in_paths,
     unused_qualifications

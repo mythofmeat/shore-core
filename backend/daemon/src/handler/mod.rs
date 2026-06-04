@@ -282,7 +282,7 @@ impl MessageHandler {
                 }
                 control = self.control_rx.recv(), if control_open => {
                     match control {
-                        Some(control) => self.handle_control(control).await,
+                        Some(ctrl) => self.handle_control(ctrl).await,
                         None => control_open = false,
                     }
                 }
@@ -308,8 +308,11 @@ impl MessageHandler {
                     .send_to_session(meta.session.session_id, result)
                     .await;
             }
-            RoutedMessage::Engine { msg, meta } => {
-                self.handle_engine_message(msg, meta).await;
+            RoutedMessage::Engine {
+                msg: engine_msg,
+                meta,
+            } => {
+                self.handle_engine_message(engine_msg, meta).await;
             }
             RoutedMessage::AllClientsDisconnected => {
                 let session_ids: Vec<SessionId> = self.sessions.keys().copied().collect();

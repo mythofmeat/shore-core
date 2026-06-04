@@ -186,13 +186,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
 
 pub(crate) fn resolve_roots(
     workspace_dir: &str,
-    relative: &str,
+    relative_raw: &str,
 ) -> Result<(PathBuf, String), ToolError> {
     if workspace_dir.is_empty() {
         return Err(ToolError::InvalidArgs("workspace not configured".into()));
     }
 
-    let relative = relative.trim();
+    let relative = relative_raw.trim();
     if relative.is_empty() {
         return Err(ToolError::InvalidArgs("path is empty".into()));
     }
@@ -387,15 +387,15 @@ fn byte_index_after_chars(text: &str, start: usize, count: usize) -> usize {
     clippy::string_slice,
     reason = "match offsets are clamped to `trimmed.len()` and excerpt bounds come from byte_index_*_chars(), so every slice bound lands on a char boundary"
 )]
-fn excerpt_line(line: &str, match_start: usize, match_end: usize) -> String {
+fn excerpt_line(line: &str, raw_match_start: usize, raw_match_end: usize) -> String {
     let trimmed_start = line.trim_start();
     let leading_trimmed_bytes = line.len().saturating_sub(trimmed_start.len());
     let trimmed = trimmed_start.trim_end();
 
-    let match_start = match_start
+    let match_start = raw_match_start
         .saturating_sub(leading_trimmed_bytes)
         .min(trimmed.len());
-    let match_end = match_end
+    let match_end = raw_match_end
         .saturating_sub(leading_trimmed_bytes)
         .min(trimmed.len())
         .max(match_start);
@@ -495,9 +495,9 @@ pub async fn handle_read(input: Value, workspace_dir: &str) -> Result<Value, Too
     if offset > 0 || end < total_lines {
         if let Some(obj) = result.as_object_mut() {
             let _ignored = obj.insert("offset".into(), json!(offset.saturating_add(1)));
-            let _ignored = obj.insert("returned_lines".into(), json!(end.saturating_sub(offset)));
+            _ = obj.insert("returned_lines".into(), json!(end.saturating_sub(offset)));
             if end < total_lines {
-                let _ignored = obj.insert(
+                _ = obj.insert(
                     "note".into(),
                     json!(format!(
                         "Showing lines {}–{} of {}. Use offset={} to continue.",
@@ -669,16 +669,16 @@ pub async fn handle_list_files(input: Value, workspace_dir: &str) -> Result<Valu
 pub async fn handle_search(
     input: Value,
     workspace_dir: &str,
-    retrieval_config: Option<&RetrievalConfig>,
+    retrieval_config_opt: Option<&RetrievalConfig>,
     embedder: Option<&dyn Embedder>,
     workspace_index_path: Option<&Path>,
 ) -> Result<Value, ToolError> {
-    let retrieval_config = retrieval_config.cloned().unwrap_or_default();
+    let retrieval_config = retrieval_config_opt.cloned().unwrap_or_default();
     let requested_mode = parse_search_mode(input.get("mode"))?;
     let requested_hybrid = !matches!(requested_mode, RequestedMode::Lexical);
     let path_str = input.get("path").and_then(|v| v.as_str());
 
-    if let (true, Some(embedder), Some(workspace_index_path)) =
+    if let (true, Some(embedder_ref), Some(index_path)) =
         (requested_hybrid, embedder, workspace_index_path)
     {
         let mode = match requested_mode {
@@ -696,8 +696,8 @@ pub async fn handle_search(
             workspace_dir,
             &retrieval_config,
             mode,
-            embedder,
-            workspace_index_path,
+            embedder_ref,
+            index_path,
             scope.as_deref(),
         )
         .await;
@@ -707,7 +707,7 @@ pub async fn handle_search(
     if let Some(obj) = response.as_object_mut() {
         let _ignored = obj.insert("mode".into(), json!("lexical"));
         if requested_hybrid {
-            let _ignored = obj.insert(
+            _ = obj.insert(
                 "semantic_unavailable".into(),
                 json!("embedder not configured"),
             );
@@ -878,7 +878,7 @@ async fn handle_search_lexical(
     if count > 0 {
         if let Some(obj) = response.as_object_mut() {
             let _ignored = obj.insert("files".into(), json!(files_summary));
-            let _ignored = obj.insert(
+            _ = obj.insert(
                 "note".into(),
                 json!(
                     "These are line-level excerpts, ordered by file recency. \
@@ -922,7 +922,7 @@ async fn handle_search_hybrid(
             let mut lex = handle_search_lexical(input, workspace_dir, retrieval_config).await?;
             if let Some(obj) = lex.as_object_mut() {
                 let _ignored = obj.insert("mode".into(), json!("lexical"));
-                let _ignored = obj.insert("semantic_unavailable".into(), json!(e.to_string()));
+                _ = obj.insert("semantic_unavailable".into(), json!(e.to_string()));
             }
             return Ok(lex);
         }
@@ -1346,9 +1346,9 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
     let _ignored = cmd.args(program_args);
 
     if let Some(dir) = workdir {
-        let _ignored = cmd.current_dir(dir);
+        _ = cmd.current_dir(dir);
     } else if !workspace_dir.is_empty() {
-        let _ignored = cmd.current_dir(workspace_dir);
+        _ = cmd.current_dir(workspace_dir);
     }
 
     let output = cmd
@@ -1405,24 +1405,24 @@ mod tests {
         let ws_str = ws.to_string_lossy().to_string();
 
         // Write
-        let result = handle_write(
+        let write_result = handle_write(
             json!({"path": "test.txt", "content": "hello world"}),
             &ws_str,
         )
         .await
         .unwrap();
-        assert_eq!(result["bytes_written"], 11);
+        assert_eq!(write_result["bytes_written"], 11);
 
         // Read
-        let result = handle_read(json!({"path": "test.txt"}), &ws_str)
+        let read_result = handle_read(json!({"path": "test.txt"}), &ws_str)
             .await
             .unwrap();
-        assert_eq!(result["content"], "hello world");
-        assert_eq!(result["total_lines"], 1);
+        assert_eq!(read_result["content"], "hello world");
+        assert_eq!(read_result["total_lines"], 1);
 
         // List
-        let result = handle_list_files(json!({}), &ws_str).await.unwrap();
-        let entries = result["entries"].as_array().unwrap();
+        let list_result = handle_list_files(json!({}), &ws_str).await.unwrap();
+        let entries = list_result["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["name"], "test.txt");
     }
@@ -1440,7 +1440,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = handle_edit(
+        let edit_result = handle_edit(
             json!({
                 "path": "test.txt",
                 "edits": [
@@ -1451,12 +1451,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result["replacements_made"], 1);
+        assert_eq!(edit_result["replacements_made"], 1);
 
-        let result = handle_read(json!({"path": "test.txt"}), &ws_str)
+        let read_result = handle_read(json!({"path": "test.txt"}), &ws_str)
             .await
             .unwrap();
-        assert_eq!(result["content"], "goodbye world\nfoo bar\n");
+        assert_eq!(read_result["content"], "goodbye world\nfoo bar\n");
     }
 
     #[tokio::test]
@@ -1472,7 +1472,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = handle_edit(
+        let edit_result = handle_edit(
             json!({
                 "path": "test.txt",
                 "edits": [
@@ -1483,12 +1483,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result["replacements_made"], 3);
+        assert_eq!(edit_result["replacements_made"], 3);
 
-        let result = handle_read(json!({"path": "test.txt"}), &ws_str)
+        let read_result = handle_read(json!({"path": "test.txt"}), &ws_str)
             .await
             .unwrap();
-        assert_eq!(result["content"], "bar bar bar");
+        assert_eq!(read_result["content"], "bar bar bar");
     }
 
     #[tokio::test]
@@ -1655,7 +1655,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let _ignored = handle_write(
+        _ = handle_write(
             json!({"path": "memory/people/ren.md", "content": "Ren likes tea."}),
             &ws_str,
         )
@@ -1698,7 +1698,7 @@ mod tests {
             .set_modified(past)
             .unwrap();
 
-        let _ignored = handle_write(
+        _ = handle_write(
             json!({"path": "newer.md", "content": "tea on the porch"}),
             &ws_str,
         )
@@ -1888,7 +1888,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let _ignored = handle_write(
+        _ = handle_write(
             json!({"path": "other/b.md", "content": "tea ceremony"}),
             &ws_str,
         )
@@ -2102,8 +2102,8 @@ mod tests {
 
         let mut found = None;
         for entry in std::fs::read_dir(&trash).unwrap() {
-            let entry = entry.unwrap();
-            let candidate = entry.path().join("notes/old.md");
+            let dir_entry = entry.unwrap();
+            let candidate = dir_entry.path().join("notes/old.md");
             if candidate.exists() {
                 found = Some(candidate);
                 break;
@@ -2128,7 +2128,7 @@ mod tests {
         .await
         .unwrap();
 
-        let _ignored = handle_delete(json!({"path": "memory/people/ren.md"}), &ws_str, &data_str)
+        _ = handle_delete(json!({"path": "memory/people/ren.md"}), &ws_str, &data_str)
             .await
             .unwrap();
 
@@ -2136,8 +2136,8 @@ mod tests {
         let trash = data_dir.join("trash");
         let mut paths = Vec::new();
         for entry in std::fs::read_dir(&trash).unwrap() {
-            let entry = entry.unwrap();
-            paths.push(entry.path().join("memory/people/ren.md"));
+            let dir_entry = entry.unwrap();
+            paths.push(dir_entry.path().join("memory/people/ren.md"));
         }
         assert!(
             paths.iter().any(|p| p.exists()),
@@ -2156,7 +2156,7 @@ mod tests {
         let _ignored = handle_write(json!({"path": "SOUL.md", "content": "soul"}), &ws_str)
             .await
             .unwrap();
-        let _ignored = handle_write(json!({"path": "MEMORY.md", "content": "idx"}), &ws_str)
+        _ = handle_write(json!({"path": "MEMORY.md", "content": "idx"}), &ws_str)
             .await
             .unwrap();
 

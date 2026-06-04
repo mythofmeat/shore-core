@@ -151,7 +151,7 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
                 return Ok(());
             }
             if *system {
-                let _ignored = conn
+                _ = conn
                     .send_command("inject_system", serde_json::json!({ "text": text }))
                     .await?;
                 let data = recv_command_data(&mut conn).await?;
@@ -166,14 +166,14 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
                 } else {
                     None
                 };
-                let _ignored = conn
+                _ = conn
                     .send_message_full(&text, true, images.clone(), overrides)
                     .await?;
                 recv_streaming_response(&mut conn).await?;
             }
         }
         CliCommand::Regen { guidance } => {
-            let _ignored = conn.send_regen(true, guidance.clone()).await?;
+            _ = conn.send_regen(true, guidance.clone()).await?;
             recv_streaming_response(&mut conn).await?;
         }
         CliCommand::Notify {
@@ -189,7 +189,7 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
         } => {
             let (name, args) =
                 crate::cli::alt_command_to_swp(selector.as_deref(), msg_ref.as_deref());
-            let _ignored = conn.send_command(name, args).await?;
+            _ = conn.send_command(name, args).await?;
             let data = recv_command_data(&mut conn).await?;
             if *json {
                 cli_out!("{}", serde_json::to_string_pretty(&data)?);
@@ -203,7 +203,7 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
             new: false,
             ..
         } => match name {
-            Some(name) => handle_switch_character(&mut conn, name).await?,
+            Some(target) => handle_switch_character(&mut conn, target).await?,
             None => handle_list_characters(&mut conn).await?,
         },
         CliCommand::Log {
@@ -220,7 +220,7 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
                     ("delete", serde_json::json!({ "refs": msg_ref }))
                 }
             };
-            let _ignored = conn.send_command(name, args).await?;
+            _ = conn.send_command(name, args).await?;
             let data = recv_command_data(&mut conn).await?;
             if *json {
                 cli_out!("{}", serde_json::to_string_pretty(&data)?);
@@ -237,12 +237,14 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
             ..
         } => {
             let mut args = serde_json::Map::new();
-            let _ignored = args.insert("ref".into(), serde_json::json!(r));
-            if let Some(role) = role {
-                let _ignored =
-                    args.insert("role".into(), serde_json::json!(role.as_protocol_role()));
+            _ = args.insert("ref".into(), serde_json::json!(r));
+            if let Some(role_filter) = role {
+                _ = args.insert(
+                    "role".into(),
+                    serde_json::json!(role_filter.as_protocol_role()),
+                );
             }
-            let _ignored = conn
+            _ = conn
                 .send_command("get", serde_json::Value::Object(args))
                 .await?;
             let data = recv_command_data(&mut conn).await?;
@@ -264,7 +266,7 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
             json,
             ..
         } => {
-            let _ignored = conn
+            _ = conn
                 .send_command("heartbeat_log", serde_json::json!({ "count": count }))
                 .await?;
             let data = recv_command_data(&mut conn).await?;
@@ -284,12 +286,14 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
             ..
         } => {
             let mut args = serde_json::Map::new();
-            let _ignored = args.insert("turns".into(), serde_json::json!(count));
-            if let Some(role) = role {
-                let _ignored =
-                    args.insert("role".into(), serde_json::json!(role.as_protocol_role()));
+            _ = args.insert("turns".into(), serde_json::json!(count));
+            if let Some(role_filter) = role {
+                _ = args.insert(
+                    "role".into(),
+                    serde_json::json!(role_filter.as_protocol_role()),
+                );
             }
-            let _ignored = conn
+            _ = conn
                 .send_command("log", serde_json::Value::Object(args))
                 .await?;
             let data = recv_command_data(&mut conn).await?;
@@ -393,7 +397,7 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
             json,
             ..
         } => {
-            let _ignored = conn
+            _ = conn
                 .send_command("diagnostics", serde_json::json!({ "count": count }))
                 .await?;
             let data = recv_command_data(&mut conn).await?;
@@ -404,7 +408,7 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
             }
         }
         CliCommand::Status { section, json, .. } => {
-            let _ignored = conn.send_command("status", serde_json::json!({})).await?;
+            _ = conn.send_command("status", serde_json::json!({})).await?;
             let data = recv_command_data(&mut conn).await?;
             match section {
                 Some(s) => {
@@ -435,11 +439,11 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
             json,
             ..
         } => {
-            let _ignored = conn
+            _ = conn
                 .send_command("reset_model", serde_json::json!({}))
                 .await?;
             let data = recv_command_data(&mut conn).await?;
-            let _ignored = state::clear_active_model();
+            _ = state::clear_active_model();
             if *json {
                 cli_out!("{}", serde_json::to_string_pretty(&data)?);
             } else {
@@ -458,15 +462,15 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
             // <hidden-id> --all` is the documented escape hatch from the
             // `discovery.ignore` error message.
             let mut args = serde_json::Map::new();
-            let _ignored = args.insert("name".into(), serde_json::json!(name));
+            _ = args.insert("name".into(), serde_json::json!(name));
             if *all {
-                let _ignored = args.insert("include_hidden".into(), serde_json::json!(true));
+                _ = args.insert("include_hidden".into(), serde_json::json!(true));
             }
-            let _ignored = conn
+            _ = conn
                 .send_command("switch_model", serde_json::Value::Object(args))
                 .await?;
             let data = recv_command_data(&mut conn).await?;
-            let _ignored = state::clear_active_model();
+            _ = state::clear_active_model();
             if *json {
                 cli_out!("{}", serde_json::to_string_pretty(&data)?);
             } else {
@@ -539,7 +543,7 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
             let Some((name, args)) = crate::cli::to_swp_command(other) else {
                 return Err("non-send/regen/local command must map to SWP command".into());
             };
-            let _ignored = conn.send_command(name, args).await?;
+            _ = conn.send_command(name, args).await?;
             let data = recv_command_data(&mut conn).await?;
             if toml_mode {
                 print_config_toml(&data, show_all)?;
@@ -565,7 +569,7 @@ async fn handle_switch_character(
     let _ignored = conn
         .send_command("switch_character", serde_json::json!({ "name": name }))
         .await?;
-    let _ignored = recv_command_data(conn).await?;
+    _ = recv_command_data(conn).await?;
     state::write_active_character(name)?;
     cli_out!("Switched to character: {name}");
     cli_out!("To override per-terminal: export SHORE_CHARACTER={name}");
@@ -638,9 +642,9 @@ fn handle_connectors_command(
     cli: &Cli,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match subcommand {
-        crate::cli::ConnectorsCommand::Matrix { subcommand } => {
-            handle_matrix_command(subcommand, cli)
-        }
+        crate::cli::ConnectorsCommand::Matrix {
+            subcommand: matrix_sub,
+        } => handle_matrix_command(matrix_sub, cli),
     }
 }
 
@@ -682,7 +686,7 @@ fn handle_matrix_command(
         crate::cli::MatrixCommand::Register { username, password } => {
             let _ignored = cmd.arg("--register").arg(username);
             if let Some(pw) = password {
-                let _ignored = cmd.arg("--register-password").arg(pw);
+                _ = cmd.arg("--register-password").arg(pw);
             }
         }
     }
@@ -985,8 +989,8 @@ fn send_desktop_notification(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = std::process::Command::new("notify-send");
     let _ignored = cmd.arg("--app-name=shore");
-    if let Some(icon) = icon {
-        let _ignored = cmd.arg("--icon").arg(icon);
+    if let Some(icon_path) = icon {
+        _ = cmd.arg("--icon").arg(icon_path);
     }
     let status = cmd.arg(title).arg(body).status()?;
     if status.success() {
@@ -1308,10 +1312,11 @@ async fn recv_command_data(
             ServerMessage::SendImage(img) => {
                 output::print_send_image(img);
             }
-            ServerMessage::NewMessage(msg) => {
+            ServerMessage::NewMessage(new_msg) => {
                 output::print_new_message(
-                    msg,
-                    msg.character
+                    new_msg,
+                    new_msg
+                        .character
                         .as_deref()
                         .unwrap_or_else(|| session_display_character()),
                 );

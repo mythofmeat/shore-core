@@ -39,11 +39,11 @@ pub(crate) async fn stream(
         .json(request)
         .send()
         .await?;
-    let response = check_response(response).await?;
+    let checked = check_response(response).await?;
 
     let (mut writer, reader) = tokio::io::duplex(64 * 1024);
     let _stream_pump = tokio::spawn(async move {
-        let mut body = response.bytes_stream();
+        let mut body = checked.bytes_stream();
         while let Some(next) = body.next().await {
             match next {
                 Ok(bytes) => {
@@ -76,8 +76,8 @@ pub(crate) async fn generate(
         .timeout(NON_STREAMING_TIMEOUT)
         .send()
         .await?;
-    let response = check_response(response).await?;
-    let body = response.text().await?;
+    let checked = check_response(response).await?;
+    let body = checked.text().await?;
     serde_json::from_str(&body).map_err(|e| LlmError::Provider {
         message: format!(
             "sidecar /v1/generate response was not valid JSON: {e}; body preview: {}",
@@ -98,8 +98,8 @@ pub(crate) async fn image_generate(
         .timeout(NON_STREAMING_TIMEOUT)
         .send()
         .await?;
-    let response = check_response(response).await?;
-    let body = response.text().await?;
+    let checked = check_response(response).await?;
+    let body = checked.text().await?;
     serde_json::from_str(&body).map_err(|e| LlmError::Provider {
         message: format!(
             "sidecar /v1/image response was not valid JSON: {e}; body preview: {}",
@@ -193,13 +193,13 @@ mod tests {
     ) -> TestResult<oneshot::Receiver<TestResult<(String, String)>>> {
         let listener = UnixListener::bind(socket_path)?;
         let (tx, rx) = oneshot::channel();
-        let status = status.to_owned();
+        let status_owned = status.to_owned();
         tokio::spawn(async move {
             let result = async {
                 let (mut stream, _) = listener.accept().await?;
                 let captured = read_http_request(&mut stream).await?;
                 let response = format!(
-                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                    "HTTP/1.1 {status_owned}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
                     body.len()
                 );
                 stream.write_all(response.as_bytes()).await?;
@@ -294,10 +294,10 @@ mod tests {
 
         let resp = generate(&test_request(), &socket).await?;
         let (path, body) = captured.await??;
-        let body: serde_json::Value = serde_json::from_str(&body)?;
+        let parsed: serde_json::Value = serde_json::from_str(&body)?;
 
         assert_eq!(path, "/v1/generate");
-        assert_eq!(body["model"], "openai/gpt-test");
+        assert_eq!(parsed["model"], "openai/gpt-test");
         assert_eq!(resp.content, "hello");
         assert_eq!(resp.usage.output_tokens, 2);
         Ok(())
@@ -351,13 +351,13 @@ mod tests {
         };
         let resp = image_generate(&params, &socket).await?;
         let (path, body) = captured.await??;
-        let body: serde_json::Value = serde_json::from_str(&body)?;
+        let parsed: serde_json::Value = serde_json::from_str(&body)?;
 
         assert_eq!(path, "/v1/image");
-        assert_eq!(body["provider_key"], "openrouter");
-        assert_eq!(body["base_url"], "https://openrouter.ai/api/v1");
-        assert_eq!(body["aspect_ratio"], "16:9");
-        assert_eq!(body["image_size"], "1024x576");
+        assert_eq!(parsed["provider_key"], "openrouter");
+        assert_eq!(parsed["base_url"], "https://openrouter.ai/api/v1");
+        assert_eq!(parsed["aspect_ratio"], "16:9");
+        assert_eq!(parsed["image_size"], "1024x576");
         assert_eq!(resp.url, "https://example.test/image.png");
         assert_eq!(resp.timing.total_ms, 5);
         Ok(())

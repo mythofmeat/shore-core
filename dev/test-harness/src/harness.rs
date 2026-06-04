@@ -363,11 +363,11 @@ impl TestHarness {
                 ));
             }
 
-            let msg = fail_fast(
+            let recv_result = fail_fast(
                 timeout(remaining, self.conn.recv()).await,
                 "collect_stream timed out waiting for message",
             );
-            let msg = fail_fast(msg, "failed to recv server message");
+            let msg = fail_fast(recv_result, "failed to recv server message");
 
             if collected.push(msg) {
                 return collected;
@@ -565,9 +565,9 @@ impl TestHarness {
 
     /// Graceful shutdown: signal the server and handler, then await both tasks.
     pub async fn shutdown(self) {
-        let _ignored = self.shutdown_tx.send(());
-        let _ignored = self.server_handle.await;
-        let _ignored = self.handler_handle.await;
+        _ = self.shutdown_tx.send(());
+        _ = self.server_handle.await;
+        _ = self.handler_handle.await;
     }
 }
 

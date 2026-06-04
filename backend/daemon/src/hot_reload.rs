@@ -68,8 +68,8 @@ pub fn spawn_config_watcher(
                         break;
                     };
                     match event {
-                        Ok(event) => {
-                            for path in reload_paths_for_event(&config_dir, &config_path, &event) {
+                        Ok(notify_event) => {
+                            for path in reload_paths_for_event(&config_dir, &config_path, &notify_event) {
                                 let _ignored = pending.insert(path);
                             }
                             if !pending.is_empty() {
@@ -122,10 +122,10 @@ fn reload_paths_for_event(config_dir: &Path, config_path: &Path, event: &Event) 
         .collect()
 }
 
-pub fn path_triggers_reload(config_dir: &Path, config_path: &Path, path: &Path) -> bool {
-    let config_dir = absolutize(config_dir);
-    let config_path = absolutize(config_path);
-    let path = absolutize(path);
+pub fn path_triggers_reload(config_dir_in: &Path, config_path_in: &Path, path_in: &Path) -> bool {
+    let config_dir = absolutize(config_dir_in);
+    let config_path = absolutize(config_path_in);
+    let path = absolutize(path_in);
 
     if path == config_path {
         return true;

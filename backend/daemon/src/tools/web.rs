@@ -180,14 +180,14 @@ pub async fn handle_fetch_url(input: Value) -> Result<Value, ToolError> {
         .map_err(|e| ToolError::Http(format!("failed to read body: {e}")))?;
 
     let is_html = content_type.contains("html");
-    let content = if is_html { strip_html(&body) } else { body };
+    let extracted = if is_html { strip_html(&body) } else { body };
 
-    let truncated = content.len() > MAX_CONTENT_CHARS;
+    let truncated = extracted.len() > MAX_CONTENT_CHARS;
     let content = if truncated {
-        let boundary = content.floor_char_boundary(MAX_CONTENT_CHARS);
-        content[..boundary].to_string()
+        let boundary = extracted.floor_char_boundary(MAX_CONTENT_CHARS);
+        extracted[..boundary].to_string()
     } else {
-        content
+        extracted
     };
 
     Ok(json!({

@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn insert_and_read_back() {
         let ledger = test_ledger();
-        let _ignored = ledger.insert(&sample_row()).unwrap();
+        _ = ledger.insert(&sample_row()).unwrap();
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows.len(), 1);
         let row = first_item(&rows);
@@ -378,15 +378,15 @@ mod tests {
     fn last_anthropic_call() {
         let ledger = test_ledger();
         let mut row = sample_row();
-        let _ignored = ledger.insert(&row).unwrap();
+        _ = ledger.insert(&row).unwrap();
         row.ts = "2026-04-05T12:01:00Z".into();
         row.cache_read_tokens = 120;
-        let _ignored = ledger.insert(&row).unwrap();
+        _ = ledger.insert(&row).unwrap();
         // Compaction should be excluded
         row.ts = "2026-04-05T12:02:00Z".into();
         row.call_type = "compaction".into();
         row.cache_read_tokens = 0;
-        let _ignored = ledger.insert(&row).unwrap();
+        _ = ledger.insert(&row).unwrap();
         let last = ledger.last_anthropic_call("aria").unwrap().unwrap();
         assert_eq!(last.cache_read_tokens, 120);
     }
@@ -401,7 +401,7 @@ mod tests {
         row.provider = "openrouter-anthropic".into();
         row.model = "anthropic/claude-opus-4-6".into();
         row.cache_read_tokens = 99;
-        let _ignored = ledger.insert(&row).unwrap();
+        _ = ledger.insert(&row).unwrap();
         let last = ledger.last_anthropic_call("aria").unwrap().unwrap();
         assert_eq!(last.cache_read_tokens, 99);
     }
@@ -415,7 +415,7 @@ mod tests {
         row.cache_read_cost = None;
         row.cache_write_cost = None;
         row.total_cost = None;
-        let _ignored = ledger.insert(&row).unwrap();
+        _ = ledger.insert(&row).unwrap();
         let rows = ledger.recent(1).unwrap();
         assert!(first_item(&rows).total_cost.is_none());
     }

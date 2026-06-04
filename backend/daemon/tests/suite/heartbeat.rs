@@ -166,28 +166,30 @@ async fn heartbeat_log_persists_to_disk_after_tick() {
 #[tokio::test]
 async fn heartbeat_log_survives_crash_and_reboot() {
     init_tracing();
-    let harness = primed_harness(12).await;
+    let crashed = {
+        let harness = primed_harness(12).await;
 
-    harness
-        .mock_llm
-        .enqueue_json_text("<sendMessage>before crash</sendMessage>")
-        .await;
-    fire_tick(&harness).await;
+        harness
+            .mock_llm
+            .enqueue_json_text("<sendMessage>before crash</sendMessage>")
+            .await;
+        fire_tick(&harness).await;
 
-    // Sanity-check the pre-crash log shape so the post-reboot assertion is
-    // meaningful — without these the test would silently pass if the tick
-    // produced no events at all.
-    let _ignored = wait_for_heartbeat_detail(&harness, CHARACTER, "before crash").await;
-    let log_path = harness.data_dir.join(CHARACTER).join("heartbeat.jsonl");
-    let _ignored = wait_for_file_contents(&log_path, "before crash").await;
+        // Sanity-check the pre-crash log shape so the post-reboot assertion is
+        // meaningful — without these the test would silently pass if the tick
+        // produced no events at all.
+        let _ignored = wait_for_heartbeat_detail(&harness, CHARACTER, "before crash").await;
+        let log_path = harness.data_dir.join(CHARACTER).join("heartbeat.jsonl");
+        _ = wait_for_file_contents(&log_path, "before crash").await;
 
-    let crashed = harness.crash().await;
+        harness.crash().await
+    };
     let mut harness = crashed.reboot().await;
 
     // ensure_state runs lazily on first character access. Sending a message
     // primes it the same way the original boot sequence did.
     harness.mock_llm.enqueue_text("ack").await;
-    let _ignored = harness.send_and_collect("hello again").await;
+    _ = harness.send_and_collect("hello again").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let events = wait_for_heartbeat_detail(&harness, CHARACTER, "before crash").await;

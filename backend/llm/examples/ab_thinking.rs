@@ -507,8 +507,8 @@ fn print_result(label: &str, resp: &shore_llm::types::GenerateResponse) -> Vec<S
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let env_path = "/home/eshen/Documents/qifei/config/.env";
     if std::path::Path::new(env_path).exists() {
-        for line in std::fs::read_to_string(env_path)?.lines() {
-            let line = line.trim();
+        for raw_line in std::fs::read_to_string(env_path)?.lines() {
+            let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }

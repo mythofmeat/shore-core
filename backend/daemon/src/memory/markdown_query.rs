@@ -83,8 +83,8 @@ pub fn excerpt_for_query(text: &str, query: &str, limit: usize) -> String {
             .get(start..end)
             .unwrap_or(&[])
             .iter()
-            .map(|line| line.trim())
-            .filter(|line| !line.is_empty())
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
             .collect::<Vec<_>>()
             .join(" ");
 

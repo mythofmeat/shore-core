@@ -53,11 +53,11 @@ pub fn spawn_connection(
     let (event_tx, event_rx) = mpsc::channel(256);
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
 
-    let client_id = client_id.to_owned();
-    let app_name = app_name.to_owned();
+    let owned_id = client_id.to_owned();
+    let owned_app = app_name.to_owned();
 
     let _ignored = tokio::spawn(connection_loop(
-        addr, config, client_id, app_name, character, event_tx, cmd_rx,
+        addr, config, owned_id, owned_app, character, event_tx, cmd_rx,
     ));
 
     (cmd_tx, event_rx)
@@ -69,8 +69,8 @@ fn next_backoff(current: Duration, max: Duration) -> Duration {
 }
 
 fn resolve_addr(addr: Option<&str>, config: Option<&str>) -> crate::Result<ServerAddr> {
-    if let Some(addr) = addr {
-        return Ok(ServerAddr(addr.to_owned()));
+    if let Some(explicit) = addr {
+        return Ok(ServerAddr(explicit.to_owned()));
     }
     discover_or_default(config)
 }
@@ -92,11 +92,11 @@ async fn connection_loop(
     let max_backoff = Duration::from_secs(15);
 
     loop {
-        let addr = match resolve_addr(addr.as_deref(), config.as_deref()) {
-            Ok(addr) => addr,
+        let resolved = match resolve_addr(addr.as_deref(), config.as_deref()) {
+            Ok(resolved) => resolved,
             Err(e) => {
                 error!(error = %e, "failed to resolve daemon address");
-                let _ignored = event_tx
+                let _resolve_fail_sent = event_tx
                     .send(ConnEvent::Disconnected(format!(
                         "address resolution failed: {e}"
                     )))
@@ -106,9 +106,9 @@ async fn connection_loop(
                 continue;
             }
         };
-        info!(addr = ?addr, client = %app_name, "attempting connection");
+        info!(addr = ?resolved, client = %app_name, "attempting connection");
 
-        match SWPConnection::connect(&addr, &client_id, &app_name, character.clone()).await {
+        match SWPConnection::connect(&resolved, &client_id, &app_name, character.clone()).await {
             Ok((mut conn, hello, history)) => {
                 info!(
                     server = %hello.server_name,
@@ -119,7 +119,7 @@ async fn connection_loop(
                 backoff = Duration::from_millis(500);
                 let mut sync_state = SyncState::new(history.revision);
 
-                let _ignored = event_tx
+                let _connected_sent = event_tx
                     .send(ConnEvent::Connected {
                         server_name: hello.server_name,
                         characters: hello.characters,
@@ -139,7 +139,7 @@ async fn connection_loop(
                                 Some(ConnCommand::Send(msg)) => {
                                     if let Err(e) = conn.send(&msg).await {
                                         error!(error = %e, "send failed, disconnecting");
-                                        let _ignored = event_tx.send(ConnEvent::Disconnected(
+                                        let _send_fail_sent = event_tx.send(ConnEvent::Disconnected(
                                             "send failed".into()
                                         )).await;
                                         break;
@@ -159,7 +159,7 @@ async fn connection_loop(
                             match msg {
                                 Ok(ServerMessage::Shutdown(_)) => {
                                     info!("server sent shutdown");
-                                    let _ignored = event_tx.send(ConnEvent::Disconnected(
+                                    let _server_shutdown_sent = event_tx.send(ConnEvent::Disconnected(
                                         "server shutdown".into()
                                     )).await;
                                     break;
@@ -167,22 +167,22 @@ async fn connection_loop(
                                 Ok(ServerMessage::Ping(_)) => {
                                     // Keepalive — ignore
                                 }
-                                Ok(msg) => {
-                                    if matches!(sync_state.observe(&msg), SyncDecision::DropStale) {
+                                Ok(server_msg) => {
+                                    if matches!(sync_state.observe(&server_msg), SyncDecision::DropStale) {
                                         debug!(
                                             latest_revision = sync_state.latest_revision(),
                                             "dropping stale sync message"
                                         );
                                         continue;
                                     }
-                                    if event_tx.send(ConnEvent::Message(msg)).await.is_err() {
+                                    if event_tx.send(ConnEvent::Message(server_msg)).await.is_err() {
                                         debug!("event receiver dropped, exiting connection loop");
                                         return;
                                     }
                                 }
                                 Err(e) => {
                                     warn!(error = %e, "connection lost");
-                                    let _ignored = event_tx.send(ConnEvent::Disconnected(
+                                    let _conn_lost_sent = event_tx.send(ConnEvent::Disconnected(
                                         "connection lost".into()
                                     )).await;
                                     break;

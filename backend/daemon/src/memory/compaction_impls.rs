@@ -438,12 +438,12 @@ impl ConversationManager for RealConversationManager {
         params: RetentionParams,
     ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
         let character_dir = self.character_dir.clone();
-        let conversation_id = conversation_id.to_owned();
+        let owned_conversation_id = conversation_id.to_owned();
 
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let mgr = RealConversationManager { character_dir };
-                mgr.archive_and_retain(&conversation_id, &params)
+                mgr.archive_and_retain(&owned_conversation_id, &params)
             })
             .await
             .map_err(|e| {
@@ -1073,12 +1073,12 @@ mod tests {
 
         assert!(dir.join("segments/0002.jsonl").exists());
 
-        let manifest: CompactionManifest =
+        let reloaded_manifest: CompactionManifest =
             serde_json::from_str(&std::fs::read_to_string(dir.join("compaction.json")).unwrap())
                 .unwrap();
-        assert_eq!(manifest.segments.len(), 2);
-        assert_eq!(manifest.segments[1].file, "0002.jsonl");
-        assert_eq!(manifest.total_compacted_messages, 6);
+        assert_eq!(reloaded_manifest.segments.len(), 2);
+        assert_eq!(reloaded_manifest.segments[1].file, "0002.jsonl");
+        assert_eq!(reloaded_manifest.total_compacted_messages, 6);
     }
 
     #[test]

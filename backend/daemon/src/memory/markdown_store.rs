@@ -73,10 +73,12 @@ impl MarkdownMemoryStore {
                 .await
                 .map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
         }
-        let base_dir = base
+        let canonical = base
             .canonicalize()
             .map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
-        Ok(Self { base_dir })
+        Ok(Self {
+            base_dir: canonical,
+        })
     }
 
     /// Synchronous version of `open` for contexts where async is unavailable.
@@ -85,10 +87,12 @@ impl MarkdownMemoryStore {
         if !base.exists() {
             std::fs::create_dir_all(&base).map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
         }
-        let base_dir = base
+        let canonical = base
             .canonicalize()
             .map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
-        Ok(Self { base_dir })
+        Ok(Self {
+            base_dir: canonical,
+        })
     }
 
     pub fn base_dir(&self) -> &Path {
@@ -458,11 +462,11 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "a.md");
 
-        let results = store.search_text("review internal report").await.unwrap();
-        assert!(results.is_empty());
+        let report_results = store.search_text("review internal report").await.unwrap();
+        assert!(report_results.is_empty());
 
-        let results = store.search_text("index").await.unwrap();
-        assert!(results.is_empty());
+        let index_results = store.search_text("index").await.unwrap();
+        assert!(index_results.is_empty());
     }
 
     #[tokio::test]

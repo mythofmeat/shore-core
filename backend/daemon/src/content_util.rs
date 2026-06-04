@@ -60,13 +60,13 @@ pub fn content_block_to_json(block: &ContentBlock) -> Value {
             thinking,
             signature,
         } => {
-            let mut block = json!({"type": "thinking", "thinking": thinking});
+            let mut thinking_json = json!({"type": "thinking", "thinking": thinking});
             if let Some(sig) = signature {
-                if let Some(obj) = block.as_object_mut() {
+                if let Some(obj) = thinking_json.as_object_mut() {
                     let _ignored = obj.insert("signature".into(), json!(sig));
                 }
             }
-            block
+            thinking_json
         }
         ContentBlock::RedactedThinking { data } => {
             json!({"type": "redacted_thinking", "data": data})

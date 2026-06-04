@@ -29,7 +29,7 @@ fn resolve_ref(messages: &[Message], reference: &str) -> Result<String, (ErrorCo
             ));
         }
 
-        let idx = if n < 0 {
+        let signed_opt = if n < 0 {
             // -1 = last, -2 = second-to-last, etc.
             i64::try_from(messages.len())
                 .unwrap_or(i64::MAX)
@@ -38,7 +38,7 @@ fn resolve_ref(messages: &[Message], reference: &str) -> Result<String, (ErrorCo
             // 1-based positive index
             n.checked_sub(1)
         };
-        let Some(idx) = idx else {
+        let Some(signed) = signed_opt else {
             return Err((
                 ErrorCode::NotFound,
                 format!(
@@ -48,7 +48,7 @@ fn resolve_ref(messages: &[Message], reference: &str) -> Result<String, (ErrorCo
             ));
         };
 
-        let idx = match usize::try_from(idx) {
+        let idx = match usize::try_from(signed) {
             Ok(i) if i < messages.len() => i,
             _ => {
                 return Err((
@@ -95,8 +95,8 @@ fn resolve_assistant_ref(
                     "No assistant messages in conversation".into(),
                 )
             }),
-        Some(reference) => {
-            let msg_id = resolve_ref(messages, reference)?;
+        Some(name) => {
+            let msg_id = resolve_ref(messages, name)?;
             let msg = messages
                 .iter()
                 .find(|m| m.msg_id == msg_id)
@@ -112,8 +112,8 @@ fn resolve_assistant_ref(
     }
 }
 
-fn page_start_by_turns(messages: &[Message], end: usize, turns: usize) -> usize {
-    let end = end.min(messages.len());
+fn page_start_by_turns(messages: &[Message], end_bound: usize, turns: usize) -> usize {
+    let end = end_bound.min(messages.len());
     if turns == 0 {
         return end;
     }
@@ -163,7 +163,7 @@ fn role_filter(args: &serde_json::Value) -> Result<Option<Role>, (ErrorCode, Str
 }
 
 fn matches_role(message: &Message, role: Option<&Role>) -> bool {
-    role.is_none_or(|role| message.role == *role)
+    role.is_none_or(|want| message.role == *want)
 }
 
 fn resolve_history_before(
@@ -192,12 +192,12 @@ fn resolve_history_before(
 fn history_page_payload(
     messages: &[Message],
     global_active_start: usize,
-    start: usize,
-    end: usize,
+    start_idx: usize,
+    end_idx: usize,
     role: Option<&Role>,
 ) -> serde_json::Value {
-    let start = start.min(messages.len());
-    let end = end.min(messages.len()).max(start);
+    let start = start_idx.min(messages.len());
+    let end = end_idx.min(messages.len()).max(start);
     let messages_page = messages.get(start..end).unwrap_or(&[]);
     let mut page: Vec<Message> = messages_page
         .iter()
@@ -489,8 +489,8 @@ fn resolve_alt_target(
     current: u32,
     count: u32,
 ) -> Result<u32, (ErrorCode, String)> {
-    if let Some(index) = args.get("index").and_then(serde_json::Value::as_u64) {
-        let index = u32::try_from(index).unwrap_or(u32::MAX);
+    if let Some(index_u64) = args.get("index").and_then(serde_json::Value::as_u64) {
+        let index = u32::try_from(index_u64).unwrap_or(u32::MAX);
         if index >= count {
             return Err((
                 ErrorCode::InvalidRequest,
@@ -770,17 +770,17 @@ mod tests {
         let character_dir = tmp.path().join("TestChar");
         let image_path = tmp.path().join("image.bin");
         std::fs::write(&image_path, b"image bytes").unwrap();
-        let image_path = image_path.to_string_lossy().to_string();
+        let image_path_str = image_path.to_string_lossy().to_string();
 
         let mut archived = make_msg("m1", Role::User, "archived image");
         archived.images.push(ImageRef {
-            path: image_path.clone(),
+            path: image_path_str.clone(),
             caption: Some("old".into()),
             data: None,
         });
         let mut active = make_msg("m2", Role::User, "active image");
         active.images.push(ImageRef {
-            path: image_path,
+            path: image_path_str,
             caption: Some("new".into()),
             data: None,
         });
@@ -1133,8 +1133,8 @@ mod tests {
         let messages = vec![make_msg("m1", Role::User, "A")];
         let (code, _msg) = resolve_ref(&messages, "99").unwrap_err();
         assert_eq!(code, ErrorCode::NotFound);
-        let (code, _msg) = resolve_ref(&messages, "-99").unwrap_err();
-        assert_eq!(code, ErrorCode::NotFound);
+        let (neg_code, _neg_msg) = resolve_ref(&messages, "-99").unwrap_err();
+        assert_eq!(neg_code, ErrorCode::NotFound);
     }
 
     #[test]
@@ -1142,8 +1142,8 @@ mod tests {
         let messages: Vec<Message> = vec![];
         let (code, _msg) = resolve_ref(&messages, "last").unwrap_err();
         assert_eq!(code, ErrorCode::NotFound);
-        let (code, _msg) = resolve_ref(&messages, "-1").unwrap_err();
-        assert_eq!(code, ErrorCode::NotFound);
+        let (neg_code, _neg_msg) = resolve_ref(&messages, "-1").unwrap_err();
+        assert_eq!(neg_code, ErrorCode::NotFound);
     }
 
     #[test]

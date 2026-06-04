@@ -172,9 +172,9 @@ pub(crate) fn print_stream_end(end: &StreamEnd) {
     // Metadata line in dim
     let model = abbreviate_model(&end.metadata.model);
     if use_color() {
-        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ignored = write!(
+    _ = write!(
         out,
         "[{} | in:{} out:{} cache_r:{} cache_w:{} | ttft:{}ms total:{}ms]",
         model,
@@ -186,10 +186,10 @@ pub(crate) fn print_stream_end(end: &StreamEnd) {
         end.metadata.timing.total_ms,
     );
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = writeln!(out);
-    let _ignored = writeln!(out); // blank line after metadata
+    _ = writeln!(out);
+    _ = writeln!(out); // blank line after metadata
 }
 
 /// Print an error in red to stderr.
@@ -202,9 +202,9 @@ pub(crate) fn print_error(err: &dyn std::fmt::Display) {
     }
     let _ignored = write!(out, "error");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = writeln!(out, ": {err}");
+    _ = writeln!(out, ": {err}");
 }
 
 /// Print a provider key fallback warning. Emitted when the daemon
@@ -219,9 +219,9 @@ pub(crate) fn print_provider_fallback_warning(w: &ProviderFallbackWarning) {
     }
     let _ignored = write!(out, "warning");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = writeln!(out, ": {}", w.message);
+    _ = writeln!(out, ": {}", w.message);
 }
 
 /// Print a usage budget warning emitted after a threshold crossing.
@@ -234,9 +234,9 @@ pub(crate) fn print_usage_warning(w: &UsageWarning) {
     }
     let _ignored = write!(out, "warning");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = writeln!(out, ": {}", w.message);
+    _ = writeln!(out, ": {}", w.message);
 }
 
 /// Print a server protocol error.
@@ -249,9 +249,9 @@ pub(crate) fn print_server_error(code: &str, message: &str) {
     }
     let _ignored = write!(out, "server error");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = writeln!(out, " [{code}]: {message}");
+    _ = writeln!(out, " [{code}]: {message}");
 }
 
 /// Render an inline image from a SendImage server message.
@@ -339,9 +339,9 @@ pub(crate) fn print_stream_start(regen: bool) {
     }
     let _ignored = write!(out, "(regenerating...) ");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = out.flush();
+    _ = out.flush();
 }
 
 /// Print a phase indicator (e.g. "thinking...") during streaming.
@@ -359,9 +359,9 @@ pub(crate) fn print_phase(phase: &Phase) {
     }
     let _ignored = write!(out, "({label}) ");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = out.flush();
+    _ = out.flush();
 }
 
 #[cfg(test)]
@@ -488,9 +488,9 @@ mod tests {
         set_color_enabled(false);
         let mut stdout = io::stdout();
         let _ignored = stdout.write_all(b"\n----- STREAMING RENDER (live tokens) -----\n");
-        let _ignored = stdout.write_all(&buf);
-        let _ignored = stdout.write_all(b"\n----- end -----\n");
-        let _ignored = stdout.flush();
+        _ = stdout.write_all(&buf);
+        _ = stdout.write_all(b"\n----- end -----\n");
+        _ = stdout.flush();
     }
 
     #[test]

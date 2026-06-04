@@ -127,37 +127,36 @@ impl AnthropicStreamBuilder {
         let mut out = String::new();
         let mut content = String::new();
 
-        let _ignored = writeln!(out, "{}", json!({"type": "start", "model": self.model}));
+        _ = writeln!(out, "{}", json!({"type": "start", "model": self.model}));
 
         for block in self.content_blocks {
             match block {
                 ContentBlock::Text(text) => {
                     content.push_str(&text);
-                    let _ignored = writeln!(out, "{}", json!({"type": "text", "text": text}));
+                    _ = writeln!(out, "{}", json!({"type": "text", "text": text}));
                 }
                 ContentBlock::Thinking {
                     thinking,
                     signature,
                 } => {
-                    let _ignored =
-                        writeln!(out, "{}", json!({"type": "thinking", "text": thinking}));
-                    if let Some(signature) = signature {
-                        let _ignored = writeln!(
+                    _ = writeln!(out, "{}", json!({"type": "thinking", "text": thinking}));
+                    if let Some(sig) = signature {
+                        _ = writeln!(
                             out,
                             "{}",
-                            json!({"type": "thinking_signature", "signature": signature})
+                            json!({"type": "thinking_signature", "signature": sig})
                         );
                     }
                 }
                 ContentBlock::RedactedThinking { data } => {
-                    let _ignored = writeln!(
+                    _ = writeln!(
                         out,
                         "{}",
                         json!({"type": "redacted_thinking", "data": data})
                     );
                 }
                 ContentBlock::ToolUse { id, name, input } => {
-                    let _ignored = writeln!(
+                    _ = writeln!(
                         out,
                         "{}",
                         json!({"type": "tool_use", "id": id, "name": name, "input": input})
@@ -166,7 +165,7 @@ impl AnthropicStreamBuilder {
             }
         }
 
-        let _ignored = writeln!(
+        _ = writeln!(
             out,
             "{}",
             json!({
@@ -414,7 +413,7 @@ impl QueuedSidecarResponse {
     fn ndjson(path: &'static str, events: Vec<Value>) -> Self {
         let mut body = String::new();
         for event in events {
-            let _ignored = writeln!(body, "{event}");
+            _ = writeln!(body, "{event}");
         }
         Self {
             path,
@@ -735,10 +734,10 @@ async fn run_mock_sidecar(
     received: Arc<Mutex<Vec<(String, Value)>>>,
 ) {
     while let Ok((stream, _)) = listener.accept().await {
-        let responses = Arc::clone(&responses);
-        let received = Arc::clone(&received);
+        let conn_responses = Arc::clone(&responses);
+        let conn_received = Arc::clone(&received);
         let handle = tokio::spawn(async move {
-            handle_mock_sidecar_connection(stream, responses, received).await;
+            handle_mock_sidecar_connection(stream, conn_responses, conn_received).await;
         });
         drop(handle);
     }

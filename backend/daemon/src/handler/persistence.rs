@@ -49,7 +49,7 @@ pub(super) async fn persist_and_notify(
     let notify_content = {
         let mut engine = engine_arc.lock().await;
 
-        let response_messages = completed_response_messages(result, &request.sdk);
+        let completed_messages = completed_response_messages(result, &request.sdk);
 
         // Include the assistant response in last_request so the
         // heartbeat system sees a complete conversation ending on an
@@ -64,7 +64,7 @@ pub(super) async fn persist_and_notify(
             let mut full_request = request.clone();
             append_response_messages_to_request(
                 &mut full_request,
-                &response_messages,
+                &completed_messages,
                 &request.sdk,
             );
             crate::content_util::maybe_strip_prior_thinking(
@@ -74,7 +74,7 @@ pub(super) async fn persist_and_notify(
             );
             ctx.autonomy.notify_last_request(char_name, full_request);
         }
-        let notify_content = notify_content_from_response_messages(&response_messages);
+        let notify_content = notify_content_from_response_messages(&completed_messages);
         let mut generated_messages = tool_intermediate_messages;
         // The provider that actually minted this turn (matching the diagnostics
         // entry above) so opaque thinking data carries its provenance to disk.
@@ -82,7 +82,7 @@ pub(super) async fn persist_and_notify(
             .provider_key
             .clone()
             .unwrap_or_else(|| resolved.provider_key.clone());
-        let response_messages: Vec<Message> = response_messages
+        let response_messages: Vec<Message> = completed_messages
             .into_iter()
             .map(|m| message_from_response(m, &minting_provider))
             .collect();
@@ -104,7 +104,7 @@ pub(super) async fn persist_and_notify(
                 })
                 .cloned()
                 .collect();
-            let _ignored = engine.replace_after_last_user_turn(generated_messages)?;
+            _ = engine.replace_after_last_user_turn(generated_messages)?;
             let revision = engine.current_revision();
             for msg in &event_messages {
                 emit_new_message_event(
@@ -122,13 +122,13 @@ pub(super) async fn persist_and_notify(
                     .any(|msg_id| msg_id == &msg.msg_id)
                     .then(|| msg.clone());
                 engine.append_message(msg)?;
-                if let Some(msg) = event_msg {
+                if let Some(emitted) = event_msg {
                     emit_new_message_event(
                         &ctx.event_tx,
                         char_name,
                         MessageOrigin::AssistantReply,
                         engine.current_revision(),
-                        &msg,
+                        &emitted,
                     );
                 }
             }

@@ -611,7 +611,7 @@ mod tests {
             cost_source: Some("pricing_catalog".into()),
             total_cost: Some(0.005_745),
         };
-        let _ignored = ledger.insert(&base).unwrap();
+        _ = ledger.insert(&base).unwrap();
 
         let mut row2 = base.clone();
         row2.ts = "2026-04-05T10:01:00Z".into();
@@ -619,7 +619,7 @@ mod tests {
         row2.api_key_name = Some("overflow".into());
         row2.input_tokens = 200;
         row2.total_cost = Some(0.01);
-        let _ignored = ledger.insert(&row2).unwrap();
+        _ = ledger.insert(&row2).unwrap();
 
         let mut row3 = base.clone();
         row3.ts = "2026-04-05T10:02:00Z".into();
@@ -630,7 +630,7 @@ mod tests {
         row3.cache_state = None;
         row3.finish_reason = "end_turn".into();
         row3.total_cost = Some(0.002);
-        let _ignored = ledger.insert(&row3).unwrap();
+        _ = ledger.insert(&row3).unwrap();
 
         ledger
     }
@@ -712,9 +712,9 @@ mod tests {
             api_key_name: Some("overflow".into()),
             ..Default::default()
         };
-        let summary = usage_summary(&ledger, &filter).unwrap();
-        assert_eq!(summary.len(), 1);
-        let summary = first_item(&summary);
+        let summaries = usage_summary(&ledger, &filter).unwrap();
+        assert_eq!(summaries.len(), 1);
+        let summary = first_item(&summaries);
         assert_eq!(summary.call_count, 1);
         assert_eq!(summary.total_input, 200);
     }
@@ -747,9 +747,9 @@ mod tests {
             cost_source: Some("pricing_catalog".into()),
             total_cost: None,
         };
-        let _ignored = ledger.insert(&row).unwrap();
+        _ = ledger.insert(&row).unwrap();
         row.cache_anomaly = None;
-        let _ignored = ledger.insert(&row).unwrap();
+        _ = ledger.insert(&row).unwrap();
         let anomalies = query_anomalies(&ledger, &QueryFilter::default()).unwrap();
         assert_eq!(anomalies.len(), 1);
     }
@@ -776,7 +776,7 @@ mod tests {
         provider_reported.cache_write_cost = None;
         provider_reported.cost_source = Some("provider_reported".into());
         provider_reported.total_cost = Some(0.1234);
-        let _ignored = ledger.insert(&provider_reported).unwrap();
+        _ = ledger.insert(&provider_reported).unwrap();
 
         let rows = all_cost_rows(&ledger).unwrap();
         assert_eq!(rows.len(), 3);
@@ -814,21 +814,21 @@ mod tests {
             cost_source: Some("pricing_catalog".into()),
             total_cost: None,
         };
-        let _ignored = ledger.insert(&base).unwrap();
+        _ = ledger.insert(&base).unwrap();
 
         let mut routed = base.clone();
         routed.ts = "2026-04-05T10:01:00Z".into();
         routed.character = "kai".into();
         routed.provider = "openrouter-anthropic".into();
         routed.model = "anthropic/claude-opus-4.6".into();
-        let _ignored = ledger.insert(&routed).unwrap();
+        _ = ledger.insert(&routed).unwrap();
 
         let mut other = base.clone();
         other.ts = "2026-04-05T10:02:00Z".into();
         other.character = "leo".into();
         other.provider = "openai".into();
         other.model = "gpt-4o".into();
-        let _ignored = ledger.insert(&other).unwrap();
+        _ = ledger.insert(&other).unwrap();
 
         let result = active_anthropic_characters(&ledger, &QueryFilter::default()).unwrap();
         let chars: std::collections::HashSet<_> = result.iter().map(|(c, _)| c.clone()).collect();
@@ -865,15 +865,15 @@ mod tests {
             cost_source: Some("pricing_catalog".into()),
             total_cost: None,
         };
-        let _ignored = ledger.insert(&base).unwrap();
+        _ = ledger.insert(&base).unwrap();
         let mut warm = base.clone();
         warm.cache_state = Some("warm".into());
         warm.ts = "2026-04-05T10:01:00Z".into();
-        let _ignored = ledger.insert(&warm).unwrap();
+        _ = ledger.insert(&warm).unwrap();
         warm.ts = "2026-04-05T10:02:00Z".into();
-        let _ignored = ledger.insert(&warm).unwrap();
+        _ = ledger.insert(&warm).unwrap();
         warm.ts = "2026-04-05T10:03:00Z".into();
-        let _ignored = ledger.insert(&warm).unwrap();
+        _ = ledger.insert(&warm).unwrap();
         assert_eq!(warm_streak(&ledger, "aria").unwrap(), 3);
     }
 }

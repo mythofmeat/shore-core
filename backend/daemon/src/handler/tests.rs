@@ -339,12 +339,12 @@ async fn switch_character_pushes_authoritative_history_to_session() {
         other => panic!("Expected CommandOutput, got {other:?}"),
     }
 
-    let history = direct_rx.recv().await.unwrap();
+    let history_msg = direct_rx.recv().await.unwrap();
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "exhaustive-by-panic test arm"
     )]
-    match history {
+    match history_msg {
         ServerMessage::History(history) => {
             assert_eq!(history.selected_character.as_deref(), Some("Bob"));
             assert_eq!(history.messages.len(), 1);
@@ -635,7 +635,7 @@ async fn config_set_runtime_override_survives_next_command() {
         other => panic!("Expected CommandOutput, got {other:?}"),
     }
 
-    let result = handler
+    let read_result = handler
         .dispatch_command(
             &Command {
                 rid: None,
@@ -653,7 +653,7 @@ async fn config_set_runtime_override_survives_next_command() {
         clippy::wildcard_enum_match_arm,
         reason = "exhaustive-by-panic test arm"
     )]
-    match result {
+    match read_result {
         ServerMessage::CommandOutput(output) => {
             assert_eq!(output.data["config"]["stream"], false);
         }
@@ -734,8 +734,8 @@ async fn handle_engine_message_regen_builds_empty_body() {
 async fn run_cancel_route_aborts_active_generation() {
     let tmp = TempDir::new().unwrap();
     let (mut handler, _push_rx, mut direct_rx) = make_handler(&tmp, &["Alice"]).await;
-    let (route_tx, route_rx) = mpsc::channel(4);
-    let route_rx = Arc::new(Mutex::new(route_rx));
+    let (route_tx, raw_route_rx) = mpsc::channel(4);
+    let route_rx = Arc::new(Mutex::new(raw_route_rx));
 
     handler.session_state_mut(SessionId(1)).generation_handle = Some(tokio::spawn(async {
         tokio::time::sleep(Duration::from_mins(1)).await;
@@ -1136,8 +1136,8 @@ async fn pipeline_user_message_to_persisted_response() {
 
     let mut new_messages = Vec::new();
     while let Ok(msg) = push_rx.try_recv() {
-        if let ServerMessage::NewMessage(msg) = msg {
-            new_messages.push(msg);
+        if let ServerMessage::NewMessage(new_message) = msg {
+            new_messages.push(new_message);
         }
     }
     assert!(
@@ -1459,8 +1459,8 @@ async fn cross_session_user_message_transfers_lease() {
 async fn all_clients_disconnected_clears_leases() {
     let tmp = TempDir::new().unwrap();
     let (mut handler, _push_rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
-    let (route_tx, route_rx) = mpsc::channel(4);
-    let route_rx = Arc::new(Mutex::new(route_rx));
+    let (route_tx, raw_route_rx) = mpsc::channel(4);
+    let route_rx = Arc::new(Mutex::new(raw_route_rx));
 
     let _ = handler.last_user_session.insert(
         "Alice".into(),

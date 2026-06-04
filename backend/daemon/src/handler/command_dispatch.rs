@@ -337,8 +337,8 @@ impl MessageHandler {
                             "character_discovery".into(),
                             json!(summary.character_discovery_changed),
                         );
-                        let _ignored = inv.insert("merged_character_configs".into(), json!(true));
-                        let _ignored = inv.insert(
+                        _ = inv.insert("merged_character_configs".into(), json!(true));
+                        _ = inv.insert(
                             "removed_character_engines".into(),
                             json!(summary.dropped_engines),
                         );
@@ -349,12 +349,12 @@ impl MessageHandler {
 
         if cmd.name == "switch_character" {
             if let ServerMessage::CommandOutput(output) = &mut result {
-                let selected = output
+                let selected_opt = output
                     .data
                     .get("character")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned);
-                if let Some(selected) = selected {
+                if let Some(selected) = selected_opt {
                     let _ignored = self
                         .session_router
                         .set_selected_character(session_id, Some(selected.clone()))
@@ -368,11 +368,11 @@ impl MessageHandler {
                     .await;
 
                     if let Some(data) = output.data.as_object_mut() {
-                        let _ignored = data.insert(
+                        _ = data.insert(
                             "selected_character".into(),
                             serde_json::Value::String(selected.clone()),
                         );
-                        let _ignored = data.insert(
+                        _ = data.insert(
                             "active_model".into(),
                             snapshot
                                 .config
@@ -380,7 +380,7 @@ impl MessageHandler {
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null),
                         );
-                        let _ignored = data.insert(
+                        _ = data.insert(
                             "private".into(),
                             snapshot
                                 .config
@@ -390,7 +390,7 @@ impl MessageHandler {
                         );
                     }
 
-                    let _ignored = self
+                    _ = self
                         .session_router
                         .send_to_session(
                             session_id,

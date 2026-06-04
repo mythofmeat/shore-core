@@ -166,10 +166,10 @@ fn configured_token_limit(configured: Option<u32>, default: usize) -> usize {
 fn template_vars(params: &PromptParams<'_>) -> HashMap<String, String> {
     let mut vars = HashMap::new();
     let _ignored = vars.insert("char".into(), params.character_name.to_owned());
-    let _ignored = vars.insert("character_name".into(), params.character_name.to_owned());
-    let _ignored = vars.insert("user".into(), params.display_name.to_owned());
-    let _ignored = vars.insert("date".into(), String::new());
-    let _ignored = vars.insert("time".into(), String::new());
+    _ = vars.insert("character_name".into(), params.character_name.to_owned());
+    _ = vars.insert("user".into(), params.display_name.to_owned());
+    _ = vars.insert("date".into(), String::new());
+    _ = vars.insert("time".into(), String::new());
     vars
 }
 
@@ -356,12 +356,12 @@ pub fn xml_tag_from_name(name: &str, fallback: &str) -> String {
     while tag.contains("__") {
         tag = tag.replace("__", "_");
     }
-    let tag = tag.trim_matches('_');
+    let trimmed = tag.trim_matches('_');
 
-    if tag.is_empty() {
+    if trimmed.is_empty() {
         fallback.to_owned()
     } else {
-        tag.to_owned()
+        trimmed.to_owned()
     }
 }
 
@@ -580,8 +580,8 @@ mod tests {
     fn test_vars() -> HashMap<String, String> {
         let mut vars = HashMap::new();
         let _ignored = vars.insert("char".into(), "Shore".into());
-        let _ignored = vars.insert("character_name".into(), "Shore".into());
-        let _ignored = vars.insert("user".into(), "Alice".into());
+        _ = vars.insert("character_name".into(), "Shore".into());
+        _ = vars.insert("user".into(), "Alice".into());
         vars
     }
 
@@ -660,7 +660,7 @@ mod tests {
     fn render_template_builtin_system() {
         let mut vars = test_vars();
         let _ignored = vars.insert("char".into(), "TestChar".into());
-        let _ignored = vars.insert("user".into(), "TestUser".into());
+        _ = vars.insert("user".into(), "TestUser".into());
         let result = render_template(BUILTIN_SYSTEM_TEMPLATE, &vars);
         assert!(result.contains("You are TestChar, in conversation with TestUser."));
         assert!(result.contains("Communicate directly"));

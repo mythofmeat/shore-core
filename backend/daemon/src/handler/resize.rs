@@ -343,7 +343,7 @@ pub(super) fn cached_resize(
 pub(crate) async fn warm_image_cache(
     messages: &[crate::engine::prompt::PromptMessage],
     max_bytes: u64,
-    cache_dir: &Path,
+    cache_dir_ref: &Path,
 ) {
     use futures::future::join_all;
 
@@ -368,14 +368,14 @@ pub(crate) async fn warm_image_cache(
         return;
     }
 
-    let cache_dir = cache_dir.to_path_buf();
+    let cache_dir = cache_dir_ref.to_path_buf();
     let futures: Vec<_> = work
         .into_iter()
         .map(|(path, media_type)| {
-            let cache_dir = cache_dir.clone();
+            let task_dir = cache_dir.clone();
             tokio::task::spawn_blocking(move || {
                 if let Ok(bytes) = std::fs::read(&path) {
-                    let _ignored = cached_resize(&path, &bytes, &media_type, max_bytes, &cache_dir);
+                    let _ignored = cached_resize(&path, &bytes, &media_type, max_bytes, &task_dir);
                 }
             })
         })

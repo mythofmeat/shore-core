@@ -63,8 +63,8 @@ impl MessageStore {
                 source: e,
             })?;
             let mut msgs = Vec::new();
-            for line in content.lines() {
-                let line = line.trim();
+            for raw_line in content.lines() {
+                let line = raw_line.trim();
                 if line.is_empty() {
                     continue;
                 }
@@ -1025,12 +1025,15 @@ mod tests {
 
         // Persisted in correct order.
         let reloaded = MessageStore::load(path).unwrap();
-        let ids: Vec<&str> = reloaded
+        let reloaded_ids: Vec<&str> = reloaded
             .messages()
             .iter()
             .map(|m| m.msg_id.as_str())
             .collect();
-        assert_eq!(ids, vec!["m_user1", "m_assistant1", "m_recap", "m_user2"]);
+        assert_eq!(
+            reloaded_ids,
+            vec!["m_user1", "m_assistant1", "m_recap", "m_user2"]
+        );
     }
 
     #[test]
