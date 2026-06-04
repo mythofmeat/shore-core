@@ -237,7 +237,7 @@ impl SWPConnection {
                 let bytes = std::fs::read(path).ok()?;
                 let filename = std::path::Path::new(path)
                     .file_name()
-                    .map_or_else(|| "image".to_string(), |f| f.to_string_lossy().to_string());
+                    .map_or_else(|| "image".to_owned(), |f| f.to_string_lossy().into_owned());
                 let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 Some(ImageUpload { filename, data })
             })

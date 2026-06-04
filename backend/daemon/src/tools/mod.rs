@@ -172,9 +172,9 @@ pub fn render_tool_defs(
 ) -> Vec<Value> {
     use std::collections::HashMap;
     let mut vars: HashMap<String, String> = HashMap::new();
-    let _ignored = vars.insert("char".into(), char_name.to_string());
-    let _ignored = vars.insert("character_name".into(), char_name.to_string());
-    let _ignored = vars.insert("user".into(), user_name.to_string());
+    let _ignored = vars.insert("char".into(), char_name.to_owned());
+    let _ignored = vars.insert("character_name".into(), char_name.to_owned());
+    let _ignored = vars.insert("user".into(), user_name.to_owned());
     available_tools(is_private, toggles)
         .iter()
         .map(|t| {
@@ -255,7 +255,7 @@ pub fn dispatch_tool<'a>(
                     .get("path")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
-                    .to_string();
+                    .to_owned();
                 let mut result = workspace::handle_write(input, ctx.workspace_dir()).await?;
                 if let Some(deferred_path) =
                     crate::memory::deferred_edits::normalize_prompt_visible_path(&path)
@@ -284,7 +284,7 @@ pub fn dispatch_tool<'a>(
                     .get("path")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
-                    .to_string();
+                    .to_owned();
                 let mut result = workspace::handle_edit(input, ctx.workspace_dir()).await?;
                 if let Some(deferred_path) =
                     crate::memory::deferred_edits::normalize_prompt_visible_path(&path)
@@ -333,7 +333,7 @@ pub fn dispatch_tool<'a>(
                     "set_next_wake is only available during heartbeat ticks".into(),
                 ))
             }),
-            _ => Err(ToolError::NotImplemented(name.to_string())),
+            _ => Err(ToolError::NotImplemented(name.to_owned())),
         }
     })
 }

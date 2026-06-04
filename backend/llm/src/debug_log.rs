@@ -93,9 +93,9 @@ fn redact_request(body: &str) -> String {
                     let _ignored = obj.insert("api_key".into(), serde_json::json!("[REDACTED]"));
                 }
             }
-            serde_json::to_string(&v).unwrap_or_else(|_| body.to_string())
+            serde_json::to_string(&v).unwrap_or_else(|_| body.to_owned())
         }
-        Err(_) => body.to_string(),
+        Err(_) => body.to_owned(),
     }
 }
 
@@ -128,7 +128,7 @@ pub fn log_request(
     };
 
     let payload: serde_json::Value = serde_json::from_str(&redact_request(body))
-        .unwrap_or_else(|_| serde_json::Value::String(body.to_string()));
+        .unwrap_or_else(|_| serde_json::Value::String(body.to_owned()));
 
     let doc = serde_json::json!({
         "ts": envelope.ts,

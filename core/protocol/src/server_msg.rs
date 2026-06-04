@@ -88,7 +88,7 @@ pub struct StreamChunk {
 }
 
 fn default_content_type() -> String {
-    "text".to_string()
+    "text".to_owned()
 }
 
 /// Done streaming.

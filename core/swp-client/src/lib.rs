@@ -24,6 +24,8 @@
     clippy::wildcard_enum_match_arm,
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::str_to_string,
     clippy::print_stdout,
     clippy::print_stderr,
     clippy::undocumented_unsafe_blocks,
@@ -119,7 +121,7 @@ mod tests {
             };
             assert_eq!(h.client_type, "tui");
             assert_eq!(h.client_name, "test-client");
-            assert!(h.capabilities.contains(&"streaming".to_string()));
+            assert!(h.capabilities.contains(&"streaming".to_owned()));
 
             // Server sends history
             let history = ServerMessage::History(History {

@@ -146,7 +146,7 @@ impl TestToolContext {
     pub fn new() -> Self {
         Self {
             model: test_model(),
-            image_dir_val: "/tmp/test_images".to_string(),
+            image_dir_val: "/tmp/test_images".to_owned(),
             search_config_val: SearchConfig::default(),
             autonomy_mgr: None,
             character_name_val: String::new(),
@@ -161,14 +161,14 @@ impl TestToolContext {
 
     /// Set a custom image directory.
     pub fn with_image_dir(mut self, dir: &str) -> Self {
-        self.image_dir_val = dir.to_string();
+        self.image_dir_val = dir.to_owned();
         self
     }
 
     /// Set an autonomy manager and character name for activity tests.
     pub fn with_autonomy(mut self, mgr: AutonomyManager, character: &str) -> Self {
         self.autonomy_mgr = Some(mgr);
-        self.character_name_val = character.to_string();
+        self.character_name_val = character.to_owned();
         self
     }
 
@@ -180,13 +180,13 @@ impl TestToolContext {
 
     /// Set a workspace directory for workspace dispatch tests.
     pub fn with_workspace_dir(mut self, dir: &str) -> Self {
-        self.workspace_dir_val = dir.to_string();
+        self.workspace_dir_val = dir.to_owned();
         self
     }
 
     /// Set a character data directory for conversation-history tool tests.
     pub fn with_character_data_dir(mut self, dir: &str) -> Self {
-        self.character_data_dir_val = dir.to_string();
+        self.character_data_dir_val = dir.to_owned();
         self
     }
 

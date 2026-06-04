@@ -116,7 +116,7 @@ where
         return Ok(Arc::clone(e.value()));
     }
     let new = build()?;
-    let _ignored = embedder_cache().insert(key.to_string(), Arc::clone(&new));
+    let _ignored = embedder_cache().insert(key.to_owned(), Arc::clone(&new));
     Ok(new)
 }
 

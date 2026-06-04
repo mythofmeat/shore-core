@@ -24,6 +24,8 @@
     clippy::wildcard_enum_match_arm,
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::str_to_string,
     clippy::undocumented_unsafe_blocks,
     unsafe_code,
     elided_lifetimes_in_paths,

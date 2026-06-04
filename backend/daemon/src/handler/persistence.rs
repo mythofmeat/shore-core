@@ -214,14 +214,14 @@ fn emit_usage_budget_warnings(ctx: &GenContext, rid: Option<&str>) {
     for warning in warnings {
         let message = warning.message.clone();
         let frame = UsageWarning {
-            rid: rid.map(str::to_string),
+            rid: rid.map(str::to_owned),
             budget: warning.budget,
             message: message.clone(),
             current_cost: warning.current_cost,
             cost_limit: warning.cost_limit,
             percent_used: warning.percent_used,
             crossed_warn_at: warning.crossed_warn_at,
-            period: usage_period_name(warning.period).to_string(),
+            period: usage_period_name(warning.period).to_owned(),
             period_start: warning.period_start,
             reset_at: warning.reset_at,
             reset_at_display: warning.reset_at_display,
@@ -257,7 +257,7 @@ fn emit_new_message_event(
     crate::handler::embed_image_data(&mut wire_msg.images);
     let _ignored = event_tx.send(ServerMessage::NewMessage(NewMessage {
         revision,
-        character: Some(character.to_string()),
+        character: Some(character.to_owned()),
         origin: Some(origin),
         message: wire_msg,
     }));
@@ -275,7 +275,7 @@ fn message_from_response(response_msg: CompletedResponseMessage, provider_key: &
         alt_count: None,
         alternatives: vec![],
         timestamp: chrono::Local::now().to_rfc3339(),
-        provider_key: Some(provider_key.to_string()),
+        provider_key: Some(provider_key.to_owned()),
     }
 }
 

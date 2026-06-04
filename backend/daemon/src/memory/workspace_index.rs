@@ -154,7 +154,7 @@ pub async fn hybrid_search(
     let _guard = lock.lock().await;
 
     let mut index = load_index(index_path);
-    let model_id = embedder.model_id().to_string();
+    let model_id = embedder.model_id().to_owned();
 
     let mut candidates = enumerate_files(workspace_dir, retrieval_config).await;
     let mut skipped_binary_or_large = 0usize;
@@ -431,7 +431,7 @@ async fn enumerate_files(
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
 
         let skip_reason = if size > retrieval_config.max_file_bytes {
-            Some("oversize".to_string())
+            Some("oversize".to_owned())
         } else {
             None
         };

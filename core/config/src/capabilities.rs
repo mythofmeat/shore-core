@@ -645,7 +645,7 @@ pub fn validate(
             if !domain.iter().any(|v| v == effort) {
                 return Err(CapabilityError::OutOfDomain {
                     field,
-                    value: effort.to_string(),
+                    value: effort.to_owned(),
                     allowed: domain.join(", "),
                 });
             }

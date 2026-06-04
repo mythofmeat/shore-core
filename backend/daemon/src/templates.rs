@@ -197,7 +197,7 @@ fn write_template(
     fs::write(file_path, content)?;
     let hash = sha256_hex(content.as_bytes());
     let _ignored = manifest.templates.insert(
-        name.to_string(),
+        name.to_owned(),
         TemplateEntry {
             hash,
             updated_at: Local::now().to_rfc3339(),
@@ -231,12 +231,12 @@ mod tests {
     fn make_defaults() -> Vec<DefaultTemplate> {
         vec![
             DefaultTemplate {
-                name: "system.md".to_string(),
-                content: "You are {{character_name}}.".to_string(),
+                name: "system.md".to_owned(),
+                content: "You are {{character_name}}.".to_owned(),
             },
             DefaultTemplate {
-                name: "compact.md".to_string(),
-                content: "Summarize: {{conversation}}".to_string(),
+                name: "compact.md".to_owned(),
+                content: "Summarize: {{conversation}}".to_owned(),
             },
         ]
     }
@@ -261,10 +261,10 @@ mod tests {
 
         let mut manifest = PromptManifest::default();
         let _ignored = manifest.templates.insert(
-            "system.md".to_string(),
+            "system.md".to_owned(),
             TemplateEntry {
-                hash: "sha256:abc123".to_string(),
-                updated_at: "2026-03-25T00:00:00Z".to_string(),
+                hash: "sha256:abc123".to_owned(),
+                updated_at: "2026-03-25T00:00:00Z".to_owned(),
             },
         );
 
@@ -305,11 +305,11 @@ mod tests {
         assert_eq!(report.actions.len(), 2);
         assert_eq!(
             item(&report.actions, 0),
-            &("system.md".to_string(), TemplateAction::Written)
+            &("system.md".to_owned(), TemplateAction::Written)
         );
         assert_eq!(
             item(&report.actions, 1),
-            &("compact.md".to_string(), TemplateAction::Written)
+            &("compact.md".to_owned(), TemplateAction::Written)
         );
 
         // Files exist with correct content.
@@ -345,8 +345,8 @@ mod tests {
 
         // First sync: write v1 defaults.
         let defaults_v1 = vec![DefaultTemplate {
-            name: "system.md".to_string(),
-            content: "Version 1".to_string(),
+            name: "system.md".to_owned(),
+            content: "Version 1".to_owned(),
         }];
         let _ignored = sync_templates(&prompts, &manifest_path, &defaults_v1).unwrap();
         assert_eq!(
@@ -356,14 +356,14 @@ mod tests {
 
         // Second sync with upgraded v2 default.
         let defaults_v2 = vec![DefaultTemplate {
-            name: "system.md".to_string(),
-            content: "Version 2".to_string(),
+            name: "system.md".to_owned(),
+            content: "Version 2".to_owned(),
         }];
         let report = sync_templates(&prompts, &manifest_path, &defaults_v2).unwrap();
 
         assert_eq!(
             item(&report.actions, 0),
-            &("system.md".to_string(), TemplateAction::Updated)
+            &("system.md".to_owned(), TemplateAction::Updated)
         );
         assert_eq!(
             fs::read_to_string(prompts.join("system.md")).unwrap(),
@@ -388,8 +388,8 @@ mod tests {
 
         // First sync.
         let defaults = vec![DefaultTemplate {
-            name: "system.md".to_string(),
-            content: "Default content".to_string(),
+            name: "system.md".to_owned(),
+            content: "Default content".to_owned(),
         }];
         let _ignored = sync_templates(&prompts, &manifest_path, &defaults).unwrap();
 
@@ -400,7 +400,7 @@ mod tests {
         let report = sync_templates(&prompts, &manifest_path, &defaults).unwrap();
         assert_eq!(
             item(&report.actions, 0),
-            &("system.md".to_string(), TemplateAction::UserModified)
+            &("system.md".to_owned(), TemplateAction::UserModified)
         );
         assert_eq!(
             fs::read_to_string(prompts.join("system.md")).unwrap(),
@@ -421,14 +421,14 @@ mod tests {
         fs::write(prompts.join("system.md"), "Pre-manifest content").unwrap();
 
         let defaults = vec![DefaultTemplate {
-            name: "system.md".to_string(),
-            content: "Default content".to_string(),
+            name: "system.md".to_owned(),
+            content: "Default content".to_owned(),
         }];
         let report = sync_templates(&prompts, &manifest_path, &defaults).unwrap();
 
         assert_eq!(
             item(&report.actions, 0),
-            &("system.md".to_string(), TemplateAction::PreManifest)
+            &("system.md".to_owned(), TemplateAction::PreManifest)
         );
         assert_eq!(
             fs::read_to_string(prompts.join("system.md")).unwrap(),

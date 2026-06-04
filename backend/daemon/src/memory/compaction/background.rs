@@ -73,9 +73,9 @@ pub async fn run_compaction(
     // Resolve prompt templates.
     let system_template =
         resolve_prompt_template(&effective.dirs.config, character, "compact_system.md")
-            .unwrap_or_else(|| DEFAULT_COMPACT_SYSTEM.to_string());
+            .unwrap_or_else(|| DEFAULT_COMPACT_SYSTEM.to_owned());
     let prompt_template = resolve_prompt_template(&effective.dirs.config, character, "compact.md")
-        .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
+        .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_owned());
 
     let model = crate::preferences::resolve_background_model(
         &effective,
@@ -89,7 +89,7 @@ pub async fn run_compaction(
         llm_client.clone(),
         model,
         effective.providers.clone(),
-        character.to_string(),
+        character.to_owned(),
     );
     let conv_mgr = RealConversationManager::new(&character_dir);
 
@@ -271,7 +271,7 @@ fn build_compaction_tool_context(
         llm_client: llm_client.inner().clone(),
         image_gen_config,
         search_config: effective.app.behavior.tool_use.search.clone(),
-        character_name: character.to_string(),
+        character_name: character.to_owned(),
         workspace_dir: character_workspace_dir(&effective.dirs.config, character)
             .to_string_lossy()
             .into_owned(),

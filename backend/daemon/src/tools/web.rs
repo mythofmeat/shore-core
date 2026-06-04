@@ -55,7 +55,7 @@ pub async fn handle_web_search(input: Value, ctx: &dyn ToolContext) -> Result<Va
     let query = input
         .get("query")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::InvalidArgs("missing 'query' field".to_string()))?;
+        .ok_or_else(|| ToolError::InvalidArgs("missing 'query' field".to_owned()))?;
 
     let search_cfg = ctx.search_config();
 
@@ -139,11 +139,15 @@ pub async fn handle_web_search(input: Value, ctx: &dyn ToolContext) -> Result<Va
 const MAX_CONTENT_CHARS: usize = 50_000;
 
 /// Handle `fetch_url` — fetch a webpage and extract readable text.
+#[expect(
+    clippy::string_slice,
+    reason = "slice end comes from floor_char_boundary(), which is guaranteed to be a char boundary"
+)]
 pub async fn handle_fetch_url(input: Value) -> Result<Value, ToolError> {
     let url = input
         .get("url")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::InvalidArgs("missing 'url' field".to_string()))?;
+        .ok_or_else(|| ToolError::InvalidArgs("missing 'url' field".to_owned()))?;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -168,7 +172,7 @@ pub async fn handle_fetch_url(input: Value) -> Result<Value, ToolError> {
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
-        .to_string();
+        .to_owned();
 
     let body = resp
         .text()
@@ -198,6 +202,10 @@ pub async fn handle_fetch_url(input: Value) -> Result<Value, ToolError> {
 ///
 /// Removes `<script>`, `<style>`, and `<head>` blocks entirely, strips remaining
 /// tags, decodes common HTML entities, and collapses whitespace.
+#[expect(
+    clippy::string_slice,
+    reason = "byte offsets derive from find()/char-len() on `html` itself (see body comment), so every slice bound lands on a char boundary"
+)]
 fn strip_html(html: &str) -> String {
     // Phase 1: Remove script, style, and head blocks.
     //
@@ -278,7 +286,7 @@ fn strip_html(html: &str) -> String {
         }
     }
 
-    result.trim().to_string()
+    result.trim().to_owned()
 }
 
 // ---------------------------------------------------------------------------

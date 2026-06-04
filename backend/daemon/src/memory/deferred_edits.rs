@@ -62,10 +62,10 @@ fn normalize_workspace_path(path: &str) -> String {
             let _ignored = normalized.remove(0);
         }
         while let Some(rest) = normalized.strip_prefix("./") {
-            normalized = rest.to_string();
+            normalized = rest.to_owned();
         }
         if let Some(rest) = normalized.strip_prefix("workspace/") {
-            normalized = rest.to_string();
+            normalized = rest.to_owned();
         }
         if normalized.len() == before {
             break;
@@ -97,7 +97,7 @@ pub fn normalize_prompt_visible_path(path: &str) -> Option<String> {
         return Some(path);
     }
     if normalized == MEMORY_INDEX_DEFERRED_PATH {
-        return Some(MEMORY_INDEX_DEFERRED_PATH.to_string());
+        return Some(MEMORY_INDEX_DEFERRED_PATH.to_owned());
     }
     None
 }
@@ -485,9 +485,9 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                "AGENTS.md".to_string(),
-                "MEMORY.md".to_string(),
-                "SOUL.md".to_string(),
+                "AGENTS.md".to_owned(),
+                "MEMORY.md".to_owned(),
+                "SOUL.md".to_owned(),
             ]
         );
     }

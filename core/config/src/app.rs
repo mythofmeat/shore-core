@@ -50,7 +50,7 @@ pub struct AppConfig {
 
 // ── [daemon] ────────────────────────────────────────────────────────────
 
-serde_default!(default_daemon_addr -> String { "127.0.0.1:7320".to_string() });
+serde_default!(default_daemon_addr -> String { "127.0.0.1:7320".to_owned() });
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -160,7 +160,7 @@ impl DefaultsConfig {
         self.display_name
             .clone()
             .or_else(|| std::env::var("USER").ok())
-            .unwrap_or_else(|| "User".to_string())
+            .unwrap_or_else(|| "User".to_owned())
     }
 
     /// Resolve the *explicitly configured* background-task model name,
@@ -427,7 +427,7 @@ impl ToolToggles {
     }
 
     pub fn set(&mut self, tool: &str, enabled: bool) {
-        let _ignored = self.0.insert(tool.to_string(), enabled);
+        let _ignored = self.0.insert(tool.to_owned(), enabled);
     }
 
     pub fn generate_image(&self) -> bool {
@@ -544,7 +544,7 @@ pub struct DreamingConfig {
     pub compact_to_zero: bool,
 }
 
-serde_default!(default_dreaming_frequency -> String { "0 3 * * *".to_string() });
+serde_default!(default_dreaming_frequency -> String { "0 3 * * *".to_owned() });
 serde_default!(default_dreaming_max_tool_rounds -> u32 { 12 });
 serde_default!(default_dreaming_minimum_inactive_time -> ConfigDuration { ConfigDuration::from_secs(45 * 60) });
 serde_default!(default_dreaming_max_lateness -> ConfigDuration { ConfigDuration::from_secs(2 * 60 * 60) });

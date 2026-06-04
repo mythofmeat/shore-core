@@ -80,8 +80,8 @@ impl ConfigDuration {
 
 fn millis_from_secs_f64(secs: f64) -> Result<u64, String> {
     let duration = Duration::try_from_secs_f64(secs)
-        .map_err(|_| "duration must be finite, non-negative, and in range".to_string())?;
-    u64::try_from(duration.as_millis()).map_err(|_| "duration is too large".to_string())
+        .map_err(|_| "duration must be finite, non-negative, and in range".to_owned())?;
+    u64::try_from(duration.as_millis()).map_err(|_| "duration is too large".to_owned())
 }
 
 impl fmt::Display for ConfigDuration {

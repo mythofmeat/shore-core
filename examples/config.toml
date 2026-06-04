@@ -1,344 +1,130 @@
-# Shore V2 — Example Configuration
-# All values shown are defaults unless noted otherwise.
+# Shore — Example Configuration
+#
+# All values shown are defaults unless noted otherwise. Most sections are
+# commented out; uncomment only what you want to override.
 #
 # Models are identified by `provider:model_id`. Configure a provider's
-# transport once under [providers.<name>], then reference any of its models as
-# `provider:model_id` (e.g. defaults.model below). The legacy inline
-# [chat.<provider>.<model>] catalog is deprecated (still honored this release).
-# You can also split config with `include = ["extra.toml"]` or conf.d/*.toml.
+# transport once under [providers.<name>], then reference any of its models
+# as `provider:model_id` (e.g. [defaults].model below). Provider-wide
+# behavioral defaults go under [providers.<name>.defaults]; per-model
+# overrides under [models."<provider>:<model_id>"].
+#
+# Split config across files with `include = ["models.toml"]`, or drop extra
+# `*.toml` into a `conf.d/` next to this file (auto-loaded).
+#
+# The old inline [chat.<provider>.<model>] / [tools.<provider>.<model>]
+# catalog is deprecated and intentionally omitted from this example. See
+# CONFIGURATION.md for migrating any leftover entries.
 
-# include = ["models.toml"]   # Optional explicit includes
-                               # conf.d/*.toml is also auto-loaded
+# include = ["models.toml"]   # Optional explicit includes (conf.d/*.toml also auto-loads)
 
 # ── Daemon ───────────────────────────────────────────────────────────────
 
 # [daemon]
-# addr = "127.0.0.1:7320"       # Default listen address
-# unsafe_allow_remote_access = false  # Required for non-loopback binds
-# allowed_hosts = []                  # IP allowlist only; not auth/TLS
+# addr = "127.0.0.1:7320"             # Default listen address
+# unsafe_allow_remote_access = false  # Required for any non-loopback bind
+# allowed_hosts = []                  # Source-IP allowlist only; NOT auth or TLS
 
 # ── Defaults ─────────────────────────────────────────────────────────────
 
 [defaults]
-model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; also fallback for background tasks
+model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; also the final fallback for background tasks
 # embedding = "openai:text-embedding-3-large"           # Embedding model (provider:model_id)
-# image_generation = "gemini:gemini-2.5-flash-image"    # Image model (provider:model_id)
-# display_name = "Your Name"        # {{user}} in templates; falls back to $USER
+# image_generation = "openai:dall-e-3"                  # Image model (provider:model_id)
+# display_name = "Ren"                # {{user}} in templates; falls back to $USER
 # stream = true
 
-# Optional: split chat from background tasks (heartbeat/compaction/dreaming).
-# - Set only `defaults.model` above for one model everywhere.
-# - Set `[defaults.background] model` to send all background work to a different
-#   model (the most common split — two fields total).
-# - Per-task keys override `background.model` for that one task.
+# Optional: route background work (heartbeat/compaction/dreaming) to a
+# different, usually cheaper model. When omitted, background tasks follow the
+# character's current chat model.
+# - Set background.model for one blanket background model.
+# - Per-task keys override background.model for that task only.
 # [defaults.background]
 # model = "anthropic:claude-haiku-4-5"
 # heartbeat = "anthropic:claude-haiku-4-5"
 # compaction = "anthropic:claude-sonnet-4-6"
 # dreaming = "anthropic:claude-sonnet-4-6"
 
-# ── Autonomy ─────────────────────────────────────────────────────────────
-# Controls the character's autonomous behavior — what makes it feel present
-# and real. Disabled by default; enable to allow unprompted messages.
-
-# [behavior.autonomy]
-# enabled = false
-
-# Heartbeat — autonomous "private moment" ticks where the character can reflect,
-# use tools (memory, web search, etc.), and optionally send an unprompted message.
-# [behavior.autonomy.heartbeat]
-# enabled = true
-# fallback_heartbeat_interval = "1h"      # Base cadence when the character doesn't self-schedule
-# dormant_after_heartbeat_turns = 3       # Consecutive ticks with no user reply before sleeping
-# dormant_after_idle_time = "48h"           # Hard idle ceiling before sleeping until user returns
-# minimum_heartbeat_latency = "1h"        # Floor between a user message and the next tick
-# max_tool_rounds = 12                      # Tool-use rounds per tick
-
-# Dreaming — opt-in scheduled memory consolidation. Requires
-# [behavior.autonomy].enabled = true, but does not require heartbeat.
-# [memory.dreaming]
-# enabled = false
-# frequency = "0 3 * * *"                   # Five-field cron; e.g. "0 6 * * 1" for Mondays at 06:00
-# max_tool_rounds = 12
-# Optional: set [defaults.background].dreaming to choose a specific model.
-
-# ── Tool use ─────────────────────────────────────────────────────────────
-
-# [behavior.tool_use]
-# enabled = true
-# max_iterations = 10  # Max tool-call rounds per turn before forcing a final response
-# max_result_chars = 20000  # Truncate each tool result past this many characters (default 20000; 0 disables)
-
-# Per-tool toggles — all enabled by default; set to false to disable.
-# [behavior.tool_use.tools]
-# memory = true              # Enables memory/... workspace access and history search
-# memory_read = true         # Allows read/list/search of memory/... and search_history
-# memory_write = true        # Allows write/edit of memory/... files
-# generate_image = true
-# web_search = true
-# fetch_url = true
-# check_time = true
-# roll_dice = true
-# activity_heatmap = true
-# read = true                # Read workspace files; memory=false blocks memory/... access
-# write = true               # Write workspace files; protected character files defer to compaction
-# edit = true                # Edit workspace files
-# list_files = true          # List workspace files
-# search = true              # Search workspace files; memory=false hides memory/... results
-# search_history = true      # Search compacted and active conversation history
-# exec = true                # Allowlisted, argument-sandboxed workspace commands;
-#                            # hidden when memory read/write is disabled or private
-
-# [behavior.tool_use.search]
-# api_key_env = "TAVILY_API_KEY"  # Env var holding the Tavily API key
-# max_results = 5
-# search_depth = "basic"          # "basic" or "advanced"
-# include_answer = true           # Include Tavily's synthesized answer
-
-# ── Memory & context management ──────────────────────────────────────────
-
-# Compaction — trims the active conversation when it grows too long.
-# [memory.compaction]
-# enabled = true
-# idle_trigger = "30m"       # Trigger after this much inactivity
-# min_turns = 8              # Don't compact below this many user turns
-# max_turns = 16             # Force compaction when this many user turns is reached
-# max_context_tokens = 200000 # Force compaction when the last turn's prompt context
-#                            # (input + cache_read + cache_creation) reaches this
-#                            # many tokens. Default 200000 is a context-window
-#                            # safety net. Set ~30000 to optimise for cost on
-#                            # Opus 4.7 (cost-curve elbow). 0 disables entirely.
-# keep_recent_turns = 2      # User turns to retain verbatim after compaction
-
-# Retrieval — controls semantic/lexical ranking for internal memory retrieval.
-# "auto" uses hybrid semantic+lexical search when an embedder is resolved and
-# usable, otherwise lexical search.
-# [memory.retrieval]
-# mode = "auto"              # "auto", "lexical", or "hybrid"
-
-# Thinking — controls how extended-thinking blocks from prior turns are
-# handled when building outgoing API requests.
-# [memory.thinking]
-# replay_prior_thinking = true   # default: keep prior-turn thinking blocks.
-#                               # Set false to strip and save tokens — safe
-#                               # for Anthropic Claude 4.x. DeepSeek V3.1+
-#                               # and Moonshot Kimi-thinking ignore the
-#                               # strip and always replay reasoning_content.
-#                               # Global fallback only — the effect is
-#                               # model-dependent, so override per model via
-#                               # `set_model_setting replay_prior_thinking`.
-
-# ── Notifications ────────────────────────────────────────────────────────
-
-# [notifications]
-# enabled = false
-# backend = "notify_send"  # "notify_send", "ntfy", or "command"
-
-# [notifications.ntfy]
-# url = "https://ntfy.sh"
-# topic = ""
-# token = ""  # Optional auth token for self-hosted instances
-
-# [notifications.command]
-# template = ""  # Shell command; use {title} and {body} as placeholders
-
-# generation_threshold = "0s"  # Only notify message_complete when generation exceeds this (0 = always)
-
-# [notifications.events]
-# autonomous_message = true
-# cache_warning = true
-# compaction_complete = true
-# error = true
-# message_complete = false  # Notify when message generation completes
-# usage_warning = true      # Notify when a usage budget warning threshold is crossed
-
-# ── Usage budgets ────────────────────────────────────────────────────────
-
-# [usage]
-# timezone = "local"                  # "local" or "utc"; default: local
-# allow_compaction_over_budget = true # Let compaction run even over a blocking budget
+# ── Providers & models ───────────────────────────────────────────────────
+# A [providers.<name>] block is the single home for transport — sdk, base_url,
+# and ordered API keys. Reference any model it serves as `provider:model_id`.
 #
-# [[usage.budgets]]
-# name = "daily total"
-# period = "day"                      # hour, day, week, month
-# cost_usd = 10.00
-# warn_at = [0.5, 0.8, 1.0]           # Crossings emit usage_warning frames and notifications
-# limit = "warn"                      # warn, block, pause_background
+# Known provider keys carry hardcoded transport defaults, so an empty block
+# (or just an api_key_env override) registers them:
 #
-# [[usage.budgets]]
-# name = "background"
-# period = "day"
-# usage_kind = ["heartbeat", "dreaming"] # omit compaction so it can still save future cost
-# cost_usd = 2.00
-# limit = "pause_background"
+#   key         sdk         api_key_env          base_url (default)
+#   ─────────   ─────────   ──────────────────   ─────────────────────────────────
+#   anthropic   anthropic   ANTHROPIC_API_KEY    https://api.anthropic.com
+#   openai      openai      OPENAI_API_KEY       https://api.openai.com/v1
+#   openrouter  openrouter  OPENROUTER_API_KEY   https://openrouter.ai/api/v1
+#   gemini      gemini      GEMINI_API_KEY       (native Google API)
+#   deepseek    deepseek    DEEPSEEK_API_KEY     https://api.deepseek.com
+#   moonshot    moonshot    MOONSHOT_API_KEY     https://api.moonshot.ai/v1
+#   zai         zai         ZAI_API_KEY          https://api.z.ai/api/paas/v4
+#   xai         openai      XAI_API_KEY          https://api.x.ai/v1
+#   nanogpt     openai      NANOGPT_API_KEY      https://nano-gpt.com/api/v1
 #
-# [[usage.budgets]]
-# name = "overflow key monthly"
-# period = "month"
-# provider = "openrouter"
-# api_key = "overflow"                # Friendly name from [providers.<name>.keys]
-# cost_usd = 25.00
-# limit = "block"
-# allow_compaction_over_budget = false # Optional per-budget strict override
+# All hardcoded providers default to temperature 1.0, max_output_tokens 8192,
+# max_context_tokens 200000. Any other OpenAI-compatible endpoint works as a
+# custom provider — set sdk = "openai" plus base_url and api_key_env.
 #
-# [usage.spike_warnings]
-# enabled = false                      # `shore usage --budget` reports spikes when true
-# period = "hour"
-# multiplier = 3.0
-# min_cost_usd = 1.00
-
-# ── Connections ──────────────────────────────────────────────────────────
-
-# ── Matrix: External mode (connect to an existing homeserver) ─────────────
-# [connections.matrix]
-# enabled = true
-# homeserver = "https://matrix.example.com"
-# user_id = "@shore:example.com"
-# room_id = "!abc123:example.com"
-# trusted_user = "@user:example.com"
-
-# ── Matrix: Embedded mode (shore-matrix manages a local homeserver) ───────
-# Uses a conduwuit-compatible server (continuwuity, conduwuit, or tuwunel).
-# [connections.matrix]
-# trusted_user = "@user:shore.local"
-#
-# [connections.matrix.embedded]
-# server_name = "shore.local"          # Cannot be changed after first run. Default: "localhost"
-# admin_password = "your-admin-pass"   # Required
-# port = 6167
-# admin_user = "shore-admin"
-# # bind_address = "127.0.0.1"         # Default: loopback only. Use "0.0.0.0" for
-#                                      # all interfaces, or a specific LAN/Tailscale
-#                                      # IP to expose the homeserver to other devices.
-# # data_dir = "..."                   # Default: $XDG_DATA_HOME/shore/matrix-server/
-# # binary = "continuwuity"            # Default: auto-detect
-
-# ── Telegram (reserved for future use) ───────────────────────────────────
-# [connections.telegram]
-
-# ── Discord (reserved for future use) ────────────────────────────────────
-# [connections.discord]
-
-# ── Services ─────────────────────────────────────────────────────────────
-# Supervised helper processes that the daemon manages.
-# Currently only [services.llm] is used (reserved for an external LLM proxy).
-
-# [services.llm]
-# command = "node shore-llm/dist/index.js"  # Command to spawn the LLM service
-# socket = "/run/shore-llm.sock"            # Unix socket the service listens on
-
-# ── Advanced ─────────────────────────────────────────────────────────────
-
-# [advanced]
-# api_payload_logging = false
-# cache_forensics = false          # Write prompt-cache diagnostics to cache_forensics.jsonl when debugging cache behavior
-# editor = "nvim"                   # Override $VISUAL / $EDITOR
-# max_retries = 2
-# retry_backoff = "500ms"           # Base delay; doubles on each retry
-# max_image_size = 2000000          # Resize images above this size (bytes) before LLM upload; 0 = disable
-# Data directory: override via $XDG_DATA_HOME (default: ~/.local/share/shore)
-
-# [advanced.llm_sidecar]
-# enabled = true                    # Default; chat/generate/image require the Bun sidecar
-# socket_path = "/path/to/llm.sock" # Override; defaults to <runtime_dir>/llm.sock when unset
-
-# ── Chat models ──────────────────────────────────────────────────────────
-# Declare a provider once under [providers.<name>] (transport: sdk + base_url
-# + keys), then reference its models anywhere as `provider:model_id`. Behavioral
-# defaults for every model a provider resolves go under
-# [providers.<name>.defaults]; per-model overrides go under
-# [models."<provider>:<model_id>"]. The legacy inline [chat.<provider>.<model>]
-# catalog below is deprecated — still honored this release, but it warns on load.
-#
-# Known providers with hardcoded defaults:
-#   anthropic  — sdk: anthropic,  api_key_env: ANTHROPIC_API_KEY,  temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#   openrouter — sdk: openrouter, api_key_env: OPENROUTER_API_KEY, temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#   deepseek   — sdk: deepseek,   api_key_env: DEEPSEEK_API_KEY,   temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#   moonshot   — sdk: moonshot,   api_key_env: MOONSHOT_API_KEY,   temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#   gemini     — sdk: gemini,     api_key_env: GEMINI_API_KEY,     temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#   xai        — sdk: openai,     api_key_env: XAI_API_KEY,        temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#   zhipuai    — sdk: openai,     api_key_env: ZAI_API_KEY,        temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#   zai        — sdk: zai,        api_key_env: ZAI_API_KEY,        temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#   nanogpt    — sdk: openai,     api_key_env: NANOGPT_API_KEY,    temp: 1.0, max_output_tokens: 8192, max_context: 200000
-#
-# Available fields (provider- or model-level):
-#
-#   — Auth & connection —
-#   sdk = "anthropic"                        # Wire: anthropic, openai, openrouter, gemini, zai, deepseek, moonshot
-#   api_key_env = "MY_API_KEY"               # Env var holding the API key
-#   base_url = "https://..."                 # Override the API base URL
-#   keepalive_enabled = false                # Keep the HTTP connection alive between requests
+# Behavioral / vendor fields (valid under [providers.*.defaults] or
+# [models."provider:model_id"]):
 #
 #   — Sampling —
-#   max_context_tokens = 200000              # Context window size
-#   max_output_tokens = 8192                        # Maximum output tokens
-#   temperature = 1.0
-#   top_p = 1.0
+#   max_context_tokens = 200000   # Context window
+#   max_output_tokens  = 8192     # Max output tokens
+#   temperature        = 1.0
+#   top_p              = 1.0
 #
-#   — Reasoning / thinking —
-#   reasoning_effort = "high"               # Anthropic: "low"|"medium"|"high"|"xhigh"|"max" (adaptive) or "adaptive"; OpenAI/DeepSeek: "low"|"medium"|"high"
-#                                           #   Anthropic adaptive maps to thinking={type:adaptive, display:summarized}.
-#                                           #   Adaptive is supported on Opus 4.6/4.7/4.8 + Sonnet 4.6; older models (Sonnet/Opus 4.5, Haiku) auto-downgrade to a budget.
-#   budget_tokens = 8192                    # Thinking token budget — Anthropic (legacy) + Gemini. On Opus 4.7/4.8 (which only accept
-#                                           #   adaptive) Shore auto-upgrades this to adaptive; budgets are clamped below max_output_tokens.
+#   — Reasoning / thinking —  (accepted set is capability-checked per model)
+#   reasoning_effort = "high"
+#     anthropic         low|medium|high|xhigh|max  (+ "adaptive", "off")
+#     openai/openrouter minimal|low|medium|high|xhigh   ("max" is Anthropic-only)
+#     gemini            minimal|low|medium|high    ("minimal" is Flash-only on 3.x Pro)
+#     deepseek (native) low|medium|high|xhigh|max
+#     moonshot (native) thinking on/off, driven by budget_tokens
+#     zai (GLM)         thinking on/off only — no effort tiers
+#   budget_tokens = 8192          # Gemini thinkingBudget / native Moonshot thinking budget
 #
 #   — Prompt caching (Anthropic) —
-#   cache_ttl = "5m"                        # e.g. "5m", "1h"
-#   keepalive_enabled = true                # Send periodic pings to keep the cache alive (cost-saving)
-#   keepalive_ttl = "5m"                   # Derive ping interval from TTL (default: 4 min)
-#   keepalive_max_pings = 15               # Stop after this many pings to avoid runaway cost
+#   cache_ttl          = "5m"     # e.g. "5m", "1h"
+#   keepalive_enabled  = true     # Periodic pings keep the prompt cache warm
+#   keepalive_ttl      = "5m"     # Derive ping interval from TTL (default ~4m)
+#   keepalive_max_pings = 15      # Stop after N pings to cap runaway cost
 #
-#   — Provider-specific —
-#   openrouter_provider = {order = ["anthropic"]}  # OpenRouter provider routing hints
-#   vertex_project = "my-gcp-project"       # GCP project for Vertex AI
-#   vertex_location = "us-central1"         # GCP region for Vertex AI
+#   — Vendor knobs (resolve model > sdk > provider) —
+#   openrouter_provider = { order = ["anthropic"] }  # OpenRouter routing hints
+#   vertex_project   = "my-gcp-project"
+#   vertex_location  = "us-central1"
 #   gemini_generation = 2
-#   gemini_web_search = false               # Enable Gemini's built-in web search
-#   zai_clear_thinking = false              # false = preserve reasoning across turns (Z.AI)
-#   zai_subscription = false                # true = use Z.AI coding subscription endpoint
+#   gemini_web_search = false     # Gemini built-in Google Search grounding
+#   zai_clear_thinking = false    # false = preserve cross-turn reasoning (Z.AI default)
+#   zai_subscription   = false    # true = use the Z.AI coding-plan endpoint
 
-# Recommended: declare the provider, then reference models as provider:model_id
-# (see [defaults].model above). `anthropic` has hardcoded transport defaults
-# (sdk + ANTHROPIC_API_KEY), so an empty block is enough to register it.
+# Anthropic has hardcoded transport, so an empty block registers it.
 [providers.anthropic]
 # api_key_env = "ANTHROPIC_API_KEY"   # Override the hardcoded default if needed
 
-# Behavioral / vendor defaults for every anthropic model (optional):
+# Provider-wide behavioral defaults applied to every anthropic model (optional):
 # [providers.anthropic.defaults]
 # cache_ttl = "1h"
 # max_output_tokens = 16384
 
-# Per-model overrides keyed by the canonical provider:model_id (optional):
+# Per-model override, keyed by the canonical provider:model_id (optional):
 # [models."anthropic:claude-sonnet-4-6"]
-# temperature = 0.8
 # reasoning_effort = "high"
 
-# DEPRECATED — the inline [chat.<provider>.<model>] catalog still loads this
-# release but warns on parse. Prefer [providers.*] + provider:model_id above.
-# [chat.anthropic.claude-sonnet]
-# model_id = "claude-sonnet-4-6"
-#
-# [chat.zai.glm-5]
-# model_id = "glm-5"
-# zai_clear_thinking = false    # Preserve reasoning across turns
+# Opus 4.7/4.8 think in adaptive-only mode: temperature/top_p and budget_tokens
+# are rejected; use reasoning_effort instead.
+# [models."anthropic:claude-opus-4-8"]
+# reasoning_effort = "adaptive"   # model decides whether/how much to think
+# max_output_tokens = 16384
 
-# ── Provider registry & discovery ────────────────────────────────────────
-# A `[providers.<name>]` block configures a provider once (sdk + base_url +
-# ordered keys + /v1/models discovery). Reference its models as
-# `provider:model_id`; with discovery on, `shore model` also lists everything
-# the provider advertises. Any legacy `[chat.<provider>.<alias>]` entry wins on
-# conflict this release and is never hidden by `discovery.ignore`.
-#
-# Use `shore provider` and `shore model` to inspect, refresh, and switch.
-
-# ── Single-key form (compact) ────────────────────────────────────────────
-# [providers.openai]
-# api_key_env = "OPENAI_API_KEY"
-
-# ── Multiple keys with budget/overflow rotation ──────────────────────────
-# Keys are tried in configured order on every request. When the daemon
-# falls back away from a key marked `warn_on_fallback = true` (e.g. your
-# capped budget key), a one-line warning surfaces in the client.
+# ── Multi-key rotation + discovery (OpenRouter example) ───────────────────
+# Keys are tried in configured order on every request. When the daemon falls
+# back away from a key marked warn_on_fallback = true (e.g. an exhausted budget
+# cap), a one-line warning surfaces in the client.
 # [providers.openrouter]
 # enabled = true
 # sdk = "openrouter"
@@ -353,12 +139,11 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 # name = "overflow"
 # env = "OPENROUTER_API_KEY_OVERFLOW"
 #
+# Discovery lists everything the provider advertises via GET <base_url>/models.
+# ignore is gitignore-style: last match wins, `*` opts out, `!pattern` opts in.
+# Hidden models stay cached but are filtered from `shore model` until `--all`.
 # [providers.openrouter.discovery]
 # enabled = true
-# # Gitignore-style; last match wins. `*` opt-out, `!pattern` opt-in.
-# # Hidden discovered models stay in the cache but are filtered from
-# # `shore model` and `shore provider models <name>` until `--all`
-# # (CLI) / `:model all` (TUI) is used.
 # ignore = [
 #   "*",
 #   "!anthropic/*",
@@ -366,101 +151,255 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 #   "!google/gemini-*",
 # ]
 #
-# ── Provider-wide defaults ───────────────────────────────────────────────
-# Behavioral + vendor knobs applied to every model this provider resolves
-# (discovered, trusted `provider:model_id`, or static). Same field set as
-# the per-model overlay, one tier lower. Transport (sdk/base_url/keys) stays
-# on the provider entry above — it is rejected inside [.defaults].
+# Provider-wide defaults (transport stays on the entry above; sdk/base_url/keys
+# are rejected here):
 # [providers.openrouter.defaults]
 # max_output_tokens = 8192
-# cache_ttl = "1h"
 # openrouter_provider = { order = ["anthropic"] }   # routing pin for anthropic/*
-
-# ── Default model on a discovery provider ────────────────────────────────
-# [defaults].model takes a `provider:model_id` directly — no static alias
-# needed. It resolves on any enabled provider even with discovery off (the
-# model_id is trusted as-given). Per-model overrides live under
-# [models."<provider>:<model_id>"]; provider-wide ones under [.defaults] above.
-# In [defaults] at the top of this file:
-#   model = "openrouter:anthropic/claude-sonnet-4.5"
 #
+# Reference a discovered/trusted model directly — no catalog entry needed:
+#   [defaults] model = "openrouter:anthropic/claude-sonnet-4.5"
 # [models."openrouter:anthropic/claude-sonnet-4.5"]
 # temperature = 0.8
 
-# ── Thinking / reasoning ─────────────────────────────────────────────────
+# ── Z.AI (GLM) ───────────────────────────────────────────────────────────
+# Hardcoded transport (sdk = "zai", ZAI_API_KEY, base_url above), so an empty
+# block registers it. GLM thinking is on/off only — there are no effort tiers.
+# [providers.zai]
+# [providers.zai.defaults]
+# zai_clear_thinking = false   # preserve reasoning across turns (default)
+# zai_subscription   = false   # true = GLM coding-plan endpoint (.../api/coding/paas/v4)
 #
-# Anthropic (Opus 4.6, Sonnet 4.6) — reasoning_effort (recommended):
-#   reasoning_effort = "adaptive"  model decides whether/how much to think
-#   reasoning_effort = "high"      always think, deep reasoning (default effort)
-#   reasoning_effort = "medium"    moderate thinking, may skip for simple queries
-#   reasoning_effort = "low"       minimal thinking
-#   reasoning_effort = "max"       deepest reasoning, Opus 4.6 only
-#
-# Anthropic (legacy / older models) — budget_tokens:
-#   budget_tokens = 8192           explicit thinking token budget
-#
-# OpenAI / DeepSeek — reasoning_effort:
-#   reasoning_effort = "high"      "low" | "medium" | "high"
-#
-# Gemini — budget_tokens:
-#   budget_tokens = 8192           thinking token budget
-#
-# Z.AI (GLM-5) — thinking enabled by default:
-#   zai_clear_thinking = false     preserve reasoning across turns (default)
-#   zai_clear_thinking = true      strip reasoning from prior turns (cheaper)
-#
-# Examples:
-#
-# [chat.anthropic.claude-opus-thinking]
-# model_id = "claude-opus-4-6"
-# max_output_tokens = 16384
-# reasoning_effort = "high"
-#
-# [chat.anthropic.claude-sonnet-adaptive]
-# model_id = "claude-sonnet-4-6"
-# max_output_tokens = 16384
-# reasoning_effort = "adaptive"
-#
-# [chat.openai.o3]
-# model_id = "o3"
-# reasoning_effort = "high"
-#
-# [chat.deepseek.deepseek-r1]
-# model_id = "deepseek-reasoner"
-# reasoning_effort = "high"
-#
-# [chat.gemini.gemini-pro-thinking]
-# model_id = "gemini-2.5-pro"
-# budget_tokens = 8192
-#
-# [chat.zai.glm-5-thinking]
-# model_id = "glm-5"
-# zai_clear_thinking = false
+# [models."zai:glm-5.1"]
+# zai_clear_thinking = true    # strip prior-turn reasoning (cheaper)
 
-# ── Tool models ──────────────────────────────────────────────────────────
-
-# [tools.openrouter]
-# api_key_env = "OPENROUTER_API_KEY"
-# temperature = 0.5
+# ── Native DeepSeek / Moonshot (Kimi) ─────────────────────────────────────
+# These hit api.deepseek.com / api.moonshot.ai directly (not via OpenRouter)
+# with native reasoning control.
+# [providers.deepseek]
+# [models."deepseek:deepseek-reasoner"]
+# reasoning_effort = "high"    # low|medium|high|xhigh|max; "off" disables thinking
 #
-# [tools.openrouter.mistral-small]
-# model_id = "mistralai/mistral-small-2603"
+# [providers.moonshot]
+# [models."moonshot:kimi-k2-thinking"]
+# budget_tokens = 8192         # native Moonshot thinking budget
+
+# ── Autonomy ─────────────────────────────────────────────────────────────
+# Controls the character's autonomous behavior. Disabled by default; enable
+# to allow unprompted messages.
+
+# [behavior.autonomy]
+# enabled = false
+
+# Heartbeat — autonomous "private moment" ticks where the character can reflect,
+# use tools (memory, web search, etc.), and optionally send an unprompted message.
+# [behavior.autonomy.heartbeat]
+# enabled = true
+# fallback_heartbeat_interval = "1h"      # Base cadence when the character doesn't self-schedule
+# dormant_after_heartbeat_turns = 3       # Consecutive ticks with no user reply before sleeping
+# dormant_after_idle_time = "48h"         # Hard idle ceiling before sleeping until the user returns
+# minimum_heartbeat_latency = "1h"        # Floor between a user message and the next tick
+# max_tool_rounds = 12                    # Tool-use rounds per tick
+# wrap_up_grace_rounds = 3                # Extra rounds granted after the wrap-up nudge
+
+# Dreaming — opt-in scheduled memory consolidation. Requires
+# [behavior.autonomy].enabled = true, but does not require heartbeat.
+# [memory.dreaming]
+# enabled = false
+# frequency = "0 3 * * *"                 # Five-field cron; e.g. "0 6 * * 1" = Mondays 06:00
+# max_tool_rounds = 12
+# Optionally pin a model via [defaults.background].dreaming.
+
+# ── Tool use ─────────────────────────────────────────────────────────────
+
+# [behavior.tool_use]
+# enabled = true
+# max_iterations = 10        # Max tool-call rounds per turn before forcing a final response
+# max_result_chars = 20000   # Truncate each tool result past this many characters (0 disables)
+
+# Per-tool toggles — all enabled by default; set to false to disable.
+# [behavior.tool_use.tools]
+# web_search = true
+# fetch_url = true
+# generate_image = true
+# check_time = true
+# roll_dice = true
+# activity_heatmap = true
+# read = true                # Read workspace files (memory/ is an ordinary subdir)
+# write = true               # Write workspace files; protected prompt files defer to compaction
+# edit = true
+# list_files = true
+# search = true              # Search workspace files
+# delete = true
+# search_history = true      # Search compacted + active conversation history (hidden in private convos)
+# exec = true                # Allowlisted, argument-sandboxed workspace commands (hidden in private convos)
+
+# [behavior.tool_use.search]
+# api_key_env = "TAVILY_API_KEY"  # Env var holding the Tavily API key
+# max_results = 5
+# search_depth = "basic"          # "basic" or "advanced"
+# include_answer = true           # Include Tavily's synthesized answer
+
+# ── Memory & context management ──────────────────────────────────────────
+
+# Compaction — trims the active conversation when it grows too long.
+# [memory.compaction]
+# enabled = true
+# idle_trigger = "30m"        # Trigger after this much inactivity
+# min_turns = 8               # Don't compact below this many user turns
+# max_turns = 16              # Force compaction at this many user turns
+# max_context_tokens = 200000 # Force compaction when last-turn prompt context reaches this
+#                             # (200000 is a context-window safety net; lower it to cut cost; 0 disables)
+# keep_recent_turns = 2       # User turns kept verbatim after compaction
+# max_tool_rounds = 12        # Tool-use rounds for the memory-writing pass
+
+# Retrieval — ranking for internal memory retrieval. "auto" uses hybrid
+# semantic+lexical when an embedder is resolved, otherwise lexical.
+# [memory.retrieval]
+# mode = "auto"               # "auto", "lexical", or "hybrid"
+
+# Thinking — how prior-turn extended-thinking blocks are handled on outgoing
+# requests. This is the GLOBAL fallback; the effect is model-dependent, so
+# override per model via `shore model setting replay_prior_thinking <bool>`.
+# [memory.thinking]
+# replay_prior_thinking = true # false strips prior thinking to save tokens — safe on
+#                             # Anthropic Claude 4.x. DeepSeek V3.1+ / Moonshot Kimi-thinking
+#                             # always replay reasoning_content and ignore this.
+
+# ── Notifications ────────────────────────────────────────────────────────
+
+# [notifications]
+# enabled = false
+# backend = "notify_send"     # "notify_send", "ntfy", or "command"
+# generation_threshold = "0s" # Only notify message_complete when generation exceeds this (0 = always)
+
+# [notifications.ntfy]
+# url = "https://ntfy.sh"
+# topic = ""
+# token = ""                  # Optional auth token for self-hosted instances
+
+# [notifications.command]
+# template = ""               # Shell command; use {title} and {body} as placeholders
+
+# [notifications.events]
+# autonomous_message = true
+# cache_warning = true
+# compaction_complete = true
+# error = true
+# message_complete = false
+# usage_warning = true
+
+# ── Usage budgets ────────────────────────────────────────────────────────
+
+# [usage]
+# timezone = "local"                  # "local" or "utc"
+# allow_compaction_over_budget = true # Let compaction run even over a blocking budget
+#
+# [[usage.budgets]]
+# name = "daily total"
+# period = "day"                      # hour, day, week, month
+# cost_usd = 10.00
+# warn_at = [0.5, 0.8, 1.0]           # Crossings emit usage_warning frames + notifications
+# limit = "warn"                      # warn, block, pause_background
+#
+# [[usage.budgets]]
+# name = "background"
+# period = "day"
+# usage_kind = ["heartbeat", "dreaming"] # omit compaction so it can still save future cost
+# cost_usd = 2.00
+# limit = "pause_background"
+#
+# [[usage.budgets]]
+# name = "overflow key monthly"
+# period = "month"
+# provider = "openrouter"
+# api_key = "overflow"                # Friendly name from [[providers.<name>.keys]]
+# cost_usd = 25.00
+# limit = "block"
+# allow_compaction_over_budget = false # Optional per-budget strict override
+#
+# [usage.spike_warnings]
+# enabled = false                      # `shore usage --budget` reports spikes when true
+# period = "hour"
+# multiplier = 3.0
+# min_cost_usd = 1.00
+
+# ── Connections ──────────────────────────────────────────────────────────
+
+# Matrix: External mode (connect to an existing homeserver)
+# [connections.matrix]
+# enabled = true
+# homeserver = "https://matrix.example.com"
+# user_id = "@shore:example.com"
+# room_id = "!abc123:example.com"
+# trusted_user = "@user:example.com"
+
+# Matrix: Embedded mode (shore-matrix manages a conduwuit-compatible server)
+# [connections.matrix]
+# trusted_user = "@user:shore.local"
+#
+# [connections.matrix.embedded]
+# server_name = "shore.local"          # Cannot be changed after first run. Default: "localhost"
+# admin_password = "your-admin-pass"   # Required
+# port = 6167
+# admin_user = "shore-admin"
+# # bind_address = "127.0.0.1"         # Default: loopback only. "0.0.0.0" or a LAN/Tailscale
+#                                      # IP exposes the homeserver to other devices.
+# # data_dir = "..."                   # Default: $XDG_DATA_HOME/shore/matrix-server/
+# # binary = "continuwuity"            # Default: auto-detect
+
+# Telegram / Discord (reserved for future use)
+# [connections.telegram]
+# [connections.discord]
+
+# ── Services ─────────────────────────────────────────────────────────────
+# Supervised helper processes the daemon manages. Currently only the LLM
+# service slot is used (reserved for an external LLM proxy).
+
+# [services.llm]
+# command = "node shore-llm/dist/index.js"  # Command to spawn the LLM service
+# socket = "/run/shore-llm.sock"            # Unix socket the service listens on
+
+# ── Advanced ─────────────────────────────────────────────────────────────
+
+# [advanced]
+# api_payload_logging = false
+# cache_forensics = false          # Write prompt-cache diagnostics when debugging cache behavior
+# editor = "nvim"                  # Override $VISUAL / $EDITOR
+# max_retries = 2
+# retry_backoff = "500ms"          # Base delay; doubles on each retry
+# max_image_size = 2000000         # Resize images above this size (bytes) before upload; 0 = disable
+# Data directory: override via $XDG_DATA_HOME (default: ~/.local/share/shore)
+
+# The Bun LLM sidecar handles all chat/generate/image calls and is on by default.
+# [advanced.llm_sidecar]
+# enabled = true
+# socket_path = "/path/to/llm.sock" # Defaults to <runtime_dir>/llm.sock when unset
 
 # ── Embedding ────────────────────────────────────────────────────────────
+# Identity is provider:model_id; transport + credentials come from
+# [providers.<provider>]. The optional settings table carries only category
+# knobs (dimensions). Select the model with [defaults].embedding above.
+# Any endpoint speaking /v1/embeddings works (OpenAI, Voyage compat, a local
+# text-embedding-inference server, etc.).
 
-# Identity is `provider:model_id`; transport + credentials come from
-# [providers.<provider>]. The settings table is optional and carries only
-# category knobs (e.g. dimensions). Select it with defaults.embedding above.
 # [providers.openai]
 # api_key_env = "OPENAI_API_KEY"
 #
 # [embedding."openai:text-embedding-3-large"]
+# dimensions = 1024   # Omit to get the model's native width (e.g. 3072)
+
+# Self-hosted example:
+# [providers.local-tei]
+# base_url = "http://127.0.0.1:8080/v1"
+# api_key_env = "TEI_API_KEY"   # Must point at a set var; use any non-empty value if unchecked
+#
+# [embedding."local-tei:BAAI/bge-large-en-v1.5"]
 # dimensions = 1024
 
 # ── Image generation ─────────────────────────────────────────────────────
-
-# Same model: identity is `provider:model_id`, transport on [providers.*],
-# optional settings table holds size/quality/aspect_ratio/image_size.
+# Same shape: identity provider:model_id, transport on [providers.*], optional
+# settings table (size/quality for OpenAI; aspect_ratio/image_size for OpenRouter).
 
 # OpenAI DALL-E:
 # [providers.openai]

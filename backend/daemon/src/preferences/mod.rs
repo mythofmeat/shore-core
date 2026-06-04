@@ -175,7 +175,7 @@ impl SamplerSettings {
             budget_tokens: model.budget_tokens,
             max_output_tokens: model.max_output_tokens,
             cache_ttl: model.cache_ttl.clone(),
-            sdk: Some(model.sdk.as_str().to_string()),
+            sdk: Some(model.sdk.as_str().to_owned()),
             replay_prior_thinking: model.replay_prior_thinking,
             openrouter_provider: model.openrouter_provider.clone(),
             vertex_project: model.vertex_project.clone(),
@@ -357,13 +357,13 @@ pub fn resolve_selected_model(
 ) -> Option<(String, String)> {
     if let Some(char_prefs) = character {
         if let Some((p, m)) = char_prefs.selected.pair() {
-            return Some((p.to_string(), m.to_string()));
+            return Some((p.to_owned(), m.to_owned()));
         }
     }
     global
         .selected
         .pair()
-        .map(|(p, m)| (p.to_string(), m.to_string()))
+        .map(|(p, m)| (p.to_owned(), m.to_owned()))
 }
 
 /// Resolve sampler settings for `(provider, model_id)`.
@@ -640,13 +640,13 @@ fn synthesize_selected_provider_model(
     }
 
     Some(shore_config::models::ResolvedModel::from_parts(
-        model_id.to_string(),
+        model_id.to_owned(),
         // Canonical `provider:model_id` identity (#139), not the retired
         // `chat.<provider>.<model_id>` cosplay.
         format!("{provider}:{model_id}"),
-        "chat".to_string(),
-        provider.to_string(),
-        model_id.to_string(),
+        "chat".to_owned(),
+        provider.to_owned(),
+        model_id.to_owned(),
         shore_config::models::default_sdk(provider),
         fields,
     ))

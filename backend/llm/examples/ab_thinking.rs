@@ -384,7 +384,7 @@ fn heartbeat_conversation(
         );
         format!("{HEARTBEAT_PROMPT}\n\nYour recent activity log:\n{journal}")
     } else {
-        HEARTBEAT_PROMPT.to_string()
+        HEARTBEAT_PROMPT.to_owned()
     };
 
     let messages = vec![

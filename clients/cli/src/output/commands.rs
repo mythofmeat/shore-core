@@ -15,10 +15,10 @@ use super::{
 /// Translate a heartbeat state string to a human-readable description.
 fn heartbeat_description(state: &str, ticks: u64, max_ticks: u64) -> String {
     match state {
-        "Active" if ticks == 0 => "active \u{2014} in conversation".to_string(),
+        "Active" if ticks == 0 => "active \u{2014} in conversation".to_owned(),
         "Active" => format!("active \u{2014} idle {ticks}/{max_ticks} ticks"),
-        "Dormant" => "dormant \u{2014} waiting for you".to_string(),
-        other => other.to_string(),
+        "Dormant" => "dormant \u{2014} waiting for you".to_owned(),
+        other => other.to_owned(),
     }
 }
 
@@ -177,7 +177,7 @@ pub(crate) fn print_status(data: &serde_json::Value, character_name: &str) {
             .filter_map(|path| path.as_str())
             .collect();
         let label = if pending_deferred_edit_count == 1 {
-            "1 pending".to_string()
+            "1 pending".to_owned()
         } else {
             format!("{pending_deferred_edit_count} pending")
         };
@@ -503,7 +503,7 @@ fn print_model_list(data: &serde_json::Value) {
                 let tag = if hidden {
                     format!("{source}, hidden")
                 } else {
-                    source.to_string()
+                    source.to_owned()
                 };
                 let _ignored = write!(out, "[{tag}]");
             }
@@ -662,15 +662,15 @@ fn print_model_settings(data: &serde_json::Value) {
         .iter()
         .map(|&key| {
             let value = match sampler.get(key) {
-                Some(v) if v.is_null() => "(unset)".to_string(),
+                Some(v) if v.is_null() => "(unset)".to_owned(),
                 Some(v) => v.as_str().map_or_else(|| v.to_string(), String::from),
-                None => "(unset)".to_string(),
+                None => "(unset)".to_owned(),
             };
             let scope = scopes
                 .get(key)
                 .and_then(|v| v.as_str())
                 .unwrap_or("(default)")
-                .to_string();
+                .to_owned();
             let domain = (key == "reasoning_effort" && !effort_domain.is_empty())
                 .then(|| effort_domain.join(", "));
             SettingRow {
@@ -707,9 +707,9 @@ fn print_set_model_setting(data: &serde_json::Value) {
     let key = data["key"].as_str().unwrap_or("?");
     let scope = data["scope"].as_str().unwrap_or("?");
     let value = match data.get("value") {
-        Some(v) if v.is_null() => "(cleared)".to_string(),
+        Some(v) if v.is_null() => "(cleared)".to_owned(),
         Some(v) => v.as_str().map_or_else(|| v.to_string(), String::from),
-        None => "(cleared)".to_string(),
+        None => "(cleared)".to_owned(),
     };
     let model = data["model"].as_str().unwrap_or("?");
     cli_out!("[{scope}] {key} = {value}  ({})", abbreviate_model(model));
@@ -1061,7 +1061,7 @@ fn print_changelog(data: &serde_json::Value) {
                 let desc = entry["description"].as_str().unwrap_or("");
 
                 let time_display = parse_timestamp(ts)
-                    .map_or_else(|| ts.to_string(), |dt| dt.format("%b %d %H:%M").to_string());
+                    .map_or_else(|| ts.to_owned(), |dt| dt.format("%b %d %H:%M").to_string());
 
                 if use_color() {
                     let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
@@ -1500,7 +1500,7 @@ fn ellipsize(s: &str, max_width: usize) -> String {
     }
     let count = s.chars().count();
     if count <= max_width {
-        return s.to_string();
+        return s.to_owned();
     }
     let mut out: String = s.chars().take(max_width.saturating_sub(1)).collect();
     out.push('\u{2026}');
@@ -1513,7 +1513,7 @@ fn ellipsize(s: &str, max_width: usize) -> String {
 /// match the configured anchor at a glance.
 fn format_local_ampm(rfc3339: &str) -> String {
     parse_timestamp(rfc3339).map_or_else(
-        || rfc3339.to_string(),
+        || rfc3339.to_owned(),
         |dt| dt.format("%Y-%m-%d %I:%M %p").to_string(),
     )
 }
@@ -1974,7 +1974,7 @@ fn format_threshold(secs: u64) -> String {
 /// raw string on parse failure.
 fn format_local_timestamp(rfc3339: &str) -> String {
     parse_timestamp(rfc3339).map_or_else(
-        || rfc3339.to_string(),
+        || rfc3339.to_owned(),
         |dt| dt.format("%Y-%m-%d %H:%M").to_string(),
     )
 }
@@ -2462,6 +2462,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::string_slice,
+        reason = "test slices a fixed ASCII table row at a find()-derived offset, so the bounds are char boundaries"
+    )]
     fn usage_summary_table_keeps_columns_aligned_with_long_provider() {
         // Regression for issue #32: an over-long provider name used to push
         // every subsequent value one column to the right.
