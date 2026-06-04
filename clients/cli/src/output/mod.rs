@@ -154,6 +154,10 @@ const MIN_BODY_WRAP: usize = 16;
 /// text at column 5. Each line is word-wrapped to the terminal width with its
 /// leading indentation preserved on continuation rows, so long lines stay in
 /// the gutter instead of soft-wrapping back to column 0.
+#[expect(
+    clippy::string_slice,
+    reason = "`indent_len` counts leading ASCII spaces, so it is a char-boundary byte offset into `line`"
+)]
 pub(crate) fn write_process_body(out: &mut impl Write, body: &str) {
     if body.is_empty() {
         return;
@@ -229,7 +233,7 @@ pub(crate) fn primary_tool_arg(input: &serde_json::Value) -> Option<String> {
 /// Truncate `s` to at most `max` chars, appending `…` when shortened.
 fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
-        s.to_string()
+        s.to_owned()
     } else {
         let kept: String = s.chars().take(max.saturating_sub(1)).collect();
         format!("{kept}\u{2026}")

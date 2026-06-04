@@ -425,11 +425,11 @@ fn build_resolved_from_provider(
     let sdk_fallback = fields.sdk.clone().unwrap_or(sdk);
 
     ResolvedModel::from_parts(
-        model_id.to_string(),
+        model_id.to_owned(),
         qualified_name,
         "chat".into(),
         provider_key.into(),
-        model_id.to_string(),
+        model_id.to_owned(),
         sdk_fallback,
         fields,
     )

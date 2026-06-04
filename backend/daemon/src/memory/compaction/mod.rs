@@ -138,6 +138,10 @@ impl CompactionManager {
     /// Existing memory is no longer inlined here: the model already has the
     /// `MEMORY.md` index in its system prompt and reaches full files via its
     /// `read`/`list_files`/`search` tools on demand.
+    #[expect(
+        clippy::string_slice,
+        reason = "byte offsets derive from find()/literal-len() on `final_msg` itself, so every slice bound lands on a char boundary"
+    )]
     pub fn build_final_message(
         final_message_template: &str,
         char_name: &str,
@@ -165,6 +169,10 @@ impl CompactionManager {
     /// Replaces `{{conversation}}` with formatted messages and substitutes
     /// `{{char}}` / `{{user}}` with the provided names.
     #[cfg(test)]
+    #[expect(
+        clippy::string_slice,
+        reason = "byte offsets derive from find()/literal-len() on `result` itself, so every slice bound lands on a char boundary"
+    )]
     pub fn build_prompt(
         template: &str,
         messages: &[ConversationMessage],
@@ -343,7 +351,7 @@ impl CompactionManager {
 
         if !dry_run && markdown_store.is_none() {
             return Err(CompactionError::MarkdownStore(
-                "markdown memory store not available".to_string(),
+                "markdown memory store not available".to_owned(),
             ));
         }
 
@@ -371,7 +379,7 @@ impl CompactionManager {
                 .to_string_lossy()
                 .into_owned()
         } else {
-            tool_ctx.workspace_dir().to_string()
+            tool_ctx.workspace_dir().to_owned()
         };
 
         let compacted_turns = Self::count_turns(compacted_part);
@@ -463,7 +471,7 @@ impl CompactionManager {
                 "compaction: zero memory writes; active conversation NOT archived"
             );
             return Ok(CompactionOutcome::NoMemoryWrites(NoMemoryWritesResult {
-                conversation_id: conversation_id.to_string(),
+                conversation_id: conversation_id.to_owned(),
                 message_count: split_at,
                 compacted_turns,
                 tool_rounds: loop_state.tool_rounds,
@@ -481,7 +489,7 @@ impl CompactionManager {
                 conversation_id,
                 RetentionParams {
                     keep_last_n: retained,
-                    active_content: active_content.to_string(),
+                    active_content: active_content.to_owned(),
                 },
             )
             .await
@@ -562,7 +570,7 @@ impl CompactionManager {
         );
         Ok(CompactionOutcome::Compacted(CompactionResult {
             memory_files_written: markdown_paths.clone(),
-            conversation_id: conversation_id.to_string(),
+            conversation_id: conversation_id.to_owned(),
             new_conversation_id,
             message_count: split_at,
             compacted_turns,
@@ -681,12 +689,12 @@ pub(crate) fn push_assistant_response(
 /// from a tool input value. Returns `None` if the input is malformed; the
 /// dispatch wrapper surfaces that as a tool error.
 fn extract_memory_write_intent(name: &str, input: &Value) -> Option<(String, Option<String>)> {
-    let path = input.get("path").and_then(|v| v.as_str())?.to_string();
+    let path = input.get("path").and_then(|v| v.as_str())?.to_owned();
     let content = match name {
         "write" => input
             .get("content")
             .and_then(|v| v.as_str())
-            .map(str::to_string),
+            .map(str::to_owned),
         // `edit` carries an `edits` array, not a single content blob —
         // the dry-run preview just records the path.
         _ => None,
@@ -898,9 +906,9 @@ mod tests {
         (0..count)
             .map(|i| ConversationMessage {
                 role: if i % 2 == 0 {
-                    "user".to_string()
+                    "user".to_owned()
                 } else {
-                    "assistant".to_string()
+                    "assistant".to_owned()
                 },
                 content: format!("Message {i}"),
                 timestamp: Local::now().to_rfc3339(),
@@ -1074,7 +1082,7 @@ mod tests {
                 compact_now_user
                     .get("content")
                     .and_then(|c| c.as_str())
-                    .map(str::to_string);
+                    .map(str::to_owned);
             let mut combined = chat_request.messages.clone();
             combined.push(compact_now_user);
             let mut request = LlmRequest {
@@ -1131,7 +1139,7 @@ mod tests {
         fn new(next_id: &str) -> Self {
             Self {
                 archived: StdMutex::new(Vec::new()),
-                next_id: next_id.to_string(),
+                next_id: next_id.to_owned(),
             }
         }
 
@@ -1149,7 +1157,7 @@ mod tests {
             self.archived
                 .lock()
                 .unwrap()
-                .push((conversation_id.to_string(), params.keep_last_n));
+                .push((conversation_id.to_owned(), params.keep_last_n));
             let next_id = self.next_id.clone();
             Box::pin(async move { Ok(next_id) })
         }
@@ -1169,7 +1177,7 @@ mod tests {
                 Self {
                     entered_tx: StdMutex::new(Some(entered_tx)),
                     release_rx: StdMutex::new(Some(release_rx)),
-                    next_id: next_id.to_string(),
+                    next_id: next_id.to_owned(),
                 },
                 entered_rx,
                 release_tx,
@@ -1199,7 +1207,7 @@ mod tests {
                     }
                     release_rx.recv().map_err(|_| {
                         CompactionError::ConversationManager(
-                            "test release signal dropped before archive completed".to_string(),
+                            "test release signal dropped before archive completed".to_owned(),
                         )
                     })?;
                     Ok(next_id)
@@ -1224,7 +1232,7 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
             Box::pin(async {
                 Err(CompactionError::ConversationManager(
-                    "simulated archive failure".to_string(),
+                    "simulated archive failure".to_owned(),
                 ))
             })
         }
@@ -1278,15 +1286,15 @@ mod tests {
     fn test_build_prompt_no_recap() {
         let messages = vec![
             ConversationMessage {
-                role: "user".to_string(),
-                content: "Hello!".to_string(),
-                timestamp: "2026-03-25T10:00:00Z".to_string(),
+                role: "user".to_owned(),
+                content: "Hello!".to_owned(),
+                timestamp: "2026-03-25T10:00:00Z".to_owned(),
                 is_tool_result_only: false,
             },
             ConversationMessage {
-                role: "assistant".to_string(),
-                content: "Hi there!".to_string(),
-                timestamp: "2026-03-25T10:00:01Z".to_string(),
+                role: "assistant".to_owned(),
+                content: "Hi there!".to_owned(),
+                timestamp: "2026-03-25T10:00:01Z".to_owned(),
                 is_tool_result_only: false,
             },
         ];
@@ -1401,39 +1409,39 @@ mod tests {
     fn test_find_turn_split_skips_tool_result_messages() {
         let messages = vec![
             ConversationMessage {
-                role: "user".to_string(),
-                content: "Hello".to_string(),
-                timestamp: "t0".to_string(),
+                role: "user".to_owned(),
+                content: "Hello".to_owned(),
+                timestamp: "t0".to_owned(),
                 is_tool_result_only: false,
             },
             ConversationMessage {
-                role: "assistant".to_string(),
+                role: "assistant".to_owned(),
                 content: String::new(),
-                timestamp: "t1".to_string(),
+                timestamp: "t1".to_owned(),
                 is_tool_result_only: false,
             },
             ConversationMessage {
-                role: "user".to_string(),
-                content: "tool output here".to_string(),
-                timestamp: "t2".to_string(),
+                role: "user".to_owned(),
+                content: "tool output here".to_owned(),
+                timestamp: "t2".to_owned(),
                 is_tool_result_only: true,
             },
             ConversationMessage {
-                role: "assistant".to_string(),
-                content: "Based on the tool result...".to_string(),
-                timestamp: "t3".to_string(),
+                role: "assistant".to_owned(),
+                content: "Based on the tool result...".to_owned(),
+                timestamp: "t3".to_owned(),
                 is_tool_result_only: false,
             },
             ConversationMessage {
-                role: "user".to_string(),
-                content: "Thanks!".to_string(),
-                timestamp: "t4".to_string(),
+                role: "user".to_owned(),
+                content: "Thanks!".to_owned(),
+                timestamp: "t4".to_owned(),
                 is_tool_result_only: false,
             },
             ConversationMessage {
-                role: "assistant".to_string(),
-                content: "You're welcome!".to_string(),
-                timestamp: "t5".to_string(),
+                role: "assistant".to_owned(),
+                content: "You're welcome!".to_owned(),
+                timestamp: "t5".to_owned(),
                 is_tool_result_only: false,
             },
         ];
@@ -1446,15 +1454,15 @@ mod tests {
     fn test_find_turn_split_keep_zero_returns_full_length() {
         let all_user = vec![
             ConversationMessage {
-                role: "user".to_string(),
-                content: "a".to_string(),
-                timestamp: "t0".to_string(),
+                role: "user".to_owned(),
+                content: "a".to_owned(),
+                timestamp: "t0".to_owned(),
                 is_tool_result_only: false,
             },
             ConversationMessage {
-                role: "user".to_string(),
-                content: "b".to_string(),
-                timestamp: "t1".to_string(),
+                role: "user".to_owned(),
+                content: "b".to_owned(),
+                timestamp: "t1".to_owned(),
                 is_tool_result_only: false,
             },
         ];
@@ -1468,15 +1476,15 @@ mod tests {
     fn test_find_turn_split_all_tool_results_returns_zero() {
         let messages = vec![
             ConversationMessage {
-                role: "user".to_string(),
-                content: "tool output".to_string(),
-                timestamp: "t0".to_string(),
+                role: "user".to_owned(),
+                content: "tool output".to_owned(),
+                timestamp: "t0".to_owned(),
                 is_tool_result_only: true,
             },
             ConversationMessage {
-                role: "assistant".to_string(),
-                content: "response".to_string(),
-                timestamp: "t1".to_string(),
+                role: "assistant".to_owned(),
+                content: "response".to_owned(),
+                timestamp: "t1".to_owned(),
                 is_tool_result_only: false,
             },
         ];

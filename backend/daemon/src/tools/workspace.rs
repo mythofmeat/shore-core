@@ -202,13 +202,13 @@ pub(crate) fn resolve_roots(
     let (root, stripped) = if relative == "workspace" {
         (workspace_root, String::new())
     } else if let Some(rest) = relative.strip_prefix("workspace/") {
-        (workspace_root, rest.to_string())
+        (workspace_root, rest.to_owned())
     } else if relative == "memory" {
         (workspace_root.join("memory"), String::new())
     } else if let Some(rest) = relative.strip_prefix("memory/") {
-        (workspace_root.join("memory"), rest.to_string())
+        (workspace_root.join("memory"), rest.to_owned())
     } else {
-        (workspace_root, relative.to_string())
+        (workspace_root, relative.to_owned())
     };
 
     Ok((root, stripped))
@@ -301,7 +301,7 @@ fn normalize_search_query(input: &Value) -> Result<String, ToolError> {
         return Err(ToolError::InvalidArgs("query must not be empty".into()));
     }
 
-    Ok(query.to_string())
+    Ok(query.to_owned())
 }
 
 fn search_result_limit(input: &Value) -> usize {
@@ -353,6 +353,10 @@ fn find_case_insensitive_match(line: &str, query_lower: &str) -> Option<(usize, 
     ))
 }
 
+#[expect(
+    clippy::string_slice,
+    reason = "`end` is a char-boundary byte offset (caller passes char_indices/len-derived positions), so `text[..end]` is valid"
+)]
 fn byte_index_before_chars(text: &str, end: usize, count: usize) -> usize {
     let mut start = end;
     for _ in 0..count {
@@ -364,6 +368,10 @@ fn byte_index_before_chars(text: &str, end: usize, count: usize) -> usize {
     start
 }
 
+#[expect(
+    clippy::string_slice,
+    reason = "`start` is a char-boundary byte offset (caller passes char_indices/len-derived positions), so `text[start..]` is valid"
+)]
 fn byte_index_after_chars(text: &str, start: usize, count: usize) -> usize {
     let mut end = start;
     for _ in 0..count {
@@ -375,6 +383,10 @@ fn byte_index_after_chars(text: &str, start: usize, count: usize) -> usize {
     end
 }
 
+#[expect(
+    clippy::string_slice,
+    reason = "match offsets are clamped to `trimmed.len()` and excerpt bounds come from byte_index_*_chars(), so every slice bound lands on a char boundary"
+)]
 fn excerpt_line(line: &str, match_start: usize, match_end: usize) -> String {
     let trimmed_start = line.trim_start();
     let leading_trimmed_bytes = line.len().saturating_sub(trimmed_start.len());
@@ -1003,7 +1015,7 @@ fn search_excerpt_terms(query_lower: &str) -> Vec<String> {
     query_lower
         .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
         .filter(|t| t.len() >= 2)
-        .map(str::to_string)
+        .map(str::to_owned)
         .collect()
 }
 
@@ -1068,7 +1080,7 @@ fn best_term_matched_line<'val>(
 fn truncate_excerpt_line(line: &str) -> String {
     let count = line.chars().count();
     if count <= SEARCH_EXCERPT_CHARS {
-        return line.to_string();
+        return line.to_owned();
     }
     let truncated: String = line.chars().take(SEARCH_EXCERPT_CHARS).collect();
     format!("{truncated}...")

@@ -37,18 +37,18 @@ fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
 
 fn msg(id: &str, role: Role, text: &str, ts: &str) -> Message {
     Message {
-        msg_id: id.to_string(),
+        msg_id: id.to_owned(),
         role,
-        content: text.to_string(),
+        content: text.to_owned(),
         images: vec![],
         content_blocks: vec![ContentBlock::Text {
-            text: text.to_string(),
+            text: text.to_owned(),
         }],
         alt_index: None,
         alt_count: None,
         alternatives: vec![],
         provider_key: None,
-        timestamp: ts.to_string(),
+        timestamp: ts.to_owned(),
     }
 }
 

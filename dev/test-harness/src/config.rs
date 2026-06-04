@@ -92,7 +92,7 @@ impl TestConfigBuilder {
     /// a complete TOML fragment (without a wrapping `[providers]` table —
     /// the parser expects each entry as `[providers.<name>]`).
     pub fn provider_registry_toml(mut self, toml: &str) -> Self {
-        self.provider_registry_toml = Some(toml.to_string());
+        self.provider_registry_toml = Some(toml.to_owned());
         self
     }
 
@@ -102,7 +102,7 @@ impl TestConfigBuilder {
     /// between two real catalog entries on a single boot.
     pub fn extra_chat_alias(mut self, alias: &str, model_id: &str) -> Self {
         self.extra_chat_aliases
-            .push((alias.to_string(), model_id.to_string()));
+            .push((alias.to_owned(), model_id.to_owned()));
         self
     }
 
@@ -110,7 +110,7 @@ impl TestConfigBuilder {
     /// one. Used by Phase 10 per-character preference tests.
     pub fn extra_character(mut self, name: &str, definition: &str) -> Self {
         self.extra_characters
-            .push((name.to_string(), definition.to_string()));
+            .push((name.to_owned(), definition.to_owned()));
         self
     }
 
@@ -347,7 +347,7 @@ dimensions = 8
                 format!("base_url = \"{mock_base_url}\"\napi_key_env = \"SHORE_TEST_API_KEY\"\n")
                     .parse::<toml::Table>()?
                     .into();
-            let _ignored = providers_section.insert("testembed".to_string(), entry);
+            let _ignored = providers_section.insert("testembed".to_owned(), entry);
         }
 
         if !providers_section.is_empty() {

@@ -31,7 +31,7 @@ pub fn format_tool_output_with_limit(output: &str, max_bytes: Option<usize>) -> 
     let trimmed = output.trim_end();
     let formatted = match serde_json::from_str::<Value>(trimmed) {
         Ok(value) => format_json_value(&value),
-        Err(_) => trimmed.to_string(),
+        Err(_) => trimmed.to_owned(),
     };
     truncate_with_notice(formatted, max_bytes)
 }
@@ -116,7 +116,7 @@ fn push_scalar(lines: &mut Vec<String>, value: &Value, indent: usize) {
 
 fn inline_value(value: &Value) -> Option<String> {
     match value {
-        Value::Null => Some("null".to_string()),
+        Value::Null => Some("null".to_owned()),
         Value::Bool(value) => Some(value.to_string()),
         Value::Number(value) => Some(value.to_string()),
         Value::String(value) if !value.contains('\n') => Some(format_string(value)),
@@ -128,16 +128,16 @@ fn inline_value(value: &Value) -> Option<String> {
                 .join(", ");
             Some(format!("[{joined}]"))
         }
-        Value::Object(map) if map.is_empty() => Some("{}".to_string()),
+        Value::Object(map) if map.is_empty() => Some("{}".to_owned()),
         Value::String(_) | Value::Array(_) | Value::Object(_) => None,
     }
 }
 
 fn format_string(value: &str) -> String {
     if value.is_empty() {
-        "\"\"".to_string()
+        "\"\"".to_owned()
     } else {
-        value.to_string()
+        value.to_owned()
     }
 }
 

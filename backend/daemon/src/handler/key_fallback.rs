@@ -254,12 +254,12 @@ fn record_fallback(ctx: &GenContext, record: FallbackRecord<'_>) {
             rid: request.rid.clone(),
             provider: resolved.provider_key.clone(),
             model: resolved.qualified_name.clone(),
-            character: char_name.to_string(),
+            character: char_name.to_owned(),
             from_key: from.name.clone(),
             to_key: to_name.clone(),
-            kind: kind.as_str().to_string(),
+            kind: kind.as_str().to_owned(),
             status,
-            reason: reason.to_string(),
+            reason: reason.to_owned(),
         });
     }
 
@@ -289,7 +289,7 @@ fn record_fallback(ctx: &GenContext, record: FallbackRecord<'_>) {
                 provider: resolved.provider_key.clone(),
                 from_key: from.name.clone(),
                 to_key: to_cand.name.clone(),
-                kind: kind.as_str().to_string(),
+                kind: kind.as_str().to_owned(),
                 status,
                 message,
             };
@@ -355,6 +355,10 @@ fn build_warning_message(
 /// keep the status code but never leak provider response payloads
 /// (which can include partial credentials, internal IDs, or quota
 /// quotas verbatim).
+#[expect(
+    clippy::string_slice,
+    reason = "slice end comes from floor_char_boundary(), which is guaranteed to be a char boundary"
+)]
 fn sanitize_reason(err: &LlmError) -> String {
     match err {
         LlmError::HttpStatus { status, .. } => format!("HTTP {status}"),

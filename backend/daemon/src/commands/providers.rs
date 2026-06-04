@@ -197,7 +197,7 @@ pub(crate) async fn refresh_one(
 
     let cache = ProviderModelsCache {
         version: shore_llm::discovery::CACHE_VERSION,
-        provider_key: provider.to_string(),
+        provider_key: provider.to_owned(),
         fetched_at: chrono::Utc::now().to_rfc3339(),
         base_url: Some(base_url),
         models,

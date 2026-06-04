@@ -494,12 +494,10 @@ impl AutonomyManager {
             dream_failure_count: 0,
         }));
 
-        let _ignored = self
-            .states
-            .insert(character.to_string(), Arc::clone(&state));
+        let _ignored = self.states.insert(character.to_owned(), Arc::clone(&state));
 
         // Spawn per-character tick task.
-        let name = character.to_string();
+        let name = character.to_owned();
         let config = autonomy_cfg;
         let compaction = Arc::clone(&self.compaction);
         let data_dir = self.data_dir.clone();
@@ -810,7 +808,7 @@ impl AutonomyManager {
                 .collect();
             AutonomyStatus {
                 paused: s.paused,
-                heartbeat_state: s.heartbeat.state_at(now).to_string(),
+                heartbeat_state: s.heartbeat.state_at(now).to_owned(),
                 ticks_without_user: s.heartbeat.ticks_without_user(),
                 dormant_after_heartbeat_turns: s.heartbeat.max_idle_ticks(),
                 effective_interval_secs: s.heartbeat.default_interval().as_secs(),
@@ -941,7 +939,7 @@ fn schedule_next_wake_in_state(state: &Mutex<AutonomyState>, input: &Value) -> V
         .get("reason")
         .and_then(Value::as_str)
         .unwrap_or("")
-        .to_string();
+        .to_owned();
     let clamped = hours.clamp(1.0, 48.0);
     let now = Instant::now();
     let when = now
@@ -1591,7 +1589,7 @@ fn default_heartbeat_instructions() -> &'static str {
 
 fn load_heartbeat_instructions(character_data_dir: &Path) -> String {
     crate::memory::deferred_edits::load_active_prompt_file(character_data_dir, HEARTBEAT_FILE)
-        .unwrap_or_else(|| default_heartbeat_instructions().to_string())
+        .unwrap_or_else(|| default_heartbeat_instructions().to_owned())
 }
 
 fn history_is_between_turns(messages: &[Message]) -> bool {
@@ -1833,7 +1831,7 @@ async fn execute_heartbeat_tick(
     {
         let h = default_interval_secs / 3600;
         if h == 1 {
-            "1 hour".to_string()
+            "1 hour".to_owned()
         } else {
             format!("{h} hours")
         }
@@ -1922,7 +1920,7 @@ async fn execute_heartbeat_tick(
                 let mut s = lock_state(state);
                 s.heartbeat_log.push(
                     HeartbeatEventKind::ToolUse,
-                    "Wrap-up nudge: budget reached, model asked to summarize".to_string(),
+                    "Wrap-up nudge: budget reached, model asked to summarize".to_owned(),
                 );
             }
         } else if deadline_reached && wrap_up_nudged {
@@ -2116,7 +2114,7 @@ async fn execute_heartbeat_tick(
                         let _ignored = tx.send(ServerMessage::NewMessage(
                             shore_protocol::server_msg::NewMessage {
                                 revision: engine.current_revision(),
-                                character: Some(character.to_string()),
+                                character: Some(character.to_owned()),
                                 origin: Some(shore_protocol::server_msg::MessageOrigin::Autonomous),
                                 message: msg.clone(),
                             },
@@ -2152,7 +2150,7 @@ async fn execute_heartbeat_tick(
         let mut s = lock_state(state);
         s.heartbeat_log.push(
             HeartbeatEventKind::MessageSkipped,
-            "Tick completed — no message sent".to_string(),
+            "Tick completed — no message sent".to_owned(),
         );
     }
 }
@@ -2203,7 +2201,7 @@ fn build_tool_context(
         llm_client: client.inner().clone(),
         image_gen_config,
         search_config: config.app.behavior.tool_use.search.clone(),
-        character_name: character.to_string(),
+        character_name: character.to_owned(),
         workspace_dir: character_workspace_dir(&config.dirs.config, character)
             .to_string_lossy()
             .into_owned(),
@@ -2223,6 +2221,10 @@ fn build_tool_context(
 }
 
 /// Extract text between XML-style tags. Returns the last match (last-wins).
+#[expect(
+    clippy::string_slice,
+    reason = "byte offsets derive from find()/literal-len() on `content` itself, so every slice bound lands on a char boundary"
+)]
 fn extract_tag(content: &str, start_tag: &str, end_tag: &str) -> Option<String> {
     let mut result = None;
     let mut search_from = 0;
@@ -2233,7 +2235,7 @@ fn extract_tag(content: &str, start_tag: &str, end_tag: &str) -> Option<String> 
         if let Some(end_pos) = content[abs_start..].find(end_tag) {
             let inner = content[abs_start..abs_start.saturating_add(end_pos)].trim();
             if !inner.is_empty() {
-                result = Some(inner.to_string());
+                result = Some(inner.to_owned());
             }
             search_from = abs_start
                 .saturating_add(end_pos)
@@ -2340,7 +2342,7 @@ async fn execute_dormant_ping(
     loaded_config: Option<&LoadedConfig>,
 ) -> DormantPingOutcome {
     let Some(client) = llm_client else {
-        return DormantPingOutcome::Skipped("no LLM client available".to_string());
+        return DormantPingOutcome::Skipped("no LLM client available".to_owned());
     };
 
     let mut request = {
@@ -2352,7 +2354,7 @@ async fn execute_dormant_ping(
             let Some(config) = loaded_config else {
                 debug!(character, "Dormant ping: no cached request, skipping");
                 return DormantPingOutcome::Skipped(
-                    "no cached request and no loaded config for rebuild".to_string(),
+                    "no cached request and no loaded config for rebuild".to_owned(),
                 );
             };
             if let Some(req) = rebuild_request_from_disk(character, data_dir, config) {
@@ -2365,7 +2367,7 @@ async fn execute_dormant_ping(
                     character,
                     "Dormant ping: failed to rebuild request, skipping"
                 );
-                return DormantPingOutcome::Skipped("no cached or rebuildable request".to_string());
+                return DormantPingOutcome::Skipped("no cached or rebuildable request".to_owned());
             }
         }
     };
@@ -3376,7 +3378,7 @@ api_key_env = "{heartbeat_env}"
                 .unwrap();
 
         let mut app = shore_config::app::AppConfig::default();
-        app.defaults.background.heartbeat = heartbeat.map(str::to_string);
+        app.defaults.background.heartbeat = heartbeat.map(str::to_owned);
 
         let tmp = tempfile::tempdir().unwrap();
         LoadedConfig::new_for_test(

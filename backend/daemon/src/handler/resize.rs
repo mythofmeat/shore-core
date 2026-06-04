@@ -357,7 +357,7 @@ pub(crate) async fn warm_image_cache(
             if let Some(mt) = super::images::media_type_for_path(&img.path) {
                 if let Ok(meta) = std::fs::metadata(&img.path) {
                     if meta.len() > max_bytes {
-                        work.push((img.path.clone(), mt.to_string()));
+                        work.push((img.path.clone(), mt.to_owned()));
                     }
                 }
             }

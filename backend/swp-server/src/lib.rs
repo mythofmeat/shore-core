@@ -27,6 +27,8 @@
     clippy::single_char_lifetime_names,
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::str_to_string,
     clippy::undocumented_unsafe_blocks,
     clippy::multiple_unsafe_ops_per_block,
     clippy::missing_assert_message,
@@ -1014,7 +1016,7 @@ mod tests {
                 client_type: client_type.into(),
                 client_name: "test".into(),
                 capabilities: vec![],
-                character: character.map(str::to_string),
+                character: character.map(str::to_owned),
             }),
         )
         .await

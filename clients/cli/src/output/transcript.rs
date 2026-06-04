@@ -78,7 +78,7 @@ pub(crate) fn write_header(
 
 fn write_archive_boundary(out: &mut impl Write, width: usize, archived_turns: usize) {
     let label = if archived_turns == 1 {
-        " 1 archived turn above · outside current context ".to_string()
+        " 1 archived turn above · outside current context ".to_owned()
     } else {
         format!(" {archived_turns} archived turns above · outside current context ")
     };
@@ -88,7 +88,7 @@ fn write_archive_boundary(out: &mut impl Write, width: usize, archived_turns: us
         let right = width.saturating_sub(label_width.saturating_add(left));
         format!("{}{}{}", "─".repeat(left), label, "─".repeat(right))
     } else {
-        label.trim().to_string()
+        label.trim().to_owned()
     };
 
     if use_color() {
@@ -187,7 +187,7 @@ fn render_message_content(
                         let name = block["name"].as_str().unwrap_or("?");
                         let header = match primary_tool_arg(&block["input"]) {
                             Some(arg) => format!("{name} \u{00b7} {arg}"),
-                            None => name.to_string(),
+                            None => name.to_owned(),
                         };
                         write_sigil_header(out, SIGIL_TOOL, &header, COLOR_TOOL);
                         if let Some(input_str) = format_tool_input(&block["input"]) {

@@ -100,16 +100,16 @@ fn track_cache_state(
     }
 
     let obs = Observation {
-        ts: ts.to_string(),
-        model: record.model.to_string(),
+        ts: ts.to_owned(),
+        model: record.model.to_owned(),
         thinking_enabled: record.thinking_enabled,
         cache_read_tokens: record.usage.cache_read_tokens,
         cache_write_tokens: record.usage.cache_creation_tokens,
-        call_type: record.call_type.as_str().to_string(),
+        call_type: record.call_type.as_str().to_owned(),
     };
 
     let mut trackers = lock_or_recover("ledger cache tracker map", cache_trackers);
-    let tracker = trackers.entry(record.character.to_string()).or_default();
+    let tracker = trackers.entry(record.character.to_owned()).or_default();
     let result = tracker.observe(&obs);
 
     let state_str = match result.state {
@@ -142,7 +142,7 @@ fn track_cache_state(
         );
     }
 
-    (Some(state_str.to_string()), anomaly_str.map(String::from))
+    (Some(state_str.to_owned()), anomaly_str.map(String::from))
 }
 
 #[instrument(skip(ledger, pricing, cache_trackers, record), fields(call_type = record.call_type.as_str()))]
@@ -201,11 +201,11 @@ pub(crate) fn record_call(
 
     let row = CallRow {
         ts,
-        character: character.to_string(),
-        provider: provider.to_string(),
+        character: character.to_owned(),
+        provider: provider.to_owned(),
         api_key_name,
-        model: model.to_string(),
-        call_type: call_type.as_str().to_string(),
+        model: model.to_owned(),
+        call_type: call_type.as_str().to_owned(),
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
         cache_read_tokens: usage.cache_read_tokens,
@@ -213,7 +213,7 @@ pub(crate) fn record_call(
         cache_ttl,
         total_ms: timing.total_ms,
         ttft_ms: timing.time_to_first_token_ms,
-        finish_reason: finish_reason.to_string(),
+        finish_reason: finish_reason.to_owned(),
         thinking_enabled,
         cache_state,
         cache_anomaly,
@@ -221,7 +221,7 @@ pub(crate) fn record_call(
         output_cost: breakdown.map(|c| c.output),
         cache_read_cost: breakdown.map(|c| c.cache_read),
         cache_write_cost: breakdown.map(|c| c.cache_write),
-        cost_source: Some(cost_source.to_string()),
+        cost_source: Some(cost_source.to_owned()),
         total_cost: total_cost_override.or_else(|| priced_cost.as_ref().map(|c| c.total)),
     };
 
@@ -712,11 +712,11 @@ impl LedgerClient {
         Ok(LedgerStream::new(
             reader,
             crate::stream::CallMeta {
-                provider: provider_key.to_string(),
+                provider: provider_key.to_owned(),
                 api_key_name: request.api_key_name.clone(),
                 model: request.model.clone(),
                 call_type,
-                character: character.to_string(),
+                character: character.to_owned(),
                 thinking_enabled,
                 cache_ttl,
             },
@@ -753,7 +753,7 @@ impl LedgerClient {
                     ttl_secs,
                 );
                 let _ignored = lock_or_recover("ledger cache tracker map", &self.cache_trackers)
-                    .insert(character.to_string(), tracker);
+                    .insert(character.to_owned(), tracker);
             }
             Ok(None) => {} // No prior call — start cold
             Err(e) => {
@@ -819,13 +819,17 @@ fn record_generate_fallback_event(
     CredentialFallbackEvent {
         from_key: from.name.clone(),
         to_key,
-        kind: kind.as_str().to_string(),
+        kind: kind.as_str().to_owned(),
         status,
-        reason: reason.to_string(),
+        reason: reason.to_owned(),
         warn_on_fallback: from.warn_on_fallback,
     }
 }
 
+#[expect(
+    clippy::string_slice,
+    reason = "slice end comes from floor_char_boundary(), which is guaranteed to be a char boundary"
+)]
 fn sanitize_fallback_reason(err: &LlmError) -> String {
     match err {
         LlmError::HttpStatus { status, .. } => format!("HTTP {status}"),
@@ -1158,11 +1162,11 @@ mod tests {
                 },
                 finish_reason: "end_turn",
                 thinking_enabled: false,
-                cache_ttl: Some("5m".to_string()),
+                cache_ttl: Some("5m".to_owned()),
             },
         );
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(first_item(&rows).cache_ttl, Some("5m".to_string()));
+        assert_eq!(first_item(&rows).cache_ttl, Some("5m".to_owned()));
     }
 }

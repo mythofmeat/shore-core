@@ -583,7 +583,7 @@ fn matrix_log_filter() -> String {
 fn matrix_log_filter_from(value: Option<String>) -> String {
     value
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_MATRIX_LOG_FILTER.to_string())
+        .unwrap_or_else(|| DEFAULT_MATRIX_LOG_FILTER.to_owned())
 }
 
 /// Sleep for `dur` unless a shutdown signal arrives first. Returns

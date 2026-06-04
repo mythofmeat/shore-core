@@ -362,7 +362,7 @@ fn parse_entry(provider: &str, value: toml::Value) -> Result<ProviderEntry, Prov
         value
             .try_into()
             .map_err(|e| ProviderRegistryError::ParseEntry {
-                provider: provider.to_string(),
+                provider: provider.to_owned(),
                 source: Box::new(e),
             })?;
 
@@ -371,7 +371,7 @@ fn parse_entry(provider: &str, value: toml::Value) -> Result<ProviderEntry, Prov
     // (and no silent second source once `[chat.*]` is gone).
     if let Some(field) = transport_field_in_defaults(&entry.defaults) {
         return Err(ProviderRegistryError::TransportInDefaults {
-            provider: provider.to_string(),
+            provider: provider.to_owned(),
             field,
         });
     }
@@ -380,7 +380,7 @@ fn parse_entry(provider: &str, value: toml::Value) -> Result<ProviderEntry, Prov
     // compact and named-key forms invites surprise. Pick one per provider.
     if entry.api_key_env.is_some() && !entry.keys.is_empty() {
         return Err(ProviderRegistryError::ConflictingKeyForms {
-            provider: provider.to_string(),
+            provider: provider.to_owned(),
         });
     }
 
@@ -390,21 +390,21 @@ fn parse_entry(provider: &str, value: toml::Value) -> Result<ProviderEntry, Prov
     for (idx, key) in entry.keys.iter().enumerate() {
         if key.name.is_empty() {
             return Err(ProviderRegistryError::MissingKeyField {
-                provider: provider.to_string(),
+                provider: provider.to_owned(),
                 index: idx,
                 field: "name",
             });
         }
         if key.env.is_empty() {
             return Err(ProviderRegistryError::MissingKeyField {
-                provider: provider.to_string(),
+                provider: provider.to_owned(),
                 index: idx,
                 field: "env",
             });
         }
         if !seen.insert(key.name.clone()) {
             return Err(ProviderRegistryError::DuplicateKeyName {
-                provider: provider.to_string(),
+                provider: provider.to_owned(),
                 name: key.name.clone(),
             });
         }

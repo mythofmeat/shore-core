@@ -63,22 +63,22 @@ pub fn memory_changelog(
                 return None;
             }
             let prefixed = if trimmed.starts_with("## ") {
-                trimmed.to_string()
+                trimmed.to_owned()
             } else {
                 format!("## {trimmed}")
             };
             let mut lines = prefixed.lines();
             let heading = lines.next()?.trim_start_matches("## ").trim();
-            let description = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+            let description = lines.collect::<Vec<_>>().join("\n").trim().to_owned();
             let (timestamp, operation) = heading
                 .strip_prefix("Dream Cycle - ")
-                .map(|ts| (ts.to_string(), "dream_cycle".to_string()))
+                .map(|ts| (ts.to_owned(), "dream_cycle".to_owned()))
                 .or_else(|| {
                     heading
                         .split_once(" - ")
-                        .map(|(ts, op)| (ts.to_string(), op.to_string()))
+                        .map(|(ts, op)| (ts.to_owned(), op.to_owned()))
                 })
-                .unwrap_or_else(|| (String::new(), heading.to_string()));
+                .unwrap_or_else(|| (String::new(), heading.to_owned()));
             Some(json!({
                 "timestamp": timestamp,
                 "operation": operation,
@@ -306,7 +306,7 @@ pub async fn compact(
         .and_then(serde_json::Value::as_u64)
         .map(u64_to_usize);
 
-    let char_name = engine.character_name().to_string();
+    let char_name = engine.character_name().to_owned();
     let _compaction_guard =
         crate::memory::compaction::try_begin_compaction(&ctx.config.dirs.data, &char_name)
             .ok_or_else(|| {
@@ -321,9 +321,9 @@ pub async fn compact(
         .iter()
         .map(|m| ConversationMessage {
             role: match m.role {
-                Role::User => "user".to_string(),
-                Role::Assistant => "assistant".to_string(),
-                Role::System => "system".to_string(),
+                Role::User => "user".to_owned(),
+                Role::Assistant => "assistant".to_owned(),
+                Role::System => "system".to_owned(),
             },
             content: m.content.clone(),
             timestamp: m.timestamp.clone(),
@@ -334,7 +334,7 @@ pub async fn compact(
     if messages.is_empty() {
         return Err((
             ErrorCode::InvalidRequest,
-            "No messages to compact".to_string(),
+            "No messages to compact".to_owned(),
         ));
     }
 
@@ -342,17 +342,17 @@ pub async fn compact(
 
     let system_template =
         resolve_prompt_template(&ctx.config.dirs.config, &char_name, "compact_system.md")
-            .unwrap_or_else(|| DEFAULT_COMPACT_SYSTEM.to_string());
+            .unwrap_or_else(|| DEFAULT_COMPACT_SYSTEM.to_owned());
     let prompt_template =
         resolve_prompt_template(&ctx.config.dirs.config, &char_name, "compact.md")
-            .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
+            .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_owned());
 
     let model = crate::preferences::resolve_background_model(
         &ctx.config,
         shore_config::app::BackgroundTask::Compaction,
         &char_name,
     )
-    .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
+    .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_owned()))?;
 
     let llm = RealCompactionLlm::new(
         ctx.llm_client.clone(),
@@ -392,7 +392,7 @@ pub async fn compact(
                 .ok_or_else(|| {
                     (
                         ErrorCode::InternalError,
-                        "No chat model configured for compaction prefix rebuild".to_string(),
+                        "No chat model configured for compaction prefix rebuild".to_owned(),
                     )
                 })?;
         let character_dir = engine.character_dir().clone();
@@ -561,7 +561,7 @@ fn build_swp_compaction_tool_context(
         llm_client: ctx.llm_client.inner().clone(),
         image_gen_config,
         search_config: ctx.config.app.behavior.tool_use.search.clone(),
-        character_name: char_name.to_string(),
+        character_name: char_name.to_owned(),
         workspace_dir: character_workspace_dir(&ctx.config.dirs.config, char_name)
             .to_string_lossy()
             .into_owned(),
@@ -654,10 +654,10 @@ model_id = "minimax-tool"
     #[test]
     fn compaction_prefers_per_task_override() {
         let config = make_config(DefaultsConfig {
-            model: Some("primary".to_string()),
+            model: Some("primary".to_owned()),
             background: BackgroundDefaultsConfig {
-                model: Some("primary".to_string()),
-                compaction: Some("bg".to_string()),
+                model: Some("primary".to_owned()),
+                compaction: Some("bg".to_owned()),
                 ..BackgroundDefaultsConfig::default()
             },
             ..DefaultsConfig::default()
@@ -669,9 +669,9 @@ model_id = "minimax-tool"
     #[test]
     fn compaction_falls_back_to_background_model() {
         let config = make_config(DefaultsConfig {
-            model: Some("primary".to_string()),
+            model: Some("primary".to_owned()),
             background: BackgroundDefaultsConfig {
-                model: Some("bg".to_string()),
+                model: Some("bg".to_owned()),
                 ..BackgroundDefaultsConfig::default()
             },
             ..DefaultsConfig::default()
@@ -683,7 +683,7 @@ model_id = "minimax-tool"
     #[test]
     fn compaction_falls_back_to_chat_default_when_background_unset() {
         let config = make_config(DefaultsConfig {
-            model: Some("primary".to_string()),
+            model: Some("primary".to_owned()),
             ..DefaultsConfig::default()
         });
         let model = resolve(&config).expect("resolved");
@@ -729,7 +729,7 @@ model_id = "minimax-tool"
         let app = AppConfig {
             defaults: DefaultsConfig {
                 background: BackgroundDefaultsConfig {
-                    compaction: Some("openrouter:anthropic/claude-sonnet-4.5".to_string()),
+                    compaction: Some("openrouter:anthropic/claude-sonnet-4.5".to_owned()),
                     ..BackgroundDefaultsConfig::default()
                 },
                 ..DefaultsConfig::default()

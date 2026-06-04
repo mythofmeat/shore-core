@@ -229,7 +229,7 @@ pub async fn dream_status(
     let state = read_state(data_dir, config_dir, character).await?;
     let due = cfg.enabled && is_due(cfg, state.last_run_at.as_deref())?;
     Ok(DreamStatus {
-        character: character.to_string(),
+        character: character.to_owned(),
         enabled: cfg.enabled,
         frequency: cfg.frequency.clone(),
         last_run_at: state.last_run_at,
@@ -273,7 +273,7 @@ pub async fn run_librarian_sweep(
 
     let mut request =
         build_librarian_request(loaded_config, character, cached_request, dry_run, &ran_at)?;
-    request.forensic_character = Some(character.to_string());
+    request.forensic_character = Some(character.to_owned());
     request.rid = None;
     let tool_ctx = std::sync::Arc::new(build_librarian_tool_context(
         loaded_config,
@@ -310,12 +310,12 @@ pub async fn run_librarian_sweep(
             state_path.display().to_string(),
         ];
         return Ok(Some(DreamSweepResult {
-            character: character.to_string(),
+            character: character.to_owned(),
             dry_run,
             ran_at,
-            mode: "ai_librarian".to_string(),
+            mode: "ai_librarian".to_owned(),
             phase_summaries: vec![DreamPhaseSummary {
-                phase: "librarian".to_string(),
+                phase: "librarian".to_owned(),
                 summary: format!(
                     "dry-run AI librarian pass inspected memory with {} tool round(s); writes were disabled",
                     loop_result.tool_rounds
@@ -389,7 +389,7 @@ pub async fn run_librarian_sweep(
     let after = snapshot_memory_files(&store, &memory_index_path).await?;
     let mut changed = changed_paths(&before, &after);
     if !changed.iter().any(|path| path == DREAM_STATE_REL) {
-        changed.push(DREAM_STATE_REL.to_string());
+        changed.push(DREAM_STATE_REL.to_owned());
     }
     let paths_written = changed
         .iter()
@@ -406,12 +406,12 @@ pub async fn run_librarian_sweep(
     let indexed_count = usize::from(after.contains_key(MEMORY_INDEX_FILE));
 
     Ok(Some(DreamSweepResult {
-        character: character.to_string(),
+        character: character.to_owned(),
         dry_run,
         ran_at,
-        mode: "ai_librarian".to_string(),
+        mode: "ai_librarian".to_owned(),
         phase_summaries: vec![DreamPhaseSummary {
-            phase: "librarian".to_string(),
+            phase: "librarian".to_owned(),
             summary: format!(
                 "AI librarian pass used {} tool round(s), changed {} file(s), and {} DREAMS.md audit fallback",
                 loop_result.tool_rounds,
@@ -436,7 +436,7 @@ pub async fn run_librarian_sweep(
         promotions: Vec::new(),
         rejected: Vec::new(),
         indexed: if after.contains_key(MEMORY_INDEX_FILE) {
-            vec![MEMORY_INDEX_FILE.to_string()]
+            vec![MEMORY_INDEX_FILE.to_owned()]
         } else {
             Vec::new()
         },
@@ -551,10 +551,10 @@ pub async fn run_legacy_diagnostic_sweep(
 
     if dry_run {
         return Ok(Some(DreamSweepResult {
-            character: character.to_string(),
+            character: character.to_owned(),
             dry_run,
             ran_at,
-            mode: "legacy_diagnostic".to_string(),
+            mode: "legacy_diagnostic".to_owned(),
             phase_summaries: initial_phase_summaries,
             candidate_count: deep.candidates.len(),
             indexed_count: deep.promoted.len(),
@@ -614,10 +614,10 @@ pub async fn run_legacy_diagnostic_sweep(
     let paths_written = would_write_paths;
 
     Ok(Some(DreamSweepResult {
-        character: character.to_string(),
+        character: character.to_owned(),
         dry_run,
         ran_at,
-        mode: "legacy_diagnostic".to_string(),
+        mode: "legacy_diagnostic".to_owned(),
         phase_summaries: phase_summaries(&light, &rem, &deep, &paths_written),
         candidate_count: deep.candidates.len(),
         indexed_count: deep.promoted.len(),
@@ -866,7 +866,7 @@ fn build_librarian_tool_context(
         llm_client: llm_client.inner().clone(),
         image_gen_config,
         search_config: loaded_config.app.behavior.tool_use.search.clone(),
-        character_name: character.to_string(),
+        character_name: character.to_owned(),
         workspace_dir: character_workspace_dir(&loaded_config.dirs.config, character)
             .to_string_lossy()
             .into_owned(),
@@ -940,7 +940,7 @@ async fn run_private_librarian_loop(
 
             if !is_error && matches!(name.as_str(), "write" | "edit") {
                 if let Some(path) = tool_path(&input) {
-                    loop_result.changed.push(path.to_string());
+                    loop_result.changed.push(path.to_owned());
                 }
             }
 
@@ -963,7 +963,7 @@ async fn run_private_librarian_loop(
 fn remember_final_report(loop_result: &mut LibrarianLoopResult, resp: &GenerateResponse) {
     let text = resp.extract_text();
     if !text.trim().is_empty() {
-        loop_result.final_report = Some(text.trim().to_string());
+        loop_result.final_report = Some(text.trim().to_owned());
     }
 }
 
@@ -994,13 +994,13 @@ fn blocked_librarian_tool_result(
 ) -> Option<(String, bool)> {
     if name == "exec" {
         return Some((
-            "exec is not available during private dreaming passes".to_string(),
+            "exec is not available during private dreaming passes".to_owned(),
             true,
         ));
     }
     if dry_run && matches!(name, "write" | "edit") {
         return Some((
-            "dry-run dreaming does not write or edit files".to_string(),
+            "dry-run dreaming does not write or edit files".to_owned(),
             true,
         ));
     }
@@ -1011,7 +1011,7 @@ fn record_librarian_tool_intent(result: &mut LibrarianLoopResult, name: &str, in
     match name {
         "read" | "list_files" => {
             if let Some(path) = tool_path(input) {
-                push_unique(&mut result.inspected, path.to_string());
+                push_unique(&mut result.inspected, path.to_owned());
             }
         }
         "search" | "search_history" => {
@@ -1050,7 +1050,7 @@ async fn snapshot_memory_files(
     }
     match fs::read_to_string(memory_index_path).await {
         Ok(content) => {
-            let _ignored = snapshot.insert(MEMORY_INDEX_FILE.to_string(), content);
+            let _ignored = snapshot.insert(MEMORY_INDEX_FILE.to_owned(), content);
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(DreamingError::Io(e.to_string())),
@@ -1394,7 +1394,7 @@ fn run_light_phase(
             let evidence = DreamEvidence {
                 source: entry.path.clone(),
                 line: Some(idx.saturating_add(1)),
-                source_kind: source_kind(&entry.path).to_string(),
+                source_kind: source_kind(&entry.path).to_owned(),
                 snippet: text.clone(),
             };
             if let Some(existing) = by_key.get_mut(&key) {
@@ -1418,7 +1418,7 @@ fn run_light_phase(
             let _ignored = evidence_sources.insert(evidence.source.clone());
             let first_seen_at = match prior {
                 Some(seen) if !seen.first_seen_at.is_empty() => seen.first_seen_at.clone(),
-                Some(_) | None => ran_at.to_string(),
+                Some(_) | None => ran_at.to_owned(),
             };
             let themes = detect_themes(&text);
             let recency = recency_score(&entry.modified_at);
@@ -1429,9 +1429,9 @@ fn run_light_phase(
                 text: text.clone(),
                 source: entry.path.clone(),
                 line: Some(idx.saturating_add(1)),
-                source_kind: source_kind(&entry.path).to_string(),
+                source_kind: source_kind(&entry.path).to_owned(),
                 first_seen_at,
-                last_seen_at: ran_at.to_string(),
+                last_seen_at: ran_at.to_owned(),
                 recall_count,
                 unique_source_count: evidence_sources.len(),
                 unique_query_count: 0,
@@ -1443,7 +1443,7 @@ fn run_light_phase(
                 score: 0.0,
                 gates: Vec::new(),
                 promote: false,
-                decision_reason: "staged by Light Sleep; Deep has not evaluated it yet".to_string(),
+                decision_reason: "staged by Light Sleep; Deep has not evaluated it yet".to_owned(),
                 evidence: vec![evidence],
             };
             let _ignored = by_key.insert(key, candidate);
@@ -1522,7 +1522,7 @@ async fn run_deep_phase(
         candidate.gates = promotion_gates(&candidate, source_still_present);
         candidate.promote = candidate.gates.iter().all(|gate| gate.passed);
         if candidate.promote {
-            candidate.decision_reason = "qualified for memory-index throughline".to_string();
+            "qualified for memory-index throughline".clone_into(&mut candidate.decision_reason);
             promoted.push(DreamPromotion {
                 text: candidate.text.clone(),
                 score: candidate.promotion_score,
@@ -1546,7 +1546,7 @@ async fn run_deep_phase(
                 .iter()
                 .find(|gate| !gate.passed)
                 .map_or_else(
-                    || "deferred for more evidence".to_string(),
+                    || "deferred for more evidence".to_owned(),
                     |gate| gate.reason.clone(),
                 );
             candidate.decision_reason.clone_from(&reason);
@@ -1576,7 +1576,7 @@ fn phase_summaries(
 ) -> Vec<DreamPhaseSummary> {
     vec![
         DreamPhaseSummary {
-            phase: "light".to_string(),
+            phase: "light".to_owned(),
             summary: format!(
                 "reviewed {} sources, staged {} candidates, ignored {} duplicate signals; no durable memory was written",
                 light.sources_reviewed, light.candidates_staged, light.duplicates_ignored
@@ -1594,7 +1594,7 @@ fn phase_summaries(
                 .collect(),
         },
         DreamPhaseSummary {
-            phase: "rem".to_string(),
+            phase: "rem".to_owned(),
             summary: format!(
                 "noticed {} themes and {} reinforcement signals; no durable memory was written",
                 rem.themes.len(),
@@ -1613,7 +1613,7 @@ fn phase_summaries(
                 .collect(),
         },
         DreamPhaseSummary {
-            phase: "deep".to_string(),
+            phase: "deep".to_owned(),
             summary: format!(
                 "indexed {} throughlines and deferred {} candidates after scoring gates",
                 deep.promoted.len(),
@@ -1678,12 +1678,12 @@ fn promotion_gates(candidate: &DreamCandidate, source_still_present: bool) -> Ve
         gate(
             "minimum_evidence",
             !candidate.evidence.is_empty() && candidate.unique_source_count >= 1,
-            "candidate has no usable source evidence".to_string(),
+            "candidate has no usable source evidence".to_owned(),
         ),
         gate(
             "not_generated_from_dreaming_files",
             !generated_source,
-            "generated dreaming artifacts are never index sources".to_string(),
+            "generated dreaming artifacts are never index sources".to_owned(),
         ),
         gate(
             "not_too_short",
@@ -1693,27 +1693,27 @@ fn promotion_gates(candidate: &DreamCandidate, source_still_present: bool) -> Ve
         gate(
             "not_heading",
             !heading,
-            "headings are structure, not durable memory candidates".to_string(),
+            "headings are structure, not durable memory candidates".to_owned(),
         ),
         gate(
             "not_obviously_transient",
             !transient,
-            "candidate looks temporary or task-like".to_string(),
+            "candidate looks temporary or task-like".to_owned(),
         ),
         gate(
             "source_still_present",
             source_still_present,
-            "source snippet is stale, deleted, or changed".to_string(),
+            "source snippet is stale, deleted, or changed".to_owned(),
         ),
     ]
 }
 
 fn gate(name: &str, passed: bool, failure_reason: String) -> DreamGate {
     DreamGate {
-        name: name.to_string(),
+        name: name.to_owned(),
         passed,
         reason: if passed {
-            "passed".to_string()
+            "passed".to_owned()
         } else {
             failure_reason
         },
@@ -1788,7 +1788,7 @@ async fn append_dream_diary(
 ) -> Result<(), DreamingError> {
     let mut body = match crate::memory::dreams_log::read_dreams_log(data_dir, character).await {
         Ok(Some(content)) => normalize_dream_diary(content),
-        Ok(None) => DREAM_DIARY_HEADER.to_string(),
+        Ok(None) => DREAM_DIARY_HEADER.to_owned(),
         Err(e) => return Err(DreamingError::Io(e.to_string())),
     };
 
@@ -2072,7 +2072,7 @@ fn memory_file_summary(entry: &MarkdownEntry) -> String {
 
     match detail {
         Some(detail) => format!("{title}; {detail}"),
-        None => title.to_string(),
+        None => title.to_owned(),
     }
 }
 
@@ -2146,7 +2146,7 @@ fn candidate_text_from_line(line: &str) -> Option<String> {
     if text.len() < MIN_CANDIDATE_LEN || is_obviously_transient(text) {
         return None;
     }
-    Some(text.to_string())
+    Some(text.to_owned())
 }
 
 fn strip_list_marker(text: &str) -> &str {
@@ -2216,7 +2216,7 @@ fn detect_themes(text: &str) -> Vec<String> {
             "wants",
         ],
     ) {
-        let _ignored = themes.insert("preference".to_string());
+        let _ignored = themes.insert("preference".to_owned());
     }
     if contains_any(
         &lower,
@@ -2229,13 +2229,13 @@ fn detect_themes(text: &str) -> Vec<String> {
             "calls themself",
         ],
     ) {
-        let _ignored = themes.insert("identity".to_string());
+        let _ignored = themes.insert("identity".to_owned());
     }
     if contains_any(
         &lower,
         &["project", "working on", "building", "repo", "branch"],
     ) {
-        let _ignored = themes.insert("project".to_string());
+        let _ignored = themes.insert("project".to_owned());
     }
     if contains_any(
         &lower,
@@ -2248,19 +2248,19 @@ fn detect_themes(text: &str) -> Vec<String> {
             "must not forget",
         ],
     ) {
-        let _ignored = themes.insert("commitment".to_string());
+        let _ignored = themes.insert("commitment".to_owned());
     }
     if contains_any(
         &lower,
         &["friend", "partner", "family", "works with", "relationship"],
     ) {
-        let _ignored = themes.insert("relationship".to_string());
+        let _ignored = themes.insert("relationship".to_owned());
     }
     if contains_any(
         &lower,
         &["always", "usually", "never", "long-term", "durable"],
     ) {
-        let _ignored = themes.insert("stable_context".to_string());
+        let _ignored = themes.insert("stable_context".to_owned());
     }
     themes.into_iter().collect()
 }
@@ -2367,6 +2367,10 @@ fn round_score(value: f32) -> f32 {
     (value * 100.0).round() / 100.0
 }
 
+#[expect(
+    clippy::string_slice,
+    reason = "`cycle_start` is a find() byte offset into `existing`, so the slice start lands on a char boundary"
+)]
 fn normalize_dream_diary(existing: String) -> String {
     if existing.contains("human-readable Dream Diary") {
         let mut body = if existing.contains("prompt-visible memory index") {
@@ -2374,7 +2378,7 @@ fn normalize_dream_diary(existing: String) -> String {
         } else if let Some(cycle_start) = existing.find("## Dream Cycle") {
             format!("{DREAM_DIARY_HEADER}{}", &existing[cycle_start..])
         } else {
-            DREAM_DIARY_HEADER.to_string()
+            DREAM_DIARY_HEADER.to_owned()
         };
         if !body.ends_with("\n\n") {
             if !body.ends_with('\n') {
@@ -2386,14 +2390,14 @@ fn normalize_dream_diary(existing: String) -> String {
     }
     let old = existing.trim();
     if old.is_empty() || old == "# Dreams" {
-        DREAM_DIARY_HEADER.to_string()
+        DREAM_DIARY_HEADER.to_owned()
     } else {
         format!("{DREAM_DIARY_HEADER}<!-- Previous review output preserved below. -->\n\n{old}\n\n")
     }
 }
 
 fn diary_text(text: &str) -> String {
-    text.replace('\n', " ").trim().to_string()
+    text.replace('\n', " ").trim().to_owned()
 }
 
 #[cfg(test)]
@@ -2515,10 +2519,10 @@ mod tests {
         // The daemon now always writes the audit; model writes to DREAMS.md
         // are no longer wired (DREAMS lives in data_dir, outside the workspace).
         assert!(result.audit_appended);
-        assert!(result.tools_used.contains(&"list_files".to_string()));
-        assert!(result.tools_used.contains(&"read".to_string()));
-        assert!(result.tools_used.contains(&"search".to_string()));
-        assert!(result.tools_used.contains(&"write".to_string()));
+        assert!(result.tools_used.contains(&"list_files".to_owned()));
+        assert!(result.tools_used.contains(&"read".to_owned()));
+        assert!(result.tools_used.contains(&"search".to_owned()));
+        assert!(result.tools_used.contains(&"write".to_owned()));
         assert_eq!(result.tool_rounds, 6);
 
         let notes = fs::read_to_string(mem.join("shore-notes.md"))
@@ -2888,7 +2892,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert!(result.tools_used.contains(&"write".to_string()));
+        assert!(result.tools_used.contains(&"write".to_owned()));
         assert_eq!(
             fs::read_to_string(workspace.join(SOUL_FILE)).await.unwrap(),
             "new soul"
@@ -3091,12 +3095,12 @@ mod tests {
     #[test]
     fn due_and_schedule_validation_still_work() {
         let cfg = DreamingConfig {
-            frequency: "0 0 * * *".to_string(),
+            frequency: "0 0 * * *".to_owned(),
             ..DreamingConfig::default()
         };
         assert!(is_due(&cfg, None).is_ok());
         let invalid = DreamingConfig {
-            frequency: "bad schedule".to_string(),
+            frequency: "bad schedule".to_owned(),
             ..DreamingConfig::default()
         };
         assert!(matches!(
@@ -3111,7 +3115,7 @@ mod tests {
         // if `now` is within 2 hours of the scheduled time. Beyond that, it
         // is skipped and we wait for the next cron occurrence.
         let cfg = DreamingConfig {
-            frequency: "0 6 * * 1".to_string(),
+            frequency: "0 6 * * 1".to_owned(),
             ..DreamingConfig::default()
         };
         let before_monday = local_dt(2026, 5, 11, 5, 59, 0);
@@ -3140,7 +3144,7 @@ mod tests {
         // skip every out-of-window occurrence and end up returning false
         // (the next firing-eligible occurrence is in the future).
         let cfg = DreamingConfig {
-            frequency: "0 * * * *".to_string(),
+            frequency: "0 * * * *".to_owned(),
             ..DreamingConfig::default()
         };
         let last_run = local_dt(2026, 5, 11, 0, 0, 0).to_rfc3339();
@@ -3158,7 +3162,7 @@ mod tests {
         // window, last_run far enough back that the walker skips many.
         // Use a daily cron at 6 AM so there's only one occurrence per day.
         let daily_cfg = DreamingConfig {
-            frequency: "0 6 * * *".to_string(),
+            frequency: "0 6 * * *".to_owned(),
             ..DreamingConfig::default()
         };
         let stale_run = local_dt(2026, 5, 9, 6, 0, 0).to_rfc3339();
@@ -3173,7 +3177,7 @@ mod tests {
         // Override the default 2h window to 10 minutes — a 15-minute-late
         // tick should now be considered stale.
         let cfg = DreamingConfig {
-            frequency: "0 6 * * *".to_string(),
+            frequency: "0 6 * * *".to_owned(),
             max_lateness: shore_config::ConfigDuration::from_secs(10 * 60),
             ..DreamingConfig::default()
         };
@@ -3190,7 +3194,7 @@ mod tests {
         // the search at `now - max_lateness - 1min`, so this returns promptly
         // with the same answer as a recent in-window occurrence.
         let cfg = DreamingConfig {
-            frequency: "* * * * *".to_string(),
+            frequency: "* * * * *".to_owned(),
             max_lateness: shore_config::ConfigDuration::from_secs(5 * 60),
             ..DreamingConfig::default()
         };
@@ -3208,7 +3212,7 @@ mod tests {
         let mem = character_memory_dir(&cfg_dir, "alice");
         fs::create_dir_all(mem.join(".dreams")).await.unwrap();
         let legacy_state = DreamState {
-            last_run_at: Some("2026-04-01T00:00:00+00:00".to_string()),
+            last_run_at: Some("2026-04-01T00:00:00+00:00".to_owned()),
             runs: 7,
             ..DreamState::default()
         };

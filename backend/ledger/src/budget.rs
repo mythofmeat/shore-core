@@ -303,7 +303,7 @@ pub fn newly_crossed_budget_warnings(
 /// show something than nothing in a warning message.
 fn format_local_ampm(rfc3339: &str) -> String {
     DateTime::parse_from_rfc3339(rfc3339).map_or_else(
-        |_| rfc3339.to_string(),
+        |_| rfc3339.to_owned(),
         |dt| {
             dt.with_timezone(&Local)
                 .format("%Y-%m-%d %I:%M %p")
@@ -370,7 +370,7 @@ fn budget_status(
         current_cost,
         cost_limit: budget.cost_usd,
         percent_used,
-        status: status.to_string(),
+        status: status.to_owned(),
         action: budget.limit,
         warning_thresholds,
         crossed_warn_at,
@@ -399,7 +399,7 @@ fn budget_name(budget: &UsageBudgetConfig, idx: usize) -> String {
         let display_index = idx.saturating_add(1);
         format!("budget {display_index}")
     } else {
-        name.to_string()
+        name.to_owned()
     }
 }
 

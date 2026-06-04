@@ -41,7 +41,7 @@ pub fn list_characters_standalone(ctx: &CommandContext) -> CommandResult {
 
 pub(crate) fn character_metadata(config_dir: &std::path::Path, name: &str) -> CharacterInfo {
     CharacterInfo {
-        name: name.to_string(),
+        name: name.to_owned(),
         avatar: character_avatar(config_dir, name),
     }
 }
@@ -64,7 +64,7 @@ fn character_avatar(config_dir: &std::path::Path, name: &str) -> Option<Characte
             continue;
         }
         return Some(CharacterAvatar {
-            mime_type: mime_type.to_string(),
+            mime_type: mime_type.to_owned(),
             data: {
                 use base64::Engine as _;
                 base64::engine::general_purpose::STANDARD.encode(data)
@@ -112,7 +112,7 @@ pub fn character_info(
     ]
     .into_iter()
     .filter(|name| workspace_dir.join(name).exists())
-    .map(str::to_string)
+    .map(str::to_owned)
     .collect::<Vec<_>>();
 
     let config_override_path = char_dir.join("config.toml");
@@ -208,7 +208,7 @@ mod tests {
         let (push_tx, push_rx) = broadcast::channel(16);
         let data_dir = tmp.path().to_path_buf();
         let engine =
-            ConversationEngine::new("TestChar".to_string(), data_dir.clone(), push_tx.clone())
+            ConversationEngine::new("TestChar".to_owned(), data_dir.clone(), push_tx.clone())
                 .unwrap();
 
         let config = shore_config::LoadedConfig::new_for_test(

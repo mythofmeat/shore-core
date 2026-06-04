@@ -693,7 +693,7 @@ fn handle_matrix_command(
         .status()
         .map_err(|e| {
             if e.kind() == io::ErrorKind::NotFound {
-                "shore-matrix binary not found. Is it installed and in your PATH?".to_string()
+                "shore-matrix binary not found. Is it installed and in your PATH?".to_owned()
             } else {
                 format!("failed to run shore-matrix: {e}")
             }
@@ -771,7 +771,7 @@ async fn handle_notify(
                     let character = notify_character(&msg, requested_character);
                     let title = format!("Shore - {character}");
                     let body = notification_preview(&msg.message.content)
-                        .unwrap_or_else(|| "New message".to_string());
+                        .unwrap_or_else(|| "New message".to_owned());
                     let icon =
                         notification_icon_path(&config_dir, character, avatars.get(character));
                     if let Err(e) = send_desktop_notification(&title, &body, icon.as_deref()) {
@@ -963,7 +963,7 @@ fn notification_avatar_basename(character: &str) -> String {
         })
         .collect();
     if basename.is_empty() {
-        "character".to_string()
+        "character".to_owned()
     } else {
         basename
     }
@@ -1061,7 +1061,7 @@ fn print_config_toml(
     let section_payload;
     let to_serialize: &serde_json::Value = if let Some(k) = key {
         let mut section_map = serde_json::Map::new();
-        let _ignored = section_map.insert(k.to_string(), effective.clone());
+        let _ignored = section_map.insert(k.to_owned(), effective.clone());
         section_payload = serde_json::Value::Object(section_map);
         &section_payload
     } else {
@@ -1168,7 +1168,7 @@ fn json_to_toml_value(value: &serde_json::Value) -> Option<toml::Value> {
 fn read_stdin() -> Result<String, Box<dyn std::error::Error>> {
     let mut buf = String::new();
     let _ignored = io::stdin().read_to_string(&mut buf)?;
-    Ok(buf.trim().to_string())
+    Ok(buf.trim().to_owned())
 }
 
 /// Open `$EDITOR` (or `$VISUAL`) with a temp file and return the composed text.
@@ -1194,7 +1194,7 @@ fn edit_message_in_editor() -> Result<String, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(&path)
         .unwrap_or_default()
         .trim()
-        .to_string();
+        .to_owned();
 
     Ok(content)
 }
@@ -1976,7 +1976,7 @@ mod tests {
         let payload = data.get("config").unwrap();
         let key = data.get("key").and_then(|v| v.as_str()).unwrap();
         let mut section_map = serde_json::Map::new();
-        let _ignored = section_map.insert(key.to_string(), payload.clone());
+        let _ignored = section_map.insert(key.to_owned(), payload.clone());
         let section_payload = serde_json::Value::Object(section_map);
         let toml_value = super::json_to_toml_value(&section_payload).expect("table");
         let rendered = match toml_value {

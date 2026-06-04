@@ -379,7 +379,7 @@ fn arb_compaction_config() -> impl Strategy<Value = CompactionConfig> {
 fn arb_dreaming_config() -> impl Strategy<Value = DreamingConfig> {
     (
         any::<bool>(),
-        Just("0 3 * * *".to_string()),
+        Just("0 3 * * *".to_owned()),
         0_u32..50,
         arb_duration(),
         arb_duration(),
@@ -665,7 +665,7 @@ fn arb_usage_budget_config() -> impl Strategy<Value = UsageBudgetConfig> {
 
 fn arb_usage_config() -> impl Strategy<Value = UsageConfig> {
     (
-        prop_oneof![Just("local".to_string()), Just("utc".to_string())],
+        prop_oneof![Just("local".to_owned()), Just("utc".to_owned())],
         any::<bool>(),
         prop::collection::vec(arb_usage_budget_config(), 0..2),
         any::<bool>(),

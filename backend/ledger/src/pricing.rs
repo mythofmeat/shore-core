@@ -87,7 +87,7 @@ impl PricingEngine {
         })?;
 
         self.with_memory_cache_mut(|cache| {
-            let _ignored = cache.insert(model_id.to_string(), pricing.clone());
+            let _ignored = cache.insert(model_id.to_owned(), pricing.clone());
         });
         debug!(model_id, elapsed = ?started.elapsed(), "pricing stored");
         Ok(())
@@ -140,7 +140,7 @@ impl PricingEngine {
         // Populate memory cache on DB hit
         if let Some(ref p) = result {
             self.with_memory_cache_mut(|cache| {
-                let _ignored = cache.insert(model_id.to_string(), p.clone());
+                let _ignored = cache.insert(model_id.to_owned(), p.clone());
             });
         }
 
@@ -327,7 +327,7 @@ impl PricingEngine {
 /// by the `/` in the model column and pass through unchanged.
 pub fn to_openrouter_id(provider: &str, model: &str) -> String {
     if provider == "openrouter" || model.contains('/') {
-        model.to_string()
+        model.to_owned()
     } else if provider == "anthropic" {
         format!("anthropic/{}", normalize_anthropic_model(model))
     } else {

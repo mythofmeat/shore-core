@@ -622,30 +622,30 @@ fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
         | "zai_subscription" => match trimmed.to_ascii_lowercase().as_str() {
             "true" | "yes" | "on" => Value::Bool(true),
             "false" | "no" | "off" => Value::Bool(false),
-            _ => Value::String(trimmed.to_string()),
+            _ => Value::String(trimmed.to_owned()),
         },
         "temperature" | "top_p" => trimmed
             .parse::<f64>()
             .ok()
             .and_then(serde_json::Number::from_f64)
-            .map_or_else(|| Value::String(trimmed.to_string()), Value::Number),
+            .map_or_else(|| Value::String(trimmed.to_owned()), Value::Number),
         "budget_tokens" | "max_output_tokens" | "gemini_generation" => {
             trimmed.parse::<u64>().map_or_else(
-                |_| Value::String(trimmed.to_string()),
+                |_| Value::String(trimmed.to_owned()),
                 |n| Value::Number(n.into()),
             )
         }
         "reasoning_effort" => match trimmed.to_ascii_lowercase().as_str() {
             "off" | "none" | "disable" | "disabled" | "unset" | "" => Value::String("off".into()),
-            _ => Value::String(trimmed.to_string()),
+            _ => Value::String(trimmed.to_owned()),
         },
         // `openrouter_provider` is a routing object — accept a JSON object string
         // (e.g. `{"order":["Anthropic"]}`); fall through to a string otherwise so
         // the daemon reports a clear type error.
         "openrouter_provider" => serde_json::from_str::<Value>(trimmed)
-            .unwrap_or_else(|_| Value::String(trimmed.to_string())),
+            .unwrap_or_else(|_| Value::String(trimmed.to_owned())),
         // vertex_project / vertex_location and any unknown key: raw string.
-        _ => Value::String(trimmed.to_string()),
+        _ => Value::String(trimmed.to_owned()),
     }
 }
 

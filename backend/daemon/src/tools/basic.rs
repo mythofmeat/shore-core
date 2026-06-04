@@ -122,6 +122,10 @@ pub struct DiceNotation {
 }
 
 /// Parse dice notation like `2d6+3`, `1d20`, `4d6-1`, `d8`.
+#[expect(
+    clippy::string_slice,
+    reason = "byte offsets derive from find('d')/char_indices() on the same string, so every slice bound lands on a char boundary"
+)]
 pub fn parse_dice_notation(notation: &str) -> Result<DiceNotation, String> {
     let s = notation.trim().to_lowercase();
 

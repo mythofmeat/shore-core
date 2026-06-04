@@ -107,7 +107,7 @@ impl MarkdownMemoryStore {
     pub async fn read(&self, rel_path: &str) -> Result<MarkdownEntry, MarkdownStoreError> {
         let path = self.resolve_path(rel_path)?;
         if !path.exists() {
-            return Err(MarkdownStoreError::NotFound(rel_path.to_string()));
+            return Err(MarkdownStoreError::NotFound(rel_path.to_owned()));
         }
         let content = fs::read_to_string(&path)
             .await
@@ -121,7 +121,7 @@ impl MarkdownMemoryStore {
             .map(format_modified_at)
             .unwrap_or_default();
         Ok(MarkdownEntry {
-            path: rel_path.to_string(),
+            path: rel_path.to_owned(),
             content,
             size: meta.len(),
             modified_at: modified,
@@ -147,7 +147,7 @@ impl MarkdownMemoryStore {
     pub async fn delete(&self, rel_path: &str) -> Result<(), MarkdownStoreError> {
         let path = self.resolve_path(rel_path)?;
         if !path.exists() {
-            return Err(MarkdownStoreError::NotFound(rel_path.to_string()));
+            return Err(MarkdownStoreError::NotFound(rel_path.to_owned()));
         }
         fs::remove_file(&path)
             .await

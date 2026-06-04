@@ -31,7 +31,7 @@ fn make_ctx_with_models(
     let (push_tx, push_rx) = broadcast::channel(16);
     let data_dir = tmp.path().to_path_buf();
     let engine =
-        ConversationEngine::new("TestChar".to_string(), data_dir.clone(), push_tx.clone()).unwrap();
+        ConversationEngine::new("TestChar".to_owned(), data_dir.clone(), push_tx.clone()).unwrap();
 
     let config = shore_config::LoadedConfig::new_for_test(
         shore_config::app::AppConfig::default(),
@@ -90,54 +90,54 @@ model_id = "gpt-4o"
 
 fn make_msg(id: &str, role: Role, content: &str) -> Message {
     Message {
-        msg_id: id.to_string(),
+        msg_id: id.to_owned(),
         role,
-        content: content.to_string(),
+        content: content.to_owned(),
         images: vec![],
         content_blocks: vec![],
         alt_index: None,
         alt_count: None,
         alternatives: vec![],
         provider_key: None,
-        timestamp: "2026-01-01T00:00:00Z".to_string(),
+        timestamp: "2026-01-01T00:00:00Z".to_owned(),
     }
 }
 
 fn tool_use_msg(id: &str) -> Message {
     Message {
-        msg_id: id.to_string(),
+        msg_id: id.to_owned(),
         role: Role::Assistant,
         content: String::new(),
         images: vec![],
         content_blocks: vec![ContentBlock::ToolUse {
-            id: "toolu_1".to_string(),
-            name: "check_time".to_string(),
+            id: "toolu_1".to_owned(),
+            name: "check_time".to_owned(),
             input: json!({}),
         }],
         alt_index: None,
         alt_count: None,
         alternatives: vec![],
         provider_key: None,
-        timestamp: "2026-01-01T00:00:00Z".to_string(),
+        timestamp: "2026-01-01T00:00:00Z".to_owned(),
     }
 }
 
 fn tool_result_msg(id: &str) -> Message {
     Message {
-        msg_id: id.to_string(),
+        msg_id: id.to_owned(),
         role: Role::User,
-        content: "ok".to_string(),
+        content: "ok".to_owned(),
         images: vec![],
         content_blocks: vec![ContentBlock::ToolResult {
-            tool_use_id: "toolu_1".to_string(),
-            content: "ok".to_string(),
+            tool_use_id: "toolu_1".to_owned(),
+            content: "ok".to_owned(),
             is_error: false,
         }],
         alt_index: None,
         alt_count: None,
         alternatives: vec![],
         provider_key: None,
-        timestamp: "2026-01-01T00:00:00Z".to_string(),
+        timestamp: "2026-01-01T00:00:00Z".to_owned(),
     }
 }
 
@@ -601,7 +601,7 @@ fn test_reset_model_clears_override() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx(&tmp);
 
-    ctx.active_model = Some("custom-override".to_string());
+    ctx.active_model = Some("custom-override".to_owned());
     let result = reset_model(&mut ctx).unwrap();
 
     assert_eq!(result["previous"], "custom-override");
@@ -1399,7 +1399,7 @@ mod phase7 {
         // Reattach an engine that matches the existing make_ctx_with_models
         // engine pattern (we discard the original since we mutated config).
         let engine = ConversationEngine::new(
-            "TestChar".to_string(),
+            "TestChar".to_owned(),
             ctx.data_dir.clone(),
             ctx.push_tx.clone(),
         )

@@ -60,7 +60,7 @@ fn write_stdout_line(args: std::fmt::Arguments<'_>) {
 
 fn insert_json_field(value: &mut Value, key: &str, field: Value) {
     if let Some(object) = value.as_object_mut() {
-        let _previous = object.insert(key.to_string(), field);
+        let _previous = object.insert(key.to_owned(), field);
     }
 }
 
@@ -91,11 +91,7 @@ fn load_env_file() {
         if key.is_empty() {
             continue;
         }
-        let value = value
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
-            .to_string();
+        let value = value.trim().trim_matches('"').trim_matches('\'').to_owned();
         env::set_var(key, value);
     }
 }
@@ -250,8 +246,8 @@ fn build_request(
 ) -> LlmRequest {
     LlmRequest {
         sdk: Sdk::Anthropic,
-        model: model.to_string(),
-        api_key: api_key.to_string(),
+        model: model.to_owned(),
+        api_key: api_key.to_owned(),
         api_key_name: Some("default".into()),
         base_url: Some("https://openrouter.ai/api/v1".into()),
         messages: messages.to_vec(),

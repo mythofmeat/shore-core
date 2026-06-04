@@ -351,7 +351,7 @@ pub fn query_anomalies(
 
     // If filter already produced a WHERE, append with AND; otherwise start one.
     let anomaly_clause = if where_clause.is_empty() {
-        " WHERE cache_anomaly IS NOT NULL".to_string()
+        " WHERE cache_anomaly IS NOT NULL".to_owned()
     } else {
         format!("{where_clause} AND cache_anomaly IS NOT NULL")
     };
@@ -671,15 +671,15 @@ mod tests {
             .map(|s| ((s.provider.clone(), s.api_key_name.clone()), s.call_count))
             .collect();
         assert_eq!(
-            by_key.get(&("anthropic".to_string(), "default".to_string())),
+            by_key.get(&("anthropic".to_owned(), "default".to_owned())),
             Some(&1)
         );
         assert_eq!(
-            by_key.get(&("anthropic".to_string(), "overflow".to_string())),
+            by_key.get(&("anthropic".to_owned(), "overflow".to_owned())),
             Some(&1)
         );
         assert_eq!(
-            by_key.get(&("openai".to_string(), "default".to_string())),
+            by_key.get(&("openai".to_owned(), "default".to_owned())),
             Some(&1)
         );
     }

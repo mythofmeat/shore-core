@@ -103,7 +103,7 @@ fn build_filter(args: &serde_json::Value, timezone: &str) -> (QueryFilter, Strin
         .get("last")
         .and_then(|v| v.as_str())
         .unwrap_or("today")
-        .to_string();
+        .to_owned();
     let since = parse_last_period(&last, timezone);
     let filter = QueryFilter {
         since,

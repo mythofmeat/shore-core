@@ -257,19 +257,19 @@ pub async fn discover_openai_compatible(
         .send()
         .await
         .map_err(|e| DiscoveryError::Network {
-            provider: provider_key.to_string(),
+            provider: provider_key.to_owned(),
             source: e,
         })?;
 
     let status = resp.status();
     let body = resp.text().await.map_err(|e| DiscoveryError::Network {
-        provider: provider_key.to_string(),
+        provider: provider_key.to_owned(),
         source: e,
     })?;
 
     if !status.is_success() {
         return Err(DiscoveryError::HttpStatus {
-            provider: provider_key.to_string(),
+            provider: provider_key.to_owned(),
             status: status.as_u16(),
             body: truncate_for_log(&body),
         });
@@ -301,19 +301,19 @@ pub async fn discover_anthropic(
         .send()
         .await
         .map_err(|e| DiscoveryError::Network {
-            provider: provider_key.to_string(),
+            provider: provider_key.to_owned(),
             source: e,
         })?;
 
     let status = resp.status();
     let body = resp.text().await.map_err(|e| DiscoveryError::Network {
-        provider: provider_key.to_string(),
+        provider: provider_key.to_owned(),
         source: e,
     })?;
 
     if !status.is_success() {
         return Err(DiscoveryError::HttpStatus {
-            provider: provider_key.to_string(),
+            provider: provider_key.to_owned(),
             status: status.as_u16(),
             body: truncate_for_log(&body),
         });
@@ -342,10 +342,14 @@ fn build_anthropic_models_url(base_url: &str) -> String {
 /// Truncate a response body for logging so we don't drag huge payloads
 /// (or, in pathological cases, secrets that a buggy provider might echo)
 /// into error chains.
+#[expect(
+    clippy::string_slice,
+    reason = "slice end comes from floor_char_boundary(), which is guaranteed to be a char boundary"
+)]
 fn truncate_for_log(body: &str) -> String {
     const MAX: usize = 512;
     if body.len() <= MAX {
-        body.to_string()
+        body.to_owned()
     } else {
         // Round down to the nearest UTF-8 char boundary so a multibyte
         // character straddling byte 512 doesn't panic the slice.
@@ -384,7 +388,7 @@ fn parse_models_response(
 ) -> Result<Vec<DiscoveredModel>, DiscoveryError> {
     let envelope: ModelsEnvelope =
         serde_json::from_str(body).map_err(|e| DiscoveryError::Parse {
-            provider: provider_key.to_string(),
+            provider: provider_key.to_owned(),
             source: e,
         })?;
 
@@ -405,12 +409,12 @@ fn map_entry(
     raw: &serde_json::Value,
     now: &str,
 ) -> Option<DiscoveredModel> {
-    let id = raw.get("id").and_then(|v| v.as_str())?.to_string();
+    let id = raw.get("id").and_then(|v| v.as_str())?.to_owned();
     let display_name = raw
         .get("name")
         .or_else(|| raw.get("display_name"))
         .and_then(|v| v.as_str())
-        .map(ToString::to_string);
+        .map(str::to_owned);
     let created_at = raw
         .get("created")
         .and_then(serde_json::Value::as_i64)
@@ -423,11 +427,11 @@ fn map_entry(
     let owned_by = raw
         .get("owned_by")
         .and_then(|v| v.as_str())
-        .map(ToString::to_string);
+        .map(str::to_owned);
     let description = raw
         .get("description")
         .and_then(|v| v.as_str())
-        .map(ToString::to_string);
+        .map(str::to_owned);
 
     let context_length = raw
         .get("context_length")
@@ -450,11 +454,11 @@ fn map_entry(
     let supports_prompt_cache = supported_param(raw, &["prompt_cache", "cache_control"]);
 
     Some(DiscoveredModel {
-        provider_key: provider_key.to_string(),
+        provider_key: provider_key.to_owned(),
         model_id: id,
         display_name,
-        sdk: sdk.to_string(),
-        base_url: Some(base_url.to_string()),
+        sdk: sdk.to_owned(),
+        base_url: Some(base_url.to_owned()),
         created_at,
         owned_by,
         description,
@@ -465,7 +469,7 @@ fn map_entry(
         supports_reasoning,
         supports_prompt_cache,
         raw_provider_metadata: raw.clone(),
-        discovered_at: now.to_string(),
+        discovered_at: now.to_owned(),
     })
 }
 
