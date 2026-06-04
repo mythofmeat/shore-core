@@ -383,7 +383,7 @@ async fn stream_tool_loop_continuation(
             Ok(result)
         }
         Err(e) => {
-            ledger_stream.finalize_error();
+            ledger_stream.finalize_error(&e);
             Err(e.into())
         }
     }

@@ -238,3 +238,39 @@ test("maps thinking+signature+text+tool_use SSE to StreamEvents in order", async
   }
   expect(out.length).toBe(6);
 });
+
+test("emits error frame with the message_start cache write when the stream throws", async () => {
+  // message_start reports the cache write (Anthropic bills it before any
+  // output); the SDK iterator then throws. The adapter must surface that usage
+  // in a terminal `error` frame so the daemon records the already-billed cache
+  // write instead of dropping it to zero.
+  async function* throwingEvents(): AsyncIterable<RawMessageStreamEvent> {
+    yield asEvent({
+      type: "message_start",
+      message: {
+        usage: {
+          input_tokens: 2,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 19_188,
+        },
+      },
+    });
+    throw new Error("connection reset");
+  }
+
+  const out = await collect(
+    anthropicStreamEvents("anthropic/claude-opus-4.8", throwingEvents(), fakeClock()),
+  );
+
+  expect(out[0]).toEqual({ type: "start", model: "anthropic/claude-opus-4.8" });
+  const last = out[out.length - 1];
+  expect(last?.type).toBe("error");
+  if (last?.type === "error") {
+    expect(last.message).toBe("connection reset");
+    expect(last.usage.cache_creation_tokens).toBe(19_188);
+    expect(last.usage.input_tokens).toBe(2);
+  }
+  // No `done` frame after the error.
+  expect(out.some((e) => e.type === "done")).toBe(false);
+});

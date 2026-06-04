@@ -48,6 +48,7 @@ import type {
   Usage,
   WireMessage,
 } from "../types.ts";
+import { streamErrorEvent } from "../types.ts";
 
 export class AnthropicProvider implements SidecarProvider {
   async *stream(req: SidecarRequest, signal?: AbortSignal): AsyncIterable<StreamEvent> {
@@ -127,7 +128,8 @@ export async function* anthropicStreamEvents(
   let stopReason = "end_turn";
   let usage: Usage = emptyUsage();
 
-  for await (const event of events) {
+  try {
+    for await (const event of events) {
     switch (event.type) {
       case "message_start": {
         usage = anthropicUsage(event.message.usage);
@@ -184,6 +186,14 @@ export async function* anthropicStreamEvents(
       case "message_stop":
         break;
     }
+    }
+  } catch (err) {
+    // The Anthropic stream failed mid-flight. `usage` already holds the
+    // cache write reported in `message_start` (which the provider bills
+    // before any output), so surface it instead of letting the failure drop
+    // the cost to zero. The daemon records this then still retries.
+    yield streamErrorEvent(err, usage, startedAt, firstTokenAt, now);
+    return;
   }
 
   const total = now() - startedAt;

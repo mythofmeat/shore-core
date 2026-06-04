@@ -176,6 +176,20 @@ pub enum StreamEvent {
         usage: Usage,
         timing: Timing,
     },
+    /// The provider stream failed mid-flight. Carries whatever usage the
+    /// provider had accumulated before the error (e.g. Anthropic reports the
+    /// cache write in `message_start`, before any output) so the ledger can
+    /// record the already-billed tokens instead of zeros. The consumer turns
+    /// this into [`crate::LlmError::StreamErrored`] and still fails the call so
+    /// the normal retry path runs.
+    Error {
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        usage: Usage,
+        #[serde(default)]
+        timing: Timing,
+    },
 }
 
 /// A tool_use event extracted from the stream for the engine's tool loop.

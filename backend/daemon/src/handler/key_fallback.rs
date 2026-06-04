@@ -177,6 +177,7 @@ fn llm_http_status(error: &LlmError) -> Option<u16> {
         | LlmError::Serialize(_)
         | LlmError::Deserialize(_)
         | LlmError::IncompleteStream
+        | LlmError::StreamErrored { .. }
         | LlmError::MissingApiKey { .. }
         | LlmError::Provider { .. }
         | LlmError::Refusal => None,
@@ -376,6 +377,7 @@ fn sanitize_reason(err: &LlmError) -> String {
         }
         LlmError::Refusal => "model refusal".into(),
         LlmError::IncompleteStream => "stream ended without done event".into(),
+        LlmError::StreamErrored { message, .. } => format!("stream errored: {message}"),
         LlmError::Request(_) => "transport error".into(),
         LlmError::Serialize(_) => "request serialization failed".into(),
         LlmError::Deserialize(_) => "response deserialization failed".into(),

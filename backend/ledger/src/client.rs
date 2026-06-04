@@ -569,16 +569,7 @@ impl LedgerClient {
                         return Err(e);
                     }
 
-                    let status = match &e {
-                        LlmError::HttpStatus { status, .. } => Some(*status),
-                        LlmError::Request(_)
-                        | LlmError::Serialize(_)
-                        | LlmError::Deserialize(_)
-                        | LlmError::IncompleteStream
-                        | LlmError::MissingApiKey { .. }
-                        | LlmError::Provider { .. }
-                        | LlmError::Refusal => None,
-                    };
+                    let status = http_status_code(&e);
                     let reason = sanitize_fallback_reason(&e);
                     events.push(record_generate_fallback_event(
                         FallbackContext {
@@ -826,6 +817,16 @@ fn record_generate_fallback_event(
     }
 }
 
+/// The HTTP status carried by an `HttpStatus` error, if any. All other error
+/// kinds (transport, stream, serde, refusal, …) have no status code.
+fn http_status_code(err: &LlmError) -> Option<u16> {
+    if let LlmError::HttpStatus { status, .. } = err {
+        Some(*status)
+    } else {
+        None
+    }
+}
+
 #[expect(
     clippy::string_slice,
     reason = "slice end comes from floor_char_boundary(), which is guaranteed to be a char boundary"
@@ -845,6 +846,7 @@ fn sanitize_fallback_reason(err: &LlmError) -> String {
         }
         LlmError::Refusal => "model refusal".into(),
         LlmError::IncompleteStream => "stream ended without done event".into(),
+        LlmError::StreamErrored { message, .. } => format!("stream errored: {message}"),
         LlmError::Request(_) => "transport error".into(),
         LlmError::Serialize(_) => "request serialization failed".into(),
         LlmError::Deserialize(_) => "response deserialization failed".into(),

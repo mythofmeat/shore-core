@@ -106,7 +106,9 @@ pub fn classify_credential_failure(_provider_key: &str, error: &LlmError) -> Cre
         // Mid-stream disconnects must not rotate keys: the provider already
         // accepted the credential, and the user may have seen partial
         // output.
-        LlmError::IncompleteStream => CredentialFailureKind::NotCredentialFailure,
+        LlmError::IncompleteStream | LlmError::StreamErrored { .. } => {
+            CredentialFailureKind::NotCredentialFailure
+        }
 
         // Network / transport / serde / refusal — none of these are
         // credential failures. Let retry.rs decide what to do.
