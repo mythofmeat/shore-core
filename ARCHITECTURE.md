@@ -500,8 +500,9 @@ panics/unwraps inside `Result` functions, `let _ =` discards of must-use values,
 ignored return values, and unchecked `as` conversions. The low-noise Tier 2 set
 also locks ref-counted pointer clone style, single-variant wildcard matches,
 `dbg!`, stdout/stderr print macros, `std::process::exit`, `mem::forget`,
-undocumented unsafe blocks, `unsafe_code`, elided lifetimes in paths, unused
-qualifications, missing `Debug` implementations, and unreachable `pub` items.
+undocumented unsafe blocks, one unsafe op per `unsafe {}` block, assert
+messages, `unsafe_code`, elided lifetimes in paths, unused qualifications,
+missing `Debug` implementations, and unreachable `pub` items.
 Suppressions must use `#[expect(..., reason = "...")]`.
 
 Before a release, also run relevant cache tests, live provider smoke tests if

@@ -776,7 +776,11 @@ impl E2EHarness {
                 .await
                 .expect("Failed to connect to daemon");
 
-        assert_eq!(server_hello.v, shore_protocol::SWP_V1);
+        assert_eq!(
+            server_hello.v,
+            shore_protocol::SWP_V1,
+            "server hello must advertise the SWP v1 protocol version"
+        );
 
         Self {
             conn,

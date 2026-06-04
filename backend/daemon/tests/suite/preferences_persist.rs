@@ -78,8 +78,14 @@ async fn set_temperature(conn: &mut SWPConnection, value: f64) {
     )
     .await;
     let data = extract(&messages, "set_model_setting");
-    assert_eq!(data["changed"], true);
-    assert_eq!(data["scope"], "character");
+    assert_eq!(
+        data["changed"], true,
+        "set_model_setting should report a change"
+    );
+    assert_eq!(
+        data["scope"], "character",
+        "set_model_setting should persist at character scope"
+    );
 }
 
 #[expect(
