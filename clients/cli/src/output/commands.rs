@@ -611,8 +611,8 @@ fn visible_setting_keys<'src>(
 
 /// One rendered row of `print_model_settings`, collected before drawing so the
 /// value and scope columns can be width-aligned.
-struct SettingRow<'a> {
-    key: &'a str,
+struct SettingRow<'key> {
+    key: &'key str,
     value: String,
     scope: String,
     domain: Option<String>,
