@@ -2,6 +2,7 @@
 //! extracting structured data from content block sequences.
 
 use serde_json::{json, Value};
+use shore_config::app::ThinkingReplay;
 use shore_config::models::Sdk;
 use shore_protocol::types::ContentBlock;
 
@@ -194,17 +195,30 @@ pub fn thinking_block_portable_to(
     }
 }
 
-/// Apply [`strip_thinking_from_assistant_history`] when the user has opted
-/// out of preserving prior-turn thinking AND the provider does not require
-/// `reasoning_content` to be replayed (DeepSeek V3.1+, Moonshot
-/// Kimi-thinking — see [`shore_llm::requires_reasoning_replay`]).
+/// Strip prior-turn thinking from `messages` according to the tri-state
+/// `replay` mode (#191), unless the provider requires `reasoning_content` to be
+/// replayed (DeepSeek V3.1+, Moonshot Kimi-thinking — see
+/// [`shore_llm::requires_reasoning_replay`]), in which case full replay is
+/// forced regardless of the setting.
+///
+/// - [`ThinkingReplay::All`]: keep every prior turn's thinking (no-op).
+/// - [`ThinkingReplay::LastTurn`]: keep only the most-recent assistant turn's
+///   thinking; strip older turns.
+/// - [`ThinkingReplay::None`]: strip thinking from all assistant history.
 pub fn maybe_strip_prior_thinking(
     messages: &mut [Value],
-    replay_prior_thinking: bool,
+    replay: ThinkingReplay,
     provider_key: &str,
 ) {
-    if !replay_prior_thinking && !shore_llm::requires_reasoning_replay(provider_key) {
-        strip_thinking_from_assistant_history(messages);
+    // Provider floor: these models hard-require prior `reasoning_content`, so
+    // never strip for them — full replay always wins over the user setting.
+    if shore_llm::requires_reasoning_replay(provider_key) {
+        return;
+    }
+    match replay {
+        ThinkingReplay::All => {}
+        ThinkingReplay::LastTurn => strip_thinking_from_assistant_history_except_last(messages),
+        ThinkingReplay::None => strip_thinking_from_assistant_history(messages),
     }
 }
 
@@ -223,25 +237,99 @@ pub fn maybe_strip_prior_thinking(
 /// left untouched.
 pub fn strip_thinking_from_assistant_history(messages: &mut [Value]) {
     for msg in messages.iter_mut() {
-        let Some(role) = msg.get("role").and_then(|r| r.as_str()) else {
-            continue;
-        };
-        if role != "assistant" {
-            continue;
-        }
-        let Some(content) = msg.get_mut("content") else {
-            continue;
-        };
-        let Some(arr) = content.as_array_mut() else {
-            continue;
-        };
-        arr.retain(|block| {
-            block
-                .get("type")
-                .and_then(|t| t.as_str())
-                .is_none_or(|t| t != "thinking" && t != "redacted_thinking")
-        });
+        strip_thinking_from_message(msg);
     }
+}
+
+/// Like [`strip_thinking_from_assistant_history`], but keep the thinking on the
+/// most-recent assistant *turn* and strip it from all earlier turns
+/// ([`ThinkingReplay::LastTurn`], #191).
+///
+/// Anthropic models tend to stop producing thinking when the immediately
+/// preceding assistant turn has none, so retaining just the last turn's
+/// thinking keeps the model reasoning while still shedding the bulk of the
+/// token cost (older thinking blocks dwarf the surrounding text).
+///
+/// "Most-recent assistant turn" is the trailing run of assistant messages and
+/// their interleaved tool-result user messages, counted back from the last
+/// assistant message to the first genuine (non-tool-result) user message. This
+/// keeps a whole tool-use loop's thinking together rather than only the final
+/// assistant message of it. If there is no assistant message, this is a no-op.
+pub fn strip_thinking_from_assistant_history_except_last(messages: &mut [Value]) {
+    let keep_from = most_recent_assistant_turn_start(messages);
+    for (idx, msg) in messages.iter_mut().enumerate() {
+        if idx < keep_from {
+            strip_thinking_from_message(msg);
+        }
+    }
+}
+
+/// Index at which the most-recent assistant turn begins — the first message of
+/// the trailing assistant run (walking back over assistant messages and the
+/// tool-result-only user messages between them, stopping at the first genuine
+/// user turn). Returns `messages.len()` when there is no assistant message
+/// (nothing to keep), so every message is treated as strippable history.
+fn most_recent_assistant_turn_start(messages: &[Value]) -> usize {
+    let Some(last_assistant) = messages
+        .iter()
+        .rposition(|m| msg_role(m) == Some("assistant"))
+    else {
+        return messages.len();
+    };
+    // Walk back from the last assistant message; the turn extends across
+    // assistant messages and tool-result-only user messages (tool-loop steps),
+    // and ends at the first genuine user turn.
+    let mut start = last_assistant;
+    while start > 0 {
+        let prev = start.saturating_sub(1);
+        let Some(prev_msg) = messages.get(prev) else {
+            break;
+        };
+        match msg_role(prev_msg) {
+            Some("assistant") => start = prev,
+            Some("user") if is_tool_result_only_user(prev_msg) => start = prev,
+            _ => break,
+        }
+    }
+    start
+}
+
+/// Role string of a wire message, if present.
+fn msg_role(msg: &Value) -> Option<&str> {
+    msg.get("role").and_then(|r| r.as_str())
+}
+
+/// A user message whose content is entirely `tool_result` blocks — i.e. a
+/// tool-loop continuation, not a genuine user turn. An empty or non-array
+/// content is not considered tool-result-only.
+fn is_tool_result_only_user(msg: &Value) -> bool {
+    let Some(arr) = msg.get("content").and_then(|c| c.as_array()) else {
+        return false;
+    };
+    !arr.is_empty()
+        && arr
+            .iter()
+            .all(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+}
+
+/// Drop `thinking` / `redacted_thinking` blocks from a single assistant
+/// message. Non-assistant or non-conforming messages are left untouched.
+fn strip_thinking_from_message(msg: &mut Value) {
+    if msg_role(msg) != Some("assistant") {
+        return;
+    }
+    let Some(content) = msg.get_mut("content") else {
+        return;
+    };
+    let Some(arr) = content.as_array_mut() else {
+        return;
+    };
+    arr.retain(|block| {
+        block
+            .get("type")
+            .and_then(|t| t.as_str())
+            .is_none_or(|t| t != "thinking" && t != "redacted_thinking")
+    });
 }
 
 /// Truncate a tool result to at most `max_chars` characters, appending a
@@ -603,6 +691,161 @@ mod tests {
         assert_eq!(msgs[2]["content"].as_array().unwrap().len(), 1);
         assert_eq!(msgs[2]["content"][0]["type"], "text");
         assert_eq!(msgs[2]["content"][0]["text"], "b");
+    }
+
+    // ── strip_thinking_from_assistant_history_except_last (#191) ──────
+
+    /// Helper: an assistant message with a thinking block + a text block.
+    fn asst_thinking(text: &str) -> Value {
+        json!({
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "t", "signature": "s"},
+                {"type": "text", "text": text},
+            ],
+        })
+    }
+
+    fn user_text(text: &str) -> Value {
+        json!({"role": "user", "content": [{"type": "text", "text": text}]})
+    }
+
+    /// Count thinking/redacted_thinking blocks in a message's content array.
+    fn thinking_count(msg: &Value) -> usize {
+        msg.get("content").and_then(Value::as_array).map_or(0, |a| {
+            a.iter()
+                .filter(|b| {
+                    matches!(
+                        b.get("type").and_then(Value::as_str),
+                        Some("thinking" | "redacted_thinking")
+                    )
+                })
+                .count()
+        })
+    }
+
+    #[test]
+    fn except_last_keeps_only_final_turn() {
+        // U, A(think), U, A(think), U(current). The most-recent assistant turn
+        // is the second A; its thinking stays, the first A's is stripped.
+        let mut msgs = vec![
+            user_text("q1"),
+            asst_thinking("a1"),
+            user_text("q2"),
+            asst_thinking("a2"),
+            user_text("q3"),
+        ];
+        strip_thinking_from_assistant_history_except_last(&mut msgs);
+        assert_eq!(thinking_count(&msgs[1]), 0, "older turn stripped");
+        assert_eq!(thinking_count(&msgs[3]), 1, "most-recent turn kept");
+    }
+
+    #[test]
+    fn except_last_keeps_whole_tool_loop_of_final_turn() {
+        // A multi-message final turn: A(tool) → U(tool_result) → A(text).
+        // Both assistant messages of that turn keep their thinking; the
+        // earlier turn's assistant is stripped.
+        let mut msgs = vec![
+            user_text("q1"),
+            asst_thinking("old"),
+            user_text("q2"),
+            json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "t", "signature": "s"},
+                    {"type": "tool_use", "id": "t1", "name": "roll", "input": {}},
+                ],
+            }),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "6"}]}),
+            asst_thinking("final"),
+        ];
+        strip_thinking_from_assistant_history_except_last(&mut msgs);
+        assert_eq!(thinking_count(&msgs[1]), 0, "older turn stripped");
+        assert_eq!(
+            thinking_count(&msgs[3]),
+            1,
+            "tool-loop start of last turn kept"
+        );
+        assert_eq!(
+            thinking_count(&msgs[5]),
+            1,
+            "tool-loop end of last turn kept"
+        );
+    }
+
+    #[test]
+    fn except_last_keeps_turn_ending_on_assistant() {
+        // History ending on an assistant turn (heartbeat snapshot shape): the
+        // trailing assistant turn is the most recent and is kept.
+        let mut msgs = vec![
+            user_text("q1"),
+            asst_thinking("a1"),
+            user_text("q2"),
+            asst_thinking("a2"),
+        ];
+        strip_thinking_from_assistant_history_except_last(&mut msgs);
+        assert_eq!(thinking_count(&msgs[1]), 0);
+        assert_eq!(thinking_count(&msgs[3]), 1);
+    }
+
+    #[test]
+    fn except_last_single_turn_is_noop() {
+        let mut msgs = vec![user_text("q1"), asst_thinking("only"), user_text("q2")];
+        strip_thinking_from_assistant_history_except_last(&mut msgs);
+        assert_eq!(
+            thinking_count(&msgs[1]),
+            1,
+            "the only turn is the last turn"
+        );
+    }
+
+    #[test]
+    fn except_last_no_assistant_is_noop() {
+        let mut msgs = vec![user_text("q1")];
+        strip_thinking_from_assistant_history_except_last(&mut msgs);
+        // No assistant message → nothing to strip, no panic.
+        assert_eq!(msgs.len(), 1);
+    }
+
+    #[test]
+    fn maybe_strip_last_turn_respects_provider_floor() {
+        // DeepSeek requires full reasoning replay: LastTurn must NOT strip.
+        let mut msgs = vec![
+            user_text("q1"),
+            asst_thinking("a1"),
+            user_text("q2"),
+            asst_thinking("a2"),
+            user_text("q3"),
+        ];
+        maybe_strip_prior_thinking(&mut msgs, ThinkingReplay::LastTurn, "deepseek");
+        assert_eq!(thinking_count(&msgs[1]), 1, "floor forces full replay");
+        assert_eq!(thinking_count(&msgs[3]), 1);
+    }
+
+    #[test]
+    fn maybe_strip_dispatches_on_mode() {
+        let base = || {
+            vec![
+                user_text("q1"),
+                asst_thinking("a1"),
+                user_text("q2"),
+                asst_thinking("a2"),
+                user_text("q3"),
+            ]
+        };
+
+        let mut all = base();
+        maybe_strip_prior_thinking(&mut all, ThinkingReplay::All, "anthropic");
+        assert_eq!(thinking_count(&all[1]) + thinking_count(&all[3]), 2);
+
+        let mut last = base();
+        maybe_strip_prior_thinking(&mut last, ThinkingReplay::LastTurn, "anthropic");
+        assert_eq!(thinking_count(&last[1]), 0);
+        assert_eq!(thinking_count(&last[3]), 1);
+
+        let mut none = base();
+        maybe_strip_prior_thinking(&mut none, ThinkingReplay::None, "anthropic");
+        assert_eq!(thinking_count(&none[1]) + thinking_count(&none[3]), 0);
     }
 
     #[test]

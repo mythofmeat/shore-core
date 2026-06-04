@@ -447,11 +447,20 @@ fn arb_retrieval_binary_mode() -> impl Strategy<Value = RetrievalBinaryMode> {
     ]
 }
 
+fn arb_thinking_replay() -> impl Strategy<Value = shore_config::app::ThinkingReplay> {
+    use shore_config::app::ThinkingReplay;
+    prop_oneof![
+        Just(ThinkingReplay::All),
+        Just(ThinkingReplay::LastTurn),
+        Just(ThinkingReplay::None),
+    ]
+}
+
 fn arb_memory_config() -> impl Strategy<Value = MemoryConfig> {
     (
         arb_compaction_config(),
         arb_dreaming_config(),
-        any::<bool>(),
+        arb_thinking_replay(),
         arb_retrieval_mode(),
         0_u64..10_000_000,
         0_usize..100_000,

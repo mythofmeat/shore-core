@@ -323,7 +323,7 @@ pub struct ResolvedModel {
     /// `[chat.*]` catalog — it is stamped here by the runtime preference
     /// overlay (`preferences::apply_sampler_overlay`). The quality effect is
     /// model-dependent (issue #129), so there is no opinionated default.
-    pub replay_prior_thinking: Option<bool>,
+    pub replay_prior_thinking: Option<crate::app::ThinkingReplay>,
 }
 
 impl ResolvedModel {

@@ -2409,7 +2409,7 @@ mod tests {
                 "max_output_tokens": 8192,
                 "cache_ttl": "1h",
                 "sdk": "anthropic",
-                "replay_prior_thinking": false,
+                "replay_prior_thinking": "last_turn",
             },
             "scopes": {
                 "reasoning_effort": "character_model",

@@ -99,8 +99,10 @@ pub struct SamplerSettings {
     /// it OFF while minimax-m3/glm-5.1 want it ON — so there is no
     /// opinionated default and no auto-promotion in either direction. The
     /// DeepSeek/Kimi reasoning-replay floor (`requires_reasoning_replay`) is
-    /// orthogonal and still enforced regardless of this setting.
-    pub replay_prior_thinking: Option<bool>,
+    /// orthogonal and still enforced regardless of this setting. Tri-state
+    /// (`all` | `last_turn` | `none`); legacy bool configs still deserialize
+    /// (#191).
+    pub replay_prior_thinking: Option<shore_config::app::ThinkingReplay>,
 
     // ── Vendor knobs (per-model runtime settings) ───────────────────────
     // These mirror the same-named `ModelConfigFields`/`ResolvedModel` fields,
@@ -1121,7 +1123,7 @@ typo_setting = "x"
                     max_output_tokens: Some(4096),
                     cache_ttl: Some("5m".into()),
                     sdk: Some("anthropic".into()),
-                    replay_prior_thinking: Some(false),
+                    replay_prior_thinking: Some(shore_config::app::ThinkingReplay::None),
                     ..Default::default()
                 },
             },
@@ -1829,11 +1831,14 @@ model_id = "claude-opus-4-6"
         );
 
         let overlay = SamplerSettings {
-            replay_prior_thinking: Some(false),
+            replay_prior_thinking: Some(shore_config::app::ThinkingReplay::None),
             ..Default::default()
         };
         let patched = apply_sampler_overlay(base, &overlay);
-        assert_eq!(patched.replay_prior_thinking, Some(false));
+        assert_eq!(
+            patched.replay_prior_thinking,
+            Some(shore_config::app::ThinkingReplay::None)
+        );
     }
 
     #[test]
@@ -1849,7 +1854,8 @@ model_id = "claude-opus-4-6"
         let base = catalog.find_model("opus").unwrap();
 
         let mut global = ModelPreferences::default();
-        global.defaults.sampler.replay_prior_thinking = Some(true);
+        global.defaults.sampler.replay_prior_thinking =
+            Some(shore_config::app::ThinkingReplay::All);
 
         let mut character = ModelPreferences::default();
         character.set_model(
@@ -1857,7 +1863,7 @@ model_id = "claude-opus-4-6"
             "claude-opus-4-6",
             ModelPreference {
                 sampler: SamplerSettings {
-                    replay_prior_thinking: Some(false),
+                    replay_prior_thinking: Some(shore_config::app::ThinkingReplay::None),
                     ..Default::default()
                 },
             },
@@ -1872,7 +1878,7 @@ model_id = "claude-opus-4-6"
         );
         assert_eq!(
             effective.replay_prior_thinking,
-            Some(false),
+            Some(shore_config::app::ThinkingReplay::None),
             "character per-model override beats global default"
         );
 
