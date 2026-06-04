@@ -188,6 +188,10 @@ impl ActivityTracker {
     // Internal computations
     // -----------------------------------------------------------------------
 
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "activity statistics compute f64 session rates and weighted engagement scores"
+    )]
     fn compute_stats(&self) -> ActivityStats {
         let now = Instant::now();
         let current_weekday = Local::now().naive_local().weekday();
@@ -262,6 +266,10 @@ impl ActivityTracker {
     }
 
     /// Consistency: ratio of active days to total span days.
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "consistency is a bounded f64 ratio of active days to observed span days"
+    )]
     fn compute_consistency(&self) -> f64 {
         let [first, .., last] = self.timestamps.as_slice() else {
             return if self.timestamps.is_empty() { 0.0 } else { 1.0 };
@@ -381,6 +389,10 @@ impl ActivityTracker {
 
     /// Weekday-aware hour histogram. If the current weekday has ≥ WEEKDAY_HEATMAP_MIN
     /// events, use only that weekday's data; otherwise fall back to global.
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "hour histogram normalizes event counts into f64 density buckets"
+    )]
     fn compute_hour_histogram(&self, current_weekday: Weekday) -> [f64; 24] {
         let weekday_events: Vec<&MessageTimestamp> = self
             .timestamps
@@ -420,6 +432,10 @@ impl ActivityTracker {
     }
 
     /// Z-score anomaly detection on the most recent inter-message gap.
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "gap anomaly detection computes f64 mean, variance, and z-score"
+    )]
     fn compute_anomaly_z_score(&self, sessions: &[Vec<usize>]) -> Option<f64> {
         let gaps = self.compute_session_gaps(sessions);
         if gaps.len() < 3 {
@@ -451,6 +467,10 @@ impl Default for ActivityTracker {
 // ---------------------------------------------------------------------------
 
 /// Tempo score logistic: 1 / (1 + e^((median_gap - 900) / 400)).
+#[expect(
+    clippy::float_arithmetic,
+    reason = "tempo scoring is a logistic curve over f64 gap durations"
+)]
 pub fn compute_tempo_score(gaps: &[f64]) -> f64 {
     let Some(med) = median(gaps) else {
         return 0.5; // neutral when no data
@@ -459,6 +479,10 @@ pub fn compute_tempo_score(gaps: &[f64]) -> f64 {
 }
 
 /// Classify each hour as Peak, Trough, or Normal based on histogram density.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "hour classification compares f64 densities against scaled peak/trough thresholds"
+)]
 pub fn classify_hours(histogram: &[f64; 24]) -> [HourClassification; 24] {
     let non_zero: Vec<f64> = histogram.iter().copied().filter(|&d| d > 0.0).collect();
     let avg = if non_zero.is_empty() {
@@ -489,7 +513,7 @@ fn median(values: &[f64]) -> Option<f64> {
     }
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mid = sorted.len() / 2;
+    let mid: usize = sorted.len().checked_div(2).unwrap_or_default();
     if sorted.len().is_multiple_of(2) {
         let lo_opt = mid.checked_sub(1).and_then(|i| sorted.get(i));
         let (Some(lo), Some(hi)) = (lo_opt, sorted.get(mid)) else {

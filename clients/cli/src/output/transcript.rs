@@ -84,7 +84,8 @@ fn write_archive_boundary(out: &mut impl Write, width: usize, archived_turns: us
     };
     let label_width = label.chars().count();
     let line = if width > label_width {
-        let left = width.saturating_sub(label_width) / 2;
+        let extra_width = width.saturating_sub(label_width);
+        let left: usize = extra_width.checked_div(2).unwrap_or_default();
         let right = width.saturating_sub(label_width.saturating_add(left));
         format!("{}{}{}", "─".repeat(left), label, "─".repeat(right))
     } else {

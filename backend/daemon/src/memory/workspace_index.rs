@@ -128,6 +128,10 @@ impl HybridMode {
     clippy::too_many_lines,
     reason = "workspace index refresh/search orchestration split is tracked in #109"
 )]
+#[expect(
+    clippy::float_arithmetic,
+    reason = "hybrid workspace search blends lexical and semantic f32 relevance weights"
+)]
 pub async fn hybrid_search(
     workspace_dir: &str,
     retrieval_config: &RetrievalConfig,
@@ -586,6 +590,10 @@ fn index_lock_for(index_path: &Path) -> Arc<Mutex<()>> {
         .clone()
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "cosine similarity is vector dot-product and norm math over f32 embeddings"
+)]
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;

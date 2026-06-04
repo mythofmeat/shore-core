@@ -4,6 +4,11 @@ use std::time::Duration;
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+const MILLIS_PER_SECOND: u64 = 1_000;
+const MILLIS_PER_MINUTE: u64 = 60_000;
+const MILLIS_PER_HOUR: u64 = 3_600_000;
+const MILLIS_PER_DAY: u64 = 86_400_000;
+
 /// A duration type that parses systemd-style strings (`500ms`, `30s`, `2m`, `1h`, `2d`).
 ///
 /// Bare integers (no suffix) are treated as seconds for backwards compatibility.
@@ -37,20 +42,13 @@ impl ConfigDuration {
             .ok_or_else(|| format!("invalid duration: {s}"))?;
 
         let (num_str, suffix) = s.split_at(digit_end);
-        let value: f64 = num_str
-            .parse()
-            .map_err(|_| format!("invalid number in duration: {s}"))?;
-
-        if value < 0.0 {
-            return Err("duration cannot be negative".into());
-        }
 
         let millis = match suffix {
-            "ms" => millis_from_secs_f64(value / 1000.0)?,
-            "s" => millis_from_secs_f64(value)?,
-            "m" => millis_from_secs_f64(value * 60.0)?,
-            "h" => millis_from_secs_f64(value * 3600.0)?,
-            "d" => millis_from_secs_f64(value * 86400.0)?,
+            "ms" => millis_from_decimal_unit(num_str, 1, s)?,
+            "s" => millis_from_decimal_unit(num_str, MILLIS_PER_SECOND, s)?,
+            "m" => millis_from_decimal_unit(num_str, MILLIS_PER_MINUTE, s)?,
+            "h" => millis_from_decimal_unit(num_str, MILLIS_PER_HOUR, s)?,
+            "d" => millis_from_decimal_unit(num_str, MILLIS_PER_DAY, s)?,
             _ => return Err(format!("invalid duration suffix: {suffix}")),
         };
 
@@ -58,7 +56,7 @@ impl ConfigDuration {
     }
 
     pub const fn from_secs(secs: u64) -> Self {
-        Self(secs.saturating_mul(1000))
+        Self(secs.saturating_mul(MILLIS_PER_SECOND))
     }
 
     pub const fn from_millis(millis: u64) -> Self {
@@ -66,7 +64,10 @@ impl ConfigDuration {
     }
 
     pub const fn as_secs(&self) -> u64 {
-        self.0 / 1000
+        match self.0.checked_div(MILLIS_PER_SECOND) {
+            Some(seconds) => seconds,
+            None => 0,
+        }
     }
 
     pub const fn as_millis(&self) -> u64 {
@@ -76,6 +77,75 @@ impl ConfigDuration {
     pub const fn as_duration(&self) -> Duration {
         Duration::from_millis(self.0)
     }
+}
+
+fn millis_from_decimal_unit(decimal: &str, unit_millis: u64, raw: &str) -> Result<u64, String> {
+    let (whole_digits, fractional_digits) = decimal_parts(decimal, raw)?;
+    let whole_units = parse_whole_digits(whole_digits, raw)?;
+    let whole_millis = whole_units
+        .checked_mul(unit_millis)
+        .ok_or_else(|| format!("duration too large: {raw}"))?;
+    let fractional_millis = match fractional_digits {
+        Some(digits) => millis_from_fractional_digits(digits, unit_millis, raw)?,
+        None => 0,
+    };
+
+    whole_millis
+        .checked_add(fractional_millis)
+        .ok_or_else(|| format!("duration too large: {raw}"))
+}
+
+fn decimal_parts<'duration>(
+    decimal: &'duration str,
+    raw: &str,
+) -> Result<(&'duration str, Option<&'duration str>), String> {
+    if decimal.is_empty() || decimal == "." {
+        return Err(format!("invalid number in duration: {raw}"));
+    }
+
+    if let Some((whole_digits, fractional_digits)) = decimal.split_once('.') {
+        if fractional_digits.contains('.')
+            || whole_digits.is_empty() && fractional_digits.is_empty()
+        {
+            return Err(format!("invalid number in duration: {raw}"));
+        }
+        Ok((whole_digits, Some(fractional_digits)))
+    } else {
+        Ok((decimal, None))
+    }
+}
+
+fn parse_whole_digits(digits: &str, raw: &str) -> Result<u64, String> {
+    if digits.is_empty() {
+        return Ok(0);
+    }
+
+    digits
+        .parse()
+        .map_err(|_| format!("duration too large: {raw}"))
+}
+
+fn millis_from_fractional_digits(digits: &str, unit_millis: u64, raw: &str) -> Result<u64, String> {
+    if digits.is_empty() {
+        return Ok(0);
+    }
+
+    let fractional_units = digits
+        .parse::<u128>()
+        .map_err(|_| format!("duration fractional precision is too large: {raw}"))?;
+    let digit_count = u32::try_from(digits.len())
+        .map_err(|_| format!("duration fractional precision is too large: {raw}"))?;
+    let scale = 10_u128
+        .checked_pow(digit_count)
+        .ok_or_else(|| format!("duration fractional precision is too large: {raw}"))?;
+    let scaled_fractional_millis = fractional_units
+        .checked_mul(u128::from(unit_millis))
+        .ok_or_else(|| format!("duration fractional precision is too large: {raw}"))?;
+    let fractional_millis = scaled_fractional_millis
+        .checked_div(scale)
+        .ok_or_else(|| format!("duration fractional precision is too large: {raw}"))?;
+
+    u64::try_from(fractional_millis).map_err(|_| format!("duration too large: {raw}"))
 }
 
 fn millis_from_secs_f64(secs: f64) -> Result<u64, String> {
@@ -90,14 +160,18 @@ impl fmt::Display for ConfigDuration {
         if ms == 0 {
             return write!(f, "0s");
         }
-        if ms.is_multiple_of(86400 * 1000) {
-            write!(f, "{}d", ms / (86400 * 1000))
-        } else if ms.is_multiple_of(3600 * 1000) {
-            write!(f, "{}h", ms / (3600 * 1000))
-        } else if ms.is_multiple_of(60 * 1000) {
-            write!(f, "{}m", ms / (60 * 1000))
-        } else if ms.is_multiple_of(1000) {
-            write!(f, "{}s", ms / 1000)
+        if ms.is_multiple_of(MILLIS_PER_DAY) {
+            let days = ms.checked_div(MILLIS_PER_DAY).ok_or(fmt::Error)?;
+            write!(f, "{days}d")
+        } else if ms.is_multiple_of(MILLIS_PER_HOUR) {
+            let hours = ms.checked_div(MILLIS_PER_HOUR).ok_or(fmt::Error)?;
+            write!(f, "{hours}h")
+        } else if ms.is_multiple_of(MILLIS_PER_MINUTE) {
+            let minutes = ms.checked_div(MILLIS_PER_MINUTE).ok_or(fmt::Error)?;
+            write!(f, "{minutes}m")
+        } else if ms.is_multiple_of(MILLIS_PER_SECOND) {
+            let seconds = ms.checked_div(MILLIS_PER_SECOND).ok_or(fmt::Error)?;
+            write!(f, "{seconds}s")
         } else {
             write!(f, "{ms}ms")
         }

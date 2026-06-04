@@ -180,6 +180,22 @@ shadow_same = "warn"
 shadow_reuse = "warn"
 shadow_unrelated = "warn"
 
+# Arithmetic-discipline ratchet (#153). Extends the `arithmetic_side_effects`
+# story (#148): same belt-and-suspenders pattern as the blocks above — `warn`
+# here so new/un-locked crates inherit the baseline, while each cleaned crate
+# escalates to `deny` via its crate-root `#![deny(...)]` (CI's `-D warnings`
+# keeps it hard). `integer_division` forces truncating `/` to be acknowledged,
+# `modulo_arithmetic` flags `%` sign-surprises on negatives, and
+# `float_arithmetic` flags precision/NaN-prone float math. Float-heavy functions
+# (scoring heuristics, cosine similarity, pricing, percent/time formatting) carry
+# a reasoned function-level `#[expect]` rather than being rewritten. Daemon tests
+# exempt `integer_division` at module level via `#![cfg_attr(test, expect(...))]`
+# (truncating division on fixtures is a threshold computation), which a workspace
+# `warn` does not disturb.
+integer_division = "warn"
+modulo_arithmetic = "warn"
+float_arithmetic = "warn"
+
 [workspace.lints.rust]
 # Rustc-side paranoia lints from the Tier 2 ratchet (#115). Crates also deny
 # these at their roots once clean, with documented local `unsafe_code`

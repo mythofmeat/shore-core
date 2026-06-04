@@ -73,6 +73,10 @@ pub(super) fn smart_resize(
     }
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "image resizing estimates f64 scale factors from byte ratios for transparent PNGs"
+)]
 fn resize_transparent(
     img: &DynamicImage,
     src_w: u32,
@@ -135,6 +139,10 @@ fn resize_quality_only(img: &DynamicImage, max_bytes: u64) -> Option<(Vec<u8>, &
     None
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "image resizing estimates f64 scale factors from byte and dimension ratios"
+)]
 fn resize_with_dims(
     img: &DynamicImage,
     src_w: u32,
@@ -194,6 +202,10 @@ fn resize_with_dims(
     None
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "image resizing applies a computed f64 scale factor to integer dimensions"
+)]
 fn scaled_dims(w: u32, h: u32, scale: f64) -> (u32, u32) {
     (
         f64_to_u32_saturating((f64::from(w) * scale).round().max(1.0)),
