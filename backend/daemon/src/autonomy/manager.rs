@@ -999,106 +999,12 @@ async fn character_tick_loop(
 }
 
 /// One tick for a single character.
-#[expect(
-    clippy::too_many_lines,
-    reason = "autonomy tick orchestration split is tracked in #109"
-)]
 async fn tick_character(character: &str, ctx: &TickContext) {
     let now = Instant::now();
 
     // Collect actions under the lock, then release before any async work.
-    let (int_action, keepalive_action, compaction_needed, dream_needed) = {
-        let mut s = lock_state(&ctx.state);
-        debug!(
-            character,
-            state = %s.heartbeat.state_at(now),
-            ticks_without_user = s.heartbeat.ticks_without_user(),
-            turn_count = s.active_turn_count,
-            "tick"
-        );
-
-        // -- heartbeat ------------------------------------------------------
-        let int_action = if ctx.config.enabled && ctx.config.heartbeat.enabled && !s.paused {
-            let had_deadline = s.heartbeat.next_wake().is_some();
-            let action = s.heartbeat.tick(now);
-
-            if !matches!(action, HeartbeatAction::None) {
-                s.mark_dirty();
-            }
-
-            // Detect guard trip: had a deadline, tick returned None, deadline now cleared.
-            if had_deadline
-                && matches!(action, HeartbeatAction::None)
-                && s.heartbeat.next_wake().is_none()
-            {
-                let ticks = s.heartbeat.ticks_without_user();
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::Dormant,
-                    format!("Abandonment guard tripped (ticks without user: {ticks})"),
-                );
-                // Guard-trip propagation: stop cache keepalive pings.
-                s.cache_keepalive.set_next_wake(None);
-            }
-            action
-        } else {
-            HeartbeatAction::None
-        };
-
-        // -- cache keepalive -------------------------------------------------
-        let keepalive_action = s.cache_keepalive.tick(now);
-
-        let dream_backoff_elapsed = s
-            .next_dream_attempt_at
-            .is_none_or(|next_attempt| now >= next_attempt);
-        let dreaming_cfg = ctx.loaded_config.as_ref().map(|lc| &lc.app.memory.dreaming);
-        let dream_needed = dream_backoff_elapsed
-            && ctx.config.enabled
-            && dreaming_cfg.is_some_and(|cfg| cfg.enabled)
-            && dream_inactivity_satisfied(dreaming_cfg, s.heartbeat.last_user_at(), now);
-
-        // -- compaction triggers ---------------------------------------------
-        let mut compaction_needed = false;
-        if ctx.config.enabled && ctx.compaction.enabled && !s.compaction_triggered {
-            if ctx.compaction.max_turns > 0
-                && s.active_turn_count >= ctx.compaction.max_turns
-                && s.active_turn_count >= ctx.compaction.min_turns
-            {
-                s.compaction_triggered = true;
-                compaction_needed = true;
-                info!(
-                    character = %character,
-                    turn_count = s.active_turn_count,
-                    max_turns = ctx.compaction.max_turns,
-                    "Compaction: max turns trigger fired"
-                );
-            } else if s.active_turn_count >= ctx.compaction.min_turns {
-                let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
-                let threshold_secs = ctx.compaction.idle_trigger.as_secs();
-                if threshold_secs > 0 && idle_secs >= threshold_secs {
-                    s.compaction_triggered = true;
-                    compaction_needed = true;
-                    info!(
-                        character = %character,
-                        idle_secs,
-                        threshold_secs,
-                        turn_count = s.active_turn_count,
-                        "Compaction: idle trigger fired"
-                    );
-                }
-            } else {
-                // Below min_turns: no compaction trigger applies.
-            }
-        }
-
-        save_state(&ctx.data_dir, character, &mut s);
-        s.heartbeat_log.flush_if_dirty();
-        (
-            int_action,
-            keepalive_action,
-            compaction_needed,
-            dream_needed,
-        )
-    };
+    let (int_action, keepalive_action, compaction_needed, dream_needed) =
+        collect_tick_actions(character, ctx, now);
 
     // Idle-triggered compaction: when the tick has the dependencies it needs
     // (LLM client, config, notifier, registry), run compaction inline so idle
@@ -1152,62 +1058,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 
     // -- cache keepalive ping (async, outside lock) -------------------------
     if keepalive_action == CacheKeepaliveAction::Ping {
-        let ping_result = execute_dormant_ping(
-            character,
-            &ctx.state,
-            &ctx.data_dir,
-            ctx.llm_client.as_ref(),
-            ctx.loaded_config.as_deref(),
-        )
-        .await;
-        let mut s = lock_state(&ctx.state);
-        match ping_result {
-            DormantPingOutcome::Success {
-                usage,
-                fallback_events,
-            } => {
-                // Ping actually sent and succeeded — confirm to the keepalive
-                // so it schedules the next ping 55 minutes from now.
-                s.cache_keepalive.on_cache_warmed(Instant::now());
-                push_provider_fallback_events(
-                    &mut s,
-                    HeartbeatEventKind::DormantPing,
-                    &fallback_events,
-                );
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::DormantPing,
-                    format!(
-                        "Cache refresh ping (cache_read: {}, input: {})",
-                        usage.cache_read_tokens, usage.input_tokens
-                    ),
-                );
-                s.heartbeat_log
-                    .push(HeartbeatEventKind::DormantPing, "Cache keepalive ping");
-                s.mark_dirty();
-            }
-            DormantPingOutcome::Failed(reason) => {
-                s.cache_keepalive.on_ping_failed(Instant::now());
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::DormantPing,
-                    format!(
-                        "Cache keepalive ping failed: {}",
-                        truncate_summary(&reason, 160)
-                    ),
-                );
-                s.mark_dirty();
-            }
-            DormantPingOutcome::Skipped(reason) => {
-                s.cache_keepalive.on_ping_failed(Instant::now());
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::DormantPing,
-                    format!(
-                        "Cache keepalive ping skipped: {}",
-                        truncate_summary(&reason, 160)
-                    ),
-                );
-                s.mark_dirty();
-            }
-        }
+        execute_cache_keepalive_ping(character, ctx).await;
     }
 
     // -- idle-triggered compaction (async, outside lock) -------------------
@@ -1240,6 +1091,167 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         let mut s = lock_state(&ctx.state);
         save_state(&ctx.data_dir, character, &mut s);
         s.heartbeat_log.flush_if_dirty();
+    }
+}
+
+/// Snapshot the per-tick actions while holding the state lock, then release it
+/// before any async work runs. Returns the heartbeat action, cache-keepalive
+/// action, and the compaction-needed / dream-needed gates.
+fn collect_tick_actions(
+    character: &str,
+    ctx: &TickContext,
+    now: Instant,
+) -> (HeartbeatAction, CacheKeepaliveAction, bool, bool) {
+    let mut s = lock_state(&ctx.state);
+    debug!(
+        character,
+        state = %s.heartbeat.state_at(now),
+        ticks_without_user = s.heartbeat.ticks_without_user(),
+        turn_count = s.active_turn_count,
+        "tick"
+    );
+
+    // -- heartbeat ------------------------------------------------------
+    let int_action = if ctx.config.enabled && ctx.config.heartbeat.enabled && !s.paused {
+        let had_deadline = s.heartbeat.next_wake().is_some();
+        let action = s.heartbeat.tick(now);
+
+        if !matches!(action, HeartbeatAction::None) {
+            s.mark_dirty();
+        }
+
+        // Detect guard trip: had a deadline, tick returned None, deadline now cleared.
+        if had_deadline
+            && matches!(action, HeartbeatAction::None)
+            && s.heartbeat.next_wake().is_none()
+        {
+            let ticks = s.heartbeat.ticks_without_user();
+            s.heartbeat_log.push(
+                HeartbeatEventKind::Dormant,
+                format!("Abandonment guard tripped (ticks without user: {ticks})"),
+            );
+            // Guard-trip propagation: stop cache keepalive pings.
+            s.cache_keepalive.set_next_wake(None);
+        }
+        action
+    } else {
+        HeartbeatAction::None
+    };
+
+    // -- cache keepalive -------------------------------------------------
+    let keepalive_action = s.cache_keepalive.tick(now);
+
+    let dream_backoff_elapsed = s
+        .next_dream_attempt_at
+        .is_none_or(|next_attempt| now >= next_attempt);
+    let dreaming_cfg = ctx.loaded_config.as_ref().map(|lc| &lc.app.memory.dreaming);
+    let dream_needed = dream_backoff_elapsed
+        && ctx.config.enabled
+        && dreaming_cfg.is_some_and(|cfg| cfg.enabled)
+        && dream_inactivity_satisfied(dreaming_cfg, s.heartbeat.last_user_at(), now);
+
+    // -- compaction triggers ---------------------------------------------
+    let mut compaction_needed = false;
+    if ctx.config.enabled && ctx.compaction.enabled && !s.compaction_triggered {
+        if ctx.compaction.max_turns > 0
+            && s.active_turn_count >= ctx.compaction.max_turns
+            && s.active_turn_count >= ctx.compaction.min_turns
+        {
+            s.compaction_triggered = true;
+            compaction_needed = true;
+            info!(
+                character = %character,
+                turn_count = s.active_turn_count,
+                max_turns = ctx.compaction.max_turns,
+                "Compaction: max turns trigger fired"
+            );
+        } else if s.active_turn_count >= ctx.compaction.min_turns {
+            let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
+            let threshold_secs = ctx.compaction.idle_trigger.as_secs();
+            if threshold_secs > 0 && idle_secs >= threshold_secs {
+                s.compaction_triggered = true;
+                compaction_needed = true;
+                info!(
+                    character = %character,
+                    idle_secs,
+                    threshold_secs,
+                    turn_count = s.active_turn_count,
+                    "Compaction: idle trigger fired"
+                );
+            }
+        } else {
+            // Below min_turns: no compaction trigger applies.
+        }
+    }
+
+    save_state(&ctx.data_dir, character, &mut s);
+    s.heartbeat_log.flush_if_dirty();
+    (
+        int_action,
+        keepalive_action,
+        compaction_needed,
+        dream_needed,
+    )
+}
+
+/// Send a dormant cache-keepalive ping and fold the outcome back into per-tick
+/// state: success confirms the keepalive schedule; failure or skip backs it off.
+async fn execute_cache_keepalive_ping(character: &str, ctx: &TickContext) {
+    let ping_result = execute_dormant_ping(
+        character,
+        &ctx.state,
+        &ctx.data_dir,
+        ctx.llm_client.as_ref(),
+        ctx.loaded_config.as_deref(),
+    )
+    .await;
+    let mut s = lock_state(&ctx.state);
+    match ping_result {
+        DormantPingOutcome::Success {
+            usage,
+            fallback_events,
+        } => {
+            // Ping actually sent and succeeded — confirm to the keepalive
+            // so it schedules the next ping 55 minutes from now.
+            s.cache_keepalive.on_cache_warmed(Instant::now());
+            push_provider_fallback_events(
+                &mut s,
+                HeartbeatEventKind::DormantPing,
+                &fallback_events,
+            );
+            s.heartbeat_log.push(
+                HeartbeatEventKind::DormantPing,
+                format!(
+                    "Cache refresh ping (cache_read: {}, input: {})",
+                    usage.cache_read_tokens, usage.input_tokens
+                ),
+            );
+            s.heartbeat_log
+                .push(HeartbeatEventKind::DormantPing, "Cache keepalive ping");
+            s.mark_dirty();
+        }
+        DormantPingOutcome::Failed(reason) => {
+            s.cache_keepalive.on_ping_failed(Instant::now());
+            s.heartbeat_log.push(
+                HeartbeatEventKind::DormantPing,
+                format!(
+                    "Cache keepalive ping failed: {}",
+                    truncate_summary(&reason, 160)
+                ),
+            );
+            s.mark_dirty();
+        }
+        DormantPingOutcome::Skipped(reason) => {
+            s.cache_keepalive.on_ping_failed(Instant::now());
+            s.heartbeat_log.push(
+                HeartbeatEventKind::DormantPing,
+                format!(
+                    "Cache keepalive ping skipped: {}",
+                    truncate_summary(&reason, 160)
+                ),
+            );
+            s.mark_dirty();
+        }
     }
 }
 
@@ -1767,10 +1779,6 @@ fn apply_heartbeat_model_override(
     clippy::too_many_arguments,
     reason = "heartbeat tick boundary carries scheduler dependencies"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "heartbeat tick tool-loop orchestration split is tracked in #109"
-)]
 async fn execute_heartbeat_tick(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
@@ -1782,7 +1790,54 @@ async fn execute_heartbeat_tick(
     registry: Option<&Arc<tokio::sync::Mutex<CharacterRegistry>>>,
 ) {
     let Some(client) = llm_client else { return };
+    let Some(lc) = loaded_config else { return };
 
+    let Some(mut request) = prepare_heartbeat_request(character, state, data_dir, lc) else {
+        return;
+    };
+
+    let inner_ctx = build_tool_context(character, data_dir, client, lc);
+    let tool_ctx = Arc::new(HeartbeatToolContext {
+        inner: inner_ctx,
+        state: Arc::clone(state),
+    });
+
+    let (send_message_text, cache_warmed) =
+        run_heartbeat_tool_loop(character, state, &mut request, client, lc, &tool_ctx).await;
+
+    // -- Cache warmed: the tick itself was a cache-warming LLM call -----------
+    if cache_warmed {
+        let mut s = lock_state(state);
+        s.cache_keepalive.on_cache_warmed(Instant::now());
+        // Mirror schedule to keepalive (character may have called set_next_wake).
+        if let Some(wake) = s.heartbeat.next_wake() {
+            s.cache_keepalive.set_next_wake(Some(wake));
+        }
+    }
+
+    persist_heartbeat_message(
+        character,
+        state,
+        registry,
+        push_tx,
+        notifier,
+        &request,
+        send_message_text,
+    )
+    .await;
+}
+
+/// Resolve and prepare the `LlmRequest` for a heartbeat tick: reuse the cached
+/// `last_request` (or rebuild it from the compacted conversation on disk),
+/// clear the stale request ID, apply the heartbeat model override, and pin the
+/// heartbeat instructions + prompt at a fixed inline-system slot. Returns
+/// `None` when there is no prior conversation to build on.
+fn prepare_heartbeat_request(
+    character: &str,
+    state: &Arc<Mutex<AutonomyState>>,
+    data_dir: &Path,
+    lc: &LoadedConfig,
+) -> Option<LlmRequest> {
     // Clone last_request under the lock, then release.
     let mut request = {
         let s = lock_state(state);
@@ -1790,22 +1845,20 @@ async fn execute_heartbeat_tick(
             req.clone()
         } else {
             drop(s);
-            let Some(config) = loaded_config else { return };
-            if let Some(req) = rebuild_request_from_disk(character, data_dir, config) {
-                // Persist the rebuilt request so keepalive pings can use it;
-                // otherwise pings silently no-op after daemon restart until
-                // the next user message.
-                let mut write_guard = lock_state(state);
-                cache_last_request(&mut write_guard, character, req.clone());
-                drop(write_guard);
-                req
-            } else {
+            let Some(req) = rebuild_request_from_disk(character, data_dir, lc) else {
                 info!(
                     character,
                     "Heartbeat: skipping tick (no prior conversation)"
                 );
-                return;
-            }
+                return None;
+            };
+            // Persist the rebuilt request so keepalive pings can use it;
+            // otherwise pings silently no-op after daemon restart until
+            // the next user message.
+            let mut write_guard = lock_state(state);
+            cache_last_request(&mut write_guard, character, req.clone());
+            drop(write_guard);
+            req
         }
     };
 
@@ -1814,8 +1867,6 @@ async fn execute_heartbeat_tick(
     // routing/dedup and cause unexpected cache misses.
     request.rid = None;
     request.forensic_character = Some(character.to_owned());
-
-    let Some(lc) = loaded_config else { return };
 
     let _ignored = apply_heartbeat_model_override(&mut request, lc, character);
 
@@ -1880,11 +1931,81 @@ async fn execute_heartbeat_tick(
     // This prevents cache prefix invalidation. Instructions for using
     // set_next_wake are in the heartbeat prompt.
 
-    let inner_ctx = build_tool_context(character, data_dir, client, lc);
-    let tool_ctx = Arc::new(HeartbeatToolContext {
-        inner: inner_ctx,
-        state: Arc::clone(state),
-    });
+    Some(request)
+}
+
+/// Round/time budget for the heartbeat tool loop.
+struct HeartbeatLoopBudget {
+    max_normal_iterations: u32,
+    wrap_up_grace: u32,
+    loop_deadline: std::time::Instant,
+}
+
+/// Decide whether the heartbeat tool loop should stop at the start of an
+/// iteration. On first exhaustion (normal round cap or soft deadline) it
+/// appends a one-round wrap-up nudge; a deadline tripped during the grace
+/// round — or no grace configured — ends the loop. Returns `true` to break.
+fn heartbeat_budget_break(
+    character: &str,
+    state: &Arc<Mutex<AutonomyState>>,
+    request: &mut LlmRequest,
+    budget: &HeartbeatLoopBudget,
+    iteration: u32,
+    wrap_up_nudged: &mut bool,
+) -> bool {
+    let deadline_reached = std::time::Instant::now() >= budget.loop_deadline;
+    let normal_cap_reached = iteration >= budget.max_normal_iterations;
+
+    if (deadline_reached || normal_cap_reached) && !*wrap_up_nudged {
+        if budget.wrap_up_grace == 0 {
+            warn!(
+                character,
+                iteration,
+                deadline_reached,
+                normal_cap_reached,
+                "Heartbeat: tool budget reached, no wrap-up grace configured"
+            );
+            return true;
+        }
+        warn!(
+            character,
+            iteration,
+            deadline_reached,
+            normal_cap_reached,
+            wrap_up_grace = budget.wrap_up_grace,
+            "Heartbeat: tool budget reached, nudging wrap-up"
+        );
+        append_wrap_up_nudge(request);
+        *wrap_up_nudged = true;
+        let mut s = lock_state(state);
+        s.heartbeat_log.push(
+            HeartbeatEventKind::ToolUse,
+            "Wrap-up nudge: budget reached, model asked to summarize".to_owned(),
+        );
+    } else if deadline_reached && *wrap_up_nudged {
+        warn!(
+            character,
+            iteration, "Heartbeat: deadline tripped during wrap-up grace, breaking"
+        );
+        return true;
+    } else {
+        // Budget intact (or wrap-up grace still running): continue the loop.
+    }
+    false
+}
+
+/// Run the heartbeat tool loop: repeated non-streaming `generate()` calls with
+/// tool dispatch, a soft deadline, and a wrap-up grace window. Tool-loop
+/// messages are appended to `request` ephemerally. Returns the last-wins
+/// `<sendMessage>` text (if any) and whether any LLM call warmed the cache.
+async fn run_heartbeat_tool_loop(
+    character: &str,
+    state: &Arc<Mutex<AutonomyState>>,
+    request: &mut LlmRequest,
+    client: &LedgerClient,
+    lc: &LoadedConfig,
+    tool_ctx: &Arc<HeartbeatToolContext>,
+) -> (Option<String>, bool) {
     let max_normal_iterations = lc.app.behavior.autonomy.heartbeat.max_tool_rounds;
     let wrap_up_grace = lc.app.behavior.autonomy.heartbeat.wrap_up_grace_rounds;
     let total_iterations = max_normal_iterations.saturating_add(wrap_up_grace);
@@ -1901,51 +2022,25 @@ async fn execute_heartbeat_tick(
     let mut cache_warmed = false;
 
     let loop_start = std::time::Instant::now();
-    let loop_deadline = loop_start
-        .checked_add(HEARTBEAT_LOOP_DEADLINE)
-        .unwrap_or(loop_start);
+    let budget = HeartbeatLoopBudget {
+        max_normal_iterations,
+        wrap_up_grace,
+        loop_deadline: loop_start
+            .checked_add(HEARTBEAT_LOOP_DEADLINE)
+            .unwrap_or(loop_start),
+    };
     let mut wrap_up_nudged = false;
 
     for iteration in 0..total_iterations {
-        let deadline_reached = std::time::Instant::now() >= loop_deadline;
-        let normal_cap_reached = iteration >= max_normal_iterations;
-
-        if (deadline_reached || normal_cap_reached) && !wrap_up_nudged {
-            if wrap_up_grace == 0 {
-                warn!(
-                    character,
-                    iteration,
-                    deadline_reached,
-                    normal_cap_reached,
-                    "Heartbeat: tool budget reached, no wrap-up grace configured"
-                );
-                break;
-            }
-            warn!(
-                character,
-                iteration,
-                deadline_reached,
-                normal_cap_reached,
-                wrap_up_grace,
-                "Heartbeat: tool budget reached, nudging wrap-up"
-            );
-            append_wrap_up_nudge(&mut request);
-            wrap_up_nudged = true;
-            {
-                let mut s = lock_state(state);
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::ToolUse,
-                    "Wrap-up nudge: budget reached, model asked to summarize".to_owned(),
-                );
-            }
-        } else if deadline_reached && wrap_up_nudged {
-            warn!(
-                character,
-                iteration, "Heartbeat: deadline tripped during wrap-up grace, breaking"
-            );
+        if heartbeat_budget_break(
+            character,
+            state,
+            request,
+            &budget,
+            iteration,
+            &mut wrap_up_nudged,
+        ) {
             break;
-        } else {
-            // Budget intact (or wrap-up grace still running): continue the loop.
         }
 
         let call_type = if iteration == 0 {
@@ -1955,7 +2050,7 @@ async fn execute_heartbeat_tick(
         };
 
         let (resp, fallback_events) = match client
-            .generate_with_config_fallback(&mut request, lc, call_type, character, false)
+            .generate_with_config_fallback(request, lc, call_type, character, false)
             .await
         {
             Ok(r) => r,
@@ -2024,73 +2119,91 @@ async fn execute_heartbeat_tick(
             break;
         }
 
-        // Dispatch each tool, collect results.
-        let mut tool_results: Vec<Value> = Vec::new();
-
-        for (id, name, input) in &tool_uses {
-            let input_str = serde_json::to_string(input).unwrap_or_default();
-            info!(
-                character,
-                iteration,
-                tool = %name, tool_id = %id,
-                input = %truncate_summary(&input_str, 200),
-                "Heartbeat: executing tool"
-            );
-
-            // Intercept set_next_wake — handled inline, not dispatched.
-            let (output_str, is_error) = if name.as_str() == "set_next_wake" {
-                crate::content_util::dispatch_result_to_output(Ok(schedule_next_wake_in_state(
-                    state.as_ref(),
-                    input,
-                )))
-            } else {
-                crate::content_util::dispatch_result_to_output(
-                    tool_system::dispatch_tool(name, input.clone(), tool_ctx.as_ref()).await,
-                )
-            };
-
-            info!(
-                character,
-                iteration,
-                tool = %name, is_error,
-                output = %truncate_summary(&output_str, 200),
-                "Heartbeat: tool result"
-            );
-
-            tool_results.push(crate::content_util::build_tool_result_json(
-                id,
-                &output_str,
-                is_error,
-            ));
-
-            // Log to ring buffer (skip set_next_wake — already logged above).
-            if name.as_str() != "set_next_wake" {
-                let mut s = lock_state(state);
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::ToolUse,
-                    format!("Tool: {name} → {}", truncate_summary(&output_str, 80)),
-                );
-            }
-        }
-
-        // Append tool results as user message.
+        // Dispatch each tool, then append the results as a user message.
+        let tool_results =
+            dispatch_heartbeat_tools(character, state, iteration, &tool_uses, tool_ctx).await;
         request.messages.push(json!({
             "role": "user",
             "content": tool_results,
         }));
     }
 
-    // -- Cache warmed: the tick itself was a cache-warming LLM call -----------
-    if cache_warmed {
-        let mut s = lock_state(state);
-        s.cache_keepalive.on_cache_warmed(Instant::now());
-        // Mirror schedule to keepalive (character may have called set_next_wake).
-        if let Some(wake) = s.heartbeat.next_wake() {
-            s.cache_keepalive.set_next_wake(Some(wake));
+    (send_message_text, cache_warmed)
+}
+
+/// Dispatch every tool call from one heartbeat iteration and collect the
+/// `tool_result` JSON blocks. `set_next_wake` is intercepted and applied to
+/// state inline rather than routed through the tool system.
+async fn dispatch_heartbeat_tools(
+    character: &str,
+    state: &Arc<Mutex<AutonomyState>>,
+    iteration: u32,
+    tool_uses: &[(String, String, Value)],
+    tool_ctx: &Arc<HeartbeatToolContext>,
+) -> Vec<Value> {
+    let mut tool_results: Vec<Value> = Vec::new();
+
+    for (id, name, input) in tool_uses {
+        let input_str = serde_json::to_string(input).unwrap_or_default();
+        info!(
+            character,
+            iteration,
+            tool = %name, tool_id = %id,
+            input = %truncate_summary(&input_str, 200),
+            "Heartbeat: executing tool"
+        );
+
+        // Intercept set_next_wake — handled inline, not dispatched.
+        let (output_str, is_error) = if name.as_str() == "set_next_wake" {
+            crate::content_util::dispatch_result_to_output(Ok(schedule_next_wake_in_state(
+                state.as_ref(),
+                input,
+            )))
+        } else {
+            crate::content_util::dispatch_result_to_output(
+                tool_system::dispatch_tool(name, input.clone(), tool_ctx.as_ref()).await,
+            )
+        };
+
+        info!(
+            character,
+            iteration,
+            tool = %name, is_error,
+            output = %truncate_summary(&output_str, 200),
+            "Heartbeat: tool result"
+        );
+
+        tool_results.push(crate::content_util::build_tool_result_json(
+            id,
+            &output_str,
+            is_error,
+        ));
+
+        // Log to ring buffer (skip set_next_wake — already logged above).
+        if name.as_str() != "set_next_wake" {
+            let mut s = lock_state(state);
+            s.heartbeat_log.push(
+                HeartbeatEventKind::ToolUse,
+                format!("Tool: {name} → {}", truncate_summary(&output_str, 80)),
+            );
         }
     }
 
-    // -- Persist <sendMessage> if present --------------------------------------
+    tool_results
+}
+
+/// Persist a heartbeat tick's `<sendMessage>` output (if any) to the engine and
+/// notify clients, or record a skip in the ring buffer when the tick produced
+/// no message.
+async fn persist_heartbeat_message(
+    character: &str,
+    state: &Arc<Mutex<AutonomyState>>,
+    registry: Option<&Arc<tokio::sync::Mutex<CharacterRegistry>>>,
+    push_tx: Option<&broadcast::Sender<ServerMessage>>,
+    notifier: Option<&NotificationService>,
+    request: &LlmRequest,
+    send_message_text: Option<String>,
+) {
     if let Some(user_msg) = send_message_text {
         info!(character, msg = %truncate_summary(&user_msg, 200), "Heartbeat: sending message to user");
 
