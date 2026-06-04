@@ -669,12 +669,24 @@ The hybrid index is rebuildable and non-authoritative.
 
 ```toml
 [memory.thinking]
-replay_prior_thinking = true
+replay_prior_thinking = "all"
 ```
 
-Default `true` keeps prior-turn thinking/redacted-thinking blocks in outgoing requests. Set `false` to strip them and save the tokens they consume on each subsequent turn — only safe with providers that don't depend on prior-turn thinking (e.g. Anthropic Claude 4.x). DeepSeek V3.1+ and Moonshot Kimi-thinking reject requests that omit prior `reasoning_content` while in thinking mode and ignore the user setting. In-progress tool-loop thinking is always preserved.
+Tri-state control over how much prior-turn thinking/redacted-thinking is replayed in outgoing requests:
 
-This value is the **global fallback**. The quality effect is model-dependent — for example Claude Opus 4.8 is reproducibly better with it OFF, while minimax-m3 / glm-5.1 want it ON — so it can be overridden **per model** through the preference overlay (`shore model setting replay_prior_thinking <bool>` / `:setting replay_prior_thinking <bool>`, the same path as `reasoning_effort` etc.). An unset per-model value inherits this global default; there is no auto-promotion in either direction. The DeepSeek/Kimi reasoning-replay floor is enforced regardless of either setting.
+| value | behavior |
+|-------|----------|
+| `all` (default) | keep every prior turn's thinking |
+| `last_turn` | keep only the most-recent assistant turn's thinking; strip older turns |
+| `none` | strip all prior-turn thinking |
+
+`all` and `none` are the historical behaviors; the legacy bool form still parses (`true` → `all`, `false` → `none`), so existing configs keep working unchanged.
+
+`last_turn` is a middle ground: Anthropic models tend to stop producing thinking once the immediately-preceding assistant turn has none, so keeping just the last turn's thinking keeps the model reasoning while shedding most of the token cost that `all` carries forever (older thinking blocks dwarf the surrounding text). The kept turn loses its thinking on the *next* request (a moving boundary), but this was measured to be cache-safe: Anthropic's prompt cache reads the longest matching prefix and writes incrementally, so the default breakpoint schedule re-reads the stable prefix and only re-creates the changed tail — no extra breakpoint placement is needed (#191).
+
+Stripping is only safe with providers that don't depend on prior-turn thinking (e.g. Anthropic Claude 4.x). DeepSeek V3.1+ and Moonshot Kimi-thinking reject requests that omit prior `reasoning_content` while in thinking mode, so their reasoning-replay floor forces full replay regardless of this setting. In-progress tool-loop thinking is always preserved.
+
+This value is the **global fallback**. The quality effect is model-dependent — for example Claude Opus 4.8 is reproducibly better with less prior thinking, while minimax-m3 / glm-5.1 want it all — so it can be overridden **per model** through the preference overlay (`shore model setting replay_prior_thinking <all|last_turn|none>` / `:setting replay_prior_thinking <…>`, the same path as `reasoning_effort` etc.). An unset per-model value inherits this global default; there is no auto-promotion in either direction.
 
 ## `[notifications]`
 

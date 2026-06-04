@@ -3312,7 +3312,7 @@ api_key_env = "{api_key_env}"
 
         let mut app = shore_config::app::AppConfig::default();
         app.behavior.tool_use.enabled = false;
-        app.memory.thinking.replay_prior_thinking = false;
+        app.memory.thinking.replay_prior_thinking = shore_config::app::ThinkingReplay::None;
         let config = LoadedConfig::new_for_test(
             app,
             catalog,

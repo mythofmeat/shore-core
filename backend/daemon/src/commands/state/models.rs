@@ -634,7 +634,7 @@ fn apply_sampler_value(
             };
         }
         "replay_prior_thinking" => {
-            sampler.replay_prior_thinking = parse_bool_value(value, "replay_prior_thinking")?;
+            sampler.replay_prior_thinking = parse_thinking_replay_value(value)?;
         }
         _ => return apply_vendor_sampler_value(sampler, key, value),
     }
@@ -720,6 +720,39 @@ fn parse_bool_value(value: &Value, name: &str) -> Result<Option<bool>, (ErrorCod
         (
             ErrorCode::InvalidRequest,
             format!("{name} must be a boolean, got {value}"),
+        )
+    })
+}
+
+/// Parse the tri-state `replay_prior_thinking` value (#191): `null` clears the
+/// override; the string form (`all` | `last_turn` | `none`) and the legacy
+/// bool (`true` → all, `false` → none) are both accepted.
+fn parse_thinking_replay_value(
+    value: &Value,
+) -> Result<Option<shore_config::app::ThinkingReplay>, (ErrorCode, String)> {
+    use shore_config::app::ThinkingReplay;
+    if value.is_null() {
+        return Ok(None);
+    }
+    if let Some(b) = value.as_bool() {
+        return Ok(Some(if b {
+            ThinkingReplay::All
+        } else {
+            ThinkingReplay::None
+        }));
+    }
+    let s = value.as_str().ok_or_else(|| {
+        (
+            ErrorCode::InvalidRequest,
+            format!(
+                "replay_prior_thinking must be \"all\", \"last_turn\", or \"none\"; got {value}"
+            ),
+        )
+    })?;
+    ThinkingReplay::parse_wire(s).map(Some).ok_or_else(|| {
+        (
+            ErrorCode::InvalidRequest,
+            format!("replay_prior_thinking must be \"all\", \"last_turn\", or \"none\"; got {s:?}"),
         )
     })
 }

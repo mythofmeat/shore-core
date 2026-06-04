@@ -608,7 +608,10 @@ complete -c shore -n \"__fish_shore_using_subcommand provider; and __fish_seen_s
 ///   sentinel "off"; the daemon's overlay then explicitly suppresses
 ///   `reasoning_effort` on the resolved model. JSON null is reserved
 ///   for *clearing* a saved preference (handled by `unset` flows).
-/// - `replay_prior_thinking`: parse "true"/"false"/"yes"/"no"/"on"/"off".
+/// - `replay_prior_thinking`: tri-state (#191). The strings
+///   "all"/"last_turn"/"none" pass through verbatim; the legacy bool words
+///   "true"/"yes"/"on" (→ all) and "false"/"no"/"off" (→ none) still coerce to
+///   a bool the daemon maps for back-compat.
 /// - `temperature`, `top_p`: parse as f64.
 /// - `budget_tokens`, `max_output_tokens`: parse as integer.
 /// - `cache_ttl`: pass through as a string.

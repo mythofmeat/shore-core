@@ -563,19 +563,93 @@ impl Default for DreamingConfig {
     }
 }
 
-serde_default!(default_replay_prior_thinking -> bool { true });
+serde_default!(default_replay_prior_thinking -> ThinkingReplay { ThinkingReplay::All });
+
+/// Tri-state control for replaying prior-turn extended-thinking blocks in
+/// outgoing requests (#191).
+///
+/// Back-compat: prior releases stored a bool, so deserialization accepts one —
+/// `true` → [`ThinkingReplay::All`], `false` → [`ThinkingReplay::None`] — and
+/// existing `replay_prior_thinking = true/false` configs keep working
+/// unchanged. New configs use the string form.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingReplay {
+    /// Replay every prior turn's thinking (legacy `true`).
+    All,
+    /// Keep only the most-recent assistant turn's thinking; strip older turns.
+    /// A middle ground: keeps the in-context cue that stops Claude from
+    /// imitating a no-thinking last turn, while shedding the bulk of the
+    /// token cost that `All` carries forever.
+    LastTurn,
+    /// Strip all prior-turn thinking (legacy `false`).
+    None,
+}
+
+impl ThinkingReplay {
+    /// Parse a wire string (`all` | `last_turn` | `none`), tolerating the
+    /// legacy stringy bools `true`/`false`. Returns `None` for anything else.
+    pub fn parse_wire(s: &str) -> Option<Self> {
+        match s {
+            "all" | "true" => Some(Self::All),
+            "last_turn" => Some(Self::LastTurn),
+            "none" | "false" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    /// Canonical wire string (`all` | `last_turn` | `none`).
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::LastTurn => "last_turn",
+            Self::None => "none",
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ThinkingReplay {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Accept either the legacy bool or the new string form.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum BoolOrStr {
+            Bool(bool),
+            Str(String),
+        }
+        match BoolOrStr::deserialize(deserializer)? {
+            BoolOrStr::Bool(true) => Ok(Self::All),
+            BoolOrStr::Bool(false) => Ok(Self::None),
+            BoolOrStr::Str(s) => Self::parse_wire(&s).ok_or_else(|| {
+                serde::de::Error::custom(format!(
+                    "invalid replay_prior_thinking {s:?}; expected \"all\", \"last_turn\", \"none\" (or legacy true/false)"
+                ))
+            }),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ThinkingConfig {
-    /// Preserve extended-thinking blocks from prior turns in outgoing
-    /// requests. Default `true`: thinking / redacted_thinking blocks are
-    /// kept in history. Set `false` to strip them and save the tokens
-    /// they consume on each subsequent turn — only safe with providers
-    /// that don't depend on prior-turn thinking (e.g. Anthropic Claude
-    /// 4.x). DeepSeek V3.1+ and Moonshot Kimi-thinking reject requests
-    /// that omit prior `reasoning_content` while in thinking mode, and
-    /// model performance is generally better when thinking is preserved.
+    /// Replay extended-thinking blocks from prior turns in outgoing requests.
+    /// Tri-state (#191):
+    ///
+    /// - `all` (default; legacy `true`): keep every prior turn's thinking.
+    /// - `last_turn`: keep only the most-recent assistant turn's thinking and
+    ///   strip older turns — recovers most of the token savings of `none`
+    ///   while keeping the model reasoning.
+    /// - `none` (legacy `false`): strip all prior-turn thinking. Only safe with
+    ///   providers that don't depend on prior-turn thinking (e.g. Anthropic
+    ///   Claude 4.x).
+    ///
+    /// DeepSeek V3.1+ and Moonshot Kimi-thinking reject requests that omit
+    /// prior `reasoning_content` while in thinking mode, so the
+    /// `requires_reasoning_replay` provider floor forces full replay for them
+    /// regardless of this setting.
     ///
     /// This is the **global fallback**. The quality effect is
     /// model-dependent (issue #129), so it can be overridden per model via
@@ -583,7 +657,7 @@ pub struct ThinkingConfig {
     /// → `ResolvedModel::replay_prior_thinking`); an unset per-model value
     /// inherits this default.
     #[serde(default = "default_replay_prior_thinking")]
-    pub replay_prior_thinking: bool,
+    pub replay_prior_thinking: ThinkingReplay,
 }
 
 impl Default for ThinkingConfig {

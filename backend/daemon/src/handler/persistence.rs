@@ -41,7 +41,7 @@ pub(super) async fn persist_and_notify(
     request: &shore_llm::types::LlmRequest,
     tool_intermediate_messages: Vec<Message>,
     wall_clock_start: Instant,
-    replay_prior_thinking: bool,
+    replay_prior_thinking: shore_config::app::ThinkingReplay,
     regen_alt: Option<PendingAlt>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     record_completion_diagnostics(ctx, result, request, resolved);

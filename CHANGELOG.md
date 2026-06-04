@@ -8,6 +8,21 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **Tri-state `replay_prior_thinking`** (`[memory.thinking]`, issue #191). The
+  setting gains a `last_turn` mode alongside the existing behaviors, now named
+  `all` / `last_turn` / `none`: `last_turn` keeps only the most-recent assistant
+  turn's extended-thinking and strips older turns, recovering most of `none`'s
+  token savings while keeping Anthropic models reasoning (they tend to stop
+  producing thinking when the preceding turn has none). The legacy bool form
+  still deserializes (`true` → `all`, `false` → `none`), so existing configs and
+  `shore model setting replay_prior_thinking true/false` keep working; the new
+  values are accepted as strings. `last_turn`'s moving thinking boundary was
+  measured against the live Anthropic cache and found cache-safe — the default
+  breakpoint schedule already re-reads the stable prefix and re-creates only the
+  changed tail, so no breakpoint-placement change was needed (#191).
+  **Behavior change:** `shore model …`'s `effective_sampler.replay_prior_thinking`
+  is now reported as a string (`"all"` / `"last_turn"` / `"none"`) rather than a
+  bool.
 - **Default discovery base URL for the `zai` provider** (`https://api.z.ai/api/paas/v4`).
   `[providers.zai]` with `discovery.enabled = true` no longer needs an explicit
   `base_url` — model discovery now works out of the box, matching the other
