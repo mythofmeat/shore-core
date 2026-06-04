@@ -75,12 +75,12 @@ pub struct UsageBudgetWarningEvent {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct BudgetCallContext<'a> {
-    pub provider: &'a str,
-    pub api_key_name: Option<&'a str>,
-    pub model: &'a str,
+pub struct BudgetCallContext<'ctx> {
+    pub provider: &'ctx str,
+    pub api_key_name: Option<&'ctx str>,
+    pub model: &'ctx str,
     pub call_type: CallType,
-    pub character: &'a str,
+    pub character: &'ctx str,
 }
 
 #[derive(Debug, Clone)]

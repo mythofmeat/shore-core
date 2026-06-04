@@ -573,7 +573,7 @@ async fn graceful_shutdown(child: &mut tokio::process::Child, grace: Duration) {
 /// is the 1-indexed consecutive failure count.
 fn backoff(failures: u32) -> Duration {
     let shift = failures.saturating_sub(1).min(5);
-    Duration::from_secs(1u64 << shift)
+    Duration::from_secs(1_u64 << shift)
 }
 
 fn matrix_log_filter() -> String {

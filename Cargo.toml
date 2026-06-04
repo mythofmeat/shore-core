@@ -125,6 +125,20 @@ cast_possible_truncation = "warn"
 cast_sign_loss = "warn"
 cast_possible_wrap = "warn"
 
+# Import & literal hygiene ratchet (#154). Same belt-and-suspenders pattern as
+# the blocks above: `warn` here so a newly-added or un-locked crate inherits the
+# baseline automatically (CI's `-D warnings` keeps it hard), while each cleaned
+# crate escalates these to `deny` via its crate-root `#![deny(...)]`. All make
+# provenance/literals greppable; `wildcard_imports` rides in via `pedantic`
+# already but is named explicitly so the deny locks can list it. The cluster's
+# fourth proposed lint, `semicolon_outside_block`, is intentionally omitted: it
+# is mutually exclusive with `semicolon_if_nothing_returned` (enforced via
+# `pedantic` and already clean), and no source form satisfies both on a bare
+# scope block.
+wildcard_imports = "warn"
+unseparated_literal_suffix = "warn"
+single_char_lifetime_names = "warn"
+
 # Low-noise Tier 2 lints (#115) that are clean workspace-wide.
 clone_on_ref_ptr = "warn"
 dbg_macro = "warn"

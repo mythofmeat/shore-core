@@ -616,8 +616,8 @@ async fn test_no_early_ping() {
     // Check at 10, 20, 30, 40, 50, and 54 minutes — no ping should fire.
     // Use incremental advances (not absolute), since tokio::time::advance
     // is cumulative.
-    let checkpoints = [10u64, 20, 30, 40, 50, 54];
-    let mut prev = 0u64;
+    let checkpoints = [10_u64, 20, 30, 40, 50, 54];
+    let mut prev = 0_u64;
     for &check_min in &checkpoints {
         let delta = check_min - prev;
         tokio::time::advance(Duration::from_secs(delta * 60)).await;

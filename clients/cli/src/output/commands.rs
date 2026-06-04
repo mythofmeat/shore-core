@@ -593,10 +593,10 @@ fn print_model_info(data: &serde_json::Value) {
 /// `"honored"` or `"always"`, or when no label is present — older daemons omit
 /// the `applicability` map, in which case every key is shown (forward/backward
 /// compatible).
-fn visible_setting_keys<'a>(
-    all_keys: &[&'a str],
+fn visible_setting_keys<'src>(
+    all_keys: &[&'src str],
     applicability: &serde_json::Value,
-) -> Vec<&'a str> {
+) -> Vec<&'src str> {
     all_keys
         .iter()
         .copied()
@@ -611,8 +611,8 @@ fn visible_setting_keys<'a>(
 
 /// One rendered row of `print_model_settings`, collected before drawing so the
 /// value and scope columns can be width-aligned.
-struct SettingRow<'a> {
-    key: &'a str,
+struct SettingRow<'key> {
+    key: &'key str,
     value: String,
     scope: String,
     domain: Option<String>,
@@ -1642,10 +1642,10 @@ fn write_usage_summary_table(out: &mut impl Write, data: &serde_json::Value) -> 
 
     let total_w = [provider_w, 1, model_w, 1, 5, 2, 9, 2, 9, 2, 9, 2, 9, 2, 8]
         .into_iter()
-        .fold(0usize, usize::saturating_add);
+        .fold(0_usize, usize::saturating_add);
     writeln!(out, "{}", "-".repeat(total_w))?;
 
-    let mut grand_total = 0.0f64;
+    let mut grand_total = 0.0_f64;
     if let Some(rows) = summary {
         for s in rows {
             let cost_str = s["total_cost"].as_f64().map_or_else(
@@ -1711,7 +1711,7 @@ pub(crate) fn print_usage(data: &serde_json::Value) {
             );
             cli_out!("{}", "-".repeat(78));
             let summary = data["summary"].as_array();
-            let mut grand_total = 0.0f64;
+            let mut grand_total = 0.0_f64;
             if let Some(rows) = summary {
                 for s in rows {
                     let cost_str = s["total_cost"].as_f64().map_or_else(
@@ -1755,7 +1755,7 @@ pub(crate) fn print_usage(data: &serde_json::Value) {
             );
             cli_out!("{}", "-".repeat(80));
             let summary = data["summary"].as_array();
-            let mut grand_total = 0.0f64;
+            let mut grand_total = 0.0_f64;
             if let Some(rows) = summary {
                 for s in rows {
                     let cost_str = s["total_cost"].as_f64().map_or_else(
@@ -1800,7 +1800,7 @@ pub(crate) fn print_usage(data: &serde_json::Value) {
             );
             cli_out!("{}", "-".repeat(102));
             let summary = data["summary"].as_array();
-            let mut grand_total = 0.0f64;
+            let mut grand_total = 0.0_f64;
             if let Some(rows) = summary {
                 for s in rows {
                     let cost_str = s["total_cost"].as_f64().map_or_else(
@@ -2135,7 +2135,7 @@ mod tests {
     use super::*;
     use crate::output::set_color_enabled;
 
-    fn line<'a>(lines: &'a [&str], index: usize) -> &'a str {
+    fn line<'src>(lines: &'src [&str], index: usize) -> &'src str {
         lines.get(index).copied().expect("expected rendered line")
     }
 

@@ -503,9 +503,12 @@ also locks ref-counted pointer clone style, single-variant wildcard matches,
 undocumented unsafe blocks, one unsafe op per `unsafe {}` block, assert
 messages, `unsafe_code`, elided lifetimes in paths, unused qualifications,
 missing `Debug` implementations, and unreachable `pub` items.
-String discipline is locked too: `string_slice` bans `&s[i..j]` (a panic class
-on non-char-boundary byte indices) and `str_to_string` prefers `.to_owned()`
-over `.to_string()` on `&str`. Suppressions must use
+Import and literal hygiene is locked too: no wildcard imports (`use foo::*`),
+separated numeric-literal suffixes (`1_u64`, not `1u64`), and descriptive
+(non-single-char) lifetime names. String discipline is locked too:
+`string_slice` bans `&s[i..j]` (a panic class on non-char-boundary byte
+indices) and `str_to_string` prefers `.to_owned()` over `.to_string()` on
+`&str`. Suppressions must use
 `#[expect(..., reason = "...")]`.
 
 Before a release, also run relevant cache tests, live provider smoke tests if

@@ -438,7 +438,7 @@ pub fn handle_search_history(input: &Value, ctx: &dyn ToolContext) -> Result<Val
     let character_dir = PathBuf::from(character_data_dir);
 
     let mut candidates: Vec<ScoredCandidate> = Vec::new();
-    let mut searched_messages = 0usize;
+    let mut searched_messages = 0_usize;
     let mut stats = SearchStats::default();
 
     // Scan the entire corpus so ranking sees every match and `searched_messages`

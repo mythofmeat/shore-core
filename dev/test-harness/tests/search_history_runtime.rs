@@ -87,7 +87,7 @@ fn tool_result_for(harness: &TestHarness, query: &str) -> TestResult<Value> {
     found.ok_or_else(|| test_error(format!("no tool_result found for query {query:?}")))
 }
 
-fn results_array<'a>(result: &'a Value, label: &str) -> TestResult<&'a [Value]> {
+fn results_array<'val>(result: &'val Value, label: &str) -> TestResult<&'val [Value]> {
     result["results"]
         .as_array()
         .map(Vec::as_slice)

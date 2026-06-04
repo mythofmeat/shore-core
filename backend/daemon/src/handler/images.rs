@@ -268,7 +268,7 @@ mod tests {
     fn make_noisy_jpeg(width: u32, height: u32) -> Vec<u8> {
         let len =
             usize::try_from(width.saturating_mul(height).saturating_mul(3)).unwrap_or(usize::MAX);
-        let mut pixels = vec![0u8; len];
+        let mut pixels = vec![0_u8; len];
         // Simple LCG to fill with pseudo-random values without pulling in rand.
         let mut state: u64 = 0xdead_beef_cafe_babe;
         for byte in &mut pixels {
@@ -440,7 +440,7 @@ mod tests {
     fn make_noisy_png(width: u32, height: u32) -> Vec<u8> {
         let len =
             usize::try_from(width.saturating_mul(height).saturating_mul(3)).unwrap_or(usize::MAX);
-        let mut pixels = vec![0u8; len];
+        let mut pixels = vec![0_u8; len];
         let mut state: u64 = 0xcafe_f00d_1234_5678;
         for byte in &mut pixels {
             state = state

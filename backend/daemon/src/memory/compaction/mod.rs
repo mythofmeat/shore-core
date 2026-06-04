@@ -87,7 +87,7 @@ impl CompactionManager {
         if keep_turns == 0 {
             return messages.len();
         }
-        let mut turns_seen = 0usize;
+        let mut turns_seen = 0_usize;
         for (i, msg) in messages.iter().enumerate().rev() {
             if msg.role == "user" && !Self::is_tool_loop_message(msg) {
                 turns_seen = turns_seen.saturating_add(1);
@@ -1109,10 +1109,10 @@ mod tests {
             Ok(request)
         }
 
-        fn generate<'a>(
-            &'a self,
-            _request: &'a mut LlmRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<GenerateResponse, CompactionError>> + Send + 'a>>
+        fn generate<'src>(
+            &'src self,
+            _request: &'src mut LlmRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<GenerateResponse, CompactionError>> + Send + 'src>>
         {
             let next = {
                 let mut guard = self.responses.lock().unwrap();

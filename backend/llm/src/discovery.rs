@@ -500,7 +500,7 @@ mod tests {
         models.get(index).expect("discovered model")
     }
 
-    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+    fn field<'val>(value: &'val serde_json::Value, key: &str) -> &'val serde_json::Value {
         value
             .get(key)
             .unwrap_or_else(|| panic!("missing field {key}"))

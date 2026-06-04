@@ -56,7 +56,7 @@ fn ping_interval() -> Duration {
 
 fn retry_delay(failure_count: u32) -> Duration {
     let exponent = failure_count.saturating_sub(1).min(5);
-    let secs = 30u64.saturating_mul(1u64 << exponent);
+    let secs = 30_u64.saturating_mul(1_u64 << exponent);
     Duration::from_secs(secs.min(15 * 60))
 }
 

@@ -869,7 +869,7 @@ async fn mock_sse_server(sse_body: String) -> (String, tokio::task::JoinHandle<(
     let handle = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let (mut reader, mut writer) = stream.split();
-        let mut buf = vec![0u8; 16384];
+        let mut buf = vec![0_u8; 16384];
         #[expect(
             clippy::let_underscore_must_use,
             reason = "probe read drains the socket; result intentionally ignored"

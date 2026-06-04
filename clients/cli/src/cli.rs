@@ -974,7 +974,7 @@ mod tests {
         Cli::parse_from(full)
     }
 
-    fn arg<'a>(args: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+    fn arg<'val>(args: &'val serde_json::Value, key: &str) -> &'val serde_json::Value {
         args.get(key).expect("expected command argument")
     }
 

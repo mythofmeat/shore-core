@@ -575,11 +575,11 @@ pub fn save_global_preferences(
 /// find a matching entry. Returns `None` if no static entry matches —
 /// discovered-model lookups go through
 /// [`resolve_active_for_character`] / [`crate::effective_catalog`].
-pub fn find_static_model<'a>(
-    catalog: &'a shore_config::models::ModelCatalog,
+pub fn find_static_model<'cat>(
+    catalog: &'cat shore_config::models::ModelCatalog,
     provider: &str,
     model_id: &str,
-) -> Option<&'a shore_config::models::ResolvedModel> {
+) -> Option<&'cat shore_config::models::ResolvedModel> {
     catalog
         .chat
         .values()

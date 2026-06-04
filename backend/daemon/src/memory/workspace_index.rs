@@ -157,7 +157,7 @@ pub async fn hybrid_search(
     let model_id = embedder.model_id().to_owned();
 
     let mut candidates = enumerate_files(workspace_dir, retrieval_config).await;
-    let mut skipped_binary_or_large = 0usize;
+    let mut skipped_binary_or_large = 0_usize;
     let mut index_dirty = false;
 
     // Drop entries whose files vanished or now live outside the walk.
@@ -523,11 +523,11 @@ async fn embed_documents(
     docs: &[String],
 ) -> Result<Vec<Vec<f32>>, WorkspaceIndexError> {
     let mut vectors = Vec::with_capacity(docs.len());
-    let mut start = 0usize;
+    let mut start = 0_usize;
 
     while start < docs.len() {
         let mut end = start;
-        let mut batch_chars = 0usize;
+        let mut batch_chars = 0_usize;
 
         while end < docs.len() && end.saturating_sub(start) < EMBED_BATCH_MAX_ITEMS {
             let Some(doc) = docs.get(end) else {

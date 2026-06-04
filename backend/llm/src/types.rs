@@ -216,16 +216,16 @@ pub struct StreamResult {
 
 /// Parameters for an image generation request.
 #[derive(Debug, Clone)]
-pub struct ImageGenerateParams<'a> {
-    pub provider_key: &'a str,
-    pub model: &'a str,
-    pub api_key: &'a str,
-    pub base_url: Option<&'a str>,
-    pub prompt: &'a str,
-    pub size: Option<&'a str>,
-    pub quality: Option<&'a str>,
-    pub aspect_ratio: Option<&'a str>,
-    pub image_size: Option<&'a str>,
+pub struct ImageGenerateParams<'val> {
+    pub provider_key: &'val str,
+    pub model: &'val str,
+    pub api_key: &'val str,
+    pub base_url: Option<&'val str>,
+    pub prompt: &'val str,
+    pub size: Option<&'val str>,
+    pub quality: Option<&'val str>,
+    pub aspect_ratio: Option<&'val str>,
+    pub image_size: Option<&'val str>,
 }
 
 /// Response from shore-llm's POST /v1/image/generate endpoint.
@@ -291,7 +291,7 @@ mod tests {
         }};
     }
 
-    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+    fn field<'val>(value: &'val serde_json::Value, key: &str) -> &'val serde_json::Value {
         value.get(key).expect("expected JSON field")
     }
 

@@ -231,11 +231,11 @@ fn apply_default_search_mode(input: &mut Value, ctx: &dyn ToolContext, index_pat
 }
 
 /// Dispatch a tool call by name to its handler.
-pub fn dispatch_tool<'a>(
-    name: &'a str,
+pub fn dispatch_tool<'ctx>(
+    name: &'ctx str,
     input: Value,
-    ctx: &'a dyn ToolContext,
-) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
+    ctx: &'ctx dyn ToolContext,
+) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'ctx>> {
     Box::pin(async move {
         match name {
             "search_history" => history::handle_search_history(&input, ctx),

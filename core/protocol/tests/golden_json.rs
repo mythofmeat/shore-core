@@ -48,7 +48,7 @@ where
     parsed
 }
 
-fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
+fn field<'val>(value: &'val Value, key: &str) -> &'val Value {
     value.get(key).expect("expected JSON field")
 }
 

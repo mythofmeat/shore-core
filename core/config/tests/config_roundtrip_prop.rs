@@ -42,19 +42,19 @@ fn arb_nonempty_text() -> impl Strategy<Value = String> {
 }
 
 fn arb_duration() -> impl Strategy<Value = ConfigDuration> {
-    (0u64..(14 * 24 * 60 * 60 * 1000)).prop_map(ConfigDuration::from_millis)
+    (0_u64..(14 * 24 * 60 * 60 * 1000)).prop_map(ConfigDuration::from_millis)
 }
 
 fn arb_cost() -> impl Strategy<Value = f64> {
-    (0u32..100_000).prop_map(|cents| f64::from(cents) / 100.0)
+    (0_u32..100_000).prop_map(|cents| f64::from(cents) / 100.0)
 }
 
 fn arb_fraction() -> impl Strategy<Value = f64> {
-    (0u32..200).prop_map(|hundredths| f64::from(hundredths) / 100.0)
+    (0_u32..200).prop_map(|hundredths| f64::from(hundredths) / 100.0)
 }
 
 fn arb_decimal(max_tenths: u32) -> impl Strategy<Value = f64> {
-    (0u32..max_tenths).prop_map(|tenths| f64::from(tenths) / 10.0)
+    (0_u32..max_tenths).prop_map(|tenths| f64::from(tenths) / 10.0)
 }
 
 fn arb_sdk() -> impl Strategy<Value = Sdk> {
@@ -70,7 +70,7 @@ fn arb_sdk() -> impl Strategy<Value = Sdk> {
 fn arb_toml_value() -> BoxedStrategy<toml::Value> {
     let leaf = prop_oneof![
         any::<bool>().prop_map(toml::Value::Boolean),
-        (-100_000i64..100_000).prop_map(toml::Value::Integer),
+        (-100_000_i64..100_000).prop_map(toml::Value::Integer),
         arb_decimal(10_000).prop_map(toml::Value::Float),
         arb_text().prop_map(toml::Value::String),
         prop::collection::vec(arb_text().prop_map(toml::Value::String), 0..4)
@@ -89,24 +89,24 @@ fn arb_model_config_fields() -> impl Strategy<Value = ModelConfigFields> {
         prop::option::of(arb_sdk()),
         prop::option::of(arb_nonempty_text()),
         prop::option::of(arb_nonempty_text()),
-        prop::option::of(1u32..1_000_000),
-        prop::option::of(1u32..200_000),
+        prop::option::of(1_u32..1_000_000),
+        prop::option::of(1_u32..200_000),
         prop::option::of(arb_decimal(20)),
         prop::option::of(arb_decimal(10)),
     );
     let reasoning = (
         prop::option::of(arb_nonempty_text()),
-        prop::option::of(1u32..200_000),
+        prop::option::of(1_u32..200_000),
         prop::option::of(arb_nonempty_text()),
         prop::option::of(any::<bool>()),
         prop::option::of(arb_duration()),
-        prop::option::of(0u32..100),
+        prop::option::of(0_u32..100),
         prop::option::of(arb_toml_value()),
     );
     let provider_specific = (
         prop::option::of(arb_nonempty_text()),
         prop::option::of(arb_nonempty_text()),
-        prop::option::of(0u32..3),
+        prop::option::of(0_u32..3),
         prop::option::of(any::<bool>()),
         prop::option::of(any::<bool>()),
         prop::option::of(any::<bool>()),
@@ -267,11 +267,11 @@ fn arb_heartbeat_config() -> impl Strategy<Value = HeartbeatConfig> {
     (
         any::<bool>(),
         arb_duration(),
-        0u32..10,
+        0_u32..10,
         arb_duration(),
         arb_duration(),
-        0u32..40,
-        0u32..20,
+        0_u32..40,
+        0_u32..20,
     )
         .prop_map(
             |(
@@ -307,12 +307,12 @@ fn arb_tool_toggles() -> impl Strategy<Value = ToolToggles> {
 fn arb_tool_use_config() -> impl Strategy<Value = ToolUseConfig> {
     (
         any::<bool>(),
-        0u32..40,
-        0usize..100_000,
+        0_u32..40,
+        0_usize..100_000,
         arb_tool_toggles(),
         (
             arb_nonempty_text(),
-            0u32..25,
+            0_u32..25,
             arb_nonempty_text(),
             any::<bool>(),
         ),
@@ -349,11 +349,11 @@ fn arb_compaction_config() -> impl Strategy<Value = CompactionConfig> {
     (
         any::<bool>(),
         arb_duration(),
-        0usize..100,
-        0usize..200,
-        0usize..500_000,
-        0usize..20,
-        0u32..50,
+        0_usize..100,
+        0_usize..200,
+        0_usize..500_000,
+        0_usize..20,
+        0_u32..50,
     )
         .prop_map(
             |(
@@ -380,7 +380,7 @@ fn arb_dreaming_config() -> impl Strategy<Value = DreamingConfig> {
     (
         any::<bool>(),
         Just("0 3 * * *".to_owned()),
-        0u32..50,
+        0_u32..50,
         arb_duration(),
         arb_duration(),
         any::<bool>(),
@@ -429,10 +429,10 @@ fn arb_memory_config() -> impl Strategy<Value = MemoryConfig> {
         arb_dreaming_config(),
         any::<bool>(),
         arb_retrieval_mode(),
-        0u64..10_000_000,
-        0usize..100_000,
-        0u64..1_000_000_000,
-        0usize..100_000,
+        0_u64..10_000_000,
+        0_usize..100_000,
+        0_u64..1_000_000_000,
+        0_usize..100_000,
         arb_retrieval_binary_mode(),
     )
         .prop_map(
@@ -468,7 +468,7 @@ fn arb_matrix_config() -> impl Strategy<Value = MatrixConfig> {
     let embedded = (
         arb_nonempty_text(),
         arb_nonempty_text(),
-        1u16..9000,
+        1_u16..9000,
         arb_nonempty_text(),
         arb_nonempty_text(),
         prop::option::of(arb_nonempty_text()),
@@ -633,9 +633,9 @@ fn arb_usage_budget_config() -> impl Strategy<Value = UsageBudgetConfig> {
     );
     let resets = (
         prop::option::of(any::<bool>()),
-        prop::option::of(0u32..24),
+        prop::option::of(0_u32..24),
         prop::option::of(arb_budget_weekday()),
-        prop::option::of(1u32..32),
+        prop::option::of(1_u32..32),
     );
 
     (base, filters, resets).prop_map(
@@ -670,7 +670,7 @@ fn arb_usage_config() -> impl Strategy<Value = UsageConfig> {
         prop::collection::vec(arb_usage_budget_config(), 0..2),
         any::<bool>(),
         arb_usage_budget_period(),
-        (10u32..100).prop_map(|tenths| f64::from(tenths) / 10.0),
+        (10_u32..100).prop_map(|tenths| f64::from(tenths) / 10.0),
         arb_cost(),
     )
         .prop_map(
@@ -701,9 +701,9 @@ fn arb_advanced_config() -> impl Strategy<Value = AdvancedConfig> {
         any::<bool>(),
         any::<bool>(),
         prop::option::of(arb_nonempty_text()),
-        prop::option::of(0u32..10),
+        prop::option::of(0_u32..10),
         prop::option::of(arb_duration()),
-        0u64..20_000_000,
+        0_u64..20_000_000,
         arb_llm_sidecar_config(),
     )
         .prop_map(

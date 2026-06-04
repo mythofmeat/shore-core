@@ -133,12 +133,14 @@ impl CompactionLlm for ScriptedCompactionLlm {
         Ok(request)
     }
 
-    fn generate<'a>(
-        &'a self,
-        _request: &'a mut LlmRequest,
+    fn generate<'src>(
+        &'src self,
+        _request: &'src mut LlmRequest,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = Result<GenerateResponse, CompactionError>> + Send + 'a,
+            dyn std::future::Future<Output = Result<GenerateResponse, CompactionError>>
+                + Send
+                + 'src,
         >,
     > {
         let next = {

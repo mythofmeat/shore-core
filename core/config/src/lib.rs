@@ -22,6 +22,9 @@
     clippy::mem_forget,
     clippy::match_wildcard_for_single_variants,
     clippy::wildcard_enum_match_arm,
+    clippy::wildcard_imports,
+    clippy::unseparated_literal_suffix,
+    clippy::single_char_lifetime_names,
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
     clippy::string_slice,
@@ -1018,7 +1021,7 @@ pub fn resolve_prompt_template(
 mod tests {
     use super::*;
 
-    fn table_value<'a>(table: &'a toml::Table, key: &str) -> &'a toml::Value {
+    fn table_value<'val>(table: &'val toml::Table, key: &str) -> &'val toml::Value {
         table.get(key).expect("table key should be present")
     }
 

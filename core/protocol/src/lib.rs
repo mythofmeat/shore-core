@@ -26,6 +26,9 @@
     clippy::mem_forget,
     clippy::match_wildcard_for_single_variants,
     clippy::wildcard_enum_match_arm,
+    clippy::wildcard_imports,
+    clippy::unseparated_literal_suffix,
+    clippy::single_char_lifetime_names,
     clippy::undocumented_unsafe_blocks,
     clippy::multiple_unsafe_ops_per_block,
     clippy::missing_assert_message,
@@ -80,7 +83,7 @@ mod tests {
         (json, back)
     }
 
-    fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+    fn field<'val>(value: &'val serde_json::Value, key: &str) -> &'val serde_json::Value {
         value.get(key).expect("expected JSON field")
     }
 

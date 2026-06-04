@@ -1,10 +1,10 @@
 use std::sync::{Mutex, MutexGuard};
 use tracing::error;
 
-pub(crate) fn lock_or_recover<'a, T>(
+pub(crate) fn lock_or_recover<'lock, T>(
     resource: &'static str,
-    mutex: &'a Mutex<T>,
-) -> MutexGuard<'a, T> {
+    mutex: &'lock Mutex<T>,
+) -> MutexGuard<'lock, T> {
     match mutex.lock() {
         Ok(guard) => guard,
         Err(poisoned) => {

@@ -79,21 +79,21 @@ pub struct AssembledPrompt {
 
 /// Parameters required for prompt assembly.
 #[derive(Debug)]
-pub struct PromptParams<'a> {
+pub struct PromptParams<'prompt> {
     /// Character name.
-    pub character_name: &'a str,
+    pub character_name: &'prompt str,
     /// Resolved display name for the user (from config or $USER).
-    pub display_name: &'a str,
+    pub display_name: &'prompt str,
     /// Active AGENTS.md content, or None to use the built-in default.
-    pub system_prompt: Option<&'a str>,
+    pub system_prompt: Option<&'prompt str>,
     /// Active TOOLS.md guidance.
-    pub tools_guidance: Option<&'a str>,
+    pub tools_guidance: Option<&'prompt str>,
     /// Character definition (from SOUL.md).
-    pub character_definition: Option<&'a str>,
+    pub character_definition: Option<&'prompt str>,
     /// User definition (from USER.md).
-    pub user_definition: Option<&'a str>,
+    pub user_definition: Option<&'prompt str>,
     /// Prompt-visible memory index from workspace/MEMORY.md.
-    pub memory_index: Option<&'a str>,
+    pub memory_index: Option<&'prompt str>,
     /// Whether this is a private conversation.
     pub is_private: bool,
     /// Whether there is conversation history outside of `messages` that the
@@ -103,7 +103,7 @@ pub struct PromptParams<'a> {
     /// a date/time anchor across the cut.
     pub has_prior_context: bool,
     /// Conversation messages (full history).
-    pub messages: &'a [Message],
+    pub messages: &'prompt [Message],
     /// Maximum context tokens (total context window). `None` uses default.
     pub max_context_tokens: Option<u32>,
     /// Maximum output tokens (reserved for response). `None` uses default.

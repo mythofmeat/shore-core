@@ -44,14 +44,14 @@ fn arb_ident() -> impl Strategy<Value = String> {
 }
 
 fn arb_decimal(max_tenths: u32) -> impl Strategy<Value = f64> {
-    (0u32..max_tenths).prop_map(|tenths| f64::from(tenths) / 10.0)
+    (0_u32..max_tenths).prop_map(|tenths| f64::from(tenths) / 10.0)
 }
 
 fn arb_json() -> BoxedStrategy<Value> {
     let leaf = prop_oneof![
         Just(Value::Null),
         any::<bool>().prop_map(Value::Bool),
-        (0i64..10_000).prop_map(|n| Value::Number(n.into())),
+        (0_i64..10_000).prop_map(|n| Value::Number(n.into())),
         arb_small_string().prop_map(Value::String),
     ];
 
@@ -130,8 +130,8 @@ fn arb_message() -> impl Strategy<Value = Message> {
         arb_small_string(),
         prop::collection::vec(arb_image_ref(), 0..2),
         prop::collection::vec(arb_content_block(), 0..4),
-        prop::option::of(0u32..4),
-        prop::option::of(1u32..5),
+        prop::option::of(0_u32..4),
+        prop::option::of(1_u32..5),
         prop::collection::vec(arb_message_alternative(), 0..2),
         prop::option::of(arb_ident()),
         arb_small_string(),
@@ -165,12 +165,12 @@ fn arb_message() -> impl Strategy<Value = Message> {
 
 fn arb_stream_metadata() -> impl Strategy<Value = StreamMetadata> {
     (
-        0u64..100_000,
-        0u64..100_000,
-        0u64..100_000,
-        0u64..100_000,
-        0u32..100_000,
-        0u32..100_000,
+        0_u64..100_000,
+        0_u64..100_000,
+        0_u64..100_000,
+        0_u64..100_000,
+        0_u32..100_000,
+        0_u32..100_000,
         arb_ident(),
     )
         .prop_map(
@@ -212,11 +212,11 @@ fn arb_client_message() -> BoxedStrategy<ClientMessage> {
         any::<bool>(),
         prop::collection::vec(arb_small_string(), 0..2),
         prop::collection::vec(image_upload, 0..2),
-        prop::option::of(0u64..100_000),
+        prop::option::of(0_u64..100_000),
         prop::option::of((
             prop::option::of(arb_decimal(20)),
             prop::option::of(arb_decimal(10)),
-            prop::option::of(0u32..20_000),
+            prop::option::of(0_u32..20_000),
         )),
     )
         .prop_map(
@@ -297,7 +297,7 @@ fn arb_character_info() -> impl Strategy<Value = CharacterInfo> {
 fn arb_server_message() -> BoxedStrategy<ServerMessage> {
     prop_oneof![
         (
-            1u32..3,
+            1_u32..3,
             arb_ident(),
             prop::collection::vec(arb_character_info(), 0..3)
         )
@@ -311,10 +311,10 @@ fn arb_server_message() -> BoxedStrategy<ServerMessage> {
         (
             prop::option::of(arb_ident()),
             prop::collection::vec(arb_message(), 0..3),
-            0usize..3,
+            0_usize..3,
             arb_json(),
             prop::option::of(arb_ident()),
-            0u64..100,
+            0_u64..100,
         )
             .prop_map(
                 |(rid, messages, active_start, config, selected_character, revision)| {
@@ -360,7 +360,7 @@ fn arb_server_message() -> BoxedStrategy<ServerMessage> {
         (
             prop::option::of(arb_ident()),
             prop::option::of(arb_ident()),
-            prop::option::of(0u64..100),
+            prop::option::of(0_u64..100),
             arb_small_string(),
             arb_stream_metadata(),
             arb_ident(),
@@ -390,7 +390,7 @@ fn arb_server_message() -> BoxedStrategy<ServerMessage> {
                 model
             }),),
         (
-            0u64..100,
+            0_u64..100,
             prop::option::of(arb_ident()),
             prop::option::of(arb_message_origin()),
             arb_message()
@@ -447,7 +447,7 @@ fn arb_server_message() -> BoxedStrategy<ServerMessage> {
                     data,
                 })
             }),
-        (0u32..100_000, arb_small_string()).prop_map(|(expected_tokens, message)| {
+        (0_u32..100_000, arb_small_string()).prop_map(|(expected_tokens, message)| {
             ServerMessage::CacheWarning(CacheWarning {
                 expected_tokens,
                 message,
@@ -459,7 +459,7 @@ fn arb_server_message() -> BoxedStrategy<ServerMessage> {
             arb_ident(),
             arb_ident(),
             arb_ident(),
-            prop::option::of(400u16..600),
+            prop::option::of(400_u16..600),
             arb_small_string(),
         )
             .prop_map(|(rid, provider, from_key, to_key, kind, status, message)| {

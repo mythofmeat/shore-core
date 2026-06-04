@@ -324,7 +324,7 @@ async fn run_tool_loop(
     label_prefix: &str,
     cold_write_out: &mut Option<u64>,
 ) -> Result<(), String> {
-    let mut iter = 0usize;
+    let mut iter = 0_usize;
     loop {
         iter = iter.saturating_add(1);
         let rid = format!("{rid_prefix}-iter-{iter}");
