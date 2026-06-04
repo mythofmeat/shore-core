@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.12](https://github.com/mythofmeat/shore-core/compare/shore-swp-client-v0.2.11...shore-swp-client-v0.2.12) - 2026-06-04
+
+### Other
+
+- integer & float arithmetic discipline ([#153](https://github.com/mythofmeat/shore-core/pull/153)) ([#194](https://github.com/mythofmeat/shore-core/pull/194))
+- ban variable shadowing (shadow_same/reuse/unrelated) ([#151](https://github.com/mythofmeat/shore-core/pull/151)) ([#192](https://github.com/mythofmeat/shore-core/pull/192))
+- Enable import & literal hygiene lints ([#154](https://github.com/mythofmeat/shore-core/pull/154)) ([#185](https://github.com/mythofmeat/shore-core/pull/185))
+- enable string_slice + str_to_string ([#152](https://github.com/mythofmeat/shore-core/pull/152))
+- enable unsafe-block + assert-message hardening ([#156](https://github.com/mythofmeat/shore-core/pull/156))
+
 ## [0.2.11](https://github.com/mythofmeat/shore-core/compare/shore-swp-client-v0.2.10...shore-swp-client-v0.2.11) - 2026-06-03
 
 ### Other
