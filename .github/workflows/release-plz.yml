@@ -1,23 +1,45 @@
 name: release-plz
 
-# Release cutting is an explicit decision, not a per-push reflex, so this never
-# runs on push to main (rapid iteration would otherwise spawn release PRs).
-#   - workflow_dispatch: click "Run workflow" when a build is worth distributing.
-#   - schedule: weekly safety net in case a manual run is forgotten.
-# Either trigger on an unchanged main is a no-op: no new conventional commits
-# => no version bump, no release PR, no publish.
+# release-plz's two halves are split across triggers so rapid iteration on main
+# never spawns a release PR, yet merging one still publishes automatically:
+#
+#   - release-pr (open/update the release PR): on demand via workflow_dispatch,
+#     plus a weekly schedule as a safety net. The PR appears only when asked.
+#   - release (tag + publish): on push to main. A no-op on ordinary merges
+#     (versions aren't bumped, so nothing to tag); when a release PR merges,
+#     the bumped versions get tagged + published — no second dispatch needed.
+#
+# Any trigger on an unchanged main is a no-op.
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
   schedule:
     # Mondays 00:00 UTC (Mon 10:00 AEST). Opens a release PR if commits landed.
     - cron: "0 0 * * 1"
 
 jobs:
-  release-plz:
+  # Open/update the release PR — only on demand or on the weekly schedule.
+  release-pr:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     permissions:
       contents: write
       pull-requests: write
     uses: mythofmeat/repo-arch/.github/workflows/release-plz-rust.yml@main
     with:
       system_deps: "libasound2-dev protobuf-compiler"
+      command: release-pr
+    secrets: inherit
+
+  # Tag + publish — only on push to main (e.g. when the release PR merges).
+  release:
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: mythofmeat/repo-arch/.github/workflows/release-plz-rust.yml@main
+    with:
+      system_deps: "libasound2-dev protobuf-compiler"
+      command: release
     secrets: inherit
