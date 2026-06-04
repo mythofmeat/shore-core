@@ -1662,54 +1662,54 @@ homeserver = "https://matrix.example.com"
     #[test]
     fn max_image_size_defaults_and_overrides() {
         // Default: 2 MB.
-        let config = AppConfig::default();
-        assert_eq!(config.advanced.max_image_size, 2_000_000);
+        let default_config = AppConfig::default();
+        assert_eq!(default_config.advanced.max_image_size, 2_000_000);
 
         // Override via TOML.
-        let toml_str = r"
+        let override_toml = r"
 [advanced]
 max_image_size = 5000000
 ";
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.advanced.max_image_size, 5_000_000);
+        let override_config: AppConfig = toml::from_str(override_toml).unwrap();
+        assert_eq!(override_config.advanced.max_image_size, 5_000_000);
 
         // Disable via 0.
-        let toml_str = r"
+        let disabled_toml = r"
 [advanced]
 max_image_size = 0
 ";
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.advanced.max_image_size, 0);
+        let disabled_config: AppConfig = toml::from_str(disabled_toml).unwrap();
+        assert_eq!(disabled_config.advanced.max_image_size, 0);
     }
 
     #[test]
     fn cache_forensics_defaults_and_overrides() {
-        let config = AppConfig::default();
-        assert!(!config.advanced.cache_forensics);
+        let default_config = AppConfig::default();
+        assert!(!default_config.advanced.cache_forensics);
 
         let toml_str = r"
 [advanced]
 cache_forensics = true
 ";
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert!(config.advanced.cache_forensics);
+        let enabled_config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(enabled_config.advanced.cache_forensics);
     }
 
     #[test]
     fn llm_sidecar_defaults_on_and_accepts_socket_path() {
-        let config = AppConfig::default();
-        assert!(config.advanced.llm_sidecar.enabled);
-        assert!(config.advanced.llm_sidecar.socket_path.is_none());
+        let default_config = AppConfig::default();
+        assert!(default_config.advanced.llm_sidecar.enabled);
+        assert!(default_config.advanced.llm_sidecar.socket_path.is_none());
 
         let toml_str = r#"
 [advanced.llm_sidecar]
 enabled = false
 socket_path = "/tmp/shore-llm.sock"
 "#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert!(!config.advanced.llm_sidecar.enabled);
+        let override_config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(!override_config.advanced.llm_sidecar.enabled);
         assert_eq!(
-            config.advanced.llm_sidecar.socket_path.as_deref(),
+            override_config.advanced.llm_sidecar.socket_path.as_deref(),
             Some(std::path::Path::new("/tmp/shore-llm.sock"))
         );
     }

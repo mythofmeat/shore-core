@@ -168,6 +168,18 @@ missing_assert_message = "warn"
 string_slice = "warn"
 str_to_string = "warn"
 
+# Shadowing ban (#151). Same belt-and-suspenders pattern as the blocks above:
+# `warn` here so new/un-locked crates inherit the baseline, while each cleaned
+# crate escalates to `deny` via its crate-root `#![deny(...)]`. A binding can
+# never silently shadow another, so data flow stays explicit and "I thought
+# this was the other `x`" bugs are impossible. `shadow_unrelated` (rebind to an
+# unrelated value) is the dangerous one; `shadow_reuse` (`let x = x.foo()`) and
+# `shadow_same` (`let x = x`) round out the ban. Tests are cleaned inline, not
+# exempted.
+shadow_same = "warn"
+shadow_reuse = "warn"
+shadow_unrelated = "warn"
+
 [workspace.lints.rust]
 # Rustc-side paranoia lints from the Tier 2 ratchet (#115). Crates also deny
 # these at their roots once clean, with documented local `unsafe_code`

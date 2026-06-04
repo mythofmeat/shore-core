@@ -49,8 +49,8 @@ fn push_value(lines: &mut Vec<String>, value: &Value, indent: usize) {
                 lines.push(format!("{}{{}}", spaces(indent)));
                 return;
             }
-            for (key, value) in map {
-                push_key_value(lines, key, value, indent);
+            for (key, child) in map {
+                push_key_value(lines, key, child, indent);
             }
         }
         Value::Array(values) => push_array(lines, values, indent),
@@ -101,8 +101,8 @@ fn push_array(lines: &mut Vec<String>, values: &[Value], indent: usize) {
 fn push_scalar(lines: &mut Vec<String>, value: &Value, indent: usize) {
     let prefix = spaces(indent);
     match value {
-        Value::String(value) => {
-            for line in value.lines() {
+        Value::String(text) => {
+            for line in text.lines() {
                 lines.push(format!("{prefix}{line}"));
             }
         }
@@ -117,10 +117,10 @@ fn push_scalar(lines: &mut Vec<String>, value: &Value, indent: usize) {
 fn inline_value(value: &Value) -> Option<String> {
     match value {
         Value::Null => Some("null".to_owned()),
-        Value::Bool(value) => Some(value.to_string()),
-        Value::Number(value) => Some(value.to_string()),
-        Value::String(value) if !value.contains('\n') => Some(format_string(value)),
-        Value::Array(values) if values.iter().all(|value| inline_value(value).is_some()) => {
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::String(s) if !s.contains('\n') => Some(format_string(s)),
+        Value::Array(values) if values.iter().all(|item| inline_value(item).is_some()) => {
             let joined = values
                 .iter()
                 .filter_map(inline_value)
@@ -142,15 +142,15 @@ fn format_string(value: &str) -> String {
 }
 
 fn truncate_with_notice(mut text: String, max_bytes: Option<usize>) -> String {
-    let Some(max_bytes) = max_bytes else {
+    let Some(limit) = max_bytes else {
         return text;
     };
     let original_len = text.len();
-    if original_len <= max_bytes {
+    if original_len <= limit {
         return text;
     }
 
-    let end = floor_char_boundary(&text, max_bytes);
+    let end = floor_char_boundary(&text, limit);
     text.truncate(end);
     text.push_str("\n... truncated, ");
     text.push_str(&original_len.to_string());

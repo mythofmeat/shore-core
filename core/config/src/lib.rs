@@ -32,6 +32,9 @@
     clippy::undocumented_unsafe_blocks,
     clippy::multiple_unsafe_ops_per_block,
     clippy::missing_assert_message,
+    clippy::shadow_same,
+    clippy::shadow_reuse,
+    clippy::shadow_unrelated,
     unsafe_code,
     elided_lifetimes_in_paths,
     unused_qualifications
@@ -413,11 +416,10 @@ pub fn load_raw_config_table(config_path: Option<&Path>) -> Result<RawConfigTabl
 ///
 /// Extracts model sections (`chat`, `tools`, `embedding`, `image_generation`),
 /// deserializes the remainder into `AppConfig`, builds `ModelCatalog`, validates.
-fn parse_config_table(table: toml::Table, dirs: ShoreDirs) -> Result<LoadedConfig, ConfigError> {
+fn parse_config_table(mut table: toml::Table, dirs: ShoreDirs) -> Result<LoadedConfig, ConfigError> {
     // Preserve the raw table for per-character merging.
     let raw_table = table.clone();
 
-    let mut table = table;
     let chat_section = table.remove("chat");
     let tools_section = table.remove("tools");
     let embedding_section = table.remove("embedding");
@@ -792,9 +794,9 @@ fn validate_aux_provider(
 /// default to be valid; transport resolves through `[providers.<provider>]`.
 fn validate_default_embedding(
     providers: &ProviderRegistry,
-    name: Option<&str>,
+    name_opt: Option<&str>,
 ) -> Result<(), ConfigError> {
-    let Some(name) = name else { return Ok(()) };
+    let Some(name) = name_opt else { return Ok(()) };
     let Some((provider_key, model_id)) = name.split_once(':') else {
         return Err(ConfigError::Validation(format!(
             "defaults.embedding \"{name}\" must be a `provider:model_id` identity \
@@ -814,9 +816,9 @@ fn validate_default_embedding(
 /// (transport lives on `[providers.<provider>]`). There is no bundled fallback.
 fn validate_default_image_generation(
     providers: &ProviderRegistry,
-    name: Option<&str>,
+    name_opt: Option<&str>,
 ) -> Result<(), ConfigError> {
-    let Some(name) = name else { return Ok(()) };
+    let Some(name) = name_opt else { return Ok(()) };
     let Some((provider_key, model_id)) = name.split_once(':') else {
         return Err(ConfigError::Validation(format!(
             "defaults.image_generation \"{name}\" must be a `provider:model_id` identity \
@@ -861,9 +863,9 @@ fn warn_on_unresolvable_model_ref(
     catalog: &ModelCatalog,
     providers: &ProviderRegistry,
     field: &str,
-    name: Option<&str>,
+    name_opt: Option<&str>,
 ) {
-    let Some(name) = name else { return };
+    let Some(name) = name_opt else { return };
 
     if catalog.find_model(name).is_ok() {
         return;
@@ -1723,16 +1725,16 @@ c = 4
         ]);
 
         // Character-specific wins.
-        let result = resolve_prompt_template(tmp.path(), "TestChar", "system.md");
-        assert_eq!(result.as_deref(), Some("Character system prompt"));
+        let char_specific = resolve_prompt_template(tmp.path(), "TestChar", "system.md");
+        assert_eq!(char_specific.as_deref(), Some("Character system prompt"));
 
         // Falls back to global.
-        let result = resolve_prompt_template(tmp.path(), "TestChar", "compact.md");
-        assert_eq!(result.as_deref(), Some("Global compact prompt"));
+        let global_fallback = resolve_prompt_template(tmp.path(), "TestChar", "compact.md");
+        assert_eq!(global_fallback.as_deref(), Some("Global compact prompt"));
 
         // Returns None if no file exists.
-        let result = resolve_prompt_template(tmp.path(), "TestChar", "nonexistent.md");
-        assert!(result.is_none());
+        let missing = resolve_prompt_template(tmp.path(), "TestChar", "nonexistent.md");
+        assert!(missing.is_none());
     }
 
     #[test]

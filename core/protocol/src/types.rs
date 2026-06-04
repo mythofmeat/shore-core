@@ -189,10 +189,10 @@ impl Message {
 
             // Strip inline image data — storage uses paths, not embedded bytes.
             let strip_image_data = |images: Option<&mut serde_json::Value>| {
-                if let Some(images) = images.and_then(|v| v.as_array_mut()) {
-                    for img in images {
+                if let Some(arr) = images.and_then(|v| v.as_array_mut()) {
+                    for img in arr {
                         if let Some(img_obj) = img.as_object_mut() {
-                            let _ignored = img_obj.remove("data");
+                            let _removed = img_obj.remove("data");
                         }
                     }
                 }

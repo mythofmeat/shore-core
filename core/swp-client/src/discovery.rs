@@ -93,12 +93,12 @@ enum ProcessState {
 fn pid_state(pid: u32) -> ProcessState {
     // The kernel's pid_t is i32; real PIDs fit far below i32::MAX. A value that
     // doesn't fit can't name a live process, so treat it as dead.
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
+    let Ok(pid_t) = libc::pid_t::try_from(pid) else {
         return ProcessState::Dead;
     };
-    // SAFETY: signal 0 performs permission/existence checking only. `pid`
+    // SAFETY: signal 0 performs permission/existence checking only. `pid_t`
     // was range-checked for this platform's pid_t above.
-    let rc = unsafe { libc::kill(pid, 0) };
+    let rc = unsafe { libc::kill(pid_t, 0) };
     if rc == 0 {
         return ProcessState::Alive;
     }

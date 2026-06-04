@@ -465,7 +465,7 @@ fn arb_memory_config() -> impl Strategy<Value = MemoryConfig> {
 }
 
 fn arb_matrix_config() -> impl Strategy<Value = MatrixConfig> {
-    let embedded = (
+    let embedded_strategy = (
         arb_nonempty_text(),
         arb_nonempty_text(),
         1_u16..9000,
@@ -494,7 +494,7 @@ fn arb_matrix_config() -> impl Strategy<Value = MatrixConfig> {
         prop::option::of(arb_nonempty_text()),
         prop::option::of(arb_nonempty_text()),
         prop::option::of(arb_nonempty_text()),
-        prop::option::of(embedded),
+        prop::option::of(embedded_strategy),
     )
         .prop_map(
             |(enabled, homeserver, user_id, room_id, trusted_user, embedded)| MatrixConfig {

@@ -1013,8 +1013,8 @@ fn request_scoped_server_messages_missing_rid_default_to_none() {
     ];
 
     for fixture in cases {
-        let msg: ServerMessage = serde_json::from_str(fixture).expect("missing rid");
-        match msg {
+        let parsed: ServerMessage = serde_json::from_str(fixture).expect("missing rid");
+        match parsed {
             ServerMessage::CommandOutput(msg) => assert_eq!(msg.rid, None),
             ServerMessage::Error(msg) => assert_eq!(msg.rid, None),
             ServerMessage::StreamStart(msg) => assert_eq!(msg.rid, None),
