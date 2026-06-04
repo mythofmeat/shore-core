@@ -128,8 +128,8 @@ pub(crate) fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> Prep
         // Per-model override (preferences overlay) falls back to the global
         // `[memory.thinking]` default. The effect is model-dependent — see #129.
         resolved
-            .preserve_prior_turns
-            .unwrap_or(config.app.memory.thinking.preserve_prior_turns),
+            .replay_prior_thinking
+            .unwrap_or(config.app.memory.thinking.replay_prior_thinking),
         &resolved.provider_key,
     );
 

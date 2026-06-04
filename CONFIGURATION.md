@@ -669,12 +669,12 @@ The hybrid index is rebuildable and non-authoritative.
 
 ```toml
 [memory.thinking]
-preserve_prior_turns = true
+replay_prior_thinking = true
 ```
 
 Default `true` keeps prior-turn thinking/redacted-thinking blocks in outgoing requests. Set `false` to strip them and save the tokens they consume on each subsequent turn — only safe with providers that don't depend on prior-turn thinking (e.g. Anthropic Claude 4.x). DeepSeek V3.1+ and Moonshot Kimi-thinking reject requests that omit prior `reasoning_content` while in thinking mode and ignore the user setting. In-progress tool-loop thinking is always preserved.
 
-This value is the **global fallback**. The quality effect is model-dependent — for example Claude Opus 4.8 is reproducibly better with it OFF, while minimax-m3 / glm-5.1 want it ON — so it can be overridden **per model** through the preference overlay (`shore model setting preserve_prior_turns <bool>` / `:setting preserve_prior_turns <bool>`, the same path as `reasoning_effort` etc.). An unset per-model value inherits this global default; there is no auto-promotion in either direction. The DeepSeek/Kimi reasoning-replay floor is enforced regardless of either setting.
+This value is the **global fallback**. The quality effect is model-dependent — for example Claude Opus 4.8 is reproducibly better with it OFF, while minimax-m3 / glm-5.1 want it ON — so it can be overridden **per model** through the preference overlay (`shore model setting replay_prior_thinking <bool>` / `:setting replay_prior_thinking <bool>`, the same path as `reasoning_effort` etc.). An unset per-model value inherits this global default; there is no auto-promotion in either direction. The DeepSeek/Kimi reasoning-replay floor is enforced regardless of either setting.
 
 ## `[notifications]`
 

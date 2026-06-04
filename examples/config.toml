@@ -260,9 +260,9 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 
 # Thinking — how prior-turn extended-thinking blocks are handled on outgoing
 # requests. This is the GLOBAL fallback; the effect is model-dependent, so
-# override per model via `shore model setting preserve_prior_turns <bool>`.
+# override per model via `shore model setting replay_prior_thinking <bool>`.
 # [memory.thinking]
-# preserve_prior_turns = true # false strips prior thinking to save tokens — safe on
+# replay_prior_thinking = true # false strips prior thinking to save tokens — safe on
 #                             # Anthropic Claude 4.x. DeepSeek V3.1+ / Moonshot Kimi-thinking
 #                             # always replay reasoning_content and ignore this.
 

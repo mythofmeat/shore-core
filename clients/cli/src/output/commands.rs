@@ -637,7 +637,7 @@ fn print_model_settings(data: &serde_json::Value) {
         "max_output_tokens",
         "cache_ttl",
         "sdk",
-        "preserve_prior_turns",
+        "replay_prior_thinking",
         "openrouter_provider",
         "vertex_project",
         "vertex_location",
@@ -2312,7 +2312,7 @@ mod tests {
             "reasoning_effort",
             "cache_ttl",
             "sdk",
-            "preserve_prior_turns",
+            "replay_prior_thinking",
         ];
         // openrouter-shaped: cache_ttl ignored, temperature honored, Shore keys always.
         let applicability = serde_json::json!({
@@ -2320,7 +2320,7 @@ mod tests {
             "reasoning_effort": "honored",
             "cache_ttl": "ignored",
             "sdk": "always",
-            "preserve_prior_turns": "always",
+            "replay_prior_thinking": "always",
         });
         let visible = visible_setting_keys(&all, &applicability);
         assert!(visible.contains(&"temperature"));
@@ -2367,21 +2367,21 @@ mod tests {
                 "max_output_tokens": 8192,
                 "cache_ttl": "1h",
                 "sdk": "anthropic",
-                "preserve_prior_turns": false,
+                "replay_prior_thinking": false,
             },
             "scopes": {
                 "reasoning_effort": "character_model",
                 "max_output_tokens": "static_default",
                 "cache_ttl": "static_default",
                 "sdk": "static_default",
-                "preserve_prior_turns": "character_model",
+                "replay_prior_thinking": "character_model",
             },
             "applicability": {
                 "reasoning_effort": "honored",
                 "max_output_tokens": "honored",
                 "cache_ttl": "honored",
                 "sdk": "always",
-                "preserve_prior_turns": "honored",
+                "replay_prior_thinking": "honored",
             },
             "reasoning_effort_domain": ["adaptive", "low", "medium", "high", "xhigh", "max"],
         }));

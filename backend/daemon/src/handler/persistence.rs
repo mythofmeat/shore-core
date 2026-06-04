@@ -41,7 +41,7 @@ pub(super) async fn persist_and_notify(
     request: &shore_llm::types::LlmRequest,
     tool_intermediate_messages: Vec<Message>,
     wall_clock_start: Instant,
-    preserve_prior_turn_thinking: bool,
+    replay_prior_thinking: bool,
     regen_alt: Option<PendingAlt>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     record_completion_diagnostics(ctx, result, request, resolved);
@@ -69,7 +69,7 @@ pub(super) async fn persist_and_notify(
             );
             crate::content_util::maybe_strip_prior_thinking(
                 &mut full_request.messages,
-                preserve_prior_turn_thinking,
+                replay_prior_thinking,
                 &resolved.provider_key,
             );
             ctx.autonomy.notify_last_request(char_name, full_request);

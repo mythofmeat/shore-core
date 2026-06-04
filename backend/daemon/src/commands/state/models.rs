@@ -17,7 +17,7 @@ const SAMPLER_KEYS: &[&str] = &[
     "max_output_tokens",
     "cache_ttl",
     "sdk",
-    "preserve_prior_turns",
+    "replay_prior_thinking",
     // Vendor knobs (per-model). The capability matrix gates which of these a
     // given model's resolved sdk actually honors — see `capability_check`.
     "openrouter_provider",
@@ -105,7 +105,7 @@ fn load_char_prefs(
 
 /// Map each settable sampler key to how the resolved `sdk` treats it (#162):
 /// `"honored"` / `"ignored"` / `"rejected"` from the capability matrix, or
-/// `"always"` for Shore-only keys (`sdk`, `preserve_prior_turns`) that name no
+/// `"always"` for Shore-only keys (`sdk`, `replay_prior_thinking`) that name no
 /// matrix field. Clients show only `honored` / `always` keys.
 fn key_applicability(sdk: &shore_config::models::Sdk, model_id: &str) -> Value {
     use shore_config::capabilities::{applicability, Applicability, Field};
@@ -311,7 +311,7 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
                     "max_output_tokens": scopes.max_output_tokens.map(scope_str),
                     "cache_ttl": scopes.cache_ttl.map(scope_str),
                     "sdk": scopes.sdk.map(scope_str),
-                    "preserve_prior_turns": scopes.preserve_prior_turns.map(scope_str),
+                    "replay_prior_thinking": scopes.replay_prior_thinking.map(scope_str),
                 }),
             );
         }
@@ -408,7 +408,7 @@ pub fn reset_model(ctx: &mut CommandContext) -> CommandResult {
 /// Args:
 /// - `key`: one of `temperature`, `top_p`, `reasoning_effort`,
 ///   `budget_tokens`, `max_output_tokens`, `cache_ttl`, `sdk`,
-///   `preserve_prior_turns`.
+///   `replay_prior_thinking`.
 /// - `value`: a number/string/bool/null. `null` removes the setting.
 /// - `scope`: `"character"` (default) or `"global"`.
 pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResult {
@@ -448,7 +448,7 @@ pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResul
     // Capability boundary (#162): reject keys the resolved sdk ignores/rejects
     // and out-of-domain values *before* they reach the preference file (and
     // later the wire). Keys with no matrix field — `sdk`,
-    // `preserve_prior_turns` — are Shore behaviors / transport and skip this.
+    // `replay_prior_thinking` — are Shore behaviors / transport and skip this.
     capability_check(&active.sdk, &model_id, &key, &value)?;
 
     // Load the appropriate preferences file.
@@ -504,7 +504,7 @@ pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResul
 
 /// Reject a setting the model's resolved `sdk` cannot honor, sourcing the
 /// message from [`shore_config::capabilities`] (#162). Returns `Ok(())` for
-/// keys outside the capability matrix (`sdk`, `preserve_prior_turns`) and for
+/// keys outside the capability matrix (`sdk`, `replay_prior_thinking`) and for
 /// clearing a value (`null`).
 fn capability_check(
     sdk: &shore_config::models::Sdk,
@@ -633,8 +633,8 @@ fn apply_sampler_value(
                 Some(s.to_owned())
             };
         }
-        "preserve_prior_turns" => {
-            sampler.preserve_prior_turns = parse_bool_value(value, "preserve_prior_turns")?;
+        "replay_prior_thinking" => {
+            sampler.replay_prior_thinking = parse_bool_value(value, "replay_prior_thinking")?;
         }
         _ => return apply_vendor_sampler_value(sampler, key, value),
     }
@@ -802,7 +802,7 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
             "max_output_tokens": scopes.max_output_tokens.map(scope_str),
             "cache_ttl": scopes.cache_ttl.map(scope_str),
             "sdk": scopes.sdk.map(scope_str),
-            "preserve_prior_turns": scopes.preserve_prior_turns.map(scope_str),
+            "replay_prior_thinking": scopes.replay_prior_thinking.map(scope_str),
             "openrouter_provider": scopes.openrouter_provider.map(scope_str),
             "vertex_project": scopes.vertex_project.map(scope_str),
             "vertex_location": scopes.vertex_location.map(scope_str),

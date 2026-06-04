@@ -563,7 +563,7 @@ impl Default for DreamingConfig {
     }
 }
 
-serde_default!(default_preserve_prior_turns -> bool { true });
+serde_default!(default_replay_prior_thinking -> bool { true });
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -579,17 +579,17 @@ pub struct ThinkingConfig {
     ///
     /// This is the **global fallback**. The quality effect is
     /// model-dependent (issue #129), so it can be overridden per model via
-    /// the runtime preference overlay (`SamplerSettings::preserve_prior_turns`
-    /// → `ResolvedModel::preserve_prior_turns`); an unset per-model value
+    /// the runtime preference overlay (`SamplerSettings::replay_prior_thinking`
+    /// → `ResolvedModel::replay_prior_thinking`); an unset per-model value
     /// inherits this default.
-    #[serde(default = "default_preserve_prior_turns")]
-    pub preserve_prior_turns: bool,
+    #[serde(default = "default_replay_prior_thinking")]
+    pub replay_prior_thinking: bool,
 }
 
 impl Default for ThinkingConfig {
     fn default() -> Self {
         Self {
-            preserve_prior_turns: default_preserve_prior_turns(),
+            replay_prior_thinking: default_replay_prior_thinking(),
         }
     }
 }

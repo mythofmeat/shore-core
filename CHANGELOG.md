@@ -117,6 +117,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   `max_output_tokens`). No backward-compatible alias is kept — configs and any
   persisted per-character settings using `max_tokens` must be updated. The
   Anthropic wire field (`max_tokens` on the request body) is unchanged.
+- Renamed the model-config key `preserve_prior_turns` to `replay_prior_thinking`.
+  The old name read like a context/history-retention switch, but the setting only
+  governs whether extended-thinking (`thinking` / `redacted_thinking`) blocks from
+  completed prior turns are replayed on outgoing requests — prior conversation
+  turns are always kept. Polarity and default are unchanged (`true` = replay).
+  The rename applies everywhere the key is user-facing: the `[memory.thinking]`
+  TOML section, the `shore model setting` / `:setting` key, and the
+  `shore state models` JSON output. No backward-compatible alias is kept — configs
+  and any persisted per-model settings using `preserve_prior_turns` must be updated.
 
 ### Fixed
 - Ledger cache-health tracking no longer skips OpenRouter-routed Anthropic

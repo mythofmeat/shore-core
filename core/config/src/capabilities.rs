@@ -218,7 +218,7 @@ impl Field {
     }
 
     /// Parse a TOML key back into its [`Field`] — the inverse of [`key`]. Keys
-    /// that name no matrix field (Shore-only behaviors like `preserve_prior_turns`,
+    /// that name no matrix field (Shore-only behaviors like `replay_prior_thinking`,
     /// or transport like `sdk`) return `None`, which callers treat as "no
     /// capability opinion — always applicable".
     ///
@@ -694,7 +694,7 @@ mod tests {
     fn from_key_is_none_for_non_matrix_keys() {
         // Shore-only behaviors and transport name no capability field — callers
         // treat `None` as "always applicable".
-        for key in ["preserve_prior_turns", "sdk", "nonsense"] {
+        for key in ["replay_prior_thinking", "sdk", "nonsense"] {
             assert_eq!(Field::from_key(key), None, "{key}");
         }
     }

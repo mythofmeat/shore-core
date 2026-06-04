@@ -56,7 +56,7 @@ fn make_model(effort: &str) -> ResolvedModel {
         gemini_web_search: None,
         zai_clear_thinking: None,
         zai_subscription: None,
-        preserve_prior_turns: None,
+        replay_prior_thinking: None,
     }
 }
 
