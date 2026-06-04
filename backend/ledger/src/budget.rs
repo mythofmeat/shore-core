@@ -581,9 +581,9 @@ fn period_window_local(
 fn period_start_naive(
     now: NaiveDateTime,
     period: UsageBudgetPeriod,
-    anchors: Option<&BudgetAnchors>,
+    anchors_opt: Option<&BudgetAnchors>,
 ) -> NaiveDateTime {
-    let anchors = anchors.copied().unwrap_or_default();
+    let anchors = anchors_opt.copied().unwrap_or_default();
     let date = now.date();
     match period {
         UsageBudgetPeriod::Hour => at_hour(date, now.hour()),
@@ -635,9 +635,9 @@ fn period_start_naive(
 fn period_end_naive(
     start: NaiveDateTime,
     period: UsageBudgetPeriod,
-    anchors: Option<&BudgetAnchors>,
+    anchors_opt: Option<&BudgetAnchors>,
 ) -> NaiveDateTime {
-    let anchors = anchors.copied().unwrap_or_default();
+    let anchors = anchors_opt.copied().unwrap_or_default();
     match period {
         UsageBudgetPeriod::Hour => start
             .checked_add_signed(Duration::hours(1))

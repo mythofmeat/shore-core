@@ -32,6 +32,9 @@
     clippy::undocumented_unsafe_blocks,
     clippy::multiple_unsafe_ops_per_block,
     clippy::missing_assert_message,
+    clippy::shadow_same,
+    clippy::shadow_reuse,
+    clippy::shadow_unrelated,
     unsafe_code,
     elided_lifetimes_in_paths,
     unused_qualifications
@@ -338,7 +341,7 @@ impl LlmClient {
             }
         });
 
-        let provider_options = if opts.is_null() { None } else { Some(opts) };
+        let normalized_options = if opts.is_null() { None } else { Some(opts) };
 
         LlmRequest {
             sdk: model.sdk.clone(),
@@ -352,7 +355,7 @@ impl LlmClient {
             max_tokens: model.max_output_tokens.unwrap_or(4096),
             temperature: model.temperature,
             top_p: model.top_p,
-            provider_options,
+            provider_options: normalized_options,
             provider_key: Some(model.provider_key.clone()),
             rid: None,
             forensic_character: None,
@@ -367,18 +370,18 @@ impl LlmClient {
     /// debug logging is enabled, the reader is transparently teed to a
     /// per-call response file.
     pub async fn stream_raw(&self, request: &LlmRequest) -> Result<StreamReader, LlmError> {
-        let request = preprocess_request(request);
-        let body = serde_json::to_string(&*request).map_err(LlmError::Serialize)?;
-        let handle = debug_log::log_request(self.payload_log_dir.as_deref(), &request, &body);
+        let prepared = preprocess_request(request);
+        let body = serde_json::to_string(&*prepared).map_err(LlmError::Serialize)?;
+        let handle = debug_log::log_request(self.payload_log_dir.as_deref(), &prepared, &body);
 
         debug!(
-            sdk = %request.sdk.as_str(),
-            model = %request.model,
+            sdk = %prepared.sdk.as_str(),
+            model = %prepared.model,
             "Sending streaming request to provider"
         );
 
         let read_half =
-            providers::stream(&self.http_client, &request, self.sidecar_socket()).await?;
+            providers::stream(&self.http_client, &prepared, self.sidecar_socket()).await?;
         let reader: Box<dyn AsyncRead + Send + Unpin> = match handle {
             Some(h) => Box::new(debug_log::TeeReader::new(read_half, &h)),
             None => Box::new(read_half),
@@ -391,11 +394,11 @@ impl LlmClient {
         &self,
         request: &LlmRequest,
     ) -> Result<types::GenerateResponse, LlmError> {
-        let request = preprocess_request(request);
-        let body = serde_json::to_string(&*request).map_err(LlmError::Serialize)?;
-        let handle = debug_log::log_request(self.payload_log_dir.as_deref(), &request, &body);
+        let prepared = preprocess_request(request);
+        let body = serde_json::to_string(&*prepared).map_err(LlmError::Serialize)?;
+        let handle = debug_log::log_request(self.payload_log_dir.as_deref(), &prepared, &body);
 
-        let result = providers::generate(&self.http_client, &request, self.sidecar_socket()).await;
+        let result = providers::generate(&self.http_client, &prepared, self.sidecar_socket()).await;
         if let Some(h) = handle {
             match &result {
                 Ok(resp) => debug_log::log_response(&h, resp),
@@ -596,13 +599,13 @@ mod tests {
 
         // A real effort passes through unchanged.
         model.reasoning_effort = Some("high".into());
-        let req = LlmClient::build_request(&model, vec![], None, None, None).unwrap();
-        let opts = req.provider_options.expect("provider_options present");
+        let req_high = LlmClient::build_request(&model, vec![], None, None, None).unwrap();
+        let opts_high = req_high.provider_options.expect("provider_options present");
         assert_eq!(
-            opts.get("reasoning_effort"),
+            opts_high.get("reasoning_effort"),
             Some(&serde_json::json!("high"))
         );
-        assert!(opts.get("thinking_enabled").is_none());
+        assert!(opts_high.get("thinking_enabled").is_none());
 
         std::env::remove_var("TEST_API_KEY_164");
     }

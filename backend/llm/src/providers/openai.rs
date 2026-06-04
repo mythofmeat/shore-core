@@ -31,9 +31,9 @@ pub(crate) async fn embed(
         .send()
         .await?;
 
-    let response = super::check_response(response).await?;
+    let checked = super::check_response(response).await?;
 
-    let resp_text = response.text().await.map_err(LlmError::Request)?;
+    let resp_text = checked.text().await.map_err(LlmError::Request)?;
     let resp: Value = serde_json::from_str(&resp_text).map_err(|e| LlmError::Provider {
         message: format!(
             "embedding response was not valid JSON: {e}; body preview: {}",
@@ -48,10 +48,10 @@ pub(crate) async fn embed(
 /// `Some`; `None` omits the field so the provider returns the native width.
 fn build_embed_body(model: &str, input: &[&str], dimensions: Option<usize>) -> Value {
     let mut map = serde_json::Map::new();
-    let _ignored = map.insert("model".into(), json!(model));
-    let _ignored = map.insert("input".into(), json!(input));
+    let _prev_model = map.insert("model".into(), json!(model));
+    let _prev_input = map.insert("input".into(), json!(input));
     if let Some(dims) = dimensions {
-        let _ignored = map.insert("dimensions".into(), json!(dims));
+        let _prev_dims = map.insert("dimensions".into(), json!(dims));
     }
     Value::Object(map)
 }

@@ -136,9 +136,9 @@ mod tests {
                 .map(|s| {
                     let mut v = vec![0.0_f32; self.dim];
                     if !s.is_empty() {
-                        let h = s.bytes().fold(0_u32, |a, b| a.wrapping_add(u32::from(b)));
-                        let h = usize::try_from(h).unwrap_or(usize::MAX);
-                        if let Some(idx) = h.checked_rem(self.dim) {
+                        let hash = s.bytes().fold(0_u32, |a, b| a.wrapping_add(u32::from(b)));
+                        let idx_base = usize::try_from(hash).unwrap_or(usize::MAX);
+                        if let Some(idx) = idx_base.checked_rem(self.dim) {
                             if let Some(slot) = v.get_mut(idx) {
                                 *slot = 1.0;
                             }

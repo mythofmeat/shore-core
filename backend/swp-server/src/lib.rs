@@ -32,6 +32,9 @@
     clippy::undocumented_unsafe_blocks,
     clippy::multiple_unsafe_ops_per_block,
     clippy::missing_assert_message,
+    clippy::shadow_same,
+    clippy::shadow_reuse,
+    clippy::shadow_unrelated,
     unsafe_code,
     elided_lifetimes_in_paths,
     unused_qualifications
@@ -174,14 +177,14 @@ impl SessionRouter {
         direct_tx: mpsc::Sender<ServerMessage>,
     ) {
         let id = client.id;
-        let _ignored = self.clients.write().await.insert(id, client);
-        let _ignored = self.direct_txs.write().await.insert(id, direct_tx);
+        let _prev_client = self.clients.write().await.insert(id, client);
+        let _prev_tx = self.direct_txs.write().await.insert(id, direct_tx);
     }
 
     /// Unregister a disconnected session.
     pub async fn unregister_session(&self, session_id: SessionId) {
-        let _ignored = self.clients.write().await.remove(&session_id.0);
-        let _ignored = self.direct_txs.write().await.remove(&session_id.0);
+        let _removed_client = self.clients.write().await.remove(&session_id.0);
+        let _removed_tx = self.direct_txs.write().await.remove(&session_id.0);
     }
 
     /// Look up the direct sender for a session.
@@ -444,7 +447,7 @@ struct ClientCtx {
 #[instrument(skip(reader, writer, ctx), fields(client_id = ctx.client_id))]
 async fn handle_client<R, W>(
     reader: R,
-    writer: W,
+    mut writer: W,
     mut ctx: ClientCtx,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
@@ -453,7 +456,6 @@ where
 {
     let client_id = ctx.client_id;
     let mut buf_reader = BufReader::new(reader);
-    let mut writer = writer;
 
     let hello_snapshot = load_hello_snapshot(ctx.handshake.as_ref()).await;
 
@@ -467,8 +469,8 @@ where
     info!(client_id, "Sent server hello");
 
     // ── Step 2: Receive client Hello ─────────────────────────────────
-    let client_hello = read_message(&mut buf_reader).await?;
-    let client_hello = match client_hello {
+    let hello_msg = read_message(&mut buf_reader).await?;
+    let client_hello = match hello_msg {
         Some(ClientMessage::Hello(hello)) => {
             info!(
                 client_id,
@@ -507,8 +509,8 @@ where
     let session = client_info.session_meta();
 
     // Register client.
-    let _ignored = ctx.clients.write().await.insert(client_id, client_info);
-    let _ignored = ctx
+    let _prev_client = ctx.clients.write().await.insert(client_id, client_info);
+    let _prev_tx = ctx
         .direct_txs
         .write()
         .await
@@ -541,13 +543,13 @@ where
     // disconnects from both seeing is_empty() == true (double-fire).
     let all_gone = {
         let mut clients = ctx.clients.write().await;
-        let _ignored = clients.remove(&client_id);
+        let _removed_client = clients.remove(&client_id);
         info!(client_id, "Client disconnected");
         clients.is_empty()
     };
-    let _ignored = ctx.direct_txs.write().await.remove(&client_id);
+    let _removed_tx = ctx.direct_txs.write().await.remove(&client_id);
     if all_gone {
-        let _ignored = ctx
+        let _all_gone_sent = ctx
             .route_tx
             .send(RoutedMessage::AllClientsDisconnected)
             .await;
@@ -1153,10 +1155,10 @@ mod tests {
         .await
         .unwrap();
 
-        let routed = h.route_rx.recv().await.unwrap();
+        let regen_routed = h.route_rx.recv().await.unwrap();
         assert_variant!(
 
-            routed,
+            regen_routed,
             RoutedMessage::Engine {
                 msg: ClientMessage::Regen(r),
                 meta,
@@ -1301,10 +1303,10 @@ mod tests {
         .await
         .unwrap();
 
-        let routed = h.route_rx.recv().await.unwrap();
+        let status_routed = h.route_rx.recv().await.unwrap();
         assert_variant!(
 
-            routed,
+            status_routed,
             RoutedMessage::Command { cmd, meta } => {
                 assert_eq!(cmd.name, "status");
                 assert_eq!(meta.kind, RequestKind::Command);
@@ -1693,8 +1695,8 @@ mod tests {
             return false;
         };
 
-        let (reader, _writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
+        let (read_half, _writer) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
         let mut line = String::new();
 
         match timeout(Duration::from_secs(2), reader.read_line(&mut line)).await {
