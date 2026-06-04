@@ -163,6 +163,10 @@ pub fn enforce_budget_for_call(
     Ok(())
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "usage spike detection compares f64 USD totals as a ratio against a configured multiplier"
+)]
 pub fn spike_warnings(
     ledger: &Ledger,
     config: &UsageConfig,
@@ -279,7 +283,7 @@ pub fn newly_crossed_budget_warnings(
             message: format!(
                 "Usage budget \"{}\" reached {:.0}% (${:.2}/${:.2}); resets at {}.",
                 status.name,
-                highest * 100.0,
+                fraction_to_percent(highest),
                 status.current_cost,
                 status.cost_limit,
                 reset_display,
@@ -312,6 +316,14 @@ fn format_local_ampm(rfc3339: &str) -> String {
     )
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "budget warning text renders configured f64 threshold fractions as percentages"
+)]
+fn fraction_to_percent(fraction: f64) -> f64 {
+    fraction * 100.0
+}
+
 fn record_budget_warning_threshold(
     ledger: &Ledger,
     budget_name: &str,
@@ -331,6 +343,10 @@ fn record_budget_warning_threshold(
     })
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "budget status compares f64 USD totals against configured f64 limits and thresholds"
+)]
 fn budget_status(
     ledger: &Ledger,
     config: &UsageConfig,

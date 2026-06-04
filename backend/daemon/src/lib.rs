@@ -27,6 +27,9 @@
     clippy::single_char_lifetime_names,
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
+    clippy::integer_division,
+    clippy::modulo_arithmetic,
+    clippy::float_arithmetic,
     clippy::string_slice,
     clippy::str_to_string,
     clippy::undocumented_unsafe_blocks,
@@ -66,6 +69,17 @@
     expect(
         clippy::arithmetic_side_effects,
         reason = "overflow in tests is an assertion failure, not a service panic"
+    )
+)]
+// Tests divide fixture values freely: truncating division on test data is a
+// threshold computation, not a service correctness hazard (same rationale as
+// the `arithmetic_side_effects` exemption above). Production code stays locked
+// by the `#![deny(...)]` above.
+#![cfg_attr(
+    test,
+    expect(
+        clippy::integer_division,
+        reason = "truncating division in tests is a threshold computation, not a service hazard"
     )
 )]
 

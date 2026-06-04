@@ -29,6 +29,12 @@
 //!     -- --ignored --nocapture
 //! ```
 #![deny(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+// Cache-token assertions halve cold baselines (`cold_w / 2`) as comparison
+// thresholds; truncating division is intended there, not a correctness hazard.
+#![expect(
+    clippy::integer_division,
+    reason = "halving token baselines for assertion thresholds intends truncation"
+)]
 
 use std::env;
 use std::fs;

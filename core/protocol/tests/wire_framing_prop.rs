@@ -43,6 +43,10 @@ fn arb_ident() -> impl Strategy<Value = String> {
         .prop_map(|bytes| String::from_utf8(bytes).unwrap())
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "wire property tests intentionally generate decimal f64 payloads in tenths"
+)]
 fn arb_decimal(max_tenths: u32) -> impl Strategy<Value = f64> {
     (0_u32..max_tenths).prop_map(|tenths| f64::from(tenths) / 10.0)
 }

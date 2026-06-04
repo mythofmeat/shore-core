@@ -42,6 +42,9 @@ use shore_llm::types::LlmRequest;
 
 use crate::sync::lock_or_recover;
 
+const SECONDS_PER_MINUTE: u64 = 60;
+const SECONDS_PER_HOUR: u64 = 3_600;
+
 // ---------------------------------------------------------------------------
 // Tick context — shared state for the per-character autonomy loop
 // ---------------------------------------------------------------------------
@@ -930,6 +933,10 @@ fn push_provider_fallback_events(
     }
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "heartbeat tool accepts f64 hours and converts the clamped display value to seconds"
+)]
 fn schedule_next_wake_in_state(state: &Mutex<AutonomyState>, input: &Value) -> Value {
     let hours = input
         .get("hours_from_now")
@@ -1827,16 +1834,22 @@ async fn execute_heartbeat_tick(
         .heartbeat
         .fallback_heartbeat_interval
         .as_secs();
-    let default_interval_str = if default_interval_secs >= 3600 && default_interval_secs % 3600 == 0
+    let default_interval_str = if default_interval_secs >= SECONDS_PER_HOUR
+        && default_interval_secs.is_multiple_of(SECONDS_PER_HOUR)
     {
-        let h = default_interval_secs / 3600;
+        let h = default_interval_secs
+            .checked_div(SECONDS_PER_HOUR)
+            .unwrap_or_default();
         if h == 1 {
             "1 hour".to_owned()
         } else {
             format!("{h} hours")
         }
     } else {
-        format!("{} minutes", default_interval_secs / 60)
+        let minutes = default_interval_secs
+            .checked_div(SECONDS_PER_MINUTE)
+            .unwrap_or_default();
+        format!("{minutes} minutes")
     };
     let heartbeat_instructions =
         load_heartbeat_instructions(&character_data_dir).replace("{user}", &user_name);

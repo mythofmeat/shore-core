@@ -45,16 +45,40 @@ fn arb_duration() -> impl Strategy<Value = ConfigDuration> {
     (0_u64..(14 * 24 * 60 * 60 * 1000)).prop_map(ConfigDuration::from_millis)
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "property tests generate f64 dollar amounts from integer cents"
+)]
+fn cents_to_dollars(cents: u32) -> f64 {
+    f64::from(cents) / 100.0
+}
+
+#[expect(
+    clippy::float_arithmetic,
+    reason = "property tests generate f64 threshold fractions from integer hundredths"
+)]
+fn hundredths_to_fraction(hundredths: u32) -> f64 {
+    f64::from(hundredths) / 100.0
+}
+
+#[expect(
+    clippy::float_arithmetic,
+    reason = "property tests generate f64 decimal multipliers from integer tenths"
+)]
+fn tenths_to_decimal(tenths: u32) -> f64 {
+    f64::from(tenths) / 10.0
+}
+
 fn arb_cost() -> impl Strategy<Value = f64> {
-    (0_u32..100_000).prop_map(|cents| f64::from(cents) / 100.0)
+    (0_u32..100_000).prop_map(cents_to_dollars)
 }
 
 fn arb_fraction() -> impl Strategy<Value = f64> {
-    (0_u32..200).prop_map(|hundredths| f64::from(hundredths) / 100.0)
+    (0_u32..200).prop_map(hundredths_to_fraction)
 }
 
 fn arb_decimal(max_tenths: u32) -> impl Strategy<Value = f64> {
-    (0_u32..max_tenths).prop_map(|tenths| f64::from(tenths) / 10.0)
+    (0_u32..max_tenths).prop_map(tenths_to_decimal)
 }
 
 fn arb_sdk() -> impl Strategy<Value = Sdk> {
@@ -670,7 +694,7 @@ fn arb_usage_config() -> impl Strategy<Value = UsageConfig> {
         prop::collection::vec(arb_usage_budget_config(), 0..2),
         any::<bool>(),
         arb_usage_budget_period(),
-        (10_u32..100).prop_map(|tenths| f64::from(tenths) / 10.0),
+        (10_u32..100).prop_map(tenths_to_decimal),
         arb_cost(),
     )
         .prop_map(

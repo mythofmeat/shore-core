@@ -1635,6 +1635,10 @@ fn phase_summaries(
     ]
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "dream promotion scoring combines weighted f32 evidence signals"
+)]
 fn score_candidate(candidate: &DreamCandidate, rem: &RemPhaseOutput) -> f32 {
     let evidence_score = (usize_to_f32(candidate.unique_source_count) / 3.0).min(1.0);
     let recall_score = (u32_to_f32(candidate.recall_count) / 4.0).min(1.0);
@@ -2287,6 +2291,10 @@ fn recency_score(modified_at: &str) -> f32 {
     0.50
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "dream candidate durability is a bounded weighted f32 heuristic score"
+)]
 fn durability_score(text: &str, themes: &[String]) -> f32 {
     let lower = text.to_lowercase();
     let mut score = 0.20 + (usize_to_f32(themes.len()) * 0.16);
@@ -2312,6 +2320,10 @@ fn durability_score(text: &str, themes: &[String]) -> f32 {
     round_score(score.min(1.0))
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "dream candidate specificity is a bounded additive f32 heuristic score"
+)]
 fn specificity_score(text: &str) -> f32 {
     let mut score: f32 = 0.15;
     let words = text.split_whitespace().count();
@@ -2363,6 +2375,10 @@ fn candidate_id(normalized: &str) -> String {
     format!("dc-{hash:016x}")
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "dream scores are rounded to two decimal places for stable serialized output"
+)]
 fn round_score(value: f32) -> f32 {
     (value * 100.0).round() / 100.0
 }

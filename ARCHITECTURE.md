@@ -508,7 +508,10 @@ separated numeric-literal suffixes (`1_u64`, not `1u64`), and descriptive
 (non-single-char) lifetime names. String discipline is locked too:
 `string_slice` bans `&s[i..j]` (a panic class on non-char-boundary byte
 indices) and `str_to_string` prefers `.to_owned()` over `.to_string()` on
-`&str`. Suppressions must use
+`&str`. Arithmetic discipline is locked too: `integer_division` forces
+truncating `/` to be acknowledged, `modulo_arithmetic` flags `%` sign-surprises,
+and `float_arithmetic` flags precision/NaN-prone float math (float-heavy
+functions carry a reasoned function-level `#[expect]`). Suppressions must use
 `#[expect(..., reason = "...")]`.
 
 Before a release, also run relevant cache tests, live provider smoke tests if

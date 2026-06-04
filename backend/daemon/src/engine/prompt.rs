@@ -394,6 +394,10 @@ fn estimate_message_tokens(msg: &Message) -> usize {
 /// Render the relative-time phrase ("6 hours later", "about a day later", …)
 /// for a gap in seconds. Used as part of the full marker when the gap crosses
 /// `TIME_GAP_THRESHOLD_SECS`.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "relative time markers round f64 second gaps into display hours or days"
+)]
 fn relative_gap_phrase(gap_secs: f64) -> String {
     if gap_secs < ONE_AND_HALF_HOURS_SECS {
         // < 1.5 hours

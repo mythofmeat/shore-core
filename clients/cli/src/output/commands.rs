@@ -8,6 +8,10 @@ use super::{
     write_row, write_row_colored, write_section_header,
 };
 
+const SECONDS_PER_MINUTE: u64 = 60;
+const SECONDS_PER_HOUR: u64 = 3_600;
+const SECONDS_PER_DAY: u64 = 86_400;
+
 // ---------------------------------------------------------------------------
 // Status formatter -- human-readable dashboard
 // ---------------------------------------------------------------------------
@@ -26,6 +30,10 @@ fn heartbeat_description(state: &str, ticks: u64, max_ticks: u64) -> String {
 ///
 /// Uses 8 Unicode block elements for non-zero values and a light shade for
 /// effectively-zero values.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "heatmap rendering maps a normalized float density onto eight display glyphs"
+)]
 fn density_to_block(normalized: f64) -> char {
     const BLOCKS: [char; 8] = [
         '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
@@ -49,13 +57,27 @@ fn density_to_block(normalized: f64) -> char {
     }
 }
 
+fn checked_div_u64(value: u64, divisor: u64) -> u64 {
+    value.checked_div(divisor).unwrap_or_default()
+}
+
+fn checked_rem_u64(value: u64, divisor: u64) -> u64 {
+    value.checked_rem(divisor).unwrap_or_default()
+}
+
+fn format_millis_as_seconds_one_decimal(millis: u64) -> String {
+    let rounded_deciseconds = checked_div_u64(millis.saturating_add(50), 100);
+    let whole_seconds = checked_div_u64(rounded_deciseconds, 10);
+    let decimal_seconds = checked_rem_u64(rounded_deciseconds, 10);
+    format!("{whole_seconds}.{decimal_seconds}")
+}
+
 #[expect(
-    clippy::as_conversions,
-    clippy::cast_precision_loss,
-    reason = "CLI display formatting can round huge counters without changing stored values"
+    clippy::float_arithmetic,
+    reason = "CLI usage summaries add daemon-provided f64 display costs for rounded totals only"
 )]
-fn u64_to_f64_for_display(value: u64) -> f64 {
-    value as f64
+fn add_display_cost(total: &mut f64, cost: f64) {
+    *total += cost;
 }
 
 /// Color for an hour classification label.
@@ -71,6 +93,10 @@ fn classification_color(class: &str) -> Color {
 ///
 /// Renders a 24-character bar chart (one block per hour) with hour labels
 /// underneath, plus engagement and session stats.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "activity heatmap uses visual-only logarithmic scaling of normalized f64 densities"
+)]
 fn write_activity_section(out: &mut impl Write, activity: &serde_json::Value, width: usize) {
     let histogram: Vec<f64> = match activity["hour_histogram"].as_array() {
         Some(arr) => arr.iter().filter_map(serde_json::Value::as_f64).collect(),
@@ -1398,12 +1424,12 @@ pub(crate) fn print_diagnostics(data: &serde_json::Value) {
             let cr = call["cache_read_tokens"].as_u64().unwrap_or(0);
             let cw = call["cache_write_tokens"].as_u64().unwrap_or(0);
             let total = call["total_ms"].as_u64().unwrap_or(0);
-            let secs = u64_to_f64_for_display(total) / 1000.0;
+            let secs = format_millis_as_seconds_one_decimal(total);
 
             let _ignored = write!(w, "{model:<24}");
             write_dim(
                 w,
-                &format!("in:{input:<5} out:{output_t:<5} cache:{cr}/{cw}  {secs:.1}s"),
+                &format!("in:{input:<5} out:{output_t:<5} cache:{cr}/{cw}  {secs}s"),
             );
 
             if let Some(err) = call.get("error").filter(|v| !v.is_null()) {
@@ -1487,7 +1513,10 @@ fn format_k(tokens: u64) -> String {
     } else if tokens < 1000 {
         tokens.to_string()
     } else {
-        format!("{:.1}K", u64_to_f64_for_display(tokens) / 1000.0)
+        let rounded_tenths = checked_div_u64(tokens.saturating_add(50), 100);
+        let whole = checked_div_u64(rounded_tenths, 10);
+        let decimal = checked_rem_u64(rounded_tenths, 10);
+        format!("{whole}.{decimal}K")
     }
 }
 
@@ -1550,6 +1579,10 @@ fn print_budget_table(data: &serde_json::Value) {
         for budget in rows {
             let current = budget["current_cost"].as_f64().unwrap_or(0.0);
             let limit = budget["cost_limit"].as_f64().unwrap_or(0.0);
+            #[expect(
+                clippy::float_arithmetic,
+                reason = "budget payload stores used share as f64; CLI scales it for percent display"
+            )]
             let percent = budget["percent_used"].as_f64().unwrap_or(0.0) * 100.0;
             let started = budget["period_start"]
                 .as_str()
@@ -1651,7 +1684,7 @@ fn write_usage_summary_table(out: &mut impl Write, data: &serde_json::Value) -> 
             let cost_str = s["total_cost"].as_f64().map_or_else(
                 || "\u{2014}".into(),
                 |c| {
-                    grand_total += c;
+                    add_display_cost(&mut grand_total, c);
                     format!("${c:.2}")
                 },
             );
@@ -1717,7 +1750,7 @@ pub(crate) fn print_usage(data: &serde_json::Value) {
                     let cost_str = s["total_cost"].as_f64().map_or_else(
                         || "\u{2014}".into(),
                         |c| {
-                            grand_total += c;
+                            add_display_cost(&mut grand_total, c);
                             format!("${c:.2}")
                         },
                     );
@@ -1761,7 +1794,7 @@ pub(crate) fn print_usage(data: &serde_json::Value) {
                     let cost_str = s["total_cost"].as_f64().map_or_else(
                         || "\u{2014}".into(),
                         |c| {
-                            grand_total += c;
+                            add_display_cost(&mut grand_total, c);
                             format!("${c:.2}")
                         },
                     );
@@ -1806,7 +1839,7 @@ pub(crate) fn print_usage(data: &serde_json::Value) {
                     let cost_str = s["total_cost"].as_f64().map_or_else(
                         || "\u{2014}".into(),
                         |c| {
-                            grand_total += c;
+                            add_display_cost(&mut grand_total, c);
                             format!("${c:.2}")
                         },
                     );
@@ -1931,13 +1964,13 @@ pub(crate) fn print_usage(data: &serde_json::Value) {
 /// Negative inputs render with a leading "-".
 fn format_duration_compact(secs: i64) -> String {
     let neg = secs < 0;
-    let mut s = secs.unsigned_abs();
-    let days = s / 86_400;
-    s %= 86_400;
-    let hours = s / 3_600;
-    s %= 3_600;
-    let minutes = s / 60;
-    let seconds = s % 60;
+    let mut remaining_seconds = secs.unsigned_abs();
+    let days = checked_div_u64(remaining_seconds, SECONDS_PER_DAY);
+    remaining_seconds = checked_rem_u64(remaining_seconds, SECONDS_PER_DAY);
+    let hours = checked_div_u64(remaining_seconds, SECONDS_PER_HOUR);
+    remaining_seconds = checked_rem_u64(remaining_seconds, SECONDS_PER_HOUR);
+    let minutes = checked_div_u64(remaining_seconds, SECONDS_PER_MINUTE);
+    let seconds = checked_rem_u64(remaining_seconds, SECONDS_PER_MINUTE);
 
     let body = if days > 0 {
         format!("{days}d {hours}h")
@@ -1957,14 +1990,19 @@ fn format_duration_compact(secs: i64) -> String {
 
 /// Format a duration in seconds for "threshold" rows like "100m" or "48h".
 fn format_threshold(secs: u64) -> String {
-    if secs >= 3_600 && secs.is_multiple_of(3_600) {
-        format!("{}h", secs / 3_600)
-    } else if secs >= 60 && secs.is_multiple_of(60) {
-        format!("{}m", secs / 60)
-    } else if secs >= 3_600 {
-        format!("{}h {}m", secs / 3_600, (secs % 3_600) / 60)
-    } else if secs >= 60 {
-        format!("{}m {}s", secs / 60, secs % 60)
+    if secs >= SECONDS_PER_HOUR && secs.is_multiple_of(SECONDS_PER_HOUR) {
+        format!("{}h", checked_div_u64(secs, SECONDS_PER_HOUR))
+    } else if secs >= SECONDS_PER_MINUTE && secs.is_multiple_of(SECONDS_PER_MINUTE) {
+        format!("{}m", checked_div_u64(secs, SECONDS_PER_MINUTE))
+    } else if secs >= SECONDS_PER_HOUR {
+        let hours = checked_div_u64(secs, SECONDS_PER_HOUR);
+        let remaining_minutes =
+            checked_div_u64(checked_rem_u64(secs, SECONDS_PER_HOUR), SECONDS_PER_MINUTE);
+        format!("{hours}h {remaining_minutes}m")
+    } else if secs >= SECONDS_PER_MINUTE {
+        let minutes = checked_div_u64(secs, SECONDS_PER_MINUTE);
+        let seconds = checked_rem_u64(secs, SECONDS_PER_MINUTE);
+        format!("{minutes}m {seconds}s")
     } else {
         format!("{secs}s")
     }
@@ -2017,8 +2055,8 @@ fn write_autonomy_section(out: &mut impl Write, autonomy: &serde_json::Value, wi
     _ = writeln!(out);
 
     if let Some(eff) = autonomy["effective_interval_secs"].as_u64() {
-        let mins = eff / 60;
-        let secs = eff % 60;
+        let mins = checked_div_u64(eff, SECONDS_PER_MINUTE);
+        let secs = checked_rem_u64(eff, SECONDS_PER_MINUTE);
         let label = if secs == 0 {
             format!("{mins}m")
         } else {

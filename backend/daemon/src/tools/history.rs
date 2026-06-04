@@ -203,7 +203,7 @@ impl QueryMatcher {
         }
 
         let mut score = i64::try_from(hits)
-            .unwrap_or(i64::MAX / TERM_HIT)
+            .unwrap_or_else(|_| i64::MAX.checked_div(TERM_HIT).unwrap_or_default())
             .saturating_mul(TERM_HIT);
         if hits == self.terms.len() {
             score = score.saturating_add(FULL_COVERAGE_BONUS);
@@ -386,6 +386,10 @@ fn collect_matches(
 /// Combined ranking score: lexical relevance plus a recency boost normalized
 /// over the span of candidate timestamps. Older messages contribute 0 recency,
 /// the newest contributes `RECENCY_WEIGHT`.
+#[expect(
+    clippy::float_arithmetic,
+    reason = "history ranking blends integer lexical relevance with normalized f64 recency weight"
+)]
 fn combined_score(
     candidate: &ScoredCandidate,
     min_ts: Option<DateTime<FixedOffset>>,

@@ -404,7 +404,8 @@ fn excerpt_line(line: &str, raw_match_start: usize, raw_match_end: usize) -> Str
     let available_before = trimmed[..match_start].chars().count();
     let available_after = trimmed[match_end..].chars().count();
     let context_chars = SEARCH_EXCERPT_CHARS.saturating_sub(match_chars);
-    let mut before_chars = (context_chars / 2).min(available_before);
+    let half_context_chars = context_chars.checked_div(2).unwrap_or_default();
+    let mut before_chars = half_context_chars.min(available_before);
     let mut after_chars = context_chars
         .saturating_sub(before_chars)
         .min(available_after);

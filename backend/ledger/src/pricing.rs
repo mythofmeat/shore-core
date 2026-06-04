@@ -261,6 +261,10 @@ impl PricingEngine {
     /// Multiply tokens by per-token prices. Returns None if pricing unavailable.
     /// `cache_ttl`: "5m" or "1h" (default "1h" if None). Selects the pre-computed
     /// cache write price for the appropriate TTL tier.
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "pricing multiplies f64 per-token catalog rates by token counts and sums cost breakdowns"
+    )]
     pub fn calculate_cost(
         &self,
         request: CostRequest<'_>,
