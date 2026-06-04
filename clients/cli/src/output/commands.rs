@@ -609,6 +609,15 @@ fn visible_setting_keys<'a>(
         .collect()
 }
 
+/// One rendered row of `print_model_settings`, collected before drawing so the
+/// value and scope columns can be width-aligned.
+struct SettingRow<'a> {
+    key: &'a str,
+    value: String,
+    scope: String,
+    domain: Option<String>,
+}
+
 fn print_model_settings(data: &serde_json::Value) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -648,25 +657,47 @@ fn print_model_settings(data: &serde_json::Value) {
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
 
-    let label_width = keys.iter().map(|key| key.len()).max().unwrap_or(0);
-    for key in keys {
-        let value = match sampler.get(key) {
-            Some(v) if v.is_null() => "(unset)".to_string(),
-            Some(v) => v.as_str().map_or_else(|| v.to_string(), String::from),
-            None => "(unset)".to_string(),
-        };
-        let scope = scopes
-            .get(key)
-            .and_then(|v| v.as_str())
-            .unwrap_or("(default)");
-        let label = format!("{key:<label_width$}");
-        let mut detail = format!("{value}  [{scope}]");
-        if key == "reasoning_effort" && !effort_domain.is_empty() {
-            detail.push_str("  {");
-            detail.push_str(&effort_domain.join(", "));
-            detail.push('}');
+    // Collect rows up front so value/scope columns can be aligned.
+    let rows: Vec<SettingRow<'_>> = keys
+        .iter()
+        .map(|&key| {
+            let value = match sampler.get(key) {
+                Some(v) if v.is_null() => "(unset)".to_string(),
+                Some(v) => v.as_str().map_or_else(|| v.to_string(), String::from),
+                None => "(unset)".to_string(),
+            };
+            let scope = scopes
+                .get(key)
+                .and_then(|v| v.as_str())
+                .unwrap_or("(default)")
+                .to_string();
+            let domain = (key == "reasoning_effort" && !effort_domain.is_empty())
+                .then(|| effort_domain.join(", "));
+            SettingRow {
+                key,
+                value,
+                scope,
+                domain,
+            }
+        })
+        .collect();
+
+    let label_width = rows.iter().map(|r| r.key.len()).max().unwrap_or(0);
+    let value_width = rows.iter().map(|r| r.value.len()).max().unwrap_or(0);
+    for row in &rows {
+        // `  <label>   <value>   [scope]   {domain}`, columns aligned, with the
+        // label/scope/domain dimmed and the live value at full brightness.
+        write_dim(&mut out, &format!("  {:<label_width$}   ", row.key));
+        write_fg(
+            &mut out,
+            Color::White,
+            &format!("{:<value_width$}", row.value),
+        );
+        write_dim(&mut out, &format!("   [{}]", row.scope));
+        if let Some(domain) = &row.domain {
+            write_dim(&mut out, &format!("   {{{domain}}}"));
         }
-        write_row(&mut out, &label, &detail);
+        let _ignored = writeln!(out);
     }
     let _ignored = writeln!(out);
 }
@@ -2320,6 +2351,41 @@ mod tests {
             "applicability": {"reasoning_effort": "honored", "cache_ttl": "ignored"},
             "reasoning_effort_domain": ["minimal", "low", "medium", "high", "xhigh", "max"],
         }));
+    }
+
+    /// Visual preview of `shore model setting` (the user-reported scenario).
+    /// Run with: cargo test -p shore-cli render_preview_model_settings --
+    ///   --ignored --nocapture --test-threads=1
+    #[test]
+    #[ignore = "visual preview; run explicitly with --ignored --nocapture"]
+    fn render_preview_model_settings() {
+        set_color_enabled(true);
+        print_model_settings(&serde_json::json!({
+            "model": "anthropic:claude-opus-4-8",
+            "effective_sampler": {
+                "reasoning_effort": "high",
+                "max_output_tokens": 8192,
+                "cache_ttl": "1h",
+                "sdk": "anthropic",
+                "preserve_prior_turns": false,
+            },
+            "scopes": {
+                "reasoning_effort": "character_model",
+                "max_output_tokens": "static_default",
+                "cache_ttl": "static_default",
+                "sdk": "static_default",
+                "preserve_prior_turns": "character_model",
+            },
+            "applicability": {
+                "reasoning_effort": "honored",
+                "max_output_tokens": "honored",
+                "cache_ttl": "honored",
+                "sdk": "always",
+                "preserve_prior_turns": "honored",
+            },
+            "reasoning_effort_domain": ["adaptive", "low", "medium", "high", "xhigh", "max"],
+        }));
+        set_color_enabled(false);
     }
 
     #[test]
