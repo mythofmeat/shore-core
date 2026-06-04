@@ -62,7 +62,6 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 #   moonshot    moonshot    MOONSHOT_API_KEY     https://api.moonshot.ai/v1
 #   zai         zai         ZAI_API_KEY          https://api.z.ai/api/paas/v4
 #   xai         openai      XAI_API_KEY          https://api.x.ai/v1
-#   zhipuai     openai      ZAI_API_KEY          https://open.bigmodel.cn/api/paas/v4
 #   nanogpt     openai      NANOGPT_API_KEY      https://nano-gpt.com/api/v1
 #
 # All hardcoded providers default to temperature 1.0, max_output_tokens 8192,
