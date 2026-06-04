@@ -106,7 +106,7 @@ impl StreamSpinner {
 
     pub(crate) fn set_phase(&self, phase: &str) {
         let mut s = lock_state(&self.state);
-        s.phase = phase.to_string();
+        phase.clone_into(&mut s.phase);
     }
 
     pub(crate) fn set_model(&self, model: Option<String>) {

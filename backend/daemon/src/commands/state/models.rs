@@ -119,7 +119,7 @@ fn key_applicability(sdk: &shore_config::models::Sdk, model_id: &str) -> Value {
                 Applicability::Rejected => "rejected",
             },
         };
-        let _ignored = map.insert((*key).to_string(), json!(label));
+        let _ignored = map.insert((*key).to_owned(), json!(label));
     }
     Value::Object(map)
 }
@@ -206,7 +206,7 @@ fn list_models_active_name(ctx: &CommandContext, entries: &[EffectiveModel]) -> 
                 .map(|m| m.qualified_name.clone())
         })
         .ok()
-        .or_else(|| Some(active.to_string()));
+        .or_else(|| Some(active.to_owned()));
     }
 
     if let Some(default) = ctx
@@ -231,7 +231,7 @@ fn list_models_active_name(ctx: &CommandContext, entries: &[EffectiveModel]) -> 
                 .map(|m| m.qualified_name.clone())
         })
         .ok()
-        .or_else(|| Some(default.to_string()));
+        .or_else(|| Some(default.to_owned()));
     }
 
     entries.first().map(|e| e.resolved.qualified_name.clone())
@@ -345,7 +345,7 @@ pub fn switch_model(ctx: &mut CommandContext, args: &Value) -> CommandResult {
             )
             .map_err(|e| effective_catalog_err(&e))?;
 
-            let char_name = require_character(ctx)?.to_string();
+            let char_name = require_character(ctx)?.to_owned();
             let mut prefs = load_char_prefs(ctx, &char_name)?;
             prefs.selected.provider = Some(resolved.provider_key.clone());
             prefs.selected.model_id = Some(resolved.model_id.clone());
@@ -354,7 +354,7 @@ pub fn switch_model(ctx: &mut CommandContext, args: &Value) -> CommandResult {
             // Keep ctx.active_model as the user-supplied name so existing
             // session/CLI flows that expect the raw name keep working.
             // Persistence uses (provider, model_id) so aliases survive.
-            ctx.active_model = Some(name.to_string());
+            ctx.active_model = Some(name.to_owned());
             // Also park the resolved model so any subsequent command in
             // this same connection (e.g. `set_model_setting`) doesn't
             // need to re-resolve — and for discovered models, can't.
@@ -381,7 +381,7 @@ pub fn switch_model(ctx: &mut CommandContext, args: &Value) -> CommandResult {
 /// the daemon falls back to global preferences / `app.defaults.model` /
 /// the first chat model.
 pub fn reset_model(ctx: &mut CommandContext) -> CommandResult {
-    let char_name = require_character(ctx)?.to_string();
+    let char_name = require_character(ctx)?.to_owned();
     let mut prefs = load_char_prefs(ctx, &char_name)?;
     let previous = prefs.selected.clone();
     prefs.selected = preferences::SelectedModel::default();
@@ -417,7 +417,7 @@ pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResul
         .and_then(|v| v.as_str())
         .ok_or((ErrorCode::InvalidRequest, "missing key".into()))?
         .trim()
-        .to_string();
+        .to_owned();
     if !SAMPLER_KEYS.contains(&key.as_str()) {
         return Err((
             ErrorCode::InvalidRequest,
@@ -480,7 +480,7 @@ pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResul
         preferences::save_global_preferences(&ctx.data_dir, &prefs)
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
     } else {
-        let char_name = require_character(ctx)?.to_string();
+        let char_name = require_character(ctx)?.to_owned();
         save_char_prefs(ctx, &char_name, &prefs)?;
     }
 
@@ -539,7 +539,7 @@ fn capability_check(
     // domain); for every other field a placeholder is sufficient, since the
     // check there is pure applicability.
     let probe = match value.as_str() {
-        Some(s) if !reasoning_off => toml::Value::String(s.to_string()),
+        Some(s) if !reasoning_off => toml::Value::String(s.to_owned()),
         _ => toml::Value::Boolean(true),
     };
     capabilities::validate(sdk, model_id, field, &probe)
@@ -585,7 +585,7 @@ fn apply_sampler_value(
                         .ok_or_else(|| {
                             invalid(format!("reasoning_effort must be a string, got {value}"))
                         })?
-                        .to_string(),
+                        .to_owned(),
                 )
             };
         }
@@ -611,7 +611,7 @@ fn apply_sampler_value(
                     value
                         .as_str()
                         .ok_or_else(|| invalid(format!("cache_ttl must be a string, got {value}")))?
-                        .to_string(),
+                        .to_owned(),
                 )
             };
         }
@@ -630,7 +630,7 @@ fn apply_sampler_value(
                         "sdk must be one of \"anthropic\", \"openai\", \"gemini\", \"zai\"; got {s:?}"
                     )));
                 }
-                Some(s.to_string())
+                Some(s.to_owned())
             };
         }
         "preserve_prior_turns" => {
@@ -702,7 +702,7 @@ fn parse_string_value(value: &Value, name: &str) -> Result<Option<String>, (Erro
     if value.is_null() {
         return Ok(None);
     }
-    value.as_str().map(|s| Some(s.to_string())).ok_or_else(|| {
+    value.as_str().map(|s| Some(s.to_owned())).ok_or_else(|| {
         (
             ErrorCode::InvalidRequest,
             format!("{name} must be a string, got {value}"),

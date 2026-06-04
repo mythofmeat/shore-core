@@ -80,12 +80,12 @@ async fn test_multi_turn_tool_conversation_valid() {
             match block.get("type").and_then(|t| t.as_str()) {
                 Some("tool_use") => {
                     if let Some(id) = block.get("id").and_then(|id| id.as_str()) {
-                        tool_use_ids.push(id.to_string());
+                        tool_use_ids.push(id.to_owned());
                     }
                 }
                 Some("tool_result") => {
                     if let Some(id) = block.get("tool_use_id").and_then(|id| id.as_str()) {
-                        tool_result_ids.push(id.to_string());
+                        tool_result_ids.push(id.to_owned());
                     }
                 }
                 _ => {}
@@ -300,7 +300,7 @@ async fn test_multiple_tool_calls_have_unique_ids() {
         for block in content {
             if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
                 if let Some(id) = block.get("tool_use_id").and_then(|id| id.as_str()) {
-                    result_ids.push(id.to_string());
+                    result_ids.push(id.to_owned());
                 }
             }
         }
@@ -325,11 +325,11 @@ async fn test_multiple_tool_calls_have_unique_ids() {
 
     // IDs must match the original tool_use IDs.
     assert!(
-        result_ids.contains(&"toolu_multi_01".to_string()),
+        result_ids.contains(&"toolu_multi_01".to_owned()),
         "Expected tool_result for 'toolu_multi_01', got: {result_ids:?}"
     );
     assert!(
-        result_ids.contains(&"toolu_multi_02".to_string()),
+        result_ids.contains(&"toolu_multi_02".to_owned()),
         "Expected tool_result for 'toolu_multi_02', got: {result_ids:?}"
     );
 

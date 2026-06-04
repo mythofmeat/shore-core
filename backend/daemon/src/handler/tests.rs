@@ -148,9 +148,9 @@ fn test_request_meta(character: Option<&str>, rid: Option<&str>) -> RequestMeta 
             client_type: "test-client".into(),
             client_name: "test".into(),
             capabilities: vec!["streaming".into()],
-            selected_character: character.map(str::to_string),
+            selected_character: character.map(str::to_owned),
         },
-        rid: rid.map(str::to_string),
+        rid: rid.map(str::to_owned),
         kind: shore_swp_server::RequestKind::Command,
     }
 }
@@ -801,7 +801,7 @@ fn build_content_with_image() {
     std::fs::write(&img_path, b"\x89PNG\r\n\x1a\n").unwrap();
 
     let images = vec![ImageRef {
-        path: img_path.to_str().unwrap().to_string(),
+        path: img_path.to_str().unwrap().to_owned(),
         caption: None,
         data: None,
     }];
@@ -824,12 +824,12 @@ fn build_content_skips_unsupported_and_missing() {
     let tmp = TempDir::new().unwrap();
     let images = vec![
         ImageRef {
-            path: tmp.path().join("file.bmp").to_str().unwrap().to_string(),
+            path: tmp.path().join("file.bmp").to_str().unwrap().to_owned(),
             caption: None,
             data: None,
         },
         ImageRef {
-            path: tmp.path().join("ghost.png").to_str().unwrap().to_string(),
+            path: tmp.path().join("ghost.png").to_str().unwrap().to_owned(),
             caption: None,
             data: None,
         },
@@ -900,7 +900,7 @@ fn mock_model_catalog(base_url: &str) -> shore_config::models::ModelCatalog {
         sdk: Sdk::Anthropic,
         model_id: "claude-test".into(),
         api_key_env: None,
-        base_url: Some(base_url.to_string()),
+        base_url: Some(base_url.to_owned()),
         max_context_tokens: None,
         max_output_tokens: Some(4096),
         temperature: Some(0.7),
@@ -1184,7 +1184,7 @@ fn meta_for_session(character: Option<&str>, session_id: u64) -> RequestMeta {
             client_type: "test-client".into(),
             client_name: format!("test-{session_id}"),
             capabilities: vec!["streaming".into()],
-            selected_character: character.map(str::to_string),
+            selected_character: character.map(str::to_owned),
         },
         rid: None,
         kind: shore_swp_server::RequestKind::Message,

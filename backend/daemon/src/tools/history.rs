@@ -102,7 +102,7 @@ fn optional_trimmed_string(input: &Value, field: &str) -> Result<Option<String>,
     if trimmed.is_empty() {
         return Ok(None);
     }
-    Ok(Some(trimmed.to_string()))
+    Ok(Some(trimmed.to_owned()))
 }
 
 fn parse_time_bound(
@@ -175,7 +175,7 @@ impl QueryMatcher {
         let terms = raw_lower
             .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
             .filter(|t| t.len() >= 2)
-            .map(str::to_string)
+            .map(str::to_owned)
             .collect();
         Self { raw_lower, terms }
     }
@@ -506,24 +506,24 @@ mod tests {
 
     fn msg(id: &str, role: Role, content: &str) -> Message {
         Message {
-            msg_id: id.to_string(),
+            msg_id: id.to_owned(),
             role,
-            content: content.to_string(),
+            content: content.to_owned(),
             images: vec![],
             content_blocks: vec![ContentBlock::Text {
-                text: content.to_string(),
+                text: content.to_owned(),
             }],
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
             provider_key: None,
-            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_owned(),
         }
     }
 
     fn msg_at(id: &str, role: Role, content: &str, timestamp: &str) -> Message {
         let mut message = msg(id, role, content);
-        message.timestamp = timestamp.to_string();
+        message.timestamp = timestamp.to_owned();
         message
     }
 
@@ -601,12 +601,12 @@ mod tests {
                 provider_key: None,
             },
             MessageAlternative {
-                content: "Coffee came up in a regenerated reply.".to_string(),
+                content: "Coffee came up in a regenerated reply.".to_owned(),
                 images: vec![],
                 content_blocks: vec![ContentBlock::Text {
-                    text: "Coffee came up in a regenerated reply.".to_string(),
+                    text: "Coffee came up in a regenerated reply.".to_owned(),
                 }],
-                timestamp: "2026-01-01T00:01:00Z".to_string(),
+                timestamp: "2026-01-01T00:01:00Z".to_owned(),
                 provider_key: None,
             },
         ];
@@ -769,12 +769,12 @@ mod tests {
                 provider_key: None,
             },
             MessageAlternative {
-                content: "Tea appeared in a regenerated reply.".to_string(),
+                content: "Tea appeared in a regenerated reply.".to_owned(),
                 images: vec![],
                 content_blocks: vec![ContentBlock::Text {
-                    text: "Tea appeared in a regenerated reply.".to_string(),
+                    text: "Tea appeared in a regenerated reply.".to_owned(),
                 }],
-                timestamp: "2026-05-13T09:30:00+10:00".to_string(),
+                timestamp: "2026-05-13T09:30:00+10:00".to_owned(),
                 provider_key: None,
             },
         ];
@@ -823,12 +823,12 @@ mod tests {
                 provider_key: None,
             },
             MessageAlternative {
-                content: "Regenerated reply.".to_string(),
+                content: "Regenerated reply.".to_owned(),
                 images: vec![],
                 content_blocks: vec![ContentBlock::Text {
-                    text: "Regenerated reply.".to_string(),
+                    text: "Regenerated reply.".to_owned(),
                 }],
-                timestamp: "2026-05-13T11:00:00+10:00".to_string(),
+                timestamp: "2026-05-13T11:00:00+10:00".to_owned(),
                 provider_key: None,
             },
         ];

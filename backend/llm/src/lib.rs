@@ -24,6 +24,8 @@
     clippy::wildcard_enum_match_arm,
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::str_to_string,
     clippy::undocumented_unsafe_blocks,
     clippy::multiple_unsafe_ops_per_block,
     clippy::missing_assert_message,
@@ -193,7 +195,7 @@ impl LlmClient {
             .unwrap_or(default_api_key_env(&model.provider_key));
 
         let api_key = std::env::var(api_key_env).map_err(|_| LlmError::MissingApiKey {
-            var: api_key_env.to_string(),
+            var: api_key_env.to_owned(),
         })?;
 
         let mut req = Self::build_request_with_resolved_key(

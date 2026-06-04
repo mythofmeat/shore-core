@@ -52,7 +52,7 @@ pub fn resolve_embedder(
                 return Err(
                     "multiple [embedding.\"provider:model_id\"] entries are configured \
                      but defaults.embedding is unset; set defaults.embedding to choose one"
-                        .to_string(),
+                        .to_owned(),
                 );
             }
             _ => {
@@ -61,7 +61,7 @@ pub fn resolve_embedder(
                      defaults.embedding = \"provider:model_id\" pointing at an \
                      OpenAI-compatible embeddings endpoint and configure \
                      [providers.<provider>] (see CONFIGURATION.md)."
-                        .to_string(),
+                        .to_owned(),
                 );
             }
         }
@@ -127,9 +127,9 @@ pub fn resolve_embedder(
     let cache_key = format!(
         "{provider_key}::{model_id}::{}::{}",
         base_url.as_deref().unwrap_or("default"),
-        dimensions.map_or_else(|| "native".to_string(), |d| d.to_string())
+        dimensions.map_or_else(|| "native".to_owned(), |d| d.to_string())
     );
-    let model_id = model_id.to_string();
+    let model_id = model_id.to_owned();
     let http_client = http_client.clone();
     shore_llm::embed::cache_or_build(&cache_key, move || {
         Ok::<Arc<dyn Embedder>, String>(Arc::new(OpenAIEmbedder::new(
@@ -218,7 +218,7 @@ api_key_env = "{api_key_env}"
         ));
         let mut embedding = BTreeMap::new();
         let _ignored = embedding.insert(
-            "acme:my-embed".to_string(),
+            "acme:my-embed".to_owned(),
             EmbeddingSettings {
                 dimensions: Some(512),
             },

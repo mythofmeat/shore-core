@@ -38,11 +38,11 @@ pub async fn append_dream_entry(
     }
     let existing = match fs::read_to_string(&path).await {
         Ok(content) => content,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => DREAMS_HEADER.to_string(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => DREAMS_HEADER.to_owned(),
         Err(e) => return Err(e),
     };
 
-    let mut updated = existing.trim_end().to_string();
+    let mut updated = existing.trim_end().to_owned();
     if !updated.is_empty() {
         updated.push_str("\n\n");
     }

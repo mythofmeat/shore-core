@@ -34,12 +34,12 @@ pub fn sanitize_tool_pairs(messages: &[Value]) -> Option<Vec<Value>> {
             match (role, ty) {
                 ("assistant", "tool_use") => {
                     if let Some(id) = block.get("id").and_then(|i| i.as_str()) {
-                        let _ignored = tool_use_ids.insert(id.to_string());
+                        let _ignored = tool_use_ids.insert(id.to_owned());
                     }
                 }
                 ("user", "tool_result") => {
                     if let Some(id) = block.get("tool_use_id").and_then(|i| i.as_str()) {
-                        let _ignored = tool_result_ids.insert(id.to_string());
+                        let _ignored = tool_result_ids.insert(id.to_owned());
                     }
                 }
                 _ => {}
@@ -73,11 +73,11 @@ pub fn sanitize_tool_pairs(messages: &[Value]) -> Option<Vec<Value>> {
                 ("assistant", "tool_use") => block
                     .get("id")
                     .and_then(|i| i.as_str())
-                    .is_some_and(|id| orphan_tool_uses.contains(&id.to_string())),
+                    .is_some_and(|id| orphan_tool_uses.contains(&id.to_owned())),
                 ("user", "tool_result") => block
                     .get("tool_use_id")
                     .and_then(|i| i.as_str())
-                    .is_some_and(|id| orphan_tool_results.contains(&id.to_string())),
+                    .is_some_and(|id| orphan_tool_results.contains(&id.to_owned())),
                 _ => false,
             };
             if !drop {

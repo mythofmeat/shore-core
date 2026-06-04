@@ -146,7 +146,7 @@ pub(super) fn ingest_images(
             }
             let original_name = src_path
                 .file_name()
-                .map_or_else(|| "image".to_string(), |n| n.to_string_lossy().to_string());
+                .map_or_else(|| "image".to_owned(), |n| n.to_string_lossy().to_string());
             let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
             let dest_name = format!("{timestamp}_{original_name}");
             let dest_path = attachments_dir.join(&dest_name);
@@ -330,7 +330,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let jpeg = make_jpeg(16, 16);
         let upload = ImageUpload {
-            filename: "photo.jpg".to_string(),
+            filename: "photo.jpg".to_owned(),
             data: STANDARD.encode(&jpeg),
         };
 
@@ -477,7 +477,7 @@ mod tests {
         );
 
         let images = vec![ImageRef {
-            path: img_path.to_str().unwrap().to_string(),
+            path: img_path.to_str().unwrap().to_owned(),
             caption: None,
             data: None,
         }];
@@ -520,7 +520,7 @@ mod tests {
         assert!(small_jpeg.len() < 2_000_000);
 
         let images = vec![ImageRef {
-            path: img_path.to_str().unwrap().to_string(),
+            path: img_path.to_str().unwrap().to_owned(),
             caption: None,
             data: None,
         }];
@@ -559,7 +559,7 @@ mod tests {
         );
 
         let images = vec![ImageRef {
-            path: img_path.to_str().unwrap().to_string(),
+            path: img_path.to_str().unwrap().to_owned(),
             caption: None,
             data: None,
         }];

@@ -370,29 +370,29 @@ mod tests {
 
     fn make_engine(tmp: &TempDir) -> (ConversationEngine, broadcast::Receiver<ServerMessage>) {
         let (push_tx, push_rx) = broadcast::channel(16);
-        let engine = ConversationEngine::new("TestChar".to_string(), tmp.path(), push_tx).unwrap();
+        let engine = ConversationEngine::new("TestChar".to_owned(), tmp.path(), push_tx).unwrap();
         (engine, push_rx)
     }
 
     fn make_msg(id: &str, role: Role, content: &str) -> Message {
         use shore_protocol::types::ContentBlock;
         Message {
-            msg_id: id.to_string(),
+            msg_id: id.to_owned(),
             role,
-            content: content.to_string(),
+            content: content.to_owned(),
             images: vec![],
             content_blocks: if content.is_empty() {
                 vec![]
             } else {
                 vec![ContentBlock::Text {
-                    text: content.to_string(),
+                    text: content.to_owned(),
                 }]
             },
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
             provider_key: None,
-            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_owned(),
         }
     }
 
@@ -648,7 +648,7 @@ mod tests {
         {
             let (push_tx, _) = broadcast::channel(16);
             let mut engine =
-                ConversationEngine::new("ReloadChar".to_string(), tmp.path(), push_tx).unwrap();
+                ConversationEngine::new("ReloadChar".to_owned(), tmp.path(), push_tx).unwrap();
             engine
                 .append_message(make_msg("m1", Role::User, "Persisted"))
                 .unwrap();
@@ -656,8 +656,7 @@ mod tests {
 
         // Second engine instance — should reload.
         let (push_tx, _) = broadcast::channel(16);
-        let engine =
-            ConversationEngine::new("ReloadChar".to_string(), tmp.path(), push_tx).unwrap();
+        let engine = ConversationEngine::new("ReloadChar".to_owned(), tmp.path(), push_tx).unwrap();
 
         assert_eq!(engine.messages().len(), 1);
         assert_eq!(engine.messages()[0].content, "Persisted");

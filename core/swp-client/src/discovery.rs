@@ -211,7 +211,7 @@ fn discover_or_default_from_path(
         }
         Err(e) if config_path.is_none() && should_fallback_to_default(&e) => {
             warn!(error = %e, fallback = DEFAULT_ADDR, "instance discovery failed, using default address");
-            Ok(ServerAddr(DEFAULT_ADDR.to_string()))
+            Ok(ServerAddr(DEFAULT_ADDR.to_owned()))
         }
         Err(e) => Err(e),
     }

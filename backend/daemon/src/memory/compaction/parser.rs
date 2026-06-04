@@ -31,6 +31,10 @@ pub const DEFAULT_COMPACT_PROMPT: &str =
 // ---------------------------------------------------------------------------
 
 /// Extract content between `<tag>` and `</tag>` (first occurrence).
+#[expect(
+    clippy::string_slice,
+    reason = "byte offsets derive from find()/literal-len() on `text` itself, so every slice bound lands on a char boundary"
+)]
 pub(super) fn extract_xml_tag(text: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -41,7 +45,7 @@ pub(super) fn extract_xml_tag(text: &str, tag: &str) -> Option<String> {
     if content.is_empty() {
         None
     } else {
-        Some(content.to_string())
+        Some(content.to_owned())
     }
 }
 
@@ -70,6 +74,10 @@ pub fn parse_compaction_response(raw: &str) -> Result<Vec<MemoryFileOp>, Compact
 }
 
 /// Extract <write path="...">...</write> blocks from a <memory> section.
+#[expect(
+    clippy::string_slice,
+    reason = "byte offsets derive from find()/literal-len() on `text` itself, so every slice bound lands on a char boundary"
+)]
 fn extract_write_ops(text: &str) -> Vec<MemoryFileOp> {
     let mut ops = Vec::new();
     let mut search_from = 0;
@@ -87,7 +95,7 @@ fn extract_write_ops(text: &str) -> Vec<MemoryFileOp> {
             continue;
         };
         let path_end = path_start.saturating_add(path_offset_end);
-        let path = text[path_start..path_end].trim().to_string();
+        let path = text[path_start..path_end].trim().to_owned();
 
         // Find closing > of the opening tag
         let Some(content_offset) = text[abs_start..].find('>') else {
@@ -104,7 +112,7 @@ fn extract_write_ops(text: &str) -> Vec<MemoryFileOp> {
         };
         let content_end = content_start.saturating_add(content_offset_end);
 
-        let content = text[content_start..content_end].trim().to_string();
+        let content = text[content_start..content_end].trim().to_owned();
         if !path.is_empty() {
             ops.push(MemoryFileOp { path, content });
         }
@@ -138,7 +146,7 @@ mod tests {
 - This is a stable preference
 </write>
 </memory>"#
-            .to_string()
+            .to_owned()
     }
 
     #[test]
@@ -146,7 +154,7 @@ mod tests {
         let text = "before <recap>hello world</recap> after";
         assert_eq!(
             extract_xml_tag(text, "recap"),
-            Some("hello world".to_string())
+            Some("hello world".to_owned())
         );
     }
 
@@ -165,7 +173,7 @@ mod tests {
         let text = "<recap>\n  trimmed content  \n</recap>";
         assert_eq!(
             extract_xml_tag(text, "recap"),
-            Some("trimmed content".to_string())
+            Some("trimmed content".to_owned())
         );
     }
 

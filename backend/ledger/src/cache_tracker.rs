@@ -113,7 +113,7 @@ impl CacheTracker {
         Self {
             state,
             last_ts: parsed.ok(),
-            last_model: Some(last_model.to_string()),
+            last_model: Some(last_model.to_owned()),
             last_thinking: Some(last_thinking),
             last_call_type: None,
             last_cache_read,
@@ -220,7 +220,7 @@ impl CacheTracker {
         // normal message calls, not heartbeat/tool_loop (different prefix).
         if let Some(kind) = tool_loop_kind {
             if anomaly.is_none() {
-                self.last_tool_loop_kind = Some(kind.to_string());
+                self.last_tool_loop_kind = Some(kind.to_owned());
                 self.last_tool_loop_cache_read = obs.cache_read_tokens;
             } else {
                 self.clear_tool_loop_baseline();
@@ -251,7 +251,7 @@ impl CacheTracker {
 
     fn update_metadata(&mut self, ts: Option<DateTime<Utc>>, model: &str, thinking: bool) {
         self.last_ts = ts;
-        self.last_model = Some(model.to_string());
+        self.last_model = Some(model.to_owned());
         self.last_thinking = Some(thinking);
     }
 

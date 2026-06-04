@@ -59,13 +59,13 @@ impl AnthropicStreamBuilder {
             output_tokens: 20,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
-            model: "claude-3-5-sonnet-20241022".to_string(),
-            stop_reason: "end_turn".to_string(),
+            model: "claude-3-5-sonnet-20241022".to_owned(),
+            stop_reason: "end_turn".to_owned(),
         }
     }
 
     pub fn text(mut self, t: &str) -> Self {
-        self.content_blocks.push(ContentBlock::Text(t.to_string()));
+        self.content_blocks.push(ContentBlock::Text(t.to_owned()));
         self
     }
 
@@ -74,7 +74,7 @@ impl AnthropicStreamBuilder {
     /// signature is empty/absent).
     pub fn thinking(mut self, thinking: &str, signature: Option<&str>) -> Self {
         self.content_blocks.push(ContentBlock::Thinking {
-            thinking: thinking.to_string(),
+            thinking: thinking.to_owned(),
             signature: signature.map(String::from),
         });
         self
@@ -85,16 +85,16 @@ impl AnthropicStreamBuilder {
     /// with a `openrouter.reasoning:` prefix.
     pub fn redacted_thinking(mut self, data: &str) -> Self {
         self.content_blocks.push(ContentBlock::RedactedThinking {
-            data: data.to_string(),
+            data: data.to_owned(),
         });
         self
     }
 
     pub fn tool_use(mut self, id: &str, name: &str, input: Value) -> Self {
-        self.stop_reason = "tool_use".to_string();
+        "tool_use".clone_into(&mut self.stop_reason);
         self.content_blocks.push(ContentBlock::ToolUse {
-            id: id.to_string(),
-            name: name.to_string(),
+            id: id.to_owned(),
+            name: name.to_owned(),
             input,
         });
         self
@@ -114,12 +114,12 @@ impl AnthropicStreamBuilder {
     }
 
     pub fn model(mut self, m: &str) -> Self {
-        self.model = m.to_string();
+        m.clone_into(&mut self.model);
         self
     }
 
     pub fn stop_reason(mut self, r: &str) -> Self {
-        self.stop_reason = r.to_string();
+        r.clone_into(&mut self.stop_reason);
         self
     }
 
@@ -220,19 +220,19 @@ impl AnthropicJsonBuilder {
             output_tokens: 20,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
-            model: "claude-3-5-sonnet-20241022".to_string(),
-            stop_reason: "end_turn".to_string(),
+            model: "claude-3-5-sonnet-20241022".to_owned(),
+            stop_reason: "end_turn".to_owned(),
         }
     }
 
     pub fn text(mut self, t: &str) -> Self {
-        self.content_blocks.push(ContentBlock::Text(t.to_string()));
+        self.content_blocks.push(ContentBlock::Text(t.to_owned()));
         self
     }
 
     pub fn thinking(mut self, thinking: &str, signature: Option<&str>) -> Self {
         self.content_blocks.push(ContentBlock::Thinking {
-            thinking: thinking.to_string(),
+            thinking: thinking.to_owned(),
             signature: signature.map(String::from),
         });
         self
@@ -240,16 +240,16 @@ impl AnthropicJsonBuilder {
 
     pub fn redacted_thinking(mut self, data: &str) -> Self {
         self.content_blocks.push(ContentBlock::RedactedThinking {
-            data: data.to_string(),
+            data: data.to_owned(),
         });
         self
     }
 
     pub fn tool_use(mut self, id: &str, name: &str, input: Value) -> Self {
-        self.stop_reason = "tool_use".to_string();
+        "tool_use".clone_into(&mut self.stop_reason);
         self.content_blocks.push(ContentBlock::ToolUse {
-            id: id.to_string(),
-            name: name.to_string(),
+            id: id.to_owned(),
+            name: name.to_owned(),
             input,
         });
         self
@@ -268,12 +268,12 @@ impl AnthropicJsonBuilder {
     }
 
     pub fn model(mut self, m: &str) -> Self {
-        self.model = m.to_string();
+        m.clone_into(&mut self.model);
         self
     }
 
     pub fn stop_reason(mut self, r: &str) -> Self {
-        self.stop_reason = r.to_string();
+        r.clone_into(&mut self.stop_reason);
         self
     }
 
@@ -815,7 +815,7 @@ async fn read_http_request(stream: &mut UnixStream) -> io::Result<(String, Strin
         .split_whitespace()
         .nth(1)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing request path"))?
-        .to_string();
+        .to_owned();
     let content_len = headers
         .lines()
         .filter_map(|line| line.split_once(':'))

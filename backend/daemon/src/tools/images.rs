@@ -38,7 +38,7 @@ pub async fn handle_generate_image(
     let prompt = input
         .get("prompt")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::InvalidArgs("missing 'prompt' field".to_string()))?;
+        .ok_or_else(|| ToolError::InvalidArgs("missing 'prompt' field".to_owned()))?;
 
     let client = ctx
         .llm_client()
@@ -54,7 +54,7 @@ pub async fn handle_generate_image(
     let caption = input
         .get("caption")
         .and_then(|v| v.as_str())
-        .map(str::to_string);
+        .map(str::to_owned);
 
     let params = ImageGenerateParams {
         provider_key: &config.provider,
@@ -96,7 +96,7 @@ pub async fn handle_generate_image(
             .await
             .map_err(|e| ToolError::Http(format!("failed to read image bytes: {e}")))?;
 
-        (bytes.to_vec(), "png".to_string())
+        (bytes.to_vec(), "png".to_owned())
     };
 
     let image_dir = std::path::Path::new(ctx.image_dir());
@@ -133,7 +133,7 @@ fn decode_data_url(url: &str) -> Result<(Vec<u8>, String), ToolError> {
         "jpeg" => "jpg",
         other => other,
     }
-    .to_string();
+    .to_owned();
 
     let bytes = BASE64
         .decode(b64_data)

@@ -357,8 +357,8 @@ impl ResolvedModel {
         // `cache_ttl = ""` to disable). Matches the billing-side default in
         // backend/ledger/src/pricing.rs.
         if fields.cache_ttl.is_none() {
-            fields.cache_ttl = capabilities::default_value(&sdk, capabilities::Field::CacheTtl)
-                .map(str::to_string);
+            fields.cache_ttl =
+                capabilities::default_value(&sdk, capabilities::Field::CacheTtl).map(str::to_owned);
         }
 
         // Drop sampler knobs the model's wire rejects (Claude >=4.7 cutoff,
@@ -704,7 +704,7 @@ impl ModelCatalog {
             [] => {
                 debug!(name, "Model not found in static catalog");
                 Err(CatalogError::NotFound {
-                    name: name.to_string(),
+                    name: name.to_owned(),
                 })
             }
             [only] => {
@@ -724,7 +724,7 @@ impl ModelCatalog {
                     "Ambiguous model name — found in multiple providers"
                 );
                 Err(CatalogError::AmbiguousName {
-                    name: name.to_string(),
+                    name: name.to_owned(),
                     locations: locations.join(", "),
                 })
             }
@@ -771,7 +771,7 @@ fn parse_category(
         // silently routing through `default_sdk("claude_code") == Openai`.
         if provider_key == "claude_code" {
             return Err(CatalogError::RemovedProvider {
-                category: category.to_string(),
+                category: category.to_owned(),
             });
         }
 
@@ -795,7 +795,7 @@ fn parse_category(
                     "[providers.<name>.defaults]"
                 };
                 return Err(CatalogError::ProviderScalarRetired {
-                    category: category.to_string(),
+                    category: category.to_owned(),
                     provider: provider_key.clone(),
                     key: k.clone(),
                     target,
@@ -842,14 +842,14 @@ fn parse_category(
                     .clone()
                     .try_into()
                     .map_err(|e| CatalogError::ParseEntry {
-                        category: category.to_string(),
+                        category: category.to_owned(),
                         provider: provider_key.clone(),
                         name: model_name.clone(),
                         source: Box::new(e),
                     })?;
 
             let model_id = entry.model_id.ok_or_else(|| CatalogError::MissingModelId {
-                category: category.to_string(),
+                category: category.to_owned(),
                 provider: provider_key.clone(),
                 name: model_name.clone(),
             })?;
@@ -858,7 +858,7 @@ fn parse_category(
             let resolved = ResolvedModel::from_parts(
                 model_name.clone(),
                 format!("{category}.{provider_key}.{model_name}"),
-                category.to_string(),
+                category.to_owned(),
                 provider_key.clone(),
                 model_id,
                 default_sdk(provider_key),
@@ -923,29 +923,29 @@ where
             Some((provider, model_id)) if !provider.is_empty() && !model_id.is_empty() => {}
             Some(_) => {
                 return Err(CatalogError::AuxProfileInvalid {
-                    category: category.to_string(),
+                    category: category.to_owned(),
                     key: key.clone(),
                     detail: "both the provider and model_id halves of the \
                              `provider:model_id` key must be non-empty"
-                        .to_string(),
+                        .to_owned(),
                     example,
                 });
             }
             None => {
                 return Err(CatalogError::AuxProfileInvalid {
-                    category: category.to_string(),
+                    category: category.to_owned(),
                     key: key.clone(),
                     detail: "the key must be a `provider:model_id` identity, not a bare alias"
-                        .to_string(),
+                        .to_owned(),
                     example,
                 });
             }
         }
         if !value.is_table() {
             return Err(CatalogError::AuxProfileInvalid {
-                category: category.to_string(),
+                category: category.to_owned(),
                 key: key.clone(),
-                detail: "the value must be a settings table".to_string(),
+                detail: "the value must be a settings table".to_owned(),
                 example,
             });
         }
@@ -954,9 +954,9 @@ where
         // shape, as well as misspelled settings.
         let settings: T = value.clone().try_into().map_err(|e: toml::de::Error| {
             CatalogError::AuxProfileInvalid {
-                category: category.to_string(),
+                category: category.to_owned(),
                 key: key.clone(),
-                detail: e.message().to_string(),
+                detail: e.message().to_owned(),
                 example,
             }
         })?;

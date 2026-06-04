@@ -76,7 +76,7 @@ fn resolve_ref(messages: &[Message], reference: &str) -> Result<String, (ErrorCo
     }
 
     // Literal msg_id passthrough
-    Ok(reference.to_string())
+    Ok(reference.to_owned())
 }
 
 fn resolve_assistant_ref(
@@ -557,10 +557,10 @@ pub fn inject_system(
     let msg = Message {
         msg_id: format!("m_{}", uuid::Uuid::new_v4()),
         role: Role::System,
-        content: text.to_string(),
+        content: text.to_owned(),
         images: vec![],
         content_blocks: vec![ContentBlock::Text {
-            text: text.to_string(),
+            text: text.to_owned(),
         }],
         alt_index: None,
         alt_count: None,
@@ -594,7 +594,7 @@ mod tests {
         let (push_tx, push_rx) = broadcast::channel(16);
         let data_dir = tmp.path().to_path_buf();
         let engine =
-            ConversationEngine::new("TestChar".to_string(), data_dir.clone(), push_tx.clone())
+            ConversationEngine::new("TestChar".to_owned(), data_dir.clone(), push_tx.clone())
                 .unwrap();
 
         let config = shore_config::LoadedConfig::new_for_test(
@@ -640,16 +640,16 @@ mod tests {
 
     fn make_msg(id: &str, role: Role, content: &str) -> Message {
         Message {
-            msg_id: id.to_string(),
+            msg_id: id.to_owned(),
             role,
-            content: content.to_string(),
+            content: content.to_owned(),
             images: vec![],
             content_blocks: vec![],
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
             provider_key: None,
-            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_owned(),
         }
     }
 

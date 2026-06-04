@@ -90,7 +90,7 @@ fn ids(arr: &Value) -> Vec<String> {
     arr.as_array()
         .unwrap_or_else(|| panic!("expected array, got {arr:?}"))
         .iter()
-        .map(|m| m["model_id"].as_str().unwrap_or_default().to_string())
+        .map(|m| m["model_id"].as_str().unwrap_or_default().to_owned())
         .collect()
 }
 
