@@ -27,6 +27,8 @@
     clippy::print_stdout,
     clippy::print_stderr,
     clippy::undocumented_unsafe_blocks,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::missing_assert_message,
     unsafe_code,
     elided_lifetimes_in_paths,
     unused_qualifications

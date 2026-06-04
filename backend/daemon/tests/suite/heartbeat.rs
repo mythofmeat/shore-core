@@ -37,7 +37,11 @@ async fn primed_harness(max_tool_rounds: u32) -> TestHarness {
 
 async fn fire_tick(harness: &TestHarness) {
     let dormant = harness.autonomy.heartbeat_tick_now(CHARACTER);
-    assert_eq!(dormant, Some(false));
+    assert_eq!(
+        dormant,
+        Some(false),
+        "first heartbeat tick should report the character as not dormant"
+    );
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(15)).await;
     for _ in 0..100 {

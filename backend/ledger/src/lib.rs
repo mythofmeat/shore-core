@@ -25,6 +25,8 @@
     clippy::match_wildcard_for_single_variants,
     clippy::wildcard_enum_match_arm,
     clippy::undocumented_unsafe_blocks,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::missing_assert_message,
     unsafe_code,
     elided_lifetimes_in_paths,
     unused_qualifications
