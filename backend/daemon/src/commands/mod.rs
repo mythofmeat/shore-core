@@ -202,7 +202,7 @@ mod tests {
         let (push_tx, push_rx) = broadcast::channel(16);
         let data_dir = tmp.path().to_path_buf();
         let engine =
-            ConversationEngine::new("TestChar".to_string(), data_dir.clone(), push_tx.clone())
+            ConversationEngine::new("TestChar".to_owned(), data_dir.clone(), push_tx.clone())
                 .unwrap();
 
         let config = LoadedConfig::new_for_test(

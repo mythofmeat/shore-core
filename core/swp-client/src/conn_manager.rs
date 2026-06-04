@@ -53,8 +53,8 @@ pub fn spawn_connection(
     let (event_tx, event_rx) = mpsc::channel(256);
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
 
-    let client_id = client_id.to_string();
-    let app_name = app_name.to_string();
+    let client_id = client_id.to_owned();
+    let app_name = app_name.to_owned();
 
     let _ignored = tokio::spawn(connection_loop(
         addr, config, client_id, app_name, character, event_tx, cmd_rx,
@@ -70,7 +70,7 @@ fn next_backoff(current: Duration, max: Duration) -> Duration {
 
 fn resolve_addr(addr: Option<&str>, config: Option<&str>) -> crate::Result<ServerAddr> {
     if let Some(addr) = addr {
-        return Ok(ServerAddr(addr.to_string()));
+        return Ok(ServerAddr(addr.to_owned()));
     }
     discover_or_default(config)
 }

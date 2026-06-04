@@ -136,7 +136,7 @@ fn config_set(ctx: &mut CommandContext, key: &str, value: &str) -> CommandResult
                 .models
                 .find_model(value)
                 .map_err(|e| (ErrorCode::NotFound, format!("{e}")))?;
-            ctx.active_model = Some(value.to_string());
+            ctx.active_model = Some(value.to_owned());
             // Override no longer matches whatever was pre-resolved from
             // preferences — drop the cached ResolvedModel so the next
             // command re-resolves against the new name.

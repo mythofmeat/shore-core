@@ -522,7 +522,7 @@ impl TestHarness {
     /// connection drives commands against its own character workspace.
     pub async fn connect_as_character(&self, character: &str) -> SWPConnection {
         let (conn, _hello) =
-            connect_client(&self.addr, character, Some(character.to_string())).await;
+            connect_client(&self.addr, character, Some(character.to_owned())).await;
         conn
     }
 
@@ -577,7 +577,7 @@ async fn connect_client(
     selected_character: Option<String>,
 ) -> (SWPConnection, ServerHello) {
     match SWPConnection::connect(
-        &ServerAddr(addr.to_string()),
+        &ServerAddr(addr.to_owned()),
         "test",
         client_name,
         selected_character,

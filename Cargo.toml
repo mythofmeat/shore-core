@@ -143,6 +143,17 @@ undocumented_unsafe_blocks = "warn"
 multiple_unsafe_ops_per_block = "warn"
 missing_assert_message = "warn"
 
+# String-discipline ratchet (#152). Same per-crate-lock pattern as the blocks
+# above: `warn` here so a new crate inherits the baseline (CI's `-D warnings`
+# keeps it hard), while each cleaned crate escalates these to `deny` via its
+# crate-root `#![deny(...)]`. `string_slice` closes a real panic class —
+# `&s[i..j]` panics when an index falls mid-UTF-8-codepoint — so call sites use
+# `.get(..)` / char-boundary-aware slicing or carry a reasoned `#[expect]` when
+# the bounds are provably safe. `str_to_string` is clarity-only: `.to_owned()`
+# states intent (str -> String) more directly than `.to_string()`.
+string_slice = "warn"
+str_to_string = "warn"
+
 [workspace.lints.rust]
 # Rustc-side paranoia lints from the Tier 2 ratchet (#115). Crates also deny
 # these at their roots once clean, with documented local `unsafe_code`

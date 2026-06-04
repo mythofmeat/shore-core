@@ -165,9 +165,9 @@ fn configured_token_limit(configured: Option<u32>, default: usize) -> usize {
 
 fn template_vars(params: &PromptParams<'_>) -> HashMap<String, String> {
     let mut vars = HashMap::new();
-    let _ignored = vars.insert("char".into(), params.character_name.to_string());
-    let _ignored = vars.insert("character_name".into(), params.character_name.to_string());
-    let _ignored = vars.insert("user".into(), params.display_name.to_string());
+    let _ignored = vars.insert("char".into(), params.character_name.to_owned());
+    let _ignored = vars.insert("character_name".into(), params.character_name.to_owned());
+    let _ignored = vars.insert("user".into(), params.display_name.to_owned());
     let _ignored = vars.insert("date".into(), String::new());
     let _ignored = vars.insert("time".into(), String::new());
     vars
@@ -187,7 +187,7 @@ fn build_system_blocks(params: &PromptParams<'_>, template: &str) -> Vec<SystemB
     if let Some(tools_guidance) = params.tools_guidance.filter(|s| !s.is_empty()) {
         system.push(SystemBlock {
             label: "tools_guidance".into(),
-            content: tools_guidance.to_string(),
+            content: tools_guidance.to_owned(),
         });
     }
 
@@ -287,11 +287,15 @@ fn available_message_tokens(
 ///
 /// Processes conditionals first (one pass per `{{#if ...}}`), then substitutes
 /// remaining `{{key}}` variables.
+#[expect(
+    clippy::string_slice,
+    reason = "byte offsets derive from find()/literal-len() on `result` itself, so every slice bound lands on a char boundary"
+)]
 pub fn render_template<S: BuildHasher>(
     template: &str,
     vars: &HashMap<String, String, S>,
 ) -> String {
-    let mut result = template.to_string();
+    let mut result = template.to_owned();
 
     // Process all conditional blocks.
     while let Some(if_start) = result.find("{{#if ") {
@@ -301,7 +305,7 @@ pub fn render_template<S: BuildHasher>(
         };
         let name = result[name_start..name_start.saturating_add(name_end)]
             .trim()
-            .to_string();
+            .to_owned();
         let open_tag_end = name_start.saturating_add(name_end).saturating_add(2);
 
         let close_tag = "{{/if}}";
@@ -352,12 +356,12 @@ pub fn xml_tag_from_name(name: &str, fallback: &str) -> String {
     while tag.contains("__") {
         tag = tag.replace("__", "_");
     }
-    tag = tag.trim_matches('_').to_string();
+    let tag = tag.trim_matches('_');
 
     if tag.is_empty() {
-        fallback.to_string()
+        fallback.to_owned()
     } else {
-        tag
+        tag.to_owned()
     }
 }
 
@@ -393,14 +397,14 @@ fn estimate_message_tokens(msg: &Message) -> usize {
 fn relative_gap_phrase(gap_secs: f64) -> String {
     if gap_secs < ONE_AND_HALF_HOURS_SECS {
         // < 1.5 hours
-        "about an hour later".to_string()
+        "about an hour later".to_owned()
     } else if gap_secs < EIGHTEEN_HOURS_SECS {
         // < 18 hours
         let hours = f64_to_u32_saturating((gap_secs / SECS_PER_HOUR).round());
         format!("{hours} hours later")
     } else if gap_secs < THIRTY_SIX_HOURS_SECS {
         // < 36 hours
-        "about a day later".to_string()
+        "about a day later".to_owned()
     } else {
         let days = f64_to_u32_saturating((gap_secs / SECS_PER_DAY).round());
         format!("{days} days later")
@@ -562,14 +566,14 @@ mod tests {
         Message {
             msg_id: uuid::Uuid::new_v4().to_string(),
             role,
-            content: content.to_string(),
+            content: content.to_owned(),
             images: vec![],
             content_blocks: vec![],
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
             provider_key: None,
-            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_owned(),
         }
     }
 
@@ -944,16 +948,16 @@ mod tests {
         Message {
             msg_id: uuid::Uuid::new_v4().to_string(),
             role,
-            content: content.to_string(),
+            content: content.to_owned(),
             images: vec![],
             content_blocks: vec![ContentBlock::Text {
-                text: content.to_string(),
+                text: content.to_owned(),
             }],
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
             provider_key: None,
-            timestamp: timestamp.to_string(),
+            timestamp: timestamp.to_owned(),
         }
     }
 

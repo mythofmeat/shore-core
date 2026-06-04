@@ -21,6 +21,8 @@
     clippy::dbg_macro,
     clippy::exit,
     clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::str_to_string,
     clippy::mem_forget,
     clippy::match_wildcard_for_single_variants,
     clippy::wildcard_enum_match_arm,

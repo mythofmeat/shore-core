@@ -116,26 +116,26 @@ impl CharacterRegistry {
         name: &str,
     ) -> Result<Arc<Mutex<ConversationEngine>>, EngineError> {
         if !self.has_character(name) {
-            return Err(EngineError::CharacterNotFound(name.to_string()));
+            return Err(EngineError::CharacterNotFound(name.to_owned()));
         }
 
         // Entry API can't be used directly with fallible init, so check + insert.
         if !self.engines.contains_key(name) {
             let engine = ConversationEngine::new(
-                name.to_string(),
+                name.to_owned(),
                 self.data_dir.clone(),
                 self.push_tx.clone(),
             )?;
             info!(character = name, "Created engine for character");
             let _ignored = self
                 .engines
-                .insert(name.to_string(), Arc::new(Mutex::new(engine)));
+                .insert(name.to_owned(), Arc::new(Mutex::new(engine)));
         }
 
         self.engines
             .get(name)
             .map(Arc::clone)
-            .ok_or_else(|| EngineError::CharacterNotFound(name.to_string()))
+            .ok_or_else(|| EngineError::CharacterNotFound(name.to_owned()))
     }
 
     /// Load the character definition (system prompt) for a given character.
@@ -158,14 +158,14 @@ impl CharacterRegistry {
             match merged {
                 Ok(Some(config)) => {
                     info!(character = name, "Loaded per-character config override");
-                    let _ignored = self.char_configs.insert(name.to_string(), Some(config));
+                    let _ignored = self.char_configs.insert(name.to_owned(), Some(config));
                 }
                 Ok(None) => {
-                    let _ignored = self.char_configs.insert(name.to_string(), None);
+                    let _ignored = self.char_configs.insert(name.to_owned(), None);
                 }
                 Err(e) => {
                     warn!(character = name, error = %e, "Failed to load character config, using global");
-                    let _ignored = self.char_configs.insert(name.to_string(), None);
+                    let _ignored = self.char_configs.insert(name.to_owned(), None);
                 }
             }
         }
@@ -185,7 +185,7 @@ impl CharacterRegistry {
     /// This is used by runtime config commands. It is deliberately not written
     /// back to disk, and `config_reset` clears it by reloading registry state.
     pub fn set_runtime_effective_config(&mut self, name: &str, config: LoadedConfig) {
-        let _ignored = self.char_configs.insert(name.to_string(), Some(config));
+        let _ignored = self.char_configs.insert(name.to_owned(), Some(config));
     }
 
     /// Update the global config reference and invalidate per-character caches.
@@ -261,10 +261,10 @@ impl CharacterRegistry {
         match requested {
             Some(name) => {
                 if self.has_character(name) {
-                    Ok(name.to_string())
+                    Ok(name.to_owned())
                 } else {
                     Err(CharacterError::NotFound {
-                        name: name.to_string(),
+                        name: name.to_owned(),
                         available: self.available.clone(),
                     })
                 }
@@ -340,8 +340,8 @@ mod tests {
         let reg = make_registry(&tmp, &["Alice", "Bob"]);
         let chars = reg.available_characters();
         assert_eq!(chars.len(), 2);
-        assert!(chars.contains(&"Alice".to_string()));
-        assert!(chars.contains(&"Bob".to_string()));
+        assert!(chars.contains(&"Alice".to_owned()));
+        assert!(chars.contains(&"Bob".to_owned()));
     }
 
     #[test]
@@ -414,14 +414,14 @@ mod tests {
             .unwrap()
             .blocking_lock()
             .character_name()
-            .to_string();
+            .to_owned();
         // Second call returns the same engine (cached).
         let name2 = reg
             .get_or_create("Alice")
             .unwrap()
             .blocking_lock()
             .character_name()
-            .to_string();
+            .to_owned();
         assert_eq!(name1, "Alice");
         assert_eq!(name2, "Alice");
     }

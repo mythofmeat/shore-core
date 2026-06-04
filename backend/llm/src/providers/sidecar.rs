@@ -193,7 +193,7 @@ mod tests {
     ) -> TestResult<oneshot::Receiver<TestResult<(String, String)>>> {
         let listener = UnixListener::bind(socket_path)?;
         let (tx, rx) = oneshot::channel();
-        let status = status.to_string();
+        let status = status.to_owned();
         tokio::spawn(async move {
             let result = async {
                 let (mut stream, _) = listener.accept().await?;
@@ -237,7 +237,7 @@ mod tests {
             .split_whitespace()
             .nth(1)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing request path"))?
-            .to_string();
+            .to_owned();
         let mut content_len = 0;
         for line in headers.lines() {
             let Some((name, value)) = line.split_once(':') else {
@@ -312,8 +312,7 @@ mod tests {
             "{\"type\":\"done\",\"content\":\"\",\"finish_reason\":\"end_turn\",",
             "\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cache_read_tokens\":0,\"cache_creation_tokens\":0},",
             "\"timing\":{\"total_ms\":1,\"time_to_first_token_ms\":1}}\n"
-        )
-        .to_string();
+        ).to_owned();
         let captured = serve_once(&socket, "200 OK", response_body)?;
 
         let mut reader = stream(&test_request(), &socket).await?;

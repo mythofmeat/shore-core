@@ -54,7 +54,7 @@ impl NotificationService {
         }
         let config = Arc::clone(&self.config);
         let client = self.http_client.clone();
-        let title = title.to_string();
+        let title = title.to_owned();
         let body = truncate_summary(body, 200);
         let _ignored = tokio::spawn(async move {
             if let Err(e) = dispatch(&config, &client, &title, &body).await {
@@ -128,7 +128,7 @@ async fn dispatch_ntfy(
     let mut req = client
         .post(&url)
         .header("Title", title)
-        .body(body.to_string());
+        .body(body.to_owned());
     if !config.token.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", config.token));
     }

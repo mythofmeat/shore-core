@@ -53,7 +53,7 @@ async fn spawned_daemon_registers_resolved_port_when_bound_to_zero() {
                         e.get("id").and_then(|v| v.as_str()) == Some(instance_id.as_str())
                     }) {
                         if let Some(addr) = entry.get("addr").and_then(|v| v.as_str()) {
-                            break addr.to_string();
+                            break addr.to_owned();
                         }
                     }
                 }

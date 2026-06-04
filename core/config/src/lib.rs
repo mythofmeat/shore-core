@@ -24,6 +24,8 @@
     clippy::wildcard_enum_match_arm,
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::str_to_string,
     clippy::undocumented_unsafe_blocks,
     clippy::multiple_unsafe_ops_per_block,
     clippy::missing_assert_message,
@@ -691,7 +693,7 @@ fn validate_usage_config(config: &app::UsageConfig) -> Result<(), ConfigError> {
             let display_index = idx.saturating_add(1);
             format!("budget {display_index}")
         } else {
-            budget.name.trim().to_string()
+            budget.name.trim().to_owned()
         };
         if !names.insert(name.clone()) {
             return Err(ConfigError::Validation(format!(

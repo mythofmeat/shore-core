@@ -295,8 +295,8 @@ pub fn resolve_key_candidates_for(
     // for sdk/base_url/discovery only — behave identically to pre-Phase-4
     // code.
     let env = fallback_api_key_env.map_or_else(
-        || crate::default_api_key_env(provider_key).to_string(),
-        str::to_string,
+        || crate::default_api_key_env(provider_key).to_owned(),
+        str::to_owned,
     );
     vec![KeyCandidate {
         name: "default".into(),

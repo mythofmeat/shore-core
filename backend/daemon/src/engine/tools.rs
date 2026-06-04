@@ -208,7 +208,7 @@ async fn execute_tool_use(
 ) -> ToolDispatchOutcome {
     let _ignored = direct_tx
         .send(ServerMessage::ToolCall(ToolCall {
-            rid: request_rid.map(str::to_string),
+            rid: request_rid.map(str::to_owned),
             tool_id: tool_use.id.clone(),
             tool_name: tool_use.name.clone(),
             input: tool_use.input.clone(),
@@ -229,7 +229,7 @@ async fn execute_tool_use(
         Ok(value) => {
             let output = value.as_str().map_or_else(
                 || serde_json::to_string(&value).unwrap_or_default(),
-                str::to_string,
+                str::to_owned,
             );
             (output, false, Some(value))
         }
@@ -275,9 +275,9 @@ async fn attach_generated_image(
     let caption = value
         .get("caption")
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(str::to_owned);
     let image_ref = ImageRef {
-        path: path.to_string(),
+        path: path.to_owned(),
         caption: caption.clone(),
         data: None,
     };
@@ -286,8 +286,8 @@ async fn attach_generated_image(
     }
     let _ignored = direct_tx
         .send(ServerMessage::SendImage(SendImage {
-            rid: request_rid.map(str::to_string),
-            path: path.to_string(),
+            rid: request_rid.map(str::to_owned),
+            path: path.to_owned(),
             caption,
             data: crate::handler::image_data_for_path(path),
         }))
@@ -326,10 +326,10 @@ async fn emit_tool_result(
 ) {
     let _ignored = direct_tx
         .send(ServerMessage::ToolResult(SwpToolResult {
-            rid: request_rid.map(str::to_string),
+            rid: request_rid.map(str::to_owned),
             tool_id: tool_use.id.clone(),
             tool_name: tool_use.name.clone(),
-            output: output.to_string(),
+            output: output.to_owned(),
             is_error,
         }))
         .await;
@@ -429,7 +429,7 @@ mod tests {
             model: "test".into(),
             api_key: "sk-test".into(),
             api_key_name: None,
-            base_url: Some(base_url.to_string()),
+            base_url: Some(base_url.to_owned()),
             messages,
             system: None,
             tools: None,

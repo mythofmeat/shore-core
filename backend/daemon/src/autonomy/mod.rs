@@ -309,9 +309,9 @@ mod heartbeat_log_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("heartbeat.jsonl");
         let good = serde_json::to_string(&HeartbeatEvent {
-            timestamp: "2026-04-30T00:00:00+00:00".to_string(),
+            timestamp: "2026-04-30T00:00:00+00:00".to_owned(),
             kind: HeartbeatEventKind::TickFired,
-            detail: "ok".to_string(),
+            detail: "ok".to_owned(),
         })
         .unwrap();
         let contents = format!("{good}\nnot json\n{good}\n");
@@ -326,9 +326,9 @@ mod heartbeat_log_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("heartbeat.jsonl");
         let event = HeartbeatEvent {
-            timestamp: "2026-04-30T00:00:00+00:00".to_string(),
+            timestamp: "2026-04-30T00:00:00+00:00".to_owned(),
             kind: HeartbeatEventKind::TickFired,
-            detail: "x".to_string(),
+            detail: "x".to_owned(),
         };
         let line = serde_json::to_string(&event).unwrap();
         let contents = (0..HEARTBEAT_LOG_CAPACITY.saturating_add(50))

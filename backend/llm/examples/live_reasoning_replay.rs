@@ -82,11 +82,7 @@ fn load_env_file() {
         if key.is_empty() {
             continue;
         }
-        let value = value
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
-            .to_string();
+        let value = value.trim().trim_matches('"').trim_matches('\'').to_owned();
         env::set_var(key, value);
     }
 }
@@ -133,12 +129,7 @@ fn opencode_auth_key(provider: &str) -> Option<String> {
     let path = PathBuf::from("/home/eshen/.local/share/opencode/auth.json");
     let contents = fs::read_to_string(path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&contents).ok()?;
-    let key = value
-        .get(provider)?
-        .get("key")?
-        .as_str()?
-        .trim()
-        .to_string();
+    let key = value.get(provider)?.get("key")?.as_str()?.trim().to_owned();
     if key.is_empty() {
         None
     } else {
@@ -218,10 +209,10 @@ async fn main() -> ExitCode {
 
     let request = LlmRequest {
         sdk: Sdk::Openai,
-        model: target.model.to_string(),
+        model: target.model.to_owned(),
         api_key,
         api_key_name: Some("default".into()),
-        base_url: Some(target.base_url.to_string()),
+        base_url: Some(target.base_url.to_owned()),
         messages: replay_messages(),
         system: Some(json!("You are a concise live API smoke-test assistant.")),
         tools: Some(vec![json!({
@@ -239,7 +230,7 @@ async fn main() -> ExitCode {
         temperature: Some(0.0),
         top_p: None,
         provider_options,
-        provider_key: Some(target.provider_key.to_string()),
+        provider_key: Some(target.provider_key.to_owned()),
         rid: Some(format!("live-reasoning-replay-{name}")),
         forensic_character: None,
         retain_long: false,

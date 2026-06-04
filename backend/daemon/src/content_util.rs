@@ -130,7 +130,7 @@ pub fn dispatch_result_to_output(result: Result<Value, crate::tools::ToolError>)
     match result {
         Ok(value) => {
             let s = if let Some(s) = value.as_str() {
-                s.to_string()
+                s.to_owned()
             } else {
                 serde_json::to_string(&value).unwrap_or_default()
             };
@@ -629,19 +629,19 @@ mod tests {
 
     #[test]
     fn truncate_under_limit_returns_unchanged() {
-        let s = "short output".to_string();
+        let s = "short output".to_owned();
         assert_eq!(truncate_tool_result(s.clone(), 100), s);
     }
 
     #[test]
     fn truncate_at_exact_limit_returns_unchanged() {
-        let s = "abcde".to_string();
+        let s = "abcde".to_owned();
         assert_eq!(truncate_tool_result(s.clone(), 5), s);
     }
 
     #[test]
     fn truncate_over_limit_cuts_and_annotates() {
-        let s = "abcdefghij".to_string(); // 10 chars
+        let s = "abcdefghij".to_owned(); // 10 chars
         let result = truncate_tool_result(s, 4);
         assert!(result.starts_with("abcd"));
         assert!(
@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn truncate_respects_char_boundaries() {
         // Multi-byte characters must never be split mid-codepoint.
-        let s = "héllo wörld 🌊🌊🌊".to_string();
+        let s = "héllo wörld 🌊🌊🌊".to_owned();
         let result = truncate_tool_result(s, 7);
         // First 7 chars are "héllo w"; the kept prefix must be valid UTF-8
         // (guaranteed by String) and start with those characters.

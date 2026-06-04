@@ -353,7 +353,7 @@ impl MessageHandler {
                     .data
                     .get("character")
                     .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
+                    .map(str::to_owned);
                 if let Some(selected) = selected {
                     let _ignored = self
                         .session_router

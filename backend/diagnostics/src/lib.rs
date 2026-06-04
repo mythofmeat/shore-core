@@ -26,6 +26,8 @@
     clippy::wildcard_enum_match_arm,
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::str_to_string,
     clippy::undocumented_unsafe_blocks,
     clippy::multiple_unsafe_ops_per_block,
     clippy::missing_assert_message,
@@ -186,9 +188,13 @@ impl Default for Diagnostics {
 }
 
 /// Truncate a string to at most `max` bytes on a char boundary.
+#[expect(
+    clippy::string_slice,
+    reason = "slice end comes from floor_char_boundary(), which is guaranteed to be a char boundary"
+)]
 pub fn truncate_summary(s: &str, max: usize) -> String {
     if s.len() <= max {
-        s.to_string()
+        s.to_owned()
     } else {
         let end = s.floor_char_boundary(max);
         format!("{}…", &s[..end])

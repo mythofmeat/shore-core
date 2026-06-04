@@ -60,7 +60,7 @@ where
 {
     let mut spans = Vec::new();
     ctx.visit_spans(|span| {
-        let mut rendered = span.name().to_string();
+        let mut rendered = span.name().to_owned();
         let ext = span.extensions();
         // Formatted fields are normally populated by the subscriber on
         // new_span, but absence is not worth panicking over inside a log
@@ -104,7 +104,7 @@ impl EventFields {
         if field.name() == "message" {
             self.message = Some(value);
         } else {
-            self.fields.push((field.name().to_string(), value));
+            self.fields.push((field.name().to_owned(), value));
         }
     }
 }
@@ -116,7 +116,7 @@ impl Visit for EventFields {
 
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
-            self.message = Some(value.to_string());
+            self.message = Some(value.to_owned());
         } else {
             self.push(field, format!("{value:?}"));
         }

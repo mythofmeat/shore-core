@@ -36,7 +36,7 @@ pub(crate) fn read_active_character() -> Option<String> {
         None
     } else {
         debug!(character = trimmed, "Read active character from state file");
-        Some(trimmed.to_string())
+        Some(trimmed.to_owned())
     }
 }
 
@@ -63,7 +63,7 @@ pub(crate) fn read_active_model() -> Option<String> {
         None
     } else {
         debug!(model = trimmed, "Read active model from state file");
-        Some(trimmed.to_string())
+        Some(trimmed.to_owned())
     }
 }
 
@@ -99,7 +99,7 @@ pub(crate) fn resolve_display_character(
         .filter(|s| !s.is_empty())
         .or(requested.filter(|s| !s.is_empty()))
         .unwrap_or("Assistant")
-        .to_string()
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -114,11 +114,11 @@ mod tests {
         // which character it was streaming.
         assert_eq!(
             resolve_display_character(Some("sable"), None),
-            "sable".to_string(),
+            "sable".to_owned(),
         );
         assert_eq!(
             resolve_display_character(Some("sable"), Some("ignored")),
-            "sable".to_string(),
+            "sable".to_owned(),
             "daemon answer must override a stale request",
         );
     }
@@ -127,7 +127,7 @@ mod tests {
     fn resolve_display_character_falls_back_to_request() {
         assert_eq!(
             resolve_display_character(None, Some("aria")),
-            "aria".to_string(),
+            "aria".to_owned(),
         );
     }
 
@@ -135,11 +135,11 @@ mod tests {
     fn resolve_display_character_final_fallback() {
         assert_eq!(
             resolve_display_character(None, None),
-            "Assistant".to_string(),
+            "Assistant".to_owned(),
         );
         assert_eq!(
             resolve_display_character(Some(""), Some("")),
-            "Assistant".to_string(),
+            "Assistant".to_owned(),
             "empty strings should be treated as absent",
         );
     }

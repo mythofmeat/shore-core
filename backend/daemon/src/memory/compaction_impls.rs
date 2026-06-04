@@ -66,14 +66,14 @@ pub fn resolve_image_gen_config(
                     "multiple [image_generation.\"provider:model_id\"] entries are \
                      configured but defaults.image_generation is unset; set \
                      defaults.image_generation to choose one"
-                        .to_string(),
+                        .to_owned(),
                 );
             }
             _ => {
                 return Err("no image generation model configured; set \
                      defaults.image_generation = \"provider:model_id\" and configure \
                      [providers.<provider>] (see CONFIGURATION.md)."
-                    .to_string());
+                    .to_owned());
             }
         }
     };
@@ -121,14 +121,14 @@ pub fn resolve_image_gen_config(
     let settings = image_gen.get(target);
     let size = settings
         .and_then(|s| s.size.clone())
-        .unwrap_or_else(|| "1024x1024".to_string());
+        .unwrap_or_else(|| "1024x1024".to_owned());
     let quality = settings.and_then(|s| s.quality.clone());
     let aspect_ratio = settings.and_then(|s| s.aspect_ratio.clone());
     let image_size = settings.and_then(|s| s.image_size.clone());
 
     Ok(ImageGenConfig {
-        provider: provider_key.to_string(),
-        model_id: model_id.to_string(),
+        provider: provider_key.to_owned(),
+        model_id: model_id.to_owned(),
         api_key,
         base_url,
         size,
@@ -437,7 +437,7 @@ impl ConversationManager for RealConversationManager {
         params: RetentionParams,
     ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
         let character_dir = self.character_dir.clone();
-        let conversation_id = conversation_id.to_string();
+        let conversation_id = conversation_id.to_owned();
 
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
@@ -468,19 +468,19 @@ mod tests {
 
     fn test_compaction_model(api_key_env: &str) -> ResolvedModel {
         ResolvedModel::from_parts(
-            "compact".to_string(),
-            "chat.anthropic.compact".to_string(),
-            "chat".to_string(),
-            "anthropic".to_string(),
-            "compaction-model".to_string(),
+            "compact".to_owned(),
+            "chat.anthropic.compact".to_owned(),
+            "chat".to_owned(),
+            "anthropic".to_owned(),
+            "compaction-model".to_owned(),
             Sdk::Anthropic,
             ModelConfigFields {
                 sdk: Some(Sdk::Anthropic),
-                api_key_env: Some(api_key_env.to_string()),
-                base_url: Some("http://compaction.example".to_string()),
+                api_key_env: Some(api_key_env.to_owned()),
+                base_url: Some("http://compaction.example".to_owned()),
                 max_output_tokens: Some(777),
                 temperature: Some(0.25),
-                reasoning_effort: Some("medium".to_string()),
+                reasoning_effort: Some("medium".to_owned()),
                 ..Default::default()
             },
         )
@@ -488,16 +488,16 @@ mod tests {
 
     fn test_openai_compaction_model(api_key_env: &str) -> ResolvedModel {
         ResolvedModel::from_parts(
-            "gpt".to_string(),
-            "chat.openai.gpt".to_string(),
-            "chat".to_string(),
-            "openai".to_string(),
-            "gpt-4o".to_string(),
+            "gpt".to_owned(),
+            "chat.openai.gpt".to_owned(),
+            "chat".to_owned(),
+            "openai".to_owned(),
+            "gpt-4o".to_owned(),
             Sdk::Openai,
             ModelConfigFields {
                 sdk: Some(Sdk::Openai),
-                api_key_env: Some(api_key_env.to_string()),
-                base_url: Some("http://compaction-openai.example".to_string()),
+                api_key_env: Some(api_key_env.to_owned()),
+                base_url: Some("http://compaction-openai.example".to_owned()),
                 max_output_tokens: Some(777),
                 ..Default::default()
             },
@@ -516,10 +516,10 @@ mod tests {
     ) -> LlmRequest {
         LlmRequest {
             sdk,
-            model: "chat-model".to_string(),
-            api_key: "chat-secret".to_string(),
+            model: "chat-model".to_owned(),
+            api_key: "chat-secret".to_owned(),
             api_key_name: None,
-            base_url: Some("http://chat.example".to_string()),
+            base_url: Some("http://chat.example".to_owned()),
             messages,
             system,
             tools,
@@ -530,9 +530,9 @@ mod tests {
                 "cache_ttl": "1h",
                 "chat_only": true
             })),
-            provider_key: Some("anthropic".to_string()),
-            rid: Some("rid-chat".to_string()),
-            forensic_character: Some("chat-forensics".to_string()),
+            provider_key: Some("anthropic".to_owned()),
+            rid: Some("rid-chat".to_owned()),
+            forensic_character: Some("chat-forensics".to_owned()),
             retain_long: false,
         }
     }
@@ -551,7 +551,7 @@ mod tests {
             .unwrap(),
             model,
             ProviderRegistry::default(),
-            "alice".to_string(),
+            "alice".to_owned(),
         );
         let chat_request = chat_shape_request(
             Sdk::Anthropic,
@@ -635,7 +635,7 @@ mod tests {
             .unwrap(),
             model,
             ProviderRegistry::default(),
-            "alice".to_string(),
+            "alice".to_owned(),
         );
 
         let chat_tools = vec![json!({
@@ -719,7 +719,7 @@ mod tests {
             .unwrap(),
             model,
             ProviderRegistry::default(),
-            "alice".to_string(),
+            "alice".to_owned(),
         );
 
         let chat_request = chat_shape_request(

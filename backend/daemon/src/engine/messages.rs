@@ -176,11 +176,11 @@ impl MessageStore {
             .messages
             .iter_mut()
             .find(|m| m.msg_id == msg_id)
-            .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_string()))?;
+            .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_owned()))?;
         info!(msg_id, "Editing message");
-        msg.content = new_content.to_string();
+        new_content.clone_into(&mut msg.content);
         msg.content_blocks = vec![ContentBlock::Text {
-            text: new_content.to_string(),
+            text: new_content.to_owned(),
         }];
         self.persist()
     }
@@ -230,7 +230,7 @@ impl MessageStore {
             .messages
             .iter()
             .position(|m| m.msg_id == msg_id)
-            .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_string()))?;
+            .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_owned()))?;
         info!(msg_id, "Deleting message");
         let _ignored = self.messages.remove(idx);
         self.persist()
@@ -243,7 +243,7 @@ impl MessageStore {
             .messages
             .iter_mut()
             .find(|m| m.msg_id == msg_id)
-            .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_string()))?;
+            .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_owned()))?;
         info!(msg_id, alt_index = index, alt_count = count, "Setting alt");
         msg.alt_index = Some(index);
         msg.alt_count = Some(count);
@@ -256,7 +256,7 @@ impl MessageStore {
             .messages
             .iter_mut()
             .find(|m| m.msg_id == msg_id)
-            .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_string()))?;
+            .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_owned()))?;
         let new_count = msg.alt_count.unwrap_or(1).saturating_add(1);
         msg.alt_count = Some(new_count);
         // Point to the newest candidate.
@@ -320,7 +320,7 @@ impl MessageStore {
         let target = merged
             .iter()
             .find(|m| m.msg_id == msg_id)
-            .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_string()))?;
+            .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_owned()))?;
         let alt_count = usize_to_u32(target.alternatives.len());
         if alt_count == 0 {
             return Err(EngineError::InvalidAlt(format!(
@@ -368,7 +368,7 @@ impl MessageStore {
         } else if let Some(raw) = self.messages.iter_mut().find(|m| m.msg_id == msg_id) {
             *raw = selected.clone();
         } else {
-            return Err(EngineError::MessageNotFound(msg_id.to_string()));
+            return Err(EngineError::MessageNotFound(msg_id.to_owned()));
         }
 
         self.persist()?;
@@ -483,22 +483,22 @@ mod tests {
     fn make_msg(id: &str, role: Role, content: &str) -> Message {
         use shore_protocol::types::ContentBlock;
         Message {
-            msg_id: id.to_string(),
+            msg_id: id.to_owned(),
             role,
-            content: content.to_string(),
+            content: content.to_owned(),
             images: vec![],
             content_blocks: if content.is_empty() {
                 vec![]
             } else {
                 vec![ContentBlock::Text {
-                    text: content.to_string(),
+                    text: content.to_owned(),
                 }]
             },
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
             provider_key: None,
-            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_owned(),
         }
     }
 
@@ -670,7 +670,7 @@ mod tests {
         store.append(make_msg("u1", Role::User, "Prompt")).unwrap();
         // Original answer minted by Anthropic.
         let mut first = make_msg("a1", Role::Assistant, "First answer");
-        first.provider_key = Some("anthropic".to_string());
+        first.provider_key = Some("anthropic".to_owned());
         store.append(first).unwrap();
 
         let pending = store.pending_regen_alt().unwrap();
@@ -682,7 +682,7 @@ mod tests {
 
         // Regenerate under a different provider.
         let mut second = make_msg("a2", Role::Assistant, "Second answer");
-        second.provider_key = Some("openrouter".to_string());
+        second.provider_key = Some("openrouter".to_owned());
         let mut regenerated = vec![second];
         let _ = MessageStore::attach_generated_alt(&mut regenerated, pending.alternatives).unwrap();
         let _ = store.replace_after_last_user_turn(regenerated).unwrap();
@@ -726,13 +726,13 @@ mod tests {
         // has `provider_key: None`; selecting it should inherit the message's
         // `provider_key` rather than dropping provenance entirely.
         let mut template = make_msg("a1", Role::Assistant, "Active answer");
-        template.provider_key = Some("anthropic".to_string());
+        template.provider_key = Some("anthropic".to_owned());
         template.alternatives = vec![
             MessageAlternative {
-                content: "Legacy answer".to_string(),
+                content: "Legacy answer".to_owned(),
                 images: vec![],
                 content_blocks: vec![ContentBlock::Text {
-                    text: "Legacy answer".to_string(),
+                    text: "Legacy answer".to_owned(),
                 }],
                 timestamp: String::new(),
                 provider_key: None,
@@ -864,22 +864,22 @@ mod tests {
             .unwrap();
         // Tool result (NOT a real user turn).
         let mut tool_msg = Message {
-            msg_id: "m3".to_string(),
+            msg_id: "m3".to_owned(),
             role: Role::User,
             content: String::new(),
             images: vec![],
             content_blocks: vec![ContentBlock::ToolResult {
-                tool_use_id: "call_1".to_string(),
-                content: "5 results found".to_string(),
+                tool_use_id: "call_1".to_owned(),
+                content: "5 results found".to_owned(),
                 is_error: false,
             }],
             alt_index: None,
             alt_count: None,
             alternatives: vec![],
             provider_key: None,
-            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_owned(),
         };
-        tool_msg.content = "5 results found".to_string();
+        tool_msg.content = "5 results found".to_owned();
         store.append(tool_msg).unwrap();
         // Another real user turn.
         store.append(make_msg("m4", Role::User, "Thanks")).unwrap();
@@ -936,7 +936,7 @@ mod tests {
 
     fn make_msg_ts(id: &str, role: Role, ts: &str) -> Message {
         let mut m = make_msg(id, role, id);
-        m.timestamp = ts.to_string();
+        m.timestamp = ts.to_owned();
         m
     }
 
