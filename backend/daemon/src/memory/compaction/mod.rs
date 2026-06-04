@@ -56,6 +56,73 @@ pub struct CompactionManager {
     activity_notify: Arc<Notify>,
 }
 
+/// Inputs to the archive/finalize phase of compaction, threaded as one struct
+/// to keep [`CompactionManager::archive_and_build_result`] within the argument
+/// budget.
+struct CompactionArchiveInputs<'inputs> {
+    conversation_id: &'inputs str,
+    active_content: &'inputs str,
+    char_name: &'inputs str,
+    data_dir: Option<&'inputs Path>,
+    split_at: usize,
+    compacted_turns: usize,
+    retained: usize,
+    retained_turns: usize,
+    compaction_started: std::time::Instant,
+}
+
+/// Build the dry-run preview outcome (no archiving, no file writes).
+fn build_dry_run_outcome(
+    loop_state: ToolLoopState,
+    split_at: usize,
+    compacted_turns: usize,
+    retained_count: usize,
+    retained_turns: usize,
+) -> CompactionOutcome {
+    let markdown_preview: Vec<String> = loop_state
+        .dry_run_previews
+        .iter()
+        .map(|op| op.path.clone())
+        .collect();
+    CompactionOutcome::DryRun(DryRunResult {
+        would_write_files: loop_state.dry_run_previews.len(),
+        file_ops_preview: loop_state.dry_run_previews,
+        message_count: split_at,
+        compacted_turns,
+        retained_count,
+        retained_turns,
+        markdown_preview,
+        tool_rounds: loop_state.tool_rounds,
+        tools_called: loop_state.tools_called,
+    })
+}
+
+/// Build the no-memory-writes outcome and warn that the active conversation was
+/// left intact (issue #43 guard).
+fn build_no_memory_writes_outcome(
+    conversation_id: &str,
+    loop_state: ToolLoopState,
+    split_at: usize,
+    compacted_turns: usize,
+) -> CompactionOutcome {
+    warn!(
+        conversation_id,
+        tool_rounds = loop_state.tool_rounds,
+        rejected_paths = loop_state.rejected_paths.len(),
+        max_rounds_hit = loop_state.max_rounds_hit,
+        "compaction: zero memory writes; active conversation NOT archived"
+    );
+    CompactionOutcome::NoMemoryWrites(NoMemoryWritesResult {
+        conversation_id: conversation_id.to_owned(),
+        message_count: split_at,
+        compacted_turns,
+        tool_rounds: loop_state.tool_rounds,
+        tools_called: loop_state.tools_called,
+        rejected_paths: loop_state.rejected_paths,
+        max_rounds_hit: loop_state.max_rounds_hit,
+    })
+}
+
 impl CompactionManager {
     pub fn new(config: CompactionConfig) -> Self {
         Self {
@@ -294,10 +361,6 @@ impl CompactionManager {
         clippy::too_many_arguments,
         reason = "compaction boundary still carries storage, prompt, and tool-loop state"
     )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "compaction orchestration phase split is tracked in #109"
-    )]
     pub async fn compact(
         &self,
         conversation_id: &str,
@@ -391,43 +454,15 @@ impl CompactionManager {
         // DryRun preview).
         let max_rounds = self.config.max_tool_rounds.max(1);
         let loop_started = std::time::Instant::now();
-        let mut loop_state = ToolLoopState::new(dry_run);
-
-        for _ in 0..max_rounds {
-            let resp = llm.generate(&mut request).await?;
-            push_assistant_response(&mut request, &resp);
-
-            let tool_uses = crate::content_util::extract_tool_uses(&resp.content_blocks);
-            if tool_uses.is_empty() || resp.finish_reason != "tool_use" {
-                // Model ended cleanly.
-                break;
-            }
-
-            loop_state.tool_rounds = loop_state.tool_rounds.saturating_add(1);
-            let mut tool_results = Vec::with_capacity(tool_uses.len());
-            for (id, name, input) in tool_uses {
-                loop_state.tools_called.push(name.clone());
-                let (output, is_error) = dispatch_compaction_tool(
-                    &name,
-                    &input,
-                    tool_ctx,
-                    &workspace_dir,
-                    &mut loop_state,
-                )
-                .await;
-                tool_results.push(crate::content_util::build_tool_result_json(
-                    &id, &output, is_error,
-                ));
-            }
-            request
-                .messages
-                .push(json!({"role": "user", "content": tool_results}));
-
-            if loop_state.tool_rounds >= max_rounds {
-                loop_state.max_rounds_hit = true;
-                break;
-            }
-        }
+        let loop_state = run_compaction_tool_loop(
+            llm,
+            &mut request,
+            tool_ctx,
+            &workspace_dir,
+            max_rounds,
+            dry_run,
+        )
+        .await?;
         debug!(
             elapsed = ?loop_started.elapsed(),
             tool_rounds = loop_state.tool_rounds,
@@ -439,22 +474,13 @@ impl CompactionManager {
 
         // Dry-run: return the would-write preview without archiving.
         if dry_run {
-            let markdown_preview: Vec<String> = loop_state
-                .dry_run_previews
-                .iter()
-                .map(|op| op.path.clone())
-                .collect();
-            return Ok(CompactionOutcome::DryRun(DryRunResult {
-                would_write_files: loop_state.dry_run_previews.len(),
-                file_ops_preview: loop_state.dry_run_previews,
-                message_count: split_at,
+            return Ok(build_dry_run_outcome(
+                loop_state,
+                split_at,
                 compacted_turns,
-                retained_count: messages.len().saturating_sub(split_at),
+                messages.len().saturating_sub(split_at),
                 retained_turns,
-                markdown_preview,
-                tool_rounds: loop_state.tool_rounds,
-                tools_called: loop_state.tools_called,
-            }));
+            ));
         }
 
         // NoMemoryWrites: leave the active conversation intact. This is
@@ -463,26 +489,57 @@ impl CompactionManager {
         // instead of an XML payload, silently clearing active.jsonl
         // without updating any memory file.
         if loop_state.writes_applied.is_empty() {
-            warn!(
+            return Ok(build_no_memory_writes_outcome(
                 conversation_id,
-                tool_rounds = loop_state.tool_rounds,
-                rejected_paths = loop_state.rejected_paths.len(),
-                max_rounds_hit = loop_state.max_rounds_hit,
-                "compaction: zero memory writes; active conversation NOT archived"
-            );
-            return Ok(CompactionOutcome::NoMemoryWrites(NoMemoryWritesResult {
-                conversation_id: conversation_id.to_owned(),
-                message_count: split_at,
+                loop_state,
+                split_at,
                 compacted_turns,
-                tool_rounds: loop_state.tool_rounds,
-                tools_called: loop_state.tools_called,
-                rejected_paths: loop_state.rejected_paths,
-                max_rounds_hit: loop_state.max_rounds_hit,
-            }));
+            ));
         }
 
+        self.archive_and_build_result(
+            conversation_mgr,
+            tool_ctx,
+            loop_state,
+            CompactionArchiveInputs {
+                conversation_id,
+                active_content,
+                char_name,
+                data_dir,
+                split_at,
+                compacted_turns,
+                retained: messages.len().saturating_sub(split_at),
+                retained_turns,
+                compaction_started,
+            },
+        )
+        .await
+    }
+
+    /// Archive the compacted prefix, retain the recent tail, queue any
+    /// MEMORY.md prompt refresh, append a dreams-log entry, and assemble the
+    /// `Compacted` outcome. On archive failure the applied writes are rolled
+    /// back.
+    async fn archive_and_build_result(
+        &self,
+        conversation_mgr: &dyn ConversationManager,
+        tool_ctx: &dyn ToolContext,
+        loop_state: ToolLoopState,
+        inputs: CompactionArchiveInputs<'_>,
+    ) -> Result<CompactionOutcome, CompactionError> {
+        let CompactionArchiveInputs {
+            conversation_id,
+            active_content,
+            char_name,
+            data_dir,
+            split_at,
+            compacted_turns,
+            retained,
+            retained_turns,
+            compaction_started,
+        } = inputs;
+
         // Archive compacted messages and retain recent context.
-        let retained = messages.len().saturating_sub(split_at);
         let archive_started = std::time::Instant::now();
         let new_conversation_id = match conversation_mgr
             .archive_and_retain(
@@ -515,49 +572,15 @@ impl CompactionManager {
             .writes_applied
             .iter()
             .any(|write| write.memory_index_target);
-        // dispatch_tool already calls `defer_edit` on prompt-visible writes
-        // via `SharedToolContext`, so MEMORY.md is queued for refresh
-        // automatically. The explicit fallback below covers tool contexts
-        // that omit `defer_edit` (e.g. test stubs) so the queue stays
-        // consistent with the previous behaviour.
-        if memory_index_updated && tool_ctx.config_dir().is_empty() {
-            if let Some(dir) = data_dir {
-                if let Err(e) = crate::memory::deferred_edits::note_memory_index_deferred(
-                    &character_data_dir(dir, char_name),
-                ) {
-                    warn!(
-                        error = %e,
-                        "compaction: failed to queue MEMORY.md prompt refresh"
-                    );
-                }
-            } else {
-                warn!(
-                    "compaction: MEMORY.md updated but data_dir was unavailable for prompt refresh queue"
-                );
-            }
-        }
-        let dream_body = format!(
-            "Compacted {} turns from `{conversation_id}`.\n\nUpdated memory files:\n{}",
+        queue_memory_index_refresh(memory_index_updated, tool_ctx, data_dir, char_name);
+        append_compaction_dream_log(
+            data_dir,
+            char_name,
+            conversation_id,
             compacted_turns,
-            markdown_paths
-                .iter()
-                .map(|path| format!("- `{path}`"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-        if let Some(dir) = data_dir {
-            if let Err(e) = crate::memory::dreams_log::append_dream_entry(
-                dir,
-                char_name,
-                chrono::Local::now().fixed_offset(),
-                "compaction",
-                &dream_body,
-            )
-            .await
-            {
-                warn!(error = %e, "compaction: failed to append dreams log entry");
-            }
-        }
+            &markdown_paths,
+        )
+        .await;
 
         info!(
             memory_files_written = markdown_paths.len(),
@@ -684,6 +707,117 @@ pub(crate) fn push_assistant_response(
             .push(json!({"role": "assistant", "content": resp.content.clone()}));
     } else {
         // Empty assistant turn: nothing to append.
+    }
+}
+
+/// Drive the compaction tool loop: alternately `generate()` and dispatch tool
+/// calls until the model ends cleanly or the round budget is hit, accumulating
+/// applied/rejected writes and forensics into the returned [`ToolLoopState`].
+async fn run_compaction_tool_loop(
+    llm: &dyn CompactionLlm,
+    request: &mut shore_llm::types::LlmRequest,
+    tool_ctx: &dyn ToolContext,
+    workspace_dir: &str,
+    max_rounds: u32,
+    dry_run: bool,
+) -> Result<ToolLoopState, CompactionError> {
+    let mut loop_state = ToolLoopState::new(dry_run);
+
+    for _ in 0..max_rounds {
+        let resp = llm.generate(request).await?;
+        push_assistant_response(request, &resp);
+
+        let tool_uses = crate::content_util::extract_tool_uses(&resp.content_blocks);
+        if tool_uses.is_empty() || resp.finish_reason != "tool_use" {
+            // Model ended cleanly.
+            break;
+        }
+
+        loop_state.tool_rounds = loop_state.tool_rounds.saturating_add(1);
+        let mut tool_results = Vec::with_capacity(tool_uses.len());
+        for (id, name, input) in tool_uses {
+            loop_state.tools_called.push(name.clone());
+            let (output, is_error) =
+                dispatch_compaction_tool(&name, &input, tool_ctx, workspace_dir, &mut loop_state)
+                    .await;
+            tool_results.push(crate::content_util::build_tool_result_json(
+                &id, &output, is_error,
+            ));
+        }
+        request
+            .messages
+            .push(json!({"role": "user", "content": tool_results}));
+
+        if loop_state.tool_rounds >= max_rounds {
+            loop_state.max_rounds_hit = true;
+            break;
+        }
+    }
+
+    Ok(loop_state)
+}
+
+/// Queue a MEMORY.md prompt refresh when the compaction wrote the memory index
+/// but the tool context did not already `defer_edit` it (e.g. test stubs).
+fn queue_memory_index_refresh(
+    memory_index_updated: bool,
+    tool_ctx: &dyn ToolContext,
+    data_dir: Option<&Path>,
+    char_name: &str,
+) {
+    // dispatch_tool already calls `defer_edit` on prompt-visible writes
+    // via `SharedToolContext`, so MEMORY.md is queued for refresh
+    // automatically. The explicit fallback below covers tool contexts
+    // that omit `defer_edit` (e.g. test stubs) so the queue stays
+    // consistent with the previous behaviour.
+    if memory_index_updated && tool_ctx.config_dir().is_empty() {
+        if let Some(dir) = data_dir {
+            if let Err(e) = crate::memory::deferred_edits::note_memory_index_deferred(
+                &character_data_dir(dir, char_name),
+            ) {
+                warn!(
+                    error = %e,
+                    "compaction: failed to queue MEMORY.md prompt refresh"
+                );
+            }
+        } else {
+            warn!(
+                "compaction: MEMORY.md updated but data_dir was unavailable for prompt refresh queue"
+            );
+        }
+    }
+}
+
+/// Append a compaction entry to the character's dreams log summarising the
+/// archived turns and updated memory files.
+async fn append_compaction_dream_log(
+    data_dir: Option<&Path>,
+    char_name: &str,
+    conversation_id: &str,
+    compacted_turns: usize,
+    markdown_paths: &[String],
+) {
+    let dream_body = format!(
+        "Compacted {} turns from `{conversation_id}`.\n\nUpdated memory files:\n{}",
+        compacted_turns,
+        markdown_paths
+            .iter()
+            .map(|path| format!("- `{path}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    if let Some(dir) = data_dir {
+        if let Err(e) = crate::memory::dreams_log::append_dream_entry(
+            dir,
+            char_name,
+            chrono::Local::now().fixed_offset(),
+            "compaction",
+            &dream_body,
+        )
+        .await
+        {
+            warn!(error = %e, "compaction: failed to append dreams log entry");
+        }
     }
 }
 
