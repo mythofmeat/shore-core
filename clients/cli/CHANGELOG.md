@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.7](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.0.6...shore-cli-v2.0.7) - 2026-06-04
+
+### Other
+
+- enable unsafe-block + assert-message hardening ([#156](https://github.com/mythofmeat/shore-core/pull/156))
+- align `shore model setting` columns
+
 ## [2.0.6](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.0.5...shore-cli-v2.0.6) - 2026-06-03
 
 ### Other

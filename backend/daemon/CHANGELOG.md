@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [12.0.2](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v12.0.1...shore-daemon-v12.0.2) - 2026-06-04
+
+### Other
+
+- enable unsafe-block + assert-message hardening ([#156](https://github.com/mythofmeat/shore-core/pull/156))
+- suite tests: narrow blanket to per-fn indexing/arith/lines expects
+- narrow blanket expect to per-site fixes
+- replace unused_results blanket with let _ = bindings
+
 ## [12.0.1](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v12.0.0...shore-daemon-v12.0.1) - 2026-06-03
 
 ### Other
