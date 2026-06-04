@@ -19,11 +19,14 @@ use super::{ToolCategory, ToolDef, ToolError};
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "workspace tool schema literals are tracked for extraction in #109"
-)]
 pub fn tool_defs() -> Vec<ToolDef> {
+    let mut defs = editing_tool_defs();
+    defs.extend(discovery_tool_defs());
+    defs
+}
+
+/// `read` / `write` / `edit` workspace file tools.
+fn editing_tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "read",
@@ -100,6 +103,12 @@ pub fn tool_defs() -> Vec<ToolDef> {
             }),
             category: ToolCategory::Other,
         },
+    ]
+}
+
+/// `list_files` / `search` / `delete` / `exec` workspace tools.
+fn discovery_tool_defs() -> Vec<ToolDef> {
+    vec![
         ToolDef {
             name: "list_files",
             description: crate::include_prompt!("../../prompts/tools/workspace/list_files.md"),
@@ -750,10 +759,6 @@ fn parse_search_mode(raw: Option<&Value>) -> Result<RequestedMode, ToolError> {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "lexical workspace search walk/rank/render split is tracked in #109"
-)]
 async fn handle_search_lexical(
     input: Value,
     workspace_dir: &str,
@@ -778,14 +783,58 @@ async fn handle_search_lexical(
         }));
     }
 
-    // ── Phase 1: enumerate candidate files and capture mtimes. ────────
-    //
-    // We collect every searchable file up front so results can be ranked by
-    // recency rather than by directory traversal order. Symlinks are still
-    // skipped here — resolve_path canonicalizes for direct read/delete, but
-    // descendants discovered by walking are joined onto the workspace root
-    // without re-checking containment, so a symlink pointing outside (e.g.
-    // → /etc/passwd) would otherwise be read like any regular file.
+    let (candidates, oversize_skipped) = enumerate_search_candidates(root, retrieval_config).await;
+
+    let LexicalScanOutput {
+        results,
+        files_summary,
+        searched_files,
+        skipped_binary_or_large,
+    } = scan_lexical_matches(
+        candidates,
+        workspace_dir,
+        &query_lower,
+        max_results,
+        oversize_skipped,
+    )
+    .await;
+
+    let count = results.len();
+    let mut response = json!({
+        "query": query,
+        "results": results,
+        "count": count,
+        "searched_files": searched_files,
+        "skipped_binary_or_large": skipped_binary_or_large,
+    });
+
+    if count > 0 {
+        if let Some(obj) = response.as_object_mut() {
+            let _ignored = obj.insert("files".into(), json!(files_summary));
+            _ = obj.insert(
+                "note".into(),
+                json!(
+                    "These are line-level excerpts, ordered by file recency. \
+                     Call `read` on the top file paths to see surrounding context — \
+                     excerpts almost never contain the full answer, and one file \
+                     often references others worth reading too."
+                ),
+            );
+        }
+    }
+
+    Ok(response)
+}
+
+/// Enumerate searchable files under `root`, newest-first (path order breaks
+/// mtime ties). Symlinks are skipped here — descendants discovered by walking
+/// are joined onto the workspace root without re-checking containment, so a
+/// symlink pointing outside (e.g. → /etc/passwd) would otherwise be read like
+/// any regular file. Returns the candidates and the oversize-skip count.
+async fn enumerate_search_candidates(
+    root: PathBuf,
+    retrieval_config: &RetrievalConfig,
+) -> (Vec<(PathBuf, SystemTime)>, usize) {
     let mut pending = vec![root];
     let mut candidates: Vec<(PathBuf, SystemTime)> = Vec::new();
     let mut skipped_binary_or_large = 0_usize;
@@ -828,6 +877,26 @@ async fn handle_search_lexical(
     // tie (e.g. tests that write files in quick succession).
     candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
+    (candidates, skipped_binary_or_large)
+}
+
+/// Per-file lexical scan results, accumulated across candidates.
+struct LexicalScanOutput {
+    results: Vec<Value>,
+    files_summary: Vec<Value>,
+    searched_files: usize,
+    skipped_binary_or_large: usize,
+}
+
+/// Scan candidate files for case-insensitive matches of `query_lower`,
+/// collecting line excerpts (capped at `max_results`) and per-file hit counts.
+async fn scan_lexical_matches(
+    candidates: Vec<(PathBuf, SystemTime)>,
+    workspace_dir: &str,
+    query_lower: &str,
+    max_results: usize,
+    mut skipped_binary_or_large: usize,
+) -> LexicalScanOutput {
     let mut results = Vec::new();
     let mut files_summary: Vec<Value> = Vec::new();
     let mut searched_files = 0_usize;
@@ -845,7 +914,7 @@ async fn handle_search_lexical(
         let display = display_path_for(workspace_dir, &path);
         let mut file_hits = 0_usize;
         for (line_idx, line) in content.lines().enumerate() {
-            let Some((match_start, match_end)) = find_case_insensitive_match(line, &query_lower)
+            let Some((match_start, match_end)) = find_case_insensitive_match(line, query_lower)
             else {
                 continue;
             };
@@ -867,31 +936,12 @@ async fn handle_search_lexical(
         }
     }
 
-    let count = results.len();
-    let mut response = json!({
-        "query": query,
-        "results": results,
-        "count": count,
-        "searched_files": searched_files,
-        "skipped_binary_or_large": skipped_binary_or_large,
-    });
-
-    if count > 0 {
-        if let Some(obj) = response.as_object_mut() {
-            let _ignored = obj.insert("files".into(), json!(files_summary));
-            _ = obj.insert(
-                "note".into(),
-                json!(
-                    "These are line-level excerpts, ordered by file recency. \
-                     Call `read` on the top file paths to see surrounding context — \
-                     excerpts almost never contain the full answer, and one file \
-                     often references others worth reading too."
-                ),
-            );
-        }
+    LexicalScanOutput {
+        results,
+        files_summary,
+        searched_files,
+        skipped_binary_or_large,
     }
-
-    Ok(response)
 }
 
 async fn handle_search_hybrid(
