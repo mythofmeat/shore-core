@@ -41,31 +41,9 @@ fn active_start_index(data: &serde_json::Value) -> usize {
 
 /// Execute the CLI command by connecting to the daemon and dispatching.
 #[instrument(skip(cli))]
-#[expect(
-    clippy::too_many_lines,
-    reason = "CLI dispatcher remains intentionally monolithic until command routing is split"
-)]
 pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    // config --path: query the daemon for its actual config dir, fall back to local.
-    if matches!(&cli.command, CliCommand::Config { path: true, .. }) {
-        return print_config_path(&cli).await;
-    }
-    if let CliCommand::Character {
-        name: Some(name),
-        new: true,
-        ..
-    } = &cli.command
-    {
-        return handle_create_character(name);
-    }
-    if let CliCommand::Connectors { subcommand } = &cli.command {
-        return handle_connectors_command(subcommand, &cli);
-    }
-    if let CliCommand::Complete { kind } = &cli.command {
-        // Any failure (daemon down, parse error) ends with empty stdout
-        // and a zero exit code so fish falls back to no suggestions.
-        let _ignored = handle_complete_query(*kind, &cli).await;
-        return Ok(());
+    if let Some(result) = try_handle_local_only(&cli).await {
+        return result;
     }
 
     let addr = resolve_addr(&cli)?;
@@ -93,85 +71,10 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
     // themselves correctly without threading the name through every call site.
     let _ignored = SESSION_DISPLAY_CHARACTER.set(display_character.clone());
 
-    // Regression for #3: `switch_model` only mutates per-session state on
-    // the daemon, so a one-shot CLI invocation discards the choice on exit.
-    // Re-apply the persisted model here so every subsequent command sees it.
-    // Intentionally best-effort: a stale entry (model removed from config)
-    // shouldn't stop the user's actual command.
-    if !matches!(cli.command, CliCommand::Notify { .. }) {
-        if let Some(model) = state::read_active_model() {
-            if let Err(e) = conn
-                .send_command("switch_model", serde_json::json!({ "name": &model }))
-                .await
-            {
-                debug!(error = %e, model = %model, "failed to pre-apply active model");
-            } else {
-                // Drain the response so it doesn't get mixed into the next
-                // command's stream. Errors (e.g. stale model) are ignored —
-                // the user's real command still runs.
-                match conn.recv().await {
-                    Ok(ServerMessage::CommandOutput(_)) => {
-                        debug!(model = %model, "pre-applied active model");
-                    }
-                    Ok(ServerMessage::Error(err)) => {
-                        debug!(
-                            model = %model,
-                            error = %err.message,
-                            "stale active-model state file, ignoring",
-                        );
-                    }
-                    Ok(other) => {
-                        debug!(?other, "unexpected reply to pre-apply switch_model");
-                    }
-                    Err(e) => {
-                        debug!(error = %e, "error draining pre-apply switch_model reply");
-                    }
-                }
-            }
-        }
-    }
+    pre_apply_active_model(&mut conn, &cli).await;
 
     match &cli.command {
-        CliCommand::Send {
-            message,
-            images,
-            temperature,
-            top_p,
-            thinking,
-            system,
-        } => {
-            let text = if !message.is_empty() {
-                message.join(" ")
-            } else if !io::stdin().is_terminal() {
-                read_stdin()?
-            } else {
-                edit_message_in_editor()?
-            };
-            if text.is_empty() && images.is_empty() {
-                return Ok(());
-            }
-            if *system {
-                _ = conn
-                    .send_command("inject_system", serde_json::json!({ "text": text }))
-                    .await?;
-                let data = recv_command_data(&mut conn).await?;
-                output::format_command("inject_system", &data);
-            } else {
-                let overrides = if temperature.is_some() || top_p.is_some() || thinking.is_some() {
-                    Some(shore_protocol::client_msg::MessageOverrides {
-                        temperature: *temperature,
-                        top_p: *top_p,
-                        thinking_budget: *thinking,
-                    })
-                } else {
-                    None
-                };
-                _ = conn
-                    .send_message_full(&text, true, images.clone(), overrides)
-                    .await?;
-                recv_streaming_response(&mut conn).await?;
-            }
-        }
+        CliCommand::Send { .. } => handle_send_command(&mut conn, &cli.command).await?,
         CliCommand::Regen { guidance } => {
             _ = conn.send_regen(true, guidance.clone()).await?;
             recv_streaming_response(&mut conn).await?;
@@ -182,21 +85,7 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
         } => {
             handle_notify(&mut conn, &cli, *all_messages, &server_hello.characters).await?;
         }
-        CliCommand::Alt {
-            selector,
-            msg_ref,
-            json,
-        } => {
-            let (name, args) =
-                crate::cli::alt_command_to_swp(selector.as_deref(), msg_ref.as_deref());
-            _ = conn.send_command(name, args).await?;
-            let data = recv_command_data(&mut conn).await?;
-            if *json {
-                cli_out!("{}", serde_json::to_string_pretty(&data)?);
-            } else {
-                output::format_command(name, &data);
-            }
-        }
+        CliCommand::Alt { .. } => handle_alt_command(&mut conn, &cli.command).await?,
         CliCommand::Character {
             name,
             info: false,
@@ -206,276 +95,25 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
             Some(target) => handle_switch_character(&mut conn, target).await?,
             None => handle_list_characters(&mut conn).await?,
         },
-        CliCommand::Log {
-            subcommand: Some(sub),
-            json,
-            ..
-        } => {
-            let (name, args) = match sub {
-                crate::cli::LogCommand::Edit { msg_ref, content } => (
-                    "edit",
-                    serde_json::json!({ "ref": msg_ref, "content": content.join(" ") }),
-                ),
-                crate::cli::LogCommand::Delete { msg_ref } => {
-                    ("delete", serde_json::json!({ "refs": msg_ref }))
-                }
-            };
-            _ = conn.send_command(name, args).await?;
-            let data = recv_command_data(&mut conn).await?;
-            if *json {
-                cli_out!("{}", serde_json::to_string_pretty(&data)?);
-            } else {
-                output::format_command(name, &data);
-            }
+        CliCommand::Log { .. } => {
+            handle_log_command(&mut conn, &cli.command, &display_character).await?;
         }
-        CliCommand::Log {
-            msg_ref: Some(r),
-            json,
-            plain,
-            content,
-            role,
-            ..
-        } => {
-            let mut args = serde_json::Map::new();
-            _ = args.insert("ref".into(), serde_json::json!(r));
-            if let Some(role_filter) = role {
-                _ = args.insert(
-                    "role".into(),
-                    serde_json::json!(role_filter.as_protocol_role()),
-                );
-            }
-            _ = conn
-                .send_command("get", serde_json::Value::Object(args))
-                .await?;
-            let data = recv_command_data(&mut conn).await?;
-            if *json {
-                cli_out!("{}", serde_json::to_string_pretty(&data)?);
-            } else if *content {
-                output::print_message_content(&data);
-            } else if *plain {
-                let char_name = display_character.as_str();
-                output::print_log_plain(std::slice::from_ref(&data), char_name);
-            } else {
-                let char_name = display_character.as_str();
-                output::print_single_message(&data, char_name);
-            }
+        CliCommand::Status { .. } => {
+            handle_status_command(&mut conn, &cli.command, &display_character).await?;
         }
-        CliCommand::Log {
-            heartbeat: true,
-            count,
-            json,
-            ..
-        } => {
-            _ = conn
-                .send_command("heartbeat_log", serde_json::json!({ "count": count }))
-                .await?;
-            let data = recv_command_data(&mut conn).await?;
-            if *json {
-                cli_out!("{}", serde_json::to_string_pretty(&data)?);
-            } else {
-                output::print_heartbeat_log(&data);
-            }
-        }
-        CliCommand::Log {
-            count,
-            follow,
-            json,
-            content,
-            plain,
-            role,
-            ..
-        } => {
-            let mut args = serde_json::Map::new();
-            _ = args.insert("turns".into(), serde_json::json!(count));
-            if let Some(role_filter) = role {
-                _ = args.insert(
-                    "role".into(),
-                    serde_json::json!(role_filter.as_protocol_role()),
-                );
-            }
-            _ = conn
-                .send_command("log", serde_json::Value::Object(args))
-                .await?;
-            let data = recv_command_data(&mut conn).await?;
-
-            if *json {
-                cli_out!("{}", serde_json::to_string_pretty(&data)?);
-            } else if *content {
-                if let Some(messages) = data.get("messages").and_then(serde_json::Value::as_array) {
-                    for msg in messages {
-                        if let Some(c) = msg["content"].as_str() {
-                            cli_out!("{c}");
-                        }
-                    }
-                }
-            } else if *plain {
-                let char_name = display_character.as_str();
-                if let Some(messages) = data.get("messages").and_then(serde_json::Value::as_array) {
-                    let active_start = active_start_index(&data);
-                    output::print_log_plain_with_boundary(messages, active_start, char_name);
-                }
-            } else {
-                let char_name = display_character.as_str();
-                if let Some(messages) = data.get("messages").and_then(serde_json::Value::as_array) {
-                    let active_start = active_start_index(&data);
-                    output::print_log_with_boundary(messages, active_start, char_name);
-                }
-            }
-
-            if *follow {
-                let follow_char = display_character.as_str();
-                loop {
-                    let msg = conn.recv().await?;
-                    match &msg {
-                        ServerMessage::NewMessage(nm)
-                            if log_role_matches(role.as_ref(), &nm.message.role) =>
-                        {
-                            output::print_new_message(
-                                nm,
-                                nm.character.as_deref().unwrap_or(follow_char),
-                            );
-                        }
-                        ServerMessage::StreamStart(start)
-                            if log_role_matches(role.as_ref(), &Role::Assistant) =>
-                        {
-                            output::reset_chunk_state();
-                            if start.regen {
-                                output::print_stream_start(start.regen);
-                            } else {
-                                output::print_follow_stream_start(follow_char);
-                            }
-                        }
-                        ServerMessage::StreamChunk(chunk)
-                            if log_role_matches(role.as_ref(), &Role::Assistant) =>
-                        {
-                            output::print_chunk(chunk);
-                        }
-                        ServerMessage::StreamEnd(end)
-                            if log_role_matches(role.as_ref(), &Role::Assistant) =>
-                        {
-                            output::print_stream_end(end);
-                        }
-                        ServerMessage::ToolCall(call)
-                            if log_role_matches(role.as_ref(), &Role::Assistant) =>
-                        {
-                            output::print_tool_call(call);
-                        }
-                        ServerMessage::ToolResult(result)
-                            if log_role_matches(role.as_ref(), &Role::Assistant) =>
-                        {
-                            output::print_tool_result(result);
-                        }
-                        ServerMessage::Phase(phase)
-                            if log_role_matches(role.as_ref(), &Role::Assistant) =>
-                        {
-                            output::print_phase(phase);
-                        }
-                        ServerMessage::Shutdown(_) => break,
-                        ServerMessage::Hello(_)
-                        | ServerMessage::History(_)
-                        | ServerMessage::Ping(_)
-                        | ServerMessage::CommandOutput(_)
-                        | ServerMessage::Error(_)
-                        | ServerMessage::StreamStart(_)
-                        | ServerMessage::StreamChunk(_)
-                        | ServerMessage::StreamEnd(_)
-                        | ServerMessage::Phase(_)
-                        | ServerMessage::NewMessage(_)
-                        | ServerMessage::ToolCall(_)
-                        | ServerMessage::ToolResult(_)
-                        | ServerMessage::SendImage(_)
-                        | ServerMessage::CacheWarning(_)
-                        | ServerMessage::ProviderFallbackWarning(_)
-                        | ServerMessage::UsageWarning(_) => {}
-                    }
-                }
-            }
-        }
-        CliCommand::Status {
-            diagnostics: true,
-            count,
-            json,
-            ..
-        } => {
-            _ = conn
-                .send_command("diagnostics", serde_json::json!({ "count": count }))
-                .await?;
-            let data = recv_command_data(&mut conn).await?;
-            if *json {
-                cli_out!("{}", serde_json::to_string_pretty(&data)?);
-            } else {
-                output::print_diagnostics(&data);
-            }
-        }
-        CliCommand::Status { section, json, .. } => {
-            _ = conn.send_command("status", serde_json::json!({})).await?;
-            let data = recv_command_data(&mut conn).await?;
-            match section {
-                Some(s) => {
-                    if let Some(val) = data.get(s.as_str()) {
-                        cli_out!("{}", serde_json::to_string_pretty(val)?);
-                    } else {
-                        return Err(format!("Unknown status section: {s}").into());
-                    }
-                }
-                None if *json => {
-                    cli_out!("{}", serde_json::to_string_pretty(&data)?);
-                }
-                None => {
-                    let char_name = display_character.as_str();
-                    output::print_status(&data, char_name);
-                }
-            }
-        }
-        // Phase 3+: the daemon owns durable model/reasoning state in
-        // `<data_dir>/<character>/preferences/models.toml`. The CLI
-        // runtime mirror at `$SHORE_RUNTIME_DIR/active_*` is read at
-        // startup as a one-release migration fallback (see run.rs:75)
-        // but no longer written here. Best-effort cleanup of any stale
-        // mirror keeps `shore status` honest after the upgrade.
         CliCommand::Model {
             subcommand: None,
             reset: true,
-            json,
             ..
-        } => {
-            _ = conn
-                .send_command("reset_model", serde_json::json!({}))
-                .await?;
-            let data = recv_command_data(&mut conn).await?;
-            _ = state::clear_active_model();
-            if *json {
-                cli_out!("{}", serde_json::to_string_pretty(&data)?);
-            } else {
-                output::format_command("reset_model", &data);
-            }
         }
-        CliCommand::Model {
+        | CliCommand::Model {
             subcommand: None,
-            name: Some(name),
+            name: Some(_),
             info: false,
             reset: false,
-            all,
-            json,
+            ..
         } => {
-            // `--all` propagates `include_hidden = true` so `shore model
-            // <hidden-id> --all` is the documented escape hatch from the
-            // `discovery.ignore` error message.
-            let mut args = serde_json::Map::new();
-            _ = args.insert("name".into(), serde_json::json!(name));
-            if *all {
-                _ = args.insert("include_hidden".into(), serde_json::json!(true));
-            }
-            _ = conn
-                .send_command("switch_model", serde_json::Value::Object(args))
-                .await?;
-            let data = recv_command_data(&mut conn).await?;
-            _ = state::clear_active_model();
-            if *json {
-                cli_out!("{}", serde_json::to_string_pretty(&data)?);
-            } else {
-                output::format_command("switch_model", &data);
-            }
+            handle_local_model_command(&mut conn, &cli.command).await?;
         }
         other @ (CliCommand::Character { .. }
         | CliCommand::Debug { .. }
@@ -487,77 +125,527 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
         | CliCommand::Connectors { .. }
         | CliCommand::Completions { .. }
         | CliCommand::Complete { .. }) => {
-            let json_mode = match other {
-                CliCommand::Model {
-                    json, subcommand, ..
-                } => {
-                    *json
-                        || matches!(
-                            subcommand,
-                            Some(crate::cli::ModelCommand::Setting { json: true, .. })
-                        )
-                }
-                CliCommand::Provider {
-                    json, subcommand, ..
-                } => {
-                    *json
-                        || matches!(
-                            subcommand,
-                            Some(
-                                crate::cli::ProviderCommand::Models { json: true, .. }
-                                    | crate::cli::ProviderCommand::Refresh { json: true, .. }
-                            )
-                        )
-                }
-                CliCommand::Character { json, .. }
-                | CliCommand::Memory { json, .. }
-                | CliCommand::Config { json, .. }
-                | CliCommand::Usage { json, .. } => *json,
-                CliCommand::Send { .. }
-                | CliCommand::Regen { .. }
-                | CliCommand::Alt { .. }
-                | CliCommand::Notify { .. }
-                | CliCommand::Log { .. }
-                | CliCommand::Status { .. }
-                | CliCommand::Debug { .. }
-                | CliCommand::Connectors { .. }
-                | CliCommand::Completions { .. }
-                | CliCommand::Complete { .. } => false,
-            };
-            // Read-only config only. Clap's `conflicts_with_all` rejects
-            // `--toml` alongside `--check`, `--reset`, or a set value at parse
-            // time; the narrow match here documents that intent and avoids
-            // serializing non-config responses (e.g. "set" confirmations) as
-            // TOML if a future code path forgets the parse-time guard.
-            let toml_mode = matches!(
-                other,
-                CliCommand::Config {
-                    toml: true,
-                    value: None,
-                    check: false,
-                    reset: false,
-                    ..
-                }
-            );
-            let show_all = matches!(other, CliCommand::Config { all: true, .. });
-            let Some((name, args)) = crate::cli::to_swp_command(other) else {
-                return Err("non-send/regen/local command must map to SWP command".into());
-            };
-            _ = conn.send_command(name, args).await?;
-            let data = recv_command_data(&mut conn).await?;
-            if toml_mode {
-                print_config_toml(&data, show_all)?;
-            } else if json_mode {
-                cli_out!("{}", serde_json::to_string_pretty(&data)?);
-            } else if name == "config" {
-                output::commands::print_config(&data, show_all);
-            } else {
-                output::format_command(name, &data);
-            }
+            handle_generic_swp_command(&mut conn, other).await?;
         }
     }
 
     Ok(())
+}
+
+/// Map a non-send/regen/local command to its SWP command, send it, and render
+/// the response honoring `--json` / `--toml` / config formatting.
+async fn handle_generic_swp_command(
+    conn: &mut SWPConnection,
+    other: &CliCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let json_mode = match other {
+        CliCommand::Model {
+            json, subcommand, ..
+        } => {
+            *json
+                || matches!(
+                    subcommand,
+                    Some(crate::cli::ModelCommand::Setting { json: true, .. })
+                )
+        }
+        CliCommand::Provider {
+            json, subcommand, ..
+        } => {
+            *json
+                || matches!(
+                    subcommand,
+                    Some(
+                        crate::cli::ProviderCommand::Models { json: true, .. }
+                            | crate::cli::ProviderCommand::Refresh { json: true, .. }
+                    )
+                )
+        }
+        CliCommand::Character { json, .. }
+        | CliCommand::Memory { json, .. }
+        | CliCommand::Config { json, .. }
+        | CliCommand::Usage { json, .. } => *json,
+        CliCommand::Send { .. }
+        | CliCommand::Regen { .. }
+        | CliCommand::Alt { .. }
+        | CliCommand::Notify { .. }
+        | CliCommand::Log { .. }
+        | CliCommand::Status { .. }
+        | CliCommand::Debug { .. }
+        | CliCommand::Connectors { .. }
+        | CliCommand::Completions { .. }
+        | CliCommand::Complete { .. } => false,
+    };
+    // Read-only config only. Clap's `conflicts_with_all` rejects
+    // `--toml` alongside `--check`, `--reset`, or a set value at parse
+    // time; the narrow match here documents that intent and avoids
+    // serializing non-config responses (e.g. "set" confirmations) as
+    // TOML if a future code path forgets the parse-time guard.
+    let toml_mode = matches!(
+        other,
+        CliCommand::Config {
+            toml: true,
+            value: None,
+            check: false,
+            reset: false,
+            ..
+        }
+    );
+    let show_all = matches!(other, CliCommand::Config { all: true, .. });
+    let Some((name, args)) = crate::cli::to_swp_command(other) else {
+        return Err("non-send/regen/local command must map to SWP command".into());
+    };
+    _ = conn.send_command(name, args).await?;
+    let data = recv_command_data(conn).await?;
+    if toml_mode {
+        print_config_toml(&data, show_all)?;
+    } else if json_mode {
+        cli_out!("{}", serde_json::to_string_pretty(&data)?);
+    } else if name == "config" {
+        output::commands::print_config(&data, show_all);
+    } else {
+        output::format_command(name, &data);
+    }
+    Ok(())
+}
+
+/// Handle every `shore log` form: edit/delete subcommands, a single message
+/// ref, the heartbeat log, or the message list (optionally `--follow`).
+async fn handle_log_command(
+    conn: &mut SWPConnection,
+    cmd: &CliCommand,
+    display_character: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let CliCommand::Log {
+        subcommand,
+        msg_ref,
+        json,
+        plain,
+        content,
+        role,
+        heartbeat,
+        count,
+        follow,
+        ..
+    } = cmd
+    else {
+        return Ok(());
+    };
+
+    if let Some(sub) = subcommand {
+        let (name, args) = match sub {
+            crate::cli::LogCommand::Edit {
+                msg_ref: edit_ref,
+                content: edit_content,
+            } => (
+                "edit",
+                serde_json::json!({ "ref": edit_ref, "content": edit_content.join(" ") }),
+            ),
+            crate::cli::LogCommand::Delete {
+                msg_ref: delete_ref,
+            } => ("delete", serde_json::json!({ "refs": delete_ref })),
+        };
+        _ = conn.send_command(name, args).await?;
+        let data = recv_command_data(conn).await?;
+        if *json {
+            cli_out!("{}", serde_json::to_string_pretty(&data)?);
+        } else {
+            output::format_command(name, &data);
+        }
+        return Ok(());
+    }
+
+    if let Some(r) = msg_ref {
+        let mut args = serde_json::Map::new();
+        _ = args.insert("ref".into(), serde_json::json!(r));
+        if let Some(role_filter) = role {
+            _ = args.insert(
+                "role".into(),
+                serde_json::json!(role_filter.as_protocol_role()),
+            );
+        }
+        _ = conn
+            .send_command("get", serde_json::Value::Object(args))
+            .await?;
+        let data = recv_command_data(conn).await?;
+        if *json {
+            cli_out!("{}", serde_json::to_string_pretty(&data)?);
+        } else if *content {
+            output::print_message_content(&data);
+        } else if *plain {
+            output::print_log_plain(std::slice::from_ref(&data), display_character);
+        } else {
+            output::print_single_message(&data, display_character);
+        }
+        return Ok(());
+    }
+
+    if *heartbeat {
+        _ = conn
+            .send_command("heartbeat_log", serde_json::json!({ "count": count }))
+            .await?;
+        let data = recv_command_data(conn).await?;
+        if *json {
+            cli_out!("{}", serde_json::to_string_pretty(&data)?);
+        } else {
+            output::print_heartbeat_log(&data);
+        }
+        return Ok(());
+    }
+
+    let mut args = serde_json::Map::new();
+    _ = args.insert("turns".into(), serde_json::json!(count));
+    if let Some(role_filter) = role {
+        _ = args.insert(
+            "role".into(),
+            serde_json::json!(role_filter.as_protocol_role()),
+        );
+    }
+    _ = conn
+        .send_command("log", serde_json::Value::Object(args))
+        .await?;
+    let data = recv_command_data(conn).await?;
+
+    render_log_list(&data, *json, *content, *plain, display_character)?;
+
+    if *follow {
+        follow_log_stream(conn, role.as_ref(), display_character).await?;
+    }
+    Ok(())
+}
+
+/// Render a `shore log` message list honoring `--json` / `--content` / `--plain`
+/// (otherwise the boundary-annotated default view).
+fn render_log_list(
+    data: &serde_json::Value,
+    json: bool,
+    content: bool,
+    plain: bool,
+    display_character: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if json {
+        cli_out!("{}", serde_json::to_string_pretty(data)?);
+        return Ok(());
+    }
+    let Some(messages) = data.get("messages").and_then(serde_json::Value::as_array) else {
+        return Ok(());
+    };
+    if content {
+        for msg in messages {
+            if let Some(c) = msg["content"].as_str() {
+                cli_out!("{c}");
+            }
+        }
+    } else if plain {
+        let active_start = active_start_index(data);
+        output::print_log_plain_with_boundary(messages, active_start, display_character);
+    } else {
+        let active_start = active_start_index(data);
+        output::print_log_with_boundary(messages, active_start, display_character);
+    }
+    Ok(())
+}
+
+/// Stream live log frames after a `shore log --follow`, filtered by `role`.
+async fn follow_log_stream(
+    conn: &mut SWPConnection,
+    role: Option<&LogRole>,
+    follow_char: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        let msg = conn.recv().await?;
+        match &msg {
+            ServerMessage::NewMessage(nm) if log_role_matches(role, &nm.message.role) => {
+                output::print_new_message(nm, nm.character.as_deref().unwrap_or(follow_char));
+            }
+            ServerMessage::StreamStart(start) if log_role_matches(role, &Role::Assistant) => {
+                output::reset_chunk_state();
+                if start.regen {
+                    output::print_stream_start(start.regen);
+                } else {
+                    output::print_follow_stream_start(follow_char);
+                }
+            }
+            ServerMessage::StreamChunk(chunk) if log_role_matches(role, &Role::Assistant) => {
+                output::print_chunk(chunk);
+            }
+            ServerMessage::StreamEnd(end) if log_role_matches(role, &Role::Assistant) => {
+                output::print_stream_end(end);
+            }
+            ServerMessage::ToolCall(call) if log_role_matches(role, &Role::Assistant) => {
+                output::print_tool_call(call);
+            }
+            ServerMessage::ToolResult(result) if log_role_matches(role, &Role::Assistant) => {
+                output::print_tool_result(result);
+            }
+            ServerMessage::Phase(phase) if log_role_matches(role, &Role::Assistant) => {
+                output::print_phase(phase);
+            }
+            ServerMessage::Shutdown(_) => break,
+            ServerMessage::Hello(_)
+            | ServerMessage::History(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Error(_)
+            | ServerMessage::StreamStart(_)
+            | ServerMessage::StreamChunk(_)
+            | ServerMessage::StreamEnd(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::ToolCall(_)
+            | ServerMessage::ToolResult(_)
+            | ServerMessage::SendImage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Handle `shore send` / `shore send --system`: read the message (args, stdin,
+/// or editor), then stream the response or inject a system message.
+async fn handle_send_command(
+    conn: &mut SWPConnection,
+    cmd: &CliCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let CliCommand::Send {
+        message,
+        images,
+        temperature,
+        top_p,
+        thinking,
+        system,
+    } = cmd
+    else {
+        return Ok(());
+    };
+    let text = if !message.is_empty() {
+        message.join(" ")
+    } else if !io::stdin().is_terminal() {
+        read_stdin()?
+    } else {
+        edit_message_in_editor()?
+    };
+    if text.is_empty() && images.is_empty() {
+        return Ok(());
+    }
+    if *system {
+        _ = conn
+            .send_command("inject_system", serde_json::json!({ "text": text }))
+            .await?;
+        let data = recv_command_data(conn).await?;
+        output::format_command("inject_system", &data);
+    } else {
+        let overrides = if temperature.is_some() || top_p.is_some() || thinking.is_some() {
+            Some(shore_protocol::client_msg::MessageOverrides {
+                temperature: *temperature,
+                top_p: *top_p,
+                thinking_budget: *thinking,
+            })
+        } else {
+            None
+        };
+        _ = conn
+            .send_message_full(&text, true, images.clone(), overrides)
+            .await?;
+        recv_streaming_response(conn).await?;
+    }
+    Ok(())
+}
+
+/// Handle `shore alt`: map the selector/ref to its SWP command and render.
+async fn handle_alt_command(
+    conn: &mut SWPConnection,
+    cmd: &CliCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let CliCommand::Alt {
+        selector,
+        msg_ref,
+        json,
+    } = cmd
+    else {
+        return Ok(());
+    };
+    let (name, args) = crate::cli::alt_command_to_swp(selector.as_deref(), msg_ref.as_deref());
+    _ = conn.send_command(name, args).await?;
+    let data = recv_command_data(conn).await?;
+    if *json {
+        cli_out!("{}", serde_json::to_string_pretty(&data)?);
+    } else {
+        output::format_command(name, &data);
+    }
+    Ok(())
+}
+
+/// Handle `shore status` / `shore status --diagnostics`, including a single
+/// `--section` lookup.
+async fn handle_status_command(
+    conn: &mut SWPConnection,
+    cmd: &CliCommand,
+    display_character: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let CliCommand::Status {
+        section,
+        diagnostics,
+        count,
+        json,
+        ..
+    } = cmd
+    else {
+        return Ok(());
+    };
+    if *diagnostics {
+        _ = conn
+            .send_command("diagnostics", serde_json::json!({ "count": count }))
+            .await?;
+        let data = recv_command_data(conn).await?;
+        if *json {
+            cli_out!("{}", serde_json::to_string_pretty(&data)?);
+        } else {
+            output::print_diagnostics(&data);
+        }
+        return Ok(());
+    }
+    _ = conn.send_command("status", serde_json::json!({})).await?;
+    let data = recv_command_data(conn).await?;
+    match section {
+        Some(s) => {
+            if let Some(val) = data.get(s.as_str()) {
+                cli_out!("{}", serde_json::to_string_pretty(val)?);
+            } else {
+                return Err(format!("Unknown status section: {s}").into());
+            }
+        }
+        None if *json => {
+            cli_out!("{}", serde_json::to_string_pretty(&data)?);
+        }
+        None => {
+            output::print_status(&data, display_character);
+        }
+    }
+    Ok(())
+}
+
+/// Handle the model commands the CLI applies locally — `model --reset` and a
+/// bare `model <name>` switch — which clear the runtime mirror. (`--all`
+/// propagates `include_hidden = true`, the documented escape hatch from the
+/// `discovery.ignore` error message.)
+async fn handle_local_model_command(
+    conn: &mut SWPConnection,
+    cmd: &CliCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let CliCommand::Model {
+        name,
+        reset,
+        all,
+        json,
+        ..
+    } = cmd
+    else {
+        return Ok(());
+    };
+    if *reset {
+        _ = conn
+            .send_command("reset_model", serde_json::json!({}))
+            .await?;
+        let data = recv_command_data(conn).await?;
+        _ = state::clear_active_model();
+        if *json {
+            cli_out!("{}", serde_json::to_string_pretty(&data)?);
+        } else {
+            output::format_command("reset_model", &data);
+        }
+        return Ok(());
+    }
+    let mut args = serde_json::Map::new();
+    if let Some(model_name) = name {
+        _ = args.insert("name".into(), serde_json::json!(model_name));
+    }
+    if *all {
+        _ = args.insert("include_hidden".into(), serde_json::json!(true));
+    }
+    _ = conn
+        .send_command("switch_model", serde_json::Value::Object(args))
+        .await?;
+    let data = recv_command_data(conn).await?;
+    _ = state::clear_active_model();
+    if *json {
+        cli_out!("{}", serde_json::to_string_pretty(&data)?);
+    } else {
+        output::format_command("switch_model", &data);
+    }
+    Ok(())
+}
+
+/// Handle the commands that never need a daemon connection — `config --path`,
+/// `character --new`, `connectors`, and `complete`. Returns `Some(result)` when
+/// one of them ran, or `None` to continue with the normal connected path.
+async fn try_handle_local_only(cli: &Cli) -> Option<Result<(), Box<dyn std::error::Error>>> {
+    // config --path: query the daemon for its actual config dir, fall back to local.
+    if matches!(&cli.command, CliCommand::Config { path: true, .. }) {
+        return Some(print_config_path(cli).await);
+    }
+    if let CliCommand::Character {
+        name: Some(name),
+        new: true,
+        ..
+    } = &cli.command
+    {
+        return Some(handle_create_character(name));
+    }
+    if let CliCommand::Connectors { subcommand } = &cli.command {
+        return Some(handle_connectors_command(subcommand, cli));
+    }
+    if let CliCommand::Complete { kind } = &cli.command {
+        // Any failure (daemon down, parse error) ends with empty stdout
+        // and a zero exit code so fish falls back to no suggestions.
+        let _ignored = handle_complete_query(*kind, cli).await;
+        return Some(Ok(()));
+    }
+    None
+}
+
+/// Best-effort re-apply of the persisted active model after connecting.
+///
+/// Regression for #3: `switch_model` only mutates per-session state on the
+/// daemon, so a one-shot CLI invocation discards the choice on exit. Re-apply
+/// it here so every subsequent command sees it. A stale entry (model removed
+/// from config) must not stop the user's actual command.
+async fn pre_apply_active_model(conn: &mut SWPConnection, cli: &Cli) {
+    if matches!(cli.command, CliCommand::Notify { .. }) {
+        return;
+    }
+    let Some(model) = state::read_active_model() else {
+        return;
+    };
+    if let Err(e) = conn
+        .send_command("switch_model", serde_json::json!({ "name": &model }))
+        .await
+    {
+        debug!(error = %e, model = %model, "failed to pre-apply active model");
+        return;
+    }
+    // Drain the response so it doesn't get mixed into the next command's
+    // stream. Errors (e.g. stale model) are ignored — the user's real
+    // command still runs.
+    match conn.recv().await {
+        Ok(ServerMessage::CommandOutput(_)) => {
+            debug!(model = %model, "pre-applied active model");
+        }
+        Ok(ServerMessage::Error(err)) => {
+            debug!(
+                model = %model,
+                error = %err.message,
+                "stale active-model state file, ignoring",
+            );
+        }
+        Ok(other) => {
+            debug!(?other, "unexpected reply to pre-apply switch_model");
+        }
+        Err(e) => {
+            debug!(error = %e, "error draining pre-apply switch_model reply");
+        }
+    }
 }
 
 /// Handle `switch-character` locally: validate via daemon, write state file.
