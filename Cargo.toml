@@ -150,6 +150,13 @@ print_stdout = "warn"
 print_stderr = "warn"
 undocumented_unsafe_blocks = "warn"
 
+# Unsafe-block hardening (#156). `multiple_unsafe_ops_per_block` forces one
+# unsafe op per block so each carries its own `// SAFETY:` justification (pairs
+# with `undocumented_unsafe_blocks`); `missing_assert_message` requires every
+# assert to carry a failure message. Both are near-zero-noise on this tree.
+multiple_unsafe_ops_per_block = "warn"
+missing_assert_message = "warn"
+
 [workspace.lints.rust]
 # Rustc-side paranoia lints from the Tier 2 ratchet (#115). Crates also deny
 # these at their roots once clean, with documented local `unsafe_code`
