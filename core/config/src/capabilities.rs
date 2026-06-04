@@ -1183,9 +1183,11 @@ mod tests {
     #[test]
     fn native_deepseek_moonshot_reasoning_capabilities() {
         // Issue #164: native DeepSeek/Moonshot via the Vercel AI SDK providers.
-        // DeepSeek exposes a graded reasoningEffort low|medium|high|xhigh|max.
+        // DeepSeek has two distinct effort levels, high|max; per the docs
+        // low/medium fold to high and xhigh folds to max, so only the two real
+        // levels are in the domain. https://api-docs.deepseek.com/guides/thinking_mode
         let ds = reasoning_effort_domain(&Sdk::Deepseek, "deepseek-reasoner");
-        assert_eq!(ds, ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(ds, ["high", "max"]);
         assert_eq!(
             applicability(&Sdk::Deepseek, "deepseek-reasoner", Field::ReasoningEffort),
             Applicability::Honored
