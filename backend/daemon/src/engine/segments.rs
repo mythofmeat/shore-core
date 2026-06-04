@@ -95,8 +95,8 @@ impl SegmentReader {
         })?;
 
         let mut msgs = Vec::new();
-        for line in content.lines() {
-            let line = line.trim();
+        for raw_line in content.lines() {
+            let line = raw_line.trim();
             if line.is_empty() {
                 continue;
             }

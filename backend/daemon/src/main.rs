@@ -32,6 +32,9 @@
     clippy::undocumented_unsafe_blocks,
     clippy::multiple_unsafe_ops_per_block,
     clippy::missing_assert_message,
+    clippy::shadow_same,
+    clippy::shadow_reuse,
+    clippy::shadow_unrelated,
     unsafe_code,
     elided_lifetimes_in_paths,
     unused_qualifications
@@ -306,7 +309,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     error!(error = %error, "Failed to listen for SIGTERM; falling back to SIGINT only");
                     match ctrl_c.await {
                         Ok(()) => info!("Received SIGINT"),
-                        Err(error) => error!(error = %error, "Failed to listen for SIGINT"),
+                        Err(sigint_error) => {
+                            error!(error = %sigint_error, "Failed to listen for SIGINT");
+                        }
                     }
                 }
             }
@@ -500,11 +505,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(handle) = hot_reload_handle {
-        let _ignored = tokio::time::timeout(shutdown_timeout, handle).await;
+        _ = tokio::time::timeout(shutdown_timeout, handle).await;
     }
-    let _ignored = tokio::time::timeout(shutdown_timeout, auto_discovery_handle).await;
-    let _ignored = tokio::time::timeout(shutdown_timeout, handler_handle).await;
-    let _ignored = tokio::time::timeout(shutdown_timeout, autonomy.shutdown()).await;
+    _ = tokio::time::timeout(shutdown_timeout, auto_discovery_handle).await;
+    _ = tokio::time::timeout(shutdown_timeout, handler_handle).await;
+    _ = tokio::time::timeout(shutdown_timeout, autonomy.shutdown()).await;
 
     // ── Cleanup ──────────────────────────────────────────────────────
     if let Err(e) = registry.unregister(&instance_id) {
@@ -817,13 +822,14 @@ mod tests {
         assert_eq!(addr, "127.0.0.1:9000");
         assert_eq!(source, StartupValueSource::Cli);
 
-        let (addr, source) = resolve_listen_addr(None, Some("127.0.0.1:8000".into()), &loaded);
-        assert_eq!(addr, "127.0.0.1:8000");
-        assert_eq!(source, StartupValueSource::Env);
+        let (env_addr, env_source) =
+            resolve_listen_addr(None, Some("127.0.0.1:8000".into()), &loaded);
+        assert_eq!(env_addr, "127.0.0.1:8000");
+        assert_eq!(env_source, StartupValueSource::Env);
 
-        let (addr, source) = resolve_listen_addr(None, None, &loaded);
-        assert_eq!(addr, "127.0.0.1:7320");
-        assert_eq!(source, StartupValueSource::Config);
+        let (config_addr, config_source) = resolve_listen_addr(None, None, &loaded);
+        assert_eq!(config_addr, "127.0.0.1:7320");
+        assert_eq!(config_source, StartupValueSource::Config);
     }
 
     #[test]

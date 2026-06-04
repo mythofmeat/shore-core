@@ -521,9 +521,9 @@ impl CompactionManager {
         // that omit `defer_edit` (e.g. test stubs) so the queue stays
         // consistent with the previous behaviour.
         if memory_index_updated && tool_ctx.config_dir().is_empty() {
-            if let Some(data_dir) = data_dir {
+            if let Some(dir) = data_dir {
                 if let Err(e) = crate::memory::deferred_edits::note_memory_index_deferred(
-                    &character_data_dir(data_dir, char_name),
+                    &character_data_dir(dir, char_name),
                 ) {
                     warn!(
                         error = %e,
@@ -545,9 +545,9 @@ impl CompactionManager {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
-        if let Some(data_dir) = data_dir {
+        if let Some(dir) = data_dir {
             if let Err(e) = crate::memory::dreams_log::append_dream_entry(
-                data_dir,
+                dir,
                 char_name,
                 chrono::Local::now().fixed_offset(),
                 "compaction",
@@ -1721,7 +1721,7 @@ mod tests {
         let data_dir = tmp.path().join("data");
         let ctx = TestCtx::new(tmp.path().to_string_lossy().into_owned());
 
-        let result = mgr
+        let outcome = mgr
             .compact(
                 "conv-mixed",
                 &make_messages(10),
@@ -1744,7 +1744,7 @@ mod tests {
             .unwrap();
 
         let result = assert_variant!(
-            result,
+            outcome,
             CompactionOutcome::Compacted(r) => r,
         );
         assert_eq!(result.memory_files_written.len(), 2);

@@ -129,12 +129,12 @@ pub fn resolve_embedder(
         base_url.as_deref().unwrap_or("default"),
         dimensions.map_or_else(|| "native".to_owned(), |d| d.to_string())
     );
-    let model_id = model_id.to_owned();
-    let http_client = http_client.clone();
+    let owned_model_id = model_id.to_owned();
+    let owned_http_client = http_client.clone();
     shore_llm::embed::cache_or_build(&cache_key, move || {
         Ok::<Arc<dyn Embedder>, String>(Arc::new(OpenAIEmbedder::new(
-            http_client,
-            model_id,
+            owned_http_client,
+            owned_model_id,
             api_key,
             base_url,
             dimensions,

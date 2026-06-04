@@ -991,7 +991,10 @@ mod tests {
             &toml::Value::String("1h".into()),
         )
         .unwrap_err();
-        assert!(matches!(cache_ttl_err, CapabilityError::Inapplicable { .. }));
+        assert!(matches!(
+            cache_ttl_err,
+            CapabilityError::Inapplicable { .. }
+        ));
 
         // Sampler on a past-cutoff Claude model is Rejected → Inapplicable.
         let sampler_err = validate(

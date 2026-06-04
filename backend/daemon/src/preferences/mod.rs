@@ -1419,14 +1419,14 @@ max_output_tokens = 8192
         save_preferences(&path, &prefs).unwrap();
 
         // Switch selection — does not modify per-model settings.
-        let mut prefs = load_preferences(&path).unwrap();
-        prefs.selected.model_id = Some("opus".into());
-        save_preferences(&path, &prefs).unwrap();
+        let mut reloaded = load_preferences(&path).unwrap();
+        reloaded.selected.model_id = Some("opus".into());
+        save_preferences(&path, &reloaded).unwrap();
 
         // Switch back — both temperatures still intact.
-        let prefs = load_preferences(&path).unwrap();
+        let final_prefs = load_preferences(&path).unwrap();
         assert_eq!(
-            prefs
+            final_prefs
                 .model("anthropic", "opus")
                 .unwrap()
                 .sampler
@@ -1434,7 +1434,7 @@ max_output_tokens = 8192
             Some(0.7)
         );
         assert_eq!(
-            prefs
+            final_prefs
                 .model("anthropic", "sonnet")
                 .unwrap()
                 .sampler
@@ -1502,11 +1502,11 @@ model_id = "claude-opus-4-6"
 model_id = "kimi-k2"
 "#,
         );
-        let m = find_static_model(&catalog, "anthropic", "claude-opus-4-6").unwrap();
-        assert_eq!(m.qualified_name, "chat.anthropic.opus");
+        let opus_m = find_static_model(&catalog, "anthropic", "claude-opus-4-6").unwrap();
+        assert_eq!(opus_m.qualified_name, "chat.anthropic.opus");
 
-        let m = find_static_model(&catalog, "openrouter", "kimi-k2").unwrap();
-        assert_eq!(m.qualified_name, "chat.openrouter.kimi");
+        let kimi_m = find_static_model(&catalog, "openrouter", "kimi-k2").unwrap();
+        assert_eq!(kimi_m.qualified_name, "chat.openrouter.kimi");
 
         // Wrong provider / model_id pairs return None.
         assert!(find_static_model(&catalog, "anthropic", "kimi-k2").is_none());
@@ -1548,36 +1548,42 @@ model_id = "kimi-k2"
         let dd = tmp.path();
 
         // (a) Character preference wins.
-        let g = ModelPreferences::default();
-        let mut c = ModelPreferences::default();
-        c.selected.provider = Some("anthropic".into());
-        c.selected.model_id = Some("claude-sonnet-4-6".into());
-        let active = resolve_active_for_character(&loaded, dd, &g, &c, None, None).unwrap();
-        assert_eq!(active.qualified_name, "chat.anthropic.sonnet");
+        {
+            let g = ModelPreferences::default();
+            let mut c = ModelPreferences::default();
+            c.selected.provider = Some("anthropic".into());
+            c.selected.model_id = Some("claude-sonnet-4-6".into());
+            let active = resolve_active_for_character(&loaded, dd, &g, &c, None, None).unwrap();
+            assert_eq!(active.qualified_name, "chat.anthropic.sonnet");
+        }
 
         // (b) Global preference falls in when character is empty.
-        let mut g = ModelPreferences::default();
-        g.selected.provider = Some("openrouter".into());
-        g.selected.model_id = Some("kimi-k2".into());
-        let c = ModelPreferences::default();
-        let active = resolve_active_for_character(&loaded, dd, &g, &c, None, None).unwrap();
-        assert_eq!(active.qualified_name, "chat.openrouter.kimi");
+        {
+            let mut g = ModelPreferences::default();
+            g.selected.provider = Some("openrouter".into());
+            g.selected.model_id = Some("kimi-k2".into());
+            let c = ModelPreferences::default();
+            let active = resolve_active_for_character(&loaded, dd, &g, &c, None, None).unwrap();
+            assert_eq!(active.qualified_name, "chat.openrouter.kimi");
+        }
 
         // (c) Legacy runtime_state.json fallback (migration path).
         let g = ModelPreferences::default();
         let c = ModelPreferences::default();
-        let active = resolve_active_for_character(&loaded, dd, &g, &c, Some("opus"), None).unwrap();
-        assert_eq!(active.qualified_name, "chat.anthropic.opus");
+        let active_c =
+            resolve_active_for_character(&loaded, dd, &g, &c, Some("opus"), None).unwrap();
+        assert_eq!(active_c.qualified_name, "chat.anthropic.opus");
 
         // (d) app.defaults.model fallback when no preferences and no legacy.
-        let active = resolve_active_for_character(&loaded, dd, &g, &c, None, Some("kimi")).unwrap();
-        assert_eq!(active.qualified_name, "chat.openrouter.kimi");
+        let active_d =
+            resolve_active_for_character(&loaded, dd, &g, &c, None, Some("kimi")).unwrap();
+        assert_eq!(active_d.qualified_name, "chat.openrouter.kimi");
 
         // (e) First chat model is the final fallback.
-        let active = resolve_active_for_character(&loaded, dd, &g, &c, None, None).unwrap();
+        let active_e = resolve_active_for_character(&loaded, dd, &g, &c, None, None).unwrap();
         // BTreeMap iteration is lexicographic by qualified_name, so
         // "chat.anthropic.opus" comes first.
-        assert_eq!(active.qualified_name, "chat.anthropic.opus");
+        assert_eq!(active_e.qualified_name, "chat.anthropic.opus");
     }
 
     #[test]

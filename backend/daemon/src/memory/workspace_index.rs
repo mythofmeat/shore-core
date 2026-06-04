@@ -338,13 +338,13 @@ pub async fn hybrid_search(
         })
         .collect();
 
-    let max_lex = scored
+    let max_lex_count = scored
         .iter()
         .map(|f| f.lexical_score)
         .max()
         .unwrap_or(1)
         .max(1);
-    let max_lex = crate::convert::usize_to_f32(max_lex);
+    let max_lex = crate::convert::usize_to_f32(max_lex_count);
     let embedded_files = scored.iter().filter(|f| f.semantic_score.is_some()).count();
 
     let (lw, sw) = mode.weights();
@@ -676,7 +676,7 @@ mod tests {
     impl Embedder for TopicEmbedder {
         async fn embed(&self, inputs: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
             let _ignored = self.call_count.fetch_add(1, Ordering::SeqCst);
-            let _ignored = self.input_count.fetch_add(inputs.len(), Ordering::SeqCst);
+            _ = self.input_count.fetch_add(inputs.len(), Ordering::SeqCst);
             Ok(inputs.iter().map(|s| self.vector_for(s)).collect())
         }
         fn model_id(&self) -> &'static str {
@@ -803,7 +803,7 @@ mod tests {
 
         // Modify only b.md.
         write_file(&ws, "b.md", "rust and tokio are fun").await;
-        let _ignored = hybrid_search(
+        _ = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",
@@ -851,7 +851,7 @@ mod tests {
         assert_eq!(inputs_first, 2);
 
         retrieval_config.max_embed_chars_per_file = 100;
-        let _ignored = hybrid_search(
+        _ = hybrid_search(
             &ws_str,
             &retrieval_config,
             "tea",
@@ -930,7 +930,7 @@ mod tests {
         assert_eq!(inputs_first, 2);
 
         // Re-run; the binary file should not trigger another embedding.
-        let _ignored = hybrid_search(
+        _ = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",
@@ -1010,7 +1010,7 @@ mod tests {
             .unwrap();
 
         // Run again; the stale embedding must be dropped so the file doesn't appear.
-        let result = hybrid_search(
+        let rerun = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "xyzzy",
@@ -1021,7 +1021,7 @@ mod tests {
         )
         .await
         .unwrap();
-        for f in &result.files {
+        for f in &rerun.files {
             assert_ne!(f.display_path, "secret.md");
         }
     }
@@ -1066,7 +1066,7 @@ mod tests {
         assert_eq!(entry.reason.as_deref(), Some("oversize"));
 
         // Second call: only the query should embed.
-        let _ignored = hybrid_search(
+        _ = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",
@@ -1133,7 +1133,7 @@ mod tests {
         let idx = locked.join("workspace_index.json");
 
         let embedder = TopicEmbedder::new(&["tea"]);
-        let result = hybrid_search(
+        let search_result = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",
@@ -1147,7 +1147,7 @@ mod tests {
         // Restore perms so TempDir can clean up regardless of outcome.
         let _ignored = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700));
 
-        let result = result.expect("hybrid search returns despite unwritable index path");
+        let result = search_result.expect("hybrid search returns despite unwritable index path");
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].display_path, "a.md");
     }
@@ -1175,7 +1175,7 @@ mod tests {
 
         // Delete b.md and re-run; the on-disk index must lose b.md.
         fs::remove_file(ws.join("b.md")).await.unwrap();
-        let _ignored = hybrid_search(
+        _ = hybrid_search(
             &ws_str,
             &RetrievalConfig::default(),
             "tea",

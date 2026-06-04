@@ -342,7 +342,7 @@ async fn test_user_message_resets_keepalive_timer() {
         .mock_llm
         .enqueue_text("Mid-conversation response.")
         .await;
-    let _r = harness.send_and_collect("Message at minute 50").await;
+    _ = harness.send_and_collect("Message at minute 50").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let after_msg = harness.mock_llm.received_requests().await.len();
@@ -560,23 +560,23 @@ async fn test_triple_failure_then_recovery() {
 /// and fire a ping at the correct time.
 #[tokio::test]
 async fn test_keepalive_survives_crash() {
-    let mut harness = TestHarness::boot().await;
-
-    // Warm the cache.
-    harness.mock_llm.enqueue_text("Before crash.").await;
-    let _r = harness.send_and_collect("Pre-crash message").await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
     // Crash the daemon (aborts tasks, removes socket, keeps data).
-    let crashed = harness.crash().await;
+    let crashed = {
+        let mut harness = TestHarness::boot().await;
 
-    // Reboot from persisted state.
-    let harness = crashed.reboot().await;
+        // Warm the cache.
+        harness.mock_llm.enqueue_text("Before crash.").await;
+        _ = harness.send_and_collect("Pre-crash message").await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // Send a new message to re-prime last_request (it's not persisted).
-    let mut harness = harness;
+        harness.crash().await
+    };
+
+    // Reboot from persisted state, then send a new message to re-prime
+    // last_request (it's not persisted).
+    let mut harness = crashed.reboot().await;
     harness.mock_llm.enqueue_text("After reboot.").await;
-    let _r = harness.send_and_collect("Post-crash message").await;
+    _ = harness.send_and_collect("Post-crash message").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let baseline = harness.mock_llm.received_requests().await.len();

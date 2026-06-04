@@ -550,7 +550,9 @@ New lints land through a fixed sequence so the baseline only tightens:
   or unwraps inside `Result` functions, no `let _ =` discards of must-use
   values, no ignored return values, no unchecked `as` conversions, locked
   ref-counted clone style, banned `dbg!`/print macros/`process::exit`/
-  `mem::forget`, documented unsafe blocks, and no unreachable `pub` items.
+  `mem::forget`, documented unsafe blocks, no unreachable `pub` items, and no
+  variable shadowing (a binding can never silently shadow another, so data flow
+  stays explicit).
 - **Tier 2/3 tests** — `insta` snapshots, `proptest` round-trips, and a
   `cargo-llvm-cov` coverage job for visibility.
 

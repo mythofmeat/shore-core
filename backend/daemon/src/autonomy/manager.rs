@@ -1270,11 +1270,11 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
     .await
     {
         Ok(retained_count) => {
-            let engine_arc = {
+            let engine_result = {
                 let mut r = registry.lock().await;
                 r.get_or_create(character)
             };
-            match engine_arc {
+            match engine_result {
                 Ok(engine_arc) => {
                     let mut engine = engine_arc.lock().await;
                     if let Err(e) = engine.reload() {
@@ -1482,11 +1482,11 @@ async fn run_pre_dream_compaction(
     )
     .await?;
 
-    let engine_arc = {
+    let engine_result = {
         let mut r = registry.lock().await;
         r.get_or_create(character)
     };
-    match engine_arc {
+    match engine_result {
         Ok(engine_arc) => {
             let mut engine = engine_arc.lock().await;
             if let Err(e) = engine.reload() {
@@ -1786,9 +1786,9 @@ async fn execute_heartbeat_tick(
                 // Persist the rebuilt request so keepalive pings can use it;
                 // otherwise pings silently no-op after daemon restart until
                 // the next user message.
-                let mut s = lock_state(state);
-                cache_last_request(&mut s, character, req.clone());
-                drop(s);
+                let mut write_guard = lock_state(state);
+                cache_last_request(&mut write_guard, character, req.clone());
+                drop(write_guard);
                 req
             } else {
                 info!(
@@ -1865,9 +1865,9 @@ async fn execute_heartbeat_tick(
     // This prevents cache prefix invalidation. Instructions for using
     // set_next_wake are in the heartbeat prompt.
 
-    let tool_ctx = build_tool_context(character, data_dir, client, lc);
+    let inner_ctx = build_tool_context(character, data_dir, client, lc);
     let tool_ctx = Arc::new(HeartbeatToolContext {
-        inner: tool_ctx,
+        inner: inner_ctx,
         state: Arc::clone(state),
     });
     let max_normal_iterations = lc.app.behavior.autonomy.heartbeat.max_tool_rounds;
@@ -2101,17 +2101,17 @@ async fn execute_heartbeat_tick(
             // Acquire engine_arc under registry lock, then drop it before
             // locking the engine — matches handler's lock ordering and avoids
             // holding the registry during disk I/O.
-            let engine_arc = {
+            let engine_result = {
                 let mut r = reg.lock().await;
                 r.get_or_create(character)
             };
-            match engine_arc {
+            match engine_result {
                 Ok(engine_arc) => {
                     let mut engine = engine_arc.lock().await;
                     if let Err(e) = engine.append_message(msg.clone()) {
                         error!(character, error = %e, "Failed to persist autonomous message via engine");
                     } else if let Some(tx) = push_tx {
-                        let _ignored = tx.send(ServerMessage::NewMessage(
+                        _ = tx.send(ServerMessage::NewMessage(
                             shore_protocol::server_msg::NewMessage {
                                 revision: engine.current_revision(),
                                 character: Some(character.to_owned()),
@@ -2358,9 +2358,9 @@ async fn execute_dormant_ping(
                 );
             };
             if let Some(req) = rebuild_request_from_disk(character, data_dir, config) {
-                let mut s = lock_state(state);
-                cache_last_request(&mut s, character, req.clone());
-                drop(s);
+                let mut write_guard = lock_state(state);
+                cache_last_request(&mut write_guard, character, req.clone());
+                drop(write_guard);
                 build_keepalive_ping(&req, character)
             } else {
                 debug!(
@@ -2573,7 +2573,7 @@ mod tests {
 
         rt.block_on(async {
             let _ignored = mgr.ensure_state("alice");
-            let _ignored = mgr.ensure_state("alice");
+            _ = mgr.ensure_state("alice");
             assert_eq!(mgr.states.len(), 1);
         });
     }
@@ -2688,7 +2688,7 @@ mod tests {
         rt.block_on(async {
             let mgr = test_manager(tmp.path());
             let _ignored = mgr.ensure_state("alice");
-            let _ignored = mgr.with_state("alice", |s| {
+            _ = mgr.with_state("alice", |s| {
                 let now = Instant::now();
                 s.heartbeat.on_user_message(now - Duration::from_hours(72));
             });
@@ -2760,8 +2760,7 @@ mod tests {
         rt.block_on(async {
             let _ignored = mgr.ensure_state("alice");
             // Heartbeat starts with no user activity.
-            let _ignored =
-                mgr.with_state("alice", |s| assert!(s.heartbeat.last_user_at().is_none()));
+            _ = mgr.with_state("alice", |s| assert!(s.heartbeat.last_user_at().is_none()));
 
             // Most recent backfilled user turn is ~2 minutes ago.
             let now_local = chrono::Local::now().naive_local();
@@ -2773,7 +2772,7 @@ mod tests {
 
             // last_user_at is now seeded and reflects the recent (~2min) turn,
             // so a short inactivity window would NOT be satisfied.
-            let _ignored = mgr.with_state("alice", |s| {
+            _ = mgr.with_state("alice", |s| {
                 let last = s.heartbeat.last_user_at().expect("seeded");
                 let elapsed = Instant::now().duration_since(last);
                 assert!(elapsed < Duration::from_mins(5));
@@ -3095,7 +3094,7 @@ mod tests {
         let _ignored = mgr.ensure_state("alice");
 
         let now = Instant::now();
-        let _ignored = mgr.with_state("alice", |s| {
+        _ = mgr.with_state("alice", |s| {
             s.cache_keepalive
                 .on_cache_warmed(now - Duration::from_hours(1));
             s.cache_keepalive
@@ -3592,7 +3591,7 @@ api_key_env = "{heartbeat_env}"
         assert!(!mgr.should_compact_now("alice", 20, 0));
 
         // Simulate idle trigger setting the pending flag.
-        let _ignored = mgr.with_state("alice", |s| {
+        _ = mgr.with_state("alice", |s| {
             s.compaction_pending = true;
         });
 

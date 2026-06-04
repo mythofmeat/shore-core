@@ -42,7 +42,7 @@ async fn test_multi_turn_tool_conversation_valid() {
         .enqueue_tool_use("toolu_r3_01", "check_time", json!({}))
         .await;
     harness.mock_llm.enqueue_text("Time checked again.").await;
-    let _ignored = harness
+    _ = harness
         .conn
         .send_message("And now what time is it?", true)
         .await

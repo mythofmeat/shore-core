@@ -148,13 +148,13 @@ pub async fn run_compaction(
 }
 
 fn resolve_compaction_chat_request(
-    cached_request: Option<shore_llm::types::LlmRequest>,
+    cached_request_opt: Option<shore_llm::types::LlmRequest>,
     character: &str,
     character_dir: &std::path::Path,
     effective: &shore_config::LoadedConfig,
     messages: &[shore_protocol::types::Message],
 ) -> Result<shore_llm::types::LlmRequest, Box<dyn std::error::Error + Send + Sync>> {
-    let Some(cached_request) = cached_request else {
+    let Some(cached_request) = cached_request_opt else {
         let chat_model = crate::preferences::resolve_chat_model_for_character(effective, character)
             .ok_or("No chat model configured for compaction prefix rebuild")?;
         let has_prior_context = crate::engine::segments::SegmentReader::load(character_dir)

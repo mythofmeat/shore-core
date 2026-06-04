@@ -368,7 +368,7 @@ fn write_character_file(
 }
 
 fn push_cache_ttl(models_toml: &mut String, cache_ttl: Option<&str>) {
-    if let Some(cache_ttl) = cache_ttl {
-        let _ignored = writeln!(models_toml, "cache_ttl = \"{cache_ttl}\"");
+    if let Some(ttl) = cache_ttl {
+        let _ignored = writeln!(models_toml, "cache_ttl = \"{ttl}\"");
     }
 }

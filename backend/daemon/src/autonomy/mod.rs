@@ -152,8 +152,8 @@ impl HeartbeatLog {
     pub fn load_from(path: PathBuf) -> Option<Self> {
         let data = std::fs::read_to_string(&path).ok()?;
         let mut events: VecDeque<HeartbeatEvent> = VecDeque::with_capacity(HEARTBEAT_LOG_CAPACITY);
-        for (idx, line) in data.lines().enumerate() {
-            let line = line.trim();
+        for (idx, raw_line) in data.lines().enumerate() {
+            let line = raw_line.trim();
             if line.is_empty() {
                 continue;
             }

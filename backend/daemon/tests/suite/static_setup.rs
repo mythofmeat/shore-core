@@ -76,13 +76,13 @@ async fn static_only_setup_resolves_lists_and_sends() {
     assert_eq!(data["hidden_count"], 0);
 
     // ── switch_model ─────────────────────────────────────────────────────
-    let messages = harness
+    let switch_messages = harness
         .send_command_with_args("switch_model", json!({ "name": "haiku" }))
         .await;
-    let data = extract_command_output(&messages, "switch_model");
-    assert_eq!(data["active"], "haiku");
-    assert_eq!(data["provider"], "openrouter");
-    assert_eq!(data["changed"], true);
+    let switch_data = extract_command_output(&switch_messages, "switch_model");
+    assert_eq!(switch_data["active"], "haiku");
+    assert_eq!(switch_data["provider"], "openrouter");
+    assert_eq!(switch_data["changed"], true);
 
     // ── chat send ────────────────────────────────────────────────────────
     harness.mock_llm.enqueue_text("static path ok").await;

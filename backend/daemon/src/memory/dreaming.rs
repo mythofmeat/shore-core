@@ -1106,14 +1106,14 @@ async fn write_fallback_memory_index(
     body.push_str("Use it to decide which memory files to inspect before answering.\n\n");
     body.push_str("Core user facts and standing behavior guidance are already loaded from USER.md and AGENTS.md; do not duplicate them here unless needed as pointers to memory files.\n\n");
     let _ignored = writeln!(body, "Character: {character}");
-    let _ignored = writeln!(body, "Last updated: {ran_at}");
+    _ = writeln!(body, "Last updated: {ran_at}");
     body.push_str("Fallback note: Rust created this minimal index because the AI librarian pass did not leave a usable MEMORY.md.\n\n");
     body.push_str("## Memory areas\n\n");
     if entries.is_empty() {
         body.push_str("- No ordinary memory files were found yet.\n");
     } else {
         for entry in entries.iter().take(MAX_INDEX_FILES) {
-            let _ignored = writeln!(body, "- `{}` - {}", entry.path, memory_file_summary(entry));
+            _ = writeln!(body, "- `{}` - {}", entry.path, memory_file_summary(entry));
         }
     }
     body.push_str("\n## Recently updated files\n\n");
@@ -1446,7 +1446,7 @@ fn run_light_phase(
                 decision_reason: "staged by Light Sleep; Deep has not evaluated it yet".to_owned(),
                 evidence: vec![evidence],
             };
-            let _ignored = by_key.insert(key, candidate);
+            _ = by_key.insert(key, candidate);
         }
     }
 
@@ -1794,15 +1794,15 @@ async fn append_dream_diary(
 
     let _ignored = write!(body, "## Dream Cycle - {ran_at}\n\n");
     body.push_str("### Light Sleep - Staging\n\n");
-    let _ignored = writeln!(body, "- Sources reviewed: {}", light.sources_reviewed);
-    let _ignored = writeln!(body, "- Candidates staged: {}", light.candidates_staged);
-    let _ignored = writeln!(body, "- Duplicates ignored: {}", light.duplicates_ignored);
+    _ = writeln!(body, "- Sources reviewed: {}", light.sources_reviewed);
+    _ = writeln!(body, "- Candidates staged: {}", light.candidates_staged);
+    _ = writeln!(body, "- Duplicates ignored: {}", light.duplicates_ignored);
     body.push_str("- No durable memory was written\n\n");
 
     if !light.candidates.is_empty() {
         body.push_str("Staged examples:\n\n");
         for candidate in light.candidates.iter().take(MAX_DIARY_ITEMS) {
-            let _ignored = writeln!(
+            _ = writeln!(
                 body,
                 "- {}\n  - source: `{}`{}",
                 diary_text(&candidate.text),
@@ -1822,7 +1822,7 @@ async fn append_dream_diary(
     } else {
         body.push_str("- Themes noticed:\n");
         for theme in rem.themes.iter().take(MAX_DIARY_ITEMS) {
-            let _ignored = writeln!(body, "  - {} ({} hits)", theme.theme, theme.hits);
+            _ = writeln!(body, "  - {} ({} hits)", theme.theme, theme.hits);
         }
     }
     if rem.reinforcement_signals.is_empty() {
@@ -1830,7 +1830,7 @@ async fn append_dream_diary(
     } else {
         body.push_str("- Reinforcement signals:\n");
         for (theme, hits) in rem.reinforcement_signals.iter().take(MAX_DIARY_ITEMS) {
-            let _ignored = writeln!(body, "  - {theme}: {hits} supporting candidates");
+            _ = writeln!(body, "  - {theme}: {hits} supporting candidates");
         }
     }
     body.push_str("- No durable memory was written\n\n");
@@ -1841,10 +1841,10 @@ async fn append_dream_diary(
         body.push_str("- None\n");
     } else {
         for promotion in deep.promoted.iter().take(MAX_DIARY_ITEMS) {
-            let _ignored = writeln!(body, "- {}", diary_text(&promotion.text));
-            let _ignored = writeln!(body, "  - score: {:.2}", promotion.score);
+            _ = writeln!(body, "- {}", diary_text(&promotion.text));
+            _ = writeln!(body, "  - score: {:.2}", promotion.score);
             if let Some(evidence) = promotion.evidence.first() {
-                let _ignored = writeln!(
+                _ = writeln!(
                     body,
                     "  - evidence/source: `{}`{}",
                     evidence.source,
@@ -1854,7 +1854,7 @@ async fn append_dream_diary(
                         .unwrap_or_default()
                 );
             }
-            let _ignored = writeln!(
+            _ = writeln!(
                 body,
                 "  - gates passed: {}",
                 promotion.gates_passed.join(", ")
@@ -1866,8 +1866,8 @@ async fn append_dream_diary(
         body.push_str("- None\n");
     } else {
         for rejection in deep.rejected.iter().take(MAX_DIARY_ITEMS) {
-            let _ignored = writeln!(body, "- {}", diary_text(&rejection.text));
-            let _ignored = writeln!(body, "  - reason: {}", rejection.reason);
+            _ = writeln!(body, "- {}", diary_text(&rejection.text));
+            _ = writeln!(body, "  - reason: {}", rejection.reason);
         }
     }
     body.push_str("\n### Notes for Review\n\n");
@@ -1900,17 +1900,17 @@ async fn write_phase_reports(
         "- Sources reviewed: {}",
         light.sources_reviewed
     );
-    let _ignored = writeln!(
+    _ = writeln!(
         light_report,
         "- Generated sources ignored: {}",
         light.generated_sources_ignored
     );
-    let _ignored = writeln!(
+    _ = writeln!(
         light_report,
         "- Candidates staged: {}",
         light.candidates_staged
     );
-    let _ignored = writeln!(
+    _ = writeln!(
         light_report,
         "- Duplicates ignored: {}",
         light.duplicates_ignored
@@ -1920,7 +1920,7 @@ async fn write_phase_reports(
     let mut rem_report = format!("# REM Sleep - {ran_at}\n\n");
     rem_report.push_str("## Themes\n\n");
     for theme in &rem.themes {
-        let _ignored = writeln!(rem_report, "- {}: {} hits", theme.theme, theme.hits);
+        _ = writeln!(rem_report, "- {}: {} hits", theme.theme, theme.hits);
     }
     if rem.themes.is_empty() {
         rem_report.push_str("- None\n");
@@ -1933,7 +1933,7 @@ async fn write_phase_reports(
         deep_report.push_str("- None\n");
     } else {
         for promotion in &deep.promoted {
-            let _ignored = writeln!(deep_report, "- {} ({:.2})", promotion.text, promotion.score);
+            _ = writeln!(deep_report, "- {} ({:.2})", promotion.text, promotion.score);
         }
     }
     deep_report.push_str("\n## Rejected/deferred\n\n");
@@ -1941,7 +1941,7 @@ async fn write_phase_reports(
         deep_report.push_str("- None\n");
     } else {
         for rejection in &deep.rejected {
-            let _ignored = writeln!(deep_report, "- {} - {}", rejection.text, rejection.reason);
+            _ = writeln!(deep_report, "- {} - {}", rejection.text, rejection.reason);
         }
     }
 
@@ -1976,7 +1976,7 @@ async fn write_memory_index(
     let mut body = String::new();
     body.push_str("# Memory Index\n\n");
     let _ignored = writeln!(body, "Character: {character}");
-    let _ignored = write!(body, "Last updated: {ran_at}\n\n");
+    _ = write!(body, "Last updated: {ran_at}\n\n");
     body.push_str("This file is the prompt-visible memory index. It maps durable memory files in workspace/memory, recent updates, and still-relevant conversational throughlines.\n\n");
     body.push_str("It is not the character definition, user profile, standing behavior, tool guide, or heartbeat guide. Those roles stay in SOUL.md, USER.md, AGENTS.md, TOOLS.md, and HEARTBEAT.md.\n\n");
 
@@ -1985,10 +1985,10 @@ async fn write_memory_index(
         body.push_str("- No memory files yet.\n");
     } else {
         for entry in entries.iter().take(MAX_INDEX_FILES) {
-            let _ignored = writeln!(body, "- `{}` - {}", entry.path, memory_file_summary(entry));
+            _ = writeln!(body, "- `{}` - {}", entry.path, memory_file_summary(entry));
         }
         if entries.len() > MAX_INDEX_FILES {
-            let _ignored = writeln!(
+            _ = writeln!(
                 body,
                 "- {} additional memory files omitted from this index.",
                 entries.len().saturating_sub(MAX_INDEX_FILES)
@@ -2001,7 +2001,7 @@ async fn write_memory_index(
         body.push_str("- No recent memory file updates.\n");
     } else {
         for entry in recent.iter().take(MAX_RECENT_INDEX_FILES) {
-            let _ignored = writeln!(
+            _ = writeln!(
                 body,
                 "- `{}` - modified {}",
                 entry.path,
@@ -2015,9 +2015,9 @@ async fn write_memory_index(
         body.push_str("- No high-confidence throughlines selected in the latest dream cycle.\n");
     } else {
         for item in throughlines.iter().take(MAX_INDEX_THROUGHLINES) {
-            let _ignored = writeln!(body, "- {}", diary_text(&item.text));
+            _ = writeln!(body, "- {}", diary_text(&item.text));
             if let Some(evidence) = item.evidence.first() {
-                let _ignored = writeln!(
+                _ = writeln!(
                     body,
                     "  - source: `{}`{}",
                     evidence.source,
@@ -2058,7 +2058,7 @@ fn memory_file_summary(entry: &MarkdownEntry) -> String {
                 .filter(|rest| !rest.is_empty())
         })
         .unwrap_or("untitled");
-    let detail = entry
+    let detail_opt = entry
         .content
         .lines()
         .filter_map(|line| {
@@ -2070,7 +2070,7 @@ fn memory_file_summary(entry: &MarkdownEntry) -> String {
         })
         .find(|line| !line.is_empty());
 
-    match detail {
+    match detail_opt {
         Some(detail) => format!("{title}; {detail}"),
         None => title.to_owned(),
     }

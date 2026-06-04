@@ -405,13 +405,13 @@ mod tests {
 
         // Tick 2.
         now += secs(61);
-        let _ignored = c.tick(now); // bootstrap
+        _ = c.tick(now); // bootstrap
         now += secs(61);
         assert_eq!(c.tick(now), HeartbeatAction::RunTick);
 
         // ticks_without_user is now 2 == max_idle. Next deadline: guard trips.
         now += secs(61);
-        let _ignored = c.tick(now); // bootstrap
+        _ = c.tick(now); // bootstrap
         now += secs(61);
         assert_eq!(c.tick(now), HeartbeatAction::None);
         assert!(c.next_wake_at.is_none());
@@ -515,7 +515,7 @@ mod tests {
         let mut now = Instant::now();
         let _ignored = c.tick(now);
         now += secs(61);
-        let _ignored = c.tick(now); // ticks_without_user = 1
+        _ = c.tick(now); // ticks_without_user = 1
         assert_eq!(c.ticks_without_user, 1);
 
         c.on_user_message(now);
@@ -570,11 +570,11 @@ mod tests {
         let mut now = Instant::now();
         let _ignored = c.tick(now); // bootstrap
         now += secs(61);
-        let _ignored = c.tick(now); // tick 1
+        _ = c.tick(now); // tick 1
 
         // Bootstrap and trip the guard.
         now += secs(61);
-        let _ignored = c.tick(now); // bootstrap
+        _ = c.tick(now); // bootstrap
         now += secs(61);
         assert_eq!(c.tick(now), HeartbeatAction::None); // guard trips
         assert!(c.next_wake_at.is_none());
@@ -625,11 +625,11 @@ mod tests {
         let mut now = Instant::now();
         let _ignored = c.tick(now); // bootstrap
         now += secs(61);
-        let _ignored = c.tick(now); // tick 1
+        _ = c.tick(now); // tick 1
         now += secs(61);
-        let _ignored = c.tick(now); // bootstrap
+        _ = c.tick(now); // bootstrap
         now += secs(61);
-        let _ignored = c.tick(now); // guard trips
+        _ = c.tick(now); // guard trips
         assert_eq!(c.state_at(now), "Dormant");
     }
 

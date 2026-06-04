@@ -301,7 +301,7 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
                 "effective_sampler".into(),
                 serde_json::to_value(&sampler).unwrap_or(Value::Null),
             );
-            let _ignored = obj.insert(
+            _ = obj.insert(
                 "scopes".into(),
                 json!({
                     "temperature": scopes.temperature.map(scope_str),
@@ -328,13 +328,13 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
 /// caller passes `include_hidden = true`. The error spells out how to
 /// either opt in for the call or update `discovery.ignore` rules permanently.
 pub fn switch_model(ctx: &mut CommandContext, args: &Value) -> CommandResult {
-    let name = args.get("name").and_then(|v| v.as_str());
+    let name_arg = args.get("name").and_then(|v| v.as_str());
     let include_hidden = args
         .get("include_hidden")
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    match name {
+    match name_arg {
         None => Ok(json!({ "active": ctx.active_model })),
         Some(name) => {
             let resolved = effective_catalog::find_effective_model(

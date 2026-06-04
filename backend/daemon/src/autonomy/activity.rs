@@ -266,10 +266,10 @@ impl ActivityTracker {
         let [first, .., last] = self.timestamps.as_slice() else {
             return if self.timestamps.is_empty() { 0.0 } else { 1.0 };
         };
-        let first = first.wall_clock.date();
-        let last = last.wall_clock.date();
-        let span_days = last
-            .signed_duration_since(first)
+        let first_date = first.wall_clock.date();
+        let last_date = last.wall_clock.date();
+        let span_days = last_date
+            .signed_duration_since(first_date)
             .num_days()
             .saturating_add(1);
         if span_days <= 0 {
@@ -291,8 +291,8 @@ impl ActivityTracker {
         let mut current_session = vec![0_usize];
 
         for i in 1..self.timestamps.len() {
-            let prev = i.checked_sub(1).and_then(|j| self.timestamps.get(j));
-            let gap = match (self.timestamps.get(i), prev) {
+            let prev_ts = i.checked_sub(1).and_then(|j| self.timestamps.get(j));
+            let gap = match (self.timestamps.get(i), prev_ts) {
                 (Some(cur), Some(prev)) => cur
                     .wall_clock
                     .signed_duration_since(prev.wall_clock)
@@ -402,8 +402,8 @@ impl ActivityTracker {
 
         let mut histogram = [0.0_f64; 24];
         for hour in &source {
-            let hour = usize::try_from(*hour).unwrap_or(0);
-            if let Some(slot) = histogram.get_mut(hour) {
+            let hour_idx = usize::try_from(*hour).unwrap_or(0);
+            if let Some(slot) = histogram.get_mut(hour_idx) {
                 *slot += 1.0;
             }
         }
@@ -491,8 +491,8 @@ fn median(values: &[f64]) -> Option<f64> {
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = sorted.len() / 2;
     if sorted.len().is_multiple_of(2) {
-        let lo = mid.checked_sub(1).and_then(|i| sorted.get(i));
-        let (Some(lo), Some(hi)) = (lo, sorted.get(mid)) else {
+        let lo_opt = mid.checked_sub(1).and_then(|i| sorted.get(i));
+        let (Some(lo), Some(hi)) = (lo_opt, sorted.get(mid)) else {
             return None;
         };
         Some(lo.midpoint(*hi))

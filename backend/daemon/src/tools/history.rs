@@ -227,8 +227,8 @@ impl QueryMatcher {
     }
 }
 
-fn excerpt_for(content: &str, matcher: Option<&QueryMatcher>) -> String {
-    let Some(matcher) = matcher else {
+fn excerpt_for(content: &str, matcher_opt: Option<&QueryMatcher>) -> String {
+    let Some(matcher) = matcher_opt else {
         let mut excerpt: String = content.chars().take(EXCERPT_CHARS).collect();
         if content.chars().count() > EXCERPT_CHARS {
             excerpt.push_str("...");

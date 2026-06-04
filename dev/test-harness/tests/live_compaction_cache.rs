@@ -81,20 +81,24 @@ fn load_env_file() {
     let Ok(contents) = fs::read_to_string(path) else {
         return;
     };
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+    for raw_line in contents.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((key, value)) = line.split_once('=') else {
+        let line = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+        let Some((raw_key, raw_value)) = line.split_once('=') else {
             continue;
         };
-        let key = key.trim();
+        let key = raw_key.trim();
         if key.is_empty() {
             continue;
         }
-        let value = value.trim().trim_matches('"').trim_matches('\'').to_owned();
+        let value = raw_value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_owned();
         env::set_var(key, value);
     }
 }
@@ -511,18 +515,18 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
         // Run the chat tool-loop continuation so we end on an assistant
         // text turn (matches what `last_request` would carry into compaction).
         test_out!("── chat turn 1 (continuation) ──");
-        let req = build_chat_request(
+        let cont_req = build_chat_request(
             &api_key,
             &model,
             &chat_system,
             &chat_messages,
             "live-compaction-chat-1-cont",
         );
-        let resp: GenerateResponse = client.generate(&req).await.expect("chat 1 cont");
-        record(&mut stats, "chat#1 (tool_result)", &resp.usage);
+        let cont_resp: GenerateResponse = client.generate(&cont_req).await.expect("chat 1 cont");
+        record(&mut stats, "chat#1 (tool_result)", &cont_resp.usage);
         print_stat(stats.last().unwrap());
-        let assistant_wire = content_blocks_to_wire(&resp.content_blocks);
-        chat_messages.push(json!({"role": "assistant", "content": assistant_wire}));
+        let cont_wire = content_blocks_to_wire(&cont_resp.content_blocks);
+        chat_messages.push(json!({"role": "assistant", "content": cont_wire}));
     }
 
     // A second chat turn to deepen the prefix.
@@ -531,24 +535,24 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
         "content": [{"type": "text", "text": "Now describe the alley you're sneaking through, briefly."}],
     }));
     test_out!("── chat turn 2 (warm) ──");
-    let req = build_chat_request(
+    let chat2_req = build_chat_request(
         &api_key,
         &model,
         &chat_system,
         &chat_messages,
         "live-compaction-chat-2",
     );
-    let resp: GenerateResponse = client.generate(&req).await.expect("chat 2 generate");
-    record(&mut stats, "chat#2 (warm)", &resp.usage);
+    let chat2_resp: GenerateResponse = client.generate(&chat2_req).await.expect("chat 2 generate");
+    record(&mut stats, "chat#2 (warm)", &chat2_resp.usage);
     print_stat(stats.last().unwrap());
-    let chat2_read = resp.usage.cache_read_tokens;
+    let chat2_read = chat2_resp.usage.cache_read_tokens;
     assert!(
         chat2_read > 0,
         "chat#2 cache_read = 0 — TTL or hash mismatch invalidated chat#1 cache; \
          can't validate the compaction contract without a warm cache to extend."
     );
-    let assistant_wire = content_blocks_to_wire(&resp.content_blocks);
-    chat_messages.push(json!({"role": "assistant", "content": assistant_wire}));
+    let chat2_wire = content_blocks_to_wire(&chat2_resp.content_blocks);
+    chat_messages.push(json!({"role": "assistant", "content": chat2_wire}));
 
     // ── Phase 2: compaction iter-0 ───────────────────────────────────────
     //
@@ -576,14 +580,14 @@ Be concise — one file per pass. Path must start with memory/.";
         compaction_system,
         "live-compaction-iter-0",
     );
-    let resp: GenerateResponse = client
+    let compaction0_resp: GenerateResponse = client
         .generate(&compaction_req)
         .await
         .expect("compaction iter-0");
-    record(&mut stats, "compaction#0", &resp.usage);
+    record(&mut stats, "compaction#0", &compaction0_resp.usage);
     print_stat(stats.last().unwrap());
-    let compaction0_read = resp.usage.cache_read_tokens;
-    let compaction0_write = resp.usage.cache_creation_tokens;
+    let compaction0_read = compaction0_resp.usage.cache_read_tokens;
+    let compaction0_write = compaction0_resp.usage.cache_creation_tokens;
 
     assert!(
         compaction0_read > 0,
@@ -599,7 +603,7 @@ Be concise — one file per pass. Path must start with memory/.";
     // Push the assistant turn + a user(tool_result). The post-fix shape
     // puts these AFTER the inline role:"system" entry, leaving every
     // earlier slot — including compact_now_user — byte-stable.
-    let mut tool_uses: Vec<(String, String, Value)> = resp
+    let mut compaction_tool_uses: Vec<(String, String, Value)> = compaction0_resp
         .content_blocks
         .iter()
         .filter_map(|b| match b {
@@ -612,7 +616,7 @@ Be concise — one file per pass. Path must start with memory/.";
             | ContentBlock::ToolResult { .. } => None,
         })
         .collect();
-    if tool_uses.is_empty() {
+    if compaction_tool_uses.is_empty() {
         // The model finished without calling `write`. We can't measure
         // the tool-loop continuation contract in that case. Print stats
         // and bail.
@@ -625,15 +629,15 @@ Be concise — one file per pass. Path must start with memory/.";
         );
     }
 
-    let assistant_wire = content_blocks_to_wire(&resp.content_blocks);
+    let compaction_wire = content_blocks_to_wire(&compaction0_resp.content_blocks);
     compaction_req.messages.push(json!({
         "role": "assistant",
-        "content": assistant_wire,
+        "content": compaction_wire,
     }));
 
     // Fabricate `write` tool_results. The test doesn't actually write
     // to disk — we just confirm the request to the model.
-    let tool_results: Vec<Value> = tool_uses
+    let tool_results: Vec<Value> = compaction_tool_uses
         .drain(..)
         .map(|(id, name, input)| {
             let content = if name == "write" {
@@ -658,14 +662,14 @@ Be concise — one file per pass. Path must start with memory/.";
     compaction_req.rid = Some("live-compaction-iter-1".into());
 
     test_out!("── compaction iter-1 (after tool_result) ──");
-    let resp: GenerateResponse = client
+    let compaction1_resp: GenerateResponse = client
         .generate(&compaction_req)
         .await
         .expect("compaction iter-1");
-    record(&mut stats, "compaction#1", &resp.usage);
+    record(&mut stats, "compaction#1", &compaction1_resp.usage);
     print_stat(stats.last().unwrap());
-    let compaction1_read = resp.usage.cache_read_tokens;
-    let compaction1_write = resp.usage.cache_creation_tokens;
+    let compaction1_read = compaction1_resp.usage.cache_read_tokens;
+    let compaction1_write = compaction1_resp.usage.cache_creation_tokens;
 
     print_table(&stats);
 

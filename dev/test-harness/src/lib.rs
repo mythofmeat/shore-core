@@ -30,6 +30,9 @@
     clippy::string_slice,
     clippy::str_to_string,
     clippy::undocumented_unsafe_blocks,
+    clippy::shadow_same,
+    clippy::shadow_reuse,
+    clippy::shadow_unrelated,
     unsafe_code,
     elided_lifetimes_in_paths,
     unused_qualifications

@@ -471,12 +471,12 @@ async fn wait_for_llm_sidecar_health(
 async fn llm_sidecar_healthz(socket_path: &Path) -> bool {
     use tokio::net::UnixStream;
 
-    let stream = tokio::time::timeout(
+    let connect_result = tokio::time::timeout(
         LLM_SIDECAR_HEALTH_REQUEST_TIMEOUT,
         UnixStream::connect(socket_path),
     )
     .await;
-    let Ok(Ok(mut stream)) = stream else {
+    let Ok(Ok(mut stream)) = connect_result else {
         return false;
     };
 
@@ -544,7 +544,7 @@ async fn graceful_shutdown(child: &mut tokio::process::Child, grace: Duration) {
                 "supervised child pid does not fit platform pid_t; escalating"
             );
             let _ignored = child.start_kill();
-            let _ignored = child.wait().await;
+            _ = child.wait().await;
             return;
         };
         // SAFETY: `libc::kill` is a standard syscall; passing a valid pid
@@ -565,7 +565,7 @@ async fn graceful_shutdown(child: &mut tokio::process::Child, grace: Duration) {
             "supervised child did not exit within grace period; sending SIGKILL"
         );
         let _ignored = child.start_kill();
-        let _ignored = child.wait().await;
+        _ = child.wait().await;
     }
 }
 
@@ -620,7 +620,7 @@ mod tests {
             };
             let mut buf = [0_u8; 128];
             let _ignored = stream.read(&mut buf).await;
-            let _ignored = stream.write_all(response).await;
+            _ = stream.write_all(response).await;
         });
 
         Ok((tmp, probe_path))

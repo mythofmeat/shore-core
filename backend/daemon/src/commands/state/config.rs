@@ -82,11 +82,11 @@ pub async fn config_check(ctx: &CommandContext) -> CommandResult {
 }
 
 pub fn config(ctx: &mut CommandContext, args: &serde_json::Value) -> CommandResult {
-    let key = args.get("key").and_then(|v| v.as_str());
-    let value = args.get("value").and_then(|v| v.as_str());
+    let key_arg = args.get("key").and_then(|v| v.as_str());
+    let value_arg = args.get("value").and_then(|v| v.as_str());
 
     // If both key and value are present, this is a config set operation.
-    if let (Some(key), Some(value)) = (key, value) {
+    if let (Some(key), Some(value)) = (key_arg, value_arg) {
         return config_set(ctx, key, value);
     }
 
@@ -107,7 +107,7 @@ pub fn config(ctx: &mut CommandContext, args: &serde_json::Value) -> CommandResu
             )
         })?;
 
-    match key {
+    match key_arg {
         None => Ok(json!({ "config": app_json, "defaults": defaults_json })),
         Some(name) => match app_json.get(name) {
             Some(data) => {

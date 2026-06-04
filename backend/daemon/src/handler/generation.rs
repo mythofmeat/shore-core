@@ -11,8 +11,8 @@ pub(super) fn thinking_enabled_from_request(request: &shore_llm::types::LlmReque
     thinking_enabled_from_provider_options(request.provider_options.as_ref())
 }
 
-fn thinking_enabled_from_provider_options(opts: Option<&serde_json::Value>) -> bool {
-    let Some(opts) = opts else {
+fn thinking_enabled_from_provider_options(opts_opt: Option<&serde_json::Value>) -> bool {
+    let Some(opts) = opts_opt else {
         return false;
     };
     // An explicit disable (`reasoning_effort = "off"` → `thinking_enabled =
@@ -286,9 +286,11 @@ mod tests {
         // Issue #164: an explicit `thinking_enabled = false` (from
         // `reasoning_effort = "off"`) means no reasoning for accounting,
         // even if some other knob is present.
-        let v = json!({ "thinking_enabled": false });
-        assert!(!thinking_enabled_from_provider_options(Some(&v)));
-        let v = json!({ "thinking_enabled": false, "budget_tokens": 4096 });
-        assert!(!thinking_enabled_from_provider_options(Some(&v)));
+        let disabled = json!({ "thinking_enabled": false });
+        assert!(!thinking_enabled_from_provider_options(Some(&disabled)));
+        let disabled_with_budget = json!({ "thinking_enabled": false, "budget_tokens": 4096 });
+        assert!(!thinking_enabled_from_provider_options(Some(
+            &disabled_with_budget
+        )));
     }
 }

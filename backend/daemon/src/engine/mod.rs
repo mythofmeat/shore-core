@@ -470,10 +470,10 @@ mod tests {
 
         // edit_message broadcasts.
         engine.edit_message("m1", "Hello").unwrap();
-        let msg = rx.try_recv().unwrap();
+        let edit_msg = rx.try_recv().unwrap();
         assert_variant!(
 
-            msg,
+            edit_msg,
             ServerMessage::History(h) => {
                 assert_eq!(h.revision, 2);
                 assert_eq!(h.messages[0].content, "Hello");
@@ -483,10 +483,10 @@ mod tests {
 
         // delete_message broadcasts.
         engine.delete_message("m1").unwrap();
-        let msg = rx.try_recv().unwrap();
+        let delete_msg = rx.try_recv().unwrap();
         assert_variant!(
 
-            msg,
+            delete_msg,
             ServerMessage::History(h) => {
                 assert_eq!(h.revision, 3);
                 assert!(h.messages.is_empty());

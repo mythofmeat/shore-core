@@ -312,33 +312,33 @@ async fn e2e_conversation_milestone() {
         |m| matches!(m, ServerMessage::CommandOutput(o) if o.name == "status"),
     )
     .await;
-    let o = assert_variant!(&status_msg, ServerMessage::CommandOutput(o) => o);
-    assert!(o.data.is_object());
+    let status_out = assert_variant!(&status_msg, ServerMessage::CommandOutput(o) => o);
+    assert!(status_out.data.is_object());
     assert!(
-        o.data.get("tokens").is_some(),
+        status_out.data.get("tokens").is_some(),
         "status should include token counts"
     );
-    test_err!("  status OK: {:?}", o.data);
+    test_err!("  status OK: {:?}", status_out.data);
 
     // list_characters
-    let _ignored = conn
+    _ = conn
         .send_command("list_characters", json!({}))
         .await
         .unwrap();
     let chars_msg = recv_until(
         &mut conn,
         CMD_TIMEOUT,
-        |m| matches!(m, ServerMessage::CommandOutput(o) if o.name == "list_characters"),
+        |m| matches!(m, ServerMessage::CommandOutput(out) if out.name == "list_characters"),
     )
     .await;
-    let o = assert_variant!(&chars_msg, ServerMessage::CommandOutput(o) => o);
-    test_err!("  list_characters OK: {:?}", o.data);
+    let chars_out = assert_variant!(&chars_msg, ServerMessage::CommandOutput(o) => o);
+    test_err!("  list_characters OK: {:?}", chars_out.data);
 
     // new_chat — not yet implemented in command dispatcher, skip for now.
 
     // ── AC 2: Send "Hello" with stream:true ───────────────────────────
     test_err!("=== AC 2: Streaming Hello ===");
-    let _ignored = conn.send_message("Hello", true).await.unwrap();
+    _ = conn.send_message("Hello", true).await.unwrap();
 
     // Expect: History (from engine append) -> StreamStart -> StreamChunk(s) -> StreamEnd.
     let mut got_stream_start = false;
@@ -408,7 +408,7 @@ async fn e2e_conversation_milestone() {
 
     // ── AC 4: Tool use — "What time is it?" triggers check_time ───────
     test_err!("=== AC 4: Tool Use (check_time) ===");
-    let _ignored = conn
+    _ = conn
         .send_message(
             "Use the check_time tool right now and tell me the exact time.",
             true,
@@ -420,9 +420,9 @@ async fn e2e_conversation_milestone() {
     let mut got_tool_result = false;
     let mut tool_result_output = String::new();
 
-    let deadline = tokio::time::Instant::now() + RECV_TIMEOUT;
+    let tool_deadline = tokio::time::Instant::now() + RECV_TIMEOUT;
     loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let remaining = tool_deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             // Tool use is non-deterministic with LLMs — if it didn't trigger,
             // the test still passes the streaming check.
@@ -538,24 +538,24 @@ async fn e2e_conversation_milestone() {
     test_err!("=== AC 7: Content Blocks Persistence ===");
     if got_tool_call {
         // Re-read JSONL after tool use exchange.
-        let jsonl_content = std::fs::read_to_string(&jsonl_path).unwrap();
-        let lines: Vec<&str> = jsonl_content.lines().filter(|l| !l.is_empty()).collect();
+        let jsonl_after = std::fs::read_to_string(&jsonl_path).unwrap();
+        let lines_after: Vec<&str> = jsonl_after.lines().filter(|l| !l.is_empty()).collect();
 
         // After "Hello" exchange + tool use exchange, we expect:
         //   user("Hello"), assistant(response),
         //   user("Use check_time..."), assistant(tool_use), user(tool_result), assistant(final)
         // That's at least 6 messages (could be more if multi-iteration tool loop).
         assert!(
-            lines.len() >= 4,
+            lines_after.len() >= 4,
             "Should have at least 4 messages after tool use, got {}",
-            lines.len()
+            lines_after.len()
         );
 
         // Find assistant messages with tool_use content_blocks.
         let mut found_tool_use_blocks = false;
         let mut found_tool_result_blocks = false;
 
-        for (i, line) in lines.iter().enumerate() {
+        for (i, line) in lines_after.iter().enumerate() {
             let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
             let role = parsed["role"].as_str().unwrap_or("");
 
@@ -638,15 +638,15 @@ async fn e2e_conversation_milestone() {
 
     // ── AC 6: Verify status shows token counts after API usage ────────
     test_err!("=== AC 6: Token counts in status ===");
-    let _ignored = conn.send_command("status", json!({})).await.unwrap();
+    _ = conn.send_command("status", json!({})).await.unwrap();
     let final_status = recv_until(
         &mut conn,
         CMD_TIMEOUT,
-        |m| matches!(m, ServerMessage::CommandOutput(o) if o.name == "status"),
+        |m| matches!(m, ServerMessage::CommandOutput(out) if out.name == "status"),
     )
     .await;
-    let o = assert_variant!(&final_status, ServerMessage::CommandOutput(o) => o);
-    let tokens = &o.data["tokens"];
+    let final_out = assert_variant!(&final_status, ServerMessage::CommandOutput(o) => o);
+    let tokens = &final_out.data["tokens"];
     let input = tokens["input"].as_u64().unwrap_or(0);
     let output = tokens["output"].as_u64().unwrap_or(0);
     assert!(input > 0, "Input tokens should be > 0 after API calls");
@@ -655,7 +655,7 @@ async fn e2e_conversation_milestone() {
 
     // ── Cleanup ────────────────────────────────────────────────────────
     test_err!("=== Cleanup ===");
-    let _ignored = shutdown_tx.send(()); // best-effort: receiver may already be gone
+    _ = shutdown_tx.send(()); // best-effort: receiver may already be gone
     server_handle.await.expect("server task panicked");
     handler_handle.await.expect("handler task panicked");
     test_err!("=== E2E test passed ===");

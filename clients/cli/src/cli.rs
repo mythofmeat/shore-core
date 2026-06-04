@@ -656,17 +656,17 @@ pub(crate) fn alt_command_to_swp(
     use serde_json::json;
 
     let mut args = serde_json::Map::new();
-    if let Some(msg_ref) = msg_ref {
-        let _ignored = args.insert("ref".into(), json!(msg_ref));
+    if let Some(reference) = msg_ref {
+        let _ignored = args.insert("ref".into(), json!(reference));
     }
 
     match selector.unwrap_or("list") {
         "" | "list" => ("list_alternatives", serde_json::Value::Object(args)),
-        selector => {
-            if let Ok(position) = selector.parse::<u32>() {
+        chosen => {
+            if let Ok(position) = chosen.parse::<u32>() {
                 let _ignored = args.insert("position".into(), json!(position));
             } else {
-                let _ignored = args.insert("direction".into(), json!(selector));
+                let _ignored = args.insert("direction".into(), json!(chosen));
             }
             ("alt", serde_json::Value::Object(args))
         }
@@ -739,8 +739,8 @@ pub(crate) fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_js
         } => {
             let mut args = Map::new();
             let _ignored = args.insert("ref".into(), json!(r));
-            if let Some(role) = role {
-                let _ignored = args.insert("role".into(), json!(role.as_protocol_role()));
+            if let Some(role_filter) = role {
+                _ = args.insert("role".into(), json!(role_filter.as_protocol_role()));
             }
             Some(("get", Value::Object(args)))
         }
@@ -752,8 +752,8 @@ pub(crate) fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_js
         CliCommand::Log { count, role, .. } => {
             let mut args = Map::new();
             let _ignored = args.insert("turns".into(), json!(count));
-            if let Some(role) = role {
-                let _ignored = args.insert("role".into(), json!(role.as_protocol_role()));
+            if let Some(role_filter) = role {
+                _ = args.insert("role".into(), json!(role_filter.as_protocol_role()));
             }
             Some(("log", Value::Object(args)))
         }
@@ -819,7 +819,7 @@ pub(crate) fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_js
                 Some(("reset_model", json!({})))
             } else {
                 match (name, info) {
-                    (Some(name), true) => Some(("model_info", json!({ "name": name }))),
+                    (Some(model_name), true) => Some(("model_info", json!({ "name": model_name }))),
                     (None, true) => Some(("model_info", json!({}))),
                     (None, false) => {
                         let mut args = Map::new();
@@ -828,11 +828,11 @@ pub(crate) fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_js
                         }
                         Some(("list_models", Value::Object(args)))
                     }
-                    (Some(name), false) => {
+                    (Some(model_name), false) => {
                         let mut args = Map::new();
-                        let _ignored = args.insert("name".into(), json!(name));
+                        let _ignored = args.insert("name".into(), json!(model_name));
                         if *all {
-                            let _ignored = args.insert("include_hidden".into(), json!(true));
+                            _ = args.insert("include_hidden".into(), json!(true));
                         }
                         Some(("switch_model", Value::Object(args)))
                     }
@@ -1876,20 +1876,20 @@ mod tests {
 
     #[test]
     fn character_maps_to_none_without_info() {
-        let cmd = CliCommand::Character {
+        let cmd_none = CliCommand::Character {
             name: None,
             info: false,
             new: false,
             json: false,
         };
-        assert!(to_swp_command(&cmd).is_none());
-        let cmd = CliCommand::Character {
+        assert!(to_swp_command(&cmd_none).is_none());
+        let cmd_named = CliCommand::Character {
             name: Some("alice".into()),
             info: false,
             new: false,
             json: false,
         };
-        assert!(to_swp_command(&cmd).is_none());
+        assert!(to_swp_command(&cmd_named).is_none());
     }
 
     #[test]

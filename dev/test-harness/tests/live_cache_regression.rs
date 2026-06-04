@@ -78,20 +78,24 @@ fn load_env_file() {
     let Ok(contents) = fs::read_to_string(path) else {
         return;
     };
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+    for raw_line in contents.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((key, value)) = line.split_once('=') else {
+        let line = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+        let Some((raw_key, raw_value)) = line.split_once('=') else {
             continue;
         };
-        let key = key.trim();
+        let key = raw_key.trim();
         if key.is_empty() {
             continue;
         }
-        let value = value.trim().trim_matches('"').trim_matches('\'').to_owned();
+        let value = raw_value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_owned();
         env::set_var(key, value);
     }
 }
@@ -530,10 +534,10 @@ async fn cache_holds_through_adaptive_tool_loop_and_followup() {
     print_stats(&stats);
 
     let cold = stats.first().expect("at least one call");
-    let cold_write = cold.cache_w;
-    test_out!("\ncold cache_w: {cold_write}");
+    let cold_cache_w = cold.cache_w;
+    test_out!("\ncold cache_w: {cold_cache_w}");
     assert!(
-        cold_write > 0,
+        cold_cache_w > 0,
         "cold cache_creation = 0 — prompt below cache threshold; assertions are vacuous"
     );
     for (i, s) in stats.iter().enumerate().skip(1) {
@@ -544,12 +548,12 @@ async fn cache_holds_through_adaptive_tool_loop_and_followup() {
             s.label
         );
         assert!(
-            s.cache_w < cold_write / 2,
+            s.cache_w < cold_cache_w / 2,
             "call {} ({}) cache_write {} ≥ cold/2 ({}) — prefix re-cached",
             i,
             s.label,
             s.cache_w,
-            cold_write / 2
+            cold_cache_w / 2
         );
     }
 

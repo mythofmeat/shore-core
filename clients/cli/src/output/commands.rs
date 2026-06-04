@@ -114,25 +114,25 @@ fn write_activity_section(out: &mut impl Write, activity: &serde_json::Value, wi
         let ch = density_to_block(normalized);
         if use_color() {
             let color = classification_color(classification);
-            let _ignored = crossterm::execute!(out, SetForegroundColor(color));
+            _ = crossterm::execute!(out, SetForegroundColor(color));
         }
-        let _ignored = write!(out, "{ch}");
+        _ = write!(out, "{ch}");
     }
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 
     // -- hour labels row --
     //    0  3  6  9  12 15 18 21
     if use_color() {
-        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ignored = write!(out, "  {:<13}0  3  6  9  12 15 18 21", "");
+    _ = write!(out, "  {:<13}0  3  6  9  12 15 18 21", "");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 
     // -- stats row --
     let engagement = activity["engagement_score"].as_f64().unwrap_or(0.0);
@@ -144,7 +144,7 @@ fn write_activity_section(out: &mut impl Write, activity: &serde_json::Value, wi
         &format!("{engagement:.2} \u{00b7} {sessions:.1} sessions/day \u{00b7} {turn_count} turns"),
     );
 
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 /// Print the status dashboard.
@@ -200,7 +200,7 @@ pub(crate) fn print_status(data: &serde_json::Value, character_name: &str) {
                 let cname = client["client_name"].as_str().unwrap_or("?");
                 write_row(&mut out, ctype, cname);
             }
-            let _ignored = writeln!(out);
+            _ = writeln!(out);
         }
     }
 
@@ -315,12 +315,12 @@ fn print_memory_dream(data: &serde_json::Value) {
         write_row(&mut out, "Candidates", &candidates.to_string());
         write_row(&mut out, "Indexed", &indexed.to_string());
         write_row(&mut out, "Deferred", &rejected.to_string());
-        let paths = if dry {
+        let paths_opt = if dry {
             data["would_write_paths"].as_array()
         } else {
             data["paths_written"].as_array()
         };
-        if let Some(paths) = paths {
+        if let Some(paths) = paths_opt {
             write_row(
                 &mut out,
                 if dry { "Would write" } else { "Paths written" },
@@ -339,11 +339,11 @@ fn print_command_output_fallback(name: &str, data: &serde_json::Value) {
     }
     let _ignored = write!(out, "{name}");
     if use_color() {
-        let _ignored = crossterm::execute!(out, SetAttribute(Attribute::Reset));
+        _ = crossterm::execute!(out, SetAttribute(Attribute::Reset));
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
     if let Ok(pretty) = serde_json::to_string_pretty(data) {
-        let _ignored = writeln!(out, "{pretty}");
+        _ = writeln!(out, "{pretty}");
     }
 }
 
@@ -489,13 +489,13 @@ fn print_model_list(data: &serde_json::Value) {
             }
             let _ignored = write!(out, "  {marker} ");
             if use_color() {
-                let _ignored = crossterm::execute!(out, ResetColor);
+                _ = crossterm::execute!(out, ResetColor);
             }
-            let _ignored = write!(out, "{name:<name_w$}  ");
+            _ = write!(out, "{name:<name_w$}  ");
             if use_color() {
-                let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
             }
-            let _ignored = write!(out, "{provider:<provider_w$}  ");
+            _ = write!(out, "{provider:<provider_w$}  ");
             // Tag like `static` / `discovered`. Hidden rows (only seen
             // with `--all`) carry an extra `hidden` so users can spot
             // why their default list filtered them.
@@ -505,12 +505,12 @@ fn print_model_list(data: &serde_json::Value) {
                 } else {
                     source.to_owned()
                 };
-                let _ignored = write!(out, "[{tag}]");
+                _ = write!(out, "[{tag}]");
             }
             if use_color() {
-                let _ignored = crossterm::execute!(out, ResetColor);
+                _ = crossterm::execute!(out, ResetColor);
             }
-            let _ignored = writeln!(out);
+            _ = writeln!(out);
         }
     }
 
@@ -522,7 +522,7 @@ fn print_model_list(data: &serde_json::Value) {
             &mut out,
             &format!("  ({hidden_count} hidden — use `shore model --all` to include them)"),
         );
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
     }
     let _ignored = writeln!(out);
 }
@@ -745,7 +745,7 @@ fn print_provider_list(data: &serde_json::Value) {
         }
         let _ignored = write!(out, "  {name}");
         if use_color() {
-            let _ignored = crossterm::execute!(out, SetAttribute(Attribute::Reset));
+            _ = crossterm::execute!(out, SetAttribute(Attribute::Reset));
         }
         if !enabled {
             write_fg(&mut out, Color::Yellow, "  [disabled]");
@@ -753,7 +753,7 @@ fn print_provider_list(data: &serde_json::Value) {
         if discovery {
             write_dim(&mut out, "  [discovery]");
         }
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
 
         write_row(&mut out, "SDK", sdk);
         if !base_url.is_empty() {
@@ -796,7 +796,7 @@ fn print_provider_list(data: &serde_json::Value) {
                 "(empty — `shore provider refresh <name>`)",
             );
         }
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
     }
 }
 
@@ -895,8 +895,8 @@ fn print_provider_refresh_all(data: &serde_json::Value) {
                 let fetched = r["fetched_at"].as_str().unwrap_or("?");
                 if use_color() {
                     let _ignored = crossterm::execute!(out, SetForegroundColor(Color::Green));
-                    let _ignored = write!(out, "  ok  ");
-                    let _ignored = crossterm::execute!(out, ResetColor);
+                    _ = write!(out, "  ok  ");
+                    _ = crossterm::execute!(out, ResetColor);
                 } else {
                     let _ignored = write!(out, "  ok  ");
                 }
@@ -906,8 +906,8 @@ fn print_provider_refresh_all(data: &serde_json::Value) {
                 let err = r["error"].as_str().unwrap_or("unknown error");
                 if use_color() {
                     let _ignored = crossterm::execute!(out, SetForegroundColor(Color::Red));
-                    let _ignored = write!(out, "  FAIL");
-                    let _ignored = crossterm::execute!(out, ResetColor);
+                    _ = write!(out, "  FAIL");
+                    _ = crossterm::execute!(out, ResetColor);
                 } else {
                     let _ignored = write!(out, "  FAIL");
                 }
@@ -924,18 +924,18 @@ fn print_provider_refresh_all(data: &serde_json::Value) {
                 let provider = s["provider"].as_str().unwrap_or("?");
                 let reason = s["reason"].as_str().unwrap_or("?");
                 if use_color() {
-                    let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                    _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
                 }
-                let _ignored = writeln!(out, "  {provider}: {reason}");
+                _ = writeln!(out, "  {provider}: {reason}");
                 if use_color() {
-                    let _ignored = crossterm::execute!(out, ResetColor);
+                    _ = crossterm::execute!(out, ResetColor);
                 }
             }
         }
     }
 
     let _ignored = writeln!(out);
-    let _ignored = writeln!(
+    _ = writeln!(
         out,
         "Refreshed {ok_count} provider(s); {fail_count} failed."
     );
@@ -991,13 +991,13 @@ fn print_character_info(data: &serde_json::Value) {
             write_section_header(&mut out, "Preview", "", width);
             // Show first few lines, dimmed
             if use_color() {
-                let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
             }
             for line in preview.lines().take(8) {
-                let _ignored = writeln!(out, "  {line}");
+                _ = writeln!(out, "  {line}");
             }
             if use_color() {
-                let _ignored = crossterm::execute!(out, ResetColor);
+                _ = crossterm::execute!(out, ResetColor);
             }
         }
     }
@@ -1052,7 +1052,7 @@ fn print_changelog(data: &serde_json::Value) {
             }
             let _ignored = writeln!(out, "  (no entries)");
             if use_color() {
-                let _ignored = crossterm::execute!(out, ResetColor);
+                _ = crossterm::execute!(out, ResetColor);
             }
         } else {
             for entry in entries {
@@ -1080,13 +1080,13 @@ fn print_changelog(data: &serde_json::Value) {
                     _ => Color::White,
                 };
                 if use_color() {
-                    let _ignored = crossterm::execute!(out, SetForegroundColor(op_color));
+                    _ = crossterm::execute!(out, SetForegroundColor(op_color));
                 }
-                let _ignored = write!(out, "{op:<18}");
+                _ = write!(out, "{op:<18}");
                 if use_color() {
-                    let _ignored = crossterm::execute!(out, ResetColor);
+                    _ = crossterm::execute!(out, ResetColor);
                 }
-                let _ignored = writeln!(out, "{desc}");
+                _ = writeln!(out, "{desc}");
             }
         }
     }
@@ -1287,7 +1287,7 @@ fn print_config_section(
             }
             let _ignored = writeln!(out, "{indent}{k}:");
             if use_color() {
-                let _ignored = crossterm::execute!(out, ResetColor);
+                _ = crossterm::execute!(out, ResetColor);
             }
             print_config_section(out, v, d, depth.saturating_add(1), show_all);
         } else {
@@ -1299,11 +1299,11 @@ fn print_config_section(
             }
             let _ignored = write!(out, "{indent}{k:<scalar_width$}");
             if use_color() && !is_default {
-                let _ignored = crossterm::execute!(out, ResetColor);
+                _ = crossterm::execute!(out, ResetColor);
             }
-            let _ignored = writeln!(out, "{}", render_config_value(v));
+            _ = writeln!(out, "{}", render_config_value(v));
             if use_color() && is_default {
-                let _ignored = crossterm::execute!(out, ResetColor);
+                _ = crossterm::execute!(out, ResetColor);
             }
         }
     }
@@ -1342,13 +1342,13 @@ fn print_config_check(data: &serde_json::Value) {
         for w in warnings {
             if let Some(msg) = w.as_str() {
                 if use_color() {
-                    let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkYellow));
+                    _ = crossterm::execute!(out, SetForegroundColor(Color::DarkYellow));
                 }
-                let _ignored = write!(out, "  ! ");
+                _ = write!(out, "  ! ");
                 if use_color() {
-                    let _ignored = crossterm::execute!(out, ResetColor);
+                    _ = crossterm::execute!(out, ResetColor);
                 }
-                let _ignored = writeln!(out, "{msg}");
+                _ = writeln!(out, "{msg}");
             }
         }
     }
@@ -1358,17 +1358,17 @@ fn print_config_check(data: &serde_json::Value) {
         for i in info {
             if let Some(msg) = i.as_str() {
                 if use_color() {
-                    let _ignored = crossterm::execute!(out, SetForegroundColor(Color::Green));
+                    _ = crossterm::execute!(out, SetForegroundColor(Color::Green));
                 }
-                let _ignored = write!(out, "  ");
+                _ = write!(out, "  ");
                 if use_color() {
-                    let _ignored = crossterm::execute!(out, ResetColor);
+                    _ = crossterm::execute!(out, ResetColor);
                 }
-                let _ignored = writeln!(out, "{msg}");
+                _ = writeln!(out, "{msg}");
             }
         }
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 /// Print config reset confirmation.
@@ -1391,7 +1391,7 @@ pub(crate) fn print_diagnostics(data: &serde_json::Value) {
         "API Calls",
         &data["api_calls"],
         width,
-        |out, call| {
+        |w, call| {
             let model = abbreviate_model(call["model"].as_str().unwrap_or("?"));
             let input = call["input_tokens"].as_u64().unwrap_or(0);
             let output_t = call["output_tokens"].as_u64().unwrap_or(0);
@@ -1400,20 +1400,20 @@ pub(crate) fn print_diagnostics(data: &serde_json::Value) {
             let total = call["total_ms"].as_u64().unwrap_or(0);
             let secs = u64_to_f64_for_display(total) / 1000.0;
 
-            let _ignored = write!(out, "{model:<24}");
+            let _ignored = write!(w, "{model:<24}");
             write_dim(
-                out,
+                w,
                 &format!("in:{input:<5} out:{output_t:<5} cache:{cr}/{cw}  {secs:.1}s"),
             );
 
             if let Some(err) = call.get("error").filter(|v| !v.is_null()) {
                 write_fg(
-                    out,
+                    w,
                     Color::Red,
                     &format!("  ERR: {}", err.as_str().unwrap_or("?")),
                 );
             }
-            let _ignored = writeln!(out);
+            _ = writeln!(w);
         },
     );
 
@@ -1423,30 +1423,30 @@ pub(crate) fn print_diagnostics(data: &serde_json::Value) {
         "Tool Calls",
         &data["tool_calls"],
         width,
-        |out, call| {
+        |w, call| {
             let name = call["tool_name"].as_str().unwrap_or("?");
             let dur = call["duration_ms"].as_u64().unwrap_or(0);
             let ok = call["success"].as_bool().unwrap_or(true);
 
-            let _ignored = write!(out, "{name:<24}");
-            write_dim(out, &format!("{dur}ms  "));
+            let _ignored = write!(w, "{name:<24}");
+            write_dim(w, &format!("{dur}ms  "));
             let (marker_color, marker_text) = if ok {
                 (Color::Green, "ok")
             } else {
                 (Color::Red, "FAIL")
             };
-            write_fg(out, marker_color, marker_text);
-            let _ignored = writeln!(out);
+            write_fg(w, marker_color, marker_text);
+            _ = writeln!(w);
         },
     );
 
     // -- Errors --
-    print_diagnostics_section(&mut out, "Errors", &data["errors"], width, |out, err| {
+    print_diagnostics_section(&mut out, "Errors", &data["errors"], width, |w, err| {
         let etype = err["error_type"].as_str().unwrap_or("?");
         let msg = err["message"].as_str().unwrap_or("?");
 
-        write_fg(out, Color::Red, &format!("{etype:<12}"));
-        let _ignored = writeln!(out, "{msg}");
+        write_fg(w, Color::Red, &format!("{etype:<12}"));
+        let _ignored = writeln!(w, "{msg}");
     });
 }
 
@@ -2004,17 +2004,17 @@ fn write_autonomy_section(out: &mut impl Write, autonomy: &serde_json::Value, wi
     }
     let _ignored = write!(out, "  {:<13}", "Heartbeat");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = write!(out, "{description}  ");
+    _ = write!(out, "{description}  ");
     if use_color() {
-        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ignored = write!(out, "({int_state})");
+    _ = write!(out, "({int_state})");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 
     if let Some(eff) = autonomy["effective_interval_secs"].as_u64() {
         let mins = eff / 60;
@@ -2079,17 +2079,17 @@ fn write_autonomy_section(out: &mut impl Write, autonomy: &serde_json::Value, wi
         .cloned()
         .unwrap_or_default();
     if events.is_empty() {
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
         return;
     }
 
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
     if use_color() {
-        let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ignored = writeln!(out, "  Recent events:");
+    _ = writeln!(out, "  Recent events:");
     if use_color() {
-        let _ignored = crossterm::execute!(out, ResetColor);
+        _ = crossterm::execute!(out, ResetColor);
     }
     let mut prev_date: Option<String> = None;
     for event in &events {
@@ -2115,19 +2115,19 @@ fn write_autonomy_section(out: &mut impl Write, autonomy: &serde_json::Value, wi
             _ => Color::White,
         };
         if use_color() {
-            let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+            _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
         }
-        let _ignored = write!(out, "    {time_str:<12}");
+        _ = write!(out, "    {time_str:<12}");
         if use_color() {
-            let _ignored = crossterm::execute!(out, SetForegroundColor(kind_color));
+            _ = crossterm::execute!(out, SetForegroundColor(kind_color));
         }
-        let _ignored = write!(out, "{kind:<17}");
+        _ = write!(out, "{kind:<17}");
         if use_color() {
-            let _ignored = crossterm::execute!(out, ResetColor);
+            _ = crossterm::execute!(out, ResetColor);
         }
-        let _ignored = writeln!(out, "{detail}");
+        _ = writeln!(out, "{detail}");
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 #[cfg(test)]

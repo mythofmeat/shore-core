@@ -416,7 +416,10 @@ pub fn load_raw_config_table(config_path: Option<&Path>) -> Result<RawConfigTabl
 ///
 /// Extracts model sections (`chat`, `tools`, `embedding`, `image_generation`),
 /// deserializes the remainder into `AppConfig`, builds `ModelCatalog`, validates.
-fn parse_config_table(mut table: toml::Table, dirs: ShoreDirs) -> Result<LoadedConfig, ConfigError> {
+fn parse_config_table(
+    mut table: toml::Table,
+    dirs: ShoreDirs,
+) -> Result<LoadedConfig, ConfigError> {
     // Preserve the raw table for per-character merging.
     let raw_table = table.clone();
 

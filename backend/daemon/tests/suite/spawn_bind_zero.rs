@@ -67,7 +67,7 @@ async fn spawned_daemon_registers_resolved_port_when_bound_to_zero() {
     };
 
     let _ignored = child.kill().await;
-    let _ignored = child.wait().await;
+    _ = child.wait().await;
 
     assert!(
         !resolved.ends_with(":0"),

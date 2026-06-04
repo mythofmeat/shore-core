@@ -112,7 +112,7 @@ enabled = true
 ignore = ["*", "!anthropic/*"]
 "#;
 
-    let harness =
+    let mut harness =
         TestHarness::boot_with(TestConfigBuilder::new().provider_registry_toml(registry)).await;
 
     seed_cache(
@@ -124,8 +124,6 @@ ignore = ["*", "!anthropic/*"]
             "meta-llama/llama-3-405b",
         ],
     );
-
-    let mut harness = harness;
 
     // ── list_provider_models without --all ──────────────────────────────
     let messages = harness
@@ -143,21 +141,21 @@ ignore = ["*", "!anthropic/*"]
     assert_eq!(data["include_hidden"], false);
 
     // ── list_provider_models with include_hidden ────────────────────────
-    let messages = harness
+    let messages_incl_hidden = harness
         .send_command_with_args(
             "list_provider_models",
             json!({ "provider": "openrouter", "include_hidden": true }),
         )
         .await;
-    let data = extract(&messages, "list_provider_models");
-    assert_eq!(data["discovered"].as_array().unwrap().len(), 3);
-    assert!(data["hidden"].as_array().unwrap().is_empty());
-    assert_eq!(data["include_hidden"], true);
+    let data_incl_hidden = extract(&messages_incl_hidden, "list_provider_models");
+    assert_eq!(data_incl_hidden["discovered"].as_array().unwrap().len(), 3);
+    assert!(data_incl_hidden["hidden"].as_array().unwrap().is_empty());
+    assert_eq!(data_incl_hidden["include_hidden"], true);
 
     // ── list_models (effective catalog) without --all ────────────────────
-    let messages = harness.send_command("list_models").await;
-    let data = extract(&messages, "list_models");
-    let entries = data["models"].as_array().unwrap();
+    let list_messages = harness.send_command("list_models").await;
+    let list_data = extract(&list_messages, "list_models");
+    let entries = list_data["models"].as_array().unwrap();
     let discovered: Vec<&str> = entries
         .iter()
         .filter(|m| m["source"] == "discovered")
@@ -172,15 +170,15 @@ ignore = ["*", "!anthropic/*"]
     assert!(entries
         .iter()
         .any(|m| m["name"] == "haiku" && m["source"] == "static"));
-    assert_eq!(data["hidden_count"], 2);
+    assert_eq!(list_data["hidden_count"], 2);
 
     // ── list_models with include_hidden ─────────────────────────────────
-    let messages = harness
+    let list_all_messages = harness
         .send_command_with_args("list_models", json!({ "include_hidden": true }))
         .await;
-    let data = extract(&messages, "list_models");
-    let entries = data["models"].as_array().unwrap();
-    let discovered_ids: Vec<&str> = entries
+    let list_all_data = extract(&list_all_messages, "list_models");
+    let entries_all = list_all_data["models"].as_array().unwrap();
+    let discovered_ids: Vec<&str> = entries_all
         .iter()
         .filter(|m| m["source"] == "discovered")
         .map(|m| m["model_id"].as_str().unwrap())

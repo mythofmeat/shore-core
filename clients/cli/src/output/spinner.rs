@@ -91,15 +91,15 @@ impl StreamSpinner {
                 let stdout = io::stdout();
                 let mut out = stdout.lock();
                 let _ignored = write!(out, "\r");
-                let _ignored = crossterm::execute!(out, Clear(ClearType::CurrentLine));
+                _ = crossterm::execute!(out, Clear(ClearType::CurrentLine));
                 if use_color() {
-                    let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                    _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
                 }
-                let _ignored = write!(out, "{line}");
+                _ = write!(out, "{line}");
                 if use_color() {
-                    let _ignored = crossterm::execute!(out, ResetColor);
+                    _ = crossterm::execute!(out, ResetColor);
                 }
-                let _ignored = out.flush();
+                _ = out.flush();
             }
         }));
     }
@@ -136,8 +136,8 @@ impl StreamSpinner {
             let stdout = io::stdout();
             let mut out = stdout.lock();
             let _ignored = write!(out, "\r");
-            let _ignored = crossterm::execute!(out, Clear(ClearType::CurrentLine));
-            let _ignored = out.flush();
+            _ = crossterm::execute!(out, Clear(ClearType::CurrentLine));
+            _ = out.flush();
         }
     }
 

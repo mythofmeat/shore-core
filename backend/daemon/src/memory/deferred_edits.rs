@@ -93,8 +93,8 @@ pub fn is_protected_path(path: &str) -> bool {
 /// next compaction/reload boundary.
 pub fn normalize_prompt_visible_path(path: &str) -> Option<String> {
     let normalized = normalize_workspace_path(path);
-    if let Some(path) = normalize_protected_path(&normalized) {
-        return Some(path);
+    if let Some(protected) = normalize_protected_path(&normalized) {
+        return Some(protected);
     }
     if normalized == MEMORY_INDEX_DEFERRED_PATH {
         return Some(MEMORY_INDEX_DEFERRED_PATH.to_owned());
@@ -211,8 +211,8 @@ pub fn pending_deferred_edit_paths(character_data_dir: &Path) -> io::Result<Vec<
 
     let content = fs::read_to_string(queue_path)?;
     let mut paths = BTreeSet::new();
-    for line in content.lines() {
-        let line = line.trim();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
         if line.is_empty() {
             continue;
         }
@@ -232,8 +232,8 @@ pub fn pending_deferred_edit_paths(character_data_dir: &Path) -> io::Result<Vec<
 }
 
 /// Queue a deferred refresh for a prompt-visible file.
-pub fn queue_deferred_edit(character_data_dir: &Path, path: &str) -> io::Result<()> {
-    let Some(path) = normalize_prompt_visible_path(path) else {
+pub fn queue_deferred_edit(character_data_dir: &Path, requested_path: &str) -> io::Result<()> {
+    let Some(path) = normalize_prompt_visible_path(requested_path) else {
         return Ok(());
     };
 
@@ -403,8 +403,8 @@ fn copy_tree_if_missing(src: &Path, dst: &Path) -> io::Result<()> {
     }
 
     fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
+    for dir_entry in fs::read_dir(src)? {
+        let entry = dir_entry?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if src_path.is_dir() {

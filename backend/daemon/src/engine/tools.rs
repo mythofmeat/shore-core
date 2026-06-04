@@ -225,7 +225,7 @@ async fn execute_tool_use(
     let dispatch_result =
         tool_system::dispatch_tool(&tool_use.name, tool_use.input.clone(), ctx).await;
     let dispatch_ms = elapsed_ms_u64(dispatch_start.elapsed());
-    let (output_str, is_error, ok_value) = match dispatch_result {
+    let (raw_output, is_error, ok_value) = match dispatch_result {
         Ok(value) => {
             let output = value.as_str().map_or_else(
                 || serde_json::to_string(&value).unwrap_or_default(),
@@ -238,7 +238,7 @@ async fn execute_tool_use(
     // Cap how much a single result contributes to the conversation. Apply
     // before the SWP event, persistence, and LLM payload so every replay path
     // sees the same bounded result. A limit of 0 leaves output untouched.
-    let output_str = crate::content_util::truncate_tool_result(output_str, max_result_chars);
+    let output_str = crate::content_util::truncate_tool_result(raw_output, max_result_chars);
 
     if !is_error && tool_use.name == "generate_image" {
         if let Some(value) = &ok_value {
@@ -350,7 +350,7 @@ fn append_user_tool_result_turn(
 ) {
     let mut user_message = serde_json::Map::new();
     let _ignored = user_message.insert("role".into(), Value::String("user".into()));
-    let _ignored = user_message.insert("content".into(), Value::Array(tool_results));
+    _ = user_message.insert("content".into(), Value::Array(tool_results));
     request.messages.push(Value::Object(user_message));
 
     intermediate_messages.push(Message {

@@ -68,13 +68,13 @@ pub type CommandResult = Result<serde_json::Value, (ErrorCode, String)>;
 
 /// Dispatch a command to the appropriate handler.
 pub async fn dispatch(
-    engine: Arc<tokio::sync::Mutex<ConversationEngine>>,
+    engine_arc: Arc<tokio::sync::Mutex<ConversationEngine>>,
     ctx: &mut CommandContext,
     cmd: &Command,
 ) -> ServerMessage {
     info!(command = %cmd.name, "Dispatching command");
 
-    let mut guard = engine.lock().await;
+    let mut guard = engine_arc.lock().await;
     let engine = &mut *guard;
 
     let result = match cmd.name.as_str() {
