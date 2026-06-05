@@ -143,6 +143,21 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   and any persisted per-model settings using `preserve_prior_turns` must be updated.
 
 ### Fixed
+- **Cached input tokens double-counted (overcosted) on non-Anthropic
+  providers.** OpenAI-convention APIs (DeepSeek/Moonshot via the Vercel AI SDK,
+  native OpenAI, Z.ai, OpenRouter) and Gemini report `prompt_tokens` /
+  `promptTokenCount` as the **total** prompt, *inclusive* of the cached portion,
+  whereas our ledger and pricing engine follow the Anthropic convention where
+  `input` / `cache_read` / `cache_creation` are **disjoint** buckets that are
+  summed. The sidecar adapters copied the inclusive prompt count straight into
+  `input_tokens` while *also* recording the cache hits in `cache_read_tokens`,
+  so the cached tokens were billed twice — once at the full input rate and again
+  at the (much cheaper) cache-read rate. For a cache-heavy DeepSeek month this
+  inflated the estimate ~6× (e.g. $0.31 vs. an actual ~$0.058). The adapters now
+  subtract the cache-read (and cache-write) tokens from `input_tokens`, leaving
+  only the cache-miss remainder so the buckets are disjoint. Anthropic and
+  cache-less calls are unaffected. **Note:** this corrects new calls only;
+  historical ledger rows keep their inflated token counts until re-derived.
 - **Dropped cache-write cost on mid-stream errors.** When a streaming call
   failed after the provider had already reported usage — notably the Anthropic
   cache write announced in `message_start`, which the API bills before any

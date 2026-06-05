@@ -201,7 +201,9 @@ test("maps Gemini stream chunks to StreamEvents", async () => {
     content: "answer",
     finish_reason: "tool_use",
     usage: {
-      input_tokens: 12,
+      // promptTokenCount (12) is inclusive of the 7 cached tokens; input_tokens
+      // carries only the 5 cache-miss tokens so the buckets are disjoint.
+      input_tokens: 5,
       output_tokens: 4,
       cache_read_tokens: 7,
       cache_creation_tokens: 0,
@@ -240,7 +242,8 @@ test("maps non-streaming Gemini response to GenerateResponse", () => {
     ],
     finish_reason: "max_tokens",
     usage: {
-      input_tokens: 20,
+      // promptTokenCount (20) less the 3 cached tokens = 17 cache-miss tokens.
+      input_tokens: 17,
       output_tokens: 5,
       cache_read_tokens: 3,
       cache_creation_tokens: 0,

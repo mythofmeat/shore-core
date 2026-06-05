@@ -217,7 +217,9 @@ test("maps Z.ai stream chunks to StreamEvents", async () => {
     content: "Hello world",
     finish_reason: "tool_use",
     usage: {
-      input_tokens: 100,
+      // prompt_tokens (100) is inclusive of cached (80) + cache_write (12);
+      // input_tokens carries only the remaining 8 cache-miss tokens.
+      input_tokens: 8,
       output_tokens: 20,
       cache_read_tokens: 80,
       cache_creation_tokens: 12,
@@ -269,7 +271,8 @@ test("maps Z.ai non-streaming responses to GenerateResponse", () => {
     ],
     finish_reason: "content_filter",
     usage: {
-      input_tokens: 20,
+      // prompt_tokens (20) less cached (3) and cache_write (2) = 15 miss tokens.
+      input_tokens: 15,
       output_tokens: 5,
       cache_read_tokens: 3,
       cache_creation_tokens: 2,
