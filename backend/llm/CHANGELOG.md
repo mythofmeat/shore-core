@@ -14,6 +14,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(tools)* unify tool-loop cap as per-model max_tool_iterations (default unlimited) ([#215](https://github.com/mythofmeat/shore-core/pull/215))
 - *(keepalive)* per-model cache_keepalive + global cap, decouple from heartbeat ([#213](https://github.com/mythofmeat/shore-core/pull/213))
 
+### Breaking
+
+- **LlmRequest field addition**: The `LlmRequest` struct now includes a `keepalive_interval: Option<std::time::Duration>` field (line 89 in `types.rs`). This transient daemon-side scheduling hint carries the resolved per-model cache-keepalive interval for the autonomy manager's standalone keepalive subsystem.
+
+  **Migration**: Update all code that constructs `LlmRequest` directly to include the new field:
+
+  ```rust
+  // Before (10.0.0):
+  // let request = LlmRequest {
+  //     sdk: Sdk::Anthropic,
+  //     model: "claude-sonnet-4-20250514".into(),
+  //     api_key: "sk-test".into(),
+  //     ...
+  // };
+
+  // After (11.0.0):
+  let request = LlmRequest {
+      sdk: Sdk::Anthropic,
+      model: "claude-sonnet-4-20250514".into(),
+      api_key: "sk-test".into(),
+      // ... other fields ...
+      keepalive_interval: None,  // or Some(Duration::from_secs(3300)) for 55m
+  };
+  ```
+
+  Set `keepalive_interval` to `Some(interval)` when keepalive is enabled for the model, or `None` when disabled. The field is marked `#[serde(skip)]` and never sent to providers. See PR [#213](https://github.com/mythofmeat/shore-core/pull/213).
+
 ## [10.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v9.0.0...shore-llm-v10.0.0) - 2026-06-05
 
 ### Fixed
