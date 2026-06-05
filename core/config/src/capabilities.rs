@@ -427,18 +427,18 @@ pub fn applicability(sdk: &Sdk, model_id: &str, field: Field) -> Applicability {
 
         // Most sidecar adapters map `reasoning_effort` to a graded value.
         // DeepSeek's Vercel provider exposes a graded `reasoningEffort`; Moonshot
-        // (Kimi) only an on/off toggle, so it is still `Honored` but its domain
-        // is just `["off"]` (disable). Z.AI thinks compulsorily (no off), so the
-        // knob is genuinely `Ignored` there. The accepted value set is
-        // sdk-specific — see `reasoning_effort_domain`.
+        // (Kimi) and Z.AI (GLM) only an on/off toggle, so they are still `Honored`
+        // but their domain is just `["off"]` (disable → `thinking.type =
+        // "disabled"`). The accepted value set is sdk-specific — see
+        // `reasoning_effort_domain`.
         Field::ReasoningEffort => match sdk {
             Sdk::Anthropic
             | Sdk::Openai
             | Sdk::Openrouter
             | Sdk::Gemini
             | Sdk::Deepseek
-            | Sdk::Moonshot => Applicability::Honored,
-            Sdk::Zai => Applicability::Ignored,
+            | Sdk::Moonshot
+            | Sdk::Zai => Applicability::Honored,
         },
 
         // Sampler knobs: rejected on Claude opus/sonnet >= 4.7 OR on a model a
@@ -560,15 +560,17 @@ pub fn reasoning_effort_domain(sdk: &Sdk, model_id: &str) -> &'static [String] {
 ///   * `anthropic` — omitting thinking params yields a non-thinking request.
 ///
 /// For `openai` and `gemini` the native adapters have NO disable path (reasoning
-/// is model-mandatory / left at the model default), and `zai` ignores
-/// `reasoning_effort` entirely, so `"off"` is not honored there. `shore model
-/// setting` uses this to reject `"off"` where it would be a silent no-op rather
-/// than letting it persist (the `"off"` sentinel is otherwise absent from the
-/// graded domains, so the plain value-domain check cannot gate it).
+/// is model-mandatory / left at the model default), so `"off"` is not honored
+/// there. `zai` (GLM) DOES support disable — `thinking.type = "disabled"` — so
+/// `"off"` is honored. `shore model setting` uses this to reject `"off"` where it
+/// would be a silent no-op rather than letting it persist (the `"off"` sentinel
+/// is otherwise absent from the graded domains, so the plain value-domain check
+/// cannot gate it).
+///   * `zai` — `thinking.type = "disabled"`.
 pub fn supports_reasoning_off(sdk: &Sdk) -> bool {
     matches!(
         sdk,
-        Sdk::Anthropic | Sdk::Deepseek | Sdk::Moonshot | Sdk::Openrouter
+        Sdk::Anthropic | Sdk::Deepseek | Sdk::Moonshot | Sdk::Openrouter | Sdk::Zai
     )
 }
 
@@ -870,7 +872,7 @@ mod tests {
         assert!(reasoning_effort_domain(&Sdk::Anthropic, "claude-opus-4-8")
             .iter()
             .any(|v| v == "adaptive"));
-        assert!(reasoning_effort_domain(&Sdk::Zai, "glm-5").is_empty());
+        assert_eq!(reasoning_effort_domain(&Sdk::Zai, "glm-5"), ["off"]);
     }
 
     #[test]
@@ -1078,10 +1080,12 @@ mod tests {
             Err(CapabilityError::OutOfDomain { .. })
         ));
 
-        // Z.AI ignores reasoning_effort entirely → Inapplicable, not a domain check.
+        // Z.AI (GLM) honors only `off` (→ thinking.type=disabled); a graded level
+        // is out of domain.
+        assert!(validate(&Sdk::Zai, "glm-5", Field::ReasoningEffort, &eff("off")).is_ok());
         assert!(matches!(
             validate(&Sdk::Zai, "glm-5", Field::ReasoningEffort, &eff("high")),
-            Err(CapabilityError::Inapplicable { .. })
+            Err(CapabilityError::OutOfDomain { .. })
         ));
     }
 
@@ -1233,17 +1237,19 @@ mod tests {
     #[test]
     fn supports_reasoning_off_only_for_disable_capable_sdks() {
         // Issue #164 (CodeRabbit): the `off` sentinel is honored only where an
-        // adapter actually suppresses reasoning. Native openai/gemini and zai
-        // have no disable path, so `off` must NOT slip past validation there.
+        // adapter actually suppresses reasoning. Z.AI honors it via
+        // `thinking.type = "disabled"`; native openai/gemini have no disable
+        // path, so `off` must NOT slip past validation there.
         for sdk in [
             Sdk::Anthropic,
             Sdk::Deepseek,
             Sdk::Moonshot,
             Sdk::Openrouter,
+            Sdk::Zai,
         ] {
             assert!(supports_reasoning_off(&sdk), "{sdk:?} should honor off");
         }
-        for sdk in [Sdk::Openai, Sdk::Gemini, Sdk::Zai] {
+        for sdk in [Sdk::Openai, Sdk::Gemini] {
             assert!(!supports_reasoning_off(&sdk), "{sdk:?} must not honor off");
         }
     }

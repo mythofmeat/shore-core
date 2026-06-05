@@ -8,6 +8,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **Disable thinking on Z.AI (GLM) with `reasoning_effort = "off"`.** GLM's API
+  supports `thinking.type = "disabled"`, but the `zai` adapter previously
+  hardcoded `enabled` and the capability layer asserted Z.AI "thinks
+  compulsorily," rejecting `off` at `shore model setting`. Z.AI now mirrors the
+  Moonshot on/off shape: `reasoning_effort` accepts only `off` (→
+  `thinking.type = "disabled"`); a graded level is out of domain. `off` maps to
+  `thinking_enabled = false`, which the sidecar honors and which also suppresses
+  Preserved-Thinking replay.
+
 - **Tri-state `replay_prior_thinking`** (`[memory.thinking]`, issue #191). The
   setting gains a `last_turn` mode alongside the existing behaviors, now named
   `all` / `last_turn` / `none`: `last_turn` keeps only the most-recent assistant
@@ -158,6 +167,24 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   only the cache-miss remainder so the buckets are disjoint. Anthropic and
   cache-less calls are unaffected. **Note:** this corrects new calls only;
   historical ledger rows keep their inflated token counts until re-derived.
+- **Z.AI (GLM) intermittently skipped thinking under `zai_clear_thinking = false`.**
+  Setting `clear_thinking: false` puts Z.AI into its documented **Preserved
+  Thinking** mode, which requires the caller to feed the prior turn's complete,
+  unmodified `reasoning_content` back on every subsequent turn. The sidecar's
+  `ZaiProvider` sent the flag but **never replayed** the reasoning (it dropped
+  thinking from history, like the OpenAI adapter), violating the contract. The
+  result was GLM probabilistically emitting no `reasoning_content` on a fresh
+  message while a byte-identical regen reliably thought — confirmed against live
+  request/response dumps (no-think calls were cold-cache, ruling out caching).
+  The direct `zai` path now round-trips `reasoning_content` verbatim through the
+  thinking block's opaque `zair:` signature carrier (mirroring the OpenRouter
+  `reasoning_details` round-trip), replaying it as outbound `reasoning_content`
+  only under Preserved Thinking and only from its own carrier — never from
+  display text or a foreign provider's signature (cross-provider replay stays
+  gated by `provider_key`). With `clear_thinking` omitted (Z.AI default `true`,
+  stateless) nothing is replayed and the model re-thinks each turn. The
+  `examples/config.toml` notes that mislabeled `false` as the Z.AI default and as
+  a no-op continuity setting are corrected.
 - **Dropped cache-write cost on mid-stream errors.** When a streaming call
   failed after the provider had already reported usage — notably the Anthropic
   cache write announced in `message_start`, which the API bills before any

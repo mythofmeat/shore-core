@@ -116,7 +116,41 @@ describe("request construction", () => {
     expect(params.thinking).toEqual({ type: "enabled", clear_thinking: false });
   });
 
-  test("does not replay prior thinking as outbound reasoning_content", () => {
+  test("disables thinking when thinking_enabled is false (reasoning_effort=off)", () => {
+    const params = buildZaiParams(req({ provider_options: { thinking_enabled: false } }), false);
+    expect(params.thinking).toEqual({ type: "disabled" });
+  });
+
+  test("disabled thinking omits clear_thinking and never replays reasoning", () => {
+    // Even with clear_thinking:false present, disabling wins: no clear_thinking on
+    // the wire and no reasoning_content replayed into a non-thinking request.
+    const params = buildZaiParams(
+      req({ provider_options: { thinking_enabled: false, zai_clear_thinking: false } }),
+      false,
+    );
+    expect(params.thinking).toEqual({ type: "disabled" });
+    expect(params.thinking).not.toHaveProperty("clear_thinking");
+
+    const messages = buildZaiMessages(
+      req({
+        provider_options: { thinking_enabled: false, zai_clear_thinking: false },
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "chain", signature: "zair:chain" },
+              { type: "text", text: "answer" },
+            ],
+          },
+        ],
+      }),
+    ) as unknown as Array<Record<string, unknown>>;
+    expect(messages[0]).not.toHaveProperty("reasoning_content");
+  });
+
+  test("never replays a thinking block that lacks the zair: carrier", () => {
+    // No signature carrier (e.g. display-only thinking text) → not replayed, so
+    // we never feed Z.ai unverified/mutated reasoning_content.
     const messages = buildZaiMessages(
       req({
         system: [{ type: "text", text: "You are helpful." }],
@@ -138,6 +172,73 @@ describe("request construction", () => {
     expect(messages[1]).toEqual({ role: "assistant", content: "visible answer" });
     expect(messages[1]).not.toHaveProperty("reasoning_content");
     expect(messages[1]).not.toHaveProperty("reasoning");
+  });
+
+  test("replays prior reasoning_content verbatim from the zair: carrier under Preserved Thinking", () => {
+    const messages = buildZaiMessages(
+      req({
+        provider_options: { zai_clear_thinking: false },
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "step 1\nstep 2", signature: "zair:step 1\nstep 2" },
+              { type: "text", text: "answer" },
+            ],
+          },
+        ],
+      }),
+    ) as unknown as Array<Record<string, unknown>>;
+
+    expect(messages[0]).toEqual({
+      role: "assistant",
+      content: "answer",
+      reasoning_content: "step 1\nstep 2",
+    });
+  });
+
+  test("does not replay reasoning when clear_thinking is true or omitted (stateless)", () => {
+    const stateless = (over: Partial<SidecarRequest>) =>
+      buildZaiMessages(
+        req({
+          ...over,
+          messages: [
+            {
+              role: "assistant",
+              content: [
+                { type: "thinking", thinking: "chain", signature: "zair:chain" },
+                { type: "text", text: "answer" },
+              ],
+            },
+          ],
+        }),
+      ) as unknown as Array<Record<string, unknown>>;
+
+    // Explicit clear_thinking: true.
+    expect(stateless({ provider_options: { zai_clear_thinking: true } })[0]).not.toHaveProperty(
+      "reasoning_content",
+    );
+    // Omitted entirely (Z.ai default is true).
+    expect(stateless({})[0]).not.toHaveProperty("reasoning_content");
+  });
+
+  test("never replays a foreign provider's signature as Z.ai reasoning", () => {
+    const messages = buildZaiMessages(
+      req({
+        provider_options: { zai_clear_thinking: false },
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "or chain", signature: 'orrd:[{"text":"or chain"}]' },
+              { type: "text", text: "answer" },
+            ],
+          },
+        ],
+      }),
+    ) as unknown as Array<Record<string, unknown>>;
+
+    expect(messages[0]).not.toHaveProperty("reasoning_content");
   });
 
   test("passes inline system messages through as raw system messages", () => {
@@ -204,15 +305,17 @@ test("maps Z.ai stream chunks to StreamEvents", async () => {
 
   expect(events[0]).toEqual({ type: "start", model: "glm-5.1-plus" });
   expect(events[1]).toEqual({ type: "thinking", text: "think" });
-  expect(events[2]).toEqual({ type: "text", text: "Hello " });
-  expect(events[3]).toEqual({ type: "text", text: "world" });
-  expect(events[4]).toEqual({
+  // Reasoning carrier flushed while the thinking block is still open, before text.
+  expect(events[2]).toEqual({ type: "thinking_signature", signature: "zair:think" });
+  expect(events[3]).toEqual({ type: "text", text: "Hello " });
+  expect(events[4]).toEqual({ type: "text", text: "world" });
+  expect(events[5]).toEqual({
     type: "tool_use",
     id: "call_1",
     name: "lookup",
     input: { id: 7 },
   });
-  expect(events[5]).toEqual({
+  expect(events[6]).toEqual({
     type: "done",
     content: "Hello world",
     finish_reason: "tool_use",
@@ -265,7 +368,7 @@ test("maps Z.ai non-streaming responses to GenerateResponse", () => {
   expect(zaiGenerateResponse("glm-5.1", response, 77)).toEqual({
     content: "hello",
     content_blocks: [
-      { type: "thinking", thinking: "think" },
+      { type: "thinking", thinking: "think", signature: "zair:think" },
       { type: "text", text: "hello" },
       { type: "tool_use", id: "call_1", name: "lookup", input: { id: 7 } },
     ],

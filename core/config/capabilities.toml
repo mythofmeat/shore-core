@@ -35,8 +35,11 @@ domain = ["minimal", "low", "medium", "high", "xhigh"]
 domain = ["minimal", "low", "medium", "high"]
 
 [reasoning_effort.zai]
-# Z.AI ignores reasoning_effort (thinking is driven by zai_clear_thinking).
-domain = []
+# Z.AI (GLM) thinking is on/off only — no graded tiers. The only accepted
+# `reasoning_effort` is `off` (→ `thinking.type = "disabled"`); thinking is
+# otherwise on. `zai_clear_thinking` is a separate continuity knob (Preserved
+# Thinking), not an effort level. Mirrors the Moonshot on/off shape.
+domain = ["off"]
 
 # Native DeepSeek via the Vercel AI SDK provider (`@ai-sdk/deepseek`): only two
 # distinct effort levels exist, `high` and `max`. The docs note that, for
