@@ -5,9 +5,18 @@
  * specific base URLs and thinking controls. Keep it separate from the generic
  * OpenAI adapter so the Z.ai-only body fields and finish reasons stay explicit.
  *
- * The sidecar contract intentionally does not replay prior `thinking` blocks as
- * outbound `reasoning_content`; `zai_clear_thinking` only controls the documented
- * request flag.
+ * Reasoning handling (Preserved Thinking, `clear_thinking: false`):
+ * - Inbound `reasoning_content` is surfaced as `thinking` events AND stashed
+ *   verbatim on the thinking block's opaque `signature` carrier (`zair:` prefix),
+ *   so it round-trips byte-exact even if the display text is later normalized.
+ * - On the next turn, when Preserved Thinking is on, assistant turns replay that
+ *   carrier as outbound `reasoning_content`. Z.ai's documented contract requires
+ *   the complete, unmodified prior reasoning_content be fed back, so we replay
+ *   ONLY from our own `zair:` signature — never from display text, never from a
+ *   foreign provider's signature. Cross-provider replay is additionally gated
+ *   daemon-side by `provider_key`.
+ * - When `clear_thinking` is true/omitted (Z.ai default, stateless), we never
+ *   replay; the model re-thinks fresh each turn.
  */
 
 import OpenAI from "openai";
@@ -36,7 +45,7 @@ export const ZAI_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
 
 export type ZaiChatCompletionCreateParams = Omit<ChatCompletionCreateParams, "stream"> & {
   stream: boolean;
-  thinking: { type: "enabled"; clear_thinking?: boolean };
+  thinking: { type: "enabled" | "disabled"; clear_thinking?: boolean };
 };
 
 export class ZaiProvider implements SidecarProvider {
@@ -81,14 +90,20 @@ export function buildZaiParams(
   req: SidecarRequest,
   streaming: boolean,
 ): ZaiChatCompletionCreateParams {
-  // Z.ai's `thinking` object documents `clear_thinking` (default true) nested
-  // here, NOT as a top-level field. It controls clearing prior-turn
-  // `reasoning_content`; since the sidecar never replays reasoning_content into
-  // history, it's inert for us — so we only send it when the operator
-  // explicitly sets it, otherwise we let Z.ai apply its own default.
-  const thinking: ZaiChatCompletionCreateParams["thinking"] = { type: "enabled" };
-  const clearThinking = req.provider_options?.["zai_clear_thinking"];
-  if (typeof clearThinking === "boolean") thinking.clear_thinking = clearThinking;
+  // `thinking_enabled: false` (the daemon's mapping of `reasoning_effort = "off"`)
+  // disables reasoning via Z.ai's documented `thinking.type = "disabled"`.
+  // Otherwise thinking is on, and the `clear_thinking` flag (nested here, NOT a
+  // top-level field) selects Preserved Thinking. `clear_thinking` is only sent
+  // when the operator set it explicitly and only matters while thinking is on, so
+  // we omit it under `disabled` and otherwise let Z.ai's default (true) apply.
+  const thinkingDisabled = req.provider_options?.["thinking_enabled"] === false;
+  const thinking: ZaiChatCompletionCreateParams["thinking"] = thinkingDisabled
+    ? { type: "disabled" }
+    : { type: "enabled" };
+  if (!thinkingDisabled) {
+    const clearThinking = req.provider_options?.["zai_clear_thinking"];
+    if (typeof clearThinking === "boolean") thinking.clear_thinking = clearThinking;
+  }
 
   const params: ZaiChatCompletionCreateParams = {
     model: req.model,
@@ -112,8 +127,54 @@ export function buildZaiMessages(req: SidecarRequest): ChatCompletionMessagePara
   const messages: ChatCompletionMessageParam[] = [];
   const systemText = systemToText(req.system);
   if (systemText) messages.push({ role: "system", content: systemText });
-  for (const turn of req.messages) messages.push(...turnToOpenAI(normalizeTurn(turn)));
+  // Preserved Thinking is on ONLY when thinking is enabled AND the operator
+  // explicitly set `clear_thinking: false`; otherwise Z.ai's default (true)
+  // clears prior reasoning and replay would be rejected (and disabled thinking
+  // takes no reasoning_content at all).
+  const preserveThinking =
+    req.provider_options?.["thinking_enabled"] !== false &&
+    req.provider_options?.["zai_clear_thinking"] === false;
+  for (const turn of req.messages) {
+    messages.push(...turnToZai(normalizeTurn(turn), preserveThinking));
+  }
   return messages;
+}
+
+/**
+ * Turn → Z.ai message(s). Identical to the OpenAI conversion EXCEPT that, under
+ * Preserved Thinking, assistant turns replay the prior `reasoning_content`
+ * verbatim from the thinking block's `zair:` signature carrier. We reuse
+ * `turnToOpenAI` for the message shell (which never emits reasoning) and graft
+ * the reasoning field on afterward, so the OpenAI adapter's no-replay contract
+ * is untouched.
+ */
+function turnToZai(turn: TurnMessage, preserveThinking: boolean): ChatCompletionMessageParam[] {
+  const msgs = turnToOpenAI(turn);
+  if (turn.role !== "assistant" || !preserveThinking || msgs.length === 0) return msgs;
+  const thinking = turn.content.find(
+    (b): b is Extract<ContentBlock, { type: "thinking" }> => b.type === "thinking",
+  );
+  const reasoning = decodeZaiReasoning(thinking?.signature);
+  if (reasoning) {
+    (msgs[0] as unknown as Record<string, unknown>).reasoning_content = reasoning;
+  }
+  return msgs;
+}
+
+// Opaque carrier marking Z.ai `reasoning_content` for verbatim replay. The
+// prefix is provenance belt-and-suspenders (the daemon already gates replay by
+// `provider_key`); decode accepts only our own prefix, so a foreign provider's
+// signature (e.g. OpenRouter `orrd:`) is never replayed as Z.ai reasoning.
+const ZAI_REASONING_PREFIX = "zair:";
+
+function encodeZaiReasoning(reasoning: string): string | undefined {
+  return reasoning.length > 0 ? ZAI_REASONING_PREFIX + reasoning : undefined;
+}
+
+function decodeZaiReasoning(signature: string | undefined): string | undefined {
+  if (typeof signature !== "string" || !signature.startsWith(ZAI_REASONING_PREFIX)) return undefined;
+  const reasoning = signature.slice(ZAI_REASONING_PREFIX.length);
+  return reasoning.length > 0 ? reasoning : undefined;
 }
 
 export async function* zaiStreamEvents(
@@ -137,8 +198,21 @@ export async function* zaiStreamEvents(
 
   const toolCalls = new Map<number, { id: string; name: string; argsJson: string }>();
   let textAccum = "";
+  let reasoningAccum = "";
+  let sawThinking = false;
+  let sigEmitted = false;
   let finishReason: string | undefined;
   let usage: Usage = emptyUsage();
+
+  // Emit the verbatim reasoning carrier exactly once, while the thinking block is
+  // still open (before any text/tool_use closes it). Gated on having surfaced
+  // thinking so an orphan signature is never emitted.
+  const flushSignature = function* (): Iterable<StreamEvent> {
+    if (sigEmitted || !sawThinking) return;
+    sigEmitted = true;
+    const sig = encodeZaiReasoning(reasoningAccum);
+    if (sig) yield { type: "thinking_signature", signature: sig };
+  };
 
   for await (const chunk of chunks) {
     if (!startSent && typeof chunk.model === "string" && chunk.model.length > 0) {
@@ -151,10 +225,13 @@ export async function* zaiStreamEvents(
       const delta = choice.delta as ZaiDelta;
       if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
         markFirst();
+        sawThinking = true;
+        reasoningAccum += delta.reasoning_content;
         yield { type: "thinking", text: delta.reasoning_content };
       }
 
       if (typeof delta.content === "string" && delta.content.length > 0) {
+        yield* flushSignature();
         markFirst();
         textAccum += delta.content;
         yield { type: "text", text: delta.content };
@@ -182,6 +259,9 @@ export async function* zaiStreamEvents(
   }
 
   yield* sendStart();
+  // Close the thinking block for thinking-only or tool-after-thinking turns
+  // (no text delta flushed it inline).
+  yield* flushSignature();
 
   for (const [, tc] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
     markFirst();
@@ -212,7 +292,10 @@ export function zaiGenerateResponse(
   const contentBlocks: ContentBlock[] = [];
 
   if (typeof message?.reasoning_content === "string" && message.reasoning_content.length > 0) {
-    contentBlocks.push({ type: "thinking", thinking: message.reasoning_content });
+    const block: ContentBlock = { type: "thinking", thinking: message.reasoning_content };
+    const sig = encodeZaiReasoning(message.reasoning_content);
+    if (sig) block.signature = sig;
+    contentBlocks.push(block);
   }
 
   const text = typeof message?.content === "string" ? message.content : "";

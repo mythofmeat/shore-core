@@ -99,7 +99,7 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 #   vertex_location  = "us-central1"
 #   gemini_generation = 2
 #   gemini_web_search = false     # Gemini built-in Google Search grounding
-#   zai_clear_thinking = false    # false = preserve cross-turn reasoning (Z.AI default)
+#   zai_clear_thinking = false    # false = Preserved Thinking (replay prior reasoning); omit for the Z.AI default (true, stateless)
 #   zai_subscription   = false    # true = use the Z.AI coding-plan endpoint
 
 # Anthropic has hardcoded transport, so an empty block registers it.
@@ -165,13 +165,18 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 # ── Z.AI (GLM) ───────────────────────────────────────────────────────────
 # Hardcoded transport (sdk = "zai", ZAI_API_KEY, base_url above), so an empty
 # block registers it. GLM thinking is on/off only — there are no effort tiers.
+# `zai_clear_thinking` controls Z.AI's documented Preserved Thinking: omit it
+# (Z.AI default `true`) for stateless thinking that re-derives every turn, or set
+# it `false` to replay prior reasoning_content across turns (better continuity +
+# cache efficiency). Shore round-trips the reasoning_content verbatim, as Z.AI's
+# contract requires.
 # [providers.zai]
 # [providers.zai.defaults]
-# zai_clear_thinking = false   # preserve reasoning across turns (default)
+# zai_clear_thinking = false   # Preserved Thinking: replay prior reasoning across turns
 # zai_subscription   = false   # true = GLM coding-plan endpoint (.../api/coding/paas/v4)
 #
 # [models."zai:glm-5.1"]
-# zai_clear_thinking = true    # strip prior-turn reasoning (cheaper)
+# zai_clear_thinking = true    # stateless: re-think each turn, no replay (Z.AI default)
 
 # ── Native DeepSeek / Moonshot (Kimi) ─────────────────────────────────────
 # These hit api.deepseek.com / api.moonshot.ai directly (not via OpenRouter)
