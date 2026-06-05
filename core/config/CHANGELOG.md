@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.11.0...shore-config-v0.11.1) - 2026-06-05
+
+### Fixed
+
+- *(capabilities)* correct DeepSeek reasoning_effort domain to high|max ([#203](https://github.com/mythofmeat/shore-core/pull/203))
+
 ## [0.11.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.10.0...shore-config-v0.11.0) - 2026-06-04
 
 ### Added
