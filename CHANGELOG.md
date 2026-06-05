@@ -8,6 +8,22 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **Unified per-model tool-iteration cap (`max_tool_iterations`).** A single
+  `shore model setting` key now governs the maximum number of agentic tool-loop
+  rounds for **every** loop — interactive chat, the autonomous heartbeat,
+  compaction, and dreaming — resolved on the same **model > sdk > provider**
+  overlay as the other knobs and honored by every sdk. It **defaults to
+  unlimited**: each loop runs until the model stops requesting tools, bounded
+  only by per-call HTTP timeouts (and, for the heartbeat, its ~30-minute
+  wall-clock tick deadline, which is retained as the autonomous runaway
+  backstop). Set a finite cap with `shore model setting max_tool_iterations <n>`
+  (n ≥ 1); clear it (no value) to return to unlimited. This **replaces** the
+  four separate fixed caps that previously defaulted to 10/12:
+  `[behavior.tool_use].max_iterations`, `[behavior.autonomy.heartbeat]`,
+  `[memory.compaction]`, and `[memory.dreaming].max_tool_rounds`. Those keys are
+  **removed** — configs that still set them will fail to load (delete the keys;
+  set a per-model cap instead if you want a finite limit).
+
 - **Per-model cache keepalive (`cache_keepalive`) + global ceiling
   (`cache_keepalive_max`).** The cache-keepalive subsystem is now a standalone
   timer, fully decoupled from heartbeat (no longer keyed to the next-wake

@@ -859,10 +859,12 @@ const TICK_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Soft deadline for the heartbeat tool loop (all iterations combined). The
 /// loop checks this before each iteration and ends the tick if
-/// exceeded. Generous enough that a slow memory query + slow LLM across
-/// `max_tool_rounds` iterations normally fits; tight enough that a runaway
-/// loop can't block subsequent ticks for an hour. Per-call HTTP timeouts
-/// (300s, enforced by `LlmClient`) still bound each individual request.
+/// exceeded. Generous enough that a slow memory query + slow LLM across many
+/// iterations normally fits; tight enough that a runaway loop can't block
+/// subsequent ticks for an hour. This wall-clock deadline is the heartbeat's
+/// real runaway backstop now that `max_tool_iterations` defaults to unlimited.
+/// Per-call HTTP timeouts (300s, enforced by `LlmClient`) still bound each
+/// individual request.
 const HEARTBEAT_LOOP_DEADLINE: Duration = Duration::from_mins(30);
 
 /// Lock the per-character autonomy state, recovering from mutex poisoning
@@ -1996,6 +1998,21 @@ fn heartbeat_budget_break(
     false
 }
 
+/// Resolve the heartbeat's normal-round cap from the per-model
+/// `max_tool_iterations` setting. `None` = unlimited, so the round count is
+/// bounded only by the wall-clock `HEARTBEAT_LOOP_DEADLINE`; `u32::MAX` makes
+/// the loop bound effectively infinite while the deadline does the real work
+/// and still fires the wrap-up nudge when it trips.
+fn heartbeat_max_normal_iterations(lc: &LoadedConfig, character: &str) -> u32 {
+    crate::preferences::resolve_background_model(
+        lc,
+        shore_config::app::BackgroundTask::Heartbeat,
+        character,
+    )
+    .and_then(|m| m.max_tool_iterations)
+    .unwrap_or(u32::MAX)
+}
+
 /// Run the heartbeat tool loop: repeated non-streaming `generate()` calls with
 /// tool dispatch, a soft deadline, and a wrap-up grace window. Tool-loop
 /// messages are appended to `request` ephemerally. Returns the last-wins
@@ -2008,7 +2025,7 @@ async fn run_heartbeat_tool_loop(
     lc: &LoadedConfig,
     tool_ctx: &Arc<HeartbeatToolContext>,
 ) -> (Option<String>, bool) {
-    let max_normal_iterations = lc.app.behavior.autonomy.heartbeat.max_tool_rounds;
+    let max_normal_iterations = heartbeat_max_normal_iterations(lc, character);
     let wrap_up_grace = lc.app.behavior.autonomy.heartbeat.wrap_up_grace_rounds;
     let total_iterations = max_normal_iterations.saturating_add(wrap_up_grace);
 

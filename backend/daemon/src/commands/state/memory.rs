@@ -372,6 +372,7 @@ async fn prepare_and_run_compaction(
         char_name,
     )
     .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_owned()))?;
+    let max_tool_iterations = model.max_tool_iterations;
 
     let llm = RealCompactionLlm::new(
         ctx.llm_client.clone(),
@@ -451,6 +452,7 @@ async fn prepare_and_run_compaction(
         chat_request,
         Some(&ctx.config.dirs.data),
         tool_ctx.as_ref(),
+        max_tool_iterations,
     )
     .await
     .map_err(|e| compaction_err(&e))

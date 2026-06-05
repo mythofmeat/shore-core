@@ -18,6 +18,10 @@ const SAMPLER_KEYS: &[&str] = &[
     "cache_ttl",
     "sdk",
     "replay_prior_thinking",
+    // Unified per-model tool-iteration cap (None/unset = unlimited). Honored by
+    // every sdk and every tool loop (chat, heartbeat, compaction, dreaming), so
+    // it is not capability-gated.
+    "max_tool_iterations",
     // Vendor knobs (per-model). The capability matrix gates which of these a
     // given model's resolved sdk actually honors — see `capability_check`.
     "openrouter_provider",
@@ -312,6 +316,7 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
                     "cache_ttl": scopes.cache_ttl.map(scope_str),
                     "sdk": scopes.sdk.map(scope_str),
                     "replay_prior_thinking": scopes.replay_prior_thinking.map(scope_str),
+                    "max_tool_iterations": scopes.max_tool_iterations.map(scope_str),
                 }),
             );
         }
@@ -636,6 +641,21 @@ fn apply_sampler_value(
         "replay_prior_thinking" => {
             sampler.replay_prior_thinking = parse_thinking_replay_value(value)?;
         }
+        "max_tool_iterations" => {
+            sampler.max_tool_iterations = if is_null {
+                // null/unset → unlimited (the default).
+                None
+            } else {
+                let n = parse_u32_value(value, "max_tool_iterations")?;
+                if n == 0 {
+                    return Err(invalid(
+                        "max_tool_iterations must be >= 1; unset it (null) for unlimited"
+                            .to_owned(),
+                    ));
+                }
+                Some(n)
+            };
+        }
         _ => return apply_vendor_sampler_value(sampler, key, value),
     }
     Ok(())
@@ -836,6 +856,7 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
             "cache_ttl": scopes.cache_ttl.map(scope_str),
             "sdk": scopes.sdk.map(scope_str),
             "replay_prior_thinking": scopes.replay_prior_thinking.map(scope_str),
+            "max_tool_iterations": scopes.max_tool_iterations.map(scope_str),
             "openrouter_provider": scopes.openrouter_provider.map(scope_str),
             "vertex_project": scopes.vertex_project.map(scope_str),
             "vertex_location": scopes.vertex_location.map(scope_str),
@@ -845,4 +866,36 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
             "zai_subscription": scopes.zai_subscription.map(scope_str),
         },
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_tool_iterations_setting_parses_validates_and_clears() {
+        let mut s = SamplerSettings::default();
+
+        // A finite value is stored.
+        apply_sampler_value(&mut s, "max_tool_iterations", &json!(5)).unwrap();
+        assert_eq!(s.max_tool_iterations, Some(5));
+
+        // null clears back to unlimited (None).
+        apply_sampler_value(&mut s, "max_tool_iterations", &Value::Null).unwrap();
+        assert_eq!(s.max_tool_iterations, None);
+
+        // 0 is rejected — unlimited is expressed by unsetting, not by 0.
+        let err = apply_sampler_value(&mut s, "max_tool_iterations", &json!(0)).unwrap_err();
+        assert_eq!(err.0, ErrorCode::InvalidRequest);
+        assert!(err.1.contains("max_tool_iterations"));
+        assert_eq!(s.max_tool_iterations, None);
+    }
+
+    #[test]
+    fn max_tool_iterations_is_an_accepted_sampler_key_always_applicable() {
+        assert!(SAMPLER_KEYS.contains(&"max_tool_iterations"));
+        // Not a capability-matrix field, so it is "always" applicable on any sdk.
+        let applicability = key_applicability(&shore_config::models::Sdk::Openai, "gpt-test");
+        assert_eq!(applicability["max_tool_iterations"], json!("always"));
+    }
 }

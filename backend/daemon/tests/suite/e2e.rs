@@ -136,7 +136,6 @@ fn build_test_config_inner(
     let mut app = AppConfig::default();
     app.defaults.model = Some("haiku".into());
     app.behavior.tool_use.enabled = true;
-    app.behavior.tool_use.max_iterations = 5;
 
     let models_toml = r#"
 [openrouter]

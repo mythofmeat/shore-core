@@ -292,7 +292,6 @@ fn arb_heartbeat_config() -> impl Strategy<Value = HeartbeatConfig> {
         0_u32..10,
         arb_duration(),
         arb_duration(),
-        0_u32..40,
         0_u32..20,
     )
         .prop_map(
@@ -302,7 +301,6 @@ fn arb_heartbeat_config() -> impl Strategy<Value = HeartbeatConfig> {
                 dormant_after_heartbeat_turns,
                 dormant_after_idle_time,
                 minimum_heartbeat_latency,
-                max_tool_rounds,
                 wrap_up_grace_rounds,
             )| HeartbeatConfig {
                 enabled,
@@ -310,7 +308,6 @@ fn arb_heartbeat_config() -> impl Strategy<Value = HeartbeatConfig> {
                 dormant_after_heartbeat_turns,
                 dormant_after_idle_time,
                 minimum_heartbeat_latency,
-                max_tool_rounds,
                 wrap_up_grace_rounds,
             },
         )
@@ -329,7 +326,6 @@ fn arb_tool_toggles() -> impl Strategy<Value = ToolToggles> {
 fn arb_tool_use_config() -> impl Strategy<Value = ToolUseConfig> {
     (
         any::<bool>(),
-        0_u32..40,
         0_usize..100_000,
         arb_tool_toggles(),
         (
@@ -339,23 +335,20 @@ fn arb_tool_use_config() -> impl Strategy<Value = ToolUseConfig> {
             any::<bool>(),
         ),
     )
-        .prop_map(
-            |(enabled, max_iterations, max_result_chars, tools, search)| {
-                let (api_key_env, max_results, search_depth, include_answer) = search;
-                ToolUseConfig {
-                    enabled,
-                    max_iterations,
-                    max_result_chars,
-                    tools,
-                    search: SearchConfig {
-                        api_key_env,
-                        max_results,
-                        search_depth,
-                        include_answer,
-                    },
-                }
-            },
-        )
+        .prop_map(|(enabled, max_result_chars, tools, search)| {
+            let (api_key_env, max_results, search_depth, include_answer) = search;
+            ToolUseConfig {
+                enabled,
+                max_result_chars,
+                tools,
+                search: SearchConfig {
+                    api_key_env,
+                    max_results,
+                    search_depth,
+                    include_answer,
+                },
+            }
+        })
 }
 
 fn arb_behavior_config() -> impl Strategy<Value = BehaviorConfig> {
@@ -385,7 +378,6 @@ fn arb_compaction_config() -> impl Strategy<Value = CompactionConfig> {
         0_usize..200,
         0_usize..500_000,
         0_usize..20,
-        0_u32..50,
     )
         .prop_map(
             |(
@@ -395,7 +387,6 @@ fn arb_compaction_config() -> impl Strategy<Value = CompactionConfig> {
                 max_turns,
                 max_context_tokens,
                 keep_recent_turns,
-                max_tool_rounds,
             )| CompactionConfig {
                 enabled,
                 idle_trigger,
@@ -403,7 +394,6 @@ fn arb_compaction_config() -> impl Strategy<Value = CompactionConfig> {
                 max_turns,
                 max_context_tokens,
                 keep_recent_turns,
-                max_tool_rounds,
             },
         )
 }
@@ -412,7 +402,6 @@ fn arb_dreaming_config() -> impl Strategy<Value = DreamingConfig> {
     (
         any::<bool>(),
         Just("0 3 * * *".to_owned()),
-        0_u32..50,
         arb_duration(),
         arb_duration(),
         any::<bool>(),
@@ -422,7 +411,6 @@ fn arb_dreaming_config() -> impl Strategy<Value = DreamingConfig> {
             |(
                 enabled,
                 frequency,
-                max_tool_rounds,
                 minimum_inactive_time,
                 max_lateness,
                 compact_before,
@@ -430,7 +418,6 @@ fn arb_dreaming_config() -> impl Strategy<Value = DreamingConfig> {
             )| DreamingConfig {
                 enabled,
                 frequency,
-                max_tool_rounds,
                 minimum_inactive_time,
                 max_lateness,
                 compact_before,

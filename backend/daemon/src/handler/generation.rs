@@ -149,6 +149,7 @@ pub(super) async fn run_tool_phase(
     effective_config: &LoadedConfig,
     request: &mut shore_llm::types::LlmRequest,
     result: shore_llm::types::StreamResult,
+    resolved: &shore_config::models::ResolvedModel,
 ) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
     debug!(character = char_name, "run_tool_phase starting");
     let image_gen_config = resolve_image_gen_config(
@@ -213,7 +214,7 @@ pub(super) async fn run_tool_phase(
         request,
         result,
         &tool_ctx,
-        effective_config.app.behavior.tool_use.max_iterations,
+        resolved.max_tool_iterations,
         effective_config.app.behavior.tool_use.max_result_chars,
         &ctx.diagnostics,
         char_name,

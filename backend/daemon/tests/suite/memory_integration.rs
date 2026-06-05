@@ -280,6 +280,7 @@ async fn test_markdown_memory_compaction_end_to_end() {
             make_chat_request_for_test(),
             Some(&data_dir),
             &tool_ctx,
+            None,
         )
         .await
         .unwrap();
@@ -337,6 +338,7 @@ async fn test_compaction_rejects_private_conversation() {
             make_chat_request_for_test(),
             None,
             &tool_ctx,
+            None,
         )
         .await;
 

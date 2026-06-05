@@ -83,6 +83,7 @@ pub async fn run_compaction(
         character,
     )
     .ok_or("No model configured for background compaction")?;
+    let max_tool_iterations = model.max_tool_iterations;
 
     // Create trait implementations.
     let llm = RealCompactionLlm::new(
@@ -141,6 +142,7 @@ pub async fn run_compaction(
             chat_request,
             Some(data_dir),
             tool_ctx.as_ref(),
+            max_tool_iterations,
         )
         .await?;
 

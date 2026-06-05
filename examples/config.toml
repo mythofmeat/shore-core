@@ -204,23 +204,26 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 # dormant_after_heartbeat_turns = 3       # Consecutive ticks with no user reply before sleeping
 # dormant_after_idle_time = "48h"         # Hard idle ceiling before sleeping until the user returns
 # minimum_heartbeat_latency = "1h"        # Floor between a user message and the next tick
-# max_tool_rounds = 12                    # Tool-use rounds per tick
 # wrap_up_grace_rounds = 3                # Extra rounds granted after the wrap-up nudge
+# Tool-round budget per tick is the per-model `max_tool_iterations` cap
+# (`shore model setting max_tool_iterations <n>`); unset = unlimited, bounded by
+# the wall-clock loop deadline.
 
 # Dreaming — opt-in scheduled memory consolidation. Requires
 # [behavior.autonomy].enabled = true, but does not require heartbeat.
 # [memory.dreaming]
 # enabled = false
 # frequency = "0 3 * * *"                 # Five-field cron; e.g. "0 6 * * 1" = Mondays 06:00
-# max_tool_rounds = 12
-# Optionally pin a model via [defaults.background].dreaming.
+# Librarian tool-round budget is the per-model `max_tool_iterations` cap
+# (unset = unlimited). Optionally pin a model via [defaults.background].dreaming.
 
 # ── Tool use ─────────────────────────────────────────────────────────────
 
 # [behavior.tool_use]
 # enabled = true
-# max_iterations = 10        # Max tool-call rounds per turn before forcing a final response
 # max_result_chars = 20000   # Truncate each tool result past this many characters (0 disables)
+# Tool-loop round cap is the per-model `max_tool_iterations` setting
+# (`shore model setting max_tool_iterations <n>`); unset (default) = unlimited.
 
 # Per-tool toggles — all enabled by default; set to false to disable.
 # [behavior.tool_use.tools]
@@ -256,7 +259,8 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 # max_context_tokens = 200000 # Force compaction when last-turn prompt context reaches this
 #                             # (200000 is a context-window safety net; lower it to cut cost; 0 disables)
 # keep_recent_turns = 2       # User turns kept verbatim after compaction
-# max_tool_rounds = 12        # Tool-use rounds for the memory-writing pass
+# Memory-writing pass tool-round cap is the per-model `max_tool_iterations`
+# setting (unset = unlimited).
 
 # Retrieval — ranking for internal memory retrieval. "auto" uses hybrid
 # semantic+lexical when an embedder is resolved, otherwise lexical.

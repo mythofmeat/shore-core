@@ -397,6 +397,14 @@ pub struct ResolvedModel {
     /// overlay (`preferences::apply_sampler_overlay`). The quality effect is
     /// model-dependent (issue #129), so there is no opinionated default.
     pub replay_prior_thinking: Option<crate::app::ThinkingReplay>,
+    /// Maximum tool-loop iterations per turn, governing every agentic tool
+    /// loop (interactive chat, heartbeat, compaction, dreaming). `None` means
+    /// **unlimited** — the loop runs until the model stops requesting tools
+    /// (bounded only by per-call HTTP timeouts and, for the heartbeat, its
+    /// wall-clock tick deadline). Like `replay_prior_thinking`, this is not
+    /// sourced from the static `[chat.*]` catalog; it is stamped here by the
+    /// runtime preference overlay (`preferences::apply_sampler_overlay`).
+    pub max_tool_iterations: Option<u32>,
 }
 
 impl ResolvedModel {
@@ -507,6 +515,9 @@ impl ResolvedModel {
             // value is supplied later by the runtime preference overlay
             // (issue #129). `None` here means "inherit the global default".
             replay_prior_thinking: None,
+            // Runtime-overlay-only, like `replay_prior_thinking`. `None` here
+            // means "unlimited" unless a per-model preference stamps a cap.
+            max_tool_iterations: None,
         }
     }
 }

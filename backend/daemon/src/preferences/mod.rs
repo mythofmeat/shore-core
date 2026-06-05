@@ -104,6 +104,13 @@ pub struct SamplerSettings {
     /// (#191).
     pub replay_prior_thinking: Option<shore_config::app::ThinkingReplay>,
 
+    /// Maximum tool-loop iterations per turn. `None` means **unlimited** (the
+    /// default) — the loop runs until the model stops requesting tools. This
+    /// is the single surface governing every agentic tool loop: interactive
+    /// chat, heartbeat, compaction, and dreaming. It is a behavioral knob, not
+    /// a wire/sampler value, and is honored by every sdk (not capability-gated).
+    pub max_tool_iterations: Option<u32>,
+
     // ── Vendor knobs (per-model runtime settings) ───────────────────────
     // These mirror the same-named `ModelConfigFields`/`ResolvedModel` fields,
     // exposed here so they are configurable per-model at runtime (model > sdk >
@@ -140,6 +147,7 @@ impl SamplerSettings {
         merge!(cache_ttl);
         merge!(sdk);
         merge!(replay_prior_thinking);
+        merge!(max_tool_iterations);
         merge!(openrouter_provider);
         merge!(vertex_project);
         merge!(vertex_location);
@@ -159,6 +167,7 @@ impl SamplerSettings {
             && self.cache_ttl.is_none()
             && self.sdk.is_none()
             && self.replay_prior_thinking.is_none()
+            && self.max_tool_iterations.is_none()
             && self.openrouter_provider.is_none()
             && self.vertex_project.is_none()
             && self.vertex_location.is_none()
@@ -179,6 +188,7 @@ impl SamplerSettings {
             cache_ttl: model.cache_ttl.clone(),
             sdk: Some(model.sdk.as_str().to_owned()),
             replay_prior_thinking: model.replay_prior_thinking,
+            max_tool_iterations: model.max_tool_iterations,
             openrouter_provider: model.openrouter_provider.clone(),
             vertex_project: model.vertex_project.clone(),
             vertex_location: model.vertex_location.clone(),
@@ -460,6 +470,7 @@ pub struct SamplerScopes {
     pub cache_ttl: Option<PreferenceScope>,
     pub sdk: Option<PreferenceScope>,
     pub replay_prior_thinking: Option<PreferenceScope>,
+    pub max_tool_iterations: Option<PreferenceScope>,
     pub openrouter_provider: Option<PreferenceScope>,
     pub vertex_project: Option<PreferenceScope>,
     pub vertex_location: Option<PreferenceScope>,
@@ -493,6 +504,7 @@ pub fn resolve_sampler_scopes(
         note!(cache_ttl);
         note!(sdk);
         note!(replay_prior_thinking);
+        note!(max_tool_iterations);
         note!(openrouter_provider);
         note!(vertex_project);
         note!(vertex_location);
@@ -757,6 +769,9 @@ pub fn apply_sampler_overlay(
     }
     if let Some(p) = overlay.replay_prior_thinking {
         patched.replay_prior_thinking = Some(p);
+    }
+    if let Some(n) = overlay.max_tool_iterations {
+        patched.max_tool_iterations = Some(n);
     }
     if let Some(ref v) = overlay.openrouter_provider {
         patched.openrouter_provider = Some(v.clone());
