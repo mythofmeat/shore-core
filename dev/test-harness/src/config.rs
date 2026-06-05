@@ -162,9 +162,17 @@ impl TestConfigBuilder {
     }
 
     /// Set the unified per-model tool-iteration cap that governs every tool
-    /// loop (chat, heartbeat, compaction, dreaming). Written as a global
-    /// per-model preference for the chat model.
+    /// loop (chat, heartbeat, compaction, dreaming). Written as a per-character
+    /// preference for the configured chat model.
+    ///
+    /// Panics on `0` to mirror the production rejection in
+    /// `set_model_setting` — `0` is not a persistable value (unlimited is
+    /// expressed by leaving the cap unset), so tests must not fabricate it.
     pub fn max_tool_iterations(mut self, n: u32) -> Self {
+        assert!(
+            n >= 1,
+            "max_tool_iterations must be >= 1; leave it unset for unlimited"
+        );
         self.max_tool_iterations = Some(n);
         self
     }
@@ -225,7 +233,7 @@ impl TestConfigBuilder {
         self.apply_provider_registry(&mut loaded, mock_base_url)?;
 
         if let Some(n) = self.max_tool_iterations {
-            write_max_tool_iterations_pref(&loaded, &self.character_name, n)?;
+            write_max_tool_iterations_pref(&loaded, &self.character_name, &self.model_alias, n)?;
         }
 
         Ok(loaded)
@@ -391,18 +399,20 @@ fn push_cache_ttl(models_toml: &mut String, cache_ttl: Option<&str>) {
 /// heartbeat, compaction, dreaming) reads it through `resolve_*_model`.
 /// Character-scoped (not global) so the file lives under the character root and
 /// does not create a sibling directory under `data_dir`.
+///
+/// Keys on the model `model_alias` resolves to (which `build_app_config` pins as
+/// `app.defaults.model`), not `first_chat_model()` — with `extra_chat_aliases`
+/// those can diverge, and the cap must land on the model the loops actually run.
 fn write_max_tool_iterations_pref(
     loaded: &LoadedConfig,
     character: &str,
+    model_alias: &str,
     n: u32,
 ) -> BuildResult<()> {
     use shore_daemon::preferences::{
         save_character_preferences, ModelPreference, ModelPreferences, SamplerSettings,
     };
-    let model = loaded
-        .models
-        .first_chat_model()
-        .ok_or("test catalog has no chat model to attach max_tool_iterations to")?;
+    let model = loaded.models.find_model(model_alias)?;
     let key = format!("{}:{}", model.provider_key, model.model_id);
     let mut prefs = ModelPreferences::default();
     let _ignored = prefs.models.insert(

@@ -2960,17 +2960,26 @@ mod tests {
         }
     }
 
+    /// A finite per-model `max_tool_iterations` cap stops the librarian loop
+    /// after exactly that many tool rounds, even when the model keeps asking
+    /// for more tools. With a cap of 1 and an always-tool-using model, the loop
+    /// runs one round and breaks at the cap without issuing a second request.
     #[tokio::test]
-    async fn zero_max_tool_rounds_sends_no_librarian_request() {
+    async fn max_tool_iterations_caps_librarian_rounds() {
         let tmp = tempfile::tempdir().unwrap();
         let mock = MockLlmSidecar::start().await;
-        let config = librarian_config(&tmp, &mock, "alice", 0);
+        let config = librarian_config(&tmp, &mock, "alice", 1);
         let mem = character_memory_dir(&config.dirs.config, "alice");
         let workspace = character_workspace_dir(&config.dirs.config, "alice");
         fs::create_dir_all(&mem).await.unwrap();
         fs::write(mem.join("notes.md"), "# Notes\n\n- Durable note.\n")
             .await
             .unwrap();
+
+        // Only one response is enqueued: if the cap weren't enforced, the loop
+        // would call generate a second time and the mock would error.
+        mock.enqueue_json_tool_use("t_list", "list_files", json!({"path": "memory"}))
+            .await;
 
         let result = run_librarian_sweep(
             &config,
@@ -2985,8 +2994,12 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(result.tool_rounds, 0);
-        assert!(mock.received_requests().await.is_empty());
+        assert_eq!(result.tool_rounds, 1, "cap of 1 must stop after one round");
+        assert_eq!(
+            mock.received_requests().await.len(),
+            1,
+            "loop must break at the cap rather than issue a second request"
+        );
         assert!(workspace.join("MEMORY.md").exists());
         assert!(
             crate::memory::deferred_edits::load_memory_index(

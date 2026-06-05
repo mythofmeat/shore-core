@@ -720,7 +720,7 @@ async fn run_compaction_tool_loop(
     request: &mut shore_llm::types::LlmRequest,
     tool_ctx: &dyn ToolContext,
     workspace_dir: &str,
-    max_rounds: Option<u32>,
+    max_tool_iterations: Option<u32>,
     dry_run: bool,
 ) -> Result<ToolLoopState, CompactionError> {
     let mut loop_state = ToolLoopState::new(dry_run);
@@ -751,7 +751,7 @@ async fn run_compaction_tool_loop(
             .push(json!({"role": "user", "content": tool_results}));
 
         // `None` = unlimited: keep going until the model ends cleanly above.
-        if let Some(max) = max_rounds {
+        if let Some(max) = max_tool_iterations {
             if loop_state.tool_rounds >= max {
                 loop_state.max_rounds_hit = true;
                 break;

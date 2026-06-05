@@ -427,14 +427,28 @@ pub fn resolve_sampler_settings(
 /// `effective_sampler.sdk` diverge from `apply_sampler_overlay`'s result.
 /// Returns a `Cow` so the no-op case (overwhelmingly common) avoids a clone.
 fn sanitize_persisted_overlay(layer: &SamplerSettings) -> std::borrow::Cow<'_, SamplerSettings> {
-    if let Some(ref s) = layer.sdk {
-        if shore_config::models::Sdk::parse_wire(s).is_none() {
-            let mut cleaned = layer.clone();
-            cleaned.sdk = None;
-            return std::borrow::Cow::Owned(cleaned);
-        }
+    let bad_sdk = layer
+        .sdk
+        .as_deref()
+        .is_some_and(|s| shore_config::models::Sdk::parse_wire(s).is_none());
+    // `max_tool_iterations = 0` is not a valid persisted value: `None` already
+    // means unlimited and `set_model_setting` rejects 0, but a hand-edited
+    // `models.toml` can still carry it. Left intact, the tool loops would read
+    // `Some(0)` as "cap reached before the first round" — a silent no-op that
+    // diverges from the documented `None = unlimited` default. Treat 0 as unset.
+    let zero_cap = layer.max_tool_iterations == Some(0);
+    if !bad_sdk && !zero_cap {
+        return std::borrow::Cow::Borrowed(layer);
     }
-    std::borrow::Cow::Borrowed(layer)
+    let mut cleaned = layer.clone();
+    if bad_sdk {
+        cleaned.sdk = None;
+    }
+    if zero_cap {
+        tracing::warn!("preferences carry max_tool_iterations = 0; treating as unset (unlimited)");
+        cleaned.max_tool_iterations = None;
+    }
+    std::borrow::Cow::Owned(cleaned)
 }
 
 // ── Scope (where a sampler field came from) ─────────────────────────────
@@ -1993,6 +2007,37 @@ sdk = "openai"
             Some(PreferenceScope::StaticDefault),
             "scope must not credit the corrupted layer that the request \
              path would silently discard"
+        );
+    }
+
+    #[test]
+    fn resolve_sampler_settings_treats_zero_max_tool_iterations_as_unset() {
+        // `set_model_setting` rejects 0, but a hand-edited models.toml could
+        // still carry `max_tool_iterations = 0`. Left intact the tool loops
+        // would read it as "cap reached before the first round" — a silent
+        // no-op. The load/sanitize path must coerce 0 back to None (unlimited).
+        let mut prefs = ModelPreferences::default();
+        prefs.set_model(
+            "openrouter",
+            "gpt-4o",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    max_tool_iterations: Some(0),
+                    ..Default::default()
+                },
+            },
+        );
+
+        let effective = resolve_sampler_settings(&prefs, None, "openrouter", "gpt-4o", None);
+        assert_eq!(
+            effective.max_tool_iterations, None,
+            "max_tool_iterations = 0 must sanitize to None (unlimited)"
+        );
+
+        let scopes = resolve_sampler_scopes(&prefs, None, "openrouter", "gpt-4o", None);
+        assert_eq!(
+            scopes.max_tool_iterations, None,
+            "the sanitized-away zero must not be credited as a set scope"
         );
     }
 
