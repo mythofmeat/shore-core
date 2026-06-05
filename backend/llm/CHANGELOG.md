@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [11.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v10.0.0...shore-llm-v11.0.0) - 2026-06-05
+
+### Added
+
+- *(tools)* unify tool-loop cap as per-model max_tool_iterations (default unlimited) ([#215](https://github.com/mythofmeat/shore-core/pull/215))
+- *(keepalive)* per-model cache_keepalive + global cap, decouple from heartbeat ([#213](https://github.com/mythofmeat/shore-core/pull/213))
+
 ## [10.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v9.0.0...shore-llm-v10.0.0) - 2026-06-05
 
 ### Fixed

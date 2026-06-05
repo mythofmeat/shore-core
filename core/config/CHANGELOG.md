@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.11.1...shore-config-v0.12.0) - 2026-06-05
+
+### Added
+
+- *(tools)* unify tool-loop cap as per-model max_tool_iterations (default unlimited) ([#215](https://github.com/mythofmeat/shore-core/pull/215))
+- *(keepalive)* per-model cache_keepalive + global cap, decouple from heartbeat ([#213](https://github.com/mythofmeat/shore-core/pull/213))
+
+### Fixed
+
+- *(zai)* implement GLM thinking per Z.AI docs (Preserved Thinking + disable) ([#207](https://github.com/mythofmeat/shore-core/pull/207))
+
 ## [0.11.1](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.11.0...shore-config-v0.11.1) - 2026-06-05
 
 ### Fixed
