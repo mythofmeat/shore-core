@@ -98,6 +98,37 @@ describe("cache placement (mirrors ts_default_placement)", () => {
   });
 });
 
+// ── image content blocks ────────────────────────────────────────────────────
+
+describe("image blocks", () => {
+  // The daemon synthesizes base64 image blocks from a message's `images` and
+  // inlines them into the wire `content` array. The adapter must accept them;
+  // before the fix, the unknown block type fell through toContentBlockParam to
+  // `undefined`, and normalizeMessages threw "undefined is not an object
+  // (evaluating 'delete Q.cache_control')", surfacing as an HTTP 502.
+  const imageMessages: SidecarRequest["messages"] = [
+    {
+      role: "user",
+      content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+        { type: "text", text: "what is this?" },
+      ] as never,
+    },
+  ];
+
+  test("image block passes through without throwing and reaches the wire", () => {
+    const p = buildAnthropicParams(req({ messages: imageMessages, provider_options: { cache_ttl: "1h" } }));
+    const m = p.messages as Array<{ content: unknown }>;
+    const content = m[0]?.content as Rec[];
+    expect(content[0]).toEqual({
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: "AAAA" },
+    });
+    // breakpoint still lands on the trailing text block, not the image.
+    expect(blockCC(content)).toEqual([false, true]);
+  });
+});
+
 // ── thinking (mirrors build_thinking_params + thinking_caps) ────────────────
 
 describe("thinking params per model", () => {
