@@ -87,6 +87,13 @@ pub struct SamplerSettings {
     pub budget_tokens: Option<u32>,
     pub max_output_tokens: Option<u32>,
     pub cache_ttl: Option<String>,
+    /// Per-model keepalive ping cadence (`off` or a duration like `55m`).
+    /// Mirrors `ModelConfigFields`/`ResolvedModel.cache_keepalive`, exposed
+    /// here so it is configurable per-model at runtime. `None` inherits the
+    /// sdk default resolved in `ResolvedModel::from_parts` (Anthropic → `55m`,
+    /// every other sdk → `off`). It is a daemon-side scheduling cadence, not a
+    /// wire field, so it is honored for any provider with a prompt cache.
+    pub cache_keepalive: Option<shore_config::models::CacheKeepaliveSetting>,
     /// Wire SDK override (`"anthropic" | "openai" | "gemini" | "zai"`).
     /// `None` means inherit from the static catalog or provider registry.
     /// Lets users force, e.g., the Anthropic wire shape for a model that
@@ -145,6 +152,7 @@ impl SamplerSettings {
         merge!(budget_tokens);
         merge!(max_output_tokens);
         merge!(cache_ttl);
+        merge!(cache_keepalive);
         merge!(sdk);
         merge!(replay_prior_thinking);
         merge!(max_tool_iterations);
@@ -165,6 +173,7 @@ impl SamplerSettings {
             && self.budget_tokens.is_none()
             && self.max_output_tokens.is_none()
             && self.cache_ttl.is_none()
+            && self.cache_keepalive.is_none()
             && self.sdk.is_none()
             && self.replay_prior_thinking.is_none()
             && self.max_tool_iterations.is_none()
@@ -186,6 +195,7 @@ impl SamplerSettings {
             budget_tokens: model.budget_tokens,
             max_output_tokens: model.max_output_tokens,
             cache_ttl: model.cache_ttl.clone(),
+            cache_keepalive: model.cache_keepalive,
             sdk: Some(model.sdk.as_str().to_owned()),
             replay_prior_thinking: model.replay_prior_thinking,
             max_tool_iterations: model.max_tool_iterations,
@@ -482,6 +492,7 @@ pub struct SamplerScopes {
     pub budget_tokens: Option<PreferenceScope>,
     pub max_output_tokens: Option<PreferenceScope>,
     pub cache_ttl: Option<PreferenceScope>,
+    pub cache_keepalive: Option<PreferenceScope>,
     pub sdk: Option<PreferenceScope>,
     pub replay_prior_thinking: Option<PreferenceScope>,
     pub max_tool_iterations: Option<PreferenceScope>,
@@ -516,6 +527,7 @@ pub fn resolve_sampler_scopes(
         note!(budget_tokens);
         note!(max_output_tokens);
         note!(cache_ttl);
+        note!(cache_keepalive);
         note!(sdk);
         note!(replay_prior_thinking);
         note!(max_tool_iterations);
@@ -766,6 +778,9 @@ pub fn apply_sampler_overlay(
     }
     if let Some(ref c) = overlay.cache_ttl {
         patched.cache_ttl = Some(c.clone());
+    }
+    if let Some(k) = overlay.cache_keepalive {
+        patched.cache_keepalive = Some(k);
     }
     if let Some(ref s) = overlay.sdk {
         // `set_model_setting` validates the string before it reaches the
@@ -1151,6 +1166,7 @@ typo_setting = "x"
                     budget_tokens: Some(8192),
                     max_output_tokens: Some(4096),
                     cache_ttl: Some("5m".into()),
+                    cache_keepalive: Some(shore_config::models::CacheKeepaliveSetting::Off),
                     sdk: Some("anthropic".into()),
                     replay_prior_thinking: Some(shore_config::app::ThinkingReplay::None),
                     ..Default::default()
@@ -1794,6 +1810,7 @@ max_output_tokens = 4096
             temperature: Some(0.7),
             reasoning_effort: Some("high".into()),
             budget_tokens: Some(2048),
+            cache_keepalive: Some(shore_config::models::CacheKeepaliveSetting::Off),
             ..Default::default()
         };
         let patched = apply_sampler_overlay(base, &overlay);
@@ -1806,6 +1823,11 @@ max_output_tokens = 4096
         );
         assert_eq!(patched.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(patched.budget_tokens, Some(2048));
+        assert_eq!(
+            patched.cache_keepalive,
+            Some(shore_config::models::CacheKeepaliveSetting::Off),
+            "overlaid keepalive wins over the sdk default"
+        );
     }
 
     #[test]

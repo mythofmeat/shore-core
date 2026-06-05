@@ -423,9 +423,12 @@ independently. Defaults are sdk-keyed: the **Anthropic** sdk defaults to
 defaults to `"off"` (their cache lifetimes are opaque and carry no
 cache-write surcharge to amortize, so a default ping would be wasted spend —
 opt in explicitly per model, e.g. `cache_keepalive = "6h"` for a DeepSeek
-model with a long-lived context cache). The total time pings continue after
-the last real message is bounded globally by
-`[behavior.autonomy].cache_keepalive_max`.
+model with a long-lived context cache). Set it at runtime with
+`shore model setting cache_keepalive <off|duration>` (resolved on the same
+**model > sdk > provider** overlay as the other knobs); clear it with
+`shore model setting cache_keepalive` (no value) to fall back to the sdk
+default. The total time pings continue after the last real message is bounded
+globally by `[behavior.autonomy].cache_keepalive_max`.
 
 Writes are **capability-aware**: a setting is validated against the active
 model's resolved `(sdk, model_id)` before it is persisted. A key the sdk
