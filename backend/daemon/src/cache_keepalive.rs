@@ -71,17 +71,28 @@ impl CacheKeepalive {
 
     /// Update the active model's ping cadence (`None` = keepalive off), e.g. when
     /// a request is cached or the user switches models. Reschedules the ping
-    /// timer to fire one interval after the last real activity (or `now` if there
-    /// has been none yet). Disabling clears any pending ping.
-    pub fn set_interval(&mut self, interval: Option<Duration>, now: Instant) {
+    /// timer to fire one interval after the last real activity. Disabling clears
+    /// any pending ping.
+    ///
+    /// The schedule anchors strictly on `last_active_at`: if no real call has
+    /// warmed a prefix yet (`None`, e.g. at startup or right after
+    /// [`on_cache_invalidated`]), no ping is armed until the next
+    /// [`on_cache_warmed`]. This keeps the invariant that we never ping a cold
+    /// cache. `now` is unused for arming but retained for signature symmetry with
+    /// the other timer mutators.
+    ///
+    /// [`on_cache_invalidated`]: CacheKeepalive::on_cache_invalidated
+    /// [`on_cache_warmed`]: CacheKeepalive::on_cache_warmed
+    pub fn set_interval(&mut self, interval: Option<Duration>, _now: Instant) {
         let changed = self.interval != interval;
         self.interval = interval;
         match interval {
             None => self.next_ping_at = None,
             Some(iv) => {
                 if self.next_ping_at.is_none() || changed {
-                    let anchor = self.last_active_at.unwrap_or(now);
-                    self.next_ping_at = anchor.checked_add(iv);
+                    self.next_ping_at = self
+                        .last_active_at
+                        .and_then(|anchor| anchor.checked_add(iv));
                 }
             }
         }
@@ -112,6 +123,10 @@ impl CacheKeepalive {
     /// but stable pinned system sections are still worth keeping warm.
     pub fn on_cache_invalidated(&mut self) {
         self.next_ping_at = None;
+        // Clear the activity anchor too: the warmed prefix is gone, so a later
+        // `set_interval` must NOT re-arm off the stale timestamp. Pinging only
+        // resumes once a real call re-warms via `on_cache_warmed`.
+        self.last_active_at = None;
         self.failure_count = 0;
     }
 
@@ -318,5 +333,27 @@ mod tests {
         ka.set_interval(Some(hours(6)), now + minutes(30));
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
         assert_eq!(ka.tick(now + hours(6)), CacheKeepaliveAction::Ping);
+    }
+
+    #[test]
+    fn set_interval_after_invalidation_does_not_arm_cold_cache() {
+        // After invalidation, a model-switch `set_interval` must NOT re-arm off
+        // the stale activity timestamp: pinging a cold prefix is exactly what
+        // invalidation exists to prevent. Only a real warm resumes pinging.
+        let now = Instant::now();
+        let mut ka = armed(now);
+        ka.on_cache_invalidated();
+
+        // New request cached for the switched model, but nothing has warmed its
+        // prefix yet → no ping armed, even far in the future.
+        ka.set_interval(Some(minutes(55)), now + minutes(5));
+        assert_eq!(ka.tick(now + hours(2)), CacheKeepaliveAction::None);
+
+        // A real call warms the new prefix → pinging resumes from there.
+        ka.on_cache_warmed(now + hours(1));
+        assert_eq!(
+            ka.tick(now + hours(1) + minutes(55)),
+            CacheKeepaliveAction::Ping
+        );
     }
 }

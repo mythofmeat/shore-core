@@ -597,6 +597,41 @@ mod tests {
     }
 
     #[test]
+    fn build_request_maps_cache_keepalive_to_interval() {
+        use shore_config::duration::ConfigDuration;
+        use shore_config::models::CacheKeepaliveSetting;
+
+        std::env::set_var("TEST_API_KEY_KA", "sk-test-key");
+
+        // A resolved `Every(55m)` cadence becomes a transient `keepalive_interval`
+        // on the request (Anthropic-shaped here, but the mapping is sdk-agnostic).
+        let cadence = ConfigDuration::from_secs(55 * 60);
+        let mut model = test_model("ka-model", "anthropic", Sdk::Anthropic);
+        model.api_key_env = Some("TEST_API_KEY_KA".into());
+        model.cache_keepalive = Some(CacheKeepaliveSetting::Every(cadence));
+        let req = LlmClient::build_request(
+            &model,
+            vec![serde_json::json!({"role": "user", "content": "Hi"})],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(req.keepalive_interval, Some(cadence.as_duration()));
+
+        // `Off` and unset both resolve to no interval (keepalive disabled).
+        model.cache_keepalive = Some(CacheKeepaliveSetting::Off);
+        let off = LlmClient::build_request(&model, vec![], None, None, None).unwrap();
+        assert_eq!(off.keepalive_interval, None);
+
+        model.cache_keepalive = None;
+        let unset = LlmClient::build_request(&model, vec![], None, None, None).unwrap();
+        assert_eq!(unset.keepalive_interval, None);
+
+        std::env::remove_var("TEST_API_KEY_KA");
+    }
+
+    #[test]
     fn build_request_translates_reasoning_off_to_thinking_disabled() {
         // Issue #164: `reasoning_effort = "off"` becomes a `thinking_enabled =
         // false` provider option (NOT a reasoning_effort value), which the

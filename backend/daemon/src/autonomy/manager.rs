@@ -1001,7 +1001,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     let now = Instant::now();
 
     // Collect actions under the lock, then release before any async work.
-    let (int_action, keepalive_action, compaction_needed, dream_needed) =
+    let (int_action, mut keepalive_action, compaction_needed, dream_needed) =
         collect_tick_actions(character, ctx, now);
 
     // Idle-triggered compaction: when the tick has the dependencies it needs
@@ -1051,6 +1051,12 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                 ctx.registry.as_ref(),
             )
             .await;
+
+            // A heartbeat tick that warmed the cache has already reset the
+            // keepalive timer, so the pre-heartbeat `Ping` decision is stale —
+            // re-evaluate to avoid a redundant ping right after the tick.
+            let mut s = lock_state(&ctx.state);
+            keepalive_action = s.cache_keepalive.tick(Instant::now());
         }
     }
 

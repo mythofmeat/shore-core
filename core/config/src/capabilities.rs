@@ -654,16 +654,24 @@ pub fn validate(
         }
     }
 
-    // `cache_keepalive` accepts the `off` sentinel or any duration string.
+    // `cache_keepalive` accepts the `off` sentinel or a duration *string*.
+    // Non-string TOML values (`30`, `false`) only fail at the next config load,
+    // so reject them here too rather than persisting an unloadable setting.
     if field == Field::CacheKeepalive {
-        if let Some(raw) = value.as_str() {
-            if crate::models::CacheKeepaliveSetting::parse(raw).is_err() {
-                return Err(CapabilityError::OutOfDomain {
-                    field,
-                    value: raw.to_owned(),
-                    allowed: "off, or a duration like 55m / 6h / 30s".to_owned(),
-                });
-            }
+        let allowed = || "off, or a duration string like 55m / 6h / 30s".to_owned();
+        let Some(raw) = value.as_str() else {
+            return Err(CapabilityError::OutOfDomain {
+                field,
+                value: value.to_string(),
+                allowed: allowed(),
+            });
+        };
+        if crate::models::CacheKeepaliveSetting::parse(raw).is_err() {
+            return Err(CapabilityError::OutOfDomain {
+                field,
+                value: raw.to_owned(),
+                allowed: allowed(),
+            });
         }
     }
 
@@ -1018,6 +1026,34 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(sampler_err, CapabilityError::Inapplicable { .. }));
+    }
+
+    #[test]
+    fn validate_cache_keepalive_boundary() {
+        // Honored on every sdk; accepts `off` and durations, rejects zero,
+        // garbage, and non-string values.
+        let ok =
+            |v: toml::Value| validate(&Sdk::Deepseek, "deepseek-v4", Field::CacheKeepalive, &v);
+        assert!(ok(toml::Value::String("off".into())).is_ok());
+        assert!(ok(toml::Value::String("6h".into())).is_ok());
+        assert!(matches!(
+            ok(toml::Value::String("0s".into())),
+            Err(CapabilityError::OutOfDomain { .. })
+        ));
+        assert!(matches!(
+            ok(toml::Value::String("whenever".into())),
+            Err(CapabilityError::OutOfDomain { .. })
+        ));
+        // Non-string TOML values are rejected at the boundary rather than
+        // deferred to the next config load.
+        assert!(matches!(
+            ok(toml::Value::Integer(30)),
+            Err(CapabilityError::OutOfDomain { .. })
+        ));
+        assert!(matches!(
+            ok(toml::Value::Boolean(false)),
+            Err(CapabilityError::OutOfDomain { .. })
+        ));
     }
 
     #[test]

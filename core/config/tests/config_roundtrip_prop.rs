@@ -46,9 +46,12 @@ fn arb_duration() -> impl Strategy<Value = ConfigDuration> {
 }
 
 fn arb_cache_keepalive() -> impl Strategy<Value = CacheKeepaliveSetting> {
+    // `Every` must be non-zero — `parse` rejects zero intervals (`"off"` is the
+    // disable mode), so a zero would not round-trip.
     prop_oneof![
         Just(CacheKeepaliveSetting::Off),
-        arb_duration().prop_map(CacheKeepaliveSetting::Every),
+        (1_u64..(14 * 24 * 60 * 60 * 1000))
+            .prop_map(|ms| CacheKeepaliveSetting::Every(ConfigDuration::from_millis(ms))),
     ]
 }
 

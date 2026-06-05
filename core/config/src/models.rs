@@ -37,14 +37,26 @@ pub enum CacheKeepaliveSetting {
 
 impl CacheKeepaliveSetting {
     /// Parse from a TOML string: `"off"`/`"none"`/`"disabled"`/`"0"` → [`Off`],
-    /// any duration string → [`Every`].
+    /// any non-zero duration string → [`Every`].
+    ///
+    /// A zero-length interval (`"0s"`, `"0ms"`) is rejected: it would re-arm the
+    /// timer at `now` on every tick and spin a ping loop. Use `"off"` to disable.
     ///
     /// [`Off`]: CacheKeepaliveSetting::Off
     /// [`Every`]: CacheKeepaliveSetting::Every
     pub fn parse(raw: &str) -> Result<Self, String> {
-        match raw.trim().to_ascii_lowercase().as_str() {
+        let trimmed = raw.trim();
+        match trimmed.to_ascii_lowercase().as_str() {
             "off" | "none" | "disabled" | "false" | "0" => Ok(Self::Off),
-            _ => ConfigDuration::parse(raw).map(Self::Every),
+            _ => {
+                let interval = ConfigDuration::parse(trimmed)?;
+                if interval.as_millis() == 0 {
+                    return Err(
+                        "cache_keepalive interval must be > 0; use \"off\" to disable".to_owned(),
+                    );
+                }
+                Ok(Self::Every(interval))
+            }
         }
     }
 
@@ -1156,6 +1168,51 @@ mod tests {
     /// Helper: parse a TOML string as a table.
     fn parse_table(s: &str) -> toml::Table {
         s.parse::<toml::Table>().unwrap()
+    }
+
+    #[test]
+    fn cache_keepalive_parse_off_sentinels_and_durations() {
+        for off in ["off", "none", "disabled", "false", "0", "OFF", "  off  "] {
+            assert_eq!(
+                CacheKeepaliveSetting::parse(off).unwrap(),
+                CacheKeepaliveSetting::Off,
+                "{off:?} should be Off"
+            );
+        }
+        assert_eq!(
+            CacheKeepaliveSetting::parse("55m").unwrap(),
+            CacheKeepaliveSetting::Every(ConfigDuration::from_secs(3300))
+        );
+        assert_eq!(
+            CacheKeepaliveSetting::parse("6h").unwrap(),
+            CacheKeepaliveSetting::Every(ConfigDuration::from_secs(21_600))
+        );
+    }
+
+    #[test]
+    fn cache_keepalive_rejects_zero_and_garbage() {
+        // Zero-length intervals would re-arm at `now` and spin — rejected; `off`
+        // is the explicit disable.
+        for zero in ["0s", "0ms", "0m", "0h"] {
+            assert!(
+                CacheKeepaliveSetting::parse(zero).is_err(),
+                "{zero:?} must be rejected"
+            );
+        }
+        assert!(CacheKeepaliveSetting::parse("soon").is_err());
+        assert!(CacheKeepaliveSetting::parse("-5m").is_err());
+    }
+
+    #[test]
+    fn cache_keepalive_round_trips_through_display() {
+        for s in ["off", "55m", "6h", "30s"] {
+            let parsed = CacheKeepaliveSetting::parse(s).unwrap();
+            assert_eq!(
+                CacheKeepaliveSetting::parse(&parsed.to_string()).unwrap(),
+                parsed,
+                "{s:?} round-trip"
+            );
+        }
     }
 
     // ── parse_category ──────────────────────────────────────────────
