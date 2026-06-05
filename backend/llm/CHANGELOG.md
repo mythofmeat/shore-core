@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [10.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v9.0.0...shore-llm-v10.0.0) - 2026-06-05
+
+### Fixed
+
+- *(ledger)* record cache write billed before a mid-stream error ([#204](https://github.com/mythofmeat/shore-core/pull/204))
+
 ## [9.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v8.0.0...shore-llm-v9.0.0) - 2026-06-04
 
 ### Other

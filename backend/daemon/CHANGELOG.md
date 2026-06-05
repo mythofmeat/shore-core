@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [13.0.1](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v13.0.0...shore-daemon-v13.0.1) - 2026-06-05
+
+### Fixed
+
+- *(ledger)* record cache write billed before a mid-stream error ([#204](https://github.com/mythofmeat/shore-core/pull/204))
+
 ## [13.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v12.0.1...shore-daemon-v13.0.0) - 2026-06-04
 
 ### Added
