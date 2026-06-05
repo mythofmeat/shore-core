@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [15.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v14.0.0...shore-daemon-v15.0.0) - 2026-06-05
+
+### Added
+
+- *(model-setting)* expose cache_keepalive + fix max_tool_iterations CLI surface ([#217](https://github.com/mythofmeat/shore-core/pull/217))
+
 ## [14.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v13.0.1...shore-daemon-v14.0.0) - 2026-06-05
 
 ### Added
