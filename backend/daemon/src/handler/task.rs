@@ -4,12 +4,16 @@ use std::time::Instant;
 
 use serde_json::{json, Value};
 use shore_config::character_data_dir;
+use shore_config::LoadedConfig;
+use shore_protocol::client_msg::ClientMessageBody;
 use shore_protocol::types::{ContentBlock, Message, Role};
+use tokio::sync::Mutex;
 use tracing::{debug, info, instrument};
 
 use crate::convert::u64_to_usize;
 use crate::engine::messages::PendingAlt;
 use crate::engine::prompt;
+use crate::engine::ConversationEngine;
 use crate::handler::generation::{run_tool_phase, thinking_enabled_from_request};
 use crate::handler::images::{embed_image_data, ingest_images};
 use crate::handler::key_fallback::stream_with_credential_fallback;
@@ -27,10 +31,6 @@ use super::{GenContext, GenerationParams, PrepareChatContextParams, PreparedChat
         char = %params.char_name,
         rid = params.rid.as_deref().unwrap_or("-")
     )
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "generation orchestration phase split is tracked in #109"
 )]
 pub(super) async fn handle_generation(
     ctx: GenContext,
@@ -63,51 +63,8 @@ pub(super) async fn handle_generation(
             .map_err(|e| e.to_string())?
     };
 
-    let mut regen_alt: Option<PendingAlt> = None;
-    {
-        let mut engine = engine_arc.lock().await;
-        if regen {
-            regen_alt = Some(engine.pending_regen_alt().unwrap_or(PendingAlt {
-                alternatives: Vec::new(),
-            }));
-        } else if !body.text.is_empty() || !body.images.is_empty() || !body.image_data.is_empty() {
-            let (images, mut content_blocks) =
-                ingest_images(&data_dir, &char_name, &body.images, &body.image_data);
-
-            content_blocks.push(ContentBlock::Text {
-                text: body.text.clone(),
-            });
-
-            let user_msg = Message {
-                msg_id: format!("m_{}", uuid::Uuid::new_v4()),
-                role: Role::User,
-                content: body.text.clone(),
-                images,
-                content_blocks,
-                alt_index: None,
-                alt_count: None,
-                alternatives: vec![],
-                provider_key: None,
-                timestamp: chrono::Local::now().to_rfc3339(),
-            };
-            engine.append_message(user_msg.clone())?;
-            let revision = engine.current_revision();
-            let mut wire_msg = user_msg;
-            embed_image_data(&mut wire_msg.images);
-            let _ignored =
-                ctx.event_tx
-                    .send(shore_protocol::server_msg::ServerMessage::NewMessage(
-                        shore_protocol::server_msg::NewMessage {
-                            revision,
-                            character: Some(char_name.clone()),
-                            origin: Some(shore_protocol::server_msg::MessageOrigin::UserInput),
-                            message: wire_msg,
-                        },
-                    ));
-        } else {
-            // Regen with no body content: nothing to append.
-        }
-    }
+    let regen_alt =
+        append_user_turn(&ctx, &engine_arc, &data_dir, &char_name, &body, regen).await?;
 
     // The handler resolves the active model (via preferences +
     // discovery) and passes the `ResolvedModel` through directly, so we
@@ -115,34 +72,9 @@ pub(super) async fn handle_generation(
     // have a synthetic `qualified_name` that the resolver does not
     // accept as input. If nothing was passed, fall back to the
     // configured app default, then the first static chat model.
-    let resolved_base_owned: shore_config::models::ResolvedModel = match active_model {
-        Some(m) => m,
-        None => match effective_config.app.defaults.model.as_deref() {
-            Some(name) => crate::effective_catalog::find_effective_model(
-                &effective_config,
-                &effective_config.dirs.cache,
-                name,
-                // App-level defaults are user configuration, not a
-                // discovery-cache selection — `discovery.ignore` still
-                // applies for safety, but a misspelled default should surface.
-                true,
-            )
-            .map_err(|e| e.to_string())?,
-            None => effective_config
-                .models
-                .first_chat_model()
-                .cloned()
-                .ok_or("No model configured")?,
-        },
-    };
-    let resolved_base = &resolved_base_owned;
-    let resolved_owned;
-    let resolved: &shore_config::models::ResolvedModel = if sampler_overlay.is_empty() {
-        resolved_base
-    } else {
-        resolved_owned = crate::preferences::apply_sampler_overlay(resolved_base, &sampler_overlay);
-        &resolved_owned
-    };
+    let resolved_owned =
+        resolve_generation_model(active_model, &effective_config, &sampler_overlay)?;
+    let resolved = &resolved_owned;
     debug!(
         model = %resolved.qualified_name,
         provider = %resolved.provider_key,
@@ -151,172 +83,36 @@ pub(super) async fn handle_generation(
         "model resolved"
     );
 
-    let is_new_autonomy_state = ctx
-        .autonomy
-        .ensure_state_with_config(&char_name, Some(&effective_config));
-
-    if is_new_autonomy_state {
-        let engine = engine_arc.lock().await;
-        let now = chrono::Local::now().naive_local();
-        let cutoff = now
-            .checked_sub_signed(chrono::Duration::days(90))
-            .unwrap_or(now);
-        let mut timestamps: Vec<chrono::NaiveDateTime> = Vec::new();
-
-        for msg in engine
-            .messages()
-            .iter()
-            .filter(|msg| msg.role == Role::User && !msg.is_tool_result_only())
-        {
-            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&msg.timestamp) {
-                let naive = dt.with_timezone(&chrono::Local).naive_local();
-                if naive >= cutoff {
-                    timestamps.push(naive);
-                }
-            }
-        }
-
-        let segments = engine.segments();
-        for i in 0..segments.segment_count() {
-            if let Ok(segment_msgs) = segments.read_segment(i) {
-                for msg in segment_msgs
-                    .iter()
-                    .filter(|msg| msg.role == Role::User && !msg.is_tool_result_only())
-                {
-                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&msg.timestamp) {
-                        let naive = dt.with_timezone(&chrono::Local).naive_local();
-                        if naive >= cutoff {
-                            timestamps.push(naive);
-                        }
-                    }
-                }
-            }
-        }
-
-        drop(engine);
-
-        if !timestamps.is_empty() {
-            info!(
-                character = %char_name,
-                count = timestamps.len(),
-                "Backfilling activity tracker from chat history"
-            );
-            ctx.autonomy.backfill_activity(&char_name, &timestamps);
-        }
-    }
+    ensure_and_backfill_autonomy(&ctx, &engine_arc, &char_name, &effective_config).await;
 
     if !regen && (!body.text.is_empty() || !body.images.is_empty() || !body.image_data.is_empty()) {
         let turn_count = engine_arc.lock().await.turn_count();
         ctx.autonomy.notify_user_message(&char_name, turn_count);
     }
 
-    let (messages, has_prior_context) = {
-        let engine = engine_arc.lock().await;
-        let has_prior = engine.segments().segment_count() > 0;
-        (
-            if regen {
-                engine.messages_through_last_user_turn()
-            } else {
-                engine.messages().to_vec()
-            },
-            has_prior,
-        )
-    };
-
-    let character_data_dir = character_data_dir(&data_dir, &char_name);
-    let include_unsigned_thinking = resolved.sdk.echoes_unsigned_thinking();
-    let PreparedChatContext {
-        llm_messages,
-        system,
-        tool_defs,
-        prompt: prompt_result,
-    } = super::prepare_chat_context(PrepareChatContextParams {
-        character: &char_name,
-        character_data_dir: &character_data_dir,
-        config: &effective_config,
+    let mut request = build_generation_request(
+        &engine_arc,
+        &data_dir,
+        &char_name,
+        &effective_config,
         resolved,
-        messages: &messages,
-        has_prior_context,
-        is_private: false,
-        include_unsigned_thinking,
-    });
-
-    let cache_dir = &effective_config.dirs.cache;
-    warm_image_cache(
-        &prompt_result.messages,
-        effective_config.app.advanced.max_image_size,
-        cache_dir,
+        &body,
+        regen,
     )
     .await;
-
-    // Phase 4: build the request without baking in a specific API key.
-    // The credential-fallback wrapper resolves the candidate key list
-    // from the provider registry just-in-time and rewrites
-    // `request.api_key` per attempt during rotation, so we can leave
-    // the placeholder empty here.
-    let mut request = shore_llm::LlmClient::build_request_with_resolved_key(
-        resolved,
-        String::new(),
-        llm_messages,
-        system,
-        tool_defs,
-        None,
-    );
     request.rid = rid;
     request.forensic_character = Some(char_name.clone());
 
-    if let Some(ref ov) = body.overrides {
-        if let Some(t) = ov.temperature {
-            request.temperature = Some(t);
-        }
-        if let Some(p) = ov.top_p {
-            request.top_p = Some(p);
-        }
-        if let Some(budget) = ov.thinking_budget {
-            let opts = request
-                .provider_options
-                .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
-            if let Some(map) = opts.as_object_mut() {
-                let _ignored = map.insert("budget_tokens".into(), serde_json::json!(budget));
-            }
-        }
-    }
-
-    info!(
-        model = %resolved.model_id,
-        messages = request.messages.len(),
-        "Sending streaming request to LLM"
-    );
-
-    let thinking_enabled = thinking_enabled_from_request(&request);
-
-    let mut result = stream_with_credential_fallback(
+    let (result, tool_intermediate_messages) = run_generation_stream(
         &ctx,
+        &data_dir,
+        &char_name,
+        &effective_config,
         &mut request,
         resolved,
-        &effective_config,
         regen,
-        &char_name,
-        thinking_enabled,
     )
     .await?;
-
-    let tool_intermediate_messages =
-        if result.finish_reason == "tool_use" && effective_config.app.behavior.tool_use.enabled {
-            let tool_loop_result = run_tool_phase(
-                &ctx,
-                &data_dir,
-                &char_name,
-                &effective_config,
-                &mut request,
-                result,
-            )
-            .await?;
-            result = tool_loop_result.result;
-            tool_loop_result.intermediate_messages
-        } else {
-            Vec::new()
-        };
 
     persist_and_notify(
         &ctx,
@@ -336,6 +132,313 @@ pub(super) async fn handle_generation(
     )
     .await?;
 
+    emit_post_persist_stream_end(&ctx, &engine_arc, request.rid.clone(), &result).await;
+
+    maybe_schedule_compaction(
+        &ctx,
+        &engine_arc,
+        &char_name,
+        &effective_config,
+        &data_dir,
+        &result,
+        request.rid.clone(),
+    )
+    .await;
+
+    Ok(())
+}
+
+/// Record the incoming user turn (or capture the pending regen alternatives).
+///
+/// Returns the regeneration alternatives to thread into persistence when
+/// `regen` is set; `None` when this is a fresh turn. A regen request with no
+/// body content appends nothing.
+async fn append_user_turn(
+    ctx: &GenContext,
+    engine_arc: &Arc<Mutex<ConversationEngine>>,
+    data_dir: &Path,
+    char_name: &str,
+    body: &ClientMessageBody,
+    regen: bool,
+) -> Result<Option<PendingAlt>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut engine = engine_arc.lock().await;
+    if regen {
+        return Ok(Some(engine.pending_regen_alt().unwrap_or(PendingAlt {
+            alternatives: Vec::new(),
+        })));
+    }
+    if body.text.is_empty() && body.images.is_empty() && body.image_data.is_empty() {
+        // Regen with no body content: nothing to append.
+        return Ok(None);
+    }
+
+    let (images, mut content_blocks) =
+        ingest_images(data_dir, char_name, &body.images, &body.image_data);
+    content_blocks.push(ContentBlock::Text {
+        text: body.text.clone(),
+    });
+
+    let user_msg = Message {
+        msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+        role: Role::User,
+        content: body.text.clone(),
+        images,
+        content_blocks,
+        alt_index: None,
+        alt_count: None,
+        alternatives: vec![],
+        provider_key: None,
+        timestamp: chrono::Local::now().to_rfc3339(),
+    };
+    engine.append_message(user_msg.clone())?;
+    let revision = engine.current_revision();
+    let mut wire_msg = user_msg;
+    embed_image_data(&mut wire_msg.images);
+    let _ignored = ctx
+        .event_tx
+        .send(shore_protocol::server_msg::ServerMessage::NewMessage(
+            shore_protocol::server_msg::NewMessage {
+                revision,
+                character: Some(char_name.to_owned()),
+                origin: Some(shore_protocol::server_msg::MessageOrigin::UserInput),
+                message: wire_msg,
+            },
+        ));
+    Ok(None)
+}
+
+/// Resolve the active model for this generation and apply any per-model
+/// sampler overlay.
+///
+/// `active_model` is the pre-resolved model threaded through from preference
+/// resolution; when absent we fall back to the configured app default, then the
+/// first static chat model. App-level defaults are user configuration, not a
+/// discovery-cache selection — `discovery.ignore` still applies for safety, but
+/// a misspelled default should surface.
+fn resolve_generation_model(
+    active_model: Option<shore_config::models::ResolvedModel>,
+    effective_config: &LoadedConfig,
+    sampler_overlay: &crate::preferences::SamplerSettings,
+) -> Result<shore_config::models::ResolvedModel, Box<dyn std::error::Error + Send + Sync>> {
+    let resolved_base = match active_model {
+        Some(m) => m,
+        None => match effective_config.app.defaults.model.as_deref() {
+            Some(name) => crate::effective_catalog::find_effective_model(
+                effective_config,
+                &effective_config.dirs.cache,
+                name,
+                true,
+            )
+            .map_err(|e| e.to_string())?,
+            None => effective_config
+                .models
+                .first_chat_model()
+                .cloned()
+                .ok_or("No model configured")?,
+        },
+    };
+    if sampler_overlay.is_empty() {
+        Ok(resolved_base)
+    } else {
+        Ok(crate::preferences::apply_sampler_overlay(
+            &resolved_base,
+            sampler_overlay,
+        ))
+    }
+}
+
+/// Ensure the per-character autonomy state exists and, when first created,
+/// backfill its activity tracker from recent chat history (live + archived
+/// segments, user turns within the last 90 days).
+async fn ensure_and_backfill_autonomy(
+    ctx: &GenContext,
+    engine_arc: &Arc<Mutex<ConversationEngine>>,
+    char_name: &str,
+    effective_config: &LoadedConfig,
+) {
+    let is_new_autonomy_state = ctx
+        .autonomy
+        .ensure_state_with_config(char_name, Some(effective_config));
+    if !is_new_autonomy_state {
+        return;
+    }
+
+    let engine = engine_arc.lock().await;
+    let now = chrono::Local::now().naive_local();
+    let cutoff = now
+        .checked_sub_signed(chrono::Duration::days(90))
+        .unwrap_or(now);
+    let mut timestamps: Vec<chrono::NaiveDateTime> = Vec::new();
+
+    let mut collect = |msgs: &[Message]| {
+        for msg in msgs
+            .iter()
+            .filter(|msg| msg.role == Role::User && !msg.is_tool_result_only())
+        {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&msg.timestamp) {
+                let naive = dt.with_timezone(&chrono::Local).naive_local();
+                if naive >= cutoff {
+                    timestamps.push(naive);
+                }
+            }
+        }
+    };
+
+    collect(engine.messages());
+    let segments = engine.segments();
+    for i in 0..segments.segment_count() {
+        if let Ok(segment_msgs) = segments.read_segment(i) {
+            collect(&segment_msgs);
+        }
+    }
+
+    drop(engine);
+
+    if !timestamps.is_empty() {
+        info!(
+            character = %char_name,
+            count = timestamps.len(),
+            "Backfilling activity tracker from chat history"
+        );
+        ctx.autonomy.backfill_activity(char_name, &timestamps);
+    }
+}
+
+/// Assemble the prompt, warm the image cache, and build the LLM request
+/// (sans API key — the credential-fallback wrapper resolves and rewrites the
+/// key just-in-time during rotation). Client-supplied overrides are applied
+/// last. The caller sets `rid` / `forensic_character` on the returned request.
+async fn build_generation_request(
+    engine_arc: &Arc<Mutex<ConversationEngine>>,
+    data_dir: &Path,
+    char_name: &str,
+    effective_config: &LoadedConfig,
+    resolved: &shore_config::models::ResolvedModel,
+    body: &ClientMessageBody,
+    regen: bool,
+) -> shore_llm::types::LlmRequest {
+    let (messages, has_prior_context) = {
+        let engine = engine_arc.lock().await;
+        let has_prior = engine.segments().segment_count() > 0;
+        (
+            if regen {
+                engine.messages_through_last_user_turn()
+            } else {
+                engine.messages().to_vec()
+            },
+            has_prior,
+        )
+    };
+
+    let character_data_dir = character_data_dir(data_dir, char_name);
+    let include_unsigned_thinking = resolved.sdk.echoes_unsigned_thinking();
+    let PreparedChatContext {
+        llm_messages,
+        system,
+        tool_defs,
+        prompt: prompt_result,
+    } = super::prepare_chat_context(PrepareChatContextParams {
+        character: char_name,
+        character_data_dir: &character_data_dir,
+        config: effective_config,
+        resolved,
+        messages: &messages,
+        has_prior_context,
+        is_private: false,
+        include_unsigned_thinking,
+    });
+
+    warm_image_cache(
+        &prompt_result.messages,
+        effective_config.app.advanced.max_image_size,
+        &effective_config.dirs.cache,
+    )
+    .await;
+
+    let mut request = shore_llm::LlmClient::build_request_with_resolved_key(
+        resolved,
+        String::new(),
+        llm_messages,
+        system,
+        tool_defs,
+        None,
+    );
+
+    if let Some(ref ov) = body.overrides {
+        if let Some(t) = ov.temperature {
+            request.temperature = Some(t);
+        }
+        if let Some(p) = ov.top_p {
+            request.top_p = Some(p);
+        }
+        if let Some(budget) = ov.thinking_budget {
+            let opts = request
+                .provider_options
+                .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Some(map) = opts.as_object_mut() {
+                let _ignored = map.insert("budget_tokens".into(), serde_json::json!(budget));
+            }
+        }
+    }
+
+    request
+}
+
+/// Stream the LLM response, then run the tool-use phase when the model
+/// requested tools and tool use is enabled. Returns the final stream result
+/// plus any intermediate (tool-loop) messages to persist.
+async fn run_generation_stream(
+    ctx: &GenContext,
+    data_dir: &Path,
+    char_name: &str,
+    effective_config: &LoadedConfig,
+    request: &mut shore_llm::types::LlmRequest,
+    resolved: &shore_config::models::ResolvedModel,
+    regen: bool,
+) -> Result<(shore_llm::types::StreamResult, Vec<Message>), Box<dyn std::error::Error + Send + Sync>>
+{
+    info!(
+        model = %resolved.model_id,
+        messages = request.messages.len(),
+        "Sending streaming request to LLM"
+    );
+
+    let thinking_enabled = thinking_enabled_from_request(request);
+
+    let mut result = stream_with_credential_fallback(
+        ctx,
+        request,
+        resolved,
+        effective_config,
+        regen,
+        char_name,
+        thinking_enabled,
+    )
+    .await?;
+
+    let tool_intermediate_messages =
+        if result.finish_reason == "tool_use" && effective_config.app.behavior.tool_use.enabled {
+            let tool_loop_result =
+                run_tool_phase(ctx, data_dir, char_name, effective_config, request, result).await?;
+            result = tool_loop_result.result;
+            tool_loop_result.intermediate_messages
+        } else {
+            Vec::new()
+        };
+
+    Ok((result, tool_intermediate_messages))
+}
+
+/// Emit StreamEnd ONLY after persistence completes — clients that issue an
+/// immediate follow-up command (e.g. `memory_compact` via shore-mcp) would
+/// otherwise race the persist write and snapshot stale engine state. See
+/// ARCHITECTURE.md (runtime flow).
+async fn emit_post_persist_stream_end(
+    ctx: &GenContext,
+    engine_arc: &Arc<Mutex<ConversationEngine>>,
+    rid: Option<String>,
+    result: &shore_llm::types::StreamResult,
+) {
     let (stream_msg_id, stream_revision) = {
         let engine = engine_arc.lock().await;
         (
@@ -344,29 +447,37 @@ pub(super) async fn handle_generation(
         )
     };
 
-    // Emit StreamEnd ONLY after persistence completes — clients that issue
-    // an immediate follow-up command (e.g. `memory_compact` via shore-mcp)
-    // would otherwise race the persist write and snapshot stale engine
-    // state. See ARCHITECTURE.md (runtime flow).
     shore_llm::stream::emit_stream_end(
         &ctx.direct_tx,
-        request.rid.clone(),
-        &result,
+        rid,
+        result,
         true,
-        stream_msg_id.clone(),
+        stream_msg_id,
         stream_revision,
     )
     .await;
+}
 
+/// Check whether this turn crossed a compaction threshold and, if so, schedule
+/// an inline compaction on a detached task.
+async fn maybe_schedule_compaction(
+    ctx: &GenContext,
+    engine_arc: &Arc<Mutex<ConversationEngine>>,
+    char_name: &str,
+    effective_config: &LoadedConfig,
+    data_dir: &Path,
+    result: &shore_llm::types::StreamResult,
+    rid: Option<String>,
+) {
     let (turn_count, context_tokens, should_compact) = {
         let engine = engine_arc.lock().await;
         let turn_count = engine.turn_count();
         let context_tokens = u64_to_usize(result.usage.input_tokens)
             .saturating_add(u64_to_usize(result.usage.cache_read_tokens))
             .saturating_add(u64_to_usize(result.usage.cache_creation_tokens));
-        let should_compact =
-            ctx.autonomy
-                .should_compact_now(&char_name, turn_count, context_tokens);
+        let should_compact = ctx
+            .autonomy
+            .should_compact_now(char_name, turn_count, context_tokens);
         (turn_count, context_tokens, should_compact)
     };
     if should_compact {
@@ -378,23 +489,21 @@ pub(super) async fn handle_generation(
         );
         spawn_inline_compaction(
             ctx.clone(),
-            Arc::clone(&engine_arc),
-            char_name.clone(),
+            Arc::clone(engine_arc),
+            char_name.to_owned(),
             effective_config.clone(),
-            data_dir.clone(),
-            request.rid.clone(),
-            ctx.autonomy.cached_last_request(&char_name),
+            data_dir.to_path_buf(),
+            rid,
+            ctx.autonomy.cached_last_request(char_name),
         );
     }
-
-    Ok(())
 }
 
 fn spawn_inline_compaction(
     ctx: GenContext,
-    engine_arc: Arc<tokio::sync::Mutex<crate::engine::ConversationEngine>>,
+    engine_arc: Arc<Mutex<ConversationEngine>>,
     char_name: String,
-    effective_config: shore_config::LoadedConfig,
+    effective_config: LoadedConfig,
     data_dir: PathBuf,
     rid: Option<String>,
     cached_request: Option<shore_llm::types::LlmRequest>,
@@ -415,9 +524,9 @@ fn spawn_inline_compaction(
 
 async fn run_inline_compaction(
     ctx: GenContext,
-    engine_arc: Arc<tokio::sync::Mutex<crate::engine::ConversationEngine>>,
+    engine_arc: Arc<Mutex<ConversationEngine>>,
     char_name: String,
-    effective_config: shore_config::LoadedConfig,
+    effective_config: LoadedConfig,
     data_dir: PathBuf,
     rid: Option<String>,
     cached_request: Option<shore_llm::types::LlmRequest>,

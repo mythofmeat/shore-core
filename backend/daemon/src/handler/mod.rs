@@ -325,10 +325,6 @@ impl MessageHandler {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "engine-message orchestration phase split is tracked in #109"
-    )]
     async fn handle_engine_message(&mut self, msg: ClientMessage, meta: RequestMeta) {
         let msg_kind = match &msg {
             ClientMessage::Message(_) => "message",
@@ -358,29 +354,10 @@ impl MessageHandler {
             return;
         }
 
-        let (char_name, effective_config) = {
-            let mut registry = self.registry.lock().await;
-            let char_name =
-                match registry.resolve_character(meta.session.selected_character.as_deref()) {
-                    Ok(name) => name,
-                    Err(e) => {
-                        let _ignored = self
-                            .session_router
-                            .send_to_session(
-                                meta.session.session_id,
-                                ServerMessage::Error(SwpError {
-                                    rid: None,
-                                    code: ErrorCode::InvalidRequest,
-                                    message: e.to_string(),
-                                })
-                                .with_rid(meta.rid.clone()),
-                            )
-                            .await;
-                        return;
-                    }
-                };
-            let effective_config = registry.effective_config(&char_name).clone();
-            (char_name, effective_config)
+        let Some((char_name, effective_config)) =
+            self.resolve_engine_message_character(&meta).await
+        else {
+            return;
         };
 
         let (body, regen) = match msg {
@@ -424,45 +401,8 @@ impl MessageHandler {
         else {
             return;
         };
-        // Phase 3: preferences are authoritative. Legacy
-        // `runtime_state.json` remains as a migration fallback for one
-        // release; it is read but never written by Phase 3+ code paths.
-        let (active_model, sampler_overlay) = {
-            let character_data_dir = character_data_dir(&self.cmd_ctx.data_dir, &char_name);
-            let (global_prefs, char_prefs) =
-                crate::preferences::load_for_character(&self.cmd_ctx.data_dir, &char_name)
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, character = %char_name, "Failed to load preferences; using empty defaults");
-                        (
-                            crate::preferences::ModelPreferences::default(),
-                            crate::preferences::ModelPreferences::default(),
-                        )
-                    });
-            let legacy = crate::runtime_state::load_active_model(&character_data_dir);
-            let resolved = crate::preferences::resolve_active_for_character(
-                &effective_config,
-                &self.cmd_ctx.data_dir,
-                &global_prefs,
-                &char_prefs,
-                legacy.as_deref(),
-                effective_config.app.defaults.model.as_deref(),
-            );
-            let overlay = match resolved.as_ref() {
-                // None for static_default: the chat path layers the
-                // static catalog by patching the resolved model directly
-                // via `apply_sampler_overlay`. Including it here would
-                // double-count.
-                Some(m) => crate::preferences::resolve_sampler_settings(
-                    &global_prefs,
-                    Some(&char_prefs),
-                    &m.provider_key,
-                    &m.model_id,
-                    None,
-                ),
-                None => crate::preferences::SamplerSettings::default(),
-            };
-            (resolved, overlay)
-        };
+        let (active_model, sampler_overlay) =
+            self.resolve_active_model_and_overlay(&char_name, &effective_config);
         let fanout_tx = self
             .build_fanout_tx(meta.session.session_id, &char_name, direct_tx)
             .await;
@@ -480,7 +420,106 @@ impl MessageHandler {
             sampler_overlay,
         };
 
-        let session = self.session_state_mut(meta.session.session_id);
+        self.spawn_generation_task(
+            meta.session.session_id,
+            gen_ctx,
+            params,
+            fanout_tx,
+            notifier,
+        );
+    }
+
+    /// Resolve the session's selected character and effective config for an
+    /// engine message, sending an error to the session and returning `None`
+    /// when resolution fails.
+    async fn resolve_engine_message_character(
+        &mut self,
+        meta: &RequestMeta,
+    ) -> Option<(String, LoadedConfig)> {
+        let mut registry = self.registry.lock().await;
+        let char_name = match registry.resolve_character(meta.session.selected_character.as_deref())
+        {
+            Ok(name) => name,
+            Err(e) => {
+                let _ignored = self
+                    .session_router
+                    .send_to_session(
+                        meta.session.session_id,
+                        ServerMessage::Error(SwpError {
+                            rid: None,
+                            code: ErrorCode::InvalidRequest,
+                            message: e.to_string(),
+                        })
+                        .with_rid(meta.rid.clone()),
+                    )
+                    .await;
+                return None;
+            }
+        };
+        let effective_config = registry.effective_config(&char_name).clone();
+        Some((char_name, effective_config))
+    }
+
+    /// Resolve the active model and its per-model sampler overlay from merged
+    /// global + character preferences (with a one-release legacy fallback).
+    fn resolve_active_model_and_overlay(
+        &self,
+        char_name: &str,
+        effective_config: &LoadedConfig,
+    ) -> (
+        Option<shore_config::models::ResolvedModel>,
+        crate::preferences::SamplerSettings,
+    ) {
+        // Phase 3: preferences are authoritative. Legacy
+        // `runtime_state.json` remains as a migration fallback for one
+        // release; it is read but never written by Phase 3+ code paths.
+        let character_data_dir = character_data_dir(&self.cmd_ctx.data_dir, char_name);
+        let (global_prefs, char_prefs) =
+            crate::preferences::load_for_character(&self.cmd_ctx.data_dir, char_name)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, character = %char_name, "Failed to load preferences; using empty defaults");
+                    (
+                        crate::preferences::ModelPreferences::default(),
+                        crate::preferences::ModelPreferences::default(),
+                    )
+                });
+        let legacy = crate::runtime_state::load_active_model(&character_data_dir);
+        let resolved = crate::preferences::resolve_active_for_character(
+            effective_config,
+            &self.cmd_ctx.data_dir,
+            &global_prefs,
+            &char_prefs,
+            legacy.as_deref(),
+            effective_config.app.defaults.model.as_deref(),
+        );
+        let overlay = match resolved.as_ref() {
+            // None for static_default: the chat path layers the
+            // static catalog by patching the resolved model directly
+            // via `apply_sampler_overlay`. Including it here would
+            // double-count.
+            Some(m) => crate::preferences::resolve_sampler_settings(
+                &global_prefs,
+                Some(&char_prefs),
+                &m.provider_key,
+                &m.model_id,
+                None,
+            ),
+            None => crate::preferences::SamplerSettings::default(),
+        };
+        (resolved, overlay)
+    }
+
+    /// Spawn the generation task for this engine message, aborting any prior
+    /// in-flight generation on the session and reporting errors to the client.
+    fn spawn_generation_task(
+        &mut self,
+        session_id: SessionId,
+        gen_ctx: GenContext,
+        params: GenerationParams,
+        fanout_tx: mpsc::Sender<ServerMessage>,
+        notifier: NotificationService,
+    ) {
+        let session = self.session_state_mut(session_id);
         if let Some(prev) = session.generation_handle.take() {
             info!("Aborting previous generation (superseded by new request)");
             prev.abort();

@@ -779,124 +779,12 @@ mod tests {
     /// the intermediate "Let me search memory—" text, miss the ToolCall
     /// and ToolResult frames entirely, and surface the wrong finish_reason.
     #[tokio::test]
-    #[expect(
-        clippy::too_many_lines,
-        clippy::items_after_statements,
-        reason = "long end-to-end stream test with a local helper fn for readability"
-    )]
     async fn collect_stream_spans_tool_loop_to_final_end() {
         use crate::stream::{collect_stream, StreamedResponse};
-        use shore_protocol::server_msg::*;
-        use shore_protocol::types::*;
 
         let (client_stream, server_stream) = duplex(8192);
 
-        fn meta(model: &str) -> StreamMetadata {
-            StreamMetadata {
-                tokens: TokenCounts {
-                    input: 1,
-                    output: 1,
-                    cache_read: 0,
-                    cache_write: 0,
-                },
-                timing: TimingInfo {
-                    total_ms: 1,
-                    ttft_ms: 1,
-                },
-                model: model.into(),
-            }
-        }
-
-        let server_handle = tokio::spawn(async move {
-            let (_r, mut w) = tokio::io::split(server_stream);
-
-            // Turn 1: preface text, then finish with an intermediate StreamEnd.
-            write_json_line(
-                &mut w,
-                &ServerMessage::StreamStart(StreamStart {
-                    rid: None,
-                    regen: false,
-                }),
-            )
-            .await;
-            write_json_line(
-                &mut w,
-                &ServerMessage::StreamChunk(StreamChunk {
-                    rid: None,
-                    text: "Let me search memory—".into(),
-                    content_type: "text".into(),
-                }),
-            )
-            .await;
-            write_json_line(
-                &mut w,
-                &ServerMessage::StreamEnd(StreamEnd {
-                    rid: None,
-                    msg_id: None,
-                    revision: None,
-                    content: "Let me search memory—".into(),
-                    metadata: meta("turn-1"),
-                    finish_reason: "tool_use".into(),
-                    is_final: false,
-                }),
-            )
-            .await;
-
-            // Tool phase: the daemon emits one ToolCall and one ToolResult.
-            write_json_line(
-                &mut w,
-                &ServerMessage::ToolCall(ToolCall {
-                    rid: None,
-                    tool_id: "toolu_01".into(),
-                    tool_name: "memory_search".into(),
-                    input: serde_json::json!({"query": "sister"}),
-                }),
-            )
-            .await;
-            write_json_line(
-                &mut w,
-                &ServerMessage::ToolResult(ToolResult {
-                    rid: None,
-                    tool_id: "toolu_01".into(),
-                    tool_name: "memory_search".into(),
-                    output: "Your sister's name is Maya.".into(),
-                    is_error: false,
-                }),
-            )
-            .await;
-
-            // Turn 2: the final LLM response, with is_final=true.
-            write_json_line(
-                &mut w,
-                &ServerMessage::StreamStart(StreamStart {
-                    rid: None,
-                    regen: false,
-                }),
-            )
-            .await;
-            write_json_line(
-                &mut w,
-                &ServerMessage::StreamChunk(StreamChunk {
-                    rid: None,
-                    text: "Of course — her name is Maya.".into(),
-                    content_type: "text".into(),
-                }),
-            )
-            .await;
-            write_json_line(
-                &mut w,
-                &ServerMessage::StreamEnd(StreamEnd {
-                    rid: None,
-                    msg_id: None,
-                    revision: None,
-                    content: "Of course — her name is Maya.".into(),
-                    metadata: meta("turn-2"),
-                    finish_reason: "end_turn".into(),
-                    is_final: true,
-                }),
-            )
-            .await;
-        });
+        let server_handle = tokio::spawn(write_tool_loop_script(server_stream));
 
         let mut conn = SWPConnection::from_raw_stream(client_stream);
         let response: StreamedResponse = collect_stream(&mut conn).await.unwrap();
@@ -935,5 +823,111 @@ mod tests {
 
         drop(conn);
         server_handle.await.unwrap();
+    }
+
+    async fn write_tool_loop_script(server_stream: tokio::io::DuplexStream) {
+        fn meta(model: &str) -> StreamMetadata {
+            StreamMetadata {
+                tokens: TokenCounts {
+                    input: 1,
+                    output: 1,
+                    cache_read: 0,
+                    cache_write: 0,
+                },
+                timing: TimingInfo {
+                    total_ms: 1,
+                    ttft_ms: 1,
+                },
+                model: model.into(),
+            }
+        }
+        let (_r, mut w) = tokio::io::split(server_stream);
+
+        // Turn 1: preface text, then finish with an intermediate StreamEnd.
+        write_json_line(
+            &mut w,
+            &ServerMessage::StreamStart(StreamStart {
+                rid: None,
+                regen: false,
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut w,
+            &ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
+                text: "Let me search memory—".into(),
+                content_type: "text".into(),
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut w,
+            &ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                msg_id: None,
+                revision: None,
+                content: "Let me search memory—".into(),
+                metadata: meta("turn-1"),
+                finish_reason: "tool_use".into(),
+                is_final: false,
+            }),
+        )
+        .await;
+
+        // Tool phase: the daemon emits one ToolCall and one ToolResult.
+        write_json_line(
+            &mut w,
+            &ServerMessage::ToolCall(ToolCall {
+                rid: None,
+                tool_id: "toolu_01".into(),
+                tool_name: "memory_search".into(),
+                input: serde_json::json!({"query": "sister"}),
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut w,
+            &ServerMessage::ToolResult(ToolResult {
+                rid: None,
+                tool_id: "toolu_01".into(),
+                tool_name: "memory_search".into(),
+                output: "Your sister's name is Maya.".into(),
+                is_error: false,
+            }),
+        )
+        .await;
+
+        // Turn 2: the final LLM response, with is_final=true.
+        write_json_line(
+            &mut w,
+            &ServerMessage::StreamStart(StreamStart {
+                rid: None,
+                regen: false,
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut w,
+            &ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
+                text: "Of course — her name is Maya.".into(),
+                content_type: "text".into(),
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut w,
+            &ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                msg_id: None,
+                revision: None,
+                content: "Of course — her name is Maya.".into(),
+                metadata: meta("turn-2"),
+                finish_reason: "end_turn".into(),
+                is_final: true,
+            }),
+        )
+        .await;
     }
 }

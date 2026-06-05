@@ -287,10 +287,6 @@ async fn memory_query(
 }
 
 /// Run compaction on the current character's conversation.
-#[expect(
-    clippy::too_many_lines,
-    reason = "manual compaction command orchestration split is tracked in #109"
-)]
 pub async fn compact(
     engine: &mut ConversationEngine,
     ctx: &CommandContext,
@@ -338,19 +334,42 @@ pub async fn compact(
         ));
     }
 
+    let outcome = prepare_and_run_compaction(
+        engine,
+        ctx,
+        &char_name,
+        &messages,
+        dry_run,
+        keep_turns_override,
+    )
+    .await?;
+
+    build_compaction_response(engine, ctx, &char_name, outcome)
+}
+
+/// Assemble the compaction inputs (templates, model, LLM/conversation managers,
+/// active conversation, chat-shape prefix request, tool context) and run the
+/// compaction loop. Returns the raw outcome for the caller to render.
+async fn prepare_and_run_compaction(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    char_name: &str,
+    messages: &[ConversationMessage],
+    dry_run: bool,
+    keep_turns_override: Option<usize>,
+) -> Result<CompactionOutcome, (ErrorCode, String)> {
     info!(character = %char_name, message_count = messages.len(), dry_run, "Compaction started");
 
     let system_template =
-        resolve_prompt_template(&ctx.config.dirs.config, &char_name, "compact_system.md")
+        resolve_prompt_template(&ctx.config.dirs.config, char_name, "compact_system.md")
             .unwrap_or_else(|| DEFAULT_COMPACT_SYSTEM.to_owned());
-    let prompt_template =
-        resolve_prompt_template(&ctx.config.dirs.config, &char_name, "compact.md")
-            .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_owned());
+    let prompt_template = resolve_prompt_template(&ctx.config.dirs.config, char_name, "compact.md")
+        .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_owned());
 
     let model = crate::preferences::resolve_background_model(
         &ctx.config,
         shore_config::app::BackgroundTask::Compaction,
-        &char_name,
+        char_name,
     )
     .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_owned()))?;
 
@@ -358,7 +377,7 @@ pub async fn compact(
         ctx.llm_client.clone(),
         model,
         ctx.config.providers.clone(),
-        char_name.clone(),
+        char_name.to_owned(),
     );
     let conv_mgr = RealConversationManager::new(engine.character_dir());
 
@@ -376,7 +395,7 @@ pub async fn compact(
     let display_name = ctx.config.app.defaults.resolve_display_name();
 
     let markdown_store =
-        MarkdownMemoryStore::open(character_memory_dir(&ctx.config.dirs.config, &char_name))
+        MarkdownMemoryStore::open(character_memory_dir(&ctx.config.dirs.config, char_name))
             .await
             .ok();
 
@@ -384,11 +403,11 @@ pub async fn compact(
     // in-memory cached `last_request`; fall back to rebuilding from disk
     // via the same path chat would have used. The wire shape — system,
     // tools, messages — is identical either way; only the source differs.
-    let chat_request = if let Some(req) = ctx.autonomy.cached_last_request(&char_name) {
+    let chat_request = if let Some(req) = ctx.autonomy.cached_last_request(char_name) {
         req
     } else {
         let chat_model =
-            crate::preferences::resolve_chat_model_for_character(&ctx.config, &char_name)
+            crate::preferences::resolve_chat_model_for_character(&ctx.config, char_name)
                 .ok_or_else(|| {
                     (
                         ErrorCode::InternalError,
@@ -399,7 +418,7 @@ pub async fn compact(
         let has_prior_context = crate::engine::segments::SegmentReader::load(&character_dir)
             .is_ok_and(|r| r.segment_count() > 0);
         crate::handler::build_chat_shape_request_from_disk(
-            &char_name,
+            char_name,
             &character_dir,
             &ctx.config,
             &chat_model,
@@ -413,30 +432,38 @@ pub async fn compact(
     // the background-task wiring so manual `swp memory_compact` and the
     // idle-trigger path see an identical workspace/markdown-store/embedder
     // view.
-    let tool_ctx = build_swp_compaction_tool_context(ctx, &char_name);
+    let tool_ctx = build_swp_compaction_tool_context(ctx, char_name);
 
-    let outcome = mgr
-        .compact(
-            &char_name,
-            &messages,
-            &active_content,
-            false,
-            &system_template,
-            &prompt_template,
-            &char_name,
-            &display_name,
-            &llm,
-            &conv_mgr,
-            markdown_store.as_ref(),
-            dry_run,
-            keep_turns_override,
-            chat_request,
-            Some(&ctx.config.dirs.data),
-            tool_ctx.as_ref(),
-        )
-        .await
-        .map_err(|e| compaction_err(&e))?;
+    mgr.compact(
+        char_name,
+        messages,
+        &active_content,
+        false,
+        &system_template,
+        &prompt_template,
+        char_name,
+        &display_name,
+        &llm,
+        &conv_mgr,
+        markdown_store.as_ref(),
+        dry_run,
+        keep_turns_override,
+        chat_request,
+        Some(&ctx.config.dirs.data),
+        tool_ctx.as_ref(),
+    )
+    .await
+    .map_err(|e| compaction_err(&e))
+}
 
+/// Render a compaction outcome into the command's JSON result. On a successful
+/// compaction this reloads the engine and applies any deferred self-edits.
+fn build_compaction_response(
+    engine: &mut ConversationEngine,
+    ctx: &CommandContext,
+    char_name: &str,
+    outcome: CompactionOutcome,
+) -> CommandResult {
     match outcome {
         CompactionOutcome::Compacted(result) => {
             info!(
@@ -452,11 +479,11 @@ pub async fn compact(
 
             // Apply deferred character self-edits now that the cache has
             // been bust by the engine reload.
-            let character_data_dir = ctx.config.dirs.data.join(&char_name);
+            let character_data_dir = ctx.config.dirs.data.join(char_name);
             if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
                 &character_data_dir,
                 &ctx.config.dirs.config,
-                &char_name,
+                char_name,
             ) {
                 tracing::warn!(
                     character = %char_name,

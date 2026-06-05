@@ -680,13 +680,8 @@ pub(crate) fn alt_command_to_swp(
 ///
 /// Returns `None` for `Send` and `Regen` which use dedicated SWP message types
 /// rather than the generic `command` type.
-#[expect(
-    clippy::too_many_lines,
-    reason = "central CLI-to-SWP command mapping is easier to audit as one dispatch table"
-)]
 pub(crate) fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
     use serde_json::json;
-    use serde_json::{Map, Value};
     match cmd {
         // These use dedicated SWP message types or are handled locally.
         CliCommand::Send { system: false, .. }
@@ -724,42 +719,7 @@ pub(crate) fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_js
         }
 
         // Log: subcommands (edit/delete), single message ref, or list.
-        CliCommand::Log {
-            subcommand: Some(LogCommand::Edit { msg_ref, content }),
-            ..
-        } => Some((
-            "edit",
-            json!({ "ref": msg_ref, "content": content.join(" ") }),
-        )),
-        CliCommand::Log {
-            subcommand: Some(LogCommand::Delete { msg_ref }),
-            ..
-        } => Some(("delete", json!({ "refs": msg_ref }))),
-        CliCommand::Log {
-            msg_ref: Some(r),
-            role,
-            ..
-        } => {
-            let mut args = Map::new();
-            let _ignored = args.insert("ref".into(), json!(r));
-            if let Some(role_filter) = role {
-                _ = args.insert("role".into(), json!(role_filter.as_protocol_role()));
-            }
-            Some(("get", Value::Object(args)))
-        }
-        CliCommand::Log {
-            heartbeat: true,
-            count,
-            ..
-        } => Some(("heartbeat_log", json!({ "count": count }))),
-        CliCommand::Log { count, role, .. } => {
-            let mut args = Map::new();
-            let _ignored = args.insert("turns".into(), json!(count));
-            if let Some(role_filter) = role {
-                _ = args.insert("role".into(), json!(role_filter.as_protocol_role()));
-            }
-            Some(("log", Value::Object(args)))
-        }
+        CliCommand::Log { .. } => log_to_swp(cmd),
 
         // Status: diagnostics mode or normal status.
         CliCommand::Status {
@@ -775,125 +735,12 @@ pub(crate) fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_js
             DebugCommand::StatusActive => Some(("heartbeat_set_active", json!({}))),
         },
 
-        CliCommand::Model {
-            subcommand:
-                Some(ModelCommand::Setting {
-                    key,
-                    value,
-                    global,
-                    reset,
-                    ..
-                }),
-            ..
-        } => {
-            // No key → show current effective sampler. With a key:
-            // value=Some → set; --reset → clear; otherwise → show one.
-            // The CLI dispatch in run.rs is what actually picks the
-            // right daemon command per case; keep this mapping aligned
-            // with the "show" path (model_settings).
-            match (key.as_deref(), value.as_deref(), *reset) {
-                (Some(k), _, true) => Some((
-                    "set_model_setting",
-                    json!({
-                        "key": k,
-                        "value": Value::Null,
-                        "scope": if *global { "global" } else { "character" },
-                    }),
-                )),
-                (None, _, _) | (Some(_), None, false) => Some(("model_settings", json!({}))),
-                (Some(k), Some(v), false) => Some((
-                    "set_model_setting",
-                    json!({
-                        "key": k,
-                        "value": parse_setting_value(k, v),
-                        "scope": if *global { "global" } else { "character" },
-                    }),
-                )),
-            }
-        }
-        CliCommand::Model {
-            name,
-            info,
-            reset,
-            all,
-            ..
-        } => {
-            if *reset {
-                Some(("reset_model", json!({})))
-            } else {
-                match (name, info) {
-                    (Some(model_name), true) => Some(("model_info", json!({ "name": model_name }))),
-                    (None, true) => Some(("model_info", json!({}))),
-                    (None, false) => {
-                        let mut args = Map::new();
-                        if *all {
-                            let _ignored = args.insert("include_hidden".into(), json!(true));
-                        }
-                        Some(("list_models", Value::Object(args)))
-                    }
-                    (Some(model_name), false) => {
-                        let mut args = Map::new();
-                        let _ignored = args.insert("name".into(), json!(model_name));
-                        if *all {
-                            _ = args.insert("include_hidden".into(), json!(true));
-                        }
-                        Some(("switch_model", Value::Object(args)))
-                    }
-                }
-            }
-        }
+        CliCommand::Model { .. } => model_to_swp(cmd),
 
-        CliCommand::Provider {
-            subcommand: Some(ProviderCommand::Models { name, all, .. }),
-            ..
-        } => Some((
-            "list_provider_models",
-            json!({ "provider": name, "include_hidden": *all }),
-        )),
-        CliCommand::Provider {
-            subcommand: Some(ProviderCommand::Refresh { name: Some(n), .. }),
-            ..
-        } => Some(("refresh_provider_models", json!({ "provider": n }))),
-        CliCommand::Provider {
-            subcommand: Some(ProviderCommand::Refresh { name: None, .. }),
-            ..
-        } => Some(("refresh_all_provider_models", json!({}))),
-        CliCommand::Provider {
-            subcommand: None, ..
-        } => Some(("list_providers", json!({}))),
+        CliCommand::Provider { .. } => provider_to_swp(cmd),
 
         // Memory: subcommands (compact/changelog) or status/query.
-        CliCommand::Memory {
-            subcommand: Some(MemoryCommand::Compact { keep_turns }),
-            ..
-        } => {
-            let mut args = Map::new();
-            if let Some(n) = keep_turns {
-                let _ignored = args.insert("keep_turns".into(), json!(n));
-            }
-            Some(("compact", Value::Object(args)))
-        }
-        CliCommand::Memory {
-            subcommand: Some(MemoryCommand::Changelog { limit }),
-            ..
-        } => Some(("memory_changelog", json!({ "limit": limit }))),
-        CliCommand::Memory {
-            subcommand:
-                Some(MemoryCommand::Dream {
-                    status,
-                    dry_run,
-                    force,
-                }),
-            ..
-        } => Some((
-            "memory_dream",
-            json!({ "status": status, "dry_run": dry_run, "force": force }),
-        )),
-        CliCommand::Memory {
-            subcommand: Some(MemoryCommand::Dreams { limit }),
-            ..
-        } => Some(("memory_dreams", json!({ "limit": limit }))),
-        CliCommand::Memory { query, .. } => Some(("memory", json!({ "query": query }))),
+        CliCommand::Memory { .. } => memory_to_swp(cmd),
 
         CliCommand::Config { reset: true, .. } => Some(("config_reset", json!({}))),
         CliCommand::Config { check: true, .. } => Some(("config_check", json!({}))),
@@ -901,56 +748,237 @@ pub(crate) fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_js
             Some(("config", json!({ "key": key, "value": value })))
         }
 
-        CliCommand::Usage {
-            last,
-            character,
-            provider,
-            api_key,
-            model,
-            call_type,
-            by_kind,
-            by_api_key,
-            budget,
-            anomalies,
-            export_csv,
-            export_tsv,
-            refresh_pricing,
-            recalculate,
-            force,
-            json: _,
-        } => {
-            // Three-state flag:
-            //   absent         → None,             no grouping, no filter
-            //   --call-type    → Some(None),       breakdown mode
-            //   --call-type X  → Some(Some("X")),  filter by X
-            let (by_call_type, call_type_filter) = match call_type {
-                None => (false, None),
-                Some(None) => (true, None),
-                Some(Some(v)) => (false, Some(v.clone())),
-            };
-            Some((
-                "usage",
+        CliCommand::Usage { .. } => usage_to_swp(cmd),
+    }
+}
+
+/// `log` subcommands (edit/delete), single message ref, heartbeat, or list.
+fn log_to_swp(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
+    use serde_json::{json, Map, Value};
+    let CliCommand::Log {
+        subcommand,
+        msg_ref,
+        role,
+        heartbeat,
+        count,
+        ..
+    } = cmd
+    else {
+        return None;
+    };
+    if let Some(sub) = subcommand {
+        return match sub {
+            LogCommand::Edit {
+                msg_ref: edit_ref,
+                content,
+            } => Some((
+                "edit",
+                json!({ "ref": edit_ref, "content": content.join(" ") }),
+            )),
+            LogCommand::Delete {
+                msg_ref: delete_ref,
+            } => Some(("delete", json!({ "refs": delete_ref }))),
+        };
+    }
+    if let Some(r) = msg_ref {
+        let mut args = Map::new();
+        let _ignored = args.insert("ref".into(), json!(r));
+        if let Some(role_filter) = role {
+            _ = args.insert("role".into(), json!(role_filter.as_protocol_role()));
+        }
+        return Some(("get", Value::Object(args)));
+    }
+    if *heartbeat {
+        return Some(("heartbeat_log", json!({ "count": count })));
+    }
+    let mut args = Map::new();
+    let _ignored = args.insert("turns".into(), json!(count));
+    if let Some(role_filter) = role {
+        _ = args.insert("role".into(), json!(role_filter.as_protocol_role()));
+    }
+    Some(("log", Value::Object(args)))
+}
+
+/// `model` setting (show/set/clear) or model list/switch/info/reset.
+fn model_to_swp(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
+    use serde_json::{json, Map, Value};
+    let CliCommand::Model {
+        subcommand,
+        name,
+        info,
+        reset,
+        all,
+        ..
+    } = cmd
+    else {
+        return None;
+    };
+    if let Some(ModelCommand::Setting {
+        key,
+        value,
+        global,
+        reset: setting_reset,
+        ..
+    }) = subcommand
+    {
+        // No key → show current effective sampler. With a key:
+        // value=Some → set; --reset → clear; otherwise → show one.
+        // The CLI dispatch in run.rs is what actually picks the
+        // right daemon command per case; keep this mapping aligned
+        // with the "show" path (model_settings).
+        return match (key.as_deref(), value.as_deref(), *setting_reset) {
+            (Some(k), _, true) => Some((
+                "set_model_setting",
                 json!({
-                    "last": last,
-                    "character": character,
-                    "provider": provider,
-                    "api_key": api_key,
-                    "model": model,
-                    "call_type": call_type_filter,
-                    "by_call_type": by_call_type,
-                    "by_kind": by_kind,
-                    "by_api_key": by_api_key,
-                    "budget": budget,
-                    "anomalies": anomalies,
-                    "export_csv": export_csv,
-                    "export_tsv": export_tsv,
-                    "refresh_pricing": refresh_pricing,
-                    "recalculate": recalculate,
-                    "force": force,
+                    "key": k,
+                    "value": Value::Null,
+                    "scope": if *global { "global" } else { "character" },
                 }),
-            ))
+            )),
+            (None, _, _) | (Some(_), None, false) => Some(("model_settings", json!({}))),
+            (Some(k), Some(v), false) => Some((
+                "set_model_setting",
+                json!({
+                    "key": k,
+                    "value": parse_setting_value(k, v),
+                    "scope": if *global { "global" } else { "character" },
+                }),
+            )),
+        };
+    }
+
+    if *reset {
+        return Some(("reset_model", json!({})));
+    }
+    match (name, info) {
+        (Some(model_name), true) => Some(("model_info", json!({ "name": model_name }))),
+        (None, true) => Some(("model_info", json!({}))),
+        (None, false) => {
+            let mut args = Map::new();
+            if *all {
+                let _ignored = args.insert("include_hidden".into(), json!(true));
+            }
+            Some(("list_models", Value::Object(args)))
+        }
+        (Some(model_name), false) => {
+            let mut args = Map::new();
+            let _ignored = args.insert("name".into(), json!(model_name));
+            if *all {
+                _ = args.insert("include_hidden".into(), json!(true));
+            }
+            Some(("switch_model", Value::Object(args)))
         }
     }
+}
+
+/// `provider` models listing / refresh, or provider listing.
+fn provider_to_swp(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    let CliCommand::Provider { subcommand, .. } = cmd else {
+        return None;
+    };
+    match subcommand {
+        Some(ProviderCommand::Models { name, all, .. }) => Some((
+            "list_provider_models",
+            json!({ "provider": name, "include_hidden": *all }),
+        )),
+        Some(ProviderCommand::Refresh { name: Some(n), .. }) => {
+            Some(("refresh_provider_models", json!({ "provider": n })))
+        }
+        Some(ProviderCommand::Refresh { name: None, .. }) => {
+            Some(("refresh_all_provider_models", json!({})))
+        }
+        None => Some(("list_providers", json!({}))),
+    }
+}
+
+/// `memory` subcommands (compact/changelog/dream/dreams) or status/query.
+fn memory_to_swp(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
+    use serde_json::{json, Map, Value};
+    let CliCommand::Memory {
+        subcommand, query, ..
+    } = cmd
+    else {
+        return None;
+    };
+    match subcommand {
+        Some(MemoryCommand::Compact { keep_turns }) => {
+            let mut args = Map::new();
+            if let Some(n) = keep_turns {
+                let _ignored = args.insert("keep_turns".into(), json!(n));
+            }
+            Some(("compact", Value::Object(args)))
+        }
+        Some(MemoryCommand::Changelog { limit }) => {
+            Some(("memory_changelog", json!({ "limit": limit })))
+        }
+        Some(MemoryCommand::Dream {
+            status,
+            dry_run,
+            force,
+        }) => Some((
+            "memory_dream",
+            json!({ "status": status, "dry_run": dry_run, "force": force }),
+        )),
+        Some(MemoryCommand::Dreams { limit }) => Some(("memory_dreams", json!({ "limit": limit }))),
+        None => Some(("memory", json!({ "query": query }))),
+    }
+}
+
+/// `usage` query with grouping / filter / export flags.
+fn usage_to_swp(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    let CliCommand::Usage {
+        last,
+        character,
+        provider,
+        api_key,
+        model,
+        call_type,
+        by_kind,
+        by_api_key,
+        budget,
+        anomalies,
+        export_csv,
+        export_tsv,
+        refresh_pricing,
+        recalculate,
+        force,
+        json: _,
+    } = cmd
+    else {
+        return None;
+    };
+    // Three-state flag:
+    //   absent         → None,             no grouping, no filter
+    //   --call-type    → Some(None),       breakdown mode
+    //   --call-type X  → Some(Some("X")),  filter by X
+    let (by_call_type, call_type_filter) = match call_type {
+        None => (false, None),
+        Some(None) => (true, None),
+        Some(Some(v)) => (false, Some(v.clone())),
+    };
+    Some((
+        "usage",
+        json!({
+            "last": last,
+            "character": character,
+            "provider": provider,
+            "api_key": api_key,
+            "model": model,
+            "call_type": call_type_filter,
+            "by_call_type": by_call_type,
+            "by_kind": by_kind,
+            "by_api_key": by_api_key,
+            "budget": budget,
+            "anomalies": anomalies,
+            "export_csv": export_csv,
+            "export_tsv": export_tsv,
+            "refresh_pricing": refresh_pricing,
+            "recalculate": recalculate,
+            "force": force,
+        }),
+    ))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -2324,14 +2352,19 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "command mapping coverage is clearer as one exhaustive table"
-    )]
     fn all_non_message_commands_map() {
         // Every variant except Send, Regen, Notify, Character (no --info),
         // Config --path, and Completions should produce Some.
-        let commands: Vec<CliCommand> = vec![
+        let mut commands = log_status_debug_samples();
+        commands.extend(model_samples());
+        commands.extend(provider_memory_config_samples());
+        for cmd in &commands {
+            assert!(to_swp_command(cmd).is_some(), "expected Some for {cmd:?}");
+        }
+    }
+
+    fn log_status_debug_samples() -> Vec<CliCommand> {
+        vec![
             CliCommand::Log {
                 subcommand: None,
                 msg_ref: None,
@@ -2402,6 +2435,11 @@ mod tests {
             CliCommand::Debug {
                 subcommand: DebugCommand::StatusActive,
             },
+        ]
+    }
+
+    fn model_samples() -> Vec<CliCommand> {
+        vec![
             CliCommand::Model {
                 subcommand: None,
                 name: None,
@@ -2448,6 +2486,11 @@ mod tests {
                 all: false,
                 json: false,
             },
+        ]
+    }
+
+    fn provider_memory_config_samples() -> Vec<CliCommand> {
+        vec![
             CliCommand::Provider {
                 subcommand: None,
                 json: false,
@@ -2498,10 +2541,7 @@ mod tests {
                 toml: false,
                 all: false,
             },
-        ];
-        for cmd in &commands {
-            assert!(to_swp_command(cmd).is_some(), "expected Some for {cmd:?}");
-        }
+        ]
     }
 
     // ── Completions tests ────────────────────────────────────────────

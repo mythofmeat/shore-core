@@ -241,10 +241,6 @@ pub async fn dream_status(
     })
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "AI librarian sweep orchestration split is tracked in #109"
-)]
 pub async fn run_librarian_sweep(
     loaded_config: &LoadedConfig,
     data_dir: &Path,
@@ -301,59 +297,142 @@ pub async fn run_librarian_sweep(
     )
     .await?;
 
+    let paths = LibrarianSweepPaths {
+        data_dir,
+        memory_dir: &memory_dir,
+        memory_index_path: &memory_index_path,
+        state_path: &state_path,
+    };
+
     if dry_run {
-        let would_write_paths = vec![
-            memory_index_path.display().to_string(),
-            crate::memory::dreams_log::dreams_log_path(data_dir, character)
-                .display()
-                .to_string(),
-            state_path.display().to_string(),
-        ];
-        return Ok(Some(DreamSweepResult {
-            character: character.to_owned(),
-            dry_run,
+        return Ok(Some(build_dry_run_dream_result(
+            character,
             ran_at,
-            mode: "ai_librarian".to_owned(),
-            phase_summaries: vec![DreamPhaseSummary {
-                phase: "librarian".to_owned(),
-                summary: format!(
-                    "dry-run AI librarian pass inspected memory with {} tool round(s); writes were disabled",
-                    loop_result.tool_rounds
-                ),
-                candidate_count: 0,
-                promoted_count: 0,
-                rejected_count: 0,
-                paths: Vec::new(),
-            }],
-            candidate_count: 0,
-            indexed_count: 0,
-            promoted_count: 0,
-            rejected_count: 0,
-            candidates: Vec::new(),
-            rem_themes: Vec::new(),
-            promotions: Vec::new(),
-            rejected: Vec::new(),
-            indexed: Vec::new(),
-            promoted: Vec::new(),
-            paths_written: Vec::new(),
-            would_write_paths,
-            staged_path: None,
-            dreams_path: None,
-            memory_path: None,
-            inspected: loop_result.inspected,
-            changed: Vec::new(),
-            tools_used: loop_result.tools_used,
-            tool_rounds: loop_result.tool_rounds,
-            audit_appended: false,
-            final_report: loop_result.final_report,
-        }));
+            &paths,
+            loop_result,
+        )));
     }
 
+    Ok(Some(
+        finalize_librarian_sweep(
+            &store,
+            character,
+            &ran_at,
+            state,
+            before,
+            loop_result,
+            &paths,
+        )
+        .await?,
+    ))
+}
+
+/// Paths referenced while writing and reporting a librarian sweep.
+struct LibrarianSweepPaths<'paths> {
+    data_dir: &'paths Path,
+    memory_dir: &'paths Path,
+    memory_index_path: &'paths Path,
+    state_path: &'paths Path,
+}
+
+/// Build the dry-run `DreamSweepResult`: reports the would-write paths without
+/// touching memory.
+fn build_dry_run_dream_result(
+    character: &str,
+    ran_at: String,
+    paths: &LibrarianSweepPaths<'_>,
+    loop_result: LibrarianLoopResult,
+) -> DreamSweepResult {
+    let would_write_paths = vec![
+        paths.memory_index_path.display().to_string(),
+        crate::memory::dreams_log::dreams_log_path(paths.data_dir, character)
+            .display()
+            .to_string(),
+        paths.state_path.display().to_string(),
+    ];
+    DreamSweepResult {
+        character: character.to_owned(),
+        dry_run: true,
+        ran_at,
+        mode: "ai_librarian".to_owned(),
+        phase_summaries: vec![DreamPhaseSummary {
+            phase: "librarian".to_owned(),
+            summary: format!(
+                "dry-run AI librarian pass inspected memory with {} tool round(s); writes were disabled",
+                loop_result.tool_rounds
+            ),
+            candidate_count: 0,
+            promoted_count: 0,
+            rejected_count: 0,
+            paths: Vec::new(),
+        }],
+        candidate_count: 0,
+        indexed_count: 0,
+        promoted_count: 0,
+        rejected_count: 0,
+        candidates: Vec::new(),
+        rem_themes: Vec::new(),
+        promotions: Vec::new(),
+        rejected: Vec::new(),
+        indexed: Vec::new(),
+        promoted: Vec::new(),
+        paths_written: Vec::new(),
+        would_write_paths,
+        staged_path: None,
+        dreams_path: None,
+        memory_path: None,
+        inspected: loop_result.inspected,
+        changed: Vec::new(),
+        tools_used: loop_result.tools_used,
+        tool_rounds: loop_result.tool_rounds,
+        audit_appended: false,
+        final_report: loop_result.final_report,
+    }
+}
+
+/// Summarise a completed (non-dry-run) librarian pass for the result payload.
+fn librarian_phase_summary(
+    tool_rounds: u32,
+    changed_count: usize,
+    indexed_count: usize,
+    audit_appended: bool,
+    paths: Vec<String>,
+) -> DreamPhaseSummary {
+    DreamPhaseSummary {
+        phase: "librarian".to_owned(),
+        summary: format!(
+            "AI librarian pass used {tool_rounds} tool round(s), changed {changed_count} file(s), and {} DREAMS.md audit fallback",
+            if audit_appended {
+                "needed a"
+            } else {
+                "did not need a"
+            }
+        ),
+        candidate_count: 0,
+        promoted_count: indexed_count,
+        rejected_count: 0,
+        paths,
+    }
+}
+
+/// Apply a completed librarian sweep's writes — fallback MEMORY.md, the
+/// daemon-controlled DREAMS.md audit, and the dream state — then snapshot the
+/// changes and assemble the final `DreamSweepResult`.
+async fn finalize_librarian_sweep(
+    store: &MarkdownMemoryStore,
+    character: &str,
+    ran_at: &str,
+    state: DreamState,
+    before: MemorySnapshot,
+    loop_result: LibrarianLoopResult,
+    paths: &LibrarianSweepPaths<'_>,
+) -> Result<DreamSweepResult, DreamingError> {
     let memory_created_by_fallback =
-        ensure_memory_index_after_librarian(&store, &memory_index_path, character, &ran_at).await?;
+        ensure_memory_index_after_librarian(store, paths.memory_index_path, character, ran_at)
+            .await?;
     if memory_created_by_fallback {
         if let Err(e) = crate::memory::deferred_edits::note_memory_index_deferred(
-            &character_data_dir(data_dir, character),
+            &character_data_dir(paths.data_dir, character),
         ) {
             warn!(
                 character,
@@ -367,9 +446,9 @@ pub async fn run_librarian_sweep(
     // data directory, outside the workspace, so the model cannot reach it
     // through the write tool — every audit is daemon-generated.
     append_librarian_audit(
-        data_dir,
+        paths.data_dir,
         character,
-        &ran_at,
+        ran_at,
         &loop_result.inspected,
         &loop_result.changed,
         memory_created_by_fallback,
@@ -379,14 +458,14 @@ pub async fn run_librarian_sweep(
     let audit_appended = true;
 
     let mut next_state = state;
-    next_state.last_run_at = Some(ran_at.clone());
+    next_state.last_run_at = Some(ran_at.to_owned());
     next_state.runs = next_state.runs.saturating_add(1);
     next_state.last_candidates_path = None;
     next_state.last_signals_path = None;
     next_state.last_promotions_path = None;
-    write_state(data_dir, character, &next_state).await?;
+    write_state(paths.data_dir, character, &next_state).await?;
 
-    let after = snapshot_memory_files(&store, &memory_index_path).await?;
+    let after = snapshot_memory_files(store, paths.memory_index_path).await?;
     let mut changed = changed_paths(&before, &after);
     if !changed.iter().any(|path| path == DREAM_STATE_REL) {
         changed.push(DREAM_STATE_REL.to_owned());
@@ -395,38 +474,28 @@ pub async fn run_librarian_sweep(
         .iter()
         .map(|path| {
             if path == MEMORY_INDEX_FILE {
-                memory_index_path.display().to_string()
+                paths.memory_index_path.display().to_string()
             } else if path == DREAM_STATE_REL {
-                state_path.display().to_string()
+                paths.state_path.display().to_string()
             } else {
-                memory_dir.join(path).display().to_string()
+                paths.memory_dir.join(path).display().to_string()
             }
         })
         .collect::<Vec<_>>();
     let indexed_count = usize::from(after.contains_key(MEMORY_INDEX_FILE));
 
-    Ok(Some(DreamSweepResult {
+    Ok(DreamSweepResult {
         character: character.to_owned(),
-        dry_run,
-        ran_at,
+        dry_run: false,
+        ran_at: ran_at.to_owned(),
         mode: "ai_librarian".to_owned(),
-        phase_summaries: vec![DreamPhaseSummary {
-            phase: "librarian".to_owned(),
-            summary: format!(
-                "AI librarian pass used {} tool round(s), changed {} file(s), and {} DREAMS.md audit fallback",
-                loop_result.tool_rounds,
-                changed.len(),
-                if audit_appended {
-                    "needed a"
-                } else {
-                    "did not need a"
-                }
-            ),
-            candidate_count: 0,
-            promoted_count: indexed_count,
-            rejected_count: 0,
-            paths: paths_written.clone(),
-        }],
+        phase_summaries: vec![librarian_phase_summary(
+            loop_result.tool_rounds,
+            changed.len(),
+            indexed_count,
+            audit_appended,
+            paths_written.clone(),
+        )],
         candidate_count: 0,
         indexed_count,
         promoted_count: 0,
@@ -443,29 +512,25 @@ pub async fn run_librarian_sweep(
         promoted: Vec::new(),
         paths_written,
         would_write_paths: Vec::new(),
-        staged_path: Some(state_path.display().to_string()),
+        staged_path: Some(paths.state_path.display().to_string()),
         dreams_path: Some(
-            crate::memory::dreams_log::dreams_log_path(data_dir, character)
+            crate::memory::dreams_log::dreams_log_path(paths.data_dir, character)
                 .display()
                 .to_string(),
         ),
-        memory_path: Some(memory_index_path.display().to_string()),
+        memory_path: Some(paths.memory_index_path.display().to_string()),
         inspected: loop_result.inspected,
         changed,
         tools_used: loop_result.tools_used,
         tool_rounds: loop_result.tool_rounds,
         audit_appended,
         final_report: loop_result.final_report,
-    }))
+    })
 }
 
 /// Legacy deterministic sweep retained only for dry-run diagnostics and
 /// fallback-oriented unit coverage. Production scheduled and command-driven
 /// dreaming uses [`run_librarian_sweep`].
-#[expect(
-    clippy::too_many_lines,
-    reason = "legacy diagnostic dreaming sweep is retained during AI librarian migration and tracked in #109"
-)]
 pub async fn run_legacy_diagnostic_sweep(
     data_dir: &Path,
     config_dir: &Path,
@@ -477,7 +542,6 @@ pub async fn run_legacy_diagnostic_sweep(
     let memory_dir = character_memory_dir(config_dir, character);
     let workspace_dir = character_workspace_dir(config_dir, character);
     let memory_index_path = workspace_dir.join(MEMORY_INDEX_FILE);
-    let character_data_dir = character_data_dir(data_dir, character);
     let dream_dir = dream_data_dir(data_dir, character);
     let state_path = dream_state_path(data_dir, character);
     let state = read_state(data_dir, config_dir, character).await?;
@@ -501,101 +565,206 @@ pub async fn run_legacy_diagnostic_sweep(
     let rem = run_rem_phase(&light.candidates);
     let deep = run_deep_phase(&store, light.candidates.clone(), &rem).await?;
 
-    let candidates_file = format!("candidates-{stamp}.json");
-    let signals_file = format!("phase-signals-{stamp}.json");
-    let promotions_file = format!("promotions-{stamp}.json");
-    let candidates_rel = dream_data_rel(&candidates_file);
-    let signals_rel = dream_data_rel(&signals_file);
-    let promotions_rel = dream_data_rel(&promotions_file);
-    let candidates_path = dream_dir.join(&candidates_file);
-    let signals_path = dream_dir.join(&signals_file);
-    let promotions_path = dream_dir.join(&promotions_file);
-    let light_report_path = dream_dir
-        .join(DREAM_REPORTS_DIR)
-        .join("light")
-        .join(format!("{day}.md"));
-    let rem_report_path = dream_dir
-        .join(DREAM_REPORTS_DIR)
-        .join("rem")
-        .join(format!("{day}.md"));
-    let deep_report_path = dream_dir
-        .join(DREAM_REPORTS_DIR)
-        .join("deep")
-        .join(format!("{day}.md"));
-
-    let would_write_paths = vec![
-        candidates_path.display().to_string(),
-        signals_path.display().to_string(),
-        promotions_path.display().to_string(),
-        state_path.display().to_string(),
-        crate::memory::dreams_log::dreams_log_path(data_dir, character)
-            .display()
-            .to_string(),
-        memory_index_path.display().to_string(),
-        light_report_path.display().to_string(),
-        rem_report_path.display().to_string(),
-        deep_report_path.display().to_string(),
-    ];
-
-    let initial_phase_summaries = phase_summaries(
-        &light,
-        &rem,
-        &deep,
-        if dry_run { &[] } else { &would_write_paths },
-    );
+    let paths = legacy_artifact_paths(&dream_dir, &stamp, &day, state_path, memory_index_path);
+    let would_write_paths = legacy_would_write_paths(&paths, data_dir, character);
     let promoted = deep
         .promoted
         .iter()
         .map(|promotion| promotion.text.clone())
         .collect::<Vec<_>>();
 
+    let run = LegacyDreamRun {
+        ran_at,
+        state,
+        light,
+        rem,
+        deep,
+        promoted,
+        would_write_paths,
+    };
+
     if dry_run {
-        return Ok(Some(DreamSweepResult {
-            character: character.to_owned(),
-            dry_run,
-            ran_at,
-            mode: "legacy_diagnostic".to_owned(),
-            phase_summaries: initial_phase_summaries,
-            candidate_count: deep.candidates.len(),
-            indexed_count: deep.promoted.len(),
-            promoted_count: deep.promoted.len(),
-            rejected_count: deep.rejected.len(),
-            candidates: deep.candidates,
-            rem_themes: rem.themes,
-            promotions: deep.promoted,
-            rejected: deep.rejected,
-            indexed: promoted.clone(),
-            promoted,
-            paths_written: Vec::new(),
-            would_write_paths,
-            staged_path: None,
-            dreams_path: None,
-            memory_path: None,
-            inspected: Vec::new(),
-            changed: Vec::new(),
-            tools_used: Vec::new(),
-            tool_rounds: 0,
-            audit_appended: false,
-            final_report: None,
-        }));
+        return Ok(Some(build_legacy_dry_run_result(character, run)));
     }
 
-    write_data_json(&character_data_dir, &candidates_path, &deep.candidates).await?;
-    write_data_json(&character_data_dir, &signals_path, &rem).await?;
-    write_data_json(&character_data_dir, &promotions_path, &deep).await?;
+    Ok(Some(
+        persist_and_build_legacy_result(&store, data_dir, character, run, &paths).await?,
+    ))
+}
+
+/// Filesystem paths for one legacy diagnostic sweep's artifacts.
+struct LegacyDreamPaths {
+    candidates_path: PathBuf,
+    signals_path: PathBuf,
+    promotions_path: PathBuf,
+    state_path: PathBuf,
+    memory_index_path: PathBuf,
+    light_report_path: PathBuf,
+    rem_report_path: PathBuf,
+    deep_report_path: PathBuf,
+    candidates_rel: String,
+    signals_rel: String,
+    promotions_rel: String,
+}
+
+/// One legacy diagnostic sweep's computed run state, bundled so the result
+/// builders stay within the argument budget.
+struct LegacyDreamRun {
+    ran_at: String,
+    state: DreamState,
+    light: LightPhaseOutput,
+    rem: RemPhaseOutput,
+    deep: DeepPhaseOutput,
+    promoted: Vec<String>,
+    would_write_paths: Vec<String>,
+}
+
+/// Compute the per-run artifact paths (timestamped JSON + day-keyed reports)
+/// under the character's dream data directory.
+fn legacy_artifact_paths(
+    dream_dir: &Path,
+    stamp: &str,
+    day: &str,
+    state_path: PathBuf,
+    memory_index_path: PathBuf,
+) -> LegacyDreamPaths {
+    let candidates_file = format!("candidates-{stamp}.json");
+    let signals_file = format!("phase-signals-{stamp}.json");
+    let promotions_file = format!("promotions-{stamp}.json");
+    LegacyDreamPaths {
+        candidates_path: dream_dir.join(&candidates_file),
+        signals_path: dream_dir.join(&signals_file),
+        promotions_path: dream_dir.join(&promotions_file),
+        candidates_rel: dream_data_rel(&candidates_file),
+        signals_rel: dream_data_rel(&signals_file),
+        promotions_rel: dream_data_rel(&promotions_file),
+        light_report_path: dream_dir
+            .join(DREAM_REPORTS_DIR)
+            .join("light")
+            .join(format!("{day}.md")),
+        rem_report_path: dream_dir
+            .join(DREAM_REPORTS_DIR)
+            .join("rem")
+            .join(format!("{day}.md")),
+        deep_report_path: dream_dir
+            .join(DREAM_REPORTS_DIR)
+            .join("deep")
+            .join(format!("{day}.md")),
+        state_path,
+        memory_index_path,
+    }
+}
+
+/// The full set of paths a non-dry-run legacy sweep would write.
+fn legacy_would_write_paths(
+    paths: &LegacyDreamPaths,
+    data_dir: &Path,
+    character: &str,
+) -> Vec<String> {
+    vec![
+        paths.candidates_path.display().to_string(),
+        paths.signals_path.display().to_string(),
+        paths.promotions_path.display().to_string(),
+        paths.state_path.display().to_string(),
+        crate::memory::dreams_log::dreams_log_path(data_dir, character)
+            .display()
+            .to_string(),
+        paths.memory_index_path.display().to_string(),
+        paths.light_report_path.display().to_string(),
+        paths.rem_report_path.display().to_string(),
+        paths.deep_report_path.display().to_string(),
+    ]
+}
+
+/// Build the dry-run legacy diagnostic result: report phase findings and the
+/// would-write paths without touching disk.
+fn build_legacy_dry_run_result(character: &str, run: LegacyDreamRun) -> DreamSweepResult {
+    let LegacyDreamRun {
+        ran_at,
+        light,
+        rem,
+        deep,
+        promoted,
+        would_write_paths,
+        ..
+    } = run;
+    let summaries = phase_summaries(&light, &rem, &deep, &[]);
+    DreamSweepResult {
+        character: character.to_owned(),
+        dry_run: true,
+        ran_at,
+        mode: "legacy_diagnostic".to_owned(),
+        phase_summaries: summaries,
+        candidate_count: deep.candidates.len(),
+        indexed_count: deep.promoted.len(),
+        promoted_count: deep.promoted.len(),
+        rejected_count: deep.rejected.len(),
+        candidates: deep.candidates,
+        rem_themes: rem.themes,
+        promotions: deep.promoted,
+        rejected: deep.rejected,
+        indexed: promoted.clone(),
+        promoted,
+        paths_written: Vec::new(),
+        would_write_paths,
+        staged_path: None,
+        dreams_path: None,
+        memory_path: None,
+        inspected: Vec::new(),
+        changed: Vec::new(),
+        tools_used: Vec::new(),
+        tool_rounds: 0,
+        audit_appended: false,
+        final_report: None,
+    }
+}
+
+/// Persist a legacy diagnostic sweep's artifacts (candidate/signal/promotion
+/// JSON, phase reports, dream diary, memory index, and dream state) and
+/// assemble the final result.
+async fn persist_and_build_legacy_result(
+    store: &MarkdownMemoryStore,
+    data_dir: &Path,
+    character: &str,
+    run: LegacyDreamRun,
+    paths: &LegacyDreamPaths,
+) -> Result<DreamSweepResult, DreamingError> {
+    let LegacyDreamRun {
+        ran_at,
+        state,
+        light,
+        rem,
+        deep,
+        promoted,
+        would_write_paths,
+    } = run;
+    let character_data_dir = character_data_dir(data_dir, character);
+
+    write_data_json(
+        &character_data_dir,
+        &paths.candidates_path,
+        &deep.candidates,
+    )
+    .await?;
+    write_data_json(&character_data_dir, &paths.signals_path, &rem).await?;
+    write_data_json(&character_data_dir, &paths.promotions_path, &deep).await?;
     append_dream_diary(data_dir, character, &ran_at, &light, &rem, &deep).await?;
     write_phase_reports(
         &character_data_dir,
         &ran_at,
-        (&light_report_path, &rem_report_path, &deep_report_path),
+        (
+            &paths.light_report_path,
+            &paths.rem_report_path,
+            &paths.deep_report_path,
+        ),
         &light,
         &rem,
         &deep,
     )
     .await?;
     write_memory_index(
-        &store,
-        &memory_index_path,
+        store,
+        &paths.memory_index_path,
         character,
         &ran_at,
         &deep.promoted,
@@ -605,17 +774,17 @@ pub async fn run_legacy_diagnostic_sweep(
     let mut next_state = state;
     next_state.last_run_at = Some(ran_at.clone());
     next_state.runs = next_state.runs.saturating_add(1);
-    next_state.last_candidates_path = Some(candidates_rel.clone());
-    next_state.last_signals_path = Some(signals_rel.clone());
-    next_state.last_promotions_path = Some(promotions_rel.clone());
+    next_state.last_candidates_path = Some(paths.candidates_rel.clone());
+    next_state.last_signals_path = Some(paths.signals_rel.clone());
+    next_state.last_promotions_path = Some(paths.promotions_rel.clone());
     update_seen_state(&mut next_state, &deep.candidates);
     write_state(data_dir, character, &next_state).await?;
 
     let paths_written = would_write_paths;
 
-    Ok(Some(DreamSweepResult {
+    Ok(DreamSweepResult {
         character: character.to_owned(),
-        dry_run,
+        dry_run: false,
         ran_at,
         mode: "legacy_diagnostic".to_owned(),
         phase_summaries: phase_summaries(&light, &rem, &deep, &paths_written),
@@ -631,20 +800,20 @@ pub async fn run_legacy_diagnostic_sweep(
         promoted,
         paths_written,
         would_write_paths: Vec::new(),
-        staged_path: Some(candidates_path.display().to_string()),
+        staged_path: Some(paths.candidates_path.display().to_string()),
         dreams_path: Some(
             crate::memory::dreams_log::dreams_log_path(data_dir, character)
                 .display()
                 .to_string(),
         ),
-        memory_path: Some(memory_index_path.display().to_string()),
+        memory_path: Some(paths.memory_index_path.display().to_string()),
         inspected: Vec::new(),
         changed: Vec::new(),
         tools_used: Vec::new(),
         tool_rounds: 0,
         audit_appended: false,
         final_report: None,
-    }))
+    })
 }
 
 #[derive(Debug, Default)]
