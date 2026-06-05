@@ -429,10 +429,15 @@ function normalizeFinishReason(reason: string | undefined): string {
 }
 
 function extractGeminiUsage(meta: GeminiResponse["usageMetadata"] | undefined): Usage {
+  // `promptTokenCount` is the TOTAL prompt, inclusive of the cached portion
+  // (`cachedContentTokenCount`). Our ledger/pricing treats input/cache_read as
+  // disjoint buckets that are summed, so subtract the cache hits to leave only
+  // the cache-miss tokens in `input_tokens` (otherwise they bill twice).
+  const cacheRead = meta?.cachedContentTokenCount ?? 0;
   return {
-    input_tokens: meta?.promptTokenCount ?? 0,
+    input_tokens: Math.max(0, (meta?.promptTokenCount ?? 0) - cacheRead),
     output_tokens: meta?.candidatesTokenCount ?? 0,
-    cache_read_tokens: meta?.cachedContentTokenCount ?? 0,
+    cache_read_tokens: cacheRead,
     cache_creation_tokens: 0,
   };
 }

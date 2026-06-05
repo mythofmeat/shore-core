@@ -95,8 +95,10 @@ test("maps a reasoning + text + split tool_call stream to StreamEvents", async (
   if (done?.type === "done") {
     expect(done.content).toBe("Hello world");
     expect(done.finish_reason).toBe("tool_use"); // mapped from "tool_calls"
+    // prompt_tokens (100) is inclusive of the 80 cached tokens; input_tokens
+    // carries only the cache-miss remainder (20) so the buckets are disjoint.
     expect(done.usage).toEqual({
-      input_tokens: 100,
+      input_tokens: 20,
       output_tokens: 20,
       cache_read_tokens: 80,
       cache_creation_tokens: 0,

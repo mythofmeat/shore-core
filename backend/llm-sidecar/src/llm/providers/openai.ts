@@ -367,10 +367,16 @@ function emptyUsage(): Usage {
 }
 
 function extractUsage(u: RawUsage | undefined): Usage {
+  // OpenAI-convention `prompt_tokens` is the TOTAL prompt, inclusive of the
+  // cached portion. Our ledger/pricing follows the Anthropic convention where
+  // input/cache_read/cache_creation are disjoint and summed, so subtract the
+  // cache hits to leave only the cache-miss tokens in `input_tokens`. Without
+  // this the cached tokens are billed twice (once at the full input rate).
+  const cacheRead = u?.prompt_tokens_details?.cached_tokens ?? 0;
   const usage: Usage = {
-    input_tokens: u?.prompt_tokens ?? 0,
+    input_tokens: Math.max(0, (u?.prompt_tokens ?? 0) - cacheRead),
     output_tokens: u?.completion_tokens ?? 0,
-    cache_read_tokens: u?.prompt_tokens_details?.cached_tokens ?? 0,
+    cache_read_tokens: cacheRead,
     cache_creation_tokens: 0,
   };
   // OpenRouter reports total spend on `usage.cost`.

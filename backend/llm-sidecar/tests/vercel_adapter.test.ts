@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { buildCall, buildProviderOptions, turnToVercel } from "../src/llm/providers/vercel.ts";
+import { buildCall, buildProviderOptions, toUsage, turnToVercel } from "../src/llm/providers/vercel.ts";
 import type { SidecarRequest, TurnMessage } from "../src/llm/types.ts";
 
 function req(sdk: "deepseek" | "moonshot", provider_options?: Record<string, unknown>): SidecarRequest {
@@ -138,5 +138,56 @@ describe("buildMessages tool-name causality", () => {
         ]),
       ),
     ).toThrow(/unknown tool_use_id: tc_1/);
+  });
+});
+
+describe("toUsage", () => {
+  // The AI SDK's inputTokens is the TOTAL prompt, inclusive of cache reads.
+  // Our ledger convention is disjoint (input + cache_read + cache_creation),
+  // so input_tokens must carry only the cache-miss remainder. Regression for
+  // the DeepSeek overcost: cached tokens were billed at the full input rate.
+  test("subtracts cache read/write from inputTokens (disjoint buckets)", () => {
+    expect(
+      toUsage({
+        inputTokens: 671464,
+        outputTokens: 18579,
+        inputTokenDetails: { cacheReadTokens: 579840 },
+      } as never),
+    ).toEqual({
+      input_tokens: 91624,
+      output_tokens: 18579,
+      cache_read_tokens: 579840,
+      cache_creation_tokens: 0,
+    });
+  });
+
+  test("subtracts both cache read and write", () => {
+    expect(
+      toUsage({
+        inputTokens: 100,
+        outputTokens: 20,
+        inputTokenDetails: { cacheReadTokens: 70, cacheWriteTokens: 12 },
+      } as never),
+    ).toEqual({
+      input_tokens: 18,
+      output_tokens: 20,
+      cache_read_tokens: 70,
+      cache_creation_tokens: 12,
+    });
+  });
+
+  test("clamps at zero and tolerates missing details", () => {
+    expect(toUsage({ inputTokens: 5, outputTokens: 1 } as never)).toEqual({
+      input_tokens: 5,
+      output_tokens: 1,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+    });
+    expect(toUsage(undefined)).toEqual({
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+    });
   });
 });

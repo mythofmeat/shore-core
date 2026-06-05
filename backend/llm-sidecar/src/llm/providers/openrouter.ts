@@ -393,11 +393,18 @@ function emptyUsage(): Usage {
 }
 
 function extractUsage(u: ChatUsage | undefined): Usage {
-  const cached = (u?.promptTokensDetails as { cachedTokens?: number } | null | undefined)?.cachedTokens;
+  // OpenAI-convention `promptTokens` is the TOTAL prompt, inclusive of the
+  // cached portion. Our ledger/pricing treats input/cache_read as disjoint
+  // buckets that are summed, so subtract the cache hits to leave only the
+  // cache-miss tokens in `input_tokens` (otherwise they bill twice). Note the
+  // billed cost for OpenRouter rows comes from `usage.cost` when present, but
+  // the token columns must still be disjoint.
+  const cached =
+    (u?.promptTokensDetails as { cachedTokens?: number } | null | undefined)?.cachedTokens ?? 0;
   const usage: Usage = {
-    input_tokens: u?.promptTokens ?? 0,
+    input_tokens: Math.max(0, (u?.promptTokens ?? 0) - cached),
     output_tokens: u?.completionTokens ?? 0,
-    cache_read_tokens: cached ?? 0,
+    cache_read_tokens: cached,
     cache_creation_tokens: 0,
   };
   if (typeof u?.cost === "number") usage.total_cost_usd = u.cost;

@@ -338,12 +338,20 @@ function emptyUsage(): Usage {
   return { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 };
 }
 
-function toUsage(u: LanguageModelUsage | undefined): Usage {
+export function toUsage(u: LanguageModelUsage | undefined): Usage {
+  // The AI SDK's `inputTokens` is the TOTAL prompt, inclusive of the cache-read
+  // and cache-write portions (verified against DeepSeek native usage). Our
+  // ledger/pricing follows the Anthropic convention where input/cache_read/
+  // cache_creation are disjoint and summed, so subtract both to leave only the
+  // cache-miss tokens in `input_tokens`. Without this the cached tokens are
+  // billed twice — once at the full input rate (the DeepSeek overcost bug).
+  const cacheRead = u?.inputTokenDetails?.cacheReadTokens ?? 0;
+  const cacheWrite = u?.inputTokenDetails?.cacheWriteTokens ?? 0;
   return {
-    input_tokens: u?.inputTokens ?? 0,
+    input_tokens: Math.max(0, (u?.inputTokens ?? 0) - cacheRead - cacheWrite),
     output_tokens: u?.outputTokens ?? 0,
-    cache_read_tokens: u?.inputTokenDetails?.cacheReadTokens ?? 0,
-    cache_creation_tokens: u?.inputTokenDetails?.cacheWriteTokens ?? 0,
+    cache_read_tokens: cacheRead,
+    cache_creation_tokens: cacheWrite,
   };
 }
 
