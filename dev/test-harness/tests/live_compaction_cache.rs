@@ -295,6 +295,7 @@ fn build_chat_request(
         rid: Some(rid.into()),
         forensic_character: None,
         retain_long: false,
+        keepalive_interval: None,
     }
 }
 
@@ -354,6 +355,7 @@ fn build_compaction_request(
         rid: Some(rid.into()),
         forensic_character: None,
         retain_long: false,
+        keepalive_interval: None,
     }
 }
 

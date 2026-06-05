@@ -349,11 +349,23 @@ Heartbeat ticks:
 
 Heartbeat does not force recap files or daily memory notes. Durable notes happen
 only when the character uses write-capable tools. Dormancy stops autonomous LLM
-calls until user engagement resumes. Cache keepalive is separate from heartbeat;
-it preserves Anthropic cache warmth and does not simulate autonomy. Compaction
-clears any cached request body that contains the old conversation tail, but it
-does not cancel the keepalive deadline; a later keepalive can rebuild from disk
-to keep stable pinned system prompt sections warm.
+calls until user engagement resumes.
+
+Cache keepalive is a **standalone** subsystem, fully decoupled from heartbeat: it
+does not observe the heartbeat's next-wake schedule or its dormancy guard. It is
+governed by exactly two knobs — a per-model ping cadence (`cache_keepalive`,
+`"off"` or a literal interval; Anthropic defaults to `55m`, every other sdk to
+`off`) and a global idle ceiling (`[behavior.autonomy].cache_keepalive_max`,
+default 12h). It pings the prompt cache every cadence-interval while the
+character is idle, and stops once `cache_keepalive_max` elapses since the last
+**real** activity (user message or heartbeat tick) — measured from the last real
+message, never reset by a ping. Real activity reschedules the timer and restarts
+the idle clock; a model switch updates the cadence (and pauses pinging if the new
+model's prefix is cold). Compaction clears any cached request body that contains
+the old conversation tail, but does not cancel the keepalive deadline; a later
+keepalive can rebuild from disk to keep stable pinned system prompt sections
+warm. `cache_keepalive` is a literal cadence and is unrelated to the
+Anthropic-only `cache_ttl` wire setting that enables 1h caching.
 
 ## Provider Boundary
 

@@ -126,6 +126,7 @@ impl CompactionLlm for ScriptedCompactionLlm {
             rid: None,
             forensic_character: None,
             retain_long: true,
+            keepalive_interval: None,
         };
         // Mirror production: the compaction instruction is pinned at a
         // fixed inline `role:"system"` slot, never the moving tail.
@@ -178,6 +179,7 @@ fn make_chat_request_for_test() -> LlmRequest {
         rid: None,
         forensic_character: None,
         retain_long: false,
+        keepalive_interval: None,
     }
 }
 

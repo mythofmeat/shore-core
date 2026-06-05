@@ -13,6 +13,73 @@ use tracing::{debug, info, warn};
 use crate::capabilities;
 use crate::duration::ConfigDuration;
 
+// ── Cache keepalive cadence ─────────────────────────────────────────────
+
+/// Per-model cache-keepalive cadence (`cache_keepalive` in `[models.*]`).
+///
+/// `"off"` disables keepalive pings for the model; any duration string
+/// (`"55m"`, `"6h"`, `"30s"`) sets the interval between pings while the
+/// character is idle. The duration is a *literal* ping interval — it is not
+/// derived from the provider's cache TTL, and is deliberately independent of
+/// the Anthropic-only `cache_ttl` wire setting (which enables 1h caching).
+///
+/// Unset in config resolves to the sdk default (Anthropic → `55m`, every other
+/// sdk → `off`); see [`capabilities::default_value`]. The standalone daemon
+/// subsystem bounds total ping time via the global `cache_keepalive_max`, so a
+/// long interval here is safe even for providers with opaque cache lifetimes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheKeepaliveSetting {
+    /// Keepalive pings disabled for this model.
+    Off,
+    /// Ping every `interval` while the character is idle.
+    Every(ConfigDuration),
+}
+
+impl CacheKeepaliveSetting {
+    /// Parse from a TOML string: `"off"`/`"none"`/`"disabled"`/`"0"` → [`Off`],
+    /// any duration string → [`Every`].
+    ///
+    /// [`Off`]: CacheKeepaliveSetting::Off
+    /// [`Every`]: CacheKeepaliveSetting::Every
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "disabled" | "false" | "0" => Ok(Self::Off),
+            _ => ConfigDuration::parse(raw).map(Self::Every),
+        }
+    }
+
+    /// The resolved ping interval, or `None` when keepalive is off.
+    #[must_use]
+    pub fn interval(self) -> Option<std::time::Duration> {
+        match self {
+            Self::Off => None,
+            Self::Every(d) => Some(d.as_duration()),
+        }
+    }
+}
+
+impl std::fmt::Display for CacheKeepaliveSetting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Off => f.write_str("off"),
+            Self::Every(d) => write!(f, "{d}"),
+        }
+    }
+}
+
+impl Serialize for CacheKeepaliveSetting {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for CacheKeepaliveSetting {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
 // ── SDK enum ────────────────────────────────────────────────────────────
 
 /// SDK/wire protocol.  Distinguishes the message format from the gateway.
@@ -177,9 +244,7 @@ pub struct ModelConfigFields {
     pub reasoning_effort: Option<String>,
     pub budget_tokens: Option<u32>,
     pub cache_ttl: Option<String>,
-    pub keepalive_enabled: Option<bool>,
-    pub keepalive_ttl: Option<ConfigDuration>,
-    pub keepalive_max_pings: Option<u32>,
+    pub cache_keepalive: Option<CacheKeepaliveSetting>,
     pub openrouter_provider: Option<toml::Value>,
     pub vertex_project: Option<String>,
     pub vertex_location: Option<String>,
@@ -209,9 +274,7 @@ impl ModelConfigFields {
         merge_opt!(reasoning_effort);
         merge_opt!(budget_tokens);
         merge_opt!(cache_ttl);
-        merge_opt!(keepalive_enabled);
-        merge_opt!(keepalive_ttl);
-        merge_opt!(keepalive_max_pings);
+        merge_opt!(cache_keepalive);
         merge_opt!(openrouter_provider);
         merge_opt!(vertex_project);
         merge_opt!(vertex_location);
@@ -241,9 +304,7 @@ impl ModelConfigFields {
             reasoning_effort: or_opt!(reasoning_effort),
             budget_tokens: or_opt!(budget_tokens),
             cache_ttl: or_opt!(cache_ttl),
-            keepalive_enabled: or_opt!(keepalive_enabled),
-            keepalive_ttl: or_opt!(keepalive_ttl),
-            keepalive_max_pings: or_opt!(keepalive_max_pings),
+            cache_keepalive: or_opt!(cache_keepalive),
             openrouter_provider: or_opt!(openrouter_provider),
             vertex_project: or_opt!(vertex_project),
             vertex_location: or_opt!(vertex_location),
@@ -307,9 +368,9 @@ pub struct ResolvedModel {
     pub reasoning_effort: Option<String>,
     pub budget_tokens: Option<u32>,
     pub cache_ttl: Option<String>,
-    pub keepalive_enabled: Option<bool>,
-    pub keepalive_ttl: Option<ConfigDuration>,
-    pub keepalive_max_pings: Option<u32>,
+    /// Per-model cache-keepalive cadence. `None` resolves to the sdk default
+    /// (Anthropic → `55m`, others → `off`) in [`ResolvedModel::from_parts`].
+    pub cache_keepalive: Option<CacheKeepaliveSetting>,
     pub openrouter_provider: Option<toml::Value>,
     pub vertex_project: Option<String>,
     pub vertex_location: Option<String>,
@@ -359,6 +420,17 @@ impl ResolvedModel {
         if fields.cache_ttl.is_none() {
             fields.cache_ttl =
                 capabilities::default_value(&sdk, capabilities::Field::CacheTtl).map(str::to_owned);
+        }
+
+        // Cache keepalive cadence default is also sdk-keyed (Anthropic → `55m`,
+        // every other sdk → no entry, i.e. off). Fill only when unset so an
+        // explicit `cache_keepalive = "off"` (or any interval) wins. This is
+        // separate from `cache_ttl`: keepalive can run on any provider with a
+        // cache, but is opt-in everywhere except Anthropic.
+        if fields.cache_keepalive.is_none() {
+            fields.cache_keepalive =
+                capabilities::default_value(&sdk, capabilities::Field::CacheKeepalive)
+                    .and_then(|s| CacheKeepaliveSetting::parse(s).ok());
         }
 
         // Drop sampler knobs the model's wire rejects (Claude >=4.7 cutoff,
@@ -411,9 +483,7 @@ impl ResolvedModel {
             reasoning_effort: fields.reasoning_effort,
             budget_tokens: fields.budget_tokens,
             cache_ttl,
-            keepalive_enabled: fields.keepalive_enabled,
-            keepalive_ttl: fields.keepalive_ttl,
-            keepalive_max_pings: fields.keepalive_max_pings,
+            cache_keepalive: fields.cache_keepalive,
             openrouter_provider: fields.openrouter_provider,
             vertex_project: fields.vertex_project,
             vertex_location: fields.vertex_location,

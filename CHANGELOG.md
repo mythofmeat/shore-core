@@ -8,6 +8,22 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **Per-model cache keepalive (`cache_keepalive`) + global ceiling
+  (`cache_keepalive_max`).** The cache-keepalive subsystem is now a standalone
+  timer, fully decoupled from heartbeat (no longer keyed to the next-wake
+  schedule or the dormancy guard). Each model exposes `cache_keepalive` (a
+  `shore model setting` key / `[models.*]` overlay): `"off"` or a literal ping
+  interval (`"55m"`, `"6h"`). The **Anthropic** sdk defaults to `"55m"`; every
+  other sdk defaults to `"off"`, so non-Anthropic models (DeepSeek, etc.) are no
+  longer pinged unless you opt in. This fixes pointless keepalive pings on
+  providers with no cache-write surcharge to amortize. `cache_keepalive` is a
+  literal cadence and is unrelated to the Anthropic-only `cache_ttl` wire
+  setting. A new global `[behavior.autonomy].cache_keepalive_max` (default
+  `"12h"`) bounds how long pinging continues after the last real message,
+  measured from the last user/heartbeat activity (never reset by a ping).
+  Replaces the unreleased `keepalive_enabled` / `keepalive_ttl` /
+  `keepalive_max_pings` fields.
+
 - **Disable thinking on Z.AI (GLM) with `reasoning_effort = "off"`.** GLM's API
   supports `thinking.type = "disabled"`, but the `zai` adapter previously
   hardcoded `enabled` and the capability layer asserted Z.AI "thinks
@@ -152,6 +168,11 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   and any persisted per-model settings using `preserve_prior_turns` must be updated.
 
 ### Fixed
+- **Duplicate keepalive log line in `shore status`.** A successful keepalive
+  ping wrote two heartbeat-log entries (`Cache refresh ping (cache_read: …)` plus
+  a redundant generic `Cache keepalive ping`), making one ping look like two
+  overlapping timers. Only the informative line is kept now.
+
 - **Cached input tokens double-counted (overcosted) on non-Anthropic
   providers.** OpenAI-convention APIs (DeepSeek/Moonshot via the Vercel AI SDK,
   native OpenAI, Z.ai, OpenRouter) and Gemini report `prompt_tokens` /

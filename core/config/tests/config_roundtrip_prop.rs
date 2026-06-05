@@ -16,7 +16,7 @@ use shore_config::app::{
     ServicesConfig, ThinkingConfig, ToolToggles, ToolUseConfig, UsageBudgetAction,
     UsageBudgetConfig, UsageBudgetPeriod, UsageConfig, UsageSpikeWarningsConfig,
 };
-use shore_config::models::{ModelConfigFields, Sdk};
+use shore_config::models::{CacheKeepaliveSetting, ModelConfigFields, Sdk};
 use shore_config::providers::{ProviderDiscovery, ProviderEntry, ProviderKeyEntry};
 use shore_config::ConfigDuration;
 
@@ -43,6 +43,13 @@ fn arb_nonempty_text() -> impl Strategy<Value = String> {
 
 fn arb_duration() -> impl Strategy<Value = ConfigDuration> {
     (0_u64..(14 * 24 * 60 * 60 * 1000)).prop_map(ConfigDuration::from_millis)
+}
+
+fn arb_cache_keepalive() -> impl Strategy<Value = CacheKeepaliveSetting> {
+    prop_oneof![
+        Just(CacheKeepaliveSetting::Off),
+        arb_duration().prop_map(CacheKeepaliveSetting::Every),
+    ]
 }
 
 #[expect(
@@ -122,9 +129,7 @@ fn arb_model_config_fields() -> impl Strategy<Value = ModelConfigFields> {
         prop::option::of(arb_nonempty_text()),
         prop::option::of(1_u32..200_000),
         prop::option::of(arb_nonempty_text()),
-        prop::option::of(any::<bool>()),
-        prop::option::of(arb_duration()),
-        prop::option::of(0_u32..100),
+        prop::option::of(arb_cache_keepalive()),
         prop::option::of(arb_toml_value()),
     );
     let provider_specific = (
@@ -139,15 +144,7 @@ fn arb_model_config_fields() -> impl Strategy<Value = ModelConfigFields> {
     (transport, reasoning, provider_specific).prop_map(
         |(
             (sdk, api_key_env, base_url, max_context_tokens, max_output_tokens, temperature, top_p),
-            (
-                reasoning_effort,
-                budget_tokens,
-                cache_ttl,
-                keepalive_enabled,
-                keepalive_ttl,
-                keepalive_max_pings,
-                openrouter_provider,
-            ),
+            (reasoning_effort, budget_tokens, cache_ttl, cache_keepalive, openrouter_provider),
             (
                 vertex_project,
                 vertex_location,
@@ -167,9 +164,7 @@ fn arb_model_config_fields() -> impl Strategy<Value = ModelConfigFields> {
             reasoning_effort,
             budget_tokens,
             cache_ttl,
-            keepalive_enabled,
-            keepalive_ttl,
-            keepalive_max_pings,
+            cache_keepalive,
             openrouter_provider,
             vertex_project,
             vertex_location,
@@ -361,12 +356,22 @@ fn arb_tool_use_config() -> impl Strategy<Value = ToolUseConfig> {
 }
 
 fn arb_behavior_config() -> impl Strategy<Value = BehaviorConfig> {
-    (any::<bool>(), arb_heartbeat_config(), arb_tool_use_config()).prop_map(
-        |(enabled, heartbeat, tool_use)| BehaviorConfig {
-            autonomy: AutonomyConfig { enabled, heartbeat },
-            tool_use,
-        },
+    (
+        any::<bool>(),
+        arb_heartbeat_config(),
+        arb_tool_use_config(),
+        arb_duration(),
     )
+        .prop_map(
+            |(enabled, heartbeat, tool_use, cache_keepalive_max)| BehaviorConfig {
+                autonomy: AutonomyConfig {
+                    enabled,
+                    heartbeat,
+                    cache_keepalive_max,
+                },
+                tool_use,
+            },
+        )
 }
 
 fn arb_compaction_config() -> impl Strategy<Value = CompactionConfig> {

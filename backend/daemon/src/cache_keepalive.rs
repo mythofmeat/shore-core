@@ -10,48 +10,41 @@ pub enum CacheKeepaliveAction {
     Ping,
 }
 
-/// Standalone subsystem that keeps the Anthropic 1h prompt cache warm during
-/// quiet stretches — but only when doing so is economically justified.
+/// Standalone subsystem that keeps a model's prompt cache warm during quiet
+/// stretches. It is deliberately decoupled from the heartbeat: it does **not**
+/// observe the next scheduled wake, the dormancy guard, or any heartbeat config.
+/// It observes exactly three things:
 ///
-/// Has zero knowledge of autonomy/heartbeat state. It observes two signals:
-/// - `on_cache_warmed`: any LLM call that touches the cached prompt
-/// - `set_next_wake`: the character's next scheduled wake time
+/// - `set_interval`: the active model's `cache_keepalive` cadence (`None` = off).
+/// - `on_cache_warmed`: any *real* LLM call that touches the cached prompt
+///   (user message, heartbeat tick) — resets both the ping timer and the
+///   idle clock.
+/// - `on_cache_invalidated`: the cached prefix is known unusable (e.g. the
+///   model switched and its prefix is cold).
 ///
-/// **The math (1h Anthropic tier):**
-/// Cache write = 2.0× input, cache read = 0.1×. Cold-wake penalty = 1.9N,
-/// one keepalive ping = 0.1N. Break-even at ~19 pings → 19 hours.
-/// We use 18h as the threshold (slight headroom).
+/// **Two independent knobs govern it:**
+/// - **interval** (per-model `cache_keepalive`): how *often* to ping. Anthropic
+///   defaults to `55m`; every other sdk defaults to off. The interval is a
+///   literal cadence, unrelated to the Anthropic-only `cache_ttl` wire setting.
+/// - **max_idle** (global `[behavior.autonomy].cache_keepalive_max`, default
+///   12h): the longest stretch *since the last real activity* over which we keep
+///   pinging. Once it elapses, pinging stops until the user returns. This is the
+///   user-presence / cost ceiling — keyed to the last real message, NOT to the
+///   last ping (otherwise each ping would reset the clock and it would never
+///   expire).
 #[derive(Debug)]
 pub struct CacheKeepalive {
+    /// Active model's ping cadence. `None` means keepalive is off.
+    interval: Option<Duration>,
+    /// Global upper bound on time since the last real activity to keep pinging.
+    max_idle: Duration,
     /// Next time a keepalive ping should fire.
     next_ping_at: Option<Instant>,
-    /// The next scheduled wake, supplied by the heartbeat subsystem.
-    next_wake_at: Option<Instant>,
+    /// Last *real* cache-warming activity (user message / heartbeat). Keepalive
+    /// pings do NOT update this — it anchors the `max_idle` cutoff.
+    last_active_at: Option<Instant>,
     /// Consecutive failed ping attempts. Used for retry backoff.
     failure_count: u32,
-}
-
-/// Break-even point: if the gap to next wake exceeds this, pings cost more
-/// than the cold-start savings.
-const KEEPALIVE_BREAKEVEN: Duration = Duration::from_hours(18);
-const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_mins(55);
-
-/// Ping interval: 55 minutes — 5 minutes of headroom before the 60-minute
-/// cache TTL expires. If the first attempt fails, retries use short
-/// exponential backoff so transient errors get another chance without turning
-/// provider/budget outages into a 10-second failure loop.
-/// Economics: one early ping costs ~0.1N tokens; a cache miss costs ~1.9N.
-/// The 5-minute insurance is worth ~$0.01 to avoid a ~$0.20 cold-start.
-///
-/// Override with `SHORE_KEEPALIVE_INTERVAL_SECS` env var for testing.
-fn ping_interval() -> Duration {
-    match std::env::var("SHORE_KEEPALIVE_INTERVAL_SECS") {
-        Ok(s) => {
-            let secs = s.parse().unwrap_or(DEFAULT_KEEPALIVE_INTERVAL.as_secs());
-            Duration::from_secs(secs)
-        }
-        Err(_) => DEFAULT_KEEPALIVE_INTERVAL,
-    }
 }
 
 fn retry_delay(failure_count: u32) -> Duration {
@@ -61,23 +54,59 @@ fn retry_delay(failure_count: u32) -> Duration {
 }
 
 impl CacheKeepalive {
-    pub fn new() -> Self {
+    /// Create a keepalive with the global idle ceiling. The per-model interval
+    /// starts unset (off) until [`set_interval`] is called from the first cached
+    /// request.
+    ///
+    /// [`set_interval`]: CacheKeepalive::set_interval
+    pub fn new(max_idle: Duration) -> Self {
         Self {
+            interval: None,
+            max_idle,
             next_ping_at: None,
-            next_wake_at: None,
+            last_active_at: None,
             failure_count: 0,
         }
     }
 
-    /// Called after ANY LLM call involving the cached prompt — user message,
-    /// assistant response, heartbeat tick, or keepalive ping itself.
-    /// Resets the internal ping deadline.
-    pub fn on_cache_warmed(&mut self, now: Instant) {
-        self.next_ping_at = now.checked_add(ping_interval());
-        self.failure_count = 0;
+    /// Update the active model's ping cadence (`None` = keepalive off), e.g. when
+    /// a request is cached or the user switches models. Reschedules the ping
+    /// timer to fire one interval after the last real activity (or `now` if there
+    /// has been none yet). Disabling clears any pending ping.
+    pub fn set_interval(&mut self, interval: Option<Duration>, now: Instant) {
+        let changed = self.interval != interval;
+        self.interval = interval;
+        match interval {
+            None => self.next_ping_at = None,
+            Some(iv) => {
+                if self.next_ping_at.is_none() || changed {
+                    let anchor = self.last_active_at.unwrap_or(now);
+                    self.next_ping_at = anchor.checked_add(iv);
+                }
+            }
+        }
     }
 
-    /// Called when the cached prompt prefix is known to be unusable.
+    /// Called after ANY *real* LLM call involving the cached prompt — user
+    /// message or heartbeat tick (NOT a keepalive ping). Resets the idle clock
+    /// and schedules the next ping one interval out.
+    pub fn on_cache_warmed(&mut self, now: Instant) {
+        self.last_active_at = Some(now);
+        self.failure_count = 0;
+        self.next_ping_at = self.interval.and_then(|iv| now.checked_add(iv));
+    }
+
+    /// Called after a keepalive ping is confirmed sent. Advances the ping timer
+    /// one interval from `now` WITHOUT touching the idle clock (so `max_idle`
+    /// keeps counting from the last real message).
+    pub fn on_ping_succeeded(&mut self, now: Instant) {
+        self.failure_count = 0;
+        self.next_ping_at = self.interval.and_then(|iv| now.checked_add(iv));
+    }
+
+    /// Called when the cached prompt prefix is known to be unusable (e.g. the
+    /// active model changed and its prefix is cold). Pauses pinging until the
+    /// next real call warms a new prefix.
     ///
     /// Ordinary compaction should not call this: the conversation tail changes,
     /// but stable pinned system sections are still worth keeping warm.
@@ -86,63 +115,47 @@ impl CacheKeepalive {
         self.failure_count = 0;
     }
 
-    /// Mirror of the scheduled heartbeat wake. Called whenever
-    /// `next_wake_at` changes (including being cleared on guard trip).
-    pub fn set_next_wake(&mut self, at: Option<Instant>) {
-        self.next_wake_at = at;
-        if at.is_none() {
-            // Guard tripped — stop pinging.
-            self.next_ping_at = None;
-            self.failure_count = 0;
-        }
-    }
-
-    /// Called by the autonomy loop on each ~30s tick.
+    /// Called by the autonomy loop on each tick.
     ///
-    /// Returns `Ping` iff:
-    /// 1. `next_ping_at` is set and `now >= next_ping_at`
-    /// 2. `next_wake_at` is set
-    /// 3. `next_wake_at - now < KEEPALIVE_BREAKEVEN`
+    /// Returns `Ping` iff a ping is due (`next_ping_at` set and reached) and the
+    /// character is still within the `max_idle` window since its last real
+    /// activity. Past `max_idle`, pinging stops (the user is presumed away) until
+    /// real activity resumes.
     ///
     /// Does NOT advance `next_ping_at` — the caller must call
-    /// `on_cache_warmed` after a successful ping, or `on_ping_failed`
-    /// to schedule a short retry backoff.
+    /// [`on_ping_succeeded`] after a successful ping, or [`on_ping_failed`] to
+    /// schedule a short retry backoff.
+    ///
+    /// [`on_ping_succeeded`]: CacheKeepalive::on_ping_succeeded
+    /// [`on_ping_failed`]: CacheKeepalive::on_ping_failed
     pub fn tick(&mut self, now: Instant) -> CacheKeepaliveAction {
-        let _ping_at = match self.next_ping_at {
-            Some(t) if now >= t => t,
-            _ => return CacheKeepaliveAction::None,
-        };
-
-        let Some(wake_at) = self.next_wake_at else {
+        let Some(ping_at) = self.next_ping_at else {
             return CacheKeepaliveAction::None;
         };
-
-        // Don't ping if the next wake is too far out — not worth the cost.
-        if wake_at > now && wake_at.duration_since(now) >= KEEPALIVE_BREAKEVEN {
-            self.next_ping_at = None;
+        if now < ping_at {
             return CacheKeepaliveAction::None;
         }
 
-        // Ping is due and economically justified.
-        // Do NOT advance next_ping_at here — caller must confirm the ping
-        // actually succeeded via on_cache_warmed(), or call on_ping_failed()
-        // to schedule a short retry backoff.
+        // Stop pinging once we've gone `max_idle` without a real message — the
+        // user is presumed away and keeping the cache warm is no longer worth
+        // the spend. Counted from the last real activity, never from a ping.
+        if let Some(last) = self.last_active_at {
+            if now.duration_since(last) >= self.max_idle {
+                self.next_ping_at = None;
+                return CacheKeepaliveAction::None;
+            }
+        }
+
         CacheKeepaliveAction::Ping
     }
 
     /// Called when a keepalive ping fails or is skipped. Retries with a short
-    /// exponential backoff so transient failures still get another chance
-    /// before the cache goes cold, while budget/provider outages don't hammer
-    /// the account every scheduler tick.
+    /// exponential backoff so transient failures still get another chance before
+    /// the cache goes cold, while budget/provider outages don't hammer the
+    /// account every scheduler tick.
     pub fn on_ping_failed(&mut self, now: Instant) {
         self.failure_count = self.failure_count.saturating_add(1);
         self.next_ping_at = now.checked_add(retry_delay(self.failure_count));
-    }
-}
-
-impl Default for CacheKeepalive {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -158,59 +171,97 @@ mod tests {
         Duration::from_secs(m.saturating_mul(60))
     }
 
+    /// A keepalive with a 12h idle ceiling and a 55m interval already armed.
+    fn armed(now: Instant) -> CacheKeepalive {
+        let mut ka = CacheKeepalive::new(hours(12));
+        ka.set_interval(Some(minutes(55)), now);
+        ka.on_cache_warmed(now);
+        ka
+    }
+
     #[test]
     fn new_returns_no_action() {
-        let mut ka = CacheKeepalive::new();
+        let mut ka = CacheKeepalive::new(hours(12));
         assert_eq!(ka.tick(Instant::now()), CacheKeepaliveAction::None);
+    }
+
+    #[test]
+    fn off_interval_never_pings() {
+        let now = Instant::now();
+        let mut ka = CacheKeepalive::new(hours(12));
+        // No interval set (keepalive off) — warming does not schedule a ping.
+        ka.on_cache_warmed(now);
+        assert_eq!(ka.tick(now + hours(2)), CacheKeepaliveAction::None);
+        // Explicitly off.
+        ka.set_interval(None, now);
+        assert_eq!(ka.tick(now + hours(2)), CacheKeepaliveAction::None);
     }
 
     #[test]
     fn ping_fires_after_interval() {
         let now = Instant::now();
-        let mut ka = CacheKeepalive::new();
-
-        // Warm the cache and set a wake 4h out.
-        ka.on_cache_warmed(now);
-        ka.set_next_wake(Some(now + hours(4)));
-
+        let mut ka = armed(now);
         // Not due yet at 54 minutes (interval is 55min).
         assert_eq!(ka.tick(now + minutes(54)), CacheKeepaliveAction::None);
-
         // Due at 55 minutes.
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::Ping);
     }
 
     #[test]
-    fn ping_reschedules_after_caller_confirms() {
+    fn ping_reschedules_after_confirm() {
         let now = Instant::now();
-        let mut ka = CacheKeepalive::new();
-
-        ka.on_cache_warmed(now);
-        ka.set_next_wake(Some(now + hours(4)));
-
-        // First ping at 55min.
+        let mut ka = armed(now);
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::Ping);
-        // Caller confirms the ping succeeded.
-        ka.on_cache_warmed(now + minutes(55));
-
-        // Not due at 55+54 = 109 minutes.
+        // Confirm the ping succeeded — advances from the ping time.
+        ka.on_ping_succeeded(now + minutes(55));
         assert_eq!(ka.tick(now + minutes(109)), CacheKeepaliveAction::None);
-        // Due at 55+55 = 110 minutes.
         assert_eq!(ka.tick(now + minutes(110)), CacheKeepaliveAction::Ping);
     }
 
     #[test]
-    fn ping_retries_when_not_confirmed() {
+    fn ping_succeeded_does_not_reset_idle_clock() {
+        // The max_idle cutoff counts from the last REAL activity, so repeated
+        // pings must not push it back. With a 2h ceiling and 55m interval, the
+        // third scheduled ping lands past the ceiling and must be suppressed.
         let now = Instant::now();
-        let mut ka = CacheKeepalive::new();
-
+        let mut ka = CacheKeepalive::new(hours(2));
+        ka.set_interval(Some(minutes(55)), now);
         ka.on_cache_warmed(now);
-        ka.set_next_wake(Some(now + hours(4)));
 
-        // Ping fires at 55min.
+        // Ping 1 at 55m — within 2h.
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::Ping);
-        // Caller does NOT confirm (ping failed/skipped).
-        // Retry is delayed briefly rather than spinning every scheduler tick.
+        ka.on_ping_succeeded(now + minutes(55));
+        // Ping 2 at 110m — within 2h.
+        assert_eq!(ka.tick(now + minutes(110)), CacheKeepaliveAction::Ping);
+        ka.on_ping_succeeded(now + minutes(110));
+        // Ping 3 would be at 165m — past the 2h (120m) idle ceiling → stop.
+        assert_eq!(ka.tick(now + minutes(165)), CacheKeepaliveAction::None);
+        // Cleared, so later ticks also stay quiet until real activity resumes.
+        assert_eq!(ka.tick(now + minutes(166)), CacheKeepaliveAction::None);
+    }
+
+    #[test]
+    fn real_activity_resets_idle_clock_and_resumes() {
+        let now = Instant::now();
+        let mut ka = CacheKeepalive::new(hours(2));
+        ka.set_interval(Some(minutes(55)), now);
+        ka.on_cache_warmed(now);
+
+        // Drift to just under the ceiling, then a real message arrives.
+        ka.on_cache_warmed(now + minutes(115));
+        // The old 55m ping does not fire; the timer moved to 115+55=170m.
+        assert_eq!(ka.tick(now + minutes(120)), CacheKeepaliveAction::None);
+        // Fires at 170m, now measured against the fresh activity at 115m.
+        assert_eq!(ka.tick(now + minutes(170)), CacheKeepaliveAction::Ping);
+    }
+
+    #[test]
+    fn retry_backs_off_when_not_confirmed() {
+        let now = Instant::now();
+        let mut ka = armed(now);
+        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::Ping);
+        // Caller does NOT confirm (ping failed/skipped) — short backoff, not a
+        // tight spin.
         ka.on_ping_failed(now + minutes(55));
         assert_eq!(
             ka.tick(now + minutes(55) + Duration::from_secs(29)),
@@ -223,96 +274,49 @@ mod tests {
     }
 
     #[test]
-    fn no_ping_when_wake_exceeds_breakeven() {
-        let now = Instant::now();
-        let mut ka = CacheKeepalive::new();
-
-        ka.on_cache_warmed(now);
-        // Wake 30h out — beyond the 18h breakeven.
-        ka.set_next_wake(Some(now + hours(30)));
-
-        // Ping would be due at 55min, but the breakeven check kills it.
-        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
-        // next_ping_at was cleared, so future ticks also return None.
-        assert_eq!(ka.tick(now + hours(2)), CacheKeepaliveAction::None);
-    }
-
-    #[test]
-    fn no_ping_when_no_wake_set() {
-        let now = Instant::now();
-        let mut ka = CacheKeepalive::new();
-
-        ka.on_cache_warmed(now);
-        // No set_next_wake — should not ping.
-        assert_eq!(ka.tick(now + hours(1)), CacheKeepaliveAction::None);
-    }
-
-    #[test]
-    fn guard_trip_clears_pings() {
-        let now = Instant::now();
-        let mut ka = CacheKeepalive::new();
-
-        ka.on_cache_warmed(now);
-        ka.set_next_wake(Some(now + hours(4)));
-
-        // Guard trips — clock clears next_wake_at.
-        ka.set_next_wake(None);
-
-        // Even though ping_at is due, no wake means no ping.
-        assert_eq!(ka.tick(now + hours(1)), CacheKeepaliveAction::None);
-    }
-
-    #[test]
     fn cache_warm_resets_ping_deadline() {
         let now = Instant::now();
-        let mut ka = CacheKeepalive::new();
-
-        ka.on_cache_warmed(now);
-        ka.set_next_wake(Some(now + hours(4)));
-
-        // Simulate a user message warming the cache at 30min.
+        let mut ka = armed(now);
+        // A user message warms the cache at 30min.
         ka.on_cache_warmed(now + minutes(30));
-
         // The old ping at 55min should NOT fire (deadline moved to 30+55=85).
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
-        // Should fire at 85min.
         assert_eq!(ka.tick(now + minutes(85)), CacheKeepaliveAction::Ping);
     }
 
     #[test]
-    fn no_ping_when_wake_exceeds_breakeven_after_retry() {
-        // Regression: after tick() stopped advancing next_ping_at,
-        // the breakeven check must still clear it.
+    fn invalidation_pauses_and_warm_resumes() {
         let now = Instant::now();
-        let mut ka = CacheKeepalive::new();
-
-        ka.on_cache_warmed(now);
-        ka.set_next_wake(Some(now + hours(30)));
-
-        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
-        // next_ping_at was cleared by the breakeven check.
-        assert_eq!(ka.tick(now + minutes(56)), CacheKeepaliveAction::None);
-    }
-
-    #[test]
-    fn compaction_pauses_and_warm_resumes() {
-        let now = Instant::now();
-        let mut ka = CacheKeepalive::new();
-
-        ka.on_cache_warmed(now);
-        ka.set_next_wake(Some(now + hours(4)));
-
-        // Compaction completes — invalidates the cached prefix.
+        let mut ka = armed(now);
+        // The cached prefix becomes unusable (e.g. model switch).
         ka.on_cache_invalidated();
-
-        // Ping would be due at 55min, but invalidation cleared it.
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
-
-        // Next real LLM call warms the cache — pings resume.
+        // Next real call warms a new prefix — pings resume.
         ka.on_cache_warmed(now + hours(1));
         assert_eq!(
             ka.tick(now + hours(1) + minutes(55)),
             CacheKeepaliveAction::Ping
         );
+    }
+
+    #[test]
+    fn disabling_interval_stops_pinging() {
+        let now = Instant::now();
+        let mut ka = armed(now);
+        // User switches to a model with keepalive off.
+        ka.set_interval(None, now + minutes(10));
+        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
+        assert_eq!(ka.tick(now + hours(3)), CacheKeepaliveAction::None);
+    }
+
+    #[test]
+    fn switching_interval_reschedules_from_last_activity() {
+        let now = Instant::now();
+        let mut ka = armed(now);
+        // Switch to a 6h cadence at 30min; anchored to last activity (now),
+        // the next ping moves to 6h.
+        ka.set_interval(Some(hours(6)), now + minutes(30));
+        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
+        assert_eq!(ka.tick(now + hours(6)), CacheKeepaliveAction::Ping);
     }
 }

@@ -180,9 +180,7 @@ pub enum Field {
     ReasoningEffort,
     BudgetTokens,
     CacheTtl,
-    KeepaliveEnabled,
-    KeepaliveTtl,
-    KeepaliveMaxPings,
+    CacheKeepalive,
     OpenrouterProvider,
     VertexProject,
     VertexLocation,
@@ -204,9 +202,7 @@ impl Field {
             Field::ReasoningEffort => "reasoning_effort",
             Field::BudgetTokens => "budget_tokens",
             Field::CacheTtl => "cache_ttl",
-            Field::KeepaliveEnabled => "keepalive_enabled",
-            Field::KeepaliveTtl => "keepalive_ttl",
-            Field::KeepaliveMaxPings => "keepalive_max_pings",
+            Field::CacheKeepalive => "cache_keepalive",
             Field::OpenrouterProvider => "openrouter_provider",
             Field::VertexProject => "vertex_project",
             Field::VertexLocation => "vertex_location",
@@ -232,9 +228,7 @@ impl Field {
             "reasoning_effort" => Field::ReasoningEffort,
             "budget_tokens" => Field::BudgetTokens,
             "cache_ttl" => Field::CacheTtl,
-            "keepalive_enabled" => Field::KeepaliveEnabled,
-            "keepalive_ttl" => Field::KeepaliveTtl,
-            "keepalive_max_pings" => Field::KeepaliveMaxPings,
+            "cache_keepalive" => Field::CacheKeepalive,
             "openrouter_provider" => Field::OpenrouterProvider,
             "vertex_project" => Field::VertexProject,
             "vertex_location" => Field::VertexLocation,
@@ -418,12 +412,13 @@ pub fn claude_thinking_caps(model_id: &str) -> (bool, bool) {
 /// `Ignored` everywhere else (harmless but pointless).
 pub fn applicability(sdk: &Sdk, model_id: &str, field: Field) -> Applicability {
     match field {
-        // Generic knobs every sdk understands.
-        Field::MaxContextTokens
-        | Field::MaxOutputTokens
-        | Field::KeepaliveEnabled
-        | Field::KeepaliveTtl
-        | Field::KeepaliveMaxPings => Applicability::Honored,
+        // Generic knobs every sdk understands. `cache_keepalive` is a daemon-side
+        // scheduling cadence (not a wire field), meaningful for any provider with
+        // a prompt cache — honored on every sdk; the sdk only changes its default
+        // (see `default_value`).
+        Field::MaxContextTokens | Field::MaxOutputTokens | Field::CacheKeepalive => {
+            Applicability::Honored
+        }
 
         // Most sidecar adapters map `reasoning_effort` to a graded value.
         // DeepSeek's Vercel provider exposes a graded `reasoningEffort`; Moonshot
@@ -508,6 +503,11 @@ fn vendor_field(sdk: &Sdk, owner: &Sdk) -> Applicability {
 pub fn default_value(sdk: &Sdk, field: Field) -> Option<&'static str> {
     match (sdk, field) {
         (Sdk::Anthropic, Field::CacheTtl) => Some("1h"),
+        // Anthropic's paid 1h cache tier is worth keeping warm by default;
+        // every other sdk leaves keepalive off until the user opts in (their
+        // cache lifetimes are opaque and carry no cache-write surcharge to
+        // amortize, so a default ping would be wasted spend — see #N).
+        (Sdk::Anthropic, Field::CacheKeepalive) => Some("55m"),
         (
             Sdk::Anthropic
             | Sdk::Openai
@@ -654,6 +654,19 @@ pub fn validate(
         }
     }
 
+    // `cache_keepalive` accepts the `off` sentinel or any duration string.
+    if field == Field::CacheKeepalive {
+        if let Some(raw) = value.as_str() {
+            if crate::models::CacheKeepaliveSetting::parse(raw).is_err() {
+                return Err(CapabilityError::OutOfDomain {
+                    field,
+                    value: raw.to_owned(),
+                    allowed: "off, or a duration like 55m / 6h / 30s".to_owned(),
+                });
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -677,9 +690,7 @@ mod tests {
             Field::ReasoningEffort,
             Field::BudgetTokens,
             Field::CacheTtl,
-            Field::KeepaliveEnabled,
-            Field::KeepaliveTtl,
-            Field::KeepaliveMaxPings,
+            Field::CacheKeepalive,
             Field::OpenrouterProvider,
             Field::VertexProject,
             Field::VertexLocation,

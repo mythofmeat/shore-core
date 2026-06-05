@@ -324,6 +324,7 @@ mod tests {
             rid: None,
             forensic_character: None,
             retain_long,
+            keepalive_interval: None,
         }
     }
 

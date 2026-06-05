@@ -376,6 +376,9 @@ impl LlmClient {
             rid: None,
             forensic_character: None,
             retain_long: false,
+            keepalive_interval: model
+                .cache_keepalive
+                .and_then(shore_config::models::CacheKeepaliveSetting::interval),
         }
     }
 
@@ -552,9 +555,7 @@ mod tests {
             reasoning_effort: None,
             budget_tokens: None,
             cache_ttl: None,
-            keepalive_enabled: None,
-            keepalive_ttl: None,
-            keepalive_max_pings: None,
+            cache_keepalive: None,
             openrouter_provider: None,
             vertex_project: None,
             vertex_location: None,
@@ -860,6 +861,7 @@ sdk = "openai"
             rid: None,
             forensic_character: None,
             retain_long: false,
+            keepalive_interval: None,
         }
     }
 
