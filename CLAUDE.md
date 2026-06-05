@@ -1,8 +1,5 @@
 # Agent Entry Map
 
-The repo-root entry map for coding agents (formerly `AGENTS.md`). Distinct from
-the per-character workspace `AGENTS.md`, which is a runtime prompt file.
-
 ## Start Here
 
 - [README.md](README.md): product intent, quick start, repo layout.
@@ -27,23 +24,6 @@ purpose. Then update the relevant kept doc in the same change.
 
 The daemon owns character state. Clients observe and send commands; they do not
 fork authoritative state.
-
-## Load-Bearing Rules
-
-- Markdown memory under `characters/<Character>/workspace/memory/**/*.md` is the
-  runtime long-term memory source of truth.
-- Prompt-visible workspace files activate from `active_prompt/`, not directly
-  from the editable workspace.
-- Edits to `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`, and
-  `MEMORY.md` stay staged until compaction/reload.
-- Compaction may update workspace-root `MEMORY.md` with carry-forward
-  throughlines; dreaming may reorganize it later.
-- Unexpected Anthropic cache invalidation is a serious regression.
-- Workspace tools must prevent path traversal and symlink escape.
-- `exec` must not invoke a shell and must keep path-like arguments inside the
-  character workspace.
-- Non-loopback daemon access must be explicit and must not be described as auth
-  or TLS.
 
 ## Build And Test
 
