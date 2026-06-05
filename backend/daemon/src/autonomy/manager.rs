@@ -859,10 +859,12 @@ const TICK_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Soft deadline for the heartbeat tool loop (all iterations combined). The
 /// loop checks this before each iteration and ends the tick if
-/// exceeded. Generous enough that a slow memory query + slow LLM across
-/// `max_tool_rounds` iterations normally fits; tight enough that a runaway
-/// loop can't block subsequent ticks for an hour. Per-call HTTP timeouts
-/// (300s, enforced by `LlmClient`) still bound each individual request.
+/// exceeded. Generous enough that a slow memory query + slow LLM across many
+/// iterations normally fits; tight enough that a runaway loop can't block
+/// subsequent ticks for an hour. This wall-clock deadline is the heartbeat's
+/// real runaway backstop now that `max_tool_iterations` defaults to unlimited.
+/// Per-call HTTP timeouts (300s, enforced by `LlmClient`) still bound each
+/// individual request.
 const HEARTBEAT_LOOP_DEADLINE: Duration = Duration::from_mins(30);
 
 /// Lock the per-character autonomy state, recovering from mutex poisoning
@@ -1707,20 +1709,23 @@ fn rebuild_request_from_disk(
     }
 }
 
+/// Apply the configured heartbeat model override to `request`. Returns the
+/// `ResolvedModel` the request now runs on when the override was applied, or
+/// `None` when the chat model was kept (no pin, unresolvable pin, same model,
+/// or build failure). The caller uses the returned model to source the
+/// per-model `max_tool_iterations` cap from *exactly* the model the request
+/// uses, keeping the cap and the request model coherent.
 fn apply_heartbeat_model_override(
     request: &mut LlmRequest,
     config: &LoadedConfig,
     character: &str,
-) -> bool {
+) -> Option<shore_config::models::ResolvedModel> {
     // If `defaults.background.heartbeat` (or its fallbacks) is not set,
     // we have no override to apply and keep the chat model.
-    let Some(configured_name) = config
+    let configured_name = config
         .app
         .defaults
-        .resolve_background_model_name(shore_config::app::BackgroundTask::Heartbeat)
-    else {
-        return false;
-    };
+        .resolve_background_model_name(shore_config::app::BackgroundTask::Heartbeat)?;
     // The configured name must actually resolve to a catalog entry. If it
     // doesn't (typo, removed model, etc.), don't silently fall back to
     // whichever chat model the catalog returns first — keep the chat
@@ -1734,17 +1739,17 @@ fn apply_heartbeat_model_override(
             error = %e,
             "Heartbeat: configured model not found in catalog; keeping chat model"
         );
-        return false;
+        return None;
     }
-    let Some(resolved) = crate::preferences::resolve_background_model(
+    let resolved = crate::preferences::resolve_background_model(
         config,
         shore_config::app::BackgroundTask::Heartbeat,
         character,
-    ) else {
-        return false;
-    };
+    )?;
     if resolved.model_id == request.model {
-        return false;
+        // Same model as the request already uses — no swap needed, and the
+        // chat-model cap the caller resolves is identical anyway.
+        return None;
     }
     match LedgerClient::build_request_with_provider_keys(
         &resolved,
@@ -1763,7 +1768,7 @@ fn apply_heartbeat_model_override(
             );
             new_req.forensic_character = Some(character.to_owned());
             *request = new_req;
-            true
+            Some(resolved)
         }
         Err(e) => {
             warn!(
@@ -1772,7 +1777,7 @@ fn apply_heartbeat_model_override(
                 heartbeat_model = %resolved.name,
                 "Heartbeat: failed to build override request, falling back to chat model"
             );
-            false
+            None
         }
     }
 }
@@ -1798,7 +1803,9 @@ async fn execute_heartbeat_tick(
     let Some(client) = llm_client else { return };
     let Some(lc) = loaded_config else { return };
 
-    let Some(mut request) = prepare_heartbeat_request(character, state, data_dir, lc) else {
+    let Some((mut request, max_tool_iterations)) =
+        prepare_heartbeat_request(character, state, data_dir, lc)
+    else {
         return;
     };
 
@@ -1808,8 +1815,16 @@ async fn execute_heartbeat_tick(
         state: Arc::clone(state),
     });
 
-    let (send_message_text, cache_warmed) =
-        run_heartbeat_tool_loop(character, state, &mut request, client, lc, &tool_ctx).await;
+    let (send_message_text, cache_warmed) = run_heartbeat_tool_loop(
+        character,
+        state,
+        &mut request,
+        client,
+        lc,
+        &tool_ctx,
+        max_tool_iterations,
+    )
+    .await;
 
     // -- Cache warmed: the tick itself was a cache-warming LLM call -----------
     if cache_warmed {
@@ -1834,12 +1849,18 @@ async fn execute_heartbeat_tick(
 /// clear the stale request ID, apply the heartbeat model override, and pin the
 /// heartbeat instructions + prompt at a fixed inline-system slot. Returns
 /// `None` when there is no prior conversation to build on.
+/// Build the heartbeat request and resolve the per-model `max_tool_iterations`
+/// cap from the model the request *actually* runs on (the heartbeat override
+/// model when applied, otherwise the chat model). Returning the cap alongside
+/// the request keeps the two coherent — re-resolving the cap independently
+/// could pick a different model than the request when a heartbeat pin only
+/// resolves via the effective catalog.
 fn prepare_heartbeat_request(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
     data_dir: &Path,
     lc: &LoadedConfig,
-) -> Option<LlmRequest> {
+) -> Option<(LlmRequest, Option<u32>)> {
     // Clone last_request under the lock, then release.
     let mut request = {
         let s = lock_state(state);
@@ -1870,7 +1891,13 @@ fn prepare_heartbeat_request(
     request.rid = None;
     request.forensic_character = Some(character.to_owned());
 
-    let _ignored = apply_heartbeat_model_override(&mut request, lc, character);
+    // Source the cap from the model the request will actually run on: the
+    // heartbeat override model when it applied, otherwise the chat model.
+    let max_tool_iterations = match apply_heartbeat_model_override(&mut request, lc, character) {
+        Some(hb_model) => hb_model.max_tool_iterations,
+        None => crate::preferences::resolve_chat_model_for_character(lc, character)
+            .and_then(|m| m.max_tool_iterations),
+    };
 
     // Build the dynamic heartbeat prompt.
     let character_data_dir = character_data_dir(data_dir, character);
@@ -1933,7 +1960,7 @@ fn prepare_heartbeat_request(
     // This prevents cache prefix invalidation. Instructions for using
     // set_next_wake are in the heartbeat prompt.
 
-    Some(request)
+    Some((request, max_tool_iterations))
 }
 
 /// Round/time budget for the heartbeat tool loop.
@@ -2007,8 +2034,14 @@ async fn run_heartbeat_tool_loop(
     client: &LedgerClient,
     lc: &LoadedConfig,
     tool_ctx: &Arc<HeartbeatToolContext>,
+    max_tool_iterations: Option<u32>,
 ) -> (Option<String>, bool) {
-    let max_normal_iterations = lc.app.behavior.autonomy.heartbeat.max_tool_rounds;
+    // `None` = unlimited, so the round count is bounded only by the wall-clock
+    // `HEARTBEAT_LOOP_DEADLINE`; `u32::MAX` makes the loop bound effectively
+    // infinite while the deadline does the real work and still fires the
+    // wrap-up nudge when it trips. The cap is sourced (by the caller) from the
+    // exact model the request runs on, so it stays coherent with the request.
+    let max_normal_iterations = max_tool_iterations.unwrap_or(u32::MAX);
     let wrap_up_grace = lc.app.behavior.autonomy.heartbeat.wrap_up_grace_rounds;
     let total_iterations = max_normal_iterations.saturating_add(wrap_up_grace);
 
@@ -3544,7 +3577,7 @@ api_key_env = "{heartbeat_env}"
 
         let applied = apply_heartbeat_model_override(&mut request, &config, "alice");
 
-        assert!(applied, "override should have been applied");
+        assert!(applied.is_some(), "override should have been applied");
         assert_eq!(request.model, "claude-opus-slowthink");
         assert_eq!(request.api_key, "slowthink-secret");
         assert_eq!(
@@ -3575,7 +3608,7 @@ api_key_env = "{heartbeat_env}"
 
         let applied = apply_heartbeat_model_override(&mut request, &config, "alice");
 
-        assert!(!applied);
+        assert!(applied.is_none());
         assert_eq!(request.model, "claude-sonnet-chat");
     }
 
@@ -3591,7 +3624,7 @@ api_key_env = "{heartbeat_env}"
 
         let applied = apply_heartbeat_model_override(&mut request, &config, "alice");
 
-        assert!(!applied);
+        assert!(applied.is_none());
         assert_eq!(request.model, "claude-opus-slowthink");
 
         std::env::remove_var(chat_env);

@@ -42,10 +42,15 @@ pub struct ToolLoopResult {
 /// If the initial stream result has `finish_reason == "tool_use"`, executes
 /// the requested tools via the unified `dispatch_tool()` system, appends
 /// results to the request messages, and calls the LLM again. Repeats until
-/// `finish_reason != "tool_use"` or `max_iterations` is reached.
+/// `finish_reason != "tool_use"` or the `max_tool_iterations` cap is reached.
+///
+/// `max_tool_iterations` is the resolved per-model limit: `None` means
+/// **unlimited** — the loop runs until the model stops requesting tools,
+/// bounded only by per-call HTTP timeouts. `Some(n)` caps the loop at `n`
+/// iterations.
 ///
 /// Returns both the final result and any intermediate messages for persistence.
-#[instrument(skip(client, direct_tx, request, result, ctx, diag), fields(char = character, max_iterations))]
+#[instrument(skip(client, direct_tx, request, result, ctx, diag), fields(char = character, ?max_tool_iterations))]
 #[expect(
     clippy::too_many_arguments,
     reason = "tool-loop orchestration needs the live ledger, stream, request, context, diagnostics, and character inputs"
@@ -56,7 +61,7 @@ pub async fn run_tool_loop(
     request: &mut LlmRequest,
     mut result: StreamResult,
     ctx: &dyn ToolContext,
-    max_iterations: u32,
+    max_tool_iterations: Option<u32>,
     max_result_chars: usize,
     diag: &Arc<Mutex<Diagnostics>>,
     character: &str,
@@ -65,12 +70,21 @@ pub async fn run_tool_loop(
     let consumer = StreamConsumer::new(direct_tx.clone(), request.rid.clone());
     let mut intermediate_messages: Vec<Message> = Vec::new();
 
-    for iteration in 0..max_iterations {
+    let mut iteration: u32 = 0;
+    loop {
         if result.finish_reason != "tool_use" || result.tool_uses.is_empty() {
             return Ok(ToolLoopResult {
                 result,
                 intermediate_messages,
             });
+        }
+
+        // Enforce the resolved per-model cap. `None` = unlimited, so the only
+        // exit is the model ending cleanly (handled above) or an LLM error.
+        if let Some(max) = max_tool_iterations {
+            if iteration >= max {
+                break;
+            }
         }
 
         // Emit StreamEnd for the prior LLM phase now that we've decided to
@@ -91,7 +105,7 @@ pub async fn run_tool_loop(
 
         info!(
             iteration = iteration.saturating_add(1),
-            max = max_iterations,
+            max = ?max_tool_iterations,
             tool_count = result.tool_uses.len(),
             "Tool loop iteration"
         );
@@ -127,10 +141,12 @@ pub async fn run_tool_loop(
         result =
             stream_tool_loop_continuation(client, &consumer, request, character, thinking_enabled)
                 .await?;
+
+        iteration = iteration.saturating_add(1);
     }
 
     warn!(
-        max_iterations,
+        max = ?max_tool_iterations,
         "Tool loop hit max iterations, returning last result"
     );
     Ok(ToolLoopResult {
@@ -474,7 +490,7 @@ mod tests {
                 &mut request,
                 result,
                 &ctx,
-                10,
+                Some(10),
                 0,
                 &test_diag(),
                 "test",
@@ -526,7 +542,7 @@ mod tests {
             &mut request,
             initial,
             &ctx,
-            10,
+            Some(10),
             0,
             &test_diag(),
             "test",
@@ -634,7 +650,7 @@ mod tests {
             &mut request,
             initial,
             &ctx,
-            3,
+            Some(3),
             0,
             &test_diag(),
             "test",
@@ -682,7 +698,7 @@ mod tests {
             &mut request,
             initial,
             &ctx,
-            10,
+            Some(10),
             0,
             &test_diag(),
             "test",
@@ -749,7 +765,7 @@ mod tests {
                 &mut request,
                 result,
                 &ctx,
-                10,
+                Some(10),
                 0,
                 &test_diag(),
                 "test",
@@ -801,7 +817,7 @@ mod tests {
             &mut request,
             initial,
             &ctx,
-            10,
+            Some(10),
             5,
             &test_diag(),
             "test",
@@ -888,7 +904,7 @@ mod tests {
             &mut request,
             initial,
             &ctx,
-            10,
+            Some(10),
             0,
             &test_diag(),
             "test",

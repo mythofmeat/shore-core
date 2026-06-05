@@ -279,10 +279,20 @@ pub async fn run_librarian_sweep(
         dry_run,
     ));
 
+    // Per-model tool-iteration cap (the single unified surface). `None` =
+    // unlimited (default); the librarian loop then ends only when the model
+    // stops requesting tools.
+    let max_tool_iterations = crate::preferences::resolve_background_model(
+        loaded_config,
+        shore_config::app::BackgroundTask::Dreaming,
+        character,
+    )
+    .and_then(|m| m.max_tool_iterations);
+
     info!(
         character,
         dry_run,
-        max_tool_rounds = cfg.max_tool_rounds,
+        ?max_tool_iterations,
         "Dreaming: starting AI librarian pass"
     );
 
@@ -292,7 +302,7 @@ pub async fn run_librarian_sweep(
         &mut request,
         tool_ctx.as_ref(),
         character,
-        cfg.max_tool_rounds,
+        max_tool_iterations,
         dry_run,
     )
     .await?;
@@ -1061,12 +1071,19 @@ async fn run_private_librarian_loop(
     request: &mut LlmRequest,
     tool_ctx: &dyn ToolContext,
     character: &str,
-    max_tool_rounds: u32,
+    max_tool_iterations: Option<u32>,
     dry_run: bool,
 ) -> Result<LibrarianLoopResult, DreamingError> {
     let mut loop_result = LibrarianLoopResult::default();
 
-    for iteration in 0..max_tool_rounds {
+    let mut iteration: u32 = 0;
+    loop {
+        // `None` = unlimited; the only exit below is the model ending cleanly.
+        if let Some(max) = max_tool_iterations {
+            if iteration >= max {
+                break;
+            }
+        }
         let (resp, _fallback_events) = client
             .generate_with_config_fallback(
                 request,
@@ -1120,11 +1137,14 @@ async fn run_private_librarian_loop(
         request
             .messages
             .push(json!({"role": "user", "content": tool_results}));
+
+        iteration = iteration.saturating_add(1);
     }
 
     warn!(
         character,
-        max_tool_rounds, "Dreaming: private librarian tool loop hit configured cap"
+        max = ?max_tool_iterations,
+        "Dreaming: private librarian tool loop hit configured cap"
     );
     Ok(loop_result)
 }
@@ -2620,13 +2640,34 @@ mod tests {
         tmp: &tempfile::TempDir,
         mock: &MockLlmSidecar,
         character: &str,
-        max_tool_rounds: u32,
+        max_tool_iterations: u32,
     ) -> LoadedConfig {
         let mut config = TestConfigBuilder::new()
             .character_name(character)
             .build(tmp.path(), &mock.base_url());
         config.app.memory.dreaming.enabled = true;
-        config.app.memory.dreaming.max_tool_rounds = max_tool_rounds;
+        // The per-model `max_tool_iterations` cap is the unified surface that
+        // governs the librarian loop. Write it as a global preference for the
+        // resolved background (chat) model so `resolve_background_model` picks
+        // it up. `0` exercises the no-request edge (loop breaks before the
+        // first generate).
+        let model = config
+            .models
+            .first_chat_model()
+            .expect("test catalog must have a chat model");
+        let key = format!("{}:{}", model.provider_key, model.model_id);
+        let mut prefs = crate::preferences::ModelPreferences::default();
+        let _ignored = prefs.models.insert(
+            key,
+            crate::preferences::ModelPreference {
+                sampler: crate::preferences::SamplerSettings {
+                    max_tool_iterations: Some(max_tool_iterations),
+                    ..Default::default()
+                },
+            },
+        );
+        crate::preferences::save_global_preferences(&config.dirs.data, &prefs)
+            .expect("write test preferences");
         config
     }
 
@@ -2919,17 +2960,26 @@ mod tests {
         }
     }
 
+    /// A finite per-model `max_tool_iterations` cap stops the librarian loop
+    /// after exactly that many tool rounds, even when the model keeps asking
+    /// for more tools. With a cap of 1 and an always-tool-using model, the loop
+    /// runs one round and breaks at the cap without issuing a second request.
     #[tokio::test]
-    async fn zero_max_tool_rounds_sends_no_librarian_request() {
+    async fn max_tool_iterations_caps_librarian_rounds() {
         let tmp = tempfile::tempdir().unwrap();
         let mock = MockLlmSidecar::start().await;
-        let config = librarian_config(&tmp, &mock, "alice", 0);
+        let config = librarian_config(&tmp, &mock, "alice", 1);
         let mem = character_memory_dir(&config.dirs.config, "alice");
         let workspace = character_workspace_dir(&config.dirs.config, "alice");
         fs::create_dir_all(&mem).await.unwrap();
         fs::write(mem.join("notes.md"), "# Notes\n\n- Durable note.\n")
             .await
             .unwrap();
+
+        // Only one response is enqueued: if the cap weren't enforced, the loop
+        // would call generate a second time and the mock would error.
+        mock.enqueue_json_tool_use("t_list", "list_files", json!({"path": "memory"}))
+            .await;
 
         let result = run_librarian_sweep(
             &config,
@@ -2944,8 +2994,12 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(result.tool_rounds, 0);
-        assert!(mock.received_requests().await.is_empty());
+        assert_eq!(result.tool_rounds, 1, "cap of 1 must stop after one round");
+        assert_eq!(
+            mock.received_requests().await.len(),
+            1,
+            "loop must break at the cap rather than issue a second request"
+        );
         assert!(workspace.join("MEMORY.md").exists());
         assert!(
             crate::memory::deferred_edits::load_memory_index(

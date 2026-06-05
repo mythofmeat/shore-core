@@ -301,12 +301,11 @@ pub struct HeartbeatConfig {
     #[serde(default = "default_minimum_heartbeat_latency")]
     pub minimum_heartbeat_latency: ConfigDuration,
 
-    /// Maximum tool-use rounds per heartbeat tick.
-    #[serde(default = "default_max_tool_rounds")]
-    pub max_tool_rounds: u32,
-
     /// Extra tool-use rounds granted after the wrap-up nudge fires, so the
-    /// model can summarize unfinished work into HEARTBEAT.md and respond.
+    /// model can summarize unfinished work into HEARTBEAT.md and respond. Only
+    /// takes effect when the per-model `max_tool_iterations` cap is set to a
+    /// finite value; with the default (unlimited) there is no count-based
+    /// wrap-up nudge.
     #[serde(default = "default_wrap_up_grace_rounds")]
     pub wrap_up_grace_rounds: u32,
 }
@@ -315,7 +314,6 @@ serde_default!(default_fallback_heartbeat_interval -> ConfigDuration { ConfigDur
 serde_default!(default_dormant_after_heartbeat_turns -> u32 { 3 });
 serde_default!(default_dormant_after_idle_time -> ConfigDuration { ConfigDuration::from_secs(172_800) }); // 48 hours
 serde_default!(default_minimum_heartbeat_latency -> ConfigDuration { ConfigDuration::from_secs(3600) }); // 1 hour
-serde_default!(default_max_tool_rounds -> u32 { 12 });
 serde_default!(default_wrap_up_grace_rounds -> u32 { 3 });
 
 impl Default for HeartbeatConfig {
@@ -326,7 +324,6 @@ impl Default for HeartbeatConfig {
             dormant_after_heartbeat_turns: default_dormant_after_heartbeat_turns(),
             dormant_after_idle_time: default_dormant_after_idle_time(),
             minimum_heartbeat_latency: default_minimum_heartbeat_latency(),
-            max_tool_rounds: default_max_tool_rounds(),
             wrap_up_grace_rounds: default_wrap_up_grace_rounds(),
         }
     }
@@ -355,13 +352,6 @@ pub struct CompactionConfig {
     /// User turns retained in active.jsonl after compaction.
     #[serde(default = "default_keep_recent_turns")]
     pub keep_recent_turns: usize,
-    /// Maximum tool-use rounds the compaction LLM can run before the loop
-    /// is force-terminated. The model writes memory files by calling the
-    /// `write`/`edit` tools; the manager treats a zero-writes outcome as
-    /// "do not archive" so the live conversation isn't lost on a stuck
-    /// loop.
-    #[serde(default = "default_compaction_max_tool_rounds")]
-    pub max_tool_rounds: u32,
 }
 
 serde_default!(default_idle_trigger -> ConfigDuration { ConfigDuration::from_secs(1800) });
@@ -369,7 +359,6 @@ serde_default!(default_min_turns -> usize { 8 });
 serde_default!(default_max_turns -> usize { 16 });
 serde_default!(default_max_context_tokens -> usize { 200_000 });
 serde_default!(default_keep_recent_turns -> usize { 2 });
-serde_default!(default_compaction_max_tool_rounds -> u32 { 12 });
 
 impl Default for CompactionConfig {
     fn default() -> Self {
@@ -380,7 +369,6 @@ impl Default for CompactionConfig {
             max_turns: default_max_turns(),
             max_context_tokens: default_max_context_tokens(),
             keep_recent_turns: default_keep_recent_turns(),
-            max_tool_rounds: default_compaction_max_tool_rounds(),
         }
     }
 }
@@ -393,10 +381,6 @@ pub struct ToolUseConfig {
     /// Whether tool use is enabled.
     #[serde(default = "default_true")]
     pub enabled: bool,
-
-    /// Maximum tool loop iterations per turn.
-    #[serde(default = "default_max_iterations")]
-    pub max_iterations: u32,
 
     /// Maximum number of characters a single tool result may contribute to the
     /// conversation before it is truncated. Defaults to 20000 (~5k tokens of
@@ -417,14 +401,12 @@ pub struct ToolUseConfig {
     pub search: SearchConfig,
 }
 
-serde_default!(default_max_iterations -> u32 { 10 });
 serde_default!(default_max_result_chars -> usize { 20_000 });
 
 impl Default for ToolUseConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            max_iterations: default_max_iterations(),
             max_result_chars: default_max_result_chars(),
             tools: ToolToggles::default(),
             search: SearchConfig::default(),
@@ -537,10 +519,6 @@ pub struct DreamingConfig {
     #[serde(default = "default_dreaming_frequency")]
     pub frequency: String,
 
-    /// Maximum private tool rounds an LLM-backed dreaming pass may use.
-    #[serde(default = "default_dreaming_max_tool_rounds")]
-    pub max_tool_rounds: u32,
-
     /// Minimum time since the last user message before a scheduled dreaming
     /// sweep is allowed to fire. Heartbeat / autonomy turns do not reset this.
     #[serde(default = "default_dreaming_minimum_inactive_time")]
@@ -565,7 +543,6 @@ pub struct DreamingConfig {
 }
 
 serde_default!(default_dreaming_frequency -> String { "0 3 * * *".to_owned() });
-serde_default!(default_dreaming_max_tool_rounds -> u32 { 12 });
 serde_default!(default_dreaming_minimum_inactive_time -> ConfigDuration { ConfigDuration::from_secs(45 * 60) });
 serde_default!(default_dreaming_max_lateness -> ConfigDuration { ConfigDuration::from_secs(2 * 60 * 60) });
 
@@ -574,7 +551,6 @@ impl Default for DreamingConfig {
         Self {
             enabled: false,
             frequency: default_dreaming_frequency(),
-            max_tool_rounds: default_dreaming_max_tool_rounds(),
             minimum_inactive_time: default_dreaming_minimum_inactive_time(),
             max_lateness: default_dreaming_max_lateness(),
             compact_before: true,
@@ -1311,7 +1287,6 @@ mod tests {
             config.behavior.autonomy.heartbeat.minimum_heartbeat_latency,
             ConfigDuration::from_secs(3600)
         );
-        assert_eq!(config.behavior.autonomy.heartbeat.max_tool_rounds, 12);
         assert!(config.behavior.tool_use.enabled);
         assert!(config.memory.compaction.enabled);
         assert_eq!(config.memory.retrieval.mode, RetrievalMode::Auto);

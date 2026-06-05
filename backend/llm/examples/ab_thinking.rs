@@ -55,6 +55,7 @@ fn make_model(effort: &str) -> ResolvedModel {
         zai_clear_thinking: None,
         zai_subscription: None,
         replay_prior_thinking: None,
+        max_tool_iterations: None,
     }
 }
 

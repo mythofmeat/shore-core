@@ -30,13 +30,16 @@ pub struct TestConfigBuilder {
     pub max_output_tokens: u32,
     pub cache_ttl: Option<String>,
     pub tool_use_enabled: bool,
-    pub tool_use_max_iterations: u32,
     pub compaction_enabled: bool,
     pub compaction_max_turns: Option<usize>,
     pub compaction_min_turns: Option<usize>,
     pub compaction_keep_recent: Option<usize>,
     pub autonomy_enabled: bool,
-    pub heartbeat_max_tool_rounds: Option<u32>,
+    /// The unified per-model tool-iteration cap. `None` = unlimited (the
+    /// production default). When set, the harness writes it as a global
+    /// per-model preference for the chat model so every tool loop (chat,
+    /// heartbeat, compaction, dreaming) reads the same cap.
+    pub max_tool_iterations: Option<u32>,
     /// If true, the harness enables `[advanced].api_payload_logging` and
     /// wires `LlmClient::set_payload_log_dir` to the cache dir. Tests that
     /// inspect `<cache>/debug/api_logs{,_long}/` need this flipped on.
@@ -74,13 +77,12 @@ impl TestConfigBuilder {
             max_output_tokens: 1024,
             cache_ttl: None,
             tool_use_enabled: true,
-            tool_use_max_iterations: 5,
             compaction_enabled: false,
             compaction_max_turns: None,
             compaction_min_turns: None,
             compaction_keep_recent: None,
             autonomy_enabled: false,
-            heartbeat_max_tool_rounds: None,
+            max_tool_iterations: None,
             api_payload_logging: false,
             provider_registry_toml: None,
             extra_chat_aliases: Vec::new(),
@@ -159,11 +161,29 @@ impl TestConfigBuilder {
         self
     }
 
+    /// Set the unified per-model tool-iteration cap that governs every tool
+    /// loop (chat, heartbeat, compaction, dreaming). Written as a per-character
+    /// preference for the configured chat model.
+    ///
+    /// Panics on `0` to mirror the production rejection in
+    /// `set_model_setting` — `0` is not a persistable value (unlimited is
+    /// expressed by leaving the cap unset), so tests must not fabricate it.
+    pub fn max_tool_iterations(mut self, n: u32) -> Self {
+        assert!(
+            n >= 1,
+            "max_tool_iterations must be >= 1; leave it unset for unlimited"
+        );
+        self.max_tool_iterations = Some(n);
+        self
+    }
+
     /// Cap the number of tool-use rounds per heartbeat tick. A cap of 1 with
     /// a queued tool_use response at iteration 0 forces `hit_cap` → wrap-up.
-    pub fn heartbeat_max_tool_rounds(mut self, n: u32) -> Self {
-        self.heartbeat_max_tool_rounds = Some(n);
-        self
+    ///
+    /// Alias for [`Self::max_tool_iterations`]: the cap is now a single
+    /// per-model surface, so the heartbeat shares it with the other loops.
+    pub fn heartbeat_max_tool_rounds(self, n: u32) -> Self {
+        self.max_tool_iterations(n)
     }
 
     /// Enable per-call API payload logging on the harness's `LlmClient`,
@@ -212,6 +232,10 @@ impl TestConfigBuilder {
         );
         self.apply_provider_registry(&mut loaded, mock_base_url)?;
 
+        if let Some(n) = self.max_tool_iterations {
+            write_max_tool_iterations_pref(&loaded, &self.character_name, &self.model_alias, n)?;
+        }
+
         Ok(loaded)
     }
 
@@ -234,7 +258,6 @@ impl TestConfigBuilder {
         app.behavior = BehaviorConfig {
             tool_use: ToolUseConfig {
                 enabled: self.tool_use_enabled,
-                max_iterations: self.tool_use_max_iterations,
                 ..ToolUseConfig::default()
             },
             ..BehaviorConfig::default()
@@ -242,9 +265,8 @@ impl TestConfigBuilder {
         app.behavior.autonomy.enabled = self.autonomy_enabled;
         app.advanced.api_payload_logging = self.api_payload_logging;
 
-        if let Some(rounds) = self.heartbeat_max_tool_rounds {
+        if self.max_tool_iterations.is_some() {
             app.behavior.autonomy.heartbeat = HeartbeatConfig {
-                max_tool_rounds: rounds,
                 // Long intervals so spontaneous ticks don't fire during the
                 // test. The caller drives manual ticks and virtual time.
                 fallback_heartbeat_interval: ConfigDuration::from_secs(86400),
@@ -261,7 +283,6 @@ impl TestConfigBuilder {
                 max_turns: self.compaction_max_turns.unwrap_or(16),
                 max_context_tokens: 0,
                 keep_recent_turns: self.compaction_keep_recent.unwrap_or(2),
-                ..CompactionConfig::default()
             };
             app.defaults.embedding = Some(TEST_EMBED_REF.into());
         }
@@ -371,4 +392,38 @@ fn push_cache_ttl(models_toml: &mut String, cache_ttl: Option<&str>) {
     if let Some(ttl) = cache_ttl {
         let _ignored = writeln!(models_toml, "cache_ttl = \"{ttl}\"");
     }
+}
+
+/// Persist the unified per-model `max_tool_iterations` cap as a character
+/// preference keyed on the resolved chat model, so every tool loop (chat,
+/// heartbeat, compaction, dreaming) reads it through `resolve_*_model`.
+/// Character-scoped (not global) so the file lives under the character root and
+/// does not create a sibling directory under `data_dir`.
+///
+/// Keys on the model `model_alias` resolves to (which `build_app_config` pins as
+/// `app.defaults.model`), not `first_chat_model()` — with `extra_chat_aliases`
+/// those can diverge, and the cap must land on the model the loops actually run.
+fn write_max_tool_iterations_pref(
+    loaded: &LoadedConfig,
+    character: &str,
+    model_alias: &str,
+    n: u32,
+) -> BuildResult<()> {
+    use shore_daemon::preferences::{
+        save_character_preferences, ModelPreference, ModelPreferences, SamplerSettings,
+    };
+    let model = loaded.models.find_model(model_alias)?;
+    let key = format!("{}:{}", model.provider_key, model.model_id);
+    let mut prefs = ModelPreferences::default();
+    let _ignored = prefs.models.insert(
+        key,
+        ModelPreference {
+            sampler: SamplerSettings {
+                max_tool_iterations: Some(n),
+                ..Default::default()
+            },
+        },
+    );
+    save_character_preferences(&loaded.dirs.data, character, &prefs)?;
+    Ok(())
 }

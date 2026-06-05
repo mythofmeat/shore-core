@@ -1141,7 +1141,6 @@ model_id = "claude-opus-4-6"
         assert!(loaded.app.memory.compaction.enabled);
         assert!(!loaded.app.memory.dreaming.enabled);
         assert_eq!(loaded.app.memory.dreaming.frequency, "0 3 * * *");
-        assert_eq!(loaded.app.memory.dreaming.max_tool_rounds, 12);
         assert_eq!(loaded.app.daemon.addr, "127.0.0.1:7320"); // default
         assert!(!loaded.app.daemon.unsafe_allow_remote_access);
         assert!(loaded.app.advanced.editor.is_none());

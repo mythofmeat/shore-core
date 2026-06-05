@@ -90,8 +90,9 @@ pub struct NoMemoryWritesResult {
     /// compaction path filter (e.g. SOUL.md, DREAMS.md, paths outside
     /// memory/). Empty when the model wrote nothing at all.
     pub rejected_paths: Vec<String>,
-    /// True if the loop terminated because it hit the configured
-    /// max_tool_rounds rather than the model ending cleanly.
+    /// True if the loop terminated because it hit the per-model
+    /// `max_tool_iterations` cap rather than the model ending cleanly. Always
+    /// false when the cap is unlimited (the default).
     pub max_rounds_hit: bool,
 }
 

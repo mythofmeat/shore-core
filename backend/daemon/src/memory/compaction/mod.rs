@@ -379,6 +379,7 @@ impl CompactionManager {
         chat_request: shore_llm::types::LlmRequest,
         data_dir: Option<&Path>,
         tool_ctx: &dyn ToolContext,
+        max_tool_iterations: Option<u32>,
     ) -> Result<CompactionOutcome, CompactionError> {
         let compaction_started = std::time::Instant::now();
         info!(
@@ -452,14 +453,15 @@ impl CompactionManager {
         // rejected writes (for NoMemoryWrites diagnostics), all tools called
         // (for forensics), and any intended writes during dry-run (for the
         // DryRun preview).
-        let max_rounds = self.config.max_tool_rounds.max(1);
+        // `None` = unlimited (the per-model default); the loop then ends only
+        // when the model stops calling tools.
         let loop_started = std::time::Instant::now();
         let loop_state = run_compaction_tool_loop(
             llm,
             &mut request,
             tool_ctx,
             &workspace_dir,
-            max_rounds,
+            max_tool_iterations,
             dry_run,
         )
         .await?;
@@ -718,12 +720,12 @@ async fn run_compaction_tool_loop(
     request: &mut shore_llm::types::LlmRequest,
     tool_ctx: &dyn ToolContext,
     workspace_dir: &str,
-    max_rounds: u32,
+    max_tool_iterations: Option<u32>,
     dry_run: bool,
 ) -> Result<ToolLoopState, CompactionError> {
     let mut loop_state = ToolLoopState::new(dry_run);
 
-    for _ in 0..max_rounds {
+    loop {
         let resp = llm.generate(request).await?;
         push_assistant_response(request, &resp);
 
@@ -748,9 +750,12 @@ async fn run_compaction_tool_loop(
             .messages
             .push(json!({"role": "user", "content": tool_results}));
 
-        if loop_state.tool_rounds >= max_rounds {
-            loop_state.max_rounds_hit = true;
-            break;
+        // `None` = unlimited: keep going until the model ends cleanly above.
+        if let Some(max) = max_tool_iterations {
+            if loop_state.tool_rounds >= max {
+                loop_state.max_rounds_hit = true;
+                break;
+            }
         }
     }
 
@@ -1673,6 +1678,7 @@ mod tests {
                 make_chat_request(&[]),
                 Some(&data_dir),
                 &ctx,
+                None,
             )
             .await
             .unwrap();
@@ -1739,6 +1745,7 @@ mod tests {
                 make_chat_request(&[]),
                 Some(&data_dir),
                 &ctx,
+                None,
             )
             .await
             .unwrap();
@@ -1806,6 +1813,7 @@ mod tests {
                 make_chat_request(&[]),
                 None,
                 &ctx,
+                None,
             )
             .await
             .unwrap();
@@ -1877,6 +1885,7 @@ mod tests {
                 make_chat_request(&[]),
                 Some(&data_dir),
                 &ctx,
+                None,
             )
             .await
             .unwrap();
@@ -1937,6 +1946,7 @@ mod tests {
                 make_chat_request(&[]),
                 None,
                 &ctx,
+                None,
             )
             .await
             .unwrap();
@@ -1992,6 +2002,7 @@ mod tests {
                 make_chat_request(&[]),
                 None,
                 &ctx,
+                None,
             )
             .await
             .unwrap();
@@ -2043,6 +2054,7 @@ mod tests {
                 make_chat_request(&[]),
                 None,
                 &ctx,
+                None,
             )
             .await
             .unwrap();
@@ -2092,6 +2104,7 @@ mod tests {
                 make_chat_request(&[]),
                 None,
                 &ctx,
+                None,
             )
             .await
             .unwrap();
@@ -2139,6 +2152,7 @@ mod tests {
                 make_chat_request(&[]),
                 None,
                 &ctx,
+                None,
             )
             .await
         });
@@ -2204,6 +2218,7 @@ mod tests {
                 make_chat_request(&[]),
                 None,
                 &ctx,
+                None,
             )
             .await;
 
@@ -2240,6 +2255,7 @@ mod tests {
                 make_chat_request(&[]),
                 None,
                 &ctx,
+                None,
             )
             .await;
 
@@ -2275,6 +2291,7 @@ mod tests {
                 make_chat_request(&[]),
                 None,
                 &ctx,
+                None,
             )
             .await;
 
@@ -2342,6 +2359,7 @@ mod tests {
                 chat_request,
                 None,
                 &ctx,
+                None,
             )
             .await
             .unwrap();
@@ -2461,6 +2479,7 @@ mod tests {
                 make_chat_request(&[]),
                 None,
                 &ctx,
+                None,
             )
             .await;
 

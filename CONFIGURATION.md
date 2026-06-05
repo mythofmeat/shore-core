@@ -403,6 +403,16 @@ store. One-shot overrides — `shore model --all <name>`, `:model all
 <name>`, `shore provider refresh <name>` — apply to a single call and
 are never persisted.
 
+`max_tool_iterations` is the unified per-model cap on agentic tool-loop
+rounds. It governs **every** tool loop — interactive chat, the autonomous
+heartbeat, compaction, and dreaming — through one setting, resolved on the
+**model > sdk > provider** overlay like the other knobs. It is honored by every
+sdk (not capability-gated). **Unset (the default) means unlimited**: the loop
+runs until the model stops requesting tools, bounded only by per-call HTTP
+timeouts (and, for the heartbeat, its wall-clock tick deadline). Set a finite
+cap with `shore model setting max_tool_iterations <n>` (n ≥ 1); clear it with
+`shore model setting max_tool_iterations` (no value) to return to unlimited.
+
 `cache_keepalive` controls how often the daemon refreshes this model's prompt
 cache while the character is idle. It is either `"off"` or a duration
 (`"55m"`, `"6h"`, `"30s"`) — a literal ping interval, **not** derived from any
@@ -531,7 +541,6 @@ fallback_heartbeat_interval = "1h"
 dormant_after_heartbeat_turns = 3
 dormant_after_idle_time = "48h"
 minimum_heartbeat_latency = "1h"
-max_tool_rounds = 12
 wrap_up_grace_rounds = 3
 ```
 
@@ -539,14 +548,13 @@ Autonomy requires the master switch. Heartbeat controls private autonomous ticks
 
 `cache_keepalive_max` is the global ceiling on how long the cache-keepalive subsystem keeps refreshing a model's prompt cache after the last **real** activity (a user message or heartbeat tick). It answers "what is the longest gap between messages I'd still want a warm cache for?". Once it elapses with no real activity, pings stop until the user returns. It is independent of the heartbeat's `dormant_after_idle_time` guard (which governs ticks, not cache warming) and of the per-model ping cadence (`cache_keepalive`, below). Default `"12h"`; it does not require `[behavior.autonomy].enabled`.
 
-`max_tool_rounds` is the normal tool-use budget per heartbeat tick. When that budget (or the wall-clock loop deadline) is reached without natural termination, the daemon appends a wrap-up nudge that asks the character to record any unfinished work into `HEARTBEAT.md` and respond `HEARTBEAT_OK` (or send a final `<sendMessage>`). `wrap_up_grace_rounds` is the additional tool-use budget granted after that nudge so the model can finish the wrap-up turn. Total worst-case rounds per tick = `max_tool_rounds + wrap_up_grace_rounds`. Notes the model leaves in `HEARTBEAT.md` are read into the prompt at the start of every subsequent heartbeat.
+The heartbeat's tool-round budget is the per-model `max_tool_iterations` cap (see [Model Sections](#model-sections)) — a single surface shared with chat, compaction, and dreaming. **Unset (the default) means unlimited rounds**, bounded only by the wall-clock loop deadline (~30 min). When a finite `max_tool_iterations` cap is exhausted without natural termination, the daemon appends a wrap-up nudge asking the character to record any unfinished work into `HEARTBEAT.md` and respond `HEARTBEAT_OK` (or send a final `<sendMessage>`), and `wrap_up_grace_rounds` grants that many extra rounds for the wrap-up turn. The wall-clock deadline is a separate backstop: when it is what trips, the nudge still fires once (if `wrap_up_grace_rounds > 0`) but the loop exits on the next deadline check — the grace rounds only meaningfully extend the finite-cap path, not a deadline-bounded tick. Notes the model leaves in `HEARTBEAT.md` are read into the prompt at the start of every subsequent heartbeat.
 
 ## `[behavior.tool_use]`
 
 ```toml
 [behavior.tool_use]
 enabled = true
-max_iterations = 10
 max_result_chars = 20000  # Truncate each tool result past this many characters; 0 disables
 
 [behavior.tool_use.tools]
@@ -567,6 +575,8 @@ exec = true
 ```
 
 All tools default to enabled. Set `enabled = false` to disable tool use entirely.
+
+The maximum number of tool-loop rounds per chat turn is the per-model `max_tool_iterations` cap (see [Model Sections](#model-sections)), not a `[behavior.tool_use]` key. It defaults to **unlimited**; the loop ends when the model stops requesting tools.
 
 `max_result_chars` caps how many characters a single tool result may contribute
 to the conversation. It defaults to `20000` (~5k tokens of code-like output);
@@ -609,12 +619,11 @@ min_turns = 8
 max_turns = 16
 max_context_tokens = 200000
 keep_recent_turns = 2
-max_tool_rounds = 12
 ```
 
 Compaction writes markdown memory notes, archives old turns, and activates staged prompt-visible edits. It also updates `MEMORY.md` with the conversational throughline so the next conversation can pick up where this one left off; dreaming reorganizes the index later. When the autonomy manager has a cached chat request, compaction reuses that prefix and appends only the carry-forward instruction (the trailing `role:"system"` message is wrapped to a `<system_instruction>` user turn by the Anthropic provider), preserving the live conversation's prompt cache. After compaction, cache keepalive keeps its existing deadline and rebuilds the request from disk if needed, so stable pinned system prompt sections can stay warm even though the old conversation tail was discarded.
 
-Compaction runs a tool loop: the model calls `write` / `edit` on files under `memory/` and on the workspace-root `MEMORY.md`. Writes to any other path (`SOUL.md`, `USER.md`, `DREAMS.md`, paths outside `memory/`, etc.) are rejected at the dispatch wrapper. `max_tool_rounds` caps how many tool-use rounds a single pass may run. If the pass finishes with **zero** allowed memory writes — because the model used only read-only tools, only attempted disallowed paths, or hit `max_tool_rounds` — the active conversation is **not** archived and the next trigger will retry. This is by design: silent "archive with no writes" was the failure mode of the pre-tool-loop XML path.
+Compaction runs a tool loop: the model calls `write` / `edit` on files under `memory/` and on the workspace-root `MEMORY.md`. Writes to any other path (`SOUL.md`, `USER.md`, `DREAMS.md`, paths outside `memory/`, etc.) are rejected at the dispatch wrapper. The per-model `max_tool_iterations` cap (see [Model Sections](#model-sections)) limits how many tool-use rounds a single pass may run; it defaults to **unlimited**, so the pass normally ends when the model stops calling tools. If the pass finishes with **zero** allowed memory writes — because the model used only read-only tools, only attempted disallowed paths, or hit a finite `max_tool_iterations` cap — the active conversation is **not** archived and the next trigger will retry. This is by design: silent "archive with no writes" was the failure mode of the pre-tool-loop XML path.
 
 ## `[memory.dreaming]`
 
@@ -622,14 +631,13 @@ Compaction runs a tool loop: the model calls `write` / `edit` on files under `me
 [memory.dreaming]
 enabled = false
 frequency = "0 3 * * *"
-max_tool_rounds = 12
 ```
 
 `frequency` is a five-field cron schedule: `minute hour day-of-month month day-of-week`.
 It supports `*`, lists, ranges, steps, month/day names, and `0` or `7` for Sunday;
 for example, `0 6 * * 1` runs Mondays at 06:00.
 
-Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a private AI librarian pass. The character uses memory tools to inspect the existing flexible markdown layout, consolidate and dedupe durable notes, mark stale/superseded material, and update the canonical `MEMORY.md`. The daemon writes a timestamped audit entry to the dreams log automatically once the pass finishes — the model itself does not write `DREAMS.md`. Dreaming may also edit the protected prompt files (`SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`); those edits are staged through the active-prompt snapshot and take effect at the next compaction/reload boundary. When a cached chat request is available, the private librarian instruction is appended after that request prefix so the existing provider-side prompt cache can be reused.
+Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a private AI librarian pass. The librarian tool loop is bounded by the per-model `max_tool_iterations` cap (see [Model Sections](#model-sections)), which defaults to **unlimited**. The character uses memory tools to inspect the existing flexible markdown layout, consolidate and dedupe durable notes, mark stale/superseded material, and update the canonical `MEMORY.md`. The daemon writes a timestamped audit entry to the dreams log automatically once the pass finishes — the model itself does not write `DREAMS.md`. Dreaming may also edit the protected prompt files (`SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`); those edits are staged through the active-prompt snapshot and take effect at the next compaction/reload boundary. When a cached chat request is available, the private librarian instruction is appended after that request prefix so the existing provider-side prompt cache can be reused.
 
 `MEMORY.md` is the index/map and replaces the old recap/digest concept. Normal chat reads `active_prompt/MEMORY.md`; edits to `workspace/MEMORY.md` only become prompt-active after compaction/reload. It should not duplicate `USER.md` or `AGENTS.md`, which remain pinned prompt files.
 

@@ -917,6 +917,7 @@ fn mock_model_catalog(base_url: &str) -> shore_config::models::ModelCatalog {
         zai_clear_thinking: None,
         zai_subscription: None,
         replay_prior_thinking: None,
+        max_tool_iterations: None,
     };
 
     let mut chat = BTreeMap::new();
