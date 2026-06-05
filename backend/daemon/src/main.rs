@@ -70,8 +70,10 @@ use shore_diagnostics::logging::HumanLogFormat;
 use shore_diagnostics::Diagnostics;
 use shore_ledger::LedgerClient;
 use shore_llm::LlmClient;
+use shore_protocol::server_msg::ServerMessage;
 use shore_swp_server::registry::{InstanceInfo, Registry};
 use shore_swp_server::{Server, ServerConfig};
+use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -177,19 +179,8 @@ enum StartupError {
 }
 
 #[tokio::main]
-#[expect(
-    clippy::too_many_lines,
-    reason = "daemon startup orchestration split is tracked in #109"
-)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ── Human-readable logging (journalctl already adds timestamps) ──
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER)),
-        )
-        .event_format(HumanLogFormat)
-        .init();
+    init_logging();
 
     let cli_parsed = Cli::parse();
     let instance_id_override = cli_parsed.instance_id.clone();
@@ -207,7 +198,124 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Startup configuration resolved"
     );
 
-    // Ensure persistent and cache/runtime directories exist before anything writes to them.
+    create_runtime_dirs(&loaded)?;
+
+    // ── Notification service ──────────────────────────────────────────
+    let notifier = NotificationService::new(loaded.app.notifications.clone());
+
+    let instance_id = instance_id_override.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    log_remote_access_warnings(&remote_access_warnings);
+
+    let (listener, resolved_addr) = bind_resolved_listener(&addr, &loaded).await?;
+
+    let server_config = ServerConfig {
+        addr: resolved_addr.clone(),
+        allowed_hosts: loaded.app.daemon.allowed_hosts.clone(),
+        server_name: "shore-daemon".into(),
+        handshake: None,
+    };
+
+    let registry = register_daemon_instance(&loaded, &resolved_addr, &instance_id)?;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    spawn_shutdown_signal_listener(shutdown_tx);
+
+    // ── Create server and message handler ─────────────────────────────
+    let mut server = Server::new(server_config);
+    let push_tx = server.event_sender();
+    let session_router = server.session_router();
+    let route_rx = server.take_route_rx();
+
+    // Create character registry for multi-character management.
+    let char_registry = Arc::new(tokio::sync::Mutex::new(CharacterRegistry::new(
+        loaded.dirs.config.clone(),
+        loaded.dirs.data.clone(),
+        push_tx.clone(),
+        loaded.clone(),
+    )));
+    server.set_handshake_provider(build_handshake_provider(Arc::clone(&char_registry)));
+
+    let (llm_client, llm_sidecar_socket) = build_llm_client(&loaded)?;
+
+    // Autonomy manager: shared between handler, commands, and per-character ticks.
+    let autonomy = build_autonomy_manager(
+        &loaded,
+        shutdown_rx.clone(),
+        &llm_client,
+        &push_tx,
+        &notifier,
+        &char_registry,
+    );
+
+    // In-memory diagnostic ring buffers (API calls, tool calls, errors).
+    // Writer: generation tasks (handler.rs). Reader: `status`/`diagnostics` commands.
+    let diagnostics = Arc::new(std::sync::Mutex::new(Diagnostics::default()));
+    // Accumulated token counts for the daemon's lifetime.
+    // Writer: generation tasks after each API response. Reader: `status` command.
+    let session_tokens = Arc::new(std::sync::Mutex::new(SessionTokens::default()));
+
+    let cmd_ctx = build_command_context(
+        &loaded,
+        &config_path,
+        &push_tx,
+        &autonomy,
+        &llm_client,
+        Arc::clone(&session_tokens),
+        Arc::clone(&diagnostics),
+    );
+
+    let (handler_control_tx, handler_control_rx) = tokio::sync::mpsc::channel(16);
+
+    let mut msg_handler = MessageHandler::new(MessageHandlerDeps {
+        registry: char_registry,
+        cmd_ctx,
+        llm_client: llm_client.clone(),
+        push_tx,
+        session_router,
+        autonomy: autonomy.clone(),
+        notifier,
+        control_rx: handler_control_rx,
+    });
+
+    // Spawn message handler as a background task.
+    let handler_handle = tokio::spawn(async move {
+        msg_handler.run(route_rx).await;
+    });
+
+    let services = spawn_background_services(
+        &loaded,
+        &config_path,
+        handler_control_tx,
+        &shutdown_rx,
+        &llm_client,
+        llm_sidecar_socket,
+    );
+
+    let result = run_server(server, listener, shutdown_rx, &resolved_addr).await;
+
+    await_background_shutdown(services, handler_handle, autonomy).await;
+    unregister_instance(&registry, &instance_id);
+    info!("Daemon shut down cleanly");
+
+    result?;
+    Ok(())
+}
+
+/// Initialise human-readable tracing (journalctl already adds timestamps).
+fn init_logging() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER)),
+        )
+        .event_format(HumanLogFormat)
+        .init();
+}
+
+/// Ensure the persistent and cache/runtime directories exist before anything
+/// writes to them.
+fn create_runtime_dirs(loaded: &LoadedConfig) -> Result<(), StartupError> {
     std::fs::create_dir_all(&loaded.dirs.data).map_err(|source| StartupError::CreateDir {
         kind: "data",
         path: loaded.dirs.data.clone(),
@@ -223,13 +331,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         path: loaded.dirs.runtime.clone(),
         source,
     })?;
+    Ok(())
+}
 
-    // ── Notification service ──────────────────────────────────────────
-    let notifier = NotificationService::new(loaded.app.notifications.clone());
-
-    let instance_id = instance_id_override.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-    for warning in remote_access_warnings {
+/// Log any non-loopback remote-access warnings surfaced during startup.
+fn log_remote_access_warnings(warnings: &[RemoteAccessWarning]) {
+    for warning in warnings {
         warn!(
             addr = %warning.addr,
             bind_addr_source = %warning.bind_addr_source,
@@ -237,13 +344,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Daemon remote access warning"
         );
     }
+}
 
-    // Pre-bind the TCP listener so we can resolve port-zero binds (e.g.
-    // `--addr 127.0.0.1:0`) before recording the addr in the instance
-    // registry. Without this, the registry holds the literal `:0` and any
-    // discovery client connects to a port that was never actually opened.
+/// Pre-bind the TCP listener so port-zero binds (e.g. `--addr 127.0.0.1:0`)
+/// resolve to a real port before it is recorded in the instance registry —
+/// otherwise the registry holds the literal `:0` and discovery clients connect
+/// to a port that was never opened. Returns the listener and resolved address.
+async fn bind_resolved_listener(
+    addr: &str,
+    loaded: &LoadedConfig,
+) -> Result<(tokio::net::TcpListener, String), StartupError> {
     let pre_bind_config = ServerConfig {
-        addr: addr.clone(),
+        addr: addr.to_owned(),
         allowed_hosts: loaded.app.daemon.allowed_hosts.clone(),
         server_name: "shore-daemon".into(),
         handshake: None,
@@ -253,27 +365,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .bind()
         .await
         .map_err(|source| StartupError::ServerRun {
-            addr: addr.clone(),
+            addr: addr.to_owned(),
             source,
         })?;
     let resolved_addr = listener
         .local_addr()
-        .map_or_else(|_| addr.clone(), |a| a.to_string());
+        .map_or_else(|_| addr.to_owned(), |a| a.to_string());
     drop(pre_bind_server);
+    Ok((listener, resolved_addr))
+}
 
-    let server_config = ServerConfig {
-        addr: resolved_addr.clone(),
-        allowed_hosts: loaded.app.daemon.allowed_hosts.clone(),
-        server_name: "shore-daemon".into(),
-        handshake: None,
-    };
-
-    // ── Register instance ────────────────────────────────────────────
+/// Register this daemon instance in the shared registry.
+fn register_daemon_instance(
+    loaded: &LoadedConfig,
+    resolved_addr: &str,
+    instance_id: &str,
+) -> Result<Registry, StartupError> {
     let registry = Registry::default_path();
     let instance_info = InstanceInfo {
-        id: instance_id.clone(),
+        id: instance_id.to_owned(),
         pid: std::process::id(),
-        addr: resolved_addr.clone(),
+        addr: resolved_addr.to_owned(),
         started_at: epoch_timestamp(),
         data_dir: Some(loaded.dirs.data.display().to_string()),
         config_dir: Some(loaded.dirs.config.display().to_string()),
@@ -291,9 +403,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         data_dir = %loaded.dirs.data.display(),
         "Registered daemon instance"
     );
+    Ok(registry)
+}
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-
+/// Spawn the OS-signal listener that trips the shutdown watch channel on
+/// SIGINT/SIGTERM (Ctrl+C on non-unix).
+fn spawn_shutdown_signal_listener(shutdown_tx: tokio::sync::watch::Sender<()>) {
     let _ignored = tokio::spawn(async move {
         let ctrl_c = tokio::signal::ctrl_c();
 
@@ -332,30 +447,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let _ignored = shutdown_tx.send(());
     });
+}
 
-    // ── Create server and message handler ─────────────────────────────
-    let mut server = Server::new(server_config);
-    let push_tx = server.event_sender();
-    let session_router = server.session_router();
-    let route_rx = server.take_route_rx();
-
-    // Create character registry for multi-character management.
-    let char_registry = Arc::new(tokio::sync::Mutex::new(CharacterRegistry::new(
-        loaded.dirs.config.clone(),
-        loaded.dirs.data.clone(),
-        push_tx.clone(),
-        loaded.clone(),
-    )));
-    server.set_handshake_provider(build_handshake_provider(Arc::clone(&char_registry)));
-
-    // Create autonomy manager (shared between handler, commands, and per-character tick tasks).
-    let mut autonomy = AutonomyManager::new(
-        loaded.app.behavior.autonomy.clone(),
-        loaded.app.memory.compaction.clone(),
-        loaded.dirs.data.clone(),
-        shutdown_rx.clone(),
-    );
-
+/// Build the ledger-wrapped LLM client: payload logging, the optional LLM
+/// sidecar transport, cache forensics, usage config, and per-character cache
+/// reconstruction. Returns the client and the resolved sidecar socket path.
+fn build_llm_client(
+    loaded: &LoadedConfig,
+) -> Result<(LedgerClient, Option<PathBuf>), Box<dyn std::error::Error>> {
     let mut raw_llm_client = LlmClient::try_new()?;
     if loaded.app.advanced.api_payload_logging {
         raw_llm_client.set_payload_log_dir(loaded.dirs.cache.clone());
@@ -405,56 +504,104 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         llm_client.reconstruct_cache_state(&character, 3600);
     }
 
-    // Provide the autonomy manager with resources for heartbeat/keepalive execution.
+    Ok((llm_client, llm_sidecar_socket))
+}
+
+/// Create the autonomy manager and wire its heartbeat/keepalive resources and
+/// the character registry.
+fn build_autonomy_manager(
+    loaded: &LoadedConfig,
+    shutdown_rx: tokio::sync::watch::Receiver<()>,
+    llm_client: &LedgerClient,
+    push_tx: &broadcast::Sender<ServerMessage>,
+    notifier: &NotificationService,
+    char_registry: &Arc<tokio::sync::Mutex<CharacterRegistry>>,
+) -> AutonomyManager {
+    let mut autonomy = AutonomyManager::new(
+        loaded.app.behavior.autonomy.clone(),
+        loaded.app.memory.compaction.clone(),
+        loaded.dirs.data.clone(),
+        shutdown_rx,
+    );
     autonomy.set_resources(
         llm_client.clone(),
         push_tx.clone(),
         loaded.clone(),
         notifier.clone(),
     );
-    autonomy.set_registry(Arc::clone(&char_registry));
+    autonomy.set_registry(Arc::clone(char_registry));
+    autonomy
+}
 
-    // In-memory diagnostic ring buffers (API calls, tool calls, errors).
-    // Writer: generation tasks (handler.rs). Reader: `status`/`diagnostics` commands.
-    let diagnostics = Arc::new(std::sync::Mutex::new(Diagnostics::default()));
-    // Accumulated token counts for the daemon's lifetime.
-    // Writer: generation tasks after each API response. Reader: `status` command.
-    let session_tokens = Arc::new(std::sync::Mutex::new(SessionTokens::default()));
-
-    let cmd_ctx = CommandContext {
+/// Build the daemon-global (characterless) command context.
+fn build_command_context(
+    loaded: &LoadedConfig,
+    config_path: &Path,
+    push_tx: &broadcast::Sender<ServerMessage>,
+    autonomy: &AutonomyManager,
+    llm_client: &LedgerClient,
+    session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
+    diagnostics: Arc<std::sync::Mutex<Diagnostics>>,
+) -> CommandContext {
+    CommandContext {
         config: loaded.clone(),
-        config_path: config_path.clone(),
+        config_path: config_path.to_path_buf(),
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
         character_name: None,
         active_model: None,
         active_resolved_model: None,
-        session_tokens: Arc::clone(&session_tokens),
+        session_tokens,
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
-        diagnostics: Arc::clone(&diagnostics),
-    };
+        diagnostics,
+    }
+}
 
-    let (handler_control_tx, handler_control_rx) = tokio::sync::mpsc::channel(16);
+/// Run the SWP server to completion, then drop it so its `route_tx` is released
+/// and the message handler can drain.
+async fn run_server(
+    server: Server,
+    listener: tokio::net::TcpListener,
+    shutdown_rx: tokio::sync::watch::Receiver<()>,
+    resolved_addr: &str,
+) -> Result<(), StartupError> {
+    let result = server
+        .run_with_listener(listener, shutdown_rx)
+        .await
+        .map_err(|source| StartupError::ServerRun {
+            addr: resolved_addr.to_owned(),
+            source,
+        });
+    if let Err(error) = &result {
+        error!(addr = %resolved_addr, error = %error, "Daemon server exited with error");
+    }
+    // Drop the server so its route_tx is released, unblocking the handler.
+    drop(server);
+    result
+}
 
-    let mut msg_handler = MessageHandler::new(MessageHandlerDeps {
-        registry: char_registry,
-        cmd_ctx,
-        llm_client: llm_client.clone(),
-        push_tx,
-        session_router,
-        autonomy: autonomy.clone(),
-        notifier,
-        control_rx: handler_control_rx,
-    });
+/// Long-lived background tasks spawned alongside the server: config hot-reload,
+/// provider auto-discovery, and the optional LLM-sidecar / Matrix supervisors.
+struct BackgroundServices {
+    hot_reload_handle: Option<tokio::task::JoinHandle<()>>,
+    auto_discovery_handle: tokio::task::JoinHandle<()>,
+    llm_sidecar_supervisor: Option<supervisor::LlmSidecarSupervisor>,
+    matrix_supervisor: Option<supervisor::MatrixSupervisor>,
+}
 
-    // Spawn message handler as a background task.
-    let handler_handle = tokio::spawn(async move {
-        msg_handler.run(route_rx).await;
-    });
-
+/// Spawn the daemon's background services (config watcher, auto-discovery, and
+/// the LLM-sidecar / Matrix supervisors when configured).
+fn spawn_background_services(
+    loaded: &LoadedConfig,
+    config_path: &Path,
+    handler_control_tx: tokio::sync::mpsc::Sender<shore_daemon::handler::HandlerControl>,
+    shutdown_rx: &tokio::sync::watch::Receiver<()>,
+    llm_client: &LedgerClient,
+    llm_sidecar_socket: Option<PathBuf>,
+) -> BackgroundServices {
     let hot_reload_handle = shore_daemon::hot_reload::spawn_config_watcher(
-        config_path.clone(),
+        config_path.to_path_buf(),
         loaded.dirs.config.clone(),
         handler_control_tx,
         shutdown_rx.clone(),
@@ -471,7 +618,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Spawn LLM sidecar supervisor (if configured) ─────────────────
     let llm_sidecar_supervisor = llm_sidecar_socket
-        .clone()
         .and_then(|socket_path| supervisor::spawn_llm_sidecar(socket_path, shutdown_rx.clone()));
 
     // ── Spawn Matrix bridge supervisor (if configured) ───────────────
@@ -483,23 +629,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|m| m.enabled)
         .and_then(|_| supervisor::spawn(shutdown_rx.clone()));
 
-    // ── Run server ───────────────────────────────────────────────────
-    let result = server
-        .run_with_listener(listener, shutdown_rx)
-        .await
-        .map_err(|source| StartupError::ServerRun {
-            addr: resolved_addr.clone(),
-            source,
-        });
-    if let Err(error) = &result {
-        error!(addr = %resolved_addr, error = %error, "Daemon server exited with error");
+    BackgroundServices {
+        hot_reload_handle,
+        auto_discovery_handle,
+        llm_sidecar_supervisor,
+        matrix_supervisor,
     }
+}
 
-    // Drop the server so its route_tx is released, unblocking the handler.
-    drop(server);
-
-    // ── Wait for handler and autonomy tasks to finish ─────────────────
+/// Wait (bounded) for the background supervisors, watchers, handler, and
+/// autonomy tasks to finish after the server stops.
+async fn await_background_shutdown(
+    services: BackgroundServices,
+    handler_handle: tokio::task::JoinHandle<()>,
+    autonomy: AutonomyManager,
+) {
     let shutdown_timeout = std::time::Duration::from_secs(10);
+    let BackgroundServices {
+        hot_reload_handle,
+        auto_discovery_handle,
+        llm_sidecar_supervisor,
+        matrix_supervisor,
+    } = services;
 
     if let Some(sup) = llm_sidecar_supervisor {
         sup.shutdown(std::time::Duration::from_secs(6)).await;
@@ -515,9 +666,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     _ = tokio::time::timeout(shutdown_timeout, auto_discovery_handle).await;
     _ = tokio::time::timeout(shutdown_timeout, handler_handle).await;
     _ = tokio::time::timeout(shutdown_timeout, autonomy.shutdown()).await;
+}
 
-    // ── Cleanup ──────────────────────────────────────────────────────
-    if let Err(e) = registry.unregister(&instance_id) {
+/// Remove this daemon instance from the shared registry.
+fn unregister_instance(registry: &Registry, instance_id: &str) {
+    if let Err(e) = registry.unregister(instance_id) {
         error!(
             instance_id = %instance_id,
             registry_path = %registry.path().display(),
@@ -531,10 +684,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Unregistered daemon instance"
         );
     }
-    info!("Daemon shut down cleanly");
-
-    result?;
-    Ok(())
 }
 
 fn resolve_startup(cli: Cli, env_addr: Option<String>) -> Result<StartupConfig, StartupError> {
