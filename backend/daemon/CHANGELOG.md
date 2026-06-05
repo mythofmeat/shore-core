@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [14.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v13.0.1...shore-daemon-v14.0.0) - 2026-06-05
+
+### Added
+
+- *(tools)* unify tool-loop cap as per-model max_tool_iterations (default unlimited) ([#215](https://github.com/mythofmeat/shore-core/pull/215))
+- *(keepalive)* per-model cache_keepalive + global cap, decouple from heartbeat ([#213](https://github.com/mythofmeat/shore-core/pull/213))
+
+### Breaking
+
+- **Tool loop and cache keepalive configuration changes**: The tool-loop iteration cap is now controlled by per-model `max_tool_iterations` (default unlimited), replacing the previous fixed limits. Cache keepalive behavior is now configured via per-model `cache_keepalive` with a global cap, decoupled from the heartbeat interval.
+
+  **Migration**: Update any code that relied on the old tool-loop defaults:
+  - The previous fixed caps (`[behavior.tool_use].max_iterations` and `max_tool_rounds` on background tasks, typically 10-12 iterations) have been removed in favor of per-model `max_tool_iterations` on `ResolvedModel`. The default is now unlimited (None).
+  - Set `max_tool_iterations` via `shore model setting max_tool_iterations <n>` where n >= 1, or leave unset for unlimited.
+  - Cache keepalive is now configured per-model via `cache_keepalive` (e.g., `"55m"`, `"6h"`) or `"off"`, with Anthropic SDK defaulting to `"55m"` and others to `"off"`.
+  - Old app-config keys for tool-loop caps and heartbeat-coupled keepalive have been removed; configs using them will fail to load.
+
+  See PRs [#215](https://github.com/mythofmeat/shore-core/pull/215) and [#213](https://github.com/mythofmeat/shore-core/pull/213) for implementation details. Bump dependency versions to 14.0.0.
+
+### Other
+
+- decompose all non-test long functions ([#198](https://github.com/mythofmeat/shore-core/pull/198)) ([#212](https://github.com/mythofmeat/shore-core/pull/212))
+
 ## [13.0.1](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v13.0.0...shore-daemon-v13.0.1) - 2026-06-05
 
 ### Fixed

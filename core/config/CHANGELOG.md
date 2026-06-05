@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.11.1...shore-config-v0.12.0) - 2026-06-05
+
+### Added
+
+- *(tools)* unify tool-loop cap as per-model max_tool_iterations (default unlimited) ([#215](https://github.com/mythofmeat/shore-core/pull/215))
+- *(keepalive)* per-model cache_keepalive + global cap, decouple from heartbeat ([#213](https://github.com/mythofmeat/shore-core/pull/213))
+
+### Breaking
+
+- **ModelConfigFields and ResolvedModel field additions**: Two new configuration fields have been added to the public API:
+  - `ModelConfigFields` now includes `cache_keepalive: Option<CacheKeepaliveSetting>` (line 259 in `models.rs`) for per-model cache-keepalive cadence configuration.
+  - `ResolvedModel` now includes `max_tool_iterations: Option<u32>` (line 407 in `models.rs`) for per-model tool-loop iteration caps.
+
+  **Migration**: Update code that constructs these structs:
+
+  ```rust
+  // For ModelConfigFields:
+  let fields = ModelConfigFields {
+      sdk: Some(Sdk::Anthropic),
+      // ... other fields ...
+      cache_keepalive: None,  // or Some(CacheKeepaliveSetting::Every(duration))
+      ..Default::default()
+  };
+
+  // For ResolvedModel (when constructed manually):
+  let model = ResolvedModel {
+      name: "model-name".into(),
+      // ... other fields ...
+      max_tool_iterations: None,  // None = unlimited, Some(n) caps at n iterations
+  };
+  ```
+
+  **Field semantics**:
+  - `cache_keepalive`: `None` inherits sdk defaults (Anthropic → `"55m"`, others → `"off"`), `Some(CacheKeepaliveSetting::Off)` disables keepalive, `Some(CacheKeepaliveSetting::Every(interval))` sets the ping interval.
+  - `max_tool_iterations`: `None` = unlimited iterations (new default), `Some(n)` caps the tool loop at `n` rounds (n >= 1). Applied by runtime preference overlay.
+
+  **Removed config keys**: The old fixed tool-loop caps (`[behavior.tool_use].max_iterations` and per-task `max_tool_rounds` keys) have been removed; configurations that still set them will fail to load.
+
+  See PRs [#215](https://github.com/mythofmeat/shore-core/pull/215), [#213](https://github.com/mythofmeat/shore-core/pull/213), and [#207](https://github.com/mythofmeat/shore-core/pull/207).
+
+### Fixed
+
+- *(zai)* implement GLM thinking per Z.AI docs (Preserved Thinking + disable) ([#207](https://github.com/mythofmeat/shore-core/pull/207))
+
 ## [0.11.1](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.11.0...shore-config-v0.11.1) - 2026-06-05
 
 ### Fixed
