@@ -466,15 +466,11 @@ impl AutonomyManager {
             info!(character, "Autonomy state created (no prior state)");
         }
 
-        let mut cache_keepalive = CacheKeepalive::new();
-        // If the clock has a next_wake set (restored or bootstrapped), mirror
-        // it to the keepalive so it can decide whether to bridge, and prime
-        // the ping timer so keepalive pings begin immediately (rather than
-        // waiting for the first user message or heartbeat tick).
-        if let Some(wake) = heartbeat.next_wake() {
-            cache_keepalive.set_next_wake(Some(wake));
-            cache_keepalive.on_cache_warmed(Instant::now());
-        }
+        // The keepalive starts unarmed: after a (re)start the provider-side
+        // cache is cold anyway, so there is nothing to keep warm until the first
+        // real LLM call (user message or heartbeat tick) rebuilds and warms a
+        // prefix and supplies the active model's `cache_keepalive` cadence.
+        let cache_keepalive = CacheKeepalive::new(autonomy_cfg.cache_keepalive_max.as_duration());
 
         let heartbeat_log_path =
             character_data_dir(&self.data_dir, character).join("heartbeat.jsonl");
@@ -555,11 +551,9 @@ impl AutonomyManager {
             let was_idle = s.heartbeat.ticks_without_user() > 0;
             let now = Instant::now();
             s.heartbeat.on_user_message(now);
-            // Mirror the new wake deadline to the keepalive subsystem.
-            if let Some(wake) = s.heartbeat.next_wake() {
-                s.cache_keepalive.set_next_wake(Some(wake));
-            }
-            // The user message will trigger an LLM response — cache-warming event.
+            // The user message will trigger an LLM response — cache-warming
+            // event. (The keepalive cadence itself is set when that response's
+            // request is cached, via `cache_last_request`.)
             s.cache_keepalive.on_cache_warmed(now);
             if was_idle {
                 info!(character, "User returned — resetting idle counter");
@@ -885,6 +879,12 @@ fn lock_state(m: &Mutex<AutonomyState>) -> std::sync::MutexGuard<'_, AutonomySta
 /// through this so the log line stays consistent and nobody silently
 /// forgets to emit it.
 fn cache_last_request(state: &mut AutonomyState, character: &str, request: LlmRequest) {
+    // The cached request carries the active model's resolved `cache_keepalive`
+    // cadence — feed it to the standalone keepalive subsystem so a model switch
+    // (or first request after restart) takes effect immediately.
+    state
+        .cache_keepalive
+        .set_interval(request.keepalive_interval, Instant::now());
     state.last_request = Some(request);
     debug!(character, "Cached last LLM request for heartbeat reuse");
 }
@@ -955,8 +955,6 @@ fn schedule_next_wake_in_state(state: &Mutex<AutonomyState>, input: &Value) -> V
 
     let mut s = lock_state(state);
     s.heartbeat.schedule(when, now);
-    let scheduled = s.heartbeat.next_wake().unwrap_or(when);
-    s.cache_keepalive.set_next_wake(Some(scheduled));
     s.heartbeat_log.push(
         HeartbeatEventKind::ToolUse,
         format!("set_next_wake: {clamped:.1}h - {reason}"),
@@ -1003,7 +1001,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     let now = Instant::now();
 
     // Collect actions under the lock, then release before any async work.
-    let (int_action, keepalive_action, compaction_needed, dream_needed) =
+    let (int_action, mut keepalive_action, compaction_needed, dream_needed) =
         collect_tick_actions(character, ctx, now);
 
     // Idle-triggered compaction: when the tick has the dependencies it needs
@@ -1053,6 +1051,12 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                 ctx.registry.as_ref(),
             )
             .await;
+
+            // A heartbeat tick that warmed the cache has already reset the
+            // keepalive timer, so the pre-heartbeat `Ping` decision is stale —
+            // re-evaluate to avoid a redundant ping right after the tick.
+            let mut s = lock_state(&ctx.state);
+            keepalive_action = s.cache_keepalive.tick(Instant::now());
         }
     }
 
@@ -1130,8 +1134,10 @@ fn collect_tick_actions(
                 HeartbeatEventKind::Dormant,
                 format!("Abandonment guard tripped (ticks without user: {ticks})"),
             );
-            // Guard-trip propagation: stop cache keepalive pings.
-            s.cache_keepalive.set_next_wake(None);
+            // The cache keepalive is intentionally NOT stopped here: it is a
+            // standalone subsystem with its own idle ceiling
+            // (`cache_keepalive_max`), independent of the heartbeat dormancy
+            // guard. The guard governs heartbeat ticks, not cache warming.
         }
         action
     } else {
@@ -1211,9 +1217,11 @@ async fn execute_cache_keepalive_ping(character: &str, ctx: &TickContext) {
             usage,
             fallback_events,
         } => {
-            // Ping actually sent and succeeded — confirm to the keepalive
-            // so it schedules the next ping 55 minutes from now.
-            s.cache_keepalive.on_cache_warmed(Instant::now());
+            // Ping actually sent and succeeded — confirm to the keepalive so it
+            // schedules the next ping one interval out. Uses `on_ping_succeeded`
+            // (NOT `on_cache_warmed`) so the global idle ceiling keeps counting
+            // from the last real message, not from this ping.
+            s.cache_keepalive.on_ping_succeeded(Instant::now());
             push_provider_fallback_events(
                 &mut s,
                 HeartbeatEventKind::DormantPing,
@@ -1226,8 +1234,6 @@ async fn execute_cache_keepalive_ping(character: &str, ctx: &TickContext) {
                     usage.cache_read_tokens, usage.input_tokens
                 ),
             );
-            s.heartbeat_log
-                .push(HeartbeatEventKind::DormantPing, "Cache keepalive ping");
             s.mark_dirty();
         }
         DormantPingOutcome::Failed(reason) => {
@@ -1809,10 +1815,6 @@ async fn execute_heartbeat_tick(
     if cache_warmed {
         let mut s = lock_state(state);
         s.cache_keepalive.on_cache_warmed(Instant::now());
-        // Mirror schedule to keepalive (character may have called set_next_wake).
-        if let Some(wake) = s.heartbeat.next_wake() {
-            s.cache_keepalive.set_next_wake(Some(wake));
-        }
     }
 
     persist_heartbeat_message(
@@ -2614,6 +2616,7 @@ mod tests {
             rid: None,
             forensic_character: None,
             retain_long: false,
+            keepalive_interval: None,
         }
     }
 
@@ -2924,7 +2927,7 @@ mod tests {
         // Create and save.
         let mut state = AutonomyState {
             heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
-            cache_keepalive: CacheKeepalive::new(),
+            cache_keepalive: CacheKeepalive::new(Duration::from_hours(12)),
             activity: ActivityTracker::new(),
             heartbeat_log: HeartbeatLog::new(),
             paused: false,
@@ -2982,7 +2985,7 @@ mod tests {
         let config = test_config();
         let state = Arc::new(Mutex::new(AutonomyState {
             heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
-            cache_keepalive: CacheKeepalive::new(),
+            cache_keepalive: CacheKeepalive::new(Duration::from_hours(12)),
             activity: ActivityTracker::new(),
             heartbeat_log: HeartbeatLog::new(),
             paused: false,
@@ -3138,26 +3141,24 @@ mod tests {
         }
     }
 
+    /// Arm a keepalive with a 55m interval whose deadline is already due (last
+    /// real activity 1h ago, well within the 12h idle ceiling).
+    fn due_keepalive(now: Instant) -> CacheKeepalive {
+        let mut ka = CacheKeepalive::new(Duration::from_hours(12));
+        ka.set_interval(Some(Duration::from_mins(55)), now - Duration::from_hours(1));
+        ka.on_cache_warmed(now - Duration::from_hours(1));
+        ka
+    }
+
     #[tokio::test]
     async fn failed_ping_does_not_advance_timer() {
-        // The phantom ping bug: execute_dormant_ping returns early (no
-        // LLM client / no last_request), but on_cache_warmed was called
-        // unconditionally, resetting the timer for another keepalive interval.
-        // After the fix, the timer must stay on a short retry path instead
-        // of being reset for another 55 minutes.
+        // A keepalive ping that is skipped (no LLM client / no last_request)
+        // must take the short retry-backoff path, NOT be reset for another full
+        // keepalive interval.
         let tmp = tempfile::tempdir().unwrap();
         let now = Instant::now();
 
-        let mut ka = CacheKeepalive::new();
-        // Simulate: cache was warmed 59+ minutes ago, wake is set.
-        ka.on_cache_warmed(now - Duration::from_hours(1));
-        ka.set_next_wake(Some(now + Duration::from_hours(1)));
-
-        // Precondition: keepalive is due right now.
-        assert_eq!(ka.tick(now), CacheKeepaliveAction::Ping);
-        // Reset — tick() didn't advance, so re-prime for the actual test.
-        ka.on_cache_warmed(now - Duration::from_hours(1));
-
+        let ka = due_keepalive(now);
         let state = Arc::new(Mutex::new(AutonomyState {
             heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
             cache_keepalive: ka,
@@ -3194,18 +3195,15 @@ mod tests {
 
     #[tokio::test]
     async fn successful_ping_advances_timer() {
-        // Counterpart: after on_cache_warmed is called (simulating a
-        // successful ping), the next tick should NOT return Ping until
-        // 55 minutes later.
+        // After on_ping_succeeded (simulating a successful ping), the next tick
+        // should NOT return Ping until one interval later.
         let now = Instant::now();
-        let mut ka = CacheKeepalive::new();
-        ka.on_cache_warmed(now - Duration::from_hours(1));
-        ka.set_next_wake(Some(now + Duration::from_hours(1)));
+        let mut ka = due_keepalive(now);
 
         // Ping is due.
         assert_eq!(ka.tick(now), CacheKeepaliveAction::Ping);
-        // Caller confirms success.
-        ka.on_cache_warmed(now);
+        // Caller confirms success — advances from the ping time.
+        ka.on_ping_succeeded(now);
 
         // Immediately after: should NOT be due (55 min away).
         assert_eq!(
@@ -3228,9 +3226,9 @@ mod tests {
         let now = Instant::now();
         _ = mgr.with_state("alice", |s| {
             s.cache_keepalive
-                .on_cache_warmed(now - Duration::from_hours(1));
+                .set_interval(Some(Duration::from_mins(55)), now - Duration::from_hours(1));
             s.cache_keepalive
-                .set_next_wake(Some(now + Duration::from_hours(1)));
+                .on_cache_warmed(now - Duration::from_hours(1));
             s.last_request = Some(empty_request());
         });
 
@@ -3279,10 +3277,11 @@ mod tests {
     }
 
     #[test]
-    fn startup_with_restored_wake_primes_keepalive() {
-        // After daemon restart, if the heartbeat clock had a next_wake
-        // restored from persistence, the keepalive timer must be primed
-        // so pings start immediately — not wait for the first user message.
+    fn startup_leaves_keepalive_unarmed_until_first_request() {
+        // After a (re)start the provider-side cache is cold, so the keepalive
+        // must NOT ping until the first real LLM call caches a request (which
+        // supplies the model's `cache_keepalive` cadence). A restored next_wake
+        // no longer primes it — the two subsystems are independent.
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -3307,16 +3306,14 @@ mod tests {
             let _ignored = mgr.ensure_state("alice");
         });
 
-        // The keepalive should be primed: after 55 minutes, tick should
-        // return Ping (not None).
+        // Unarmed: no ping even far in the future, since no request was cached.
         let state = mgr.states.get("alice").unwrap();
         let mut s = lock_state(&state);
-        let future = Instant::now() + Duration::from_mins(55);
-        let action = s.cache_keepalive.tick(future);
+        let future = Instant::now() + Duration::from_hours(2);
         assert_eq!(
-            action,
-            CacheKeepaliveAction::Ping,
-            "Keepalive must be primed on startup when next_wake is restored"
+            s.cache_keepalive.tick(future),
+            CacheKeepaliveAction::None,
+            "Keepalive must stay unarmed on startup until a request is cached"
         );
     }
 
@@ -3356,6 +3353,7 @@ mod tests {
             rid: None,
             forensic_character: None,
             retain_long: false,
+            keepalive_interval: None,
         };
 
         // set_next_wake is now in the base tool set (tools/basic.rs),
@@ -3484,6 +3482,7 @@ api_key_env = "{api_key_env}"
             rid: None,
             forensic_character: None,
             retain_long: false,
+            keepalive_interval: None,
         }
     }
 
@@ -3901,7 +3900,7 @@ api_key_env = "{heartbeat_env}"
 
         let state = Arc::new(Mutex::new(AutonomyState {
             heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
-            cache_keepalive: CacheKeepalive::new(),
+            cache_keepalive: CacheKeepalive::new(Duration::from_hours(12)),
             activity: ActivityTracker::new(),
             heartbeat_log: HeartbeatLog::new(),
             paused: false,

@@ -245,7 +245,6 @@ pub struct BehaviorConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-#[derive(Default)]
 pub struct AutonomyConfig {
     /// Master switch for autonomous behavior.
     #[serde(default)]
@@ -253,6 +252,27 @@ pub struct AutonomyConfig {
 
     #[serde(default)]
     pub heartbeat: HeartbeatConfig,
+
+    /// Upper bound on how long the cache-keepalive subsystem keeps pinging a
+    /// model's prompt cache after the last *real* activity (user message or
+    /// heartbeat). Independent of the per-model `cache_keepalive` cadence and
+    /// of the heartbeat dormancy guard: it answers "what's the longest gap
+    /// between messages I'd want a warm cache for?". Once this elapses with no
+    /// real activity, pings stop until the user returns. Default: 12h.
+    #[serde(default = "default_cache_keepalive_max")]
+    pub cache_keepalive_max: ConfigDuration,
+}
+
+serde_default!(default_cache_keepalive_max -> ConfigDuration { ConfigDuration::from_secs(43_200) }); // 12 hours
+
+impl Default for AutonomyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            heartbeat: HeartbeatConfig::default(),
+            cache_keepalive_max: default_cache_keepalive_max(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

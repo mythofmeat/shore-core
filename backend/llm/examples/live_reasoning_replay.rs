@@ -238,6 +238,7 @@ async fn main() -> ExitCode {
         rid: Some(format!("live-reasoning-replay-{name}")),
         forensic_character: None,
         retain_long: false,
+        keepalive_interval: None,
     };
 
     let client = match LlmClient::try_new() {

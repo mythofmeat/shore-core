@@ -74,11 +74,14 @@ async fn wait_until_count_above(
 }
 
 fn heartbeat_detail_count(harness: &TestHarness, character: &str, detail: &str) -> usize {
+    // Prefix match: success pings carry a dynamic suffix
+    // (`Cache refresh ping (cache_read: N, input: M)`), so an exact match would
+    // never hit. The prefix is stable and unique enough to count by.
     harness
         .autonomy
         .heartbeat_log(character, 100)
         .into_iter()
-        .filter(|event| event.detail == detail)
+        .filter(|event| event.detail.starts_with(detail))
         .count()
 }
 
@@ -396,7 +399,7 @@ async fn test_sustained_keepalive_over_four_hours() {
     // Simulate 4+ hours of silence. Expect ~4-5 keepalive pings
     // (at 55, 110, 165, 220 minutes).
     let expected_pings = 4;
-    let ping_log_baseline = heartbeat_detail_count(&harness, "TestChar", "Cache keepalive ping");
+    let ping_log_baseline = heartbeat_detail_count(&harness, "TestChar", "Cache refresh ping");
     for i in 0..expected_pings {
         // Enqueue response for this ping.
         harness.mock_llm.enqueue_json_text_optional("ping").await;
@@ -415,7 +418,7 @@ async fn test_sustained_keepalive_over_four_hours() {
         let logged = wait_until_heartbeat_detail_count_above(
             &harness,
             "TestChar",
-            "Cache keepalive ping",
+            "Cache refresh ping",
             ping_log_baseline + i,
             200,
         )

@@ -78,6 +78,15 @@ pub struct LlmRequest {
     /// wire-format meaning and is skipped from serialization.
     #[serde(skip)]
     pub retain_long: bool,
+
+    /// Resolved per-model cache-keepalive interval (`cache_keepalive` in
+    /// `[models.*]`): `Some(interval)` to ping the prompt cache every
+    /// `interval` while idle, `None` when keepalive is off for this model.
+    /// Transient daemon-side scheduling hint — carries no wire meaning and is
+    /// never sent to providers; the autonomy manager reads it off the cached
+    /// `last_request` to drive the standalone keepalive subsystem.
+    #[serde(skip)]
+    pub keepalive_interval: Option<std::time::Duration>,
 }
 
 impl LlmRequest {
@@ -332,6 +341,7 @@ mod tests {
             rid: None,
             forensic_character: None,
             retain_long: false,
+            keepalive_interval: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(!json.as_object().unwrap().contains_key("base_url"));
@@ -365,6 +375,7 @@ mod tests {
             rid: None,
             forensic_character: None,
             retain_long: false,
+            keepalive_interval: None,
         };
         let prefix = req.messages.clone();
         req.push_inline_system("be brief");

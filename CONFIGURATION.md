@@ -403,6 +403,20 @@ store. One-shot overrides — `shore model --all <name>`, `:model all
 <name>`, `shore provider refresh <name>` — apply to a single call and
 are never persisted.
 
+`cache_keepalive` controls how often the daemon refreshes this model's prompt
+cache while the character is idle. It is either `"off"` or a duration
+(`"55m"`, `"6h"`, `"30s"`) — a literal ping interval, **not** derived from any
+cache TTL. It is also distinct from `cache_ttl`, which is the Anthropic-only
+wire setting that *enables* 1h caching; the two are unrelated and can be set
+independently. Defaults are sdk-keyed: the **Anthropic** sdk defaults to
+`"55m"` (its paid 1h cache tier is worth keeping warm), every other sdk
+defaults to `"off"` (their cache lifetimes are opaque and carry no
+cache-write surcharge to amortize, so a default ping would be wasted spend —
+opt in explicitly per model, e.g. `cache_keepalive = "6h"` for a DeepSeek
+model with a long-lived context cache). The total time pings continue after
+the last real message is bounded globally by
+`[behavior.autonomy].cache_keepalive_max`.
+
 Writes are **capability-aware**: a setting is validated against the active
 model's resolved `(sdk, model_id)` before it is persisted. A key the sdk
 ignores or rejects (e.g. `cache_ttl` on a non-Anthropic model, a sampler
@@ -509,6 +523,7 @@ Legacy `character.md`, `user.md`, and `prompts/system.md` are migrated into the 
 ```toml
 [behavior.autonomy]
 enabled = false
+cache_keepalive_max = "12h"
 
 [behavior.autonomy.heartbeat]
 enabled = true
@@ -521,6 +536,8 @@ wrap_up_grace_rounds = 3
 ```
 
 Autonomy requires the master switch. Heartbeat controls private autonomous ticks. All duration fields accept strings like `"30s"`, `"15m"`, `"2h"`, and `"48h"`.
+
+`cache_keepalive_max` is the global ceiling on how long the cache-keepalive subsystem keeps refreshing a model's prompt cache after the last **real** activity (a user message or heartbeat tick). It answers "what is the longest gap between messages I'd still want a warm cache for?". Once it elapses with no real activity, pings stop until the user returns. It is independent of the heartbeat's `dormant_after_idle_time` guard (which governs ticks, not cache warming) and of the per-model ping cadence (`cache_keepalive`, below). Default `"12h"`; it does not require `[behavior.autonomy].enabled`.
 
 `max_tool_rounds` is the normal tool-use budget per heartbeat tick. When that budget (or the wall-clock loop deadline) is reached without natural termination, the daemon appends a wrap-up nudge that asks the character to record any unfinished work into `HEARTBEAT.md` and respond `HEARTBEAT_OK` (or send a final `<sendMessage>`). `wrap_up_grace_rounds` is the additional tool-use budget granted after that nudge so the model can finish the wrap-up turn. Total worst-case rounds per tick = `max_tool_rounds + wrap_up_grace_rounds`. Notes the model leaves in `HEARTBEAT.md` are read into the prompt at the start of every subsequent heartbeat.
 

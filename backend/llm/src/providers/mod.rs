@@ -202,6 +202,7 @@ mod tests {
             rid: None,
             forensic_character: None,
             retain_long: false,
+            keepalive_interval: None,
         }
     }
 
