@@ -16,6 +16,10 @@ const SAMPLER_KEYS: &[&str] = &[
     "budget_tokens",
     "max_output_tokens",
     "cache_ttl",
+    // Daemon-side keepalive ping cadence ("off" or a duration like "55m").
+    // Not a wire field, but honored for every sdk with a prompt cache; the
+    // capability matrix (`Field::CacheKeepalive`) gates the value domain.
+    "cache_keepalive",
     "sdk",
     "replay_prior_thinking",
     // Unified per-model tool-iteration cap (None/unset = unlimited). Honored by
@@ -314,6 +318,7 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
                     "budget_tokens": scopes.budget_tokens.map(scope_str),
                     "max_output_tokens": scopes.max_output_tokens.map(scope_str),
                     "cache_ttl": scopes.cache_ttl.map(scope_str),
+                    "cache_keepalive": scopes.cache_keepalive.map(scope_str),
                     "sdk": scopes.sdk.map(scope_str),
                     "replay_prior_thinking": scopes.replay_prior_thinking.map(scope_str),
                     "max_tool_iterations": scopes.max_tool_iterations.map(scope_str),
@@ -412,8 +417,8 @@ pub fn reset_model(ctx: &mut CommandContext) -> CommandResult {
 ///
 /// Args:
 /// - `key`: one of `temperature`, `top_p`, `reasoning_effort`,
-///   `budget_tokens`, `max_output_tokens`, `cache_ttl`, `sdk`,
-///   `replay_prior_thinking`.
+///   `budget_tokens`, `max_output_tokens`, `cache_ttl`, `cache_keepalive`,
+///   `sdk`, `replay_prior_thinking`, `max_tool_iterations`.
 /// - `value`: a number/string/bool/null. `null` removes the setting.
 /// - `scope`: `"character"` (default) or `"global"`.
 pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResult {
@@ -620,23 +625,21 @@ fn apply_sampler_value(
                 )
             };
         }
-        "sdk" => {
-            sampler.sdk = if is_null {
+        "cache_keepalive" => {
+            sampler.cache_keepalive = if is_null {
                 None
             } else {
-                let s = value
-                    .as_str()
-                    .ok_or_else(|| invalid(format!("sdk must be a string, got {value}")))?;
-                // Reject unknown SDK strings up-front so the preferences
-                // file never carries a value `apply_sampler_overlay` would
-                // have to discard at request time.
-                if shore_config::models::Sdk::parse_wire(s).is_none() {
-                    return Err(invalid(format!(
-                        "sdk must be one of \"anthropic\", \"openai\", \"gemini\", \"zai\"; got {s:?}"
-                    )));
-                }
-                Some(s.to_owned())
+                let s = value.as_str().ok_or_else(|| {
+                    invalid(format!("cache_keepalive must be a string, got {value}"))
+                })?;
+                Some(
+                    shore_config::models::CacheKeepaliveSetting::parse(s)
+                        .map_err(|e| invalid(format!("cache_keepalive: {e}")))?,
+                )
             };
+        }
+        "sdk" => {
+            sampler.sdk = parse_sdk_override(value)?;
         }
         "replay_prior_thinking" => {
             sampler.replay_prior_thinking = parse_thinking_replay_value(value)?;
@@ -659,6 +662,25 @@ fn apply_sampler_value(
         _ => return apply_vendor_sampler_value(sampler, key, value),
     }
     Ok(())
+}
+
+/// Parse/validate an `sdk` override string. `null` clears it. Unknown SDK
+/// strings are rejected up-front so the preferences file never carries a value
+/// `apply_sampler_overlay` would have to discard at request time.
+fn parse_sdk_override(value: &Value) -> Result<Option<String>, (ErrorCode, String)> {
+    let invalid = |msg: String| (ErrorCode::InvalidRequest, msg);
+    if value.is_null() {
+        return Ok(None);
+    }
+    let s = value
+        .as_str()
+        .ok_or_else(|| invalid(format!("sdk must be a string, got {value}")))?;
+    if shore_config::models::Sdk::parse_wire(s).is_none() {
+        return Err(invalid(format!(
+            "sdk must be one of \"anthropic\", \"openai\", \"gemini\", \"zai\"; got {s:?}"
+        )));
+    }
+    Ok(Some(s.to_owned()))
 }
 
 /// Parse/store the vendor knobs (`openrouter_provider`, `vertex_*`, `gemini_*`,
@@ -854,6 +876,7 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
             "budget_tokens": scopes.budget_tokens.map(scope_str),
             "max_output_tokens": scopes.max_output_tokens.map(scope_str),
             "cache_ttl": scopes.cache_ttl.map(scope_str),
+            "cache_keepalive": scopes.cache_keepalive.map(scope_str),
             "sdk": scopes.sdk.map(scope_str),
             "replay_prior_thinking": scopes.replay_prior_thinking.map(scope_str),
             "max_tool_iterations": scopes.max_tool_iterations.map(scope_str),
@@ -897,5 +920,40 @@ mod tests {
         // Not a capability-matrix field, so it is "always" applicable on any sdk.
         let applicability = key_applicability(&shore_config::models::Sdk::Openai, "gpt-test");
         assert_eq!(applicability["max_tool_iterations"], json!("always"));
+    }
+
+    #[test]
+    fn cache_keepalive_setting_parses_validates_and_clears() {
+        use shore_config::models::CacheKeepaliveSetting;
+        let mut s = SamplerSettings::default();
+
+        // A duration string is parsed into the typed setting.
+        apply_sampler_value(&mut s, "cache_keepalive", &json!("30m")).unwrap();
+        assert!(matches!(
+            s.cache_keepalive,
+            Some(CacheKeepaliveSetting::Every(_))
+        ));
+
+        // The "off" sentinel disables keepalive.
+        apply_sampler_value(&mut s, "cache_keepalive", &json!("off")).unwrap();
+        assert_eq!(s.cache_keepalive, Some(CacheKeepaliveSetting::Off));
+
+        // null clears back to inheriting the sdk default.
+        apply_sampler_value(&mut s, "cache_keepalive", &Value::Null).unwrap();
+        assert_eq!(s.cache_keepalive, None);
+
+        // A zero interval is rejected (would spin a ping loop; use "off").
+        let err = apply_sampler_value(&mut s, "cache_keepalive", &json!("0s")).unwrap_err();
+        assert_eq!(err.0, ErrorCode::InvalidRequest);
+        assert!(err.1.contains("cache_keepalive"));
+        assert_eq!(s.cache_keepalive, None);
+    }
+
+    #[test]
+    fn cache_keepalive_is_an_accepted_sampler_key_honored_everywhere() {
+        assert!(SAMPLER_KEYS.contains(&"cache_keepalive"));
+        // `Field::CacheKeepalive` is Honored on every sdk (daemon-side cadence).
+        let applicability = key_applicability(&shore_config::models::Sdk::Openai, "gpt-test");
+        assert_eq!(applicability["cache_keepalive"], json!("honored"));
     }
 }

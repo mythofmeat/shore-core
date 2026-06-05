@@ -450,8 +450,9 @@ pub(crate) enum LogCommand {
 #[derive(Subcommand, Debug)]
 pub(crate) enum ModelCommand {
     /// Show, set, or reset saved sampler settings (temperature, top_p,
-    /// reasoning_effort, budget_tokens, max_output_tokens, cache_ttl, sdk,
-    /// replay_prior_thinking) for the active model.
+    /// reasoning_effort, budget_tokens, max_output_tokens, cache_ttl,
+    /// cache_keepalive, sdk, replay_prior_thinking, max_tool_iterations) for
+    /// the active model.
     ///
     /// `shore model setting`                          show effective sampler
     /// `shore model setting <key>`                    show one key
@@ -613,8 +614,10 @@ complete -c shore -n \"__fish_shore_using_subcommand provider; and __fish_seen_s
 ///   "true"/"yes"/"on" (→ all) and "false"/"no"/"off" (→ none) still coerce to
 ///   a bool the daemon maps for back-compat.
 /// - `temperature`, `top_p`: parse as f64.
-/// - `budget_tokens`, `max_output_tokens`: parse as integer.
-/// - `cache_ttl`: pass through as a string.
+/// - `budget_tokens`, `max_output_tokens`, `max_tool_iterations`: parse as
+///   integer.
+/// - `cache_ttl`, `cache_keepalive`: pass through as a string (the daemon
+///   parses `cache_keepalive`'s `off`/duration domain).
 fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
     use serde_json::Value;
     let trimmed = raw.trim();
@@ -632,7 +635,7 @@ fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
             .ok()
             .and_then(serde_json::Number::from_f64)
             .map_or_else(|| Value::String(trimmed.to_owned()), Value::Number),
-        "budget_tokens" | "max_output_tokens" | "gemini_generation" => {
+        "budget_tokens" | "max_output_tokens" | "gemini_generation" | "max_tool_iterations" => {
             trimmed.parse::<u64>().map_or_else(
                 |_| Value::String(trimmed.to_owned()),
                 |n| Value::Number(n.into()),
