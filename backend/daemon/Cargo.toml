@@ -1,6 +1,6 @@
 [package]
 name = "shore-daemon"
-version = "13.0.1"
+version = "14.0.0"
 edition = "2021"
 license.workspace = true
 repository.workspace = true
