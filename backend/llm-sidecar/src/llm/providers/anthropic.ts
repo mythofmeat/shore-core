@@ -489,6 +489,18 @@ function toContentBlockParam(b: ContentBlock): ContentBlockParam {
       if (b.is_error) out.is_error = true;
       return out;
     }
+    case "image":
+      // Synthesized by the daemon from a message's `images` (base64 source).
+      // The shape already matches Anthropic's ImageBlockParam; only the
+      // media_type literal needs the same narrowing as imagesToAnthropicBlocks.
+      return {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: b.source.media_type as "image/png" | "image/jpeg" | "image/webp" | "image/gif",
+          data: b.source.data,
+        },
+      };
   }
 }
 

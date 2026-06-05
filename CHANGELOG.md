@@ -184,6 +184,16 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   and any persisted per-model settings using `preserve_prior_turns` must be updated.
 
 ### Fixed
+- **Sending an image crashed the Anthropic request with an HTTP 502.** The
+  daemon synthesizes a base64 image block (`{ type: "image", source: … }`) from
+  a message's attached images and inlines it into the wire `content` array, but
+  the sidecar's Anthropic adapter only knew the text/thinking/tool block types.
+  An image block fell through `toContentBlockParam` to `undefined`, and the
+  cache-normalization pass then threw `undefined is not an object (evaluating
+  'delete Q.cache_control')`, surfacing as `server error ["internal_error"]:
+  HTTP 502`. The adapter now passes image blocks straight through to Anthropic's
+  `ImageBlockParam`.
+
 - **Duplicate keepalive log line in `shore status`.** A successful keepalive
   ping wrote two heartbeat-log entries (`Cache refresh ping (cache_read: …)` plus
   a redundant generic `Cache keepalive ping`), making one ping look like two

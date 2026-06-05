@@ -26,7 +26,11 @@ export type ContentBlock =
   | { type: "thinking"; thinking: string; signature?: string; details?: unknown }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "redacted_thinking"; data: string }
-  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean };
+  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean }
+  // Image blocks are not stored in Rust `ContentBlock`; the daemon synthesizes
+  // them from a message's `images` and inlines them into the wire `content`
+  // array (see `encode_image_block`), so the adapter must accept them here.
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
 
 export interface MessageAlternative {
   content: string;
