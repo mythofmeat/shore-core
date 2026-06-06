@@ -84,7 +84,15 @@ impl LedgerStream {
         &mut self.reader
     }
 
-    pub fn finalize(&mut self, result: &StreamResult) {
+    /// Record one ledger row for this call from already-resolved fields. All
+    /// three terminal paths (`finalize`, `finalize_error`, and the `Drop`
+    /// safety net) funnel through here so the recording shape stays identical.
+    fn record(
+        &self,
+        usage: &shore_llm::types::Usage,
+        timing: &shore_llm::types::Timing,
+        finish_reason: &str,
+    ) {
         record_call(
             &self.ledger,
             &self.pricing,
@@ -95,13 +103,17 @@ impl LedgerStream {
                 model: &self.meta.model,
                 call_type: self.meta.call_type,
                 character: &self.meta.character,
-                usage: &result.usage,
-                timing: &result.timing,
-                finish_reason: &result.finish_reason,
+                usage,
+                timing,
+                finish_reason,
                 thinking_enabled: self.meta.thinking_enabled,
                 cache_ttl: self.meta.cache_ttl.clone(),
             },
         );
+    }
+
+    pub fn finalize(&mut self, result: &StreamResult) {
+        self.record(&result.usage, &result.timing, &result.finish_reason);
         self.finalized = true;
     }
 
@@ -125,23 +137,7 @@ impl LedgerStream {
         } else {
             (&zero_usage, &zero_timing)
         };
-        record_call(
-            &self.ledger,
-            &self.pricing,
-            &self.cache_trackers,
-            crate::client::RecordCall {
-                provider: &self.meta.provider,
-                api_key_name: self.meta.api_key_name.clone(),
-                model: &self.meta.model,
-                call_type: self.meta.call_type,
-                character: &self.meta.character,
-                usage,
-                timing,
-                finish_reason: "error",
-                thinking_enabled: self.meta.thinking_enabled,
-                cache_ttl: self.meta.cache_ttl.clone(),
-            },
-        );
+        self.record(usage, timing, "error");
         self.finalized = true;
     }
 
@@ -152,15 +148,30 @@ impl LedgerStream {
 
 impl Drop for LedgerStream {
     fn drop(&mut self) {
-        if !self.finalized {
-            error!(
-                provider = %self.meta.provider,
-                model = %self.meta.model,
-                character = %self.meta.character,
-                call_type = self.meta.call_type.as_str(),
-                "LedgerStream dropped without finalize — API call was NOT recorded"
-            );
+        if self.finalized {
+            return;
         }
+        // Neither `finalize` nor `finalize_error` ran: the consume future was
+        // cancelled (the SWP client disconnected, an upstream deadline dropped
+        // the generation future, etc.) before reaching a terminal frame.
+        // Record the attempt rather than silently losing it — usage is zero
+        // because it only arrives in the `done`/`error` frame, which never came,
+        // but a `cancelled` row keeps `shore usage` honest about the call having
+        // happened. `record_call` is synchronous and self-contained, so it is
+        // safe to run from Drop (no runtime, no await).
+        error!(
+            provider = %self.meta.provider,
+            model = %self.meta.model,
+            character = %self.meta.character,
+            call_type = self.meta.call_type.as_str(),
+            "LedgerStream dropped without finalize — recording as cancelled"
+        );
+        self.record(
+            &shore_llm::types::Usage::default(),
+            &shore_llm::types::Timing::default(),
+            "cancelled",
+        );
+        self.finalized = true;
     }
 }
 
@@ -308,6 +319,47 @@ mod tests {
         assert_eq!(row.finish_reason, "error");
         assert_eq!(row.cache_write_tokens, 0);
         assert_eq!(row.input_tokens, 0);
+    }
+
+    /// A `LedgerStream` whose consume future is cancelled (dropped before
+    /// either finalize path runs) must still leave a ledger trace — a
+    /// `cancelled` row with zero usage — instead of silently vanishing.
+    /// Regression for "LedgerStream dropped without finalize — API call was NOT
+    /// recorded".
+    #[test]
+    fn drop_without_finalize_records_cancelled_row() {
+        let ledger = Arc::new(Ledger::open_in_memory().unwrap());
+        let pricing = Arc::new(PricingEngine::new(Arc::clone(&ledger)));
+        let trackers = Arc::new(Mutex::new(HashMap::<String, CacheTracker>::new()));
+
+        {
+            let _stream = LedgerStream::new_test(
+                CallMeta {
+                    provider: "anthropic".into(),
+                    api_key_name: None,
+                    model: "claude-opus-4-6".into(),
+                    call_type: CallType::Message,
+                    character: "qifei".into(),
+                    thinking_enabled: true,
+                    cache_ttl: Some("1h".into()),
+                },
+                Arc::clone(&ledger),
+                Arc::clone(&pricing),
+                Arc::clone(&trackers),
+            );
+            // Drop here without calling finalize / finalize_error.
+        }
+
+        let rows = ledger.recent(1).unwrap();
+        let row = rows
+            .first()
+            .expect("dropped stream must still record a row");
+        assert_eq!(row.finish_reason, "cancelled");
+        assert_eq!(row.input_tokens, 0);
+        assert_eq!(row.output_tokens, 0);
+        assert_eq!(row.cache_write_tokens, 0);
+        // Zero-usage cancellation must not perturb the cache tracker.
+        assert!(trackers.lock().unwrap().get("qifei").is_none());
     }
 
     #[test]
