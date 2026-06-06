@@ -129,6 +129,59 @@ test("POST /v1/stream emits StreamEvents as NDJSON", async () => {
   ]);
 });
 
+test("disables the idle timeout for long, quiet /v1 turns", async () => {
+  // A max-effort reasoning turn can emit no forwarded bytes for minutes while
+  // the model thinks. Bun's default 10s idleTimeout would close the connection
+  // mid-flight (the daemon then sees an unexpected-EOF / IncompleteStream), so
+  // the handler must disable it per request via `server.timeout(req, 0)`.
+  const calls: Array<{ request: Request; seconds: number }> = [];
+  const server = {
+    timeout(request: Request, seconds: number) {
+      calls.push({ request, seconds });
+    },
+  };
+  const provider: SidecarProvider = {
+    async *stream(req) {
+      yield { type: "start", model: req.model };
+      yield {
+        type: "done",
+        content: "",
+        finish_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        timing: { total_ms: 1, time_to_first_token_ms: 1 },
+      };
+    },
+    async generate() {
+      return generateResponse();
+    },
+  };
+  const handler = createSidecarHandler({ providers: { openai: provider } });
+
+  const streamReq = post("/v1/stream", sidecarReq());
+  await handler(streamReq, server);
+  const generateReq = post("/v1/generate", sidecarReq());
+  await handler(generateReq, server);
+
+  expect(calls).toEqual([
+    { request: streamReq, seconds: 0 },
+    { request: generateReq, seconds: 0 },
+  ]);
+});
+
+test("does not touch the idle timeout for /healthz", async () => {
+  const calls: number[] = [];
+  const server = {
+    timeout(_request: Request, seconds: number) {
+      calls.push(seconds);
+    },
+  };
+  const handler = createSidecarHandler();
+
+  await handler(new Request("http://sidecar/healthz"), server);
+
+  expect(calls).toEqual([]);
+});
+
 test("pre-stream provider errors become non-2xx responses", async () => {
   const err = Object.assign(new Error("rate limited"), {
     status: 429,

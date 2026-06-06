@@ -184,6 +184,30 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   and any persisted per-model settings using `preserve_prior_turns` must be updated.
 
 ### Fixed
+- **Long, quiet reasoning turns died mid-stream ("stream ended without done
+  event").** The LLM sidecar's `Bun.serve` left the default 10-second idle
+  timeout in place, and that timer runs *while a response is streaming*. A
+  max-effort reasoning turn (e.g. `reasoning_effort = "max"` on Opus) — or any
+  long `generate` for compaction/dreaming — can produce no forwarded bytes for
+  far longer than 10s while the model thinks (Anthropic emits only `ping`s,
+  which aren't relayed). Bun then closed the connection mid-response; the daemon
+  saw `unexpected EOF during chunk size line` → `LlmError::IncompleteStream`,
+  retried, and ultimately dropped the (already-billed) ledger entry without
+  finalizing. The sidecar now disables the idle timeout per request
+  (`server.timeout(req, 0)`) for every `/v1` POST, so long quiet turns stream to
+  completion.
+
+- **Cancelled LLM streams left no ledger trace ("API call was NOT recorded").**
+  If a stream's consume future was dropped before reaching a terminal frame —
+  the SWP client disconnecting mid-turn, an upstream deadline dropping the
+  generation future — the `LedgerStream` was dropped without finalizing, so the
+  attempt vanished from `shore usage` entirely. The Drop guard now records a
+  `cancelled` row (zero usage, since none was ever reported) instead of only
+  logging, so every started call leaves a trace. The placeholder is excluded
+  from the warm/cold cache tracker so it can't inject a bogus observation or
+  fire false cache anomalies; a genuine mid-stream `error` is still tracked
+  normally because it can carry a real (already-billed) cache write.
+
 - **Sending an image crashed the Anthropic request with an HTTP 502.** The
   daemon synthesizes a base64 image block (`{ type: "image", source: … }`) from
   a message's attached images and inlines it into the wire `content` array, but

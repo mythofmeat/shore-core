@@ -53,11 +53,18 @@ const NDJSON_HEADERS = {
   "cache-control": "no-cache",
 };
 
-export function createSidecarHandler(deps: SidecarDeps = {}): (request: Request) => Promise<Response> {
+/** The slice of Bun's `Server` we use: per-request idle-timeout override. */
+interface RequestTimeoutServer {
+  timeout(request: Request, seconds: number): void;
+}
+
+export function createSidecarHandler(
+  deps: SidecarDeps = {},
+): (request: Request, server?: RequestTimeoutServer) => Promise<Response> {
   const providers = { ...DEFAULT_PROVIDERS, ...deps.providers };
   const imageGenerate = deps.imageGenerate ?? generateImage;
 
-  return async (request: Request): Promise<Response> => {
+  return async (request: Request, server?: RequestTimeoutServer): Promise<Response> => {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/healthz") {
@@ -67,6 +74,17 @@ export function createSidecarHandler(deps: SidecarDeps = {}): (request: Request)
     if (request.method !== "POST") {
       return textError(404, "not found");
     }
+
+    // Every /v1 POST can run long with no bytes on the wire: a max-effort
+    // reasoning turn (or a long `generate` for compaction/dreaming) makes the
+    // model think for minutes while Anthropic emits only `ping`s, which we do
+    // not forward. Bun's default 10s idleTimeout would then close the
+    // connection mid-flight — the daemon sees "unexpected EOF during chunk
+    // size line" → IncompleteStream → a retry and a dropped (unbilled) ledger
+    // entry. Disable the idle timeout for the whole request so long, quiet
+    // turns can complete. (`idleTimeout` maxes out at 255s, too low to set
+    // globally; the per-request override is the documented escape hatch.)
+    server?.timeout(request, 0);
 
     if (url.pathname === "/v1/stream") {
       const parsed = await readJson<SidecarRequest>(request);

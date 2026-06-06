@@ -92,6 +92,16 @@ fn track_cache_state(
     ts: &str,
     has_cache_metrics: bool,
 ) -> (Option<String>, Option<String>) {
+    // A `cancelled` row is a placeholder for a call whose stream future was
+    // dropped before any terminal frame arrived (see `LedgerStream::drop`). It
+    // carries no cache signal — usage is all zero — so feeding it to the tracker
+    // would inject a bogus cold/zero observation, perturbing the warm/cold
+    // baseline and firing false anomalies. A genuine mid-stream `error` is
+    // different: it can still carry a real cache write (StreamErrored), so it is
+    // tracked normally.
+    if record.finish_reason == "cancelled" {
+        return (None, None);
+    }
     if !(record.call_type.affects_cache_tracker()
         && (has_cache_metrics
             || crate::pricing::is_anthropic_pricing(record.provider, record.model)))

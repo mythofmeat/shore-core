@@ -46,6 +46,17 @@ they are still a small OpenAI-compatible HTTP call.
 
 Socket path passed to the sidecar via `--socket <path>` (or `SHORE_LLM_SOCKET`).
 
+**Idle timeout disabled per request.** `Bun.serve` closes a connection after 10s
+of inactivity by default, and the idle timer runs *while a response streams*. A
+max-effort reasoning turn (or a long `generate` for compaction/dreaming) can go
+quiet for minutes — the model thinks while Anthropic emits only `ping`s, which
+are not forwarded as `StreamEvent`s — so the default would close the connection
+mid-flight (daemon sees "unexpected EOF during chunk size line" →
+`LlmError::IncompleteStream`). Every `/v1` POST therefore calls
+`server.timeout(req, 0)` to disable the idle timeout for that request
+(`idleTimeout` maxes at 255s, too low to set globally). `/healthz` is left
+untouched.
+
 The Rust daemon sidecar transport is the default chat/generate/image path:
 
 ```toml
