@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.2](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v4.0.1...shore-ledger-v4.0.2) - 2026-06-06
+
+### Fixed
+
+- *(sidecar,ledger)* keep long quiet streams alive + never silently drop a call ([#221](https://github.com/mythofmeat/shore-core/pull/221))
+
 ## [4.0.1](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v4.0.0...shore-ledger-v4.0.1) - 2026-06-05
 
 ### Other
