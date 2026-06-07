@@ -18,6 +18,8 @@ import type {
 export interface SidecarDeps {
   providers?: Partial<Record<SidecarRequest["sdk"], SidecarProvider>>;
   imageGenerate?: (req: ImageRequest, signal?: AbortSignal) => Promise<ImageResponse>;
+  /** Override the streaming keepalive cadence (ms). Defaults to {@link HEARTBEAT_MS}; tests set it small. */
+  heartbeatMs?: number;
 }
 
 interface HttpishError {
@@ -53,6 +55,14 @@ const NDJSON_HEADERS = {
   "cache-control": "no-cache",
 };
 
+/**
+ * How often the streaming pump writes a `ping` keepalive when the upstream
+ * provider has gone quiet. Must stay well under Bun's 10s default idle timeout
+ * so a thinking model never lets the daemon↔sidecar socket sit idle long enough
+ * to be culled.
+ */
+const HEARTBEAT_MS = 5_000;
+
 /** The slice of Bun's `Server` we use: per-request idle-timeout override. */
 interface RequestTimeoutServer {
   timeout(request: Request, seconds: number): void;
@@ -63,6 +73,7 @@ export function createSidecarHandler(
 ): (request: Request, server?: RequestTimeoutServer) => Promise<Response> {
   const providers = { ...DEFAULT_PROVIDERS, ...deps.providers };
   const imageGenerate = deps.imageGenerate ?? generateImage;
+  const heartbeatMs = deps.heartbeatMs ?? HEARTBEAT_MS;
 
   return async (request: Request, server?: RequestTimeoutServer): Promise<Response> => {
     const url = new URL(request.url);
@@ -75,15 +86,20 @@ export function createSidecarHandler(
       return textError(404, "not found");
     }
 
-    // Every /v1 POST can run long with no bytes on the wire: a max-effort
-    // reasoning turn (or a long `generate` for compaction/dreaming) makes the
-    // model think for minutes while Anthropic emits only `ping`s, which we do
-    // not forward. Bun's default 10s idleTimeout would then close the
-    // connection mid-flight — the daemon sees "unexpected EOF during chunk
-    // size line" → IncompleteStream → a retry and a dropped (unbilled) ledger
-    // entry. Disable the idle timeout for the whole request so long, quiet
-    // turns can complete. (`idleTimeout` maxes out at 255s, too low to set
-    // globally; the per-request override is the documented escape hatch.)
+    // A /v1 POST can run long with no bytes on the wire: a max-effort reasoning
+    // turn (or a long `generate` for compaction/dreaming) makes the model think
+    // for minutes while the provider emits only `ping`s, which we do not forward.
+    // Bun's default 10s idleTimeout would then close the connection mid-flight —
+    // the daemon sees "unexpected EOF during chunk size line" → IncompleteStream.
+    //
+    // Two cases, because Bun's per-request override behaves differently:
+    //   - Non-streaming (`/v1/generate`, `/v1/image`): the handler awaits a
+    //     single JSON response, and `server.timeout(req, 0)` DOES disable the
+    //     idle timeout for that wait (verified on Bun 1.3.x). So we call it here.
+    //   - Streaming (`/v1/stream`): the same call is a NO-OP for a `ReadableStream`
+    //     body (verified: the idle timer still fires at 10s). That path instead
+    //     keeps the socket warm with periodic `ping` keepalives — see
+    //     streamResponse. The call below is harmless there, just ineffective.
     server?.timeout(request, 0);
 
     if (url.pathname === "/v1/stream") {
@@ -91,7 +107,7 @@ export function createSidecarHandler(
       if (!parsed.ok) return parsed.response;
       const provider = providers[parsed.value.sdk];
       if (!provider) return textError(501, `unsupported sdk: ${parsed.value.sdk}`);
-      return streamResponse(provider, parsed.value, request.signal);
+      return streamResponse(provider, parsed.value, request.signal, heartbeatMs);
     }
 
     if (url.pathname === "/v1/generate") {
@@ -142,6 +158,7 @@ async function streamResponse(
   provider: SidecarProvider,
   req: SidecarRequest,
   requestSignal: AbortSignal,
+  heartbeatMs: number,
 ): Promise<Response> {
   const abort = new AbortController();
   const abortUpstream = () => abort.abort();
@@ -180,13 +197,36 @@ async function streamResponse(
         try {
           for (;;) {
             if (abort.signal.aborted) break;
-            const next = await iterator.next();
-            if (next.done) break;
-            write(next.value);
+            // Race the next provider event against a heartbeat timer. If the
+            // provider stays quiet (a thinking model emitting only un-forwarded
+            // `ping`s), write our own `ping` to keep the daemon↔sidecar socket
+            // from going idle — Bun's per-request timeout override does not
+            // cover a streaming body, so this keepalive is what actually holds
+            // the connection open. Re-race the SAME pending `next` promise each
+            // tick so we never drop an event.
+            const next = iterator.next();
+            let settled: IteratorResult<StreamEvent> | undefined;
+            while (settled === undefined) {
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              const beat = new Promise<"ping">((resolve) => {
+                timer = setTimeout(() => resolve("ping"), heartbeatMs);
+              });
+              const raced = await Promise.race([next, beat]);
+              clearTimeout(timer);
+              if (raced === "ping") {
+                if (abort.signal.aborted) break;
+                write({ type: "ping" });
+              } else {
+                settled = raced;
+              }
+            }
+            if (settled === undefined || settled.done) break;
+            write(settled.value);
           }
         } catch {
-          // StreamEvent has no error variant. Close without `done` so the Rust
-          // StreamConsumer reports IncompleteStream, matching the old providers.
+          // The iterator itself threw (rather than yielding a terminal `error`
+          // event, which providers normally do via streamErrorEvent). Close
+          // without `done` so the Rust StreamConsumer reports IncompleteStream.
         } finally {
           close();
         }

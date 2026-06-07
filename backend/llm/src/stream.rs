@@ -170,6 +170,11 @@ impl StreamConsumer {
                 return Ok(Some(st.finish(content, finish_reason, usage, timing)));
             }
 
+            // Keepalive — no payload, nothing to relay or accumulate. Reading
+            // the line already reset the transport idle timer, which is the
+            // whole point. Keep consuming.
+            StreamEvent::Ping => {}
+
             // A mid-stream provider failure that still carried partial usage
             // (e.g. the Anthropic cache write reported in `message_start`).
             // Fail the call so retry runs, but hand the usage to the caller so
@@ -385,6 +390,54 @@ mod tests {
                 assert_eq!(usage.input_tokens, 2);
                 assert_eq!(timing.total_ms, 800);
             }
+        );
+
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn consume_ignores_ping_keepalives() {
+        let (mut writer, mut reader, direct_tx, mut direct_rx) = setup_stream_pair();
+        let consumer = StreamConsumer::new(direct_tx.clone(), None);
+
+        // Pings (sidecar keepalives during quiet stretches) are interleaved
+        // around real events; the consumer must skip them entirely.
+        let events = [
+            r#"{"type":"start","model":"claude-test"}"#,
+            r#"{"type":"ping"}"#,
+            r#"{"type":"text","text":"Hi"}"#,
+            r#"{"type":"ping"}"#,
+            r#"{"type":"ping"}"#,
+            r#"{"type":"done","content":"Hi","finish_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1,"cache_read_tokens":0,"cache_creation_tokens":0},"timing":{"total_ms":10,"time_to_first_token_ms":5}}"#,
+        ];
+
+        let server_handle = tokio::spawn(async move {
+            for event in events {
+                writer.write_all(event.as_bytes()).await.unwrap();
+                writer.write_all(b"\n").await.unwrap();
+            }
+            writer.shutdown().await.unwrap();
+        });
+
+        let result = consumer.consume(&mut reader, false).await.unwrap();
+        assert_eq!(result.content, "Hi");
+        assert_eq!(result.finish_reason, "end_turn");
+
+        // Exactly StreamStart then ONE text chunk — no frame for any ping.
+        assert!(matches!(
+            direct_rx.recv().await.unwrap(),
+            ServerMessage::StreamStart(_)
+        ));
+        assert_variant!(
+            direct_rx.recv().await.unwrap(),
+            ServerMessage::StreamChunk(chunk) => {
+                assert_eq!(chunk.text, "Hi");
+                assert_eq!(chunk.content_type, "text");
+            }
+        );
+        assert!(
+            direct_rx.try_recv().is_err(),
+            "pings must not produce any relayed frame"
         );
 
         server_handle.await.unwrap();

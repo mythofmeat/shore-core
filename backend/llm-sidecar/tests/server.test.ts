@@ -129,11 +129,50 @@ test("POST /v1/stream emits StreamEvents as NDJSON", async () => {
   ]);
 });
 
-test("disables the idle timeout for long, quiet /v1 turns", async () => {
-  // A max-effort reasoning turn can emit no forwarded bytes for minutes while
-  // the model thinks. Bun's default 10s idleTimeout would close the connection
-  // mid-flight (the daemon then sees an unexpected-EOF / IncompleteStream), so
-  // the handler must disable it per request via `server.timeout(req, 0)`.
+test("emits ping keepalives while the provider stream is quiet", async () => {
+  // A max-effort reasoning turn can emit no forwarded bytes for many seconds
+  // while the model thinks. Bun's idle timeout would otherwise close the socket
+  // mid-flight (the daemon then sees an unexpected-EOF / IncompleteStream). The
+  // streaming pump fills the gap with `ping` events so the socket never sits
+  // idle. (Bun's per-request `server.timeout(req, 0)` is a no-op for streaming
+  // bodies, so this keepalive — not a timeout override — is what holds it open.)
+  const provider: SidecarProvider = {
+    async *stream(req) {
+      yield { type: "start", model: req.model };
+      // Quiet gap long enough to span several heartbeat ticks.
+      await new Promise((resolve) => setTimeout(resolve, 35));
+      yield { type: "text", text: "done thinking" };
+      yield {
+        type: "done",
+        content: "done thinking",
+        finish_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        timing: { total_ms: 35, time_to_first_token_ms: 35 },
+      };
+    },
+    async generate() {
+      return generateResponse();
+    },
+  };
+  const handler = createSidecarHandler({ providers: { openai: provider }, heartbeatMs: 10 });
+
+  const res = await handler(post("/v1/stream", sidecarReq()));
+  const events = (await lines(res)) as Array<{ type: string }>;
+
+  const pings = events.filter((e) => e.type === "ping");
+  expect(pings.length).toBeGreaterThanOrEqual(1);
+  // Pings are interleaved keepalives, never a substitute for the real events:
+  // start first, the content + terminal done still arrive in order.
+  const substantive = events.filter((e) => e.type !== "ping").map((e) => e.type);
+  expect(substantive).toEqual(["start", "text", "done"]);
+});
+
+test("disables the idle timeout for /v1 POSTs", async () => {
+  // The per-request override is load-bearing for the non-streaming endpoints
+  // (`/v1/generate`, `/v1/image`), where it actually disables Bun's idle timeout
+  // for the awaited response. On `/v1/stream` it is a documented no-op (Bun
+  // ignores it for a streaming body — the `ping` keepalive holds that path open)
+  // but the handler still calls it uniformly for every POST.
   const calls: Array<{ request: Request; seconds: number }> = [];
   const server = {
     timeout(request: Request, seconds: number) {
