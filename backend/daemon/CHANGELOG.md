@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [16.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v15.0.1...shore-daemon-v16.0.0) - 2026-06-07
+
+### Fixed
+
+- *(sidecar,daemon)* keep quiet streams alive with ping keepalives + retry tool loops ([#223](https://github.com/mythofmeat/shore-core/pull/223))
+
 ## [15.0.1](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v15.0.0...shore-daemon-v15.0.1) - 2026-06-06
 
 ### Other
