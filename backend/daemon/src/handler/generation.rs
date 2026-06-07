@@ -208,6 +208,21 @@ pub(super) async fn run_tool_phase(
 
     let thinking_enabled = thinking_enabled_from_request(request);
 
+    // Mirror `stream_with_retry`'s policy so transient blips inside the tool
+    // loop are absorbed the same way they are on the first turn.
+    let tool_loop_retry = tools::ToolLoopRetry {
+        max_retries: effective_config
+            .app
+            .advanced
+            .max_retries
+            .unwrap_or(RetryPolicy::default().max_retries),
+        backoff_base_ms: effective_config
+            .app
+            .advanced
+            .retry_backoff
+            .map_or(500, |d| d.as_millis()),
+    };
+
     let tool_loop_result = tools::run_tool_loop(
         &ctx.llm_client,
         &ctx.direct_tx,
@@ -219,6 +234,7 @@ pub(super) async fn run_tool_phase(
         &ctx.diagnostics,
         char_name,
         thinking_enabled,
+        tool_loop_retry,
     )
     .await?;
 

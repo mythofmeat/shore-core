@@ -185,17 +185,24 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 
 ### Fixed
 - **Long, quiet reasoning turns died mid-stream ("stream ended without done
-  event").** The LLM sidecar's `Bun.serve` left the default 10-second idle
-  timeout in place, and that timer runs *while a response is streaming*. A
-  max-effort reasoning turn (e.g. `reasoning_effort = "max"` on Opus) — or any
-  long `generate` for compaction/dreaming — can produce no forwarded bytes for
-  far longer than 10s while the model thinks (Anthropic emits only `ping`s,
-  which aren't relayed). Bun then closed the connection mid-response; the daemon
-  saw `unexpected EOF during chunk size line` → `LlmError::IncompleteStream`,
-  retried, and ultimately dropped the (already-billed) ledger entry without
-  finalizing. The sidecar now disables the idle timeout per request
-  (`server.timeout(req, 0)`) for every `/v1` POST, so long quiet turns stream to
-  completion.
+  event"), especially inside tool loops.** The LLM sidecar's `Bun.serve` left
+  the default 10-second idle timeout in place, and that timer runs *while a
+  response is streaming*. A max-effort reasoning turn (e.g. `reasoning_effort =
+  "max"` on Opus) can produce no forwarded bytes for far longer than 10s while
+  the model thinks (the provider emits only `ping`s, which aren't relayed). Bun
+  then closed the connection mid-response; the daemon saw `unexpected EOF during
+  chunk size line` → `LlmError::IncompleteStream`. The previous fix
+  (`server.timeout(req, 0)` per request) turned out to be a **no-op for a
+  streaming `ReadableStream` body** in Bun 1.3.x — the idle timer still fired at
+  10s — so quiet turns kept dying. The streaming path now keeps the socket warm
+  with periodic `ping` keepalive events during quiet stretches (unbounded, so it
+  covers arbitrarily long thinking), and the global `idleTimeout` is raised to
+  its 255s maximum as a backstop for the non-streaming `/v1/generate` and
+  `/v1/image` calls. Separately, the per-iteration LLM calls the **tool loop**
+  makes were never covered by the first-turn retry wrapper, so a single such
+  blip aborted the whole tool loop (a normal turn silently recovered); the tool
+  loop now retries transient errors with the same policy and backoff as the
+  first turn.
 
 - **Cancelled LLM streams left no ledger trace ("API call was NOT recorded").**
   If a stream's consume future was dropped before reaching a terminal frame —

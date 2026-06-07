@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -9,6 +9,7 @@ use crate::convert::elapsed_ms_u64;
 use crate::tools::{self as tool_system, ToolContext};
 use shore_diagnostics::{self as diagnostics, Diagnostics};
 use shore_ledger::{CallType, LedgerClient};
+use shore_llm::retry::{should_retry_error, RetryDecision, RetryPolicy};
 use shore_llm::stream::StreamConsumer;
 use shore_llm::types::{LlmRequest, StreamResult, ToolUseEvent};
 use shore_llm::LlmError;
@@ -21,6 +22,29 @@ use shore_protocol::types::{derive_content_from_blocks, ContentBlock, ImageRef, 
 pub enum ToolLoopError {
     #[error("LLM error during tool loop: {0}")]
     Llm(#[from] LlmError),
+}
+
+/// Transient-retry settings for the per-iteration LLM calls the tool loop
+/// makes. The loop's continuation calls are NOT covered by
+/// `generation::stream_with_retry` (which wraps only the first turn), so a
+/// transient blip — e.g. an `IncompleteStream` from the sidecar dropping a
+/// quiet stream — would otherwise kill the whole loop. This mirrors that
+/// retry: same `should_retry_error` classification, same exponential backoff.
+#[derive(Debug, Clone, Copy)]
+pub struct ToolLoopRetry {
+    /// Maximum transient retries per continuation call before failing.
+    pub max_retries: u32,
+    /// Base backoff in milliseconds; doubled each attempt.
+    pub backoff_base_ms: u64,
+}
+
+impl ToolLoopRetry {
+    /// No retries — fail on the first error. Used by tests that drive the loop
+    /// with a deterministic mock and never inject transient failures.
+    pub const NONE: Self = Self {
+        max_retries: 0,
+        backoff_base_ms: 0,
+    };
 }
 
 /// Result of the tool loop: the final LLM response plus any intermediate
@@ -66,6 +90,7 @@ pub async fn run_tool_loop(
     diag: &Arc<Mutex<Diagnostics>>,
     character: &str,
     thinking_enabled: bool,
+    retry: ToolLoopRetry,
 ) -> Result<ToolLoopResult, ToolLoopError> {
     let consumer = StreamConsumer::new(direct_tx.clone(), request.rid.clone());
     let mut intermediate_messages: Vec<Message> = Vec::new();
@@ -138,9 +163,15 @@ pub async fn run_tool_loop(
             tool_result_blocks,
         );
 
-        result =
-            stream_tool_loop_continuation(client, &consumer, request, character, thinking_enabled)
-                .await?;
+        result = stream_tool_loop_continuation(
+            client,
+            &consumer,
+            request,
+            character,
+            thinking_enabled,
+            retry,
+        )
+        .await?;
 
         iteration = iteration.saturating_add(1);
     }
@@ -383,24 +414,66 @@ fn append_user_tool_result_turn(
     });
 }
 
+/// Stream one tool-loop continuation turn, retrying transient LLM errors with
+/// exponential backoff — the same policy `generation::stream_with_retry` applies
+/// to the first turn. Retrying here is safe and idempotent: the tools have
+/// already run and their results are already appended to `request.messages`, so
+/// a retry merely re-requests the next assistant turn. Credential-shaped and
+/// non-transient errors fail immediately (`should_retry_error` short-circuits).
 async fn stream_tool_loop_continuation(
     client: &LedgerClient,
     consumer: &StreamConsumer,
     request: &mut LlmRequest,
     character: &str,
     thinking_enabled: bool,
+    retry: ToolLoopRetry,
 ) -> Result<StreamResult, ToolLoopError> {
-    let mut ledger_stream = client
-        .stream_raw(request, CallType::ToolLoop, character, thinking_enabled)
-        .await?;
-    match consumer.consume(ledger_stream.reader_mut(), false).await {
-        Ok(result) => {
-            ledger_stream.finalize(&result);
-            Ok(result)
+    let policy = RetryPolicy {
+        max_retries: retry.max_retries,
+        fallback_model: None,
+    };
+    let mut attempt: u32 = 0;
+
+    loop {
+        let stream_result = async {
+            let mut ledger_stream = client
+                .stream_raw(request, CallType::ToolLoop, character, thinking_enabled)
+                .await?;
+            match consumer.consume(ledger_stream.reader_mut(), false).await {
+                Ok(result) => {
+                    ledger_stream.finalize(&result);
+                    Ok(result)
+                }
+                Err(e) => {
+                    ledger_stream.finalize_error(&e);
+                    Err(e)
+                }
+            }
         }
-        Err(e) => {
-            ledger_stream.finalize_error(&e);
-            Err(e.into())
+        .await;
+
+        match stream_result {
+            Ok(result) => return Ok(result),
+            // Only `Retry` loops; `Fail` (and the unreachable `FallbackModel`,
+            // since we set no fallback) surface the error to the loop caller.
+            Err(e) => match should_retry_error(&e, attempt, &policy) {
+                RetryDecision::Retry => {
+                    let delay = Duration::from_millis(
+                        retry
+                            .backoff_base_ms
+                            .saturating_mul(2_u64.saturating_pow(attempt)),
+                    );
+                    warn!(
+                        attempt,
+                        delay_ms = elapsed_ms_u64(delay),
+                        error = %e,
+                        "Retrying tool-loop continuation after transient LLM error"
+                    );
+                    tokio::time::sleep(delay).await;
+                    attempt = attempt.saturating_add(1);
+                }
+                RetryDecision::FallbackModel(_) | RetryDecision::Fail => return Err(e.into()),
+            },
         }
     }
 }
@@ -495,6 +568,7 @@ mod tests {
                 &test_diag(),
                 "test",
                 false,
+                ToolLoopRetry::NONE,
             )
             .await
             .unwrap();
@@ -547,6 +621,7 @@ mod tests {
             &test_diag(),
             "test",
             false,
+            ToolLoopRetry::NONE,
         )
         .await
         .unwrap();
@@ -655,6 +730,7 @@ mod tests {
             &test_diag(),
             "test",
             false,
+            ToolLoopRetry::NONE,
         )
         .await
         .unwrap();
@@ -703,6 +779,7 @@ mod tests {
             &test_diag(),
             "test",
             false,
+            ToolLoopRetry::NONE,
         )
         .await
         .unwrap();
@@ -770,6 +847,7 @@ mod tests {
                 &test_diag(),
                 "test",
                 false,
+                ToolLoopRetry::NONE,
             )
             .await
             .unwrap();
@@ -822,6 +900,7 @@ mod tests {
             &test_diag(),
             "test",
             false,
+            ToolLoopRetry::NONE,
         )
         .await
         .unwrap();
@@ -909,6 +988,7 @@ mod tests {
             &test_diag(),
             "test",
             false,
+            ToolLoopRetry::NONE,
         )
         .await
         .unwrap();

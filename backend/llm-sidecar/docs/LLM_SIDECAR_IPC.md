@@ -46,16 +46,29 @@ they are still a small OpenAI-compatible HTTP call.
 
 Socket path passed to the sidecar via `--socket <path>` (or `SHORE_LLM_SOCKET`).
 
-**Idle timeout disabled per request.** `Bun.serve` closes a connection after 10s
-of inactivity by default, and the idle timer runs *while a response streams*. A
+**Keeping long, quiet turns alive.** `Bun.serve` closes a connection after a
+period of inactivity, and the idle timer runs *while a response streams*. A
 max-effort reasoning turn (or a long `generate` for compaction/dreaming) can go
-quiet for minutes — the model thinks while Anthropic emits only `ping`s, which
-are not forwarded as `StreamEvent`s — so the default would close the connection
-mid-flight (daemon sees "unexpected EOF during chunk size line" →
-`LlmError::IncompleteStream`). Every `/v1` POST therefore calls
-`server.timeout(req, 0)` to disable the idle timeout for that request
-(`idleTimeout` maxes at 255s, too low to set globally). `/healthz` is left
-untouched.
+quiet for minutes — the model thinks while the provider emits only `ping`s,
+which are not forwarded as content `StreamEvent`s — so an idle close would cut
+the connection mid-flight (daemon sees "unexpected EOF during chunk size line" →
+`LlmError::IncompleteStream`).
+
+Two mechanisms guard against this:
+
+- **Streaming (`/v1/stream`): `ping` keepalives.** The pump races each provider
+  event against a heartbeat timer (`HEARTBEAT_MS`); when the provider is quiet it
+  writes a `{"type":"ping"}` event so bytes keep flowing and the socket never
+  goes idle. This is unbounded — it covers arbitrarily long thinking. NOTE: the
+  per-request `server.timeout(req, 0)` is a **no-op for a streaming
+  `ReadableStream` body** in Bun 1.3.x (the idle timer fires at 10s regardless),
+  which is why the keepalive — not a timeout override — is load bearing here.
+- **Non-streaming (`/v1/generate`, `/v1/image`): per-request `server.timeout`.**
+  These handlers await a single JSON response, and there
+  `server.timeout(req, 0)` *does* disable the idle timeout for the wait (verified
+  on Bun 1.3.x), covering the idle stretch while the provider works.
+
+`/healthz` is unaffected (no timeout override, no body to keep alive).
 
 The Rust daemon sidecar transport is the default chat/generate/image path:
 
@@ -125,6 +138,7 @@ One JSON object per line. Tag field is `type`, snake_case. Defined at
 {"type":"thinking_signature","signature":"<opaque>"}       // see ordering
 {"type":"redacted_thinking","data":"<opaque>"}             // complete block
 {"type":"tool_use","id":"<id>","name":"<name>","input":{}} // CONSOLIDATED (full input)
+{"type":"ping"}                                            // keepalive, any time, ignored
 {"type":"done",
  "content":"<final text string>",
  "finish_reason":"end_turn|tool_use|max_tokens|stop_sequence|refusal",
@@ -150,6 +164,9 @@ One JSON object per line. Tag field is `type`, snake_case. Defined at
 5. `done` last, once. `content` is the final assembled **text string** (not a
    blocks array); the structured blocks are accumulated by the consumer from the
    granular events above. EOF before `done` → `LlmError::IncompleteStream`.
+6. `ping` is a payload-free keepalive that may appear any number of times after
+   `start` and before `done`/`error`. It carries no content and the consumer
+   ignores it; its only effect is keeping the socket from going idle.
 
 ## Non-streaming response — `GenerateResponse`
 

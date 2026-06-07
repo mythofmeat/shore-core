@@ -113,6 +113,11 @@ export type StreamEvent =
       usage: Usage;
       timing: Timing;
     }
+  // A no-op keepalive emitted during quiet stretches (a long max-effort
+  // thinking turn sends only provider `ping`s, which we do not forward). Its
+  // sole purpose is to keep bytes flowing on the daemon↔sidecar socket so the
+  // transport idle timeout cannot fire mid-stream. The consumer ignores it.
+  | { type: "ping" }
   | {
       // A mid-stream provider failure. Carries whatever usage was accumulated
       // before the error (e.g. Anthropic reports the cache write in

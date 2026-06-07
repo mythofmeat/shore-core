@@ -185,6 +185,12 @@ pub enum StreamEvent {
         usage: Usage,
         timing: Timing,
     },
+    /// A no-op keepalive emitted by the sidecar during quiet stretches (e.g. a
+    /// long max-effort thinking turn where the provider sends only `ping`s,
+    /// which we do not forward). Carries no data; its sole purpose is to keep
+    /// bytes flowing on the daemon↔sidecar socket so the transport's idle
+    /// timeout cannot fire mid-stream. The consumer ignores it.
+    Ping,
     /// The provider stream failed mid-flight. Carries whatever usage the
     /// provider had accumulated before the error (e.g. Anthropic reports the
     /// cache write in `message_start`, before any output) so the ledger can
