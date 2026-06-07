@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [12.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v11.0.0...shore-llm-v12.0.0) - 2026-06-07
+
+### Fixed
+
+- *(sidecar,daemon)* keep quiet streams alive with ping keepalives + retry tool loops ([#223](https://github.com/mythofmeat/shore-core/pull/223))
+
 ## [11.0.0](https://github.com/mythofmeat/shore-core/compare/shore-llm-v10.0.0...shore-llm-v11.0.0) - 2026-06-05
 
 ### Added
