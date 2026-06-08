@@ -37,6 +37,10 @@ pub enum CallType {
     Compaction,
     Dreaming,
     MemoryQuery,
+    /// Initial stream of a delegated sub-agent (`ask_<name>` tool). The
+    /// agent's own tool-loop continuations are tagged `ToolLoop`, mirroring
+    /// how the heartbeat path tags only its first call distinctly.
+    Subagent,
 }
 
 impl CallType {
@@ -50,6 +54,7 @@ impl CallType {
             CallType::Compaction => "compaction",
             CallType::Dreaming => "dreaming",
             CallType::MemoryQuery => "memory_query",
+            CallType::Subagent => "subagent",
         }
     }
 
@@ -773,16 +778,11 @@ fn resolve_model_for_request<'ctx>(
     config: &'ctx LoadedConfig,
 ) -> Option<&'ctx ResolvedModel> {
     let provider = request.provider_key.as_deref();
-    config
-        .models
-        .chat
-        .values()
-        .chain(config.models.tools.values())
-        .find(|model| {
-            model.model_id == request.model
-                && model.sdk == request.sdk
-                && provider.is_none_or(|p| p == model.provider_key)
-        })
+    config.models.chat.values().find(|model| {
+        model.model_id == request.model
+            && model.sdk == request.sdk
+            && provider.is_none_or(|p| p == model.provider_key)
+    })
 }
 
 /// Loop-invariant context for a credential-fallback attempt.

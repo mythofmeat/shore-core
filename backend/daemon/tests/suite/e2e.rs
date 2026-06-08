@@ -135,7 +135,11 @@ fn build_test_config_inner(
 
     let mut app = AppConfig::default();
     app.defaults.model = Some("haiku".into());
-    app.behavior.tool_use.enabled = true;
+    // Tools are opt-in: allowlist the whole registered set for the e2e flow.
+    app.tools.enabled_tools = shore_daemon::tools::all_tools()
+        .iter()
+        .map(|t| t.name.to_owned())
+        .collect();
 
     let models_toml = r#"
 [openrouter]
@@ -155,7 +159,7 @@ temperature = 0.0
         }
     }
 
-    let models = ModelCatalog::from_sections(Some(&table), None, None, image_gen_table).unwrap();
+    let models = ModelCatalog::from_sections(Some(&table), None, image_gen_table).unwrap();
 
     LoadedConfig::new_for_test(
         app,

@@ -429,10 +429,12 @@ fn parse_config_table(
     let raw_table = table.clone();
 
     let chat_section = table.remove("chat");
-    let tools_section = table.remove("tools");
     let embedding_section = table.remove("embedding");
     let image_generation_section = table.remove("image_generation");
     let providers_section = table.remove("providers");
+    // NB: `[tools]` is NO LONGER removed here — it is now the tool-surface
+    // config section deserialized into `AppConfig::tools`. (The old
+    // `[tools.*]` model catalog was removed.)
 
     // Deserialize the remaining table into AppConfig.
     let mut app: AppConfig = toml::Value::Table(table)
@@ -451,7 +453,6 @@ fn parse_config_table(
 
     let catalog = ModelCatalog::from_sections_with_providers(
         chat_section.as_ref().and_then(|v| v.as_table()),
-        tools_section.as_ref().and_then(|v| v.as_table()),
         embedding_section.as_ref().and_then(|v| v.as_table()),
         image_generation_section.as_ref().and_then(|v| v.as_table()),
         Some(&providers),
@@ -657,6 +658,20 @@ fn validate_config(
         "defaults.background.dreaming",
         app.defaults.background.dreaming.as_deref(),
     );
+    warn_on_unresolvable_model_ref(
+        catalog,
+        providers,
+        "defaults.subagent_model",
+        app.defaults.subagent_model.as_deref(),
+    );
+    for (name, sub) in &app.subagents {
+        warn_on_unresolvable_model_ref(
+            catalog,
+            providers,
+            &format!("subagents.{name}.model"),
+            sub.model.as_deref(),
+        );
+    }
     validate_default_embedding(providers, app.defaults.embedding.as_deref())?;
     validate_default_image_generation(providers, app.defaults.image_generation.as_deref())?;
 
@@ -1071,8 +1086,8 @@ enabled = true
 enabled = false
 fallback_heartbeat_interval = "30m"
 
-[behavior.tool_use.tools]
-roll_dice = false
+[tools]
+enabled_tools = ["search_chat_logs", "read"]
 
 [advanced]
 max_retries = 5
@@ -1101,13 +1116,8 @@ model_id = "claude-opus-4-6"
                 .fallback_heartbeat_interval,
             ConfigDuration::from_secs(1800)
         );
-        assert!(!loaded.app.behavior.tool_use.tools.roll_dice());
-        assert!(loaded
-            .app
-            .behavior
-            .tool_use
-            .tools
-            .is_enabled("search_history"));
+        assert!(!loaded.app.tools.tool_enabled("roll_dice"));
+        assert!(loaded.app.tools.tool_enabled("search_chat_logs"));
         assert_eq!(loaded.app.advanced.max_retries, Some(5));
         assert!(!loaded.app.daemon.unsafe_allow_remote_access);
 
@@ -1137,7 +1147,7 @@ model_id = "claude-opus-4-6"
                 .fallback_heartbeat_interval,
             ConfigDuration::from_secs(3600)
         );
-        assert!(loaded.app.behavior.tool_use.enabled);
+        assert!(!loaded.app.tools.any_enabled());
         assert!(loaded.app.memory.compaction.enabled);
         assert!(!loaded.app.memory.dreaming.enabled);
         assert_eq!(loaded.app.memory.dreaming.frequency, "0 3 * * *");
@@ -1210,9 +1220,6 @@ key = "value"
 [chat.anthropic.opus]
 model_id = "claude-opus-4-6"
 
-[tools.openrouter.mistral]
-model_id = "mistralai/mistral-small"
-
 [embedding."openai:text-embedding-3-large"]
 dimensions = 1024
 
@@ -1224,7 +1231,6 @@ size = "1024x1024"
         let config_path = tmp.path().join("config.toml");
         let loaded = load_config(Some(&config_path)).unwrap();
         assert!(loaded.models.find_model("opus").is_ok());
-        assert!(loaded.models.find_model("mistral").is_ok());
         assert!(loaded
             .models
             .embedding
@@ -1547,9 +1553,9 @@ model_id = "claude-opus-4-6"
 "#,
             ),
             (
-                "conf.d/02-tools.toml",
+                "conf.d/02-more.toml",
                 r#"
-[tools.openrouter.mistral]
+[chat.openrouter.mistral]
 model_id = "mistralai/mistral-small"
 "#,
             ),

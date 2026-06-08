@@ -13,7 +13,7 @@ use shore_config::app::{
     DefaultsConfig, DreamingConfig, EmbeddedConfig, HeartbeatConfig, LlmSidecarConfig,
     MatrixConfig, MemoryConfig, NotificationBackend, NotificationEventsConfig, NotificationsConfig,
     NtfyConfig, RetrievalBinaryMode, RetrievalConfig, RetrievalMode, SearchConfig, ServiceEntry,
-    ServicesConfig, ThinkingConfig, ToolToggles, ToolUseConfig, UsageBudgetAction,
+    ServicesConfig, ThinkingConfig, ToolOverride, ToolsConfig, UsageBudgetAction,
     UsageBudgetConfig, UsageBudgetPeriod, UsageConfig, UsageSpikeWarningsConfig,
 };
 use shore_config::models::{CacheKeepaliveSetting, ModelConfigFields, Sdk};
@@ -279,6 +279,7 @@ fn arb_defaults_config() -> impl Strategy<Value = DefaultsConfig> {
                 dreaming: None,
                 embedding,
                 image_generation,
+                subagent_model: None,
                 display_name,
                 stream,
             },
@@ -313,61 +314,54 @@ fn arb_heartbeat_config() -> impl Strategy<Value = HeartbeatConfig> {
         )
 }
 
-fn arb_tool_toggles() -> impl Strategy<Value = ToolToggles> {
-    prop::collection::vec((arb_nonempty_text(), any::<bool>()), 0..5).prop_map(|entries| {
-        let mut toggles = ToolToggles::default();
-        for (tool, enabled) in entries {
-            toggles.set(&tool, enabled);
-        }
-        toggles
-    })
+fn arb_tool_override() -> impl Strategy<Value = ToolOverride> {
+    prop::option::of(0_usize..100_000)
+        .prop_map(|max_result_chars| ToolOverride { max_result_chars })
 }
 
-fn arb_tool_use_config() -> impl Strategy<Value = ToolUseConfig> {
+fn arb_tools_config() -> impl Strategy<Value = ToolsConfig> {
     (
-        any::<bool>(),
+        prop::collection::vec(arb_nonempty_text(), 0..5),
+        prop::collection::vec(arb_nonempty_text(), 0..3),
         0_usize..100_000,
-        arb_tool_toggles(),
         (
             arb_nonempty_text(),
             0_u32..25,
             arb_nonempty_text(),
             any::<bool>(),
         ),
+        prop::collection::vec((arb_nonempty_text(), arb_tool_override()), 0..3),
     )
-        .prop_map(|(enabled, max_result_chars, tools, search)| {
-            let (api_key_env, max_results, search_depth, include_answer) = search;
-            ToolUseConfig {
-                enabled,
-                max_result_chars,
-                tools,
-                search: SearchConfig {
-                    api_key_env,
-                    max_results,
-                    search_depth,
-                    include_answer,
-                },
-            }
-        })
+        .prop_map(
+            |(enabled_tools, enabled_subagents, max_result_chars, search, per_tool_entries)| {
+                let (api_key_env, result_limit, search_depth, include_answer) = search;
+                let config = per_tool_entries.into_iter().collect();
+                ToolsConfig {
+                    enabled_tools,
+                    enabled_subagents,
+                    max_result_chars,
+                    web_search: SearchConfig {
+                        api_key_env,
+                        result_limit,
+                        search_depth,
+                        include_answer,
+                    },
+                    config,
+                }
+            },
+        )
 }
 
 fn arb_behavior_config() -> impl Strategy<Value = BehaviorConfig> {
-    (
-        any::<bool>(),
-        arb_heartbeat_config(),
-        arb_tool_use_config(),
-        arb_duration(),
-    )
-        .prop_map(
-            |(enabled, heartbeat, tool_use, cache_keepalive_max)| BehaviorConfig {
-                autonomy: AutonomyConfig {
-                    enabled,
-                    heartbeat,
-                    cache_keepalive_max,
-                },
-                tool_use,
+    (any::<bool>(), arb_heartbeat_config(), arb_duration()).prop_map(
+        |(enabled, heartbeat, cache_keepalive_max)| BehaviorConfig {
+            autonomy: AutonomyConfig {
+                enabled,
+                heartbeat,
+                cache_keepalive_max,
             },
-        )
+        },
+    )
 }
 
 fn arb_compaction_config() -> impl Strategy<Value = CompactionConfig> {
@@ -769,6 +763,7 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
         arb_daemon_config(),
         arb_defaults_config(),
         arb_behavior_config(),
+        arb_tools_config(),
         arb_memory_config(),
         arb_connections_config(),
         prop::option::of(arb_nonempty_text()),
@@ -781,6 +776,7 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
                 daemon,
                 defaults,
                 behavior,
+                tools,
                 memory,
                 connections,
                 service_command,
@@ -791,6 +787,7 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
                 daemon,
                 defaults,
                 behavior,
+                tools,
                 memory,
                 connections,
                 services: ServicesConfig {
@@ -802,6 +799,7 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
                 notifications,
                 usage,
                 advanced,
+                subagents: std::collections::BTreeMap::new(),
             },
         )
 }

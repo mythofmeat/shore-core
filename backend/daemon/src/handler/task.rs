@@ -417,7 +417,7 @@ async fn run_generation_stream(
     .await?;
 
     let tool_intermediate_messages =
-        if result.finish_reason == "tool_use" && effective_config.app.behavior.tool_use.enabled {
+        if result.finish_reason == "tool_use" && effective_config.app.tools.any_enabled() {
             let tool_loop_result = run_tool_phase(
                 ctx,
                 data_dir,

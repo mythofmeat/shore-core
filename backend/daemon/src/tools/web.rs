@@ -69,7 +69,7 @@ pub async fn handle_web_search(input: Value, ctx: &dyn ToolContext) -> Result<Va
     let max_results = input
         .get("max_results")
         .and_then(Value::as_u64)
-        .unwrap_or(u64::from(search_cfg.max_results));
+        .unwrap_or(u64::from(search_cfg.result_limit));
 
     let body = json!({
         "api_key": api_key,

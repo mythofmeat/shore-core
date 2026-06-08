@@ -485,13 +485,8 @@ mod tests {
             ModelCatalog::default()
         } else {
             let table: toml::Table = chat_toml.parse().unwrap();
-            ModelCatalog::from_sections(
-                table.get("chat").and_then(|v| v.as_table()),
-                None,
-                None,
-                None,
-            )
-            .unwrap()
+            ModelCatalog::from_sections(table.get("chat").and_then(|v| v.as_table()), None, None)
+                .unwrap()
         };
         let mut loaded = LoadedConfig::new_for_test(
             shore_config::app::AppConfig::default(),

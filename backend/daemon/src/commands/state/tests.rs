@@ -85,7 +85,7 @@ model_id = "claude-sonnet-4-20250514"
 model_id = "gpt-4o"
 "#;
     let table: toml::Table = toml_str.parse().unwrap();
-    ModelCatalog::from_sections(Some(&table), None, None, None).unwrap()
+    ModelCatalog::from_sections(Some(&table), None, None).unwrap()
 }
 
 fn make_msg(id: &str, role: Role, content: &str) -> Message {
@@ -264,42 +264,6 @@ fn list_models_empty() {
     let result = list_models(&ctx).unwrap();
     assert!(result["models"].as_array().unwrap().is_empty());
     assert!(result["active"].is_null());
-}
-
-#[test]
-fn list_models_excludes_tool_models() {
-    // Regression: list_models previously merged chat AND tools into one
-    // flat list. Tool-only profiles are not meant to be user-selectable chat
-    // targets, and they pollute the UI in `shore models list` /
-    // auto-completions.
-    let tmp = TempDir::new().unwrap();
-    let toml_str = r#"
-[chat.anthropic.claude-sonnet]
-model_id = "claude-sonnet-4-20250514"
-
-[tools.openai.extractor]
-model_id = "gpt-4o-mini"
-"#;
-    let table: toml::Table = toml_str.parse().unwrap();
-    let chat = table.get("chat").and_then(|v| v.as_table());
-    let tools = table.get("tools").and_then(|v| v.as_table());
-    let catalog = ModelCatalog::from_sections(chat, tools, None, None).unwrap();
-    assert_eq!(catalog.chat.len(), 1, "sanity: one chat model");
-    assert_eq!(catalog.tools.len(), 1, "sanity: one tool model");
-
-    let (_engine, ctx, _rx) = make_ctx_with_models(&tmp, catalog);
-    let result = list_models(&ctx).unwrap();
-    let models = result["models"].as_array().unwrap();
-    assert_eq!(
-        models.len(),
-        1,
-        "list_models must only return chat models; tool models are not user-selectable"
-    );
-    assert_eq!(models[0]["name"], "claude-sonnet");
-    assert!(
-        models.iter().all(|m| m["name"] != "extractor"),
-        "tool model should not appear in list"
-    );
 }
 
 #[test]
@@ -788,7 +752,7 @@ fn set_model_setting_moonshot_reasoning_off_vs_graded() {
 model_id = "kimi-k2-thinking"
 "#;
     let table: toml::Table = toml_str.parse().unwrap();
-    let catalog = ModelCatalog::from_sections(Some(&table), None, None, None).unwrap();
+    let catalog = ModelCatalog::from_sections(Some(&table), None, None).unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, catalog);
     ctx.active_model = Some("kimi".into());
 
@@ -835,7 +799,7 @@ model_id = "deepseek-reasoner"
 model_id = "gemini-2.5-flash"
 "#;
     let table: toml::Table = toml_str.parse().unwrap();
-    let catalog = ModelCatalog::from_sections(Some(&table), None, None, None).unwrap();
+    let catalog = ModelCatalog::from_sections(Some(&table), None, None).unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, catalog);
 
     // Native DeepSeek: `off` accepted (adapter disables thinking).
@@ -1251,7 +1215,7 @@ model_id = "gemini-2.5-flash"
 model_id = "gpt-4o"
 "#;
     let table: toml::Table = toml_str.parse().unwrap();
-    ModelCatalog::from_sections(Some(&table), None, None, None).unwrap()
+    ModelCatalog::from_sections(Some(&table), None, None).unwrap()
 }
 
 #[test]
@@ -1398,13 +1362,8 @@ mod phase7 {
             ModelCatalog::default()
         } else {
             let table: toml::Table = chat_toml.parse().unwrap();
-            ModelCatalog::from_sections(
-                table.get("chat").and_then(|v| v.as_table()),
-                None,
-                None,
-                None,
-            )
-            .unwrap()
+            ModelCatalog::from_sections(table.get("chat").and_then(|v| v.as_table()), None, None)
+                .unwrap()
         };
 
         // Always enable discovery for `provider` — caches in production only

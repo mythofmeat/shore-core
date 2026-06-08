@@ -623,7 +623,6 @@ pub fn find_static_model<'cat>(
     catalog
         .chat
         .values()
-        .chain(catalog.tools.values())
         .find(|m| m.provider_key == provider && m.model_id == model_id)
 }
 
@@ -1535,7 +1534,7 @@ max_output_tokens = 8192
     fn make_catalog(toml: &str) -> shore_config::models::ModelCatalog {
         let table: toml::Table = toml.parse().unwrap();
         let chat = table.get("chat").and_then(|v| v.as_table());
-        shore_config::models::ModelCatalog::from_sections(chat, None, None, None).unwrap()
+        shore_config::models::ModelCatalog::from_sections(chat, None, None).unwrap()
     }
 
     #[test]

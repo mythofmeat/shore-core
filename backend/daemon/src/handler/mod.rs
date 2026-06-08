@@ -100,6 +100,19 @@ impl ToolContext for HandlerToolContext {
     fn defer_edit(&self, path: &str) {
         self.inner.defer_edit(path);
     }
+    fn run_subagent<'ctx>(
+        &'ctx self,
+        name: &'ctx str,
+        query: &'ctx str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<serde_json::Value, crate::tools::ToolError>>
+                + Send
+                + 'ctx,
+        >,
+    > {
+        self.inner.run_subagent(name, query)
+    }
 }
 
 #[derive(Debug, Clone)]

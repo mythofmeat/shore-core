@@ -272,7 +272,7 @@ fn build_compaction_tool_context(
             .into_owned(),
         llm_client: llm_client.inner().clone(),
         image_gen_config,
-        search_config: effective.app.behavior.tool_use.search.clone(),
+        search_config: effective.app.tools.web_search.clone(),
         character_name: character.to_owned(),
         workspace_dir: character_workspace_dir(&effective.dirs.config, character)
             .to_string_lossy()
@@ -289,5 +289,6 @@ fn build_compaction_tool_context(
         ),
         config_dir: effective.dirs.config.to_string_lossy().into_owned(),
         character_data_dir: character_data_dir_path.to_string_lossy().into_owned(),
+        subagent_runtime: None,
     })
 }

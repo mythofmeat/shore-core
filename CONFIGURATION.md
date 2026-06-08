@@ -113,8 +113,10 @@ model = "anthropic:claude-haiku-4-5"   # blanket model for every background task
 Chat/tool selectors are `provider:model_id` references resolved through the
 `[providers.*]` registry. `embedding` and `image_generation` use the same
 `provider:model_id` identity (see [Embedding](#embedding) and
-[Image generation](#image-generation)). A legacy `[chat.*]` / `[tools.*]` alias
-(deprecated) also still resolves by its short or qualified name this release.
+[Image generation](#image-generation)). A legacy `[chat.*]` alias (deprecated)
+also still resolves by its short or qualified name this release. The
+`[tools.*]` model catalog has been **removed** — `[tools]` is now the
+tool-surface config section (see [`[tools]`](#tools)).
 
 Important slots:
 
@@ -154,14 +156,18 @@ base_url = "https://openrouter.ai/api/v1"
 max_output_tokens = 8192
 ```
 
-> **Deprecated:** the inline `[chat.<provider>.<model>]` / `[tools.<provider>.<model>]`
-> catalog still loads this release but emits a deprecation warning on parse.
-> Migrate each entry to a `[providers.*]` provider plus a `provider:model_id`
-> reference (move behavioral fields to `[providers.*.defaults]` or
+> **Deprecated:** the inline `[chat.<provider>.<model>]` catalog still loads
+> this release but emits a deprecation warning on parse. Migrate each entry to
+> a `[providers.*]` provider plus a `provider:model_id` reference (move
+> behavioral fields to `[providers.*.defaults]` or
 > `[models."<provider>:<model_id>"]`). Disabling a provider blocks the
 > `provider:model_id` and bare-upstream-id forms (including for any legacy
 > `[chat.*]` entry under it); a legacy static alias's short/qualified-name
 > lookup still resolves this release.
+>
+> **Removed:** the `[tools.<provider>.<model>]` tool-model catalog no longer
+> exists; `[tools]` is now the tool-surface config section. Define tool-loop
+> models the same way as chat models (`provider:model_id`).
 
 ### Embedding
 
@@ -553,64 +559,136 @@ Autonomy requires the master switch. Heartbeat controls private autonomous ticks
 
 The heartbeat's tool-round budget is the per-model `max_tool_iterations` cap (see [Model Sections](#model-sections)) — a single surface shared with chat, compaction, and dreaming. **Unset (the default) means unlimited rounds**, bounded only by the wall-clock loop deadline (~30 min). When a finite `max_tool_iterations` cap is exhausted without natural termination, the daemon appends a wrap-up nudge asking the character to record any unfinished work into `HEARTBEAT.md` and respond `HEARTBEAT_OK` (or send a final `<sendMessage>`), and `wrap_up_grace_rounds` grants that many extra rounds for the wrap-up turn. The wall-clock deadline is a separate backstop: when it is what trips, the nudge still fires once (if `wrap_up_grace_rounds > 0`) but the loop exits on the next deadline check — the grace rounds only meaningfully extend the finite-cap path, not a deadline-bounded tick. Notes the model leaves in `HEARTBEAT.md` are read into the prompt at the start of every subsequent heartbeat.
 
-## `[behavior.tool_use]`
+## `[tools]`
+
+Tools are **opt-in**: a tool is offered to the character only if its name
+appears in `enabled_tools`, and a sub-agent's `ask_<name>` tool only if the
+sub-agent appears in `enabled_subagents`. Empty (or absent) allowlists mean
+nothing is offered — there is no implicit "all tools on" default.
+
+> The section is `[tools]`, not `[tools]` — `[tools.*]` is the (deprecated)
+> tool-model catalog section the config loader reserves.
 
 ```toml
-[behavior.tool_use]
-enabled = true
-max_result_chars = 20000  # Truncate each tool result past this many characters; 0 disables
+[tools]
+enabled_tools = [
+  "web_search",
+  "fetch_url",
+  "generate_image",
+  "check_time",
+  "roll_dice",
+  "activity_heatmap",
+  "read",
+  "write",
+  "edit",
+  "list_files",
+  "search",
+  "delete",
+  "search_chat_logs",
+  "exec",
+]
+enabled_subagents = ["memory"]   # exposes ask_memory (see [subagents])
+max_result_chars = 20000          # truncate each tool result past this; 0 disables
 
-[behavior.tool_use.tools]
-web_search = true
-fetch_url = true
-generate_image = true
-check_time = true
-roll_dice = true
-activity_heatmap = true
-read = true
-write = true
-edit = true
-list_files = true
-search = true
-delete = true
-search_history = true
-exec = true
+[tools.web_search]
+api_key_env  = "TAVILY_API_KEY"
+result_limit = 5
+search_depth = "basic"
+include_answer = true
+
+# Per-tool override of the global max_result_chars:
+[tools.config.search]
+max_result_chars = 10000
 ```
 
-All tools default to enabled. Set `enabled = false` to disable tool use entirely.
+The registered tool names are: `web_search`, `fetch_url`, `generate_image`,
+`check_time`, `roll_dice`, `activity_heatmap`, `read`, `write`, `edit`,
+`list_files`, `search`, `delete`, `search_chat_logs`, `exec`. List exactly the
+ones you want; comment a line out to disable that tool.
 
-The maximum number of tool-loop rounds per chat turn is the per-model `max_tool_iterations` cap (see [Model Sections](#model-sections)), not a `[behavior.tool_use]` key. It defaults to **unlimited**; the loop ends when the model stops requesting tools.
+The maximum number of tool-loop rounds per chat turn is the per-model
+`max_tool_iterations` cap (see [Model Sections](#model-sections)), not a
+`[tools]` key. It defaults to **unlimited**; the loop ends when the model
+stops requesting tools.
 
 `max_result_chars` caps how many characters a single tool result may contribute
 to the conversation. It defaults to `20000` (~5k tokens of code-like output);
-set it to `0` to disable truncation and preserve full tool output. When a result
+set it to `0` to disable truncation and preserve full tool output. A per-tool
+`[tools.config.<name>]` table overrides it for that tool. When a result
 exceeds the limit it is cut at a character boundary and a one-line notice
 (`[tool_result truncated: showing first N of M characters]`) is appended so the
 model knows output was dropped. The truncation is persisted, so the shortened
 result — not the original — is what gets replayed on later turns, capping its
 context cost for the rest of the conversation.
 
-- In private conversations, `search_history` and `exec` are hidden.
+- In private conversations, `search_chat_logs` and `exec` are hidden.
 - Workspace file tools (`read`, `write`, `edit`, `list_files`, `search`, `delete`) treat `memory/...` as an ordinary workspace subdirectory.
-
-Legacy config keys such as `memory_search` and `memory_list` may still parse as
-tool toggles, but they are compatibility keys and are not registered LLM tools.
-Legacy keys like `memory`, `memory_read`, and `memory_write` are also inert; use
-tool-name toggles directly (`search_history = false`, `read = false`, etc.).
-There is no `send_image` toggle for uploaded attachments; generated-image
-sending is controlled by `generate_image`.
+- There is no `send_image` toggle for uploaded attachments; generated-image sending is controlled by `generate_image`.
 
 `exec` is allowlisted and argument-sandboxed. Path-like arguments must stay inside the character workspace.
 
-### `[behavior.tool_use.search]`
+### `[tools.web_search]`
+
+Settings for the `web_search` tool (Tavily API):
 
 ```toml
-[behavior.tool_use.search]
-api_key_env = "TAVILY_API_KEY"
-max_results = 5
+[tools.web_search]
+api_key_env  = "TAVILY_API_KEY"
+result_limit = 5
 search_depth = "basic"
 include_answer = true
 ```
+
+## `[subagents]`
+
+Sub-agents wrap a subset of the in-process tools behind a single
+natural-language tool. Each `[subagents.<name>]` entry *defines* a sub-agent;
+listing its name in `[tools].enabled_subagents` *exposes* it to the primary
+character as one `ask_<name>(query)` tool. Calling it runs a full tool loop on a
+(typically cheaper) model over the listed tools and returns only the agent's
+final text — the intermediate tool results never enter the primary model's
+context, and the primary model's tool surface stays small. This both lowers
+cost (cheap model does the busywork) and improves tool-selection accuracy.
+
+Definition and enablement are deliberately separate, so a sub-agent must be
+opted in just like any tool:
+
+```toml
+[defaults]
+# Fallback model for sub-agents that don't pin their own. Keep it cheap.
+subagent_model = "anthropic:claude-haiku-4-5"
+
+[tools]
+enabled_subagents = ["memory"]   # nothing is exposed until listed here
+
+[subagents.memory]
+description = "Ask {{char}}'s archivist about past conversations and saved notes."
+prompt = "You are {{char}}'s memory archivist. Search and read what's relevant, answer concisely. Say so if you find nothing."
+tools = ["search", "search_chat_logs", "read", "list_files"]
+# model = "anthropic:claude-haiku-4-5"   # optional; else defaults.subagent_model → defaults.model
+# max_iterations = 8                      # optional; else the model's own cap
+```
+
+**Tip — "moved, not doubled":** if you expose `ask_memory`, you usually want to
+*omit* its underlying tools (`search`, `search_chat_logs`, `read`,
+`list_files`) from the primary character's `enabled_tools`, so the character
+delegates instead of doing the lookup itself. Leave them in only if you want
+both a quick direct lookup and a deep delegated dig.
+
+- `description` / `prompt` support `{{char}}` / `{{user}}` templating.
+- `tools` must name registered tools; unknown names are skipped with a warning.
+  `ask_*` tools are never offered to a sub-agent, so **nesting is hard-capped at
+  one level** — a sub-agent cannot delegate further.
+- Model resolution: `subagents.<name>.model` → `defaults.subagent_model` →
+  `defaults.model`.
+- Sub-agent spend is recorded in the ledger under call type `subagent` (its
+  own tool-loop rounds are tagged `tool_loop`), so `shore usage` attributes it
+  distinctly. Each sub-agent keeps its own stable prompt prefix, so repeated
+  calls to the same agent cache well.
+
+> Sub-agents add an LLM round-trip per delegated question (latency) and a layer
+> of English→query→summary translation. Use them for domains with a real schema
+> worth knowing; keep atomic, precisely-known operations as direct tools.
 
 ## `[memory.compaction]`
 

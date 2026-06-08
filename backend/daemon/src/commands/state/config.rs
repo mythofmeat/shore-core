@@ -35,16 +35,6 @@ pub async fn config_check(ctx: &CommandContext) -> CommandResult {
         }
     }
 
-    // Check: tool models
-    if ctx.config.models.tools.is_empty() {
-        info.push("No tool models configured (chat models will be used for tools)".into());
-    } else {
-        info.push(format!(
-            "{} tool model(s) configured",
-            ctx.config.models.tools.len()
-        ));
-    }
-
     // Check: LLM service configured?
     if ctx.config.app.services.llm.command.is_none() && ctx.config.app.services.llm.socket.is_none()
     {
@@ -76,7 +66,6 @@ pub async fn config_check(ctx: &CommandContext) -> CommandResult {
         "data_dir": ctx.config.dirs.data.display().to_string(),
         "cache_dir": ctx.config.dirs.cache.display().to_string(),
         "chat_models": ctx.config.models.chat.len(),
-        "tool_models": ctx.config.models.tools.len(),
         "memory_mode": "markdown",
     }))
 }

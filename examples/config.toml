@@ -12,8 +12,9 @@
 # Split config across files with `include = ["models.toml"]`, or drop extra
 # `*.toml` into a `conf.d/` next to this file (auto-loaded).
 #
-# The old inline [chat.<provider>.<model>] / [tools.<provider>.<model>]
-# catalog is deprecated and intentionally omitted from this example. See
+# The old inline [chat.<provider>.<model>] catalog is deprecated and omitted
+# from this example. The [tools.<provider>.<model>] model catalog has been
+# REMOVED — `[tools]` is now the tool-surface config section (see below). See
 # CONFIGURATION.md for migrating any leftover entries.
 
 # include = ["models.toml"]   # Optional explicit includes (conf.d/*.toml also auto-loads)
@@ -219,34 +220,54 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 
 # ── Tool use ─────────────────────────────────────────────────────────────
 
-# [behavior.tool_use]
-# enabled = true
+# Tools are OPT-IN: a tool is offered only if listed in `enabled_tools`, and a
+# sub-agent's `ask_<name>` tool only if listed in `enabled_subagents`. An empty
+# (or absent) [tools] section offers nothing.
+# [tools]
+# enabled_tools = [
+#   "web_search",        # Tavily web search
+#   "fetch_url",         # fetch a URL's content
+#   "generate_image",
+#   "check_time",
+#   "roll_dice",
+#   "activity_heatmap",
+#   "read",              # read workspace files (memory/ is an ordinary subdir)
+#   "write",             # write workspace files; protected prompt files defer to compaction
+#   "edit",
+#   "list_files",
+#   "search",            # search workspace files
+#   "delete",
+#   "search_chat_logs",  # search compacted + active conversation history (hidden in private convos)
+#   "exec",              # allowlisted, argument-sandboxed workspace commands (hidden in private convos)
+# ]
+# enabled_subagents = ["memory"]   # exposes ask_memory (see [subagents] below)
 # max_result_chars = 20000   # Truncate each tool result past this many characters (0 disables)
 # Tool-loop round cap is the per-model `max_tool_iterations` setting
 # (`shore model setting max_tool_iterations <n>`); unset (default) = unlimited.
 
-# Per-tool toggles — all enabled by default; set to false to disable.
-# [behavior.tool_use.tools]
-# web_search = true
-# fetch_url = true
-# generate_image = true
-# check_time = true
-# roll_dice = true
-# activity_heatmap = true
-# read = true                # Read workspace files (memory/ is an ordinary subdir)
-# write = true               # Write workspace files; protected prompt files defer to compaction
-# edit = true
-# list_files = true
-# search = true              # Search workspace files
-# delete = true
-# search_history = true      # Search compacted + active conversation history (hidden in private convos)
-# exec = true                # Allowlisted, argument-sandboxed workspace commands (hidden in private convos)
-
-# [behavior.tool_use.search]
+# [tools.web_search]
 # api_key_env = "TAVILY_API_KEY"  # Env var holding the Tavily API key
-# max_results = 5
+# result_limit = 5
 # search_depth = "basic"          # "basic" or "advanced"
 # include_answer = true           # Include Tavily's synthesized answer
+
+# Per-tool override of the global max_result_chars:
+# [tools.config.search]
+# max_result_chars = 10000
+
+# ── Sub-agents ───────────────────────────────────────────────────────────
+# A sub-agent wraps a subset of tools behind one `ask_<name>(query)` tool,
+# run on a cheap model; only its final answer returns. Define it here and
+# enable it via [tools].enabled_subagents above.
+# [defaults]
+# subagent_model = "anthropic:claude-haiku-4-5"   # cheap fallback model
+#
+# [subagents.memory]
+# description = "Ask {{char}}'s archivist about past conversations and saved notes."
+# prompt = "You are {{char}}'s memory archivist. Search and read what's relevant, answer concisely."
+# tools = ["search", "search_chat_logs", "read", "list_files"]
+# # model = "anthropic:claude-haiku-4-5"   # optional; else defaults.subagent_model
+# # max_iterations = 8                      # optional; else the model's own cap
 
 # ── Memory & context management ──────────────────────────────────────────
 

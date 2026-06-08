@@ -1359,12 +1359,11 @@ fn print_config_check(data: &serde_json::Value) {
     }
 
     let chat = data["chat_models"].as_u64().unwrap_or(0);
-    let tool = data["tool_models"].as_u64().unwrap_or(0);
     let embed = data["embedding_models"].as_u64().unwrap_or(0);
     write_row(
         &mut out,
         "Models",
-        &format!("{chat} chat, {tool} tool, {embed} embedding"),
+        &format!("{chat} chat, {embed} embedding"),
     );
 
     let _ignored = writeln!(out);

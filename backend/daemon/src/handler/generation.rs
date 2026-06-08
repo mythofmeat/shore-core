@@ -190,7 +190,7 @@ pub(super) async fn run_tool_phase(
                 .into_owned(),
             llm_client: ctx.llm_client.inner().clone(),
             image_gen_config,
-            search_config: effective_config.app.behavior.tool_use.search.clone(),
+            search_config: effective_config.app.tools.web_search.clone(),
             character_name: char_name.to_owned(),
             workspace_dir: workspace_dir.to_string_lossy().into_owned(),
             markdown_store: MarkdownMemoryStore::open_sync(memory_dir).ok(),
@@ -202,6 +202,19 @@ pub(super) async fn run_tool_phase(
             ),
             config_dir: config_dir.to_string_lossy().into_owned(),
             character_data_dir: character_data_dir.to_string_lossy().into_owned(),
+            // Wire the sub-agent runtime only when sub-agents are configured —
+            // avoids cloning the config into an Arc for every turn otherwise.
+            subagent_runtime: if effective_config.app.subagents.is_empty() {
+                None
+            } else {
+                Some(std::sync::Arc::new(
+                    crate::tools::subagent::SubagentRuntime {
+                        ledger_client: ctx.llm_client.clone(),
+                        diagnostics: std::sync::Arc::clone(&ctx.diagnostics),
+                        config: std::sync::Arc::new(effective_config.clone()),
+                    },
+                ))
+            },
         },
         autonomy_val: ctx.autonomy.clone(),
     };
@@ -230,7 +243,7 @@ pub(super) async fn run_tool_phase(
         result,
         &tool_ctx,
         resolved.max_tool_iterations,
-        effective_config.app.behavior.tool_use.max_result_chars,
+        effective_config.app.tools.max_result_chars,
         &ctx.diagnostics,
         char_name,
         thinking_enabled,

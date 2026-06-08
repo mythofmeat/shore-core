@@ -7,7 +7,36 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 
 ## [Unreleased]
 
+### Changed
+- **Tool config moved to a top-level `[tools]` section and is now opt-in.**
+  The former `[behavior.tool_use]` block is gone. Tools are an **allowlist**:
+  list the ones you want in `[tools].enabled_tools` (nothing is offered by
+  default — the old all-on bool-map is removed). Web-search settings move to
+  `[tools.web_search]` (with `result_limit` replacing `max_results`), and a
+  per-tool `[tools.config.<name>]` table can override the global
+  `max_result_chars`. **This is a breaking config change** — update your config.
+  See `[tools]` in CONFIGURATION.md.
+- **Removed the deprecated `[tools.*]` tool-model catalog section.** That
+  catalog (an alias surface for tool-loop models, long deprecated in favor of
+  `provider:model_id`) is gone, freeing the `[tools]` name for the tool-surface
+  config above. Define models under `[providers.*]` / `[models."provider:id"]`.
+- **Renamed the `search_history` tool to `search_chat_logs`** — a clearer,
+  model-facing name for searching the conversation transcript.
+
 ### Added
+- **Sub-agent delegation (`[subagents]` + `[tools].enabled_subagents`).** Each
+  `[subagents.<name>]` entry defines a sub-agent; listing it in
+  `[tools].enabled_subagents` exposes it to the character as a single
+  `ask_<name>(query)` tool that runs a full tool loop on a (typically cheaper)
+  model over a configured subset of the in-process tools, returning only the
+  agent's final summary. This pushes tool-loop busywork off the expensive chat
+  model and shrinks the primary tool surface (better selection accuracy), while
+  the bulky intermediate results stay out of the main context. Set a shared
+  cheap fallback with `[defaults].subagent_model`; per-agent `model` /
+  `max_iterations` override it. Spend is attributed in the ledger under call type
+  `subagent`. Nesting is capped at one level (a sub-agent cannot delegate to
+  another), and the runtime is wired only on the interactive chat path. See
+  `[subagents]` in CONFIGURATION.md.
 - **Unified per-model tool-iteration cap (`max_tool_iterations`).** A single
   `shore model setting` key now governs the maximum number of agentic tool-loop
   rounds for **every** loop — interactive chat, the autonomous heartbeat,

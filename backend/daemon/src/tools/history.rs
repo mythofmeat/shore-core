@@ -32,7 +32,7 @@ const RECENCY_WEIGHT: f64 = 15.0;
 
 pub fn tool_defs() -> Vec<ToolDef> {
     vec![ToolDef {
-        name: "search_history",
+        name: "search_chat_logs",
         description: crate::include_prompt!("../../prompts/tools/history/search_history.md"),
         parameters: json!({
             "type": "object",
