@@ -150,19 +150,24 @@ fn resolve_background_setting_target(
         return resolve_background_target_model(ctx, task);
     }
 
-    let tasks = [
-        BackgroundTask::Heartbeat,
-        BackgroundTask::Compaction,
-        BackgroundTask::Dreaming,
+    // Resolve all three; `all` only works when they collapse to one model. A
+    // fixed-size array lets the compiler prove the destructure below is total,
+    // so there's no dead fallback branch and no panicking index.
+    let resolved = [
+        (
+            BackgroundTask::Heartbeat,
+            resolve_background_target_model(ctx, BackgroundTask::Heartbeat)?,
+        ),
+        (
+            BackgroundTask::Compaction,
+            resolve_background_target_model(ctx, BackgroundTask::Compaction)?,
+        ),
+        (
+            BackgroundTask::Dreaming,
+            resolve_background_target_model(ctx, BackgroundTask::Dreaming)?,
+        ),
     ];
-    let mut resolved = Vec::with_capacity(tasks.len());
-    for task in tasks {
-        resolved.push((task, resolve_background_target_model(ctx, task)?));
-    }
-    // `tasks` is a non-empty literal, so `first()` always yields here.
-    let Some((_, first)) = resolved.first() else {
-        return resolve_active_model(ctx);
-    };
+    let [(_, first), ..] = &resolved;
     let all_same = resolved
         .iter()
         .all(|(_, m)| m.provider_key == first.provider_key && m.model_id == first.model_id);
