@@ -685,8 +685,29 @@ with that role.
 - **args:** none
 - **data:** `{ "previous": "…", "previous_provider": "…", "previous_model_id": "…", "active": null, "reset_to": "config default" }`
 
+#### `background_models` *(characterless OK)*
+- **args:** none.
+- **data:**
+  ```json
+  {
+    "background": [
+      { "task": "heartbeat", "model": "anthropic/claude-sonnet",
+        "source": "inherited: active chat model" },
+      { "task": "compaction", "model": "deepseek/deepseek-v4-pro",
+        "source": "config: background.compaction" },
+      { "task": "dreaming", "model": "deepseek/deepseek-v4-pro",
+        "source": "config: background.model" }
+    ]
+  }
+  ```
+- Read-only view of which model each background task resolves to (per the
+  `[defaults.background]` config section) and where the selection comes from:
+  a per-task pin (`config: background.<task>`), the blanket pin
+  (`config: background.model`), or `inherited: active chat model` when no
+  background model is configured.
+
 #### `set_model_setting`
-- **args:** `{ "key": "<key>", "value": <number|string|bool|null>, "scope"?: "character" | "global" }`
+- **args:** `{ "key": "<key>", "value": <number|string|bool|null>, "scope"?: "character" | "global", "background_task"?: "all" | "heartbeat" | "compaction" | "dreaming" }`
 - **valid keys:** `temperature`, `top_p`, `reasoning_effort`,
   `budget_tokens`, `max_output_tokens`, `cache_ttl`, `sdk`,
   `replay_prior_thinking` (plus the vendor knobs `openrouter_provider`,
@@ -694,10 +715,16 @@ with that role.
   `gemini_web_search`, `zai_clear_thinking`, `zai_subscription`).
 - **data:** `{ "changed": true, "scope": "character", "model": "…", "provider": "…", "model_id": "…", "key": "…", "value": … }`
 - `value: null` clears the setting.
+- `background_task` retargets the write at the model backing that background
+  task instead of the active chat model (settings are keyed by
+  `provider:model_id`, so no model switch is needed). `"all"` targets every
+  background task at once and is rejected if they resolve to different models.
 
 #### `model_settings`
-- **args:** `{ "name"?: "<model>" }` — defaults to the active model.
+- **args:** `{ "name"?: "<model>", "background_task"?: "all" | "heartbeat" | "compaction" | "dreaming" }` — defaults to the active model.
 - **data:** `{ model, provider, model_id, effective_sampler, saved_global, saved_character, scopes }`.
+- `background_task` reads the settings of the model backing that background
+  task (same selector semantics as `set_model_setting`).
 
 #### `memory`
 - **args:** `{ "query"?: "string" }`

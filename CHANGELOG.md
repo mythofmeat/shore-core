@@ -8,6 +8,19 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **Inspect and tune background-task models from the CLI.** Background-task
+  model selection stays config-only (`[defaults.background]`), but two new
+  commands close the visibility/access gap. `shore model --background` prints
+  which model each background task (heartbeat/compaction/dreaming) resolves to
+  and where the selection comes from (per-task pin, blanket pin, or inherited
+  chat model). `shore model setting --background <all|heartbeat|compaction|dreaming> [key [value]]`
+  reads or edits the per-model sampler settings of the model backing a task
+  **without** switching chat to it — previously the only way to tune a
+  background model was to make it the active chat model, change the setting,
+  and switch back. Settings remain keyed by `provider:model_id` (so tuning a
+  background model also affects chat when they share a model); `--background all`
+  errors if the tasks resolve to different models, listing the per-task
+  mapping. `--reset` and `--global` behave as for plain `shore model setting`.
 - **Unified per-model tool-iteration cap (`max_tool_iterations`).** A single
   `shore model setting` key now governs the maximum number of agentic tool-loop
   rounds for **every** loop — interactive chat, the autonomous heartbeat,

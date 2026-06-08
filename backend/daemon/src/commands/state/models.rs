@@ -82,6 +82,179 @@ fn effective_catalog_err(e: &EffectiveCatalogError) -> (ErrorCode, String) {
     }
 }
 
+/// Parse a background-task selector string into the config enum.
+fn background_task_from_str(s: &str) -> Option<shore_config::app::BackgroundTask> {
+    use shore_config::app::BackgroundTask;
+    match s {
+        "heartbeat" => Some(BackgroundTask::Heartbeat),
+        "compaction" => Some(BackgroundTask::Compaction),
+        "dreaming" => Some(BackgroundTask::Dreaming),
+        _ => None,
+    }
+}
+
+fn background_task_label(task: shore_config::app::BackgroundTask) -> &'static str {
+    use shore_config::app::BackgroundTask;
+    match task {
+        BackgroundTask::Heartbeat => "heartbeat",
+        BackgroundTask::Compaction => "compaction",
+        BackgroundTask::Dreaming => "dreaming",
+    }
+}
+
+/// Resolve the *base* model identity backing a background task, mirroring the
+/// model-selection half of [`preferences::resolve_background_model`] (config
+/// pin → active chat model) without applying the sampler overlay. Used to key
+/// settings reads/writes onto the right `provider:model_id`, so the user can
+/// tune a background model without first switching chat to it.
+fn resolve_background_target_model(
+    ctx: &CommandContext,
+    task: shore_config::app::BackgroundTask,
+) -> Result<shore_config::models::ResolvedModel, (ErrorCode, String)> {
+    if let Some(name) = ctx.config.app.defaults.resolve_background_model_name(task) {
+        return effective_catalog::find_effective_model(
+            &ctx.config,
+            &ctx.config.dirs.cache,
+            name,
+            true,
+        )
+        .map_err(|e| effective_catalog_err(&e));
+    }
+    // No background pin: the task inherits the character's active chat model.
+    let character = require_character(ctx)?;
+    preferences::resolve_chat_model_for_character(&ctx.config, character).ok_or((
+        ErrorCode::NotFound,
+        format!(
+            "{} has no configured model and the catalog has no chat model to inherit",
+            background_task_label(task)
+        ),
+    ))
+}
+
+/// Resolve the model a settings command targets when a `background_task`
+/// selector is present. `"all"` requires every background task to collapse to a
+/// single model identity; otherwise it errors with the per-task mapping so the
+/// user knows which task to target individually.
+fn resolve_background_setting_target(
+    ctx: &CommandContext,
+    selector: &str,
+) -> Result<shore_config::models::ResolvedModel, (ErrorCode, String)> {
+    use shore_config::app::BackgroundTask;
+    if selector != "all" {
+        let task = background_task_from_str(selector).ok_or((
+            ErrorCode::InvalidRequest,
+            format!(
+                "unknown background task: {selector}; expected all, heartbeat, compaction, or dreaming"
+            ),
+        ))?;
+        return resolve_background_target_model(ctx, task);
+    }
+
+    let tasks = [
+        BackgroundTask::Heartbeat,
+        BackgroundTask::Compaction,
+        BackgroundTask::Dreaming,
+    ];
+    let mut resolved = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        resolved.push((task, resolve_background_target_model(ctx, task)?));
+    }
+    // `tasks` is a non-empty literal, so `first()` always yields here.
+    let Some((_, first)) = resolved.first() else {
+        return resolve_active_model(ctx);
+    };
+    let all_same = resolved
+        .iter()
+        .all(|(_, m)| m.provider_key == first.provider_key && m.model_id == first.model_id);
+    if all_same {
+        return Ok(first.clone());
+    }
+    let mapping = resolved
+        .iter()
+        .map(|(task, m)| format!("{} → {}", background_task_label(*task), m.qualified_name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err((
+        ErrorCode::InvalidRequest,
+        format!(
+            "background tasks use different models ({mapping}); target a specific task instead of `all`"
+        ),
+    ))
+}
+
+/// Resolve the model a settings read/write should operate on: an explicit
+/// `background_task` selector wins, then an explicit `name`, then the active
+/// chat model.
+fn resolve_setting_target(
+    ctx: &CommandContext,
+    args: &Value,
+) -> Result<shore_config::models::ResolvedModel, (ErrorCode, String)> {
+    if let Some(selector) = args.get("background_task").and_then(|v| v.as_str()) {
+        return resolve_background_setting_target(ctx, selector);
+    }
+    if let Some(name) = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return effective_catalog::find_effective_model(
+            &ctx.config,
+            &ctx.config.dirs.cache,
+            name,
+            true,
+        )
+        .map_err(|e| effective_catalog_err(&e));
+    }
+    resolve_active_model(ctx)
+}
+
+/// Report which model each background task resolves to, plus where that
+/// selection comes from (per-task pin, blanket pin, or inherited chat model).
+/// Read-only companion to the `[defaults.background]` config section.
+pub fn background_models(ctx: &CommandContext) -> CommandResult {
+    use shore_config::app::BackgroundTask;
+    let bg = &ctx.config.app.defaults.background;
+    let tasks = [
+        BackgroundTask::Heartbeat,
+        BackgroundTask::Compaction,
+        BackgroundTask::Dreaming,
+    ];
+    let mut rows = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        let label = background_task_label(task);
+        let per_task = match task {
+            BackgroundTask::Heartbeat => bg.heartbeat.as_deref(),
+            BackgroundTask::Compaction => bg.compaction.as_deref(),
+            BackgroundTask::Dreaming => bg.dreaming.as_deref(),
+        };
+        let (model, source) = if let Some(name) = per_task.or(bg.model.as_deref()) {
+            let qualified = effective_catalog::find_effective_model(
+                &ctx.config,
+                &ctx.config.dirs.cache,
+                name,
+                true,
+            )
+            .map_or_else(|_| name.to_owned(), |m| m.qualified_name);
+            let source = if per_task.is_some() {
+                format!("config: background.{label}")
+            } else {
+                "config: background.model".to_owned()
+            };
+            (qualified, source)
+        } else {
+            // Inherits the character's active chat model.
+            let qualified = ctx
+                .character_name
+                .as_deref()
+                .and_then(|c| preferences::resolve_chat_model_for_character(&ctx.config, c))
+                .map_or_else(|| "(unresolved)".to_owned(), |m| m.qualified_name);
+            (qualified, "inherited: active chat model".to_owned())
+        };
+        rows.push(json!({ "task": label, "model": model, "source": source }));
+    }
+    Ok(json!({ "background": rows }))
+}
+
 fn save_char_prefs(
     ctx: &CommandContext,
     char_name: &str,
@@ -449,8 +622,9 @@ pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResul
         ));
     }
 
-    // Resolve active model for keying the preference entry.
-    let active = resolve_active_model(ctx)?;
+    // Resolve the model whose preference entry we key: a `background_task`
+    // selector targets that purpose's model, otherwise the active chat model.
+    let active = resolve_setting_target(ctx, args)?;
     let provider = active.provider_key.clone();
     let model_id = active.model_id.clone();
     let qualified = active.qualified_name.clone();
@@ -813,17 +987,7 @@ fn parse_u32_value(value: &Value, name: &str) -> Result<u32, (ErrorCode, String)
 
 /// Return effective sampler settings + scope info for the active model.
 pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
-    let active = match args
-        .get("name")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        Some(name) => {
-            effective_catalog::find_effective_model(&ctx.config, &ctx.config.dirs.cache, name, true)
-                .map_err(|e| effective_catalog_err(&e))?
-        }
-        None => resolve_active_model(ctx)?,
-    };
+    let active = resolve_setting_target(ctx, args)?;
 
     let char_name = ctx.character_name.as_deref();
     let (global, char_prefs) = match char_name {

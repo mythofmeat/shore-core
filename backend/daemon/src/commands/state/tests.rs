@@ -28,13 +28,25 @@ fn make_ctx_with_models(
     CommandContext,
     broadcast::Receiver<ServerMessage>,
 ) {
+    make_ctx_with_config(tmp, shore_config::app::AppConfig::default(), models)
+}
+
+fn make_ctx_with_config(
+    tmp: &TempDir,
+    app: shore_config::app::AppConfig,
+    models: ModelCatalog,
+) -> (
+    ConversationEngine,
+    CommandContext,
+    broadcast::Receiver<ServerMessage>,
+) {
     let (push_tx, push_rx) = broadcast::channel(16);
     let data_dir = tmp.path().to_path_buf();
     let engine =
         ConversationEngine::new("TestChar".to_owned(), data_dir.clone(), push_tx.clone()).unwrap();
 
     let config = shore_config::LoadedConfig::new_for_test(
-        shore_config::app::AppConfig::default(),
+        app,
         models,
         shore_config::ShoreDirs {
             config: tmp.path().join("config"),
@@ -1800,5 +1812,87 @@ base_url = "https://openrouter.ai/api/v1"
 
         let with_hidden = list_models_with_args(&ctx, &json!({"include_hidden": true})).unwrap();
         assert_eq!(with_hidden["models"].as_array().unwrap().len(), 2);
+    }
+
+    fn app_with_background(
+        blanket: Option<&str>,
+        heartbeat: Option<&str>,
+        compaction: Option<&str>,
+        dreaming: Option<&str>,
+    ) -> shore_config::app::AppConfig {
+        let mut app = shore_config::app::AppConfig::default();
+        app.defaults.background.model = blanket.map(str::to_owned);
+        app.defaults.background.heartbeat = heartbeat.map(str::to_owned);
+        app.defaults.background.compaction = compaction.map(str::to_owned);
+        app.defaults.background.dreaming = dreaming.map(str::to_owned);
+        app
+    }
+
+    #[test]
+    fn background_models_reports_per_task_and_blanket_sources() {
+        let tmp = TempDir::new().unwrap();
+        // Blanket pins everything; compaction overrides it with a per-task pin.
+        let app = app_with_background(Some("claude-sonnet"), None, Some("gpt-4o"), None);
+        let (_engine, ctx, _rx) = make_ctx_with_config(&tmp, app, sample_models());
+
+        let out = background_models(&ctx).unwrap();
+        let rows = out["background"].as_array().unwrap();
+        let by_task = |task: &str| rows.iter().find(|r| r["task"] == task).unwrap().clone();
+
+        assert_eq!(by_task("heartbeat")["source"], "config: background.model");
+        assert_eq!(
+            by_task("compaction")["source"],
+            "config: background.compaction"
+        );
+        assert_eq!(by_task("dreaming")["source"], "config: background.model");
+        // The per-task pin resolves to a different model than the blanket.
+        assert_ne!(
+            by_task("compaction")["model"],
+            by_task("heartbeat")["model"]
+        );
+    }
+
+    #[test]
+    fn background_models_inherits_chat_when_unset() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+
+        let out = background_models(&ctx).unwrap();
+        for row in out["background"].as_array().unwrap() {
+            assert_eq!(row["source"], "inherited: active chat model");
+        }
+    }
+
+    #[test]
+    fn model_settings_background_compaction_targets_pinned_model() {
+        let tmp = TempDir::new().unwrap();
+        let app = app_with_background(None, None, Some("gpt-4o"), None);
+        let (_engine, ctx, _rx) = make_ctx_with_config(&tmp, app, sample_models());
+
+        let out = model_settings(&ctx, &json!({ "background_task": "compaction" })).unwrap();
+        assert!(out["model"].as_str().unwrap().contains("gpt-4o"));
+    }
+
+    #[test]
+    fn model_settings_background_all_errors_when_models_diverge() {
+        let tmp = TempDir::new().unwrap();
+        // compaction pinned to gpt-4o; the rest inherit the chat model → divergent.
+        let app = app_with_background(None, None, Some("gpt-4o"), None);
+        let (_engine, ctx, _rx) = make_ctx_with_config(&tmp, app, sample_models());
+
+        let err = model_settings(&ctx, &json!({ "background_task": "all" })).unwrap_err();
+        assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+        assert!(err.1.contains("different models"), "got: {}", err.1);
+    }
+
+    #[test]
+    fn model_settings_background_all_ok_when_models_agree() {
+        let tmp = TempDir::new().unwrap();
+        // Blanket pin makes every task resolve to the same model.
+        let app = app_with_background(Some("gpt-4o"), None, None, None);
+        let (_engine, ctx, _rx) = make_ctx_with_config(&tmp, app, sample_models());
+
+        let out = model_settings(&ctx, &json!({ "background_task": "all" })).unwrap();
+        assert!(out["model"].as_str().unwrap().contains("gpt-4o"));
     }
 }
