@@ -606,6 +606,12 @@ The registered tool names are: `web_search`, `fetch_url`, `generate_image`,
 `list_files`, `search`, `delete`, `search_chat_logs`, `exec`. List exactly the
 ones you want; comment a line out to disable that tool.
 
+Run **`shore tools`** to see the effective surface: every registered tool,
+whether it's enabled on the main character, which sub-agents own it, the `exec`
+allowlist, and any dangling references (an `enabled_tools` / sub-agent `tools`
+entry that names no real tool, or an `enabled_subagents` entry with no
+definition).
+
 The maximum number of tool-loop rounds per chat turn is the per-model
 `max_tool_iterations` cap (see [Model Sections](#model-sections)), not a
 `[tools]` key. It defaults to **unlimited**; the loop ends when the model

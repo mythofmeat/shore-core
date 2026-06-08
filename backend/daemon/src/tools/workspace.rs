@@ -1249,6 +1249,12 @@ static DEFAULT_ALLOWLIST: &[&str] = &[
     "cmake",
 ];
 
+/// The exec tool's allowed command names (read-only view for introspection,
+/// e.g. `shore tools`).
+pub fn exec_allowlist() -> &'static [&'static str] {
+    DEFAULT_ALLOWLIST
+}
+
 fn parse_command(command: &str) -> Result<Vec<String>, ToolError> {
     let argv = shell_words::split(command)
         .map_err(|e| ToolError::InvalidArgs(format!("invalid command line: {e}")))?;

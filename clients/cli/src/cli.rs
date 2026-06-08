@@ -270,6 +270,14 @@ pub(crate) enum CliCommand {
         all: bool,
     },
 
+    /// Show the tool surface: which tools are enabled, sub-agent ownership,
+    /// the exec allowlist, and any dangling config references
+    Tools {
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Show token usage statistics and costs
     Usage {
         /// Time period: "today", "4h", "7d", "30d", "all" (default: today)
@@ -750,6 +758,8 @@ pub(crate) fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_js
         CliCommand::Config { key, value, .. } => {
             Some(("config", json!({ "key": key, "value": value })))
         }
+
+        CliCommand::Tools { .. } => Some(("tools", json!({}))),
 
         CliCommand::Usage { .. } => usage_to_swp(cmd),
     }

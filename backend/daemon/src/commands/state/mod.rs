@@ -3,7 +3,7 @@ mod memory;
 mod models;
 mod status;
 
-pub use config::{config, config_check, config_reset};
+pub use config::{config, config_check, config_reset, tools};
 pub use memory::{compact, memory, memory_changelog, memory_dream, memory_dreams};
 pub use models::{
     list_models, list_models_with_args, model_info, model_settings, reset_model, set_model_setting,

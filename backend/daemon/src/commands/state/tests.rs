@@ -76,6 +76,61 @@ fn make_ctx_with_models(
     (engine, ctx, push_rx)
 }
 
+#[test]
+fn tools_reports_surface_ownership_and_warnings() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx(&tmp);
+
+    // Enable a couple of tools on the main character + a sub-agent that owns
+    // some tools, plus a dangling reference to exercise warnings.
+    ctx.config.app.tools.enabled_tools = vec!["read".into(), "web_search".into()];
+    ctx.config.app.tools.enabled_subagents = vec!["memory".into(), "ghost".into()];
+    let _ = ctx.config.app.subagents.insert(
+        "memory".into(),
+        shore_config::app::SubagentConfig {
+            description: "archivist".into(),
+            prompt: "p".into(),
+            tools: vec!["search".into(), "read".into(), "not_a_tool".into()],
+            model: None,
+            max_iterations: None,
+        },
+    );
+
+    let out = tools(&ctx).unwrap();
+
+    // `read` is enabled on main AND owned by the `memory` sub-agent.
+    let read_row = out["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["tool"] == "read")
+        .unwrap();
+    assert_eq!(read_row["main"], true);
+    assert_eq!(read_row["subagents"][0], "memory");
+
+    // `search` is owned by `memory` but NOT enabled on main.
+    let search_row = out["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["tool"] == "search")
+        .unwrap();
+    assert_eq!(search_row["main"], false);
+    assert_eq!(search_row["subagents"][0], "memory");
+
+    // Exec allowlist is surfaced and non-empty.
+    assert!(!out["exec_allowlist"].as_array().unwrap().is_empty());
+
+    // Warnings flag the undefined sub-agent and the unknown tool reference.
+    let warnings = out["warnings"].as_array().unwrap();
+    assert!(warnings
+        .iter()
+        .any(|w| w.as_str().unwrap().contains("ghost")));
+    assert!(warnings
+        .iter()
+        .any(|w| w.as_str().unwrap().contains("not_a_tool")));
+}
+
 fn sample_models() -> ModelCatalog {
     let toml_str = r#"
 [anthropic.claude-sonnet]
