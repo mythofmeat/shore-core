@@ -239,6 +239,7 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 #   "delete",
 #   "search_chat_logs",  # search compacted + active conversation history (hidden in private convos)
 #   "exec",              # allowlisted, argument-sandboxed workspace commands (hidden in private convos)
+#   "set_next_wake",     # heartbeat self-scheduling (only usable during heartbeat ticks)
 # ]
 # enabled_subagents = ["memory"]   # exposes ask_memory (see [subagents] below)
 # max_result_chars = 20000   # Truncate each tool result past this many characters (0 disables)

@@ -588,6 +588,7 @@ enabled_tools = [
   "delete",
   "search_chat_logs",
   "exec",
+  "set_next_wake",   # heartbeat self-scheduling; only usable during heartbeat ticks
 ]
 enabled_subagents = ["memory"]   # exposes ask_memory (see [subagents])
 max_result_chars = 20000          # truncate each tool result past this; 0 disables
@@ -605,8 +606,10 @@ max_result_chars = 10000
 
 The registered tool names are: `web_search`, `fetch_url`, `generate_image`,
 `check_time`, `roll_dice`, `activity_heatmap`, `read`, `write`, `edit`,
-`list_files`, `search`, `delete`, `search_chat_logs`, `exec`. List exactly the
-ones you want; comment a line out to disable that tool.
+`list_files`, `search`, `delete`, `search_chat_logs`, `exec`, `set_next_wake`.
+List exactly the ones you want; comment a line out to disable that tool.
+(`set_next_wake` is only executable during heartbeat ticks, but must be listed
+for the autonomous heartbeat to schedule its own next wake.)
 
 Run **`shore tools`** to see the effective surface: every registered tool,
 whether it's enabled on the main character, which sub-agents own it, the `exec`
