@@ -258,6 +258,7 @@ pub(crate) fn format_command(name: &str, data: &serde_json::Value) {
     match name {
         "character_info" => print_character_info(data),
         "list_models" => print_model_list(data),
+        "background_models" => print_background_models(data),
         "switch_model" => print_model_switched(data),
         "reset_model" => print_model_reset(data),
         "model_info" => print_model_info(data),
@@ -554,6 +555,47 @@ fn print_model_list(data: &serde_json::Value) {
             &format!("  ({hidden_count} hidden — use `shore model --all` to include them)"),
         );
         _ = writeln!(out);
+    }
+    let _ignored = writeln!(out);
+}
+
+/// Print the model resolved for each background task, with its source.
+fn print_background_models(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+    write_section_header(&mut out, "Background models", "", width);
+
+    if let Some(rows) = data["background"].as_array() {
+        let task_w = rows
+            .iter()
+            .map(|r| r["task"].as_str().unwrap_or("?").chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(10);
+        let model_w = rows
+            .iter()
+            .map(|r| r["model"].as_str().unwrap_or("?").chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(20);
+
+        for r in rows {
+            let task = r["task"].as_str().unwrap_or("?");
+            let model = r["model"].as_str().unwrap_or("?");
+            let source = r["source"].as_str().unwrap_or("");
+            let _ignored = write!(out, "  {task:<task_w$}  {model:<model_w$}  ");
+            if use_color() {
+                _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+            }
+            if !source.is_empty() {
+                _ = write!(out, "[{source}]");
+            }
+            if use_color() {
+                _ = crossterm::execute!(out, ResetColor);
+            }
+            _ = writeln!(out);
+        }
     }
     let _ignored = writeln!(out);
 }

@@ -122,6 +122,8 @@ Important slots:
 
 - `model` — chat default, as `provider:model_id`. Optional: if unset, chat starts on the first model in the catalog (now empty unless a deprecated `[chat.*]` entry is present), so set this. Also acts as a late-stage fallback for background tasks (see below).
 - `[defaults.background]` — heartbeat, compaction, and dreaming selectors. Each task chains `background.<task> → background.model → active chat model → defaults.model → first chat model`. When no background-specific model is configured, background work tracks the character's current chat selection, so `shore model <name>` moves heartbeat/compaction/dreaming alongside chat. Set `background.model` (or a per-task key) to pin background to a different model regardless of chat selection.
+  - **Inspect:** `shore model --background` prints which model each task resolves to and where the selection comes from (per-task pin, blanket pin, or inherited chat model).
+  - **Tune:** `shore model setting --background <all|heartbeat|compaction|dreaming> [key [value]]` reads or sets the per-model sampler settings of the model backing that task — without switching chat to it. Settings are keyed by `provider:model_id`, so tuning a background model also affects chat if chat uses the same model. `--background all` errors if the tasks resolve to different models. `--reset` and `--global` work as with the plain `shore model setting`.
 - `embedding` — optional hybrid retrieval model, as `provider:model_id` (e.g. `openai:text-embedding-3-small`)
 - `image_generation` — image generation model, as `provider:model_id`
 
