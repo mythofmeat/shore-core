@@ -202,7 +202,7 @@ pub(crate) enum CliCommand {
 
         /// Show which model each background task (heartbeat/compaction/
         /// dreaming) resolves to, and where that selection comes from.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["name", "info", "reset", "all"])]
         background: bool,
 
         /// Output raw JSON
@@ -2114,6 +2114,18 @@ mod tests {
         let cli = parse(&["model", "--background"]);
         let (name, _) = to_swp_command(&cli.command).unwrap();
         assert_eq!(name, "background_models");
+    }
+
+    #[test]
+    fn model_background_flag_conflicts_with_selectors() {
+        // `--background` shows the resolved table; combining it with a model
+        // selector or its flags must be rejected, not silently ignored.
+        assert!(Cli::try_parse_from(["shore", "model", "--background", "somemodel"]).is_err());
+        assert!(Cli::try_parse_from(["shore", "model", "--background", "--info"]).is_err());
+        assert!(Cli::try_parse_from(["shore", "model", "--background", "--reset"]).is_err());
+        assert!(Cli::try_parse_from(["shore", "model", "--background", "--all"]).is_err());
+        // Bare `--background` still parses.
+        assert!(Cli::try_parse_from(["shore", "model", "--background"]).is_ok());
     }
 
     #[test]
