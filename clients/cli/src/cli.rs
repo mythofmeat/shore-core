@@ -200,6 +200,11 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         all: bool,
 
+        /// Show which model each background task (heartbeat/compaction/
+        /// dreaming) resolves to, and where that selection comes from.
+        #[arg(long, conflicts_with_all = ["name", "info", "reset", "all"])]
+        background: bool,
+
         /// Output raw JSON
         #[arg(long)]
         json: bool,
@@ -382,6 +387,27 @@ pub(crate) enum CompleteKind {
     Providers,
 }
 
+/// Background task to retarget `shore model setting` at. `all` targets every
+/// background task at once and errors if they resolve to different models.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BackgroundTarget {
+    All,
+    Heartbeat,
+    Compaction,
+    Dreaming,
+}
+
+impl BackgroundTarget {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            BackgroundTarget::All => "all",
+            BackgroundTarget::Heartbeat => "heartbeat",
+            BackgroundTarget::Compaction => "compaction",
+            BackgroundTarget::Dreaming => "dreaming",
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub(crate) enum ConnectorsCommand {
     /// Matrix bridge setup and management
@@ -484,6 +510,13 @@ pub(crate) enum ModelCommand {
         /// Clear the saved value for the named key.
         #[arg(long)]
         reset: bool,
+
+        /// Operate on the model backing a background task instead of the
+        /// active chat model, so you can tune heartbeat/compaction/dreaming
+        /// without switching chat to that model. `all` errors if the tasks
+        /// resolve to different models.
+        #[arg(long, value_enum)]
+        background: Option<BackgroundTarget>,
 
         /// Output raw JSON
         #[arg(long)]
@@ -811,6 +844,7 @@ fn model_to_swp(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
         info,
         reset,
         all,
+        background,
         ..
     } = cmd
     else {
@@ -821,6 +855,7 @@ fn model_to_swp(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
         value,
         global,
         reset: setting_reset,
+        background: setting_background,
         ..
     }) = subcommand
     {
@@ -828,26 +863,37 @@ fn model_to_swp(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
         // value=Some → set; --reset → clear; otherwise → show one.
         // The CLI dispatch in run.rs is what actually picks the
         // right daemon command per case; keep this mapping aligned
-        // with the "show" path (model_settings).
-        return match (key.as_deref(), value.as_deref(), *setting_reset) {
-            (Some(k), _, true) => Some((
-                "set_model_setting",
-                json!({
-                    "key": k,
-                    "value": Value::Null,
-                    "scope": if *global { "global" } else { "character" },
-                }),
-            )),
-            (None, _, _) | (Some(_), None, false) => Some(("model_settings", json!({}))),
-            (Some(k), Some(v), false) => Some((
-                "set_model_setting",
-                json!({
-                    "key": k,
-                    "value": parse_setting_value(k, v),
-                    "scope": if *global { "global" } else { "character" },
-                }),
-            )),
+        // with the "show" path (model_settings). `--background <purpose>`
+        // retargets the read/write at that task's model via background_task.
+        let scope = if *global { "global" } else { "character" };
+        let bg = setting_background.map(BackgroundTarget::as_str);
+        let with_bg = |mut obj: Map<String, Value>| -> Value {
+            if let Some(task) = bg {
+                let _ignored = obj.insert("background_task".into(), json!(task));
+            }
+            Value::Object(obj)
         };
+        return match (key.as_deref(), value.as_deref(), *setting_reset) {
+            (Some(k), _, true) => {
+                let mut obj = Map::new();
+                let _ignored = obj.insert("key".into(), json!(k));
+                _ = obj.insert("value".into(), Value::Null);
+                _ = obj.insert("scope".into(), json!(scope));
+                Some(("set_model_setting", with_bg(obj)))
+            }
+            (None, _, _) | (Some(_), None, false) => Some(("model_settings", with_bg(Map::new()))),
+            (Some(k), Some(v), false) => {
+                let mut obj = Map::new();
+                let _ignored = obj.insert("key".into(), json!(k));
+                _ = obj.insert("value".into(), parse_setting_value(k, v));
+                _ = obj.insert("scope".into(), json!(scope));
+                Some(("set_model_setting", with_bg(obj)))
+            }
+        };
+    }
+
+    if *background {
+        return Some(("background_models", json!({})));
     }
 
     if *reset {
@@ -1947,6 +1993,7 @@ mod tests {
             info: true,
             reset: false,
             all: false,
+            background: false,
             json: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1962,6 +2009,7 @@ mod tests {
             info: false,
             reset: false,
             all: true,
+            background: false,
             json: false,
         };
         let (cmd_name, args) = to_swp_command(&cmd).unwrap();
@@ -1977,12 +2025,14 @@ mod tests {
                 value: None,
                 global: false,
                 reset: false,
+                background: None,
                 json: false,
             }),
             name: None,
             info: false,
             reset: false,
             all: false,
+            background: false,
             json: false,
         };
         let (name, _) = to_swp_command(&cmd).unwrap();
@@ -1997,12 +2047,14 @@ mod tests {
                 value: Some("0.8".into()),
                 global: false,
                 reset: false,
+                background: None,
                 json: false,
             }),
             name: None,
             info: false,
             reset: false,
             all: false,
+            background: false,
             json: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -2020,12 +2072,14 @@ mod tests {
                 value: None,
                 global: false,
                 reset: true,
+                background: None,
                 json: false,
             }),
             name: None,
             info: false,
             reset: false,
             all: false,
+            background: false,
             json: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -2041,16 +2095,87 @@ mod tests {
                 value: Some("0.95".into()),
                 global: true,
                 reset: false,
+                background: None,
                 json: false,
             }),
             name: None,
             info: false,
             reset: false,
             all: false,
+            background: false,
             json: false,
         };
         let (_, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(arg(&args, "scope"), "global");
+    }
+
+    #[test]
+    fn model_background_flag_maps_to_background_models() {
+        let cli = parse(&["model", "--background"]);
+        let (name, _) = to_swp_command(&cli.command).unwrap();
+        assert_eq!(name, "background_models");
+    }
+
+    #[test]
+    fn model_background_flag_conflicts_with_selectors() {
+        // `--background` shows the resolved table; combining it with a model
+        // selector or its flags must be rejected, not silently ignored.
+        assert!(Cli::try_parse_from(["shore", "model", "--background", "somemodel"]).is_err());
+        assert!(Cli::try_parse_from(["shore", "model", "--background", "--info"]).is_err());
+        assert!(Cli::try_parse_from(["shore", "model", "--background", "--reset"]).is_err());
+        assert!(Cli::try_parse_from(["shore", "model", "--background", "--all"]).is_err());
+        // Bare `--background` still parses.
+        assert!(Cli::try_parse_from(["shore", "model", "--background"]).is_ok());
+    }
+
+    #[test]
+    fn model_setting_background_show_threads_task() {
+        let cli = parse(&["model", "setting", "--background", "compaction"]);
+        let (name, args) = to_swp_command(&cli.command).unwrap();
+        assert_eq!(name, "model_settings");
+        assert_eq!(arg(&args, "background_task"), "compaction");
+    }
+
+    #[test]
+    fn model_setting_background_set_threads_task() {
+        let cli = parse(&[
+            "model",
+            "setting",
+            "--background",
+            "all",
+            "temperature",
+            "0.5",
+        ]);
+        let (name, args) = to_swp_command(&cli.command).unwrap();
+        assert_eq!(name, "set_model_setting");
+        assert_eq!(arg(&args, "key"), "temperature");
+        assert_eq!(arg(&args, "value"), 0.5);
+        assert_eq!(arg(&args, "background_task"), "all");
+        assert_eq!(arg(&args, "scope"), "character");
+    }
+
+    #[test]
+    fn model_setting_background_reset_threads_task() {
+        let cli = parse(&[
+            "model",
+            "setting",
+            "--background",
+            "heartbeat",
+            "--reset",
+            "reasoning_effort",
+        ]);
+        let (name, args) = to_swp_command(&cli.command).unwrap();
+        assert_eq!(name, "set_model_setting");
+        assert!(arg(&args, "value").is_null());
+        assert_eq!(arg(&args, "background_task"), "heartbeat");
+    }
+
+    #[test]
+    fn model_setting_without_background_omits_task() {
+        let cli = parse(&["model", "setting", "temperature", "0.7"]);
+        let (name, args) = to_swp_command(&cli.command).unwrap();
+        assert_eq!(name, "set_model_setting");
+        assert!(args.get("background_task").is_none());
     }
 
     #[test]
@@ -2066,12 +2191,14 @@ mod tests {
                 value: Some("off".into()),
                 global: false,
                 reset: false,
+                background: None,
                 json: false,
             }),
             name: None,
             info: false,
             reset: false,
             all: false,
+            background: false,
             json: false,
         };
         let (_, args) = to_swp_command(&cmd).unwrap();
@@ -2087,12 +2214,14 @@ mod tests {
                     value: Some(synonym.into()),
                     global: false,
                     reset: false,
+                    background: None,
                     json: false,
                 }),
                 name: None,
                 info: false,
                 reset: false,
                 all: false,
+                background: false,
                 json: false,
             };
             let (_, args) = to_swp_command(&cmd).unwrap();
@@ -2449,6 +2578,7 @@ mod tests {
                 info: false,
                 reset: false,
                 all: false,
+                background: false,
                 json: false,
             },
             CliCommand::Model {
@@ -2457,6 +2587,7 @@ mod tests {
                 info: false,
                 reset: false,
                 all: false,
+                background: false,
                 json: false,
             },
             CliCommand::Model {
@@ -2465,6 +2596,7 @@ mod tests {
                 info: true,
                 reset: false,
                 all: false,
+                background: false,
                 json: false,
             },
             CliCommand::Model {
@@ -2473,6 +2605,7 @@ mod tests {
                 info: false,
                 reset: true,
                 all: false,
+                background: false,
                 json: false,
             },
             CliCommand::Model {
@@ -2481,12 +2614,14 @@ mod tests {
                     value: None,
                     global: false,
                     reset: false,
+                    background: None,
                     json: false,
                 }),
                 name: None,
                 info: false,
                 reset: false,
                 all: false,
+                background: false,
                 json: false,
             },
         ]
