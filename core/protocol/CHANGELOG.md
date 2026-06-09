@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/mythofmeat/shore-core/compare/shore-protocol-v0.8.0...shore-protocol-v0.9.0) - 2026-06-09
+
+### Added
+
+- *(protocol)* tolerate unknown ServerMessage frame types ([#228](https://github.com/mythofmeat/shore-core/pull/228))
+
+### Other
+
+- Sub-agent delegation, opt-in [tools] config, and `shore tools` ([#226](https://github.com/mythofmeat/shore-core/pull/226))
+
 ## [0.8.0](https://github.com/mythofmeat/shore-core/compare/shore-protocol-v0.7.0...shore-protocol-v0.8.0) - 2026-06-04
 
 ### Other

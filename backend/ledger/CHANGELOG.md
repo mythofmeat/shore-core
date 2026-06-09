@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v4.0.3...shore-ledger-v5.0.0) - 2026-06-09
+
+### Other
+
+- Sub-agent delegation, opt-in [tools] config, and `shore tools` ([#226](https://github.com/mythofmeat/shore-core/pull/226))
+
 ## [4.0.3](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v4.0.2...shore-ledger-v4.0.3) - 2026-06-07
 
 ### Other
