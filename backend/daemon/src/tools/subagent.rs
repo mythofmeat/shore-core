@@ -157,7 +157,7 @@ pub(crate) async fn run(
         first,
         &guard,
         spec.max_iterations.or(resolved.max_tool_iterations),
-        config.app.tools.max_result_chars,
+        &config.app.tools,
         &runtime.diagnostics,
         char_name,
         thinking,

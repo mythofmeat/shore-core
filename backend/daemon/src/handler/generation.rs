@@ -243,7 +243,7 @@ pub(super) async fn run_tool_phase(
         result,
         &tool_ctx,
         resolved.max_tool_iterations,
-        effective_config.app.tools.max_result_chars,
+        &effective_config.app.tools,
         &ctx.diagnostics,
         char_name,
         thinking_enabled,
