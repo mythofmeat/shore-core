@@ -537,6 +537,7 @@ fn arb_matrix_config() -> impl Strategy<Value = MatrixConfig> {
 
     (
         any::<bool>(),
+        any::<bool>(),
         prop::option::of(arb_nonempty_text()),
         prop::option::of(arb_nonempty_text()),
         prop::option::of(arb_nonempty_text()),
@@ -544,13 +545,16 @@ fn arb_matrix_config() -> impl Strategy<Value = MatrixConfig> {
         prop::option::of(embedded_strategy),
     )
         .prop_map(
-            |(enabled, homeserver, user_id, room_id, trusted_user, embedded)| MatrixConfig {
-                enabled,
-                homeserver,
-                user_id,
-                room_id,
-                trusted_user,
-                embedded,
+            |(enabled, mirror_all, homeserver, user_id, room_id, trusted_user, embedded)| {
+                MatrixConfig {
+                    enabled,
+                    mirror_all,
+                    homeserver,
+                    user_id,
+                    room_id,
+                    trusted_user,
+                    embedded,
+                }
             },
         )
 }
