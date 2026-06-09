@@ -32,30 +32,41 @@ publish = true
 release = true
 
 # --- Binary-side crates -----------------------------------------------------
-# Each carries its own explicit version in Cargo.toml (no workspace
-# inheritance). release-plz computes per-crate bumps from conventional
-# commits against each crate's last `{{ package }}-v{{ version }}` tag and
-# the crates.io registry.
+# These are binaries (or binary-support libs) with no external crates.io
+# consumers — they were only published as collateral so `shore-daemon` could
+# publish (cargo forces a publishable crate's path-deps to be publishable).
+#
+# `git_only = true` takes them off crates.io entirely: release-plz skips
+# `cargo publish` and baselines each version off its `{{ package }}-v{{ version }}`
+# git tag instead of the registry. `semver_check = false` stops cargo-semver-checks
+# from flagging every refactor of an incidentally-`pub` lib item as a breaking
+# change (the cause of the runaway major bumps). `release = true` is kept so
+# the git tags + CHANGELOG still publish — the Arch workflow (package.yml)
+# gates on `shore-daemon-v*` / `shore-cli-v*` tags.
 
 [[package]]
 name = "shore-llm"
-publish = true
 release = true
+git_only = true
+semver_check = false
 
 [[package]]
 name = "shore-ledger"
-publish = true
 release = true
+git_only = true
+semver_check = false
 
 [[package]]
 name = "shore-swp-server"
-publish = true
 release = true
+git_only = true
+semver_check = false
 
 [[package]]
 name = "shore-daemon"
-publish = true
 release = true
+git_only = true
+semver_check = false
 
 [[package]]
 name = "shore-cli"

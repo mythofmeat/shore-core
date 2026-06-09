@@ -43,6 +43,10 @@ build_deb_with_ar() {
 
 PKG_NAME=${PKG_NAME:-shore-daemon}
 PKG_VERSION=${PKG_VERSION:-$(awk -F '"' '/^version = / { print $2; exit }' backend/daemon/Cargo.toml)}
+# The crate version was reset 16.1.0 -> 0.1.0. The control Version below carries
+# an epoch (default 1) so `1:0.1.0` sorts above the old `16.1.0` and apt offers
+# it as an upgrade rather than refusing a downgrade. Mirrors `epoch=1` in
+# contrib/shore-daemon/PKGBUILD.
 if [[ -z "$PKG_VERSION" ]]; then
     echo "error: could not read backend/daemon package version" >&2
     exit 1
@@ -114,7 +118,7 @@ printf 'Shore is private software. All rights reserved.\n' \
 INSTALLED_SIZE=$(du -sk "$PKG_ROOT/usr" | awk '{ print $1 }')
 cat >"$PKG_ROOT/DEBIAN/control" <<CONTROL
 Package: $PKG_NAME
-Version: $PKG_VERSION
+Version: ${PKG_EPOCH:-1}:$PKG_VERSION
 Section: utils
 Priority: optional
 Architecture: $ARCH
