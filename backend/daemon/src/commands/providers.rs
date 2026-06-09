@@ -616,7 +616,7 @@ model_id = "kimi-k2"
         .unwrap();
         let chat = table.get("chat").and_then(|v| v.as_table());
         ctx.config.models =
-            shore_config::models::ModelCatalog::from_sections(chat, None, None, None).unwrap();
+            shore_config::models::ModelCatalog::from_sections(chat, None, None).unwrap();
 
         write_test_cache(
             &ctx.config.dirs.cache,
@@ -667,7 +667,6 @@ model_id = "kimi-k2"
         .unwrap();
         ctx.config.models = shore_config::models::ModelCatalog::from_sections(
             table.get("chat").and_then(|v| v.as_table()),
-            None,
             None,
             None,
         )
@@ -843,7 +842,6 @@ model_id = "kimi-k2"
         .unwrap();
         ctx.config.models = shore_config::models::ModelCatalog::from_sections(
             table.get("chat").and_then(|v| v.as_table()),
-            None,
             None,
             None,
         )

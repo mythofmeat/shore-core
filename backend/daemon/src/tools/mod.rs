@@ -3,6 +3,7 @@ pub mod basic;
 pub(crate) mod context;
 pub mod history;
 pub mod images;
+pub(crate) mod subagent;
 pub mod web;
 pub mod workspace;
 
@@ -139,6 +140,22 @@ pub trait ToolContext: Sync {
     /// whose content should only become prompt-active at the next compaction
     /// boundary.
     fn defer_edit(&self, _path: &str) {}
+
+    /// Run a configured sub-agent (`ask_<name>`) and return its final text as
+    /// a JSON string value.
+    ///
+    /// Default: unavailable — only the chat tool context wires a sub-agent
+    /// runtime. The `NotImplemented` default is also the recursion cap: a
+    /// sub-agent's own tool loop runs against a context that does not override
+    /// this, so it can never delegate further (see [`subagent`]).
+    fn run_subagent<'ctx>(
+        &'ctx self,
+        name: &'ctx str,
+        query: &'ctx str,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'ctx>> {
+        let _ = query;
+        Box::pin(async move { Err(ToolError::NotImplemented(format!("ask_{name}"))) })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +183,7 @@ pub fn all_tools() -> Vec<ToolDef> {
 /// actually substitutes instead of shipping literally to the model.
 pub fn render_tool_defs(
     is_private: bool,
-    toggles: &shore_config::app::ToolToggles,
+    tools_cfg: &shore_config::app::ToolsConfig,
     char_name: &str,
     user_name: &str,
 ) -> Vec<Value> {
@@ -175,7 +192,7 @@ pub fn render_tool_defs(
     let _ignored = vars.insert("char".into(), char_name.to_owned());
     _ = vars.insert("character_name".into(), char_name.to_owned());
     _ = vars.insert("user".into(), user_name.to_owned());
-    available_tools(is_private, toggles)
+    available_tools(is_private, tools_cfg)
         .iter()
         .map(|t| {
             serde_json::json!({
@@ -187,15 +204,21 @@ pub fn render_tool_defs(
         .collect()
 }
 
-/// Returns tool definitions available for the current privacy mode and tool toggles.
-pub fn available_tools(is_private: bool, toggles: &shore_config::app::ToolToggles) -> Vec<ToolDef> {
+/// Returns tool definitions offered for the current privacy mode and the
+/// `enabled_tools` allowlist. Tools are opt-in: only names present in
+/// `tools_cfg.enabled_tools` are offered (and `search_chat_logs` / `exec` are
+/// additionally suppressed in private conversations).
+pub fn available_tools(
+    is_private: bool,
+    tools_cfg: &shore_config::app::ToolsConfig,
+) -> Vec<ToolDef> {
     all_tools()
         .into_iter()
         .filter(|t| {
-            if is_private && matches!(t.name, "search_history" | "exec") {
+            if is_private && matches!(t.name, "search_chat_logs" | "exec") {
                 return false;
             }
-            toggles.is_enabled(t.name)
+            tools_cfg.tool_enabled(t.name)
         })
         .collect()
 }
@@ -238,7 +261,7 @@ pub fn dispatch_tool<'ctx>(
 ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'ctx>> {
     Box::pin(async move {
         match name {
-            "search_history" => history::handle_search_history(&input, ctx),
+            "search_chat_logs" => history::handle_search_history(&input, ctx),
             "generate_image" => images::handle_generate_image(input, ctx).await,
             // Web tools
             "web_search" => web::handle_web_search(input, ctx).await,
@@ -324,9 +347,59 @@ pub fn dispatch_tool<'ctx>(
                     "set_next_wake is only available during heartbeat ticks".into(),
                 ))
             }),
-            _ => Err(ToolError::NotImplemented(name.to_owned())),
+            // Sub-agent delegation: `ask_<name>` routes to the wired runtime.
+            _ => {
+                if let Some(agent) = name.strip_prefix("ask_") {
+                    let query = input.get("query").and_then(Value::as_str).ok_or_else(|| {
+                        ToolError::InvalidArgs(format!("{name} requires a string `query`"))
+                    })?;
+                    ctx.run_subagent(agent, query).await
+                } else {
+                    Err(ToolError::NotImplemented(name.to_owned()))
+                }
+            }
         }
     })
+}
+
+/// Synthesize the `ask_<name>` tool defs for the configured sub-agents,
+/// rendering `{{char}}` / `{{user}}` in each description.
+///
+/// Returned as raw outbound JSON (not [`ToolDef`], which is `&'static`) and
+/// appended after [`render_tool_defs`] in the request-build path. Ordering
+/// follows the config's `BTreeMap`, so the tool surface — and thus the cache
+/// prefix — stays stable across turns.
+pub fn subagent_tool_defs(
+    subagents: &std::collections::BTreeMap<String, shore_config::app::SubagentConfig>,
+    enabled: &[String],
+    char_name: &str,
+    user_name: &str,
+) -> Vec<Value> {
+    use std::collections::HashMap;
+    let mut vars: HashMap<String, String> = HashMap::new();
+    let _ = vars.insert("char".into(), char_name.to_owned());
+    let _ = vars.insert("character_name".into(), char_name.to_owned());
+    let _ = vars.insert("user".into(), user_name.to_owned());
+    subagents
+        .iter()
+        .filter(|(name, _)| enabled.iter().any(|e| e == *name))
+        .map(|(name, spec)| {
+            serde_json::json!({
+                "name": format!("ask_{name}"),
+                "description": crate::engine::prompt::render_template(&spec.description, &vars),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Natural-language request for this sub-agent.",
+                        }
+                    },
+                    "required": ["query"],
+                },
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -337,14 +410,22 @@ pub fn dispatch_tool<'ctx>(
 mod tests {
     use super::*;
     use crate::test_support::TestToolContext;
-    use shore_config::app::ToolToggles;
+    use shore_config::app::ToolsConfig;
+
+    /// A `ToolsConfig` with every registered tool in the allowlist.
+    fn all_enabled() -> ToolsConfig {
+        ToolsConfig {
+            enabled_tools: all_tools().iter().map(|t| t.name.to_owned()).collect(),
+            ..ToolsConfig::default()
+        }
+    }
 
     #[test]
     fn render_tool_defs_substitutes_user_placeholder() {
         // {{user}} appears in check_time and must resolve, not ship
         // literal to the model.
-        let toggles = ToolToggles::default();
-        let defs = render_tool_defs(false, &toggles, "qifei", "ren");
+        let cfg = all_enabled();
+        let defs = render_tool_defs(false, &cfg, "qifei", "ren");
         let check_time = defs
             .iter()
             .find(|d| d["name"] == "check_time")
@@ -363,8 +444,8 @@ mod tests {
     #[test]
     fn render_tool_defs_substitutes_char_placeholder() {
         // Future-proof guard: {{char}} also resolves through render_tool_defs.
-        let toggles = ToolToggles::default();
-        let defs = render_tool_defs(false, &toggles, "qifei", "ren");
+        let cfg = all_enabled();
+        let defs = render_tool_defs(false, &cfg, "qifei", "ren");
         for def in &defs {
             let desc = def["description"].as_str().unwrap();
             assert!(
@@ -384,64 +465,58 @@ mod tests {
 
     #[test]
     fn test_available_tools_filters_private() {
-        let toggles = ToolToggles::default();
+        let cfg = all_enabled();
         let all = all_tools();
-        let private = available_tools(true, &toggles);
-        let public = available_tools(false, &toggles);
+        let private = available_tools(true, &cfg);
+        let public = available_tools(false, &cfg);
 
         assert_eq!(public.len(), all.len());
         assert!(private.len() < public.len());
-        assert!(private.iter().all(|tool| tool.name != "search_history"));
+        assert!(private.iter().all(|tool| tool.name != "search_chat_logs"));
         assert!(private.iter().all(|tool| tool.name != "exec"));
     }
 
     #[test]
-    fn test_tool_toggles_filter() {
-        let mut toggles = ToolToggles::default();
-        toggles.set("roll_dice", false);
-        toggles.set("web_search", false);
-
-        let tools = available_tools(false, &toggles);
+    fn enabled_tools_allowlist_offers_only_listed() {
+        // Opt-in: only the listed tools are offered, in registry order.
+        let cfg = ToolsConfig {
+            enabled_tools: vec![
+                "search".to_owned(),
+                "search_chat_logs".to_owned(),
+                "check_time".to_owned(),
+            ],
+            ..ToolsConfig::default()
+        };
+        let tools = available_tools(false, &cfg);
         let names: Vec<&str> = tools.iter().map(|t| t.name).collect();
 
+        assert!(names.contains(&"search"));
+        assert!(names.contains(&"search_chat_logs"));
+        assert!(names.contains(&"check_time"));
+        // Not listed → not offered.
         assert!(!names.contains(&"roll_dice"));
         assert!(!names.contains(&"web_search"));
-        assert!(names.contains(&"search"));
-        assert!(names.contains(&"search_history"));
-        assert!(names.contains(&"check_time"));
-        assert_eq!(tools.len(), 13); // 15 - 2 disabled
+        assert_eq!(tools.len(), 3);
     }
 
     #[test]
-    fn legacy_memory_toggles_do_not_gate_tools() {
-        let mut toggles = ToolToggles::default();
-        toggles.set("memory", false);
-        toggles.set("memory_read", false);
-        toggles.set("memory_write", false);
-
-        let tools = available_tools(false, &toggles);
-        let names: Vec<&str> = tools.iter().map(|t| t.name).collect();
-
-        assert!(names.contains(&"search_history"));
-        assert!(names.contains(&"exec"));
-        assert!(names.contains(&"read"));
-        assert!(names.contains(&"write"));
-        assert!(names.contains(&"edit"));
-        assert!(names.contains(&"list_files"));
-        assert!(names.contains(&"search"));
+    fn empty_allowlist_offers_nothing() {
+        let cfg = ToolsConfig::default();
+        assert!(available_tools(false, &cfg).is_empty());
     }
 
     #[test]
-    fn render_tool_defs_ignores_legacy_memory_toggles() {
-        let mut toggles = ToolToggles::default();
-        toggles.set("memory", false);
-        toggles.set("memory_read", false);
-        toggles.set("memory_write", false);
-
-        let defs = render_tool_defs(false, &toggles, "qifei", "ren");
-        let names: Vec<&str> = defs.iter().filter_map(|d| d["name"].as_str()).collect();
-        assert!(names.contains(&"search_history"));
-        assert!(names.contains(&"exec"));
+    fn unknown_allowlist_names_are_harmless() {
+        // A name that isn't a registered tool simply matches nothing.
+        let cfg = ToolsConfig {
+            enabled_tools: vec!["read".to_owned(), "not_a_tool".to_owned()],
+            ..ToolsConfig::default()
+        };
+        let names: Vec<&str> = available_tools(false, &cfg)
+            .iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, vec!["read"]);
     }
 
     #[test]
@@ -558,8 +633,12 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_history_search_routes_without_memory_gate() {
         let ctx = TestToolContext::new();
-        let result =
-            dispatch_tool("search_history", serde_json::json!({"query": "tea"}), &ctx).await;
+        let result = dispatch_tool(
+            "search_chat_logs",
+            serde_json::json!({"query": "tea"}),
+            &ctx,
+        )
+        .await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -612,5 +691,54 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn sample_subagents() -> std::collections::BTreeMap<String, shore_config::app::SubagentConfig> {
+        let mut map = std::collections::BTreeMap::new();
+        let _ = map.insert(
+            "music".to_owned(),
+            shore_config::app::SubagentConfig {
+                description: "Ask {{char}}'s music assistant.".to_owned(),
+                prompt: "You help {{user}} with music.".to_owned(),
+                tools: vec!["search".to_owned()],
+                model: None,
+                max_iterations: None,
+            },
+        );
+        map
+    }
+
+    #[test]
+    fn subagent_tool_defs_shape_and_templating() {
+        let enabled = vec!["music".to_owned()];
+        let defs = subagent_tool_defs(&sample_subagents(), &enabled, "qifei", "ren");
+        assert_eq!(defs.len(), 1);
+        let def = &defs[0];
+        assert_eq!(def["name"], "ask_music");
+        // {{char}} substituted, not shipped literal.
+        let desc = def["description"].as_str().unwrap();
+        assert!(
+            desc.contains("qifei") && !desc.contains("{{char}}"),
+            "{desc}"
+        );
+        // Single required `query` string param.
+        assert_eq!(def["input_schema"]["properties"]["query"]["type"], "string");
+        assert_eq!(def["input_schema"]["required"][0], "query");
+    }
+
+    #[tokio::test]
+    async fn dispatch_ask_without_runtime_is_not_implemented() {
+        // TestToolContext uses the trait-default `run_subagent`, which is the
+        // recursion cap and the no-runtime fallback.
+        let ctx = TestToolContext::new();
+        let result = dispatch_tool("ask_music", serde_json::json!({"query": "hi"}), &ctx).await;
+        assert!(matches!(result, Err(ToolError::NotImplemented(_))));
+    }
+
+    #[tokio::test]
+    async fn dispatch_ask_missing_query_is_invalid_args() {
+        let ctx = TestToolContext::new();
+        let result = dispatch_tool("ask_music", serde_json::json!({}), &ctx).await;
+        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
     }
 }

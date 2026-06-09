@@ -84,6 +84,8 @@ pub(crate) const SIGIL_TOOL: char = '\u{2192}'; // →
 pub(crate) const SIGIL_OK: char = '\u{2713}'; // ✓
 /// Sigil marking a failed tool result.
 pub(crate) const SIGIL_ERROR: char = '\u{2717}'; // ✗
+/// Sigil marking the boundary of a sub-agent's nested tool loop. Single-width.
+pub(crate) const SIGIL_SUBAGENT: char = '\u{00bb}'; // »
 
 /// Header color for a thinking block.
 pub(crate) const COLOR_THINKING: Color = Color::Magenta;
@@ -91,6 +93,8 @@ pub(crate) const COLOR_THINKING: Color = Color::Magenta;
 pub(crate) const COLOR_TOOL: Color = Color::Yellow;
 /// Header color for a successful tool result.
 pub(crate) const COLOR_RESULT: Color = Color::Green;
+/// Header color for a sub-agent section boundary.
+pub(crate) const COLOR_SUBAGENT: Color = Color::Cyan;
 
 /// The left-gutter bar that runs down the process channel.
 pub(crate) const CHANNEL_BAR: char = '\u{2502}'; // │

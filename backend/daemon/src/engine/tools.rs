@@ -86,7 +86,7 @@ pub async fn run_tool_loop(
     mut result: StreamResult,
     ctx: &dyn ToolContext,
     max_tool_iterations: Option<u32>,
-    max_result_chars: usize,
+    tools_cfg: &shore_config::app::ToolsConfig,
     diag: &Arc<Mutex<Diagnostics>>,
     character: &str,
     thinking_enabled: bool,
@@ -147,7 +147,7 @@ pub async fn run_tool_loop(
                 direct_tx,
                 request.rid.as_deref(),
                 ctx,
-                max_result_chars,
+                tools_cfg,
                 diag,
                 intermediate_messages.as_mut_slice(),
             )
@@ -249,12 +249,13 @@ async fn execute_tool_use(
     direct_tx: &mpsc::Sender<ServerMessage>,
     request_rid: Option<&str>,
     ctx: &dyn ToolContext,
-    max_result_chars: usize,
+    tools_cfg: &shore_config::app::ToolsConfig,
     diag: &Arc<Mutex<Diagnostics>>,
     intermediate_messages: &mut [Message],
 ) -> ToolDispatchOutcome {
     let _ignored = direct_tx
         .send(ServerMessage::ToolCall(ToolCall {
+            subagent: None,
             rid: request_rid.map(str::to_owned),
             tool_id: tool_use.id.clone(),
             tool_name: tool_use.name.clone(),
@@ -282,9 +283,11 @@ async fn execute_tool_use(
         }
         Err(e) => (e.to_string(), true, None),
     };
-    // Cap how much a single result contributes to the conversation. Apply
-    // before the SWP event, persistence, and LLM payload so every replay path
-    // sees the same bounded result. A limit of 0 leaves output untouched.
+    // Cap how much a single result contributes to the conversation, honoring
+    // any per-tool `[tools.config.<name>]` override over the global limit.
+    // Apply before the SWP event, persistence, and LLM payload so every replay
+    // path sees the same bounded result. A limit of 0 leaves output untouched.
+    let max_result_chars = tools_cfg.result_chars_for(&tool_use.name);
     let output_str = crate::content_util::truncate_tool_result(raw_output, max_result_chars);
 
     if !is_error && tool_use.name == "generate_image" {
@@ -333,6 +336,7 @@ async fn attach_generated_image(
     }
     let _ignored = direct_tx
         .send(ServerMessage::SendImage(SendImage {
+            subagent: None,
             rid: request_rid.map(str::to_owned),
             path: path.to_owned(),
             caption,
@@ -373,6 +377,7 @@ async fn emit_tool_result(
 ) {
     let _ignored = direct_tx
         .send(ServerMessage::ToolResult(SwpToolResult {
+            subagent: None,
             rid: request_rid.map(str::to_owned),
             tool_id: tool_use.id.clone(),
             tool_name: tool_use.name.clone(),
@@ -510,6 +515,15 @@ mod tests {
         Arc::new(Mutex::new(Diagnostics::default()))
     }
 
+    /// A `ToolsConfig` whose global result cap is `max` and which carries no
+    /// per-tool overrides, so `result_chars_for` returns `max` for every tool.
+    fn tools_cfg(max: usize) -> shore_config::app::ToolsConfig {
+        shore_config::app::ToolsConfig {
+            max_result_chars: max,
+            ..Default::default()
+        }
+    }
+
     /// Build a test LlmRequest. The sidecar mock handles transport; base_url
     /// remains present to keep the request shape close to configured models.
     fn test_request(base_url: &str, messages: Vec<Value>) -> LlmRequest {
@@ -564,7 +578,7 @@ mod tests {
                 result,
                 &ctx,
                 Some(10),
-                0,
+                &tools_cfg(0),
                 &test_diag(),
                 "test",
                 false,
@@ -617,7 +631,7 @@ mod tests {
             initial,
             &ctx,
             Some(10),
-            0,
+            &tools_cfg(0),
             &test_diag(),
             "test",
             false,
@@ -726,7 +740,7 @@ mod tests {
             initial,
             &ctx,
             Some(3),
-            0,
+            &tools_cfg(0),
             &test_diag(),
             "test",
             false,
@@ -775,7 +789,7 @@ mod tests {
             initial,
             &ctx,
             Some(10),
-            0,
+            &tools_cfg(0),
             &test_diag(),
             "test",
             false,
@@ -843,7 +857,7 @@ mod tests {
                 result,
                 &ctx,
                 Some(10),
-                0,
+                &tools_cfg(0),
                 &test_diag(),
                 "test",
                 false,
@@ -896,7 +910,7 @@ mod tests {
             initial,
             &ctx,
             Some(10),
-            5,
+            &tools_cfg(5),
             &test_diag(),
             "test",
             false,
@@ -936,6 +950,77 @@ mod tests {
                 assert!(
                     content.contains("tool_result truncated"),
                     "persisted block should be truncated: {content}"
+                );
+            }
+            other => panic!("Expected ToolResult block, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_loop_honors_per_tool_result_char_override() {
+        // A `[tools.config.<name>]` override must win over the global cap: the
+        // global limit here is generous, but `check_time` carries a tiny
+        // per-tool override, so only that tool's result is truncated.
+        let sidecar = MockLlmSidecar::start().await;
+        sidecar.enqueue_stream_text("Noted.").await;
+        let base_url = sidecar.base_url();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let client = test_ledger_client_with_sidecar(&tmp, &sidecar);
+        let (push_tx, _push_rx) = mpsc::channel(64);
+        let ctx = TestToolContext::new();
+
+        let mut request = test_request(
+            &base_url,
+            vec![json!({"role": "user", "content": "What time is it?"})],
+        );
+
+        let initial = StreamResult {
+            content: String::new(),
+            model: "test".into(),
+            finish_reason: "tool_use".into(),
+            usage: Usage::default(),
+            timing: Timing::default(),
+            tool_uses: vec![ToolUseEvent {
+                id: "t1".into(),
+                name: "check_time".into(),
+                input: json!({}),
+            }],
+            content_blocks: vec![],
+        };
+
+        // Generous global cap, but a 5-char override scoped to `check_time`.
+        let mut tools = tools_cfg(10_000);
+        let _ = tools.config.insert(
+            "check_time".into(),
+            shore_config::app::ToolOverride {
+                max_result_chars: Some(5),
+            },
+        );
+
+        let result = run_tool_loop(
+            &client,
+            &push_tx,
+            &mut request,
+            initial,
+            &ctx,
+            Some(10),
+            &tools,
+            &test_diag(),
+            "test",
+            false,
+            ToolLoopRetry::NONE,
+        )
+        .await
+        .unwrap();
+
+        let persisted = &result.intermediate_messages[1].content_blocks[0];
+        match persisted {
+            ContentBlock::ToolResult { content, .. } => {
+                assert!(
+                    content.contains("tool_result truncated"),
+                    "per-tool override should truncate check_time under a generous \
+                     global cap: {content}"
                 );
             }
             other => panic!("Expected ToolResult block, got {other:?}"),
@@ -984,7 +1069,7 @@ mod tests {
             initial,
             &ctx,
             Some(10),
-            0,
+            &tools_cfg(0),
             &test_diag(),
             "test",
             false,

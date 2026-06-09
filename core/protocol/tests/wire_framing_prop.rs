@@ -347,8 +347,13 @@ fn arb_server_message() -> BoxedStrategy<ServerMessage> {
                 code,
                 message
             }),),
-        (prop::option::of(arb_ident()), any::<bool>())
-            .prop_map(|(rid, regen)| { ServerMessage::StreamStart(StreamStart { rid, regen }) }),
+        (prop::option::of(arb_ident()), any::<bool>()).prop_map(|(rid, regen)| {
+            ServerMessage::StreamStart(StreamStart {
+                subagent: None,
+                rid,
+                regen,
+            })
+        }),
         (
             prop::option::of(arb_ident()),
             arb_small_string(),
@@ -356,6 +361,7 @@ fn arb_server_message() -> BoxedStrategy<ServerMessage> {
         )
             .prop_map(|(rid, text, content_type)| ServerMessage::StreamChunk(
                 StreamChunk {
+                    subagent: None,
                     rid,
                     text,
                     content_type,
@@ -373,6 +379,7 @@ fn arb_server_message() -> BoxedStrategy<ServerMessage> {
             .prop_map(
                 |(rid, msg_id, revision, content, metadata, finish_reason, is_final)| {
                     ServerMessage::StreamEnd(StreamEnd {
+                        subagent: None,
                         rid,
                         msg_id,
                         revision,
@@ -415,6 +422,7 @@ fn arb_server_message() -> BoxedStrategy<ServerMessage> {
         )
             .prop_map(|(rid, tool_id, tool_name, input)| ServerMessage::ToolCall(
                 ToolCall {
+                    subagent: None,
                     rid,
                     tool_id,
                     tool_name,
@@ -430,6 +438,7 @@ fn arb_server_message() -> BoxedStrategy<ServerMessage> {
         )
             .prop_map(|(rid, tool_id, tool_name, output, is_error)| {
                 ServerMessage::ToolResult(ToolResult {
+                    subagent: None,
                     rid,
                     tool_id,
                     tool_name,
@@ -445,6 +454,7 @@ fn arb_server_message() -> BoxedStrategy<ServerMessage> {
         )
             .prop_map(|(rid, path, caption, data)| {
                 ServerMessage::SendImage(SendImage {
+                    subagent: None,
                     rid,
                     path,
                     caption,

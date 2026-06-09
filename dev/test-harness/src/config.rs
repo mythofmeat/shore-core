@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use shore_config::{
-    app::{AppConfig, BehaviorConfig, CompactionConfig, HeartbeatConfig, ToolUseConfig},
+    app::{AppConfig, CompactionConfig, HeartbeatConfig, ToolsConfig},
     duration::ConfigDuration,
     models::ModelCatalog,
     providers::ProviderRegistry,
@@ -255,12 +255,18 @@ impl TestConfigBuilder {
     fn build_app_config(&self) -> AppConfig {
         let mut app = AppConfig::default();
         app.defaults.model = Some(self.model_alias.clone());
-        app.behavior = BehaviorConfig {
-            tool_use: ToolUseConfig {
-                enabled: self.tool_use_enabled,
-                ..ToolUseConfig::default()
-            },
-            ..BehaviorConfig::default()
+        // Tools are opt-in: when enabled, allowlist the whole registered set so
+        // tests have the full surface; otherwise leave the allowlist empty.
+        app.tools = if self.tool_use_enabled {
+            ToolsConfig {
+                enabled_tools: shore_daemon::tools::all_tools()
+                    .iter()
+                    .map(|t| t.name.to_owned())
+                    .collect(),
+                ..ToolsConfig::default()
+            }
+        } else {
+            ToolsConfig::default()
         };
         app.behavior.autonomy.enabled = self.autonomy_enabled;
         app.advanced.api_payload_logging = self.api_payload_logging;
@@ -295,7 +301,6 @@ impl TestConfigBuilder {
         let embed_table = self.embed_toml().map(|toml| toml.parse()).transpose()?;
         Ok(ModelCatalog::from_sections(
             Some(&chat_table),
-            None,
             embed_table.as_ref(),
             None,
         )?)

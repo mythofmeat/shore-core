@@ -2367,7 +2367,7 @@ fn build_tool_context(
         image_dir: char_dir.join("images").to_string_lossy().into_owned(),
         llm_client: client.inner().clone(),
         image_gen_config,
-        search_config: config.app.behavior.tool_use.search.clone(),
+        search_config: config.app.tools.web_search.clone(),
         character_name: character.to_owned(),
         workspace_dir: character_workspace_dir(&config.dirs.config, character)
             .to_string_lossy()
@@ -2384,6 +2384,7 @@ fn build_tool_context(
         ),
         config_dir: config.dirs.config.to_string_lossy().into_owned(),
         character_data_dir: char_dir.to_string_lossy().into_owned(),
+        subagent_runtime: None,
     }
 }
 
@@ -3366,7 +3367,7 @@ mod tests {
         // then check if tools are modified.
         let original_tools: Vec<Value> = vec![
             json!({"name": "check_time", "input_schema": {}}),
-            json!({"name": "search_history", "input_schema": {}}),
+            json!({"name": "search_chat_logs", "input_schema": {}}),
         ];
 
         let request = LlmRequest {
@@ -3451,11 +3452,10 @@ api_key_env = "{api_key_env}"
         );
         let chat: toml::Table = chat_toml.parse().unwrap();
         let catalog =
-            shore_config::models::ModelCatalog::from_sections(Some(&chat), None, None, None)
-                .unwrap();
+            shore_config::models::ModelCatalog::from_sections(Some(&chat), None, None).unwrap();
 
         let mut app = shore_config::app::AppConfig::default();
-        app.behavior.tool_use.enabled = false;
+        // Tools are opt-in: the default empty allowlist already disables them.
         app.memory.thinking.replay_prior_thinking = shore_config::app::ThinkingReplay::None;
         let config = LoadedConfig::new_for_test(
             app,
@@ -3537,8 +3537,7 @@ api_key_env = "{heartbeat_env}"
         );
         let chat: toml::Table = chat_toml.parse().unwrap();
         let catalog =
-            shore_config::models::ModelCatalog::from_sections(Some(&chat), None, None, None)
-                .unwrap();
+            shore_config::models::ModelCatalog::from_sections(Some(&chat), None, None).unwrap();
 
         let mut app = shore_config::app::AppConfig::default();
         app.defaults.background.heartbeat = heartbeat.map(str::to_owned);

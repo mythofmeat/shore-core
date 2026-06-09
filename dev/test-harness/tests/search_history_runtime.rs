@@ -2,7 +2,7 @@
 //!
 //! Boots the real daemon + SWP socket (mock LLM stands in for the provider),
 //! seeds an on-disk history corpus (old 2025 segment + recent 2026 segment),
-//! then drives real `search_history` tool calls and prints the daemon's actual
+//! then drives real `search_chat_logs` tool calls and prints the daemon's actual
 //! tool-result JSON. This is NOT a unit test of the handler — it exercises the
 //! full dispatch path (SWP -> tool dispatch -> SegmentReader/MessageStore ->
 //! ranking -> serialization) through the booted daemon.
@@ -62,7 +62,7 @@ fn write_segment(dir: &std::path::Path, file: &str, msgs: &[Message]) -> TestRes
     Ok(())
 }
 
-/// Pull the most recent `search_history` tool-result JSON out of the persisted
+/// Pull the most recent `search_chat_logs` tool-result JSON out of the persisted
 /// transcript whose echoed `query` matches.
 fn tool_result_for(harness: &TestHarness, query: &str) -> TestResult<Value> {
     let mut found = None;
@@ -115,7 +115,7 @@ fn print_result(label: &str, result: &Value) -> TestResult {
 async fn run_search(harness: &mut TestHarness, id: &str, input: Value) -> TestResult {
     harness
         .mock_llm
-        .enqueue_tool_use(id, "search_history", input)
+        .enqueue_tool_use(id, "search_chat_logs", input)
         .await;
     harness.mock_llm.enqueue_text("done").await;
     let _ignored = harness

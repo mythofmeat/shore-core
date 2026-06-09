@@ -108,6 +108,7 @@ pub async fn dispatch(
         "memory" => state::memory(engine, ctx, &cmd.args).await,
         "compact" => state::compact(engine, ctx, &cmd.args).await,
         "config" => state::config(ctx, &cmd.args),
+        "tools" => state::tools(ctx),
         "config_check" => state::config_check(ctx).await,
         "config_reset" => state::config_reset(ctx),
         "diagnostics" => state::diagnostics(ctx, &cmd.args),

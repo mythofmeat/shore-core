@@ -985,34 +985,28 @@ fn build_librarian_prompt(
 }
 
 fn build_librarian_tool_defs(character: &str, display_name: &str, dry_run: bool) -> Vec<Value> {
-    let toggles = shore_config::app::ToolToggles::default();
-    let allowed = |name: &str| {
-        if dry_run {
-            matches!(
-                name,
-                "read" | "list_files" | "search" | "search_history" | "check_time"
-            )
-        } else {
-            matches!(
-                name,
-                "read"
-                    | "write"
-                    | "edit"
-                    | "list_files"
-                    | "search"
-                    | "search_history"
-                    | "check_time"
-            )
-        }
+    // The librarian uses its own fixed tool set, independent of the character's
+    // `[tools]` allowlist. Express it directly as an allowlist so
+    // `render_tool_defs` yields exactly these (in registry order).
+    let mut names: Vec<String> = [
+        "read",
+        "list_files",
+        "search",
+        "search_chat_logs",
+        "check_time",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    if !dry_run {
+        names.push("write".to_owned());
+        names.push("edit".to_owned());
+    }
+    let tools_cfg = shore_config::app::ToolsConfig {
+        enabled_tools: names,
+        ..Default::default()
     };
-    tool_system::render_tool_defs(false, &toggles, character, display_name)
-        .into_iter()
-        .filter(|tool| {
-            tool.get("name")
-                .and_then(|name| name.as_str())
-                .is_some_and(allowed)
-        })
-        .collect()
+    tool_system::render_tool_defs(false, &tools_cfg, character, display_name)
 }
 
 fn build_librarian_tool_context(
@@ -1044,7 +1038,7 @@ fn build_librarian_tool_context(
             .into_owned(),
         llm_client: llm_client.inner().clone(),
         image_gen_config,
-        search_config: loaded_config.app.behavior.tool_use.search.clone(),
+        search_config: loaded_config.app.tools.web_search.clone(),
         character_name: character.to_owned(),
         workspace_dir: character_workspace_dir(&loaded_config.dirs.config, character)
             .to_string_lossy()
@@ -1062,6 +1056,7 @@ fn build_librarian_tool_context(
         ),
         config_dir: loaded_config.dirs.config.to_string_lossy().into_owned(),
         character_data_dir: character_data_dir.to_string_lossy().into_owned(),
+        subagent_runtime: None,
     }
 }
 
@@ -1205,7 +1200,7 @@ fn record_librarian_tool_intent(result: &mut LibrarianLoopResult, name: &str, in
                 push_unique(&mut result.inspected, path.to_owned());
             }
         }
-        "search" | "search_history" => {
+        "search" | "search_chat_logs" => {
             let query = input
                 .get("query")
                 .and_then(|v| v.as_str())

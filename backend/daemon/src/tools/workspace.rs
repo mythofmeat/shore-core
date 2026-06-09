@@ -93,6 +93,10 @@ fn editing_tool_defs() -> Vec<ToolDef> {
                                 "new_string": {
                                     "type": "string",
                                     "description": "Text to replace old_string with."
+                                },
+                                "replace_all": {
+                                    "type": "boolean",
+                                    "description": "Replace every occurrence of old_string. Defaults to false, which requires old_string to match exactly once."
                                 }
                             },
                             "required": ["old_string", "new_string"]
@@ -585,6 +589,10 @@ pub async fn handle_edit(input: Value, workspace_dir: &str) -> Result<Value, Too
             .get("new_string")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("each edit must have 'new_string'".into()))?;
+        let replace_all = edit
+            .get("replace_all")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         if old_str.is_empty() {
             return Err(ToolError::InvalidArgs(
@@ -592,7 +600,9 @@ pub async fn handle_edit(input: Value, workspace_dir: &str) -> Result<Value, Too
             ));
         }
 
-        if !content.contains(old_str) {
+        let count = content.matches(old_str).count();
+
+        if count == 0 {
             let snippet_limit = 800;
             let content_chars = content.chars().count();
             let snippet = if content_chars <= snippet_limit {
@@ -608,8 +618,16 @@ pub async fn handle_edit(input: Value, workspace_dir: &str) -> Result<Value, Too
             )));
         }
 
-        // Replace ALL occurrences
-        let count = content.matches(old_str).count();
+        // Default to a unique match so an edit can't silently clobber other
+        // occurrences; `replace_all` opts into rewriting every one.
+        if count > 1 && !replace_all {
+            return Err(ToolError::InvalidArgs(format!(
+                "Found {count} occurrences of old_string in {path_str}; it must \
+                 match exactly once. Add surrounding context to target a single \
+                 occurrence, or set \"replace_all\": true to replace every one."
+            )));
+        }
+
         content = content.replace(old_str, new_str);
         replacements_made = replacements_made.saturating_add(count);
     }
@@ -1249,6 +1267,12 @@ static DEFAULT_ALLOWLIST: &[&str] = &[
     "cmake",
 ];
 
+/// The exec tool's allowed command names (read-only view for introspection,
+/// e.g. `shore tools`).
+pub fn exec_allowlist() -> &'static [&'static str] {
+    DEFAULT_ALLOWLIST
+}
+
 fn parse_command(command: &str) -> Result<Vec<String>, ToolError> {
     let argv = shell_words::split(command)
         .map_err(|e| ToolError::InvalidArgs(format!("invalid command line: {e}")))?;
@@ -1513,7 +1537,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_multiple_replacements() {
+    async fn edit_replace_all_replaces_every_occurrence() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
@@ -1529,7 +1553,7 @@ mod tests {
             json!({
                 "path": "test.txt",
                 "edits": [
-                    {"old_string": "foo", "new_string": "bar"}
+                    {"old_string": "foo", "new_string": "bar", "replace_all": true}
                 ]
             }),
             &ws_str,
@@ -1542,6 +1566,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read_result["content"], "bar bar bar");
+    }
+
+    #[tokio::test]
+    async fn edit_fails_on_nonunique_match_without_replace_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        let _ignored = handle_write(
+            json!({"path": "test.txt", "content": "foo foo foo"}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+
+        // Without replace_all, a non-unique old_string must error rather than
+        // silently rewriting every occurrence.
+        let result = handle_edit(
+            json!({
+                "path": "test.txt",
+                "edits": [
+                    {"old_string": "foo", "new_string": "bar"}
+                ]
+            }),
+            &ws_str,
+        )
+        .await;
+        assert!(result.is_err(), "non-unique match should error");
+
+        // The file is left untouched.
+        let read_result = handle_read(json!({"path": "test.txt"}), &ws_str)
+            .await
+            .unwrap();
+        assert_eq!(read_result["content"], "foo foo foo");
     }
 
     #[tokio::test]

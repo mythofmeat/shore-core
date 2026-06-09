@@ -429,10 +429,12 @@ fn parse_config_table(
     let raw_table = table.clone();
 
     let chat_section = table.remove("chat");
-    let tools_section = table.remove("tools");
     let embedding_section = table.remove("embedding");
     let image_generation_section = table.remove("image_generation");
     let providers_section = table.remove("providers");
+    // NB: `[tools]` is NO LONGER removed here — it is now the tool-surface
+    // config section deserialized into `AppConfig::tools`. (The old
+    // `[tools.*]` model catalog was removed.)
 
     // Deserialize the remaining table into AppConfig.
     let mut app: AppConfig = toml::Value::Table(table)
@@ -451,7 +453,6 @@ fn parse_config_table(
 
     let catalog = ModelCatalog::from_sections_with_providers(
         chat_section.as_ref().and_then(|v| v.as_table()),
-        tools_section.as_ref().and_then(|v| v.as_table()),
         embedding_section.as_ref().and_then(|v| v.as_table()),
         image_generation_section.as_ref().and_then(|v| v.as_table()),
         Some(&providers),
@@ -657,6 +658,51 @@ fn validate_config(
         "defaults.background.dreaming",
         app.defaults.background.dreaming.as_deref(),
     );
+    warn_on_unresolvable_model_ref(
+        catalog,
+        providers,
+        "defaults.subagent_model",
+        app.defaults.subagent_model.as_deref(),
+    );
+    for (name, sub) in &app.subagents {
+        if app.tools.enabled_subagents.iter().any(|s| s == name) {
+            // An enabled sub-agent resolves its model via the
+            // `subagents.<name>.model -> defaults.subagent_model -> defaults.model`
+            // chain with no per-character runtime override, so an unresolvable
+            // chain would surface only when `ask_<name>` is first called. Reject
+            // it at load time instead of merely warning.
+            let resolved = sub
+                .model
+                .as_deref()
+                .or(app.defaults.subagent_model.as_deref())
+                .or(app.defaults.model.as_deref());
+            match resolved {
+                Some(model) if model_ref_resolves(catalog, providers, model) => {}
+                Some(model) => {
+                    return Err(ConfigError::Validation(format!(
+                        "subagents.{name} resolves to model \"{model}\", which is not \
+                         in the static catalog and is not a `provider:model_id` ref to \
+                         an enabled provider; ask_{name} would fail on first use"
+                    )));
+                }
+                None => {
+                    return Err(ConfigError::Validation(format!(
+                        "subagents.{name} is enabled but resolves to no model; set \
+                         subagents.{name}.model, defaults.subagent_model, or defaults.model"
+                    )));
+                }
+            }
+        } else {
+            // Disabled sub-agents are never exposed, so an unresolvable model
+            // is advisory only — mirror the default-ref warning above.
+            warn_on_unresolvable_model_ref(
+                catalog,
+                providers,
+                &format!("subagents.{name}.model"),
+                sub.model.as_deref(),
+            );
+        }
+    }
     validate_default_embedding(providers, app.defaults.embedding.as_deref())?;
     validate_default_image_generation(providers, app.defaults.image_generation.as_deref())?;
 
@@ -867,6 +913,22 @@ fn validate_cron_schedule(expr: &str) -> Result<(), ConfigError> {
 /// non-`provider:model_id` name absent from the catalog) log a `warn!` and
 /// return — the daemon still loads, because per-character preferences can
 /// override these defaults at runtime.
+/// Whether a model reference resolves against the static catalog or an enabled
+/// provider's trusted path — the non-warning cases of
+/// [`warn_on_unresolvable_model_ref`]. Used to hard-reject enabled sub-agents
+/// whose model chain cannot resolve.
+fn model_ref_resolves(catalog: &ModelCatalog, providers: &ProviderRegistry, name: &str) -> bool {
+    if catalog.find_model(name).is_ok() {
+        return true;
+    }
+    if let Some((provider_key, model_id)) = name.split_once(':') {
+        if !provider_key.is_empty() && !model_id.is_empty() {
+            return matches!(providers.get(provider_key), Some(entry) if entry.enabled);
+        }
+    }
+    false
+}
+
 fn warn_on_unresolvable_model_ref(
     catalog: &ModelCatalog,
     providers: &ProviderRegistry,
@@ -1071,8 +1133,8 @@ enabled = true
 enabled = false
 fallback_heartbeat_interval = "30m"
 
-[behavior.tool_use.tools]
-roll_dice = false
+[tools]
+enabled_tools = ["search_chat_logs", "read"]
 
 [advanced]
 max_retries = 5
@@ -1101,13 +1163,8 @@ model_id = "claude-opus-4-6"
                 .fallback_heartbeat_interval,
             ConfigDuration::from_secs(1800)
         );
-        assert!(!loaded.app.behavior.tool_use.tools.roll_dice());
-        assert!(loaded
-            .app
-            .behavior
-            .tool_use
-            .tools
-            .is_enabled("search_history"));
+        assert!(!loaded.app.tools.tool_enabled("roll_dice"));
+        assert!(loaded.app.tools.tool_enabled("search_chat_logs"));
         assert_eq!(loaded.app.advanced.max_retries, Some(5));
         assert!(!loaded.app.daemon.unsafe_allow_remote_access);
 
@@ -1137,7 +1194,7 @@ model_id = "claude-opus-4-6"
                 .fallback_heartbeat_interval,
             ConfigDuration::from_secs(3600)
         );
-        assert!(loaded.app.behavior.tool_use.enabled);
+        assert!(!loaded.app.tools.any_enabled());
         assert!(loaded.app.memory.compaction.enabled);
         assert!(!loaded.app.memory.dreaming.enabled);
         assert_eq!(loaded.app.memory.dreaming.frequency, "0 3 * * *");
@@ -1210,9 +1267,6 @@ key = "value"
 [chat.anthropic.opus]
 model_id = "claude-opus-4-6"
 
-[tools.openrouter.mistral]
-model_id = "mistralai/mistral-small"
-
 [embedding."openai:text-embedding-3-large"]
 dimensions = 1024
 
@@ -1224,7 +1278,6 @@ size = "1024x1024"
         let config_path = tmp.path().join("config.toml");
         let loaded = load_config(Some(&config_path)).unwrap();
         assert!(loaded.models.find_model("opus").is_ok());
-        assert!(loaded.models.find_model("mistral").is_ok());
         assert!(loaded
             .models
             .embedding
@@ -1281,6 +1334,73 @@ model_id = "claude-opus-4-6"
         )]);
         let _ignored = load_config(Some(&tmp.path().join("config.toml")))
             .expect("unresolvable dreaming default should warn, not fail");
+    }
+
+    #[test]
+    fn enabled_subagent_with_unresolvable_model_chain_fails() {
+        // An enabled sub-agent has no per-character runtime override for its
+        // model, so an unresolvable chain must be rejected at load instead of
+        // surfacing on first `ask_<name>` use.
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[tools]
+enabled_subagents = ["researcher"]
+
+[subagents.researcher]
+description = "Research helper"
+prompt = "You research things."
+model = "ghost-model"
+"#,
+        )]);
+        let err = load_config(Some(&tmp.path().join("config.toml")))
+            .expect_err("enabled sub-agent with unresolvable model should fail to load");
+        assert!(
+            err.to_string().contains("subagents.researcher"),
+            "error should name the offending sub-agent: {err}"
+        );
+    }
+
+    #[test]
+    fn enabled_subagent_resolving_via_defaults_passes() {
+        // The model chain falls back to defaults.model; a resolvable fallback
+        // is enough even when the sub-agent sets no model of its own.
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults]
+model = "opus"
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+
+[tools]
+enabled_subagents = ["researcher"]
+
+[subagents.researcher]
+description = "Research helper"
+prompt = "You research things."
+"#,
+        )]);
+        let _ignored = load_config(Some(&tmp.path().join("config.toml")))
+            .expect("sub-agent resolving via defaults.model should load");
+    }
+
+    #[test]
+    fn disabled_subagent_with_unresolvable_model_warns_but_loads() {
+        // A sub-agent that is defined but not enabled is never exposed, so a
+        // bad model ref is advisory only.
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[subagents.researcher]
+description = "Research helper"
+prompt = "You research things."
+model = "ghost-model"
+"#,
+        )]);
+        let _ignored = load_config(Some(&tmp.path().join("config.toml")))
+            .expect("disabled sub-agent with unresolvable model should warn, not fail");
     }
 
     #[test]
@@ -1547,9 +1667,9 @@ model_id = "claude-opus-4-6"
 "#,
             ),
             (
-                "conf.d/02-tools.toml",
+                "conf.d/02-more.toml",
                 r#"
-[tools.openrouter.mistral]
+[chat.openrouter.mistral]
 model_id = "mistralai/mistral-small"
 "#,
             ),

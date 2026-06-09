@@ -273,6 +273,7 @@ pub(crate) fn format_command(name: &str, data: &serde_json::Value) {
         "memory_changelog" => print_changelog(data),
         "memory_dream" => print_memory_dream(data),
         "config" => print_config(data, false),
+        "tools" => print_tools(data),
         "config_check" => print_config_check(data),
         "config_reset" => print_config_reset(data),
         "edit" => print_edit_confirmation(data),
@@ -1384,6 +1385,97 @@ fn print_config_section(
 }
 
 /// Print config check results.
+/// Render the `shore tools` surface: per-tool main-character enablement, the
+/// sub-agent roster and the tools each owns, the `exec` allowlist, and any
+/// dangling-config warnings, all from the SWP `tools` query payload.
+fn print_tools(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    write_section_header(&mut out, "Tools", "surface", width);
+
+    // Per-tool: enablement on the main character + sub-agent owners.
+    if let Some(tools) = data["tools"].as_array() {
+        for t in tools {
+            let name = t["tool"].as_str().unwrap_or("?");
+            let main = t["main"].as_bool().unwrap_or(false);
+            let owners: Vec<&str> = t["subagents"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|s| s.as_str()).collect())
+                .unwrap_or_default();
+
+            if use_color() {
+                _ = crossterm::execute!(
+                    out,
+                    SetForegroundColor(if main { Color::Green } else { Color::DarkGrey })
+                );
+            }
+            _ = write!(out, "  {} ", if main { "✓" } else { "·" });
+            if use_color() {
+                _ = crossterm::execute!(out, ResetColor);
+            }
+            let owners_str = if owners.is_empty() {
+                String::new()
+            } else {
+                format!("  ← {}", owners.join(", "))
+            };
+            _ = writeln!(out, "{name:<20}{owners_str}");
+        }
+    }
+    _ = writeln!(out);
+
+    // Sub-agent roster.
+    if let Some(subs) = data["subagents"].as_array() {
+        if !subs.is_empty() {
+            write_row(&mut out, "Sub-agents", "");
+            for s in subs {
+                let name = s["name"].as_str().unwrap_or("?");
+                let enabled = s["enabled"].as_bool().unwrap_or(false);
+                let tools: Vec<&str> = s["tools"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|t| t.as_str()).collect())
+                    .unwrap_or_default();
+                let model = s["model"].as_str().unwrap_or("(default)");
+                let mark = if enabled { "ask_" } else { "(disabled) " };
+                _ = writeln!(out, "  {mark}{name}  [{}]  {model}", tools.join(", "));
+            }
+            _ = writeln!(out);
+        }
+    }
+
+    // Exec allowlist (only meaningful when `exec` is enabled).
+    if let Some(exec) = data["exec_allowlist"].as_array() {
+        let cmds: Vec<&str> = exec.iter().filter_map(|c| c.as_str()).collect();
+        if use_color() {
+            _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        }
+        _ = writeln!(out, "  exec allowlist:");
+        if use_color() {
+            _ = crossterm::execute!(out, ResetColor);
+        }
+        _ = writeln!(out, "    {}", cmds.join(" "));
+        _ = writeln!(out);
+    }
+
+    // Dangling references.
+    if let Some(warnings) = data["warnings"].as_array() {
+        for w in warnings {
+            if let Some(msg) = w.as_str() {
+                if use_color() {
+                    _ = crossterm::execute!(out, SetForegroundColor(Color::DarkYellow));
+                }
+                _ = write!(out, "  ! ");
+                if use_color() {
+                    _ = crossterm::execute!(out, ResetColor);
+                }
+                _ = writeln!(out, "{msg}");
+            }
+        }
+    }
+    _ = writeln!(out);
+}
+
 fn print_config_check(data: &serde_json::Value) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -1401,12 +1493,11 @@ fn print_config_check(data: &serde_json::Value) {
     }
 
     let chat = data["chat_models"].as_u64().unwrap_or(0);
-    let tool = data["tool_models"].as_u64().unwrap_or(0);
     let embed = data["embedding_models"].as_u64().unwrap_or(0);
     write_row(
         &mut out,
         "Models",
-        &format!("{chat} chat, {tool} tool, {embed} embedding"),
+        &format!("{chat} chat, {embed} embedding"),
     );
 
     let _ignored = writeln!(out);
@@ -2247,6 +2338,31 @@ mod tests {
 
     fn line<'src>(lines: &'src [&str], index: usize) -> &'src str {
         lines.get(index).copied().expect("expected rendered line")
+    }
+
+    /// Visual preview of `shore tools` rendering. Run with:
+    /// `cargo test -p shore-cli render_preview_tools -- --ignored --nocapture --test-threads=1`
+    #[test]
+    #[ignore = "visual preview"]
+    fn render_preview_tools() {
+        set_color_enabled(true);
+        let data = serde_json::json!({
+            "tools": [
+                { "tool": "read", "main": true, "subagents": ["memory"] },
+                { "tool": "search", "main": false, "subagents": ["memory"] },
+                { "tool": "web_search", "main": true, "subagents": [] },
+                { "tool": "write", "main": false, "subagents": [] },
+                { "tool": "exec", "main": true, "subagents": [] },
+            ],
+            "subagents": [
+                { "name": "memory", "enabled": true, "tools": ["search", "read"], "model": "anthropic:claude-haiku-4-5" },
+                { "name": "research", "enabled": false, "tools": ["web_search", "fetch_url"], "model": null },
+            ],
+            "exec_allowlist": ["ls", "cat", "rg", "git", "find"],
+            "warnings": ["subagent 'research' references unknown tool 'crawl'"],
+        });
+        format_command("tools", &data);
+        set_color_enabled(false);
     }
 
     #[test]

@@ -303,9 +303,31 @@ Rules:
 - Paths must stay inside the character workspace.
 - Symlink and traversal escapes are bugs.
 - Workspace file tools treat `memory/...` as a normal workspace subdirectory.
-- Private conversations hide `search_history` and `exec`, and still suppress
+- Private conversations hide `search_chat_logs` and `exec`, and still suppress
   prompt-visible memory index injection.
 - Prompt-visible files cannot be deleted and edits are deferred.
+
+### Sub-agent delegation
+
+`[subagents.<name>]` entries surface as `ask_<name>(query)` tools on the primary
+character. Dispatch routes any `ask_*` call to `ToolContext::run_subagent`, which
+the chat tool context implements by resolving a (cheap) model, building a request
+with the agent's prompt + its configured tool subset, and running the shared
+`run_tool_loop` against a discard output sink — only the agent's final text
+returns as the tool result. Sub-agent spend is recorded under `CallType::Subagent`
+(continuation rounds reuse `CallType::ToolLoop`, mirroring the heartbeat path).
+
+Load-bearing invariants:
+
+- **Nesting is capped at one level.** A sub-agent's nested loop runs against a
+  guard context whose `run_subagent` is the trait default (`NotImplemented`), and
+  the offered tool subset never contains `ask_*` (those are not in the static
+  registry). A hallucinated `ask_*` call therefore errors instead of recursing.
+- **The runtime is chat-only.** Only the generation path wires a
+  `SubagentRuntime`; background contexts (heartbeat, compaction, dreaming) leave
+  it `None`, so `ask_*` there returns `NotImplemented`.
+- **Tool ordering is stable.** `ask_*` defs are appended after the static tool
+  surface in config (`BTreeMap`) order, keeping the cache prefix byte-stable.
 
 `exec` is intentionally narrow:
 

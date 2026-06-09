@@ -486,6 +486,7 @@ fn call_type_matches_usage_kind(call_type: CallType, usage_kind: &str) -> bool {
         CallType::Compaction => usage_kind == "compaction",
         CallType::Dreaming => usage_kind == "dreaming",
         CallType::MemoryQuery => usage_kind == "memory_query",
+        CallType::Subagent => usage_kind == "subagent",
     }
 }
 

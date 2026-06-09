@@ -589,7 +589,7 @@ fn build_swp_compaction_tool_context(
             .into_owned(),
         llm_client: ctx.llm_client.inner().clone(),
         image_gen_config,
-        search_config: ctx.config.app.behavior.tool_use.search.clone(),
+        search_config: ctx.config.app.tools.web_search.clone(),
         character_name: char_name.to_owned(),
         workspace_dir: character_workspace_dir(&ctx.config.dirs.config, char_name)
             .to_string_lossy()
@@ -607,6 +607,7 @@ fn build_swp_compaction_tool_context(
         ),
         config_dir: ctx.config.dirs.config.to_string_lossy().into_owned(),
         character_data_dir: character_data_dir_path.to_string_lossy().into_owned(),
+        subagent_runtime: None,
     })
 }
 
@@ -652,14 +653,7 @@ model_id = "claude-bg"
 "#,
         )
         .unwrap();
-        let tools: toml::Table = toml::from_str(
-            r#"
-[openrouter.minimax]
-model_id = "minimax-tool"
-"#,
-        )
-        .unwrap();
-        ModelCatalog::from_sections(Some(&chat), Some(&tools), None, None).unwrap()
+        ModelCatalog::from_sections(Some(&chat), None, None).unwrap()
     }
 
     fn make_config(defaults: DefaultsConfig) -> LoadedConfig {

@@ -4,9 +4,12 @@
 //! with their caller-specific wiring. Adding a new `ToolContext` method requires
 //! updating this struct + impl (one place) instead of two separate copies.
 
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 
+use serde_json::Value;
 use shore_config::app::{RetrievalConfig, SearchConfig};
 use shore_llm::embed::Embedder;
 use shore_llm::LlmClient;
@@ -14,7 +17,8 @@ use shore_llm::LlmClient;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::markdown_store::MarkdownMemoryStore;
 
-use super::ToolContext;
+use super::subagent::SubagentRuntime;
+use super::{ToolContext, ToolError};
 
 // ---------------------------------------------------------------------------
 // SharedToolContext
@@ -37,6 +41,9 @@ pub(crate) struct SharedToolContext {
     pub(crate) memory_index_path: std::path::PathBuf,
     pub(crate) config_dir: String,
     pub(crate) character_data_dir: String,
+    /// Sub-agent delegation runtime. `Some` only on the chat generation path;
+    /// background contexts leave it `None`, so `ask_*` there is `NotImplemented`.
+    pub(crate) subagent_runtime: Option<Arc<SubagentRuntime>>,
 }
 
 impl ToolContext for SharedToolContext {
@@ -84,5 +91,17 @@ impl ToolContext for SharedToolContext {
         if let Err(e) = crate::memory::deferred_edits::queue_deferred_edit(data_dir, path) {
             tracing::warn!(path = %path, error = %e, "Failed to queue deferred edit");
         }
+    }
+    fn run_subagent<'ctx>(
+        &'ctx self,
+        name: &'ctx str,
+        query: &'ctx str,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'ctx>> {
+        Box::pin(async move {
+            match self.subagent_runtime.as_ref() {
+                Some(runtime) => super::subagent::run(self, runtime, name, query).await,
+                None => Err(ToolError::NotImplemented(format!("ask_{name}"))),
+            }
+        })
     }
 }

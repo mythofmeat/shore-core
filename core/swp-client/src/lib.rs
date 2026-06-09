@@ -360,6 +360,7 @@ mod tests {
         let mut handler = StreamHandler::new();
 
         let start = ServerMessage::StreamStart(StreamStart {
+            subagent: None,
             rid: None,
             regen: false,
         });
@@ -368,6 +369,7 @@ mod tests {
         assert!(!handler.is_regen());
 
         let chunk1 = ServerMessage::StreamChunk(StreamChunk {
+            subagent: None,
             rid: None,
             text: "Hello ".into(),
             content_type: "text".into(),
@@ -375,6 +377,7 @@ mod tests {
         assert!(handler.feed(&chunk1, None).unwrap());
 
         let chunk2 = ServerMessage::StreamChunk(StreamChunk {
+            subagent: None,
             rid: None,
             text: "world!".into(),
             content_type: "text".into(),
@@ -384,6 +387,7 @@ mod tests {
         assert_eq!(handler.assembled_text(), "Hello world!");
 
         let end = ServerMessage::StreamEnd(StreamEnd {
+            subagent: None,
             rid: None,
             msg_id: None,
             revision: None,
@@ -415,6 +419,7 @@ mod tests {
         let mut handler = StreamHandler::new();
 
         let start = ServerMessage::StreamStart(StreamStart {
+            subagent: None,
             rid: None,
             regen: true,
         });
@@ -433,6 +438,7 @@ mod tests {
     fn stream_handler_error_on_chunk_without_start() {
         let mut handler = StreamHandler::new();
         let chunk = ServerMessage::StreamChunk(StreamChunk {
+            subagent: None,
             rid: None,
             text: "oops".into(),
             content_type: "text".into(),
@@ -445,6 +451,7 @@ mod tests {
     fn stream_handler_error_on_end_without_start() {
         let mut handler = StreamHandler::new();
         let end = ServerMessage::StreamEnd(StreamEnd {
+            subagent: None,
             rid: None,
             msg_id: None,
             revision: None,
@@ -473,12 +480,14 @@ mod tests {
     fn stream_handler_error_on_double_start() {
         let mut handler = StreamHandler::new();
         let start = ServerMessage::StreamStart(StreamStart {
+            subagent: None,
             rid: None,
             regen: false,
         });
         let _ignored = handler.feed(&start, None).unwrap();
 
         let start2 = ServerMessage::StreamStart(StreamStart {
+            subagent: None,
             rid: None,
             regen: false,
         });
@@ -521,6 +530,7 @@ mod tests {
         let mut handler = StreamHandler::new();
 
         let start = ServerMessage::StreamStart(StreamStart {
+            subagent: None,
             rid: None,
             regen: false,
         });
@@ -528,6 +538,7 @@ mod tests {
         assert!(*started.lock().unwrap());
 
         let chunk = ServerMessage::StreamChunk(StreamChunk {
+            subagent: None,
             rid: None,
             text: "hi".into(),
             content_type: "text".into(),
@@ -537,6 +548,7 @@ mod tests {
         assert_eq!(*chunk_count.lock().unwrap(), 2);
 
         let end = ServerMessage::StreamEnd(StreamEnd {
+            subagent: None,
             rid: None,
             msg_id: None,
             revision: None,
@@ -567,17 +579,20 @@ mod tests {
 
         // First stream
         let start = ServerMessage::StreamStart(StreamStart {
+            subagent: None,
             rid: None,
             regen: false,
         });
         let _fed_start = handler.feed(&start, None).unwrap();
         let chunk = ServerMessage::StreamChunk(StreamChunk {
+            subagent: None,
             rid: None,
             text: "first".into(),
             content_type: "text".into(),
         });
         let _fed_chunk = handler.feed(&chunk, None).unwrap();
         let end = ServerMessage::StreamEnd(StreamEnd {
+            subagent: None,
             rid: None,
             msg_id: None,
             revision: None,
@@ -602,6 +617,7 @@ mod tests {
 
         // Second stream — feed automatically resets on stream_start
         let start2 = ServerMessage::StreamStart(StreamStart {
+            subagent: None,
             rid: None,
             regen: true,
         });
@@ -665,6 +681,7 @@ mod tests {
             write_json_line(
                 &mut w,
                 &ServerMessage::StreamStart(StreamStart {
+                    subagent: None,
                     rid: None,
                     regen: false,
                 }),
@@ -673,6 +690,7 @@ mod tests {
             write_json_line(
                 &mut w,
                 &ServerMessage::StreamChunk(StreamChunk {
+                    subagent: None,
                     rid: None,
                     text: "partial ".into(),
                     content_type: "text".into(),
@@ -682,6 +700,7 @@ mod tests {
             write_json_line(
                 &mut w,
                 &ServerMessage::StreamChunk(StreamChunk {
+                    subagent: None,
                     rid: None,
                     text: "text".into(),
                     content_type: "text".into(),
@@ -691,6 +710,7 @@ mod tests {
             write_json_line(
                 &mut w,
                 &ServerMessage::StreamEnd(StreamEnd {
+                    subagent: None,
                     rid: None,
                     msg_id: None,
                     revision: None,
@@ -825,6 +845,10 @@ mod tests {
         server_handle.await.unwrap();
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test script builds many wire frames inline"
+    )]
     async fn write_tool_loop_script(server_stream: tokio::io::DuplexStream) {
         fn meta(model: &str) -> StreamMetadata {
             StreamMetadata {
@@ -847,6 +871,7 @@ mod tests {
         write_json_line(
             &mut w,
             &ServerMessage::StreamStart(StreamStart {
+                subagent: None,
                 rid: None,
                 regen: false,
             }),
@@ -855,6 +880,7 @@ mod tests {
         write_json_line(
             &mut w,
             &ServerMessage::StreamChunk(StreamChunk {
+                subagent: None,
                 rid: None,
                 text: "Let me search memory—".into(),
                 content_type: "text".into(),
@@ -864,6 +890,7 @@ mod tests {
         write_json_line(
             &mut w,
             &ServerMessage::StreamEnd(StreamEnd {
+                subagent: None,
                 rid: None,
                 msg_id: None,
                 revision: None,
@@ -879,6 +906,7 @@ mod tests {
         write_json_line(
             &mut w,
             &ServerMessage::ToolCall(ToolCall {
+                subagent: None,
                 rid: None,
                 tool_id: "toolu_01".into(),
                 tool_name: "memory_search".into(),
@@ -889,6 +917,7 @@ mod tests {
         write_json_line(
             &mut w,
             &ServerMessage::ToolResult(ToolResult {
+                subagent: None,
                 rid: None,
                 tool_id: "toolu_01".into(),
                 tool_name: "memory_search".into(),
@@ -902,6 +931,7 @@ mod tests {
         write_json_line(
             &mut w,
             &ServerMessage::StreamStart(StreamStart {
+                subagent: None,
                 rid: None,
                 regen: false,
             }),
@@ -910,6 +940,7 @@ mod tests {
         write_json_line(
             &mut w,
             &ServerMessage::StreamChunk(StreamChunk {
+                subagent: None,
                 rid: None,
                 text: "Of course — her name is Maya.".into(),
                 content_type: "text".into(),
@@ -919,6 +950,7 @@ mod tests {
         write_json_line(
             &mut w,
             &ServerMessage::StreamEnd(StreamEnd {
+                subagent: None,
                 rid: None,
                 msg_id: None,
                 revision: None,

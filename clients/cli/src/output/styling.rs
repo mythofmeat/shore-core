@@ -12,7 +12,8 @@ use shore_protocol::types::ImageRef;
 use super::{
     abbreviate_model, primary_tool_arg, process_wrap_width, use_color, write_channel_rule,
     write_process_body, write_sigil_header, write_thinking_content_line, COLOR_RESULT,
-    COLOR_THINKING, COLOR_TOOL, MAX_TOOL_OUTPUT, SIGIL_ERROR, SIGIL_OK, SIGIL_THINKING, SIGIL_TOOL,
+    COLOR_SUBAGENT, COLOR_THINKING, COLOR_TOOL, MAX_TOOL_OUTPUT, SIGIL_ERROR, SIGIL_OK,
+    SIGIL_SUBAGENT, SIGIL_THINKING, SIGIL_TOOL,
 };
 use crate::images;
 
@@ -157,6 +158,71 @@ fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamCh
     }
 }
 
+/// Open a sub-agent's nested section with a dim, sigil-led header
+/// (`» <name> (sub-agent)`). The frames that follow — its thinking, tool calls,
+/// results, and output — render in the process channel until [`print_subagent_end`].
+pub(crate) fn print_subagent_begin(name: &str) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let mut state = lock_chunk_state();
+    flush_thinking(&mut out, &mut state);
+    begin_block(&mut out, &mut state, true);
+    state.was_thinking = false;
+    write_sigil_header(
+        &mut out,
+        SIGIL_SUBAGENT,
+        &format!("{name} (sub-agent)"),
+        COLOR_SUBAGENT,
+    );
+    state.at_line_start = true;
+    let _ignored = out.flush();
+}
+
+/// Close a sub-agent's nested section (`» <name> done`).
+pub(crate) fn print_subagent_end(name: &str) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let mut state = lock_chunk_state();
+    flush_thinking(&mut out, &mut state);
+    begin_block(&mut out, &mut state, true);
+    state.was_thinking = false;
+    write_sigil_header(
+        &mut out,
+        SIGIL_SUBAGENT,
+        &format!("{name} done"),
+        COLOR_SUBAGENT,
+    );
+    state.at_line_start = true;
+    let _ignored = out.flush();
+}
+
+/// Render a sub-agent stream chunk. Both its thinking and its output text go to
+/// the dim process channel (buffered per logical line like thinking), so the
+/// whole nested section stays visually distinct from the primary model's
+/// flush-left speech.
+pub(crate) fn print_subagent_chunk(chunk: &StreamChunk) {
+    if chunk.text.is_empty() {
+        return;
+    }
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let mut state = lock_chunk_state();
+    let width = process_wrap_width();
+    for ch in chunk.text.chars() {
+        if ch == '\n' {
+            let line = std::mem::take(&mut state.thinking_line);
+            write_thinking_content_line(&mut out, &line, width);
+            state.at_line_start = true;
+        } else {
+            state.thinking_line.push(ch);
+        }
+    }
+    // Treat the buffered tail as thinking so a transition back to primary
+    // speech flushes it with a separator.
+    state.was_thinking = true;
+    let _ignored = out.flush();
+}
+
 /// Print stream metadata after stream_end.
 pub(crate) fn print_stream_end(end: &StreamEnd) {
     let stdout = io::stdout();
@@ -284,8 +350,19 @@ pub(crate) fn write_tool_body_plain(out: &mut impl Write, body: &str) {
     }
 }
 
-/// Print a tool call into the process channel: `⚙ name · arg` then its input.
+/// Print a tool call into the process channel: `→ name · arg` then its input.
 pub(crate) fn print_tool_call(call: &ToolCall) {
+    print_tool_call_styled(call, COLOR_TOOL);
+}
+
+/// As [`print_tool_call`], but for a sub-agent's nested loop — rendered in the
+/// sub-agent color so a nested tool call reads differently from the primary
+/// model's.
+pub(crate) fn print_subagent_tool_call(call: &ToolCall) {
+    print_tool_call_styled(call, COLOR_SUBAGENT);
+}
+
+fn print_tool_call_styled(call: &ToolCall, color: Color) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut state = lock_chunk_state();
@@ -298,7 +375,7 @@ pub(crate) fn print_tool_call(call: &ToolCall) {
         Some(arg) => format!("{} \u{00b7} {arg}", call.tool_name),
         None => call.tool_name.clone(),
     };
-    write_sigil_header(&mut out, SIGIL_TOOL, &header, COLOR_TOOL);
+    write_sigil_header(&mut out, SIGIL_TOOL, &header, color);
     if let Some(input) = format_tool_input(&call.input) {
         write_process_body(&mut out, &input);
     }
@@ -308,6 +385,16 @@ pub(crate) fn print_tool_call(call: &ToolCall) {
 /// Print a tool result into the process channel: `✓ result` / `✗ error` then
 /// the (truncated) output.
 pub(crate) fn print_tool_result(result: &ToolResult) {
+    print_tool_result_styled(result, COLOR_RESULT);
+}
+
+/// As [`print_tool_result`], but for a sub-agent's nested loop — a successful
+/// result uses the sub-agent color; errors stay red.
+pub(crate) fn print_subagent_tool_result(result: &ToolResult) {
+    print_tool_result_styled(result, COLOR_SUBAGENT);
+}
+
+fn print_tool_result_styled(result: &ToolResult, ok_color: Color) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut state = lock_chunk_state();
@@ -319,7 +406,7 @@ pub(crate) fn print_tool_result(result: &ToolResult) {
     let (sigil, label, color) = if result.is_error {
         (SIGIL_ERROR, "error", Color::Red)
     } else {
-        (SIGIL_OK, "result", COLOR_RESULT)
+        (SIGIL_OK, "result", ok_color)
     };
     write_sigil_header(&mut out, sigil, label, color);
     // Body stays dim; the colored header carries the status.
@@ -447,6 +534,7 @@ mod tests {
 
     fn chunk(content_type: &str, text: &str) -> StreamChunk {
         StreamChunk {
+            subagent: None,
             rid: None,
             text: text.into(),
             content_type: content_type.into(),

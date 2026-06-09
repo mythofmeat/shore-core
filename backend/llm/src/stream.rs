@@ -93,6 +93,7 @@ impl StreamConsumer {
                 let _ignored = self
                     .direct_tx
                     .send(ServerMessage::StreamStart(StreamStart {
+                        subagent: None,
                         rid: self.rid.clone(),
                         regen,
                     }))
@@ -110,6 +111,7 @@ impl StreamConsumer {
                 let _ignored = self
                     .direct_tx
                     .send(ServerMessage::StreamChunk(StreamChunk {
+                        subagent: None,
                         rid: self.rid.clone(),
                         text,
                         content_type: "text".into(),
@@ -126,6 +128,7 @@ impl StreamConsumer {
                 let _ignored = self
                     .direct_tx
                     .send(ServerMessage::StreamChunk(StreamChunk {
+                        subagent: None,
                         rid: self.rid.clone(),
                         text,
                         content_type: "thinking".into(),
@@ -309,6 +312,7 @@ pub async fn emit_stream_end(
     };
     let _ignored = tx
         .send(ServerMessage::StreamEnd(StreamEnd {
+            subagent: None,
             rid,
             msg_id,
             revision,
@@ -482,6 +486,7 @@ mod tests {
         assert!(matches!(
             msg1,
             ServerMessage::StreamStart(StreamStart {
+                subagent: _,
                 rid: None,
                 regen: false
             })

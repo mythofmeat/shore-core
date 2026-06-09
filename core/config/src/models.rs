@@ -622,8 +622,6 @@ pub struct ImageGenSettings {
 pub struct ModelCatalog {
     /// Chat models keyed by short name.
     pub chat: BTreeMap<String, ResolvedModel>,
-    /// Tool models keyed by short name.
-    pub tools: BTreeMap<String, ResolvedModel>,
     /// Embedding category settings keyed by `provider:model_id`. Identity is the
     /// key; transport resolves through `[providers.<provider>]`.
     pub embedding: BTreeMap<String, EmbeddingSettings>,
@@ -691,17 +689,16 @@ const RESERVED_DICT_KEYS: &[&str] = &["openrouter_provider"];
 impl ModelCatalog {
     /// Build a catalog from the raw TOML table (the full merged config).
     ///
-    /// Extracts `chat`, `tools`, `embedding`, and `image_generation` sections.
-    /// See `from_sections_with_providers` for the variant that lets the
+    /// Extracts `chat`, `embedding`, and `image_generation` sections. See
+    /// `from_sections_with_providers` for the variant that lets the
     /// `[providers.<name>]` registry cascade transport defaults (`sdk`,
     /// `base_url`, `api_key_env`) into static model entries.
     pub fn from_sections(
         chat: Option<&toml::Table>,
-        tools: Option<&toml::Table>,
         embedding: Option<&toml::Table>,
         image_generation: Option<&toml::Table>,
     ) -> Result<Self, CatalogError> {
-        Self::from_sections_with_providers(chat, tools, embedding, image_generation, None)
+        Self::from_sections_with_providers(chat, embedding, image_generation, None)
     }
 
     /// Build a catalog with optional provider-registry transport overlay.
@@ -715,17 +712,12 @@ impl ModelCatalog {
     /// correct transport without duplicating fields under `[chat.<name>]`.
     pub fn from_sections_with_providers(
         chat: Option<&toml::Table>,
-        tools: Option<&toml::Table>,
         embedding: Option<&toml::Table>,
         image_generation: Option<&toml::Table>,
         providers: Option<&crate::providers::ProviderRegistry>,
     ) -> Result<Self, CatalogError> {
         let chat_models = match chat {
             Some(t) => parse_category("chat", t, providers)?,
-            None => BTreeMap::new(),
-        };
-        let tool_models = match tools {
-            Some(t) => parse_category("tools", t, providers)?,
             None => BTreeMap::new(),
         };
 
@@ -746,13 +738,11 @@ impl ModelCatalog {
 
         let catalog = Self {
             chat: chat_models,
-            tools: tool_models,
             embedding: embedding_profiles,
             image_generation: image_gen_profiles,
         };
         info!(
             chat_models = catalog.chat.len(),
-            tool_models = catalog.tools.len(),
             "Model catalog initialized"
         );
         Ok(catalog)
@@ -767,7 +757,7 @@ impl ModelCatalog {
         debug!(name, "Looking up model in catalog");
 
         // 1. Try qualified name match.
-        for model in self.chat.values().chain(self.tools.values()) {
+        for model in self.chat.values() {
             if model.qualified_name == name {
                 debug!(
                     name,
@@ -780,7 +770,7 @@ impl ModelCatalog {
 
         // 2. Try short name match.
         let mut matches: Vec<&ResolvedModel> = Vec::new();
-        for model in self.chat.values().chain(self.tools.values()) {
+        for model in self.chat.values() {
             if model.name == name {
                 matches.push(model);
             }
@@ -1708,7 +1698,7 @@ model_id = "google/gemini-3.1-pro-preview"
 model_id = "claude-opus-4-6"
 "#,
         );
-        let catalog = ModelCatalog::from_sections(Some(&chat), None, None, None).unwrap();
+        let catalog = ModelCatalog::from_sections(Some(&chat), None, None).unwrap();
         let model = catalog.find_model("opus").unwrap();
         assert_eq!(model.model_id, "claude-opus-4-6");
     }
@@ -1721,36 +1711,33 @@ model_id = "claude-opus-4-6"
 model_id = "claude-opus-4-6"
 "#,
         );
-        let catalog = ModelCatalog::from_sections(Some(&chat), None, None, None).unwrap();
+        let catalog = ModelCatalog::from_sections(Some(&chat), None, None).unwrap();
         let model = catalog.find_model("chat.anthropic.opus").unwrap();
         assert_eq!(model.name, "opus");
     }
 
     #[test]
-    fn find_model_ambiguous_across_categories() {
+    fn find_model_ambiguous_across_providers() {
         let chat = parse_table(
             r#"
 [openrouter.fast]
-model_id = "chat-fast"
-"#,
-        );
-        let tools = parse_table(
-            r#"
-[openrouter.fast]
-model_id = "tools-fast"
-"#,
-        );
-        let catalog = ModelCatalog::from_sections(Some(&chat), Some(&tools), None, None).unwrap();
+model_id = "or-fast"
 
-        // Ambiguous short name.
+[anthropic.fast]
+model_id = "an-fast"
+"#,
+        );
+        let catalog = ModelCatalog::from_sections(Some(&chat), None, None).unwrap();
+
+        // Ambiguous short name (same alias under two providers).
         let err = catalog.find_model("fast").unwrap_err();
         assert!(matches!(err, CatalogError::AmbiguousName { .. }));
 
-        // Qualified names still work.
-        let chat_model = catalog.find_model("chat.openrouter.fast").unwrap();
-        assert_eq!(chat_model.model_id, "chat-fast");
-        let tool_model = catalog.find_model("tools.openrouter.fast").unwrap();
-        assert_eq!(tool_model.model_id, "tools-fast");
+        // Qualified names still disambiguate.
+        let or_model = catalog.find_model("chat.openrouter.fast").unwrap();
+        assert_eq!(or_model.model_id, "or-fast");
+        let an_model = catalog.find_model("chat.anthropic.fast").unwrap();
+        assert_eq!(an_model.model_id, "an-fast");
     }
 
     #[test]
@@ -1762,9 +1749,8 @@ model_id = "tools-fast"
 
     #[test]
     fn empty_sections_produce_empty_catalog() {
-        let catalog = ModelCatalog::from_sections(None, None, None, None).unwrap();
+        let catalog = ModelCatalog::from_sections(None, None, None).unwrap();
         assert!(catalog.chat.is_empty());
-        assert!(catalog.tools.is_empty());
         assert!(catalog.embedding.is_empty());
         assert!(catalog.image_generation.is_empty());
     }
@@ -1787,7 +1773,7 @@ quality = "hd"
 "#,
         );
         let catalog =
-            ModelCatalog::from_sections(None, None, Some(&embedding), Some(&image_gen)).unwrap();
+            ModelCatalog::from_sections(None, Some(&embedding), Some(&image_gen)).unwrap();
         assert_eq!(
             catalog.embedding["openai:text-embedding-3-large"].dimensions,
             Some(1024)
@@ -1806,7 +1792,7 @@ quality = "hd"
 dimensions = 1024
 ",
         );
-        let err = ModelCatalog::from_sections(None, None, Some(&embedding), None).unwrap_err();
+        let err = ModelCatalog::from_sections(None, Some(&embedding), None).unwrap_err();
         let CatalogError::AuxProfileInvalid { category, key, .. } = err else {
             panic!("expected AuxProfileInvalid, got {err:?}");
         };
@@ -1819,7 +1805,7 @@ dimensions = 1024
         // Both halves of `provider:model_id` must be non-empty.
         for key in [":model", "provider:"] {
             let embedding = parse_table(&format!("[\"{key}\"]\ndimensions = 1024\n"));
-            let err = ModelCatalog::from_sections(None, None, Some(&embedding), None).unwrap_err();
+            let err = ModelCatalog::from_sections(None, Some(&embedding), None).unwrap_err();
             let CatalogError::AuxProfileInvalid { detail, .. } = err else {
                 panic!("expected AuxProfileInvalid for {key:?}, got {err:?}");
             };
@@ -1842,7 +1828,7 @@ api_key_env = "EMBED_KEY"
 dimensions = 1024
 "#,
         );
-        let err = ModelCatalog::from_sections(None, None, Some(&embedding), None).unwrap_err();
+        let err = ModelCatalog::from_sections(None, Some(&embedding), None).unwrap_err();
         assert!(
             matches!(err, CatalogError::AuxProfileInvalid { .. }),
             "expected AuxProfileInvalid, got {err:?}"
@@ -1862,7 +1848,7 @@ model_id = "claude-opus-4-6"
 model_id = "anthropic/claude-opus-4-6"
 "#,
         );
-        let catalog = ModelCatalog::from_sections(Some(&chat), None, None, None).unwrap();
+        let catalog = ModelCatalog::from_sections(Some(&chat), None, None).unwrap();
 
         // Both entries must exist under their qualified names.
         assert_eq!(catalog.chat.len(), 2);
@@ -1901,7 +1887,7 @@ model_id = "anthropic/claude-opus-4-6"
 model_id = "claude-opus-4-6"
 "#,
         );
-        let catalog = ModelCatalog::from_sections(Some(&chat), None, None, None).unwrap();
+        let catalog = ModelCatalog::from_sections(Some(&chat), None, None).unwrap();
         assert!(catalog.first_chat_model().is_some());
 
         let empty = ModelCatalog::default();
@@ -2020,7 +2006,7 @@ model_id = "claude-opus-4-6"
 model_id = "kimi-k2"
 "#,
         );
-        let catalog = ModelCatalog::from_sections(Some(&table), None, None, None).unwrap();
+        let catalog = ModelCatalog::from_sections(Some(&table), None, None).unwrap();
 
         let mut names: Vec<&str> = catalog.chat_model_names().collect();
         names.sort_unstable();
@@ -2036,7 +2022,7 @@ model_id = "kimi-k2"
 
     #[test]
     fn chat_model_names_empty_catalog() {
-        let catalog = ModelCatalog::from_sections(None, None, None, None).unwrap();
+        let catalog = ModelCatalog::from_sections(None, None, None).unwrap();
         assert_eq!(catalog.chat_model_names().count(), 0);
     }
 
@@ -2051,7 +2037,7 @@ model_id = "claude-opus-4-6"
 model_id = "anthropic/claude-opus-4.6"
 "#,
         );
-        let catalog = ModelCatalog::from_sections(Some(&chat), None, None, None).unwrap();
+        let catalog = ModelCatalog::from_sections(Some(&chat), None, None).unwrap();
 
         // Both findable by qualified name.
         let a = catalog.find_model("chat.anthropic.opus").unwrap();

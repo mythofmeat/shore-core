@@ -137,7 +137,7 @@ model_id = "claude-sonnet-4-20250514"
 model_id = "gpt-4o"
 "#;
     let table: toml::Table = toml_str.parse().unwrap();
-    shore_config::models::ModelCatalog::from_sections(Some(&table), None, None, None).unwrap()
+    shore_config::models::ModelCatalog::from_sections(Some(&table), None, None).unwrap()
 }
 
 fn test_request_meta(character: Option<&str>, rid: Option<&str>) -> RequestMeta {
@@ -975,7 +975,7 @@ async fn make_handler_with_models(
 
     let mut app_config = shore_config::app::AppConfig::default();
     app_config.defaults.model = Some("test".into());
-    app_config.behavior.tool_use.enabled = false;
+    // Tools are opt-in: the default empty allowlist already disables them.
 
     let loaded_config = LoadedConfig::new_for_test(
         app_config,

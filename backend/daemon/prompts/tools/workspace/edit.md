@@ -1,1 +1,1 @@
-Edit an existing file by replacing specific text. Each replacement must match old_string exactly, including whitespace and newlines.
+Edit an existing file by replacing specific text. Read the file first if you're not sure of its current contents. Each replacement must match old_string exactly, including whitespace and newlines. By default old_string must match exactly once — add surrounding context to make it unique, or set replace_all to true to replace every occurrence.

@@ -4,6 +4,81 @@ use tracing::info;
 
 use crate::commands::{CommandContext, CommandResult};
 
+/// Report the effective tool surface: every registered tool, whether it is
+/// enabled on the main character, which enabled sub-agents own it, the
+/// sub-agent roster, the exec allowlist, and any dangling config references.
+/// Read-only — backs `shore tools`.
+pub fn tools(ctx: &CommandContext) -> CommandResult {
+    let cfg = &ctx.config.app.tools;
+    let subagents = &ctx.config.app.subagents;
+    let registry = crate::tools::all_tools();
+    let known: Vec<&str> = registry.iter().map(|t| t.name).collect();
+
+    // Per-tool rows: main-character enablement + which enabled sub-agents own it.
+    let tool_rows: Vec<_> = registry
+        .iter()
+        .map(|def| {
+            let owners: Vec<String> = cfg
+                .enabled_subagents
+                .iter()
+                .filter(|s| {
+                    subagents
+                        .get(*s)
+                        .is_some_and(|sa| sa.tools.iter().any(|t| t == def.name))
+                })
+                .cloned()
+                .collect();
+            json!({
+                "tool": def.name,
+                "main": cfg.tool_enabled(def.name),
+                "subagents": owners,
+            })
+        })
+        .collect();
+
+    // Sub-agent roster.
+    let subagent_rows: Vec<_> = subagents
+        .iter()
+        .map(|(name, sa)| {
+            json!({
+                "name": name,
+                "enabled": cfg.subagent_enabled(name),
+                "tools": sa.tools,
+                "model": sa.model,
+            })
+        })
+        .collect();
+
+    // Dangling references — surfaced so a typo or stale name is visible.
+    let mut warnings: Vec<String> = Vec::new();
+    for t in &cfg.enabled_tools {
+        if !known.contains(&t.as_str()) {
+            warnings.push(format!("enabled_tools references unknown tool '{t}'"));
+        }
+    }
+    for s in &cfg.enabled_subagents {
+        if !subagents.contains_key(s) {
+            warnings.push(format!(
+                "enabled_subagents references undefined subagent '{s}'"
+            ));
+        }
+    }
+    for (name, sa) in subagents {
+        for t in &sa.tools {
+            if !known.contains(&t.as_str()) {
+                warnings.push(format!("subagent '{name}' references unknown tool '{t}'"));
+            }
+        }
+    }
+
+    Ok(json!({
+        "tools": tool_rows,
+        "subagents": subagent_rows,
+        "exec_allowlist": crate::tools::workspace::exec_allowlist(),
+        "warnings": warnings,
+    }))
+}
+
 /// Validate configuration and return warnings/info.
 pub async fn config_check(ctx: &CommandContext) -> CommandResult {
     let mut warnings: Vec<String> = Vec::new();
@@ -33,16 +108,6 @@ pub async fn config_check(ctx: &CommandContext) -> CommandResult {
                 warnings.push("No default model set. First chat model will be used.".into());
             }
         }
-    }
-
-    // Check: tool models
-    if ctx.config.models.tools.is_empty() {
-        info.push("No tool models configured (chat models will be used for tools)".into());
-    } else {
-        info.push(format!(
-            "{} tool model(s) configured",
-            ctx.config.models.tools.len()
-        ));
     }
 
     // Check: LLM service configured?
@@ -76,7 +141,6 @@ pub async fn config_check(ctx: &CommandContext) -> CommandResult {
         "data_dir": ctx.config.dirs.data.display().to_string(),
         "cache_dir": ctx.config.dirs.cache.display().to_string(),
         "chat_models": ctx.config.models.chat.len(),
-        "tool_models": ctx.config.models.tools.len(),
         "memory_mode": "markdown",
     }))
 }

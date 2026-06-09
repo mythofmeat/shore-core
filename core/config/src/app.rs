@@ -16,7 +16,7 @@ macro_rules! serde_default {
 /// Top-level daemon configuration loaded from config.toml.
 ///
 /// Covers all sections from §8: [defaults], [models], [behavior.autonomy],
-/// [behavior.tool_use], [memory], [connections], [services], [advanced].
+/// [behavior.tools], [memory], [connections], [services], [advanced].
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
@@ -28,6 +28,10 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub behavior: BehaviorConfig,
+
+    /// Tool surface (`[tools]`).
+    #[serde(default)]
+    pub tools: ToolsConfig,
 
     #[serde(default)]
     pub memory: MemoryConfig,
@@ -46,6 +50,46 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub advanced: AdvancedConfig,
+
+    /// Sub-agent delegation definitions, keyed by sub-agent name. Each entry
+    /// surfaces to the primary model as a single `ask_<name>` tool that runs a
+    /// full tool loop on a (typically cheaper) model over a subset of the
+    /// in-process tools and returns only its final summary. See `[subagents]`
+    /// in CONFIGURATION.md.
+    #[serde(default)]
+    pub subagents: BTreeMap<String, SubagentConfig>,
+}
+
+// ── [subagents.<name>] ───────────────────────────────────────────────────
+
+/// One delegated sub-agent. Surfaces as an `ask_<name>(query)` tool on the
+/// primary character; running it spins up a nested tool loop on `model` over
+/// the listed `tools` and returns the agent's final text.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SubagentConfig {
+    /// One-line description shown to the primary model as the `ask_<name>`
+    /// tool description. Supports `{{char}}` / `{{user}}` templating.
+    pub description: String,
+
+    /// System prompt for the sub-agent. Supports `{{char}}` / `{{user}}`
+    /// templating. This is the agent's whole instruction set — give it the
+    /// domain knowledge the primary model would never get prompt budget for.
+    pub prompt: String,
+
+    /// Names of in-process tools this sub-agent may call. Each must be a
+    /// registered tool; `ask_*` sub-agent tools are never offered to a
+    /// sub-agent, so nesting is hard-capped at one level.
+    #[serde(default)]
+    pub tools: Vec<String>,
+
+    /// Model the sub-agent runs on. Falls back to `defaults.subagent_model`,
+    /// then `defaults.model`. Keep this cheap — cost reduction is the point.
+    pub model: Option<String>,
+
+    /// Max tool-loop iterations for this sub-agent. `None` uses the resolved
+    /// model's own cap.
+    pub max_iterations: Option<u32>,
 }
 
 // ── [daemon] ────────────────────────────────────────────────────────────
@@ -137,6 +181,11 @@ pub struct DefaultsConfig {
     /// Default image generation profile name.
     pub image_generation: Option<String>,
 
+    /// Default model for `[subagents]` that don't pin their own `model`.
+    /// Keep this a cheap model — sub-agent delegation exists to push
+    /// tool-loop busywork off the expensive chat model.
+    pub subagent_model: Option<String>,
+
     /// User's display name for {{user}} template substitution.
     /// Falls back to $USER env var, then "User".
     pub display_name: Option<String>,
@@ -225,6 +274,7 @@ impl Default for DefaultsConfig {
             dreaming: None,
             embedding: None,
             image_generation: None,
+            subagent_model: None,
             display_name: None,
             stream: true,
         }
@@ -238,9 +288,6 @@ impl Default for DefaultsConfig {
 pub struct BehaviorConfig {
     #[serde(default)]
     pub autonomy: AutonomyConfig,
-
-    #[serde(default)]
-    pub tool_use: ToolUseConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -373,86 +420,95 @@ impl Default for CompactionConfig {
     }
 }
 
-// ── [behavior.tool_use] ─────────────────────────────────────────────────
+// ── [tools] ─────────────────────────────────────────────────────────────
 
+/// Tool surface configuration.
+///
+/// **Opt-in.** A tool is offered to the character only if its name appears in
+/// `enabled_tools`, and a sub-agent's `ask_<name>` tool only if the sub-agent
+/// appears in `enabled_subagents`. Empty allowlists mean nothing is offered —
+/// there is no implicit "all tools on" default.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ToolUseConfig {
-    /// Whether tool use is enabled.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+pub struct ToolsConfig {
+    /// Names of tools offered to the character (opt-in allowlist).
+    #[serde(default)]
+    pub enabled_tools: Vec<String>,
 
-    /// Maximum number of characters a single tool result may contribute to the
-    /// conversation before it is truncated. Defaults to 20000 (~5k tokens of
-    /// code-like output); set to `0` to disable truncation and preserve full
-    /// tool output. When a result exceeds the limit it is cut at a character
-    /// boundary and a notice is appended so the model knows the output was
-    /// truncated. Truncation is persisted, so the shortened result is what
-    /// gets replayed on subsequent turns.
+    /// Names of sub-agents (`[subagents.<name>]`) whose `ask_<name>` tool is
+    /// offered to the character (opt-in allowlist).
+    #[serde(default)]
+    pub enabled_subagents: Vec<String>,
+
+    /// Global cap on characters a single tool result may contribute before
+    /// truncation. `0` disables truncation. Per-tool `[tools.config.<name>]`
+    /// tables may override this via [`ToolOverride::max_result_chars`].
     #[serde(default = "default_max_result_chars")]
     pub max_result_chars: usize,
 
-    /// Per-tool enable/disable toggles.
+    /// Web search (Tavily) settings — `[tools.web_search]`.
     #[serde(default)]
-    pub tools: ToolToggles,
+    pub web_search: SearchConfig,
 
-    /// Web search (Tavily) configuration.
+    /// Per-tool config tables `[tools.config.<name>]`, keyed by tool name;
+    /// currently carries per-tool `max_result_chars`. (A flattened
+    /// `[tools.<name>]` form would be nicer but serde's `flatten` drops fields
+    /// on the `toml::Value` load path this crate uses.) Unknown keys are tool
+    /// names the daemon validates against its registry at request-build time.
     #[serde(default)]
-    pub search: SearchConfig,
+    pub config: BTreeMap<String, ToolOverride>,
 }
 
 serde_default!(default_max_result_chars -> usize { 20_000 });
 
-impl Default for ToolUseConfig {
+impl Default for ToolsConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled_tools: Vec::new(),
+            enabled_subagents: Vec::new(),
             max_result_chars: default_max_result_chars(),
-            tools: ToolToggles::default(),
-            search: SearchConfig::default(),
+            web_search: SearchConfig::default(),
+            config: BTreeMap::new(),
         }
     }
 }
 
-/// Per-tool enable/disable toggles. All default to enabled.
-///
-/// Stored as a map so new tool names can be toggled in config without a code change.
-/// Any key present in the map overrides the default (enabled). Absent keys default to enabled.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(transparent)]
-pub struct ToolToggles(BTreeMap<String, bool>);
-
-impl ToolToggles {
-    /// Check whether a tool is enabled by name. Absent keys default to enabled.
-    pub fn is_enabled(&self, name: &str) -> bool {
-        self.0.get(name).copied().unwrap_or(true)
+impl ToolsConfig {
+    /// Whether `name` is in the enabled-tools allowlist.
+    pub fn tool_enabled(&self, name: &str) -> bool {
+        self.enabled_tools.iter().any(|t| t == name)
     }
 
-    pub fn set(&mut self, tool: &str, enabled: bool) {
-        let _ignored = self.0.insert(tool.to_owned(), enabled);
+    /// Whether sub-agent `name`'s `ask_<name>` tool is exposed.
+    pub fn subagent_enabled(&self, name: &str) -> bool {
+        self.enabled_subagents.iter().any(|s| s == name)
     }
 
-    pub fn generate_image(&self) -> bool {
-        self.is_enabled("generate_image")
+    /// Whether any tool or sub-agent is offered (i.e. tool use is active).
+    pub fn any_enabled(&self) -> bool {
+        !self.enabled_tools.is_empty() || !self.enabled_subagents.is_empty()
     }
-    pub fn web_search(&self) -> bool {
-        self.is_enabled("web_search")
-    }
-    pub fn fetch_url(&self) -> bool {
-        self.is_enabled("fetch_url")
-    }
-    pub fn check_time(&self) -> bool {
-        self.is_enabled("check_time")
-    }
-    pub fn roll_dice(&self) -> bool {
-        self.is_enabled("roll_dice")
-    }
-    pub fn activity_heatmap(&self) -> bool {
-        self.is_enabled("activity_heatmap")
+
+    /// Effective per-tool result cap: the tool's override, else the global.
+    pub fn result_chars_for(&self, name: &str) -> usize {
+        self.config
+            .get(name)
+            .and_then(|o| o.max_result_chars)
+            .unwrap_or(self.max_result_chars)
     }
 }
 
-// ── [behavior.tool_use.search] ───────────────────────────────────────────
+/// Per-tool override table `[tools.config.<name>]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ToolOverride {
+    /// Override `[tools].max_result_chars` for this tool. `None` inherits the
+    /// global value.
+    #[serde(default)]
+    pub max_result_chars: Option<usize>,
+}
+
+// ── [tools.web_search] ───────────────────────────────────────────────────
 
 /// Configuration for the web search tool (Tavily API).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -463,8 +519,8 @@ pub struct SearchConfig {
     pub api_key_env: String,
 
     /// Default max results per search.
-    #[serde(default = "default_search_max_results")]
-    pub max_results: u32,
+    #[serde(default = "default_search_result_limit")]
+    pub result_limit: u32,
 
     /// Search depth: "basic" or "advanced".
     #[serde(default = "default_search_depth")]
@@ -476,14 +532,14 @@ pub struct SearchConfig {
 }
 
 serde_default!(default_search_api_key_env -> String { "TAVILY_API_KEY".into() });
-serde_default!(default_search_max_results -> u32 { 5 });
+serde_default!(default_search_result_limit -> u32 { 5 });
 serde_default!(default_search_depth -> String { "basic".into() });
 
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             api_key_env: default_search_api_key_env(),
-            max_results: default_search_max_results(),
+            result_limit: default_search_result_limit(),
             search_depth: default_search_depth(),
             include_answer: true,
         }
@@ -1287,7 +1343,7 @@ mod tests {
             config.behavior.autonomy.heartbeat.minimum_heartbeat_latency,
             ConfigDuration::from_secs(3600)
         );
-        assert!(config.behavior.tool_use.enabled);
+        assert!(!config.tools.any_enabled());
         assert!(config.memory.compaction.enabled);
         assert_eq!(config.memory.retrieval.mode, RetrievalMode::Auto);
         assert_eq!(config.memory.retrieval.max_file_bytes, 2 * 1024 * 1024);
@@ -1298,8 +1354,8 @@ mod tests {
         );
         assert_eq!(config.memory.retrieval.max_embed_chars_per_file, 4_000);
         assert_eq!(config.memory.retrieval.binary, RetrievalBinaryMode::Skip);
-        // Tool toggles default to true.
-        assert!(config.behavior.tool_use.tools.is_enabled("roll_dice"));
+        // Tools are opt-in: nothing is enabled by default.
+        assert!(!config.tools.tool_enabled("roll_dice"));
         // Advanced retry fields default to None.
         assert!(config.advanced.editor.is_none());
         assert!(config.advanced.max_retries.is_none());
@@ -1309,6 +1365,30 @@ mod tests {
         assert_eq!(config.usage.timezone, "local");
         assert!(config.usage.allow_compaction_over_budget);
         assert!(config.usage.budgets.is_empty());
+    }
+
+    #[test]
+    fn subagents_table_parses() {
+        let toml_str = r#"
+[defaults]
+subagent_model = "anthropic:claude-haiku-4-5"
+
+[subagents.music]
+description = "Ask about the music library."
+prompt = "You are a music assistant for {{char}}."
+tools = ["search", "read"]
+max_iterations = 6
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.defaults.subagent_model.as_deref(),
+            Some("anthropic:claude-haiku-4-5")
+        );
+        let music = config.subagents.get("music").expect("music subagent");
+        assert_eq!(music.tools, vec!["search".to_owned(), "read".to_owned()]);
+        assert_eq!(music.max_iterations, Some(6));
+        // Unset optional model falls back at resolution time, not parse time.
+        assert!(music.model.is_none());
     }
 
     #[test]
@@ -1382,45 +1462,71 @@ min_cost_usd = 2.5
     }
 
     #[test]
-    fn tool_toggles_disable_individual_tools() {
-        let toml_str = r"
-[behavior.tool_use.tools]
-roll_dice = false
-web_search = false
-";
+    fn enabled_tools_is_an_allowlist() {
+        let toml_str = r#"
+[tools]
+enabled_tools = ["read", "search_chat_logs"]
+"#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert!(!config.behavior.tool_use.tools.roll_dice());
-        assert!(!config.behavior.tool_use.tools.web_search());
-        assert!(config.behavior.tool_use.tools.is_enabled("search_history"));
-        assert!(!config.behavior.tool_use.tools.is_enabled("roll_dice"));
+        assert!(config.tools.tool_enabled("read"));
+        assert!(config.tools.tool_enabled("search_chat_logs"));
+        // Anything not listed is off — opt-in.
+        assert!(!config.tools.tool_enabled("roll_dice"));
+        assert!(!config.tools.tool_enabled("web_search"));
+        assert!(config.tools.any_enabled());
+    }
+
+    #[test]
+    fn per_tool_max_result_chars_override() {
+        let toml_str = r#"
+[tools]
+enabled_tools = ["search", "read"]
+max_result_chars = 20000
+
+[tools.config.search]
+max_result_chars = 10000
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.tools.result_chars_for("search"), 10000);
+        // A tool with no override inherits the global cap.
+        assert_eq!(config.tools.result_chars_for("read"), 20000);
+    }
+
+    #[test]
+    fn enabled_subagents_is_an_allowlist() {
+        let toml_str = r#"
+[tools]
+enabled_subagents = ["memory"]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.tools.subagent_enabled("memory"));
+        assert!(!config.tools.subagent_enabled("research"));
+        assert!(config.tools.any_enabled());
     }
 
     #[test]
     fn search_config_defaults() {
         let config = AppConfig::default();
-        assert_eq!(
-            config.behavior.tool_use.search.api_key_env,
-            "TAVILY_API_KEY"
-        );
-        assert_eq!(config.behavior.tool_use.search.max_results, 5);
-        assert_eq!(config.behavior.tool_use.search.search_depth, "basic");
-        assert!(config.behavior.tool_use.search.include_answer);
+        assert_eq!(config.tools.web_search.api_key_env, "TAVILY_API_KEY");
+        assert_eq!(config.tools.web_search.result_limit, 5);
+        assert_eq!(config.tools.web_search.search_depth, "basic");
+        assert!(config.tools.web_search.include_answer);
     }
 
     #[test]
     fn search_config_parses_from_toml() {
         let toml_str = r#"
-[behavior.tool_use.search]
+[tools.web_search]
 api_key_env = "MY_TAVILY_KEY"
-max_results = 10
+result_limit = 10
 search_depth = "advanced"
 include_answer = false
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.behavior.tool_use.search.api_key_env, "MY_TAVILY_KEY");
-        assert_eq!(config.behavior.tool_use.search.max_results, 10);
-        assert_eq!(config.behavior.tool_use.search.search_depth, "advanced");
-        assert!(!config.behavior.tool_use.search.include_answer);
+        assert_eq!(config.tools.web_search.api_key_env, "MY_TAVILY_KEY");
+        assert_eq!(config.tools.web_search.result_limit, 10);
+        assert_eq!(config.tools.web_search.search_depth, "advanced");
+        assert!(!config.tools.web_search.include_answer);
     }
 
     #[test]
@@ -1692,40 +1798,24 @@ homeserver = "https://matrix.example.com"
         assert!(!name.is_empty());
     }
 
-    // ── ToolToggles::set ────────────────────────────────────────────
+    // ── ToolsConfig allowlist ───────────────────────────────────────
 
     #[test]
-    fn tool_toggles_set_enables_and_disables() {
-        let mut toggles = ToolToggles::default();
-
-        // Default: all enabled.
-        assert!(toggles.is_enabled("search_history"));
-        assert!(toggles.is_enabled("roll_dice"));
-
-        // Disable one tool toggle.
-        toggles.set("search_history", false);
-        assert!(!toggles.is_enabled("search_history"));
-
-        // Re-enable.
-        toggles.set("search_history", true);
-        assert!(toggles.is_enabled("search_history"));
+    fn tools_default_is_empty_opt_in() {
+        let tools = ToolsConfig::default();
+        // Nothing is enabled until explicitly listed.
+        assert!(!tools.any_enabled());
+        assert!(!tools.tool_enabled("search_chat_logs"));
+        assert!(!tools.subagent_enabled("memory"));
+        // Global cap still has its default.
+        assert_eq!(tools.max_result_chars, 20_000);
     }
 
     #[test]
-    fn tool_toggles_unknown_legacy_key_is_independent() {
-        let mut toggles = ToolToggles::default();
-        toggles.set("memory_search", false);
-        assert!(!toggles.is_enabled("memory_search"));
-        assert!(toggles.is_enabled("search_history"));
-    }
-
-    #[test]
-    fn tool_toggles_set_custom_tool() {
-        let mut toggles = ToolToggles::default();
-        assert!(toggles.is_enabled("custom_tool")); // default: enabled
-
-        toggles.set("custom_tool", false);
-        assert!(!toggles.is_enabled("custom_tool"));
+    fn tools_result_chars_falls_back_to_global() {
+        let tools = ToolsConfig::default();
+        // No per-tool override → global default.
+        assert_eq!(tools.result_chars_for("anything"), 20_000);
     }
 
     #[test]
