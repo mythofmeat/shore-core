@@ -311,6 +311,13 @@ pub enum ServerMessage {
     CacheWarning(CacheWarning),
     ProviderFallbackWarning(ProviderFallbackWarning),
     UsageWarning(UsageWarning),
+    /// A frame whose `type` tag matches no known variant. Produced only by
+    /// deserialization (never constructed or sent by the server), so a client
+    /// built against an older protocol skips message types added by a newer
+    /// daemon instead of erroring the connection. Clients should treat this as
+    /// a benign no-op. Re-serializing it is lossy and must be avoided.
+    #[serde(other)]
+    Unknown,
 }
 
 impl ServerMessage {
@@ -338,7 +345,8 @@ impl ServerMessage {
             | ServerMessage::Shutdown(_)
             | ServerMessage::Ping(_)
             | ServerMessage::NewMessage(_)
-            | ServerMessage::CacheWarning(_) => {}
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::Unknown => {}
         }
         self
     }
@@ -365,7 +373,8 @@ impl ServerMessage {
             | ServerMessage::NewMessage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_) => None,
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown => None,
         }
     }
 
@@ -393,7 +402,8 @@ impl ServerMessage {
             | ServerMessage::NewMessage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_) => {}
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown => {}
         }
     }
 }
@@ -401,6 +411,24 @@ impl ServerMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_type_deserializes_to_unknown_variant() {
+        // A frame type a future daemon adds must not fail deserialization on an
+        // older client; it lands in `Unknown` so the client can skip it instead
+        // of erroring the connection.
+        let json = r#"{"type":"some_future_message","field":42}"#;
+        let msg: ServerMessage = serde_json::from_str(json).expect("must not error");
+        assert!(matches!(msg, ServerMessage::Unknown));
+    }
+
+    #[test]
+    fn known_types_still_deserialize_to_their_variant() {
+        // The catch-all must not shadow real variants.
+        let json = r#"{"type":"ping"}"#;
+        let msg: ServerMessage = serde_json::from_str(json).expect("ping must parse");
+        assert!(matches!(msg, ServerMessage::Ping(_)));
+    }
 
     #[test]
     fn set_subagent_tags_stream_and_tool_frames() {

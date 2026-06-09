@@ -62,8 +62,10 @@ defaulting.
   `skip_serializing_if = "Option::is_none"` are omitted when null; defaulted
   fields are tolerated on read (`#[serde(default)]`).
 - **Tagging:** both directions use an externally tagged enum with the
-  `"type"` discriminator (snake_case variant names). Unknown variants cause
-  the receiver to error and disconnect.
+  `"type"` discriminator (snake_case variant names). Clients **must skip** an
+  unrecognized server→client `"type"` rather than erroring the connection — see
+  the forward-compatibility rule in §3. (A server may still reject an unknown
+  client→server `"type"` it cannot act on.)
 
 ## 3. Protocol version
 
@@ -74,6 +76,18 @@ SWP_V1 = 1
 The version is currently advertised by the server in `ServerHello.v`. The
 bundled client refuses to proceed when `v != 1`. There is no negotiation
 step — clients pin to `1`.
+
+The wire version stays at `1` across **additive** changes: new optional
+fields on existing frames (defaulted, so older clients ignore them) and new
+server→client frame `type`s. Because the version does not bump for these,
+**a client must tolerate an unrecognized `type` by skipping that frame**, not
+by erroring the connection. A client that hard-matches every known `type` and
+treats anything else as a fatal error will break the moment a newer daemon
+emits a frame it predates (e.g. a newly added warning). The bundled client
+deserializes any unknown `type` into a benign `ServerMessage::Unknown`
+sentinel that its read loop ignores; client authors in other languages should
+do the equivalent. The version only bumps for a **breaking** change (a removed
+or restructured frame older clients cannot safely ignore).
 
 ## 4. Connection lifecycle
 
@@ -1027,7 +1041,8 @@ A minimal SWP client needs to:
 5. Receive `History` to seed local state (`messages`, `active_start`,
    `selected_character`, `revision`).
 6. Loop:
-   - Read frames; ignore `Ping`; treat `Shutdown` as EOF.
+   - Read frames; ignore `Ping`; treat `Shutdown` as EOF; silently skip any
+     unrecognized `type` and keep reading (forward-compat, see §3).
    - For request-shaped sends, generate an `rid`, match incoming
      `StreamStart`/`StreamChunk`/`StreamEnd`/`ToolCall`/`ToolResult`/
      `Phase`/`CommandOutput`/`Error` frames by `rid`.

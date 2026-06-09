@@ -393,7 +393,8 @@ async fn e2e_conversation_milestone() {
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_)) => {
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown) => {
                 test_err!("  (other message: {:?})", std::mem::discriminant(other));
             }
         }
@@ -475,7 +476,8 @@ async fn e2e_conversation_milestone() {
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_)) => {
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown) => {
                 test_err!("  (other: {:?})", std::mem::discriminant(other));
             }
         }
@@ -892,7 +894,8 @@ async fn e2e_generate_image() {
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_)) => {
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown) => {
                 test_err!("  (other: {:?})", std::mem::discriminant(other));
             }
         }
@@ -1046,7 +1049,8 @@ async fn e2e_web_search() {
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_)) => {
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown) => {
                 test_err!("  (other: {:?})", std::mem::discriminant(other));
             }
         }

@@ -1035,7 +1035,8 @@ fn request_scoped_server_messages_missing_rid_default_to_none() {
             | ServerMessage::NewMessage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_) => {
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown => {
                 panic!("unexpected message for missing rid test");
             }
         }

@@ -205,7 +205,8 @@ impl StreamHandler {
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_) => Ok(false),
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown => Ok(false),
         }
     }
 }
@@ -281,7 +282,8 @@ pub async fn collect_stream(
                     | ServerMessage::SendImage(_)
                     | ServerMessage::CacheWarning(_)
                     | ServerMessage::ProviderFallbackWarning(_)
-                    | ServerMessage::UsageWarning(_) => {
+                    | ServerMessage::UsageWarning(_)
+                    | ServerMessage::Unknown => {
                         return Err(ClientError::Protocol(
                             "collect_stream: stream ended on non-StreamEnd frame".into(),
                         ));
@@ -313,7 +315,8 @@ pub async fn collect_stream(
             | ServerMessage::StreamChunk(_)
             | ServerMessage::StreamEnd(_)
             | ServerMessage::CacheWarning(_)
-            | ServerMessage::ProviderFallbackWarning(_)) => {
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::Unknown) => {
                 tracing::debug!(?other, "collect_stream: ignoring unexpected frame");
             }
         }

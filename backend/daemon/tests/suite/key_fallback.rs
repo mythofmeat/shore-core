@@ -66,7 +66,8 @@ fn fallback_warnings(
             | ServerMessage::ToolResult(_)
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
-            | ServerMessage::UsageWarning(_) => None,
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown => None,
         })
         .collect()
 }

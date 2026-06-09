@@ -40,7 +40,8 @@ fn extract_command_output(messages: &[ServerMessage], expected_cmd: &str) -> Val
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_) => None,
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown => None,
         })
         .unwrap_or_else(|| panic!("no CommandOutput for {expected_cmd}: {messages:#?}"));
     output
