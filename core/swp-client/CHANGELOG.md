@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3](https://github.com/mythofmeat/shore-core/compare/shore-swp-client-v0.3.2...shore-swp-client-v0.3.3) - 2026-06-09
+
+### Other
+
+- Sub-agent delegation, opt-in [tools] config, and `shore tools` ([#226](https://github.com/mythofmeat/shore-core/pull/226))
+
 ## [0.3.2](https://github.com/mythofmeat/shore-core/compare/shore-swp-client-v0.3.1...shore-swp-client-v0.3.2) - 2026-06-05
 
 ### Other

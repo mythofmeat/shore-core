@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.2.0...shore-cli-v2.3.0) - 2026-06-09
+
+### Added
+
+- *(cli,model-setting)* inspect + tune background-task models ([#225](https://github.com/mythofmeat/shore-core/pull/225))
+
+### Other
+
+- Sub-agent delegation, opt-in [tools] config, and `shore tools` ([#226](https://github.com/mythofmeat/shore-core/pull/226))
+
 ## [2.2.0](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.1.2...shore-cli-v2.2.0) - 2026-06-05
 
 ### Added
