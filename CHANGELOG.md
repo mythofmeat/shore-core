@@ -7,6 +7,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 
 ## [Unreleased]
 
+### Added
+- **SWP clients now tolerate unknown server frame types.** `ServerMessage`
+  deserializes any unrecognized `type` tag into a benign `Unknown` sentinel
+  that the bundled client's read loop skips, instead of failing the
+  deserialize and bouncing the connection. This lets a client built against an
+  older protocol keep running when a newer daemon emits a frame type it
+  predates (the wire version stays at `1` for such additive changes). See the
+  forward-compatibility note in `docs/PROTOCOL.md` §3.
+
 ### Changed
 - **Tool config moved to a top-level `[tools]` section and is now opt-in.**
   The former `[behavior.tool_use]` block is gone. Tools are an **allowlist**:

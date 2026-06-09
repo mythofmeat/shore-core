@@ -398,7 +398,8 @@ async fn follow_log_stream(
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_) => {}
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown => {}
         }
     }
     Ok(())
@@ -887,7 +888,8 @@ async fn handle_notify(
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_)) => {
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown) => {
                 debug!(?other, "ignoring non-notification event");
             }
         }
@@ -1418,7 +1420,8 @@ async fn recv_streaming_response(
             | ServerMessage::Ping(_)
             | ServerMessage::CommandOutput(_)
             | ServerMessage::NewMessage(_)
-            | ServerMessage::CacheWarning(_) => {}
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::Unknown => {}
         }
     }
 }
@@ -1464,7 +1467,8 @@ async fn recv_command_data(
             | ServerMessage::ToolResult(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_) => {}
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown => {}
         }
     }
 }

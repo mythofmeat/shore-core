@@ -114,7 +114,8 @@ impl SWPConnection {
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_)) => {
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown) => {
                 error!("expected server hello, got unexpected message");
                 return Err(ClientError::Protocol(format!(
                     "expected server hello, got: {other:?}"
@@ -154,7 +155,8 @@ impl SWPConnection {
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_)) => {
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown) => {
                 error!("expected history, got unexpected message");
                 return Err(ClientError::Protocol(format!(
                     "expected history, got: {other:?}"

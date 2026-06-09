@@ -58,7 +58,8 @@ impl CollectedResponse {
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_) => {
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown => {
                 self.raw_messages.push(msg);
                 false
             }

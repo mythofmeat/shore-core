@@ -806,6 +806,10 @@ async fn event_matches_session(
         | ServerMessage::SendImage(_)
         | ServerMessage::ProviderFallbackWarning(_)
         | ServerMessage::UsageWarning(_) => clients.read().await.contains_key(&client_id),
+        // The server only ever constructs known variants; `Unknown` exists
+        // solely so older clients can skip frames from a newer daemon. It is
+        // never produced here, so never route it.
+        ServerMessage::Unknown => false,
     }
 }
 

@@ -53,7 +53,8 @@ impl SyncState {
             | ServerMessage::SendImage(_)
             | ServerMessage::CacheWarning(_)
             | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_) => SyncDecision::Deliver,
+            | ServerMessage::UsageWarning(_)
+            | ServerMessage::Unknown => SyncDecision::Deliver,
         }
     }
 }

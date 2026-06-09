@@ -75,6 +75,18 @@ The version is currently advertised by the server in `ServerHello.v`. The
 bundled client refuses to proceed when `v != 1`. There is no negotiation
 step — clients pin to `1`.
 
+The wire version stays at `1` across **additive** changes: new optional
+fields on existing frames (defaulted, so older clients ignore them) and new
+server→client frame `type`s. Because the version does not bump for these,
+**a client must tolerate an unrecognized `type` by skipping that frame**, not
+by erroring the connection. A client that hard-matches every known `type` and
+treats anything else as a fatal error will break the moment a newer daemon
+emits a frame it predates (e.g. a newly added warning). The bundled client
+deserializes any unknown `type` into a benign `ServerMessage::Unknown`
+sentinel that its read loop ignores; client authors in other languages should
+do the equivalent. The version only bumps for a **breaking** change (a removed
+or restructured frame older clients cannot safely ignore).
+
 ## 4. Connection lifecycle
 
 ```
