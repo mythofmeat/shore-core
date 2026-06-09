@@ -2,6 +2,12 @@
 pkgname=shore-daemon
 pkgver=1.8.5
 pkgrel=1
+# The crate version was reset 16.1.0 -> 0.1.0 (cargo-semver-checks had inflated
+# it into the double digits). epoch=1 keeps `1:0.1.0` sorting above the old
+# `16.1.0` so installed packages still upgrade across the reset instead of
+# treating it as a downgrade. The repo-arch build only rewrites pkgver from the
+# release-plz tag and leaves epoch untouched.
+epoch=1
 pkgdesc='Persistent AI character engine — daemon'
 arch=('x86_64')
 url='https://github.com/mythofmeat/shore-core'
