@@ -568,8 +568,9 @@ appears in `enabled_tools`, and a sub-agent's `ask_<name>` tool only if the
 sub-agent appears in `enabled_subagents`. Empty (or absent) allowlists mean
 nothing is offered — there is no implicit "all tools on" default.
 
-> The section is `[tools]`, not `[tools]` — `[tools.*]` is the (deprecated)
-> tool-model catalog section the config loader reserves.
+> The section is `[tools]`, not `[tools.*]` (e.g. `[tools.<provider>.<model>]`) —
+> that shape was the (deprecated) tool-model catalog section the config loader
+> reserves.
 
 ```toml
 [tools]

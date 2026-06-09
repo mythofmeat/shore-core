@@ -303,7 +303,7 @@ Rules:
 - Paths must stay inside the character workspace.
 - Symlink and traversal escapes are bugs.
 - Workspace file tools treat `memory/...` as a normal workspace subdirectory.
-- Private conversations hide `search_history` and `exec`, and still suppress
+- Private conversations hide `search_chat_logs` and `exec`, and still suppress
   prompt-visible memory index injection.
 - Prompt-visible files cannot be deleted and edits are deferred.
 

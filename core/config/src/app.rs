@@ -441,8 +441,8 @@ pub struct ToolsConfig {
     pub enabled_subagents: Vec<String>,
 
     /// Global cap on characters a single tool result may contribute before
-    /// truncation. `0` disables truncation. Per-tool `[tools.<name>]` tables
-    /// may override this via [`ToolOverride::max_result_chars`].
+    /// truncation. `0` disables truncation. Per-tool `[tools.config.<name>]`
+    /// tables may override this via [`ToolOverride::max_result_chars`].
     #[serde(default = "default_max_result_chars")]
     pub max_result_chars: usize,
 
@@ -498,7 +498,7 @@ impl ToolsConfig {
     }
 }
 
-/// Per-tool override table `[tools.<name>]`.
+/// Per-tool override table `[tools.config.<name>]`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ToolOverride {

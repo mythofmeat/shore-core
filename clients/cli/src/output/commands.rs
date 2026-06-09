@@ -1385,6 +1385,9 @@ fn print_config_section(
 }
 
 /// Print config check results.
+/// Render the `shore tools` surface: per-tool main-character enablement, the
+/// sub-agent roster and the tools each owns, the `exec` allowlist, and any
+/// dangling-config warnings, all from the SWP `tools` query payload.
 fn print_tools(data: &serde_json::Value) {
     let stdout = io::stdout();
     let mut out = stdout.lock();

@@ -13,7 +13,7 @@ use shore_config::app::{
     DefaultsConfig, DreamingConfig, EmbeddedConfig, HeartbeatConfig, LlmSidecarConfig,
     MatrixConfig, MemoryConfig, NotificationBackend, NotificationEventsConfig, NotificationsConfig,
     NtfyConfig, RetrievalBinaryMode, RetrievalConfig, RetrievalMode, SearchConfig, ServiceEntry,
-    ServicesConfig, ThinkingConfig, ToolOverride, ToolsConfig, UsageBudgetAction,
+    ServicesConfig, SubagentConfig, ThinkingConfig, ToolOverride, ToolsConfig, UsageBudgetAction,
     UsageBudgetConfig, UsageBudgetPeriod, UsageConfig, UsageSpikeWarningsConfig,
 };
 use shore_config::models::{CacheKeepaliveSetting, ModelConfigFields, Sdk};
@@ -254,6 +254,7 @@ fn arb_defaults_config() -> impl Strategy<Value = DefaultsConfig> {
         prop::option::of(arb_nonempty_text()),
         prop::option::of(arb_nonempty_text()),
         prop::option::of(arb_nonempty_text()),
+        prop::option::of(arb_nonempty_text()),
         any::<bool>(),
     )
         .prop_map(
@@ -265,6 +266,7 @@ fn arb_defaults_config() -> impl Strategy<Value = DefaultsConfig> {
                 background_dreaming,
                 embedding,
                 image_generation,
+                subagent_model,
                 display_name,
                 stream,
             )| DefaultsConfig {
@@ -279,7 +281,7 @@ fn arb_defaults_config() -> impl Strategy<Value = DefaultsConfig> {
                 dreaming: None,
                 embedding,
                 image_generation,
-                subagent_model: None,
+                subagent_model,
                 display_name,
                 stream,
             },
@@ -350,6 +352,29 @@ fn arb_tools_config() -> impl Strategy<Value = ToolsConfig> {
                 }
             },
         )
+}
+
+fn arb_subagent_config() -> impl Strategy<Value = SubagentConfig> {
+    (
+        arb_nonempty_text(),
+        arb_nonempty_text(),
+        prop::collection::vec(arb_nonempty_text(), 0..4),
+        prop::option::of(arb_nonempty_text()),
+        prop::option::of(0_u32..50),
+    )
+        .prop_map(
+            |(description, prompt, tools, model, max_iterations)| SubagentConfig {
+                description,
+                prompt,
+                tools,
+                model,
+                max_iterations,
+            },
+        )
+}
+
+fn arb_subagents() -> impl Strategy<Value = std::collections::BTreeMap<String, SubagentConfig>> {
+    prop::collection::btree_map(arb_nonempty_text(), arb_subagent_config(), 0..3)
 }
 
 fn arb_behavior_config() -> impl Strategy<Value = BehaviorConfig> {
@@ -770,6 +795,7 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
         arb_notifications_config(),
         arb_usage_config(),
         arb_advanced_config(),
+        arb_subagents(),
     )
         .prop_map(
             |(
@@ -783,6 +809,7 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
                 notifications,
                 usage,
                 advanced,
+                subagents,
             )| AppConfig {
                 daemon,
                 defaults,
@@ -799,7 +826,7 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
                 notifications,
                 usage,
                 advanced,
-                subagents: std::collections::BTreeMap::new(),
+                subagents,
             },
         )
 }

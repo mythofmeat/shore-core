@@ -90,9 +90,8 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 #
 #   — Prompt caching (Anthropic) —
 #   cache_ttl          = "5m"     # e.g. "5m", "1h"
-#   keepalive_enabled  = true     # Periodic pings keep the prompt cache warm
-#   keepalive_ttl      = "5m"     # Derive ping interval from TTL (default ~4m)
-#   keepalive_max_pings = 15      # Stop after N pings to cap runaway cost
+#   cache_keepalive    = "4m"     # Per-model ping cadence to keep the cache warm; "off" to disable
+#                                 # (global ceiling: [behavior.autonomy].cache_keepalive_max)
 #
 #   — Vendor knobs (resolve model > sdk > provider) —
 #   openrouter_provider = { order = ["anthropic"] }  # OpenRouter routing hints

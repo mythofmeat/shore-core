@@ -35,8 +35,11 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   cheap fallback with `[defaults].subagent_model`; per-agent `model` /
   `max_iterations` override it. Spend is attributed in the ledger under call type
   `subagent`. Nesting is capped at one level (a sub-agent cannot delegate to
-  another), and the runtime is wired only on the interactive chat path. See
-  `[subagents]` in CONFIGURATION.md.
+  another), and the runtime is wired only on the interactive chat path. An
+  enabled sub-agent whose model chain (`subagents.<name>.model` →
+  `[defaults].subagent_model` → `[defaults].model`) cannot resolve is rejected at
+  config load rather than failing on first `ask_<name>` use. See `[subagents]` in
+  CONFIGURATION.md.
 - **`shore tools` — inspect the effective tool surface.** A read-only command
   showing every registered tool and whether it's enabled on the main character,
   which sub-agents own each tool, the `exec` allowlist, and any dangling config

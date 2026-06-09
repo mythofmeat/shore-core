@@ -135,7 +135,7 @@ pub(crate) fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> Prep
 
     let tool_defs = if config.app.tools.any_enabled() {
         let mut defs =
-            crate::tools::render_tool_defs(false, &config.app.tools, character, &display_name);
+            crate::tools::render_tool_defs(is_private, &config.app.tools, character, &display_name);
         // Append `ask_<name>` delegation tools (only for enabled sub-agents)
         // after the static surface so the tool ordering — and thus the cache
         // prefix — stays stable.
