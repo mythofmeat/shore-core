@@ -6,36 +6,58 @@ pub enum SyncDecision {
     DropStale,
 }
 
+/// Dedup gate for a single connection's inbound stream.
+///
+/// `History` snapshots and `NewMessage` pushes carry independent meanings even
+/// though they share the revision counter: a snapshot reflects the *whole*
+/// conversation at a revision, while a push is *one* message at a revision. The
+/// daemon emits both for the same append — `append_message` broadcasts a
+/// `History` at revision N, then the handler emits the `NewMessage` also at
+/// revision N — so a single shared watermark would let the snapshot suppress its
+/// own paired push (`N <= N`). Clients that render from `NewMessage` (the Matrix
+/// bridge's `mirror_all`) would then see nothing.
+///
+/// So we keep two watermarks. `snapshot_revision` drops stale `History`
+/// snapshots on reconnect/reload; `message_revision` drops `NewMessage`s already
+/// covered by the handshake snapshot (or redelivered). A mid-session `History`
+/// never advances `message_revision`, so it can't shadow the push that follows
+/// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncState {
-    latest_revision: u64,
+    /// Highest revision delivered as a `NewMessage`; gates `NewMessage`.
+    message_revision: u64,
+    /// Highest revision delivered as a `History`; gates `History`.
+    snapshot_revision: u64,
 }
 
 impl SyncState {
     pub fn new(initial_revision: u64) -> Self {
         Self {
-            latest_revision: initial_revision,
+            message_revision: initial_revision,
+            snapshot_revision: initial_revision,
         }
     }
 
+    /// Highest revision observed on either stream — for diagnostics only.
     pub fn latest_revision(&self) -> u64 {
-        self.latest_revision
+        self.message_revision.max(self.snapshot_revision)
     }
 
     pub fn observe(&mut self, msg: &ServerMessage) -> SyncDecision {
         match msg {
             ServerMessage::History(history) => {
-                if history.revision < self.latest_revision {
+                if history.revision < self.snapshot_revision {
                     SyncDecision::DropStale
                 } else {
-                    self.latest_revision = history.revision;
+                    self.snapshot_revision = history.revision;
                     SyncDecision::Deliver
                 }
             }
             ServerMessage::NewMessage(message) => {
-                if message.revision <= self.latest_revision {
+                if message.revision <= self.message_revision {
                     SyncDecision::DropStale
                 } else {
+                    self.message_revision = message.revision;
                     SyncDecision::Deliver
                 }
             }
@@ -123,5 +145,51 @@ mod tests {
         });
 
         assert_eq!(sync.observe(&message), SyncDecision::DropStale);
+    }
+
+    fn new_message(revision: u64) -> ServerMessage {
+        ServerMessage::NewMessage(NewMessage {
+            revision,
+            character: Some("alice".into()),
+            origin: None,
+            message: message("m"),
+        })
+    }
+
+    fn history(revision: u64) -> ServerMessage {
+        ServerMessage::History(History {
+            rid: None,
+            messages: vec![message("m")],
+            active_start: 0,
+            config: serde_json::json!({}),
+            selected_character: Some("alice".into()),
+            revision,
+        })
+    }
+
+    // Regression: `append_message` broadcasts a `History` at revision N, then the
+    // handler emits the paired `NewMessage` also at revision N. The snapshot must
+    // not suppress its own push, or `mirror_all` clients see nothing.
+    #[test]
+    fn history_does_not_shadow_paired_new_message_at_same_revision() {
+        let mut sync = SyncState::new(5);
+
+        assert_eq!(sync.observe(&history(6)), SyncDecision::Deliver);
+        assert_eq!(sync.observe(&new_message(6)), SyncDecision::Deliver);
+
+        // The next append: History(7) then NewMessage(7) both deliver too.
+        assert_eq!(sync.observe(&history(7)), SyncDecision::Deliver);
+        assert_eq!(sync.observe(&new_message(7)), SyncDecision::Deliver);
+    }
+
+    // A delivered `NewMessage` advances its own watermark, so a redelivered push
+    // at the same revision is still dropped.
+    #[test]
+    fn new_message_dedupes_against_delivered_messages() {
+        let mut sync = SyncState::new(5);
+
+        assert_eq!(sync.observe(&new_message(6)), SyncDecision::Deliver);
+        assert_eq!(sync.observe(&new_message(6)), SyncDecision::DropStale);
+        assert_eq!(sync.observe(&new_message(7)), SyncDecision::Deliver);
     }
 }
