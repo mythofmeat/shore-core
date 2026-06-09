@@ -62,8 +62,10 @@ defaulting.
   `skip_serializing_if = "Option::is_none"` are omitted when null; defaulted
   fields are tolerated on read (`#[serde(default)]`).
 - **Tagging:** both directions use an externally tagged enum with the
-  `"type"` discriminator (snake_case variant names). Unknown variants cause
-  the receiver to error and disconnect.
+  `"type"` discriminator (snake_case variant names). Clients **must skip** an
+  unrecognized server→client `"type"` rather than erroring the connection — see
+  the forward-compatibility rule in §3. (A server may still reject an unknown
+  client→server `"type"` it cannot act on.)
 
 ## 3. Protocol version
 
@@ -1039,7 +1041,8 @@ A minimal SWP client needs to:
 5. Receive `History` to seed local state (`messages`, `active_start`,
    `selected_character`, `revision`).
 6. Loop:
-   - Read frames; ignore `Ping`; treat `Shutdown` as EOF.
+   - Read frames; ignore `Ping`; treat `Shutdown` as EOF; silently skip any
+     unrecognized `type` and keep reading (forward-compat, see §3).
    - For request-shaped sends, generate an `rid`, match incoming
      `StreamStart`/`StreamChunk`/`StreamEnd`/`ToolCall`/`ToolResult`/
      `Phase`/`CommandOutput`/`Error` frames by `rid`.

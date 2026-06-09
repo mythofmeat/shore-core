@@ -222,6 +222,54 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn handshake_skips_unknown_frames() {
+        let (client_stream, server_stream) = duplex(8192);
+
+        let server_handle = tokio::spawn(async move {
+            let (r, mut w) = tokio::io::split(server_stream);
+            let mut reader = tokio::io::BufReader::new(r);
+
+            // A newer daemon emits an additive frame the client predates,
+            // ahead of the hello. The client must skip it, not disconnect.
+            write_raw_line(&mut w, r#"{"type":"future_warning","detail":"x"}"#).await;
+
+            let server_hello = ServerMessage::Hello(ServerHello {
+                v: SWP_V1,
+                server_name: "test-daemon".into(),
+                characters: vec![CharacterInfo::new("alice")],
+            });
+            write_json_line(&mut w, &server_hello).await;
+
+            let client_hello: ClientMessage = read_json_line(&mut reader).await;
+            assert!(matches!(client_hello, ClientMessage::Hello(_)));
+
+            // Another unknown frame ahead of history — also skipped.
+            write_raw_line(&mut w, r#"{"type":"another_future_frame"}"#).await;
+
+            let history = ServerMessage::History(History {
+                rid: None,
+                messages: vec![],
+                active_start: 0,
+                config: serde_json::json!({}),
+                selected_character: Some("alice".into()),
+                revision: 1,
+            });
+            write_json_line(&mut w, &history).await;
+        });
+
+        let (conn, server_hello, history) =
+            SWPConnection::connect_raw(client_stream, "tui", "test-client", None)
+                .await
+                .expect("handshake should skip unknown frames and succeed");
+
+        assert_eq!(server_hello.server_name, "test-daemon");
+        assert_eq!(history.revision, 1);
+
+        drop(conn);
+        server_handle.await.unwrap();
+    }
+
     // ── Send/receive tests ───────────────────────────────────────────
 
     #[tokio::test]

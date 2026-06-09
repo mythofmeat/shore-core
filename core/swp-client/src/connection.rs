@@ -77,49 +77,53 @@ impl SWPConnection {
     ) -> Result<(ServerHello, History)> {
         debug!(client_type = %client_type, client_name = %client_name, character = ?character, "starting SWP handshake");
 
-        // Step 1: receive server hello
-        let first_msg = self.recv().await?;
-        let server_hello = match first_msg {
-            ServerMessage::Hello(h) => {
-                if h.v != SWP_V1 {
-                    error!(
-                        server_version = h.v,
-                        expected = SWP_V1,
-                        "protocol version mismatch"
+        // Step 1: receive server hello, skipping any unknown frames a newer
+        // daemon may emit ahead of the hello (forward-compat, see PROTOCOL.md §3).
+        let server_hello = loop {
+            match self.recv().await? {
+                ServerMessage::Hello(h) => {
+                    if h.v != SWP_V1 {
+                        error!(
+                            server_version = h.v,
+                            expected = SWP_V1,
+                            "protocol version mismatch"
+                        );
+                        return Err(ClientError::Protocol(format!(
+                            "unsupported protocol version: {} (expected {})",
+                            h.v, SWP_V1
+                        )));
+                    }
+                    debug!(
+                        server_name = %h.server_name,
+                        characters = h.characters.len(),
+                        "received server hello"
                     );
+                    break h;
+                }
+                ServerMessage::Unknown => {
+                    debug!("skipping unknown frame during handshake");
+                }
+                other @ (ServerMessage::History(_)
+                | ServerMessage::Shutdown(_)
+                | ServerMessage::Ping(_)
+                | ServerMessage::CommandOutput(_)
+                | ServerMessage::Error(_)
+                | ServerMessage::StreamStart(_)
+                | ServerMessage::StreamChunk(_)
+                | ServerMessage::StreamEnd(_)
+                | ServerMessage::Phase(_)
+                | ServerMessage::NewMessage(_)
+                | ServerMessage::ToolCall(_)
+                | ServerMessage::ToolResult(_)
+                | ServerMessage::SendImage(_)
+                | ServerMessage::CacheWarning(_)
+                | ServerMessage::ProviderFallbackWarning(_)
+                | ServerMessage::UsageWarning(_)) => {
+                    error!("expected server hello, got unexpected message");
                     return Err(ClientError::Protocol(format!(
-                        "unsupported protocol version: {} (expected {})",
-                        h.v, SWP_V1
+                        "expected server hello, got: {other:?}"
                     )));
                 }
-                debug!(
-                    server_name = %h.server_name,
-                    characters = h.characters.len(),
-                    "received server hello"
-                );
-                h
-            }
-            other @ (ServerMessage::History(_)
-            | ServerMessage::Shutdown(_)
-            | ServerMessage::Ping(_)
-            | ServerMessage::CommandOutput(_)
-            | ServerMessage::Error(_)
-            | ServerMessage::StreamStart(_)
-            | ServerMessage::StreamChunk(_)
-            | ServerMessage::StreamEnd(_)
-            | ServerMessage::Phase(_)
-            | ServerMessage::NewMessage(_)
-            | ServerMessage::ToolCall(_)
-            | ServerMessage::ToolResult(_)
-            | ServerMessage::SendImage(_)
-            | ServerMessage::CacheWarning(_)
-            | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_)
-            | ServerMessage::Unknown) => {
-                error!("expected server hello, got unexpected message");
-                return Err(ClientError::Protocol(format!(
-                    "expected server hello, got: {other:?}"
-                )));
             }
         };
 
@@ -133,34 +137,37 @@ impl SWPConnection {
         self.send(&hello).await?;
         debug!("sent client hello");
 
-        // Step 3: receive history
-        let history_msg = self.recv().await?;
-        let history = match history_msg {
-            ServerMessage::History(h) => {
-                debug!(message_count = h.messages.len(), "received history");
-                h
-            }
-            other @ (ServerMessage::Hello(_)
-            | ServerMessage::Shutdown(_)
-            | ServerMessage::Ping(_)
-            | ServerMessage::CommandOutput(_)
-            | ServerMessage::Error(_)
-            | ServerMessage::StreamStart(_)
-            | ServerMessage::StreamChunk(_)
-            | ServerMessage::StreamEnd(_)
-            | ServerMessage::Phase(_)
-            | ServerMessage::NewMessage(_)
-            | ServerMessage::ToolCall(_)
-            | ServerMessage::ToolResult(_)
-            | ServerMessage::SendImage(_)
-            | ServerMessage::CacheWarning(_)
-            | ServerMessage::ProviderFallbackWarning(_)
-            | ServerMessage::UsageWarning(_)
-            | ServerMessage::Unknown) => {
-                error!("expected history, got unexpected message");
-                return Err(ClientError::Protocol(format!(
-                    "expected history, got: {other:?}"
-                )));
+        // Step 3: receive history, skipping any unknown frames (forward-compat).
+        let history = loop {
+            match self.recv().await? {
+                ServerMessage::History(h) => {
+                    debug!(message_count = h.messages.len(), "received history");
+                    break h;
+                }
+                ServerMessage::Unknown => {
+                    debug!("skipping unknown frame during handshake");
+                }
+                other @ (ServerMessage::Hello(_)
+                | ServerMessage::Shutdown(_)
+                | ServerMessage::Ping(_)
+                | ServerMessage::CommandOutput(_)
+                | ServerMessage::Error(_)
+                | ServerMessage::StreamStart(_)
+                | ServerMessage::StreamChunk(_)
+                | ServerMessage::StreamEnd(_)
+                | ServerMessage::Phase(_)
+                | ServerMessage::NewMessage(_)
+                | ServerMessage::ToolCall(_)
+                | ServerMessage::ToolResult(_)
+                | ServerMessage::SendImage(_)
+                | ServerMessage::CacheWarning(_)
+                | ServerMessage::ProviderFallbackWarning(_)
+                | ServerMessage::UsageWarning(_)) => {
+                    error!("expected history, got unexpected message");
+                    return Err(ClientError::Protocol(format!(
+                        "expected history, got: {other:?}"
+                    )));
+                }
             }
         };
 
