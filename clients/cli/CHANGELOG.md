@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.3.0...shore-cli-v2.4.0) - 2026-06-09
+
+### Added
+
+- *(cli)* hide reasoning/tools in `shore log` by default ([#231](https://github.com/mythofmeat/shore-core/pull/231))
+
 ## [2.3.0](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.2.0...shore-cli-v2.3.0) - 2026-06-09
 
 ### Added
