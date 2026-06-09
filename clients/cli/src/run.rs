@@ -1369,10 +1369,18 @@ async fn recv_streaming_response(
             }
             ServerMessage::ToolCall(call) => {
                 spinner.clear().await;
-                output::print_tool_call(call);
+                if call.subagent.is_some() {
+                    output::print_subagent_tool_call(call);
+                } else {
+                    output::print_tool_call(call);
+                }
             }
             ServerMessage::ToolResult(result) => {
-                output::print_tool_result(result);
+                if result.subagent.is_some() {
+                    output::print_subagent_tool_result(result);
+                } else {
+                    output::print_tool_result(result);
+                }
             }
             ServerMessage::Error(err) => {
                 spinner.stop().await;

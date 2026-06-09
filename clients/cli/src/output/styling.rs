@@ -350,8 +350,19 @@ pub(crate) fn write_tool_body_plain(out: &mut impl Write, body: &str) {
     }
 }
 
-/// Print a tool call into the process channel: `⚙ name · arg` then its input.
+/// Print a tool call into the process channel: `→ name · arg` then its input.
 pub(crate) fn print_tool_call(call: &ToolCall) {
+    print_tool_call_styled(call, COLOR_TOOL);
+}
+
+/// As [`print_tool_call`], but for a sub-agent's nested loop — rendered in the
+/// sub-agent color so a nested tool call reads differently from the primary
+/// model's.
+pub(crate) fn print_subagent_tool_call(call: &ToolCall) {
+    print_tool_call_styled(call, COLOR_SUBAGENT);
+}
+
+fn print_tool_call_styled(call: &ToolCall, color: Color) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut state = lock_chunk_state();
@@ -364,7 +375,7 @@ pub(crate) fn print_tool_call(call: &ToolCall) {
         Some(arg) => format!("{} \u{00b7} {arg}", call.tool_name),
         None => call.tool_name.clone(),
     };
-    write_sigil_header(&mut out, SIGIL_TOOL, &header, COLOR_TOOL);
+    write_sigil_header(&mut out, SIGIL_TOOL, &header, color);
     if let Some(input) = format_tool_input(&call.input) {
         write_process_body(&mut out, &input);
     }
@@ -374,6 +385,16 @@ pub(crate) fn print_tool_call(call: &ToolCall) {
 /// Print a tool result into the process channel: `✓ result` / `✗ error` then
 /// the (truncated) output.
 pub(crate) fn print_tool_result(result: &ToolResult) {
+    print_tool_result_styled(result, COLOR_RESULT);
+}
+
+/// As [`print_tool_result`], but for a sub-agent's nested loop — a successful
+/// result uses the sub-agent color; errors stay red.
+pub(crate) fn print_subagent_tool_result(result: &ToolResult) {
+    print_tool_result_styled(result, COLOR_SUBAGENT);
+}
+
+fn print_tool_result_styled(result: &ToolResult, ok_color: Color) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut state = lock_chunk_state();
@@ -385,7 +406,7 @@ pub(crate) fn print_tool_result(result: &ToolResult) {
     let (sigil, label, color) = if result.is_error {
         (SIGIL_ERROR, "error", Color::Red)
     } else {
-        (SIGIL_OK, "result", COLOR_RESULT)
+        (SIGIL_OK, "result", ok_color)
     };
     write_sigil_header(&mut out, sigil, label, color);
     // Body stays dim; the colored header carries the status.
