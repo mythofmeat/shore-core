@@ -808,6 +808,14 @@ pub struct MatrixConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
+    /// Mirror the full conversation for each character into its bound Matrix
+    /// room — user prompts from any client, assistant replies, and autonomous
+    /// messages — routed by character. When false, only the room you are
+    /// actively chatting in sees responses (legacy behavior). Consumed by the
+    /// `shore-matrix` bridge; the daemon only stores it.
+    #[serde(default = "default_true")]
+    pub mirror_all: bool,
+
     /// Homeserver URL. Required for external mode.
     /// In embedded mode, auto-derived as http://localhost:{port}.
     pub homeserver: Option<String>,

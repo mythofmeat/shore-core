@@ -8,6 +8,13 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **`[connections.matrix] mirror_all` (default `true`).** New config key
+  controlling what each character's bound Matrix room shows. When enabled, the
+  room mirrors the character's full conversation regardless of which client drove
+  it — user prompts from the CLI/TUI, assistant replies, and autonomous messages
+  — routed by character. Set `false` for the legacy "only the actively-chatting
+  room sees responses" behavior. The daemon stores the key; the `shore-matrix`
+  bridge consumes it. See `[connections.matrix]` in CONFIGURATION.md.
 - **SWP clients now tolerate unknown server frame types.** `ServerMessage`
   deserializes any unrecognized `type` tag into a benign `Unknown` sentinel
   that the bundled client's read loop skips, instead of failing the

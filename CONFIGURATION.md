@@ -921,11 +921,19 @@ External mode connects to an existing homeserver:
 ```toml
 [connections.matrix]
 enabled = true
+mirror_all = true
 homeserver = "https://matrix.example.com"
 user_id = "@shore:example.com"
 room_id = "!room:example.com"
 trusted_user = "@user:example.com"
 ```
+
+`mirror_all` (default `true`) controls what each character's bound Matrix room
+shows. When `true`, the room mirrors the character's full conversation regardless
+of which client drove it — user prompts sent from the CLI/TUI, assistant replies,
+and autonomous messages all appear, routed by character. When `false`, only the
+room you are actively chatting in from Matrix sees responses (legacy behavior).
+The setting is consumed by the `shore-matrix` bridge; the daemon only stores it.
 
 Embedded mode manages a conduwuit-compatible homeserver:
 
