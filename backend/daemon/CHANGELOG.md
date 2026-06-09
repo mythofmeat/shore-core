@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [16.1.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v16.0.0...shore-daemon-v16.1.0) - 2026-06-09
+
+### Added
+
+- *(protocol)* tolerate unknown ServerMessage frame types ([#228](https://github.com/mythofmeat/shore-core/pull/228))
+- *(cli,model-setting)* inspect + tune background-task models ([#225](https://github.com/mythofmeat/shore-core/pull/225))
+
+### Other
+
+- Sub-agent delegation, opt-in [tools] config, and `shore tools` ([#226](https://github.com/mythofmeat/shore-core/pull/226))
+
 ## [16.0.0](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v15.0.1...shore-daemon-v16.0.0) - 2026-06-07
 
 ### Fixed
