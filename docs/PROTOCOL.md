@@ -306,6 +306,17 @@ stream_end (is_final = false)        ← if the daemon ran a tool loop
 stream_end (is_final = true)
 ```
 
+When the model calls a sub-agent (`ask_<name>`; see §7.4.5), the sub-agent's
+own nested tool-loop frames are interleaved between the `tool_call` that
+invokes it and the matching `tool_result`, each carrying a `subagent` tag:
+
+```
+tool_call (tool_name = "ask_research")              ← no subagent tag
+  stream_start | stream_chunk | tool_call |
+  tool_result | stream_end(is_final=false)          ← all tagged subagent="research"
+tool_result (tool_name = "ask_research")            ← no subagent tag; output is the summary
+```
+
 #### 7.4.1 `stream_start`
 
 ```json
@@ -355,6 +366,28 @@ for UI affordances. `model` may be `null`.
   (`"end_turn"`, `"tool_use"`, `"max_tokens"`, …).
 - `is_final` is the boundary marker. Missing field defaults to `true`
   (compatibility with pre-tool-loop daemons).
+
+#### 7.4.5 Sub-agent frames (`subagent`)
+
+`stream_start`, `stream_chunk`, `stream_end`, `tool_call`, `tool_result`, and
+`send_image` carry an optional `subagent` field. When present, the frame
+belongs to the nested tool loop of the named sub-agent (`[subagents.<name>]`,
+invoked as `ask_<name>`), not to the primary model:
+
+```json
+{ "type": "stream_chunk", "rid": "rid_…", "text": "searching…", "content_type": "thinking", "subagent": "research" }
+```
+
+- The field is **omitted** for primary-model frames (so primary traffic and the
+  cache prefix are unchanged, and pre-field clients parse as before).
+- A sub-agent never emits a terminal `stream_end` (`is_final = true`), so a
+  tagged `stream_end` never ends the primary generation.
+- Because the primary loop is blocked awaiting the sub-agent and nesting is
+  capped at one level, tagged frames never interleave with primary frames or
+  with another sub-agent. Clients can bracket a nested section by watching the
+  tag turn on and back off.
+- Rendering is advisory: a client may ignore the field and show a flat stream,
+  attribute it (e.g. nested/indented), or suppress sub-agent frames entirely.
 
 ### 7.5 `tool_call`
 

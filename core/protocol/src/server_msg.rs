@@ -75,6 +75,11 @@ pub struct StreamStart {
     pub rid: Option<String>,
     #[serde(default)]
     pub regen: bool,
+    /// Set when this frame belongs to a sub-agent's nested tool loop (the
+    /// `[subagents.<name>]` name behind an `ask_<name>` call). Clients render
+    /// it as attributed/nested activity; `None` is the primary model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<String>,
 }
 
 /// Partial content chunk.
@@ -85,6 +90,10 @@ pub struct StreamChunk {
     pub text: String,
     #[serde(default = "default_content_type")]
     pub content_type: String,
+    /// Sub-agent name when this chunk is from a nested `ask_<name>` loop; see
+    /// [`StreamStart::subagent`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<String>,
 }
 
 fn default_content_type() -> String {
@@ -124,6 +133,12 @@ pub struct StreamEnd {
     /// as terminal (matching historical single-turn behavior).
     #[serde(default = "default_true")]
     pub is_final: bool,
+    /// Sub-agent name when this boundary is from a nested `ask_<name>` loop; see
+    /// [`StreamStart::subagent`]. A sub-agent never emits a terminal
+    /// (`is_final = true`) frame, so a tagged StreamEnd never ends the primary
+    /// generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -170,6 +185,10 @@ pub struct ToolCall {
     pub tool_id: String,
     pub tool_name: String,
     pub input: serde_json::Value,
+    /// Sub-agent name when this call is from a nested `ask_<name>` loop; see
+    /// [`StreamStart::subagent`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<String>,
 }
 
 /// Tool completed.
@@ -182,6 +201,10 @@ pub struct ToolResult {
     pub output: String,
     #[serde(default)]
     pub is_error: bool,
+    /// Sub-agent name when this result is from a nested `ask_<name>` loop; see
+    /// [`StreamStart::subagent`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<String>,
 }
 
 /// Server-generated image ready.
@@ -195,6 +218,10 @@ pub struct SendImage {
     /// Base64-encoded image data for wire transfer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+    /// Sub-agent name when this image is from a nested `ask_<name>` loop; see
+    /// [`StreamStart::subagent`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<String>,
 }
 
 /// Unexpected cache invalidation warning.
@@ -314,5 +341,116 @@ impl ServerMessage {
             | ServerMessage::CacheWarning(_) => {}
         }
         self
+    }
+
+    /// The sub-agent name tagged on this frame, if any. `None` is primary-model
+    /// (or non-stream) activity. Lets clients bracket nested `ask_<name>` output
+    /// by watching the tag transition on/off.
+    #[must_use]
+    pub fn subagent(&self) -> Option<&str> {
+        match self {
+            ServerMessage::StreamStart(m) => m.subagent.as_deref(),
+            ServerMessage::StreamChunk(m) => m.subagent.as_deref(),
+            ServerMessage::StreamEnd(m) => m.subagent.as_deref(),
+            ServerMessage::ToolCall(m) => m.subagent.as_deref(),
+            ServerMessage::ToolResult(m) => m.subagent.as_deref(),
+            ServerMessage::SendImage(m) => m.subagent.as_deref(),
+            ServerMessage::Hello(_)
+            | ServerMessage::History(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Error(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_) => None,
+        }
+    }
+
+    /// Tag a stream/tool frame as belonging to a sub-agent's nested loop.
+    ///
+    /// Used by the sub-agent forwarder to attribute the messages it relays from
+    /// an `ask_<name>` loop, so clients render them as nested activity. Frame
+    /// types that a sub-agent loop never emits are left untouched.
+    pub fn set_subagent(&mut self, name: &str) {
+        let tag = || Some(name.to_owned());
+        match self {
+            ServerMessage::StreamStart(msg) => msg.subagent = tag(),
+            ServerMessage::StreamChunk(msg) => msg.subagent = tag(),
+            ServerMessage::StreamEnd(msg) => msg.subagent = tag(),
+            ServerMessage::ToolCall(msg) => msg.subagent = tag(),
+            ServerMessage::ToolResult(msg) => msg.subagent = tag(),
+            ServerMessage::SendImage(msg) => msg.subagent = tag(),
+            ServerMessage::Hello(_)
+            | ServerMessage::History(_)
+            | ServerMessage::Shutdown(_)
+            | ServerMessage::Ping(_)
+            | ServerMessage::CommandOutput(_)
+            | ServerMessage::Error(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::CacheWarning(_)
+            | ServerMessage::ProviderFallbackWarning(_)
+            | ServerMessage::UsageWarning(_) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_subagent_tags_stream_and_tool_frames() {
+        let mut chunk = ServerMessage::StreamChunk(StreamChunk {
+            rid: None,
+            text: "hi".into(),
+            content_type: "text".into(),
+            subagent: None,
+        });
+        chunk.set_subagent("research");
+        assert_eq!(chunk.subagent(), Some("research"));
+
+        // A frame type a sub-agent loop never emits is left untouched.
+        let mut phase = ServerMessage::Phase(Phase {
+            rid: None,
+            phase: "thinking".into(),
+            model: None,
+        });
+        phase.set_subagent("research");
+        assert_eq!(phase.subagent(), None);
+    }
+
+    #[test]
+    fn subagent_tag_survives_wire_round_trip() {
+        let mut call = ServerMessage::ToolCall(ToolCall {
+            rid: None,
+            tool_id: "t1".into(),
+            tool_name: "search".into(),
+            input: serde_json::json!({}),
+            subagent: None,
+        });
+        call.set_subagent("research");
+        let wire = serde_json::to_string(&call).unwrap();
+        assert!(wire.contains("\"subagent\":\"research\""), "wire: {wire}");
+        let back: ServerMessage = serde_json::from_str(&wire).unwrap();
+        assert_eq!(back.subagent(), Some("research"));
+    }
+
+    #[test]
+    fn untagged_frame_omits_subagent_on_the_wire() {
+        // `skip_serializing_if` keeps the field off the wire for primary frames,
+        // so the cache prefix and existing-client parsing stay unchanged.
+        let call = ServerMessage::ToolCall(ToolCall {
+            rid: None,
+            tool_id: "t1".into(),
+            tool_name: "search".into(),
+            input: serde_json::json!({}),
+            subagent: None,
+        });
+        let wire = serde_json::to_string(&call).unwrap();
+        assert!(!wire.contains("subagent"), "wire: {wire}");
     }
 }

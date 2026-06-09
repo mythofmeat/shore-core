@@ -1314,17 +1314,48 @@ async fn recv_streaming_response(
     // between blocks survives across rounds.
     output::reset_chunk_state();
 
+    // Which sub-agent's nested loop we're currently rendering, if any. A frame
+    // tagged with a sub-agent name opens the section; the first untagged frame
+    // after it closes the section. (The primary loop is blocked awaiting the
+    // sub-agent, so its frames can't interleave, and nesting is one level deep.)
+    let mut current_subagent: Option<String> = None;
+
     loop {
         let msg = conn.recv().await?;
+
+        // Bracket sub-agent activity on tag transitions.
+        let tag = msg.subagent();
+        if tag != current_subagent.as_deref() {
+            if let Some(prev) = &current_subagent {
+                spinner.clear().await;
+                output::print_subagent_end(prev);
+            }
+            if let Some(name) = tag {
+                spinner.clear().await;
+                output::print_subagent_begin(name);
+            }
+            current_subagent = tag.map(str::to_owned);
+        }
+
         match &msg {
             ServerMessage::StreamStart(start) => {
                 output::print_stream_start(start.regen);
             }
             ServerMessage::StreamChunk(chunk) => {
                 spinner.clear().await;
-                output::print_chunk(chunk);
+                if chunk.subagent.is_some() {
+                    output::print_subagent_chunk(chunk);
+                } else {
+                    output::print_chunk(chunk);
+                }
             }
             ServerMessage::StreamEnd(end) => {
+                // A sub-agent boundary never ends the primary generation — keep
+                // the spinner up and read on.
+                if end.subagent.is_some() {
+                    spinner.restart();
+                    continue;
+                }
                 spinner.stop().await;
                 debug!(finish_reason = end.finish_reason, "Stream complete");
                 if end.finish_reason == "tool_use" {
@@ -1736,15 +1767,18 @@ mod tests {
     fn streaming_response(text: &str) -> Vec<ServerMessage> {
         vec![
             ServerMessage::StreamStart(StreamStart {
+                subagent: None,
                 rid: None,
                 regen: false,
             }),
             ServerMessage::StreamChunk(StreamChunk {
+                subagent: None,
                 rid: None,
                 text: text.into(),
                 content_type: "text".into(),
             }),
             ServerMessage::StreamEnd(StreamEnd {
+                subagent: None,
                 rid: None,
                 msg_id: None,
                 revision: None,
@@ -1943,20 +1977,24 @@ mod tests {
     async fn streaming_with_thinking_chunks() {
         let responses = vec![
             ServerMessage::StreamStart(StreamStart {
+                subagent: None,
                 rid: None,
                 regen: false,
             }),
             ServerMessage::StreamChunk(StreamChunk {
+                subagent: None,
                 rid: None,
                 text: "Let me think...".into(),
                 content_type: "thinking".into(),
             }),
             ServerMessage::StreamChunk(StreamChunk {
+                subagent: None,
                 rid: None,
                 text: "Here's the answer.".into(),
                 content_type: "text".into(),
             }),
             ServerMessage::StreamEnd(StreamEnd {
+                subagent: None,
                 rid: None,
                 msg_id: None,
                 revision: None,

@@ -44,6 +44,12 @@ pub(crate) struct SubagentRuntime {
     /// The effective config for this character — sub-agent specs, the model
     /// catalog/providers for resolution, and tool-loop knobs.
     pub(crate) config: Arc<LoadedConfig>,
+    /// The live client channel for this turn. The sub-agent's nested tool-loop
+    /// frames are forwarded here, tagged with the sub-agent name, so the UI can
+    /// show the nested loop instead of appearing frozen. Intermediate tool
+    /// *results* still never enter the primary model's context — this is a
+    /// client-side view only.
+    pub(crate) direct_tx: mpsc::Sender<ServerMessage>,
 }
 
 /// Run sub-agent `name` with `query`, returning its final text.
@@ -111,10 +117,13 @@ pub(crate) async fn run(
     let thinking = thinking_enabled(&request);
     let char_name = ctx.character_name();
 
-    // Sub-agent stream output is internal: drain it into a discard sink so it
-    // never reaches the client. Only the returned summary is user-visible.
-    let (tx, mut rx) = mpsc::channel::<ServerMessage>(64);
-    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    // Forward the sub-agent's nested tool-loop frames to the client, each
+    // tagged with the sub-agent name, so the UI renders the nested loop instead
+    // of freezing on the `ask_<name>` call. The bulky tool *results* still never
+    // enter the primary model's context — only the returned summary does; this
+    // is purely a client-side view.
+    let (tx, rx) = mpsc::channel::<ServerMessage>(64);
+    let forward = spawn_forwarder(rx, runtime.direct_tx.clone(), name.to_owned());
 
     let consumer = StreamConsumer::new(tx.clone(), request.rid.clone());
     let mut ledger_stream = runtime
@@ -129,7 +138,7 @@ pub(crate) async fn run(
         }
         Err(e) => {
             ledger_stream.finalize_error(&e);
-            drain.abort();
+            forward.abort();
             return Err(ToolError::Http(e.to_string()));
         }
     };
@@ -166,8 +175,32 @@ pub(crate) async fn run(
     .await
     .map_err(|e| ToolError::Http(e.to_string()));
 
-    drain.abort();
+    // Close the channel (drop both senders) so the forwarder drains any
+    // buffered frames, then join it so the client sees the whole nested loop
+    // before we return the summary.
+    drop(consumer);
+    drop(tx);
+    let _ignored = forward.await;
     Ok(Value::String(loop_result?.result.content))
+}
+
+/// Spawn the task that tags each frame from the sub-agent's nested loop with
+/// `name` and relays it to the client channel. It ends when every sender on
+/// `rx` is dropped (or the client channel closes), so the caller drops its
+/// senders and awaits the handle to flush.
+fn spawn_forwarder(
+    mut rx: mpsc::Receiver<ServerMessage>,
+    client_tx: mpsc::Sender<ServerMessage>,
+    name: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(mut msg) = rx.recv().await {
+            msg.set_subagent(&name);
+            if client_tx.send(msg).await.is_err() {
+                break;
+            }
+        }
+    })
 }
 
 /// Build the `{{char}}` / `{{user}}` substitution table.
@@ -296,5 +329,46 @@ mod tests {
         let defs = subagent_tool_subset(&allowed, &vars);
         let names: Vec<&str> = defs.iter().map(|d| d["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["read"]);
+    }
+
+    #[tokio::test]
+    async fn forwarder_tags_frames_with_subagent_name() {
+        use shore_protocol::server_msg::{ToolCall, ToolResult};
+
+        let (inner_tx, inner_rx) = mpsc::channel::<ServerMessage>(8);
+        let (client_tx, mut client_rx) = mpsc::channel::<ServerMessage>(8);
+        let handle = spawn_forwarder(inner_rx, client_tx, "research".to_owned());
+
+        inner_tx
+            .send(ServerMessage::ToolCall(ToolCall {
+                rid: None,
+                tool_id: "t1".into(),
+                tool_name: "search".into(),
+                input: json!({}),
+                subagent: None,
+            }))
+            .await
+            .unwrap();
+        inner_tx
+            .send(ServerMessage::ToolResult(ToolResult {
+                rid: None,
+                tool_id: "t1".into(),
+                tool_name: "search".into(),
+                output: "hits".into(),
+                is_error: false,
+                subagent: None,
+            }))
+            .await
+            .unwrap();
+        drop(inner_tx);
+
+        // Both frames arrive tagged with the sub-agent name.
+        let call = client_rx.recv().await.unwrap();
+        assert_eq!(call.subagent(), Some("research"));
+        let result = client_rx.recv().await.unwrap();
+        assert_eq!(result.subagent(), Some("research"));
+        // Channel closes once all senders drop, so the task ends.
+        assert!(client_rx.recv().await.is_none());
+        handle.await.unwrap();
     }
 }

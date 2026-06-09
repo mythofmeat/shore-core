@@ -44,6 +44,14 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   `[defaults].subagent_model` → `[defaults].model`) cannot resolve is rejected at
   config load rather than failing on first `ask_<name>` use. See `[subagents]` in
   CONFIGURATION.md.
+- **Live sub-agent loop visibility.** A sub-agent's nested tool loop now streams
+  to the client (thinking, tool calls, results, and output) instead of leaving
+  the `ask_<name>` call looking frozen until the summary returns. Stream/tool
+  frames carry an optional `subagent` field naming the sub-agent (omitted for
+  primary-model frames); the CLI brackets the nested section under a
+  `» <name> (sub-agent)` header. The bulky intermediate results still never
+  enter the primary model's context — this is a client-side view only. See
+  §7.4.5 of docs/PROTOCOL.md.
 - **`shore tools` — inspect the effective tool surface.** A read-only command
   showing every registered tool and whether it's enabled on the main character,
   which sub-agents own each tool, the `exec` allowlist, and any dangling config

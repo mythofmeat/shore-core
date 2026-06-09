@@ -255,6 +255,7 @@ async fn execute_tool_use(
 ) -> ToolDispatchOutcome {
     let _ignored = direct_tx
         .send(ServerMessage::ToolCall(ToolCall {
+            subagent: None,
             rid: request_rid.map(str::to_owned),
             tool_id: tool_use.id.clone(),
             tool_name: tool_use.name.clone(),
@@ -335,6 +336,7 @@ async fn attach_generated_image(
     }
     let _ignored = direct_tx
         .send(ServerMessage::SendImage(SendImage {
+            subagent: None,
             rid: request_rid.map(str::to_owned),
             path: path.to_owned(),
             caption,
@@ -375,6 +377,7 @@ async fn emit_tool_result(
 ) {
     let _ignored = direct_tx
         .send(ServerMessage::ToolResult(SwpToolResult {
+            subagent: None,
             rid: request_rid.map(str::to_owned),
             tool_id: tool_use.id.clone(),
             tool_name: tool_use.name.clone(),

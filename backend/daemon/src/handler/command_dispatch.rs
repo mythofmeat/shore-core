@@ -32,6 +32,7 @@ impl MessageHandler {
                 .send_to_session(
                     session_id,
                     ServerMessage::StreamEnd(shore_protocol::server_msg::StreamEnd {
+                        subagent: None,
                         rid: None,
                         msg_id: None,
                         revision: None,

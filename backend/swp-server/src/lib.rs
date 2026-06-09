@@ -1336,6 +1336,7 @@ mod tests {
 
         let push_msgs: Vec<ServerMessage> = vec![
             ServerMessage::StreamChunk(StreamChunk {
+                subagent: None,
                 rid: None,
                 text: "hello".into(),
                 content_type: "text".into(),
@@ -1363,12 +1364,14 @@ mod tests {
                 },
             }),
             ServerMessage::ToolCall(ToolCall {
+                subagent: None,
                 rid: None,
                 tool_id: "t1".into(),
                 tool_name: "search".into(),
                 input: serde_json::json!({"q": "test"}),
             }),
             ServerMessage::ToolResult(ToolResult {
+                subagent: None,
                 rid: None,
                 tool_id: "t1".into(),
                 tool_name: "search".into(),
@@ -1376,6 +1379,7 @@ mod tests {
                 is_error: false,
             }),
             ServerMessage::SendImage(SendImage {
+                subagent: None,
                 rid: None,
                 path: "/tmp/img.png".into(),
                 caption: None,
@@ -1548,6 +1552,7 @@ mod tests {
 
         // Send a broadcast.
         let chunk = ServerMessage::StreamChunk(shore_protocol::server_msg::StreamChunk {
+            subagent: None,
             rid: None,
             text: "hello both".into(),
             content_type: "text".into(),
@@ -1612,6 +1617,7 @@ mod tests {
             .await;
 
         let direct = ServerMessage::StreamChunk(shore_protocol::server_msg::StreamChunk {
+            subagent: None,
             rid: None,
             text: "only one".into(),
             content_type: "text".into(),

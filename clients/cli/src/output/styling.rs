@@ -12,7 +12,8 @@ use shore_protocol::types::ImageRef;
 use super::{
     abbreviate_model, primary_tool_arg, process_wrap_width, use_color, write_channel_rule,
     write_process_body, write_sigil_header, write_thinking_content_line, COLOR_RESULT,
-    COLOR_THINKING, COLOR_TOOL, MAX_TOOL_OUTPUT, SIGIL_ERROR, SIGIL_OK, SIGIL_THINKING, SIGIL_TOOL,
+    COLOR_SUBAGENT, COLOR_THINKING, COLOR_TOOL, MAX_TOOL_OUTPUT, SIGIL_ERROR, SIGIL_OK,
+    SIGIL_SUBAGENT, SIGIL_THINKING, SIGIL_TOOL,
 };
 use crate::images;
 
@@ -155,6 +156,71 @@ fn print_chunk_to(out: &mut impl Write, state: &mut ChunkState, chunk: &StreamCh
         let _ignored = write!(out, "{}", chunk.text);
         state.at_line_start = chunk.text.ends_with('\n');
     }
+}
+
+/// Open a sub-agent's nested section with a dim, sigil-led header
+/// (`» <name> (sub-agent)`). The frames that follow — its thinking, tool calls,
+/// results, and output — render in the process channel until [`print_subagent_end`].
+pub(crate) fn print_subagent_begin(name: &str) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let mut state = lock_chunk_state();
+    flush_thinking(&mut out, &mut state);
+    begin_block(&mut out, &mut state, true);
+    state.was_thinking = false;
+    write_sigil_header(
+        &mut out,
+        SIGIL_SUBAGENT,
+        &format!("{name} (sub-agent)"),
+        COLOR_SUBAGENT,
+    );
+    state.at_line_start = true;
+    let _ignored = out.flush();
+}
+
+/// Close a sub-agent's nested section (`» <name> done`).
+pub(crate) fn print_subagent_end(name: &str) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let mut state = lock_chunk_state();
+    flush_thinking(&mut out, &mut state);
+    begin_block(&mut out, &mut state, true);
+    state.was_thinking = false;
+    write_sigil_header(
+        &mut out,
+        SIGIL_SUBAGENT,
+        &format!("{name} done"),
+        COLOR_SUBAGENT,
+    );
+    state.at_line_start = true;
+    let _ignored = out.flush();
+}
+
+/// Render a sub-agent stream chunk. Both its thinking and its output text go to
+/// the dim process channel (buffered per logical line like thinking), so the
+/// whole nested section stays visually distinct from the primary model's
+/// flush-left speech.
+pub(crate) fn print_subagent_chunk(chunk: &StreamChunk) {
+    if chunk.text.is_empty() {
+        return;
+    }
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let mut state = lock_chunk_state();
+    let width = process_wrap_width();
+    for ch in chunk.text.chars() {
+        if ch == '\n' {
+            let line = std::mem::take(&mut state.thinking_line);
+            write_thinking_content_line(&mut out, &line, width);
+            state.at_line_start = true;
+        } else {
+            state.thinking_line.push(ch);
+        }
+    }
+    // Treat the buffered tail as thinking so a transition back to primary
+    // speech flushes it with a separator.
+    state.was_thinking = true;
+    let _ignored = out.flush();
 }
 
 /// Print stream metadata after stream_end.
@@ -447,6 +513,7 @@ mod tests {
 
     fn chunk(content_type: &str, text: &str) -> StreamChunk {
         StreamChunk {
+            subagent: None,
             rid: None,
             text: text.into(),
             content_type: content_type.into(),

@@ -212,6 +212,7 @@ pub(super) async fn run_tool_phase(
                         ledger_client: ctx.llm_client.clone(),
                         diagnostics: std::sync::Arc::clone(&ctx.diagnostics),
                         config: std::sync::Arc::new(effective_config.clone()),
+                        direct_tx: ctx.direct_tx.clone(),
                     },
                 ))
             },
