@@ -24,6 +24,13 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   forward-compatibility note in `docs/PROTOCOL.md` §3.
 
 ### Changed
+- **`shore log` now shows only message text by default.** Reasoning/thinking,
+  tool calls and their results, and a sub-agent's nested tool activity are
+  hidden unless opted in with the new `--reasoning`, `--tools`, and
+  `--subagent-tools` flags (combinable). The flags also gate `--follow` live
+  output. `--json`, `--content`, and `--plain` are unchanged. The previous
+  behavior — full transcript with every channel — is `shore log --reasoning
+  --tools`.
 - **Tool config moved to a top-level `[tools]` section and is now opt-in.**
   The former `[behavior.tool_use]` block is gone. Tools are an **allowlist**:
   list the ones you want in `[tools].enabled_tools` (nothing is offered by

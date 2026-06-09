@@ -124,6 +124,18 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         plain: bool,
 
+        /// Also show reasoning/thinking blocks (hidden by default)
+        #[arg(long)]
+        reasoning: bool,
+
+        /// Also show tool calls and their results (hidden by default)
+        #[arg(long)]
+        tools: bool,
+
+        /// Also show sub-agent nested tool activity, in --follow (hidden by default)
+        #[arg(long = "subagent-tools")]
+        subagent_tools: bool,
+
         /// Show heartbeat probe decisions and timing history
         #[arg(long)]
         heartbeat: bool,
@@ -1223,6 +1235,9 @@ mod tests {
                 json,
                 content,
                 plain,
+                reasoning,
+                tools,
+                subagent_tools,
                 heartbeat,
             } => {
                 assert!(subcommand.is_none());
@@ -1233,6 +1248,9 @@ mod tests {
                 assert!(!json);
                 assert!(!content);
                 assert!(!plain);
+                assert!(!reasoning);
+                assert!(!tools);
+                assert!(!subagent_tools);
                 assert!(!heartbeat);
             }
         );
@@ -2364,6 +2382,9 @@ mod tests {
             json: false,
             content: false,
             plain: false,
+            reasoning: false,
+            tools: false,
+            subagent_tools: false,
             heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -2385,6 +2406,9 @@ mod tests {
             json: false,
             content: false,
             plain: false,
+            reasoning: false,
+            tools: false,
+            subagent_tools: false,
             heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -2428,6 +2452,9 @@ mod tests {
             json: false,
             content: false,
             plain: false,
+            reasoning: false,
+            tools: false,
+            subagent_tools: false,
             heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -2447,6 +2474,9 @@ mod tests {
             json: false,
             content: false,
             plain: false,
+            reasoning: false,
+            tools: false,
+            subagent_tools: false,
             heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -2516,6 +2546,9 @@ mod tests {
                 json: false,
                 content: false,
                 plain: false,
+                reasoning: false,
+                tools: false,
+                subagent_tools: false,
                 heartbeat: false,
             },
             CliCommand::Log {
@@ -2530,6 +2563,9 @@ mod tests {
                 json: false,
                 content: false,
                 plain: false,
+                reasoning: false,
+                tools: false,
+                subagent_tools: false,
                 heartbeat: false,
             },
             CliCommand::Log {
@@ -2543,6 +2579,9 @@ mod tests {
                 json: false,
                 content: false,
                 plain: false,
+                reasoning: false,
+                tools: false,
+                subagent_tools: false,
                 heartbeat: false,
             },
             CliCommand::Log {
@@ -2554,6 +2593,9 @@ mod tests {
                 json: false,
                 content: false,
                 plain: false,
+                reasoning: false,
+                tools: false,
+                subagent_tools: false,
                 heartbeat: false,
             },
             CliCommand::Status {

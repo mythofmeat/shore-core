@@ -224,6 +224,9 @@ async fn handle_log_command(
         plain,
         content,
         role,
+        reasoning,
+        tools,
+        subagent_tools,
         heartbeat,
         count,
         follow,
@@ -231,6 +234,13 @@ async fn handle_log_command(
     } = cmd
     else {
         return Ok(());
+    };
+
+    // Default view shows only message text; each flag opts a channel back in.
+    let filter = output::LogFilter {
+        reasoning: *reasoning,
+        tools: *tools,
+        subagent_tools: *subagent_tools,
     };
 
     if let Some(sub) = subcommand {
@@ -274,9 +284,9 @@ async fn handle_log_command(
         } else if *content {
             output::print_message_content(&data);
         } else if *plain {
-            output::print_log_plain(std::slice::from_ref(&data), display_character);
+            output::print_log_plain(std::slice::from_ref(&data), display_character, filter);
         } else {
-            output::print_single_message(&data, display_character);
+            output::print_single_message(&data, display_character, filter);
         }
         return Ok(());
     }
@@ -307,10 +317,10 @@ async fn handle_log_command(
         .await?;
     let data = recv_command_data(conn).await?;
 
-    render_log_list(&data, *json, *content, *plain, display_character)?;
+    render_log_list(&data, *json, *content, *plain, display_character, filter)?;
 
     if *follow {
-        follow_log_stream(conn, role.as_ref(), display_character).await?;
+        follow_log_stream(conn, role.as_ref(), display_character, filter).await?;
     }
     Ok(())
 }
@@ -323,6 +333,7 @@ fn render_log_list(
     content: bool,
     plain: bool,
     display_character: &str,
+    filter: output::LogFilter,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if json {
         cli_out!("{}", serde_json::to_string_pretty(data)?);
@@ -339,22 +350,29 @@ fn render_log_list(
         }
     } else if plain {
         let active_start = active_start_index(data);
-        output::print_log_plain_with_boundary(messages, active_start, display_character);
+        output::print_log_plain_with_boundary(messages, active_start, display_character, filter);
     } else {
         let active_start = active_start_index(data);
-        output::print_log_with_boundary(messages, active_start, display_character);
+        output::print_log_with_boundary(messages, active_start, display_character, filter);
     }
     Ok(())
 }
 
-/// Stream live log frames after a `shore log --follow`, filtered by `role`.
+/// Stream live log frames after a `shore log --follow`, filtered by `role` and
+/// the `--reasoning` / `--tools` / `--subagent-tools` channel flags.
 async fn follow_log_stream(
     conn: &mut SWPConnection,
     role: Option<&LogRole>,
     follow_char: &str,
+    filter: output::LogFilter,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let msg = conn.recv().await?;
+        // Sub-agent frames belong to the nested tool loop; gate them on
+        // --subagent-tools regardless of frame kind.
+        if msg.subagent().is_some() && !filter.subagent_tools {
+            continue;
+        }
         match &msg {
             ServerMessage::NewMessage(nm) if log_role_matches(role, &nm.message.role) => {
                 output::print_new_message(nm, nm.character.as_deref().unwrap_or(follow_char));
@@ -368,16 +386,24 @@ async fn follow_log_stream(
                 }
             }
             ServerMessage::StreamChunk(chunk) if log_role_matches(role, &Role::Assistant) => {
+                // Hide reasoning chunks unless --reasoning is set.
+                if chunk.content_type == "thinking" && !filter.reasoning {
+                    continue;
+                }
                 output::print_chunk(chunk);
             }
             ServerMessage::StreamEnd(end) if log_role_matches(role, &Role::Assistant) => {
                 output::print_stream_end(end);
             }
             ServerMessage::ToolCall(call) if log_role_matches(role, &Role::Assistant) => {
-                output::print_tool_call(call);
+                if filter.tools {
+                    output::print_tool_call(call);
+                }
             }
             ServerMessage::ToolResult(result) if log_role_matches(role, &Role::Assistant) => {
-                output::print_tool_result(result);
+                if filter.tools {
+                    output::print_tool_result(result);
+                }
             }
             ServerMessage::Phase(phase) if log_role_matches(role, &Role::Assistant) => {
                 output::print_phase(phase);
@@ -1941,6 +1967,9 @@ mod tests {
             json: false,
             content: false,
             plain: false,
+            reasoning: false,
+            tools: false,
+            subagent_tools: false,
             heartbeat: false,
         });
         let received = execute_with_mock(cli, command_response("edit")).await;
@@ -1970,6 +1999,9 @@ mod tests {
             json: false,
             content: false,
             plain: false,
+            reasoning: false,
+            tools: false,
+            subagent_tools: false,
             heartbeat: false,
         });
         let received = execute_with_mock(cli, command_response("delete")).await;

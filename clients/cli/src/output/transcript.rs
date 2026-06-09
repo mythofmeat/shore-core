@@ -18,6 +18,64 @@ use super::{
 // Log formatter -- human-readable chat transcript (Option B)
 // ---------------------------------------------------------------------------
 
+/// Which auxiliary channels a transcript view includes. Speech (text) and
+/// images are always shown; these gate the inset "process" channel so
+/// `shore log` defaults to message text only and opts into the rest.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LogFilter {
+    /// Show `thinking` reasoning blocks (`--reasoning`).
+    pub reasoning: bool,
+    /// Show `tool_use` calls and `tool_result` outputs (`--tools`).
+    pub tools: bool,
+    /// Show a sub-agent's nested tool activity in `--follow` (`--subagent-tools`).
+    pub subagent_tools: bool,
+}
+
+impl LogFilter {
+    /// Show every channel — the full, unfiltered transcript.
+    #[cfg(test)]
+    pub(crate) fn all() -> Self {
+        Self {
+            reasoning: true,
+            tools: true,
+            subagent_tools: true,
+        }
+    }
+
+    /// Whether a single content block produces visible output under this filter.
+    fn block_renders(self, block: &serde_json::Value) -> bool {
+        match block["type"].as_str().unwrap_or("text") {
+            "text" => !block["text"].as_str().unwrap_or("").is_empty(),
+            "thinking" => self.reasoning && !block["thinking"].as_str().unwrap_or("").is_empty(),
+            "tool_use" | "tool_result" => self.tools,
+            // redacted_thinking and unknown types are content-free placeholders.
+            _ => false,
+        }
+    }
+}
+
+/// Whether a message produces any visible output under `filter` — used to skip
+/// headers and spacing for messages whose only content is filtered out (e.g. a
+/// tool-result-only turn when `--tools` is off).
+fn message_renders(
+    content_blocks: Option<&Vec<serde_json::Value>>,
+    content: &str,
+    is_tool_result_msg: bool,
+    images: Option<&Vec<serde_json::Value>>,
+    filter: LogFilter,
+) -> bool {
+    if images.is_some_and(|imgs| !imgs.is_empty()) {
+        return true;
+    }
+    match content_blocks {
+        Some(blocks) if !blocks.is_empty() => blocks.iter().any(|b| filter.block_renders(b)),
+        // Empty content_blocks falls back to the plain content string.
+        Some(_) => !content.is_empty(),
+        // Legacy message (no content_blocks): show unless it's an empty tool result.
+        None => !content.is_empty() || !is_tool_result_msg,
+    }
+}
+
 /// Terminal colors that look distinct on both dark and light backgrounds.
 const CHARACTER_PALETTE: &[Color] = &[
     Color::Magenta,
@@ -135,6 +193,7 @@ fn render_message_content(
     content_blocks: Option<&Vec<serde_json::Value>>,
     content: &str,
     is_tool_result_msg: bool,
+    filter: LogFilter,
 ) {
     if let Some(blocks) = content_blocks {
         if blocks.is_empty() {
@@ -152,15 +211,10 @@ fn render_message_content(
             for block in blocks {
                 let block_type = block["type"].as_str().unwrap_or("text");
                 let is_process = block_type != "text";
-                // Whether this block will actually emit any visible output.
-                let renders = match block_type {
-                    "text" => !block["text"].as_str().unwrap_or("").is_empty(),
-                    "thinking" => !block["thinking"].as_str().unwrap_or("").is_empty(),
-                    "tool_use" | "tool_result" => true,
-                    // redacted_thinking is a content-free placeholder — hide it.
-                    _ => false,
-                };
-                if !renders {
+                // Whether this block will actually emit any visible output under
+                // the active filter (reasoning/tools gated; redacted_thinking and
+                // unknown types are content-free placeholders).
+                if !filter.block_renders(block) {
                     continue;
                 }
                 if let Some(prev) = prev_process {
@@ -226,8 +280,8 @@ fn render_message_content(
 ///
 /// `character_name` is used for assistant messages; pass the active character
 /// name or a fallback like "Assistant".
-pub(crate) fn print_log(messages: &[serde_json::Value], character_name: &str) {
-    print_log_with_boundary(messages, 0, character_name);
+pub(crate) fn print_log(messages: &[serde_json::Value], character_name: &str, filter: LogFilter) {
+    print_log_with_boundary(messages, 0, character_name, filter);
 }
 
 /// Print the conversation log with an optional archive/current-context boundary.
@@ -235,11 +289,19 @@ pub(crate) fn print_log_with_boundary(
     messages: &[serde_json::Value],
     active_start: usize,
     character_name: &str,
+    filter: LogFilter,
 ) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let width = term_width();
-    write_log_with_boundary(&mut out, messages, active_start, character_name, width);
+    write_log_with_boundary(
+        &mut out,
+        messages,
+        active_start,
+        character_name,
+        width,
+        filter,
+    );
 }
 
 fn write_log_with_boundary(
@@ -248,6 +310,7 @@ fn write_log_with_boundary(
     active_start_in: usize,
     character_name: &str,
     width: usize,
+    filter: LogFilter,
 ) {
     let char_color = character_color(character_name);
 
@@ -267,6 +330,22 @@ fn write_log_with_boundary(
         let images = msg["images"].as_array();
         let content_blocks = msg["content_blocks"].as_array();
 
+        // Detect tool-result-only "user" messages (from tool loop).
+        let is_tool_result_msg = role_str == "user"
+            && content_blocks.is_some_and(|blocks| {
+                !blocks.is_empty()
+                    && blocks
+                        .iter()
+                        .all(|b| b["type"].as_str() == Some("tool_result"))
+            });
+
+        // Skip messages that render nothing under the active filter (e.g. a
+        // thinking-only or tool-only turn when those channels are hidden) so
+        // they leave no orphan header or blank line.
+        if !message_renders(content_blocks, content, is_tool_result_msg, images, filter) {
+            continue;
+        }
+
         let parsed_ts = parse_timestamp(ts);
         let time_str = parsed_ts
             .as_ref()
@@ -277,15 +356,6 @@ fn write_log_with_boundary(
         if let Some(dt) = &parsed_ts {
             prev_date = Some(dt.format("%Y-%m-%d").to_string());
         }
-
-        // Detect tool-result-only "user" messages (from tool loop).
-        let is_tool_result_msg = role_str == "user"
-            && content_blocks.is_some_and(|blocks| {
-                !blocks.is_empty()
-                    && blocks
-                        .iter()
-                        .all(|b| b["type"].as_str() == Some("tool_result"))
-            });
 
         // Write header (skip for tool result messages -- they're continuations).
         if !is_tool_result_msg {
@@ -307,7 +377,7 @@ fn write_log_with_boundary(
             }
         }
 
-        render_message_content(out, content_blocks, content, is_tool_result_msg);
+        render_message_content(out, content_blocks, content, is_tool_result_msg, filter);
 
         // System messages: close dimming.
         if role_str == "system" && use_color() {
@@ -368,8 +438,12 @@ pub(crate) fn print_message_content(data: &serde_json::Value) {
 
 /// Print the conversation log as plain text — no colors, no box-drawing.
 /// Format: `role [HH:MM]: content` with blank lines between messages.
-pub(crate) fn print_log_plain(messages: &[serde_json::Value], character_name: &str) {
-    print_log_plain_with_boundary(messages, 0, character_name);
+pub(crate) fn print_log_plain(
+    messages: &[serde_json::Value],
+    character_name: &str,
+    filter: LogFilter,
+) {
+    print_log_plain_with_boundary(messages, 0, character_name, filter);
 }
 
 /// Plain-text transcript with an optional archive/current-context boundary.
@@ -377,10 +451,11 @@ pub(crate) fn print_log_plain_with_boundary(
     messages: &[serde_json::Value],
     active_start: usize,
     character_name: &str,
+    filter: LogFilter,
 ) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    write_log_plain_with_boundary(&mut out, messages, active_start, character_name);
+    write_log_plain_with_boundary(&mut out, messages, active_start, character_name, filter);
 }
 
 fn write_log_plain_with_boundary(
@@ -388,6 +463,7 @@ fn write_log_plain_with_boundary(
     messages: &[serde_json::Value],
     active_start_in: usize,
     character_name: &str,
+    filter: LogFilter,
 ) {
     let active_start = active_start_in.min(messages.len());
     let archived = messages.get(..active_start).unwrap_or(messages);
@@ -403,7 +479,23 @@ fn write_log_plain_with_boundary(
         let role_str = msg["role"].as_str().unwrap_or("user");
         let content = msg["content"].as_str().unwrap_or("");
         let ts = msg["timestamp"].as_str().unwrap_or("");
+        let images = msg["images"].as_array();
         let content_blocks = msg["content_blocks"].as_array();
+
+        // Tool-result-only turns count as such only when tools are hidden, but
+        // the predicate handles every empty-under-filter case uniformly.
+        let is_tool_result_msg = role_str == "user"
+            && content_blocks.is_some_and(|blocks| {
+                !blocks.is_empty()
+                    && blocks
+                        .iter()
+                        .all(|b| b["type"].as_str() == Some("tool_result"))
+            });
+
+        // Skip messages with nothing visible under the active filter.
+        if !message_renders(content_blocks, content, is_tool_result_msg, images, filter) {
+            continue;
+        }
 
         let name = match role_str {
             "user" => "you",
@@ -427,21 +519,21 @@ fn write_log_plain_with_boundary(
                                 _ = writeln!(out, "{text}");
                             }
                         }
-                        "thinking" => {
+                        "thinking" if filter.reasoning => {
                             let t = block["thinking"].as_str().unwrap_or("");
                             if !t.is_empty() {
                                 _ = writeln!(out, "[thinking] {t}");
                             }
                         }
                         // redacted_thinking is a content-free placeholder — hide it.
-                        "tool_use" => {
+                        "tool_use" if filter.tools => {
                             let tool_name = block["name"].as_str().unwrap_or("?");
                             _ = writeln!(out, "[tool: {tool_name}]");
                             if let Some(input_str) = format_tool_input(&block["input"]) {
                                 write_tool_body_plain(out, &input_str);
                             }
                         }
-                        "tool_result" => {
+                        "tool_result" if filter.tools => {
                             let output = block["content"].as_str().unwrap_or("");
                             let is_error = block["is_error"].as_bool().unwrap_or(false);
                             let label = if is_error { "error" } else { "result" };
@@ -509,8 +601,12 @@ pub(crate) fn print_follow_stream_start(character_name: &str) {
 }
 
 /// Print a single message in the same transcript format as print_log.
-pub(crate) fn print_single_message(data: &serde_json::Value, character_name: &str) {
-    print_log(std::slice::from_ref(data), character_name);
+pub(crate) fn print_single_message(
+    data: &serde_json::Value,
+    character_name: &str,
+    filter: LogFilter,
+) {
+    print_log(std::slice::from_ref(data), character_name, filter);
 }
 
 /// Print heartbeat event log returned by `shore log --heartbeat`.
@@ -607,7 +703,7 @@ mod tests {
             serde_json::json!({"type": "text", "text": "And here's the refined conclusion."}),
         ];
         let mut buf = Vec::new();
-        render_message_content(&mut buf, Some(&blocks), "", false);
+        render_message_content(&mut buf, Some(&blocks), "", false, LogFilter::all());
         set_color_enabled(false);
         let mut stdout = io::stdout();
         let _ignored = stdout.write_all(b"\n----- LOG RENDER (shore log / shore get) -----\n");
@@ -672,7 +768,14 @@ mod tests {
     fn rich_transcript_render_snapshot() {
         set_color_enabled(false);
         let mut buf = Vec::new();
-        write_log_with_boundary(&mut buf, &transcript_snapshot_messages(), 2, "Sable", 72);
+        write_log_with_boundary(
+            &mut buf,
+            &transcript_snapshot_messages(),
+            2,
+            "Sable",
+            72,
+            LogFilter::all(),
+        );
         let output = String::from_utf8(buf).unwrap();
         insta::assert_snapshot!("rich_transcript_render", output);
     }
@@ -681,7 +784,13 @@ mod tests {
     fn plain_transcript_render_snapshot() {
         set_color_enabled(false);
         let mut buf = Vec::new();
-        write_log_plain_with_boundary(&mut buf, &transcript_snapshot_messages(), 2, "Sable");
+        write_log_plain_with_boundary(
+            &mut buf,
+            &transcript_snapshot_messages(),
+            2,
+            "Sable",
+            LogFilter::all(),
+        );
         let output = String::from_utf8(buf).unwrap();
         insta::assert_snapshot!("plain_transcript_render", output);
     }
@@ -696,7 +805,7 @@ mod tests {
             serde_json::json!({"type": "text", "text": "A2"}),
         ];
         let mut buf = Vec::new();
-        render_message_content(&mut buf, Some(&blocks), "", false);
+        render_message_content(&mut buf, Some(&blocks), "", false, LogFilter::all());
         let output = String::from_utf8(buf).unwrap();
 
         // Each thinking block is a `◌ Thinking` header + gutter-barred content,
@@ -713,7 +822,7 @@ mod tests {
         let blocks =
             vec![serde_json::json!({"type": "thinking", "thinking": "line one\nline two"})];
         let mut buf = Vec::new();
-        render_message_content(&mut buf, Some(&blocks), "", false);
+        render_message_content(&mut buf, Some(&blocks), "", false, LogFilter::all());
         let output = String::from_utf8(buf).unwrap();
         // Header line, then each content line gutter-barred under it.
         assert_eq!(
@@ -730,7 +839,7 @@ mod tests {
             serde_json::json!({"type": "text", "text": "A1"}),
         ];
         let mut buf = Vec::new();
-        render_message_content(&mut buf, Some(&blocks), "", false);
+        render_message_content(&mut buf, Some(&blocks), "", false, LogFilter::all());
         let output = String::from_utf8(buf).unwrap();
         assert_eq!(
             output,
@@ -748,7 +857,7 @@ mod tests {
             serde_json::json!({"type": "thinking", "thinking": "T2"}),
         ];
         let mut buf = Vec::new();
-        render_message_content(&mut buf, Some(&blocks), "", false);
+        render_message_content(&mut buf, Some(&blocks), "", false, LogFilter::all());
         let output = String::from_utf8(buf).unwrap();
         // Two adjacent process blocks are joined by a bar-only rule, not a blank.
         assert_eq!(
@@ -767,7 +876,7 @@ mod tests {
             serde_json::json!({"type": "text", "text": "fixed"}),
         ];
         let mut buf = Vec::new();
-        render_message_content(&mut buf, Some(&blocks), "", false);
+        render_message_content(&mut buf, Some(&blocks), "", false, LogFilter::all());
         let output = String::from_utf8(buf).unwrap();
         // Speech flush-left; the tool call + result share one unbroken gutter
         // (joined by a bar rule), with a blank line to the speech on each side.
@@ -786,10 +895,107 @@ mod tests {
             serde_json::json!({"type": "text", "text": "A2"}),
         ];
         let mut buf = Vec::new();
-        render_message_content(&mut buf, Some(&blocks), "", false);
+        render_message_content(&mut buf, Some(&blocks), "", false, LogFilter::all());
         let output = String::from_utf8(buf).unwrap();
         // Redacted block produces nothing and leaves no breathing room.
         assert_eq!(output, "A1\nA2\n");
+    }
+
+    /// A mixed assistant turn: thinking + speech + tool call/result + speech.
+    fn mixed_blocks() -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({"type": "thinking", "thinking": "reasoning"}),
+            serde_json::json!({"type": "text", "text": "before"}),
+            serde_json::json!({"type": "tool_use", "name": "read", "input": {"path": "a.rs"}}),
+            serde_json::json!({"type": "tool_result", "content": "ok", "is_error": false}),
+            serde_json::json!({"type": "text", "text": "after"}),
+        ]
+    }
+
+    #[test]
+    fn default_filter_shows_only_text() {
+        set_color_enabled(false);
+        let blocks = mixed_blocks();
+        let mut buf = Vec::new();
+        render_message_content(&mut buf, Some(&blocks), "", false, LogFilter::default());
+        let output = String::from_utf8(buf).unwrap();
+        // Thinking and tool call/result are gone; only speech remains.
+        assert_eq!(output, "before\nafter\n");
+    }
+
+    #[test]
+    fn reasoning_flag_shows_thinking_not_tools() {
+        set_color_enabled(false);
+        let blocks = mixed_blocks();
+        let filter = LogFilter {
+            reasoning: true,
+            ..LogFilter::default()
+        };
+        let mut buf = Vec::new();
+        render_message_content(&mut buf, Some(&blocks), "", false, filter);
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("Thinking"), "thinking shown: {output:?}");
+        assert!(
+            output.contains("reasoning"),
+            "thought text shown: {output:?}"
+        );
+        assert!(!output.contains("read"), "tool call hidden: {output:?}");
+        assert!(!output.contains("result"), "tool result hidden: {output:?}");
+    }
+
+    #[test]
+    fn tools_flag_shows_tools_not_thinking() {
+        set_color_enabled(false);
+        let blocks = mixed_blocks();
+        let filter = LogFilter {
+            tools: true,
+            ..LogFilter::default()
+        };
+        let mut buf = Vec::new();
+        render_message_content(&mut buf, Some(&blocks), "", false, filter);
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("read"), "tool call shown: {output:?}");
+        assert!(output.contains("result"), "tool result shown: {output:?}");
+        assert!(!output.contains("Thinking"), "thinking hidden: {output:?}");
+    }
+
+    #[test]
+    fn tool_result_only_turn_skipped_when_tools_hidden() {
+        set_color_enabled(false);
+        let messages = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content_blocks": [{"type": "text", "text": "hi"}],
+                "timestamp": "",
+            }),
+            // Tool-result-only user turn — nothing to show without --tools.
+            serde_json::json!({
+                "role": "user",
+                "content_blocks": [{"type": "tool_result", "content": "ok", "is_error": false}],
+                "timestamp": "",
+            }),
+        ];
+        let mut buf = Vec::new();
+        write_log_with_boundary(&mut buf, &messages, 0, "Sable", 72, LogFilter::default());
+        let output = String::from_utf8(buf).unwrap();
+        // Only the assistant's speech renders; the tool-result turn leaves no
+        // orphan header, "result" marker, or extra blank-line gap.
+        assert!(
+            output.contains("Sable"),
+            "assistant header shown: {output:?}"
+        );
+        assert!(output.contains("hi"), "speech shown: {output:?}");
+        assert!(!output.contains("result"), "tool result hidden: {output:?}");
+        // Exactly one header line (the assistant's) and one trailing blank line.
+        assert_eq!(
+            output.matches('\u{2502}').count(),
+            0,
+            "no process gutter: {output:?}"
+        );
+        assert!(
+            output.ends_with("hi\n\n"),
+            "single trailing gap: {output:?}"
+        );
     }
 
     #[test]
@@ -918,7 +1124,7 @@ mod tests {
                 "timestamp": "2026-01-15T10:45:00Z"
             }),
         ];
-        print_log(&messages, "Sable");
+        print_log(&messages, "Sable", LogFilter::all());
     }
 
     #[test]
@@ -934,6 +1140,6 @@ mod tests {
             ],
             "timestamp": "2026-01-15T10:30:00Z"
         })];
-        print_log(&messages, "Sable");
+        print_log(&messages, "Sable", LogFilter::all());
     }
 }
