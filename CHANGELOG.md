@@ -22,6 +22,10 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   config above. Define models under `[providers.*]` / `[models."provider:id"]`.
 - **Renamed the `search_history` tool to `search_chat_logs`** — a clearer,
   model-facing name for searching the conversation transcript.
+- **The `edit` tool now requires a unique match by default.** Each replacement
+  must match its `old_string` exactly once; a non-unique match errors instead of
+  silently rewriting every occurrence. Set `"replace_all": true` on an edit to
+  replace all occurrences (the previous behavior).
 
 ### Added
 - **Sub-agent delegation (`[subagents]` + `[tools].enabled_subagents`).** Each
