@@ -378,9 +378,26 @@ impl CompactionManager {
         dry_run: bool,
     ) -> Result<String, CompactionError> {
         let workspace_dir = if let Some(store) = markdown_store {
-            Self::workspace_dir_from_store(store)?
-                .to_string_lossy()
-                .into_owned()
+            let from_store = Self::workspace_dir_from_store(store)?;
+            // write/edit path resolution and git bootstrap/rollback use this
+            // store-derived root, but the model's `exec` (git commits) runs
+            // against `tool_ctx.workspace_dir()`. If those disagree the commit
+            // would target a different tree than the one we bootstrap and roll
+            // back. They are always the same in production; fail fast rather
+            // than silently operate on two repos.
+            let from_ctx = Path::new(tool_ctx.workspace_dir());
+            let agree = match (from_store.canonicalize(), from_ctx.canonicalize()) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => from_store.as_path() == from_ctx,
+            };
+            if !agree {
+                return Err(CompactionError::MarkdownStore(format!(
+                    "workspace root mismatch: store={} tool_ctx={}",
+                    from_store.display(),
+                    tool_ctx.workspace_dir()
+                )));
+            }
+            from_store.to_string_lossy().into_owned()
         } else {
             tool_ctx.workspace_dir().to_owned()
         };
@@ -1081,6 +1098,15 @@ mod tests {
     use std::sync::mpsc;
     use std::sync::Mutex as StdMutex;
     use tokio::sync::oneshot;
+
+    /// Whether a `git` binary is on PATH. Git-history behavior is best-effort
+    /// without git, so tests that shell out skip cleanly on minimal hosts.
+    fn git_available() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
 
     macro_rules! assert_variant {
         ($value:expr, $pattern:pat => $body:expr $(,)?) => {{
@@ -1941,6 +1967,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_gates_exec_to_git() {
+        if !git_available() {
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().to_string_lossy().into_owned();
         let ctx = TestCtx::new(ws.clone());
@@ -2770,6 +2799,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_compact_rollback_records_git_revert_commit() {
+        if !git_available() {
+            return;
+        }
         let llm = ScriptedLlm::writing(&[("memory/notes/today.md", "# Today\n- new note")]);
         let conv_mgr = FailingConversationMgr;
         let mgr = CompactionManager::new(make_config_with_keep(2));

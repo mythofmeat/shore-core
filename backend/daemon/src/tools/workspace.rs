@@ -898,12 +898,15 @@ async fn enumerate_search_candidates(
             continue;
         }
 
+        // The workspace carries a git history of memory changes; the git store
+        // is machine state, not searchable memory. Skip `.git` whether it is a
+        // directory or a `.git` *file* (linked worktrees expose it as a file
+        // whose `gitdir:` line would otherwise be read and leaked).
+        if path.file_name().is_some_and(|name| name == ".git") {
+            continue;
+        }
+
         if meta.is_dir() {
-            // The workspace carries a git history of memory changes; the
-            // object store is machine state, not searchable memory.
-            if path.file_name().is_some_and(|name| name == ".git") {
-                continue;
-            }
             let mut entries = Vec::new();
             let Ok(mut read_dir) = tokio::fs::read_dir(&path).await else {
                 continue;
@@ -1711,8 +1714,20 @@ pub fn exec_input_is_git(input: &Value) -> bool {
 }
 
 async fn run_git(workspace_dir: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
+    // Neutralize repo-controlled execution surfaces for the daemon's own git
+    // calls: a pre-existing (e.g. imported) `.git/config` or `.gitattributes`
+    // must not run hooks or filter drivers when we init/commit. These are
+    // global `-c` flags so they apply to every subcommand; commits additionally
+    // pass `--no-verify` (see `git_commit_all`).
+    let mut full_args: Vec<&str> = vec![
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.attributesFile=/dev/null",
+    ];
+    full_args.extend_from_slice(args);
     tokio::process::Command::new("git")
-        .args(args)
+        .args(&full_args)
         .current_dir(workspace_dir)
         .output()
         .await
@@ -1799,7 +1814,11 @@ pub async fn git_commit_all(workspace_dir: &Path, message: &str) -> std::io::Res
     if staged.status.success() {
         return Ok(false);
     }
-    let commit = run_git(workspace_dir, &["commit", "--quiet", "-m", message]).await?;
+    let commit = run_git(
+        workspace_dir,
+        &["commit", "--quiet", "--no-verify", "-m", message],
+    )
+    .await?;
     if !commit.status.success() {
         return Err(git_output_err("git commit failed", &commit));
     }
@@ -1814,6 +1833,16 @@ pub async fn git_commit_all(workspace_dir: &Path, message: &str) -> std::io::Res
 mod tests {
     use super::*;
     use async_trait::async_trait;
+
+    /// Whether a `git` binary is on PATH. The git-history feature is
+    /// best-effort without git, so tests that shell out to it skip cleanly on
+    /// minimal hosts rather than failing.
+    fn git_available() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
 
     #[test]
     fn tool_defs_count() {
@@ -2723,6 +2752,34 @@ mod tests {
         assert_eq!(result["results"][0]["path"], "note.md");
     }
 
+    #[tokio::test]
+    async fn search_skips_git_worktree_file() {
+        // A linked worktree exposes `.git` as a FILE (`gitdir: /abs/path`),
+        // not a directory — it must still be skipped so the absolute path
+        // doesn't leak into search results.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        let _written = handle_write(
+            json!({"path": "note.md", "content": "jasmine tea preferences"}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join(".git"), "gitdir: /home/jasmine/secret/path\n").unwrap();
+
+        let result = handle_search(json!({"query": "jasmine"}), &ws_str, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            result["count"], 1,
+            "worktree .git file must not be searched"
+        );
+        assert_eq!(result["results"][0]["path"], "note.md");
+    }
+
     #[test]
     fn exec_input_is_git_matches_program_only() {
         assert!(exec_input_is_git(&json!({"command": "git status"})));
@@ -2737,6 +2794,9 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_workspace_git_repo_initializes_once() {
+        if !git_available() {
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("workspace");
 
@@ -2760,6 +2820,9 @@ mod tests {
 
     #[tokio::test]
     async fn git_commit_all_commits_and_skips_clean_tree() {
+        if !git_available() {
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("workspace");
 
