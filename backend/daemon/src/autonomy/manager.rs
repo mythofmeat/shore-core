@@ -1993,7 +1993,6 @@ fn rebuild_request_from_disk(
         resolved: &resolved,
         messages: store.messages(),
         has_prior_context,
-        is_private: false,
         // Must mirror the live chat path: a rebuild reconstructs the
         // request chat would have produced, so the unsigned-thinking
         // shape has to match too. Otherwise the heartbeat-rebuilt cache

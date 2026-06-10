@@ -284,8 +284,9 @@ pass first. A trailing run of unanswered autonomous messages (persisted with
 return, and a leftover autonomous tail alone never re-triggers the archive.
 
 Dreaming is an opt-in scheduled AI librarian pass. When autonomy and
-`[memory.dreaming]` are enabled, the character privately uses memory/workspace
-tools to inspect, dedupe, consolidate, and mark stale or superseded memory.
+`[memory.dreaming]` are enabled, the character uses memory/workspace tools in
+a background pass to inspect, dedupe, consolidate, and mark stale or
+superseded memory.
 The schedule is a five-field cron expression. Dreaming may edit prompt-visible
 files; those edits follow the same deferred activation rule.
 
@@ -329,9 +330,9 @@ Rules:
 - Paths must stay inside the character workspace.
 - Symlink and traversal escapes are bugs.
 - Workspace file tools treat `memory/...` as a normal workspace subdirectory.
-- Private conversations hide `search_chat_logs` and `exec`, and still suppress
-  prompt-visible memory index injection.
-- Prompt-visible files cannot be deleted and edits are deferred.
+- Prompt-visible files cannot be deleted; their edits apply to the workspace
+  file immediately but only become prompt-active at the next compaction/reload
+  boundary.
 
 ### Sub-agent delegation
 
@@ -499,6 +500,7 @@ Persistent surfaces:
 | Compacted segments | `$XDG_DATA_HOME/shore/<Character>/segments/` |
 | Active prompt snapshot | `$XDG_DATA_HOME/shore/<Character>/active_prompt/` |
 | Deferred prompt edits | `$XDG_DATA_HOME/shore/<Character>/deferred_edits.jsonl` |
+| Dreams audit log | `$XDG_DATA_HOME/shore/<Character>/DREAMS.md` |
 | Dreaming state | `$XDG_DATA_HOME/shore/<Character>/dreams/` |
 | Image attachments and generated outputs | `$XDG_DATA_HOME/shore/<Character>/images/` |
 

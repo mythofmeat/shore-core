@@ -86,7 +86,11 @@ pub async fn config_check(ctx: &CommandContext) -> CommandResult {
 
     // Check: any chat models configured?
     if ctx.config.models.chat.is_empty() {
-        warnings.push("No chat models configured. Add [chat.*] sections to config.".into());
+        warnings.push(
+            "No chat models configured. Add a [providers.*] entry and set \
+             [defaults].model to a provider:model_id."
+                .into(),
+        );
     } else {
         info.push(format!(
             "{} chat model(s) configured",
@@ -108,15 +112,6 @@ pub async fn config_check(ctx: &CommandContext) -> CommandResult {
                 warnings.push("No default model set. First chat model will be used.".into());
             }
         }
-    }
-
-    // Check: LLM service configured?
-    if ctx.config.app.services.llm.command.is_none() && ctx.config.app.services.llm.socket.is_none()
-    {
-        warnings.push(
-            "No LLM service configured. Set [services.llm].command or [services.llm].socket."
-                .into(),
-        );
     }
 
     // Check: API key env vars are set for configured providers

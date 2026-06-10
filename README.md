@@ -10,17 +10,16 @@ keeps the SillyTavern-style repairable conversation workflow, but improves the
 parts that hurt with long-lived character continuity, inspectable markdown
 memory, Anthropic cache discipline, useful tools, and private autonomous time.
 
-For release history, read [CHANGELOG.md](CHANGELOG.md).
-
 ## What Matters
 
 - **One daemon, many clients.** CLI, TUI, GUI, MCP, and Matrix all talk to the
   same daemon state.
 - **Repairable replies.** Regenerating an assistant response is non-destructive:
   old and new responses are kept as selectable alternates.
-- **Archive-visible history.** Compacted conversation segments remain visible in
-  bounded CLI/TUI scrollback pages, with a boundary showing what is outside
-  active context.
+- **Archive-visible history.** When older conversation is compacted (folded
+  into memory to keep the prompt bounded), it remains visible in bounded
+  CLI/TUI scrollback pages, with a boundary showing what is outside active
+  context.
 - **Markdown memory.** Long-term memory lives under each character's
   `workspace/memory/` as ordinary git-diffable files. The workspace is a real
   git repository: compaction and dreaming passes commit their memory changes
@@ -39,7 +38,21 @@ For release history, read [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick Start
 
-Create `~/.config/shore/config.toml`:
+Prerequisites: a Rust toolchain and [Bun](https://bun.sh) (the LLM transport
+sidecar is a TypeScript process).
+
+**1. Build the binaries:**
+
+```sh
+cargo build --release -p shore-daemon -p shore-cli
+(cd backend/llm-sidecar && bun install --frozen-lockfile && bun run build)
+cp backend/llm-sidecar/dist/shore-llm-sidecar target/release/
+```
+
+The daemon looks for `shore-llm-sidecar` next to its own binary or on `$PATH`
+— that is what the `cp` is for.
+
+**2. Configure a provider** in `~/.config/shore/config.toml`:
 
 ```toml
 [defaults]
@@ -52,19 +65,15 @@ api_key_env = "ANTHROPIC_API_KEY"
 cache_ttl = "1h"
 ```
 
-Create a character workspace:
+The named environment variable (here `ANTHROPIC_API_KEY`) must be set in the
+daemon's environment.
+
+**3. Create a character.** Only `workspace/SOUL.md` is required:
 
 ```text
 ~/.config/shore/characters/Alice/
-  avatar.png    # optional Matrix profile / desktop notification avatar
   workspace/
-    SOUL.md       # character identity
-    USER.md       # what this character knows about the user
-    AGENTS.md     # standing operating guidance
-    TOOLS.md      # tool-use guidance
-    HEARTBEAT.md  # heartbeat-only guidance
-    MEMORY.md     # optional/generated prompt-visible memory index
-    memory/       # markdown long-term memory
+    SOUL.md       # character identity — the only required file
 ```
 
 Minimal `SOUL.md`:
@@ -74,15 +83,36 @@ Alice is a warm, curious companion who loves literature and long conversations.
 She remembers the user across time and keeps her own notes carefully.
 ```
 
-Start the daemon and send a message:
+The rest of the workspace is optional and fills in over time, partly by the
+character's own hand:
+
+```text
+  avatar.png    # Matrix profile / desktop notification avatar
+  workspace/
+    USER.md       # what this character knows about the user
+    AGENTS.md     # standing operating guidance (built-in default otherwise)
+    TOOLS.md      # tool-use guidance
+    HEARTBEAT.md  # heartbeat-only guidance
+    MEMORY.md     # generated prompt-visible memory index
+    memory/       # markdown long-term memory
+```
+
+Legacy `character.md`, `user.md`, and `prompts/system.md` character layouts are
+migrated into the workspace on first load.
+
+**4. Start the daemon and talk:**
 
 ```sh
-cargo build --release -p shore-daemon -p shore-cli
-(cd backend/llm-sidecar && bun install --frozen-lockfile && bun run build)
-cp backend/llm-sidecar/dist/shore-llm-sidecar target/release/
 target/release/shore-daemon &
 target/release/shore send "Hello!"
 ```
+
+From here: `shore log -f` follows the conversation live, `shore regen`
+re-rolls the last reply, `shore status` shows session and budget state, and
+`shore --help` lists the rest. For an interactive chat UI, use `shore-tui` or
+`shore-gui` (see [Repo Layout](#repo-layout)).
+
+## Desktop Notifications
 
 To receive desktop notifications for autonomous character messages, run the
 listener in your user session:
@@ -104,9 +134,6 @@ The daemon includes avatar image data in character metadata, so notification
 icons still work when the daemon's config directory is on another machine.
 
 Use `shore notify --all-messages` to notify for normal assistant replies too.
-
-Legacy `character.md`, `user.md`, and `prompts/system.md` character layouts are
-migrated into the workspace on first load.
 
 ## Repo Layout
 
@@ -139,6 +166,8 @@ from crates.io):
 - [ARCHITECTURE.md](ARCHITECTURE.md) — runtime model, invariants, security,
   observability, and validation guidance.
 - [CONFIGURATION.md](CONFIGURATION.md) — config reference and examples.
+- [docs/PROTOCOL.md](docs/PROTOCOL.md) — SWP wire protocol reference for
+  client authors.
 - [CLAUDE.md](CLAUDE.md) — short entry map for coding agents.
 - [CHANGELOG.md](CHANGELOG.md) — release history.
 

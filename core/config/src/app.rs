@@ -16,7 +16,7 @@ macro_rules! serde_default {
 /// Top-level daemon configuration loaded from config.toml.
 ///
 /// Covers all sections from §8: [defaults], [models], [behavior.autonomy],
-/// [behavior.tools], [memory], [connections], [services], [advanced].
+/// [behavior.tools], [memory], [connections], [advanced].
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
@@ -38,9 +38,6 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub connections: ConnectionsConfig,
-
-    #[serde(default)]
-    pub services: ServicesConfig,
 
     #[serde(default)]
     pub notifications: NotificationsConfig,
@@ -912,26 +909,6 @@ pub struct DiscordConfig {
     pub extra: BTreeMap<String, toml::Value>,
 }
 
-// ── [services] ──────────────────────────────────────────────────────────
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ServicesConfig {
-    #[serde(default)]
-    pub llm: ServiceEntry,
-}
-
-/// Configuration for a supervised service.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ServiceEntry {
-    /// Command to spawn the service (e.g. "node shore-llm/dist/index.js").
-    pub command: Option<String>,
-
-    /// Unix socket path the service listens on.
-    pub socket: Option<String>,
-}
-
 // ── [notifications] ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1270,7 +1247,8 @@ pub struct AdvancedConfig {
     /// Maximum LLM retry attempts before giving up. Overrides the default (2).
     pub max_retries: Option<u32>,
 
-    /// Time to wait between retry attempts. Overrides the default (no backoff).
+    /// Base delay between retry attempts; doubled on each subsequent attempt.
+    /// Overrides the default (500ms).
     pub retry_backoff: Option<ConfigDuration>,
 
     /// Maximum image file size (bytes) before resizing for LLM upload.

@@ -32,10 +32,16 @@ is a JSON array; each element has the shape:
   "id": "default",
   "addr": "127.0.0.1:7320",
   "pid": 12345,
+  "started_at": "2026-01-01T00:00:00Z",
   "data_dir": "/home/user/.local/share/shore",
   "config_dir": "/home/user/.config/shore"
 }
 ```
+
+The daemon also writes `started_at` (an RFC 3339 timestamp). Clients may
+ignore it — the bundled `swp-client` deserializer treats every field except
+`addr` as optional and does not read `started_at` — so treat it as opaque
+additive metadata.
 
 Clients are expected to:
 
@@ -269,7 +275,7 @@ the session (edit/delete, compaction, autonomy messages, etc.).
   "rid": null,
   "messages": [ /* Message[] */ ],
   "active_start": 0,
-  "config": { "active_model": "claude-sonnet", "private": false },
+  "config": { "active_model": "claude-sonnet" },
   "selected_character": "Alice",
   "revision": 42
 }
@@ -280,7 +286,7 @@ the session (edit/delete, compaction, autonomy messages, etc.).
 | `rid` | string \| null | Set only when the snapshot is the response to a `switch_character` command; otherwise omitted. |
 | `messages` | `Message[]` | See §9. |
 | `active_start` | usize | Index of the first message still in the model's active context. Zero on push snapshots (active-only); paged history responses may include archive scrollback below this index. |
-| `config` | object | At minimum `active_model` (string \| null) and `private` (bool). Treat as opaque additive metadata. |
+| `config` | object | At minimum `active_model` (string \| null). Treat as opaque additive metadata. (A legacy `private` bool, always `false`, has been removed; tolerate its absence.) |
 | `selected_character` | string \| null | Character the snapshot belongs to. |
 | `revision` | u64 | Monotonic per-character revision counter. Use to detect stale snapshots. |
 
@@ -315,11 +321,11 @@ A non-empty generation emits the sequence:
 
 ```
 stream_start
-[ phase ]*
-( stream_chunk | tool_call | tool_result | phase )*
+( stream_chunk | tool_call | tool_result )*
 stream_end (is_final = false)        ← if the daemon ran a tool loop
 ( stream_chunk | tool_call | tool_result )*
 stream_end (is_final = true)
+[ phase ]                            ← only if the turn triggers inline compaction
 ```
 
 When the model calls a sub-agent (`ask_<name>`; see §7.4.5), the sub-agent's
@@ -351,11 +357,14 @@ no `content_type` field — treat missing as `"text"`.
 #### 7.4.3 `phase`
 
 ```json
-{ "type": "phase", "rid": "rid_…", "phase": "tool_use", "model": "claude-sonnet-4-6" }
+{ "type": "phase", "rid": "rid_…", "phase": "compacting", "model": null }
 ```
 
-`phase` is one of `"thinking"`, `"text_generation"`, `"tool_use"`. Useful
-for UI affordances. `model` may be `null`.
+`phase` carries the literal `"compacting"`. It is emitted once, after the
+final `stream_end`, when the just-completed turn crosses the compaction
+threshold and the daemon begins an inline compaction pass — a UI affordance
+so clients can show a "compacting memory" indicator. `model` is currently
+always `null`.
 
 #### 7.4.4 `stream_end`
 
@@ -522,13 +531,17 @@ or the key value. Only keys with `warn_on_fallback = true` raise this.
   "crossed_warn_at": [0.8],
   "period": "day",
   "period_start": "2026-05-20T00:00:00Z",
-  "reset_at": "2026-05-21T00:00:00Z"
+  "reset_at": "2026-05-21T00:00:00Z",
+  "reset_at_display": "2026-05-21 12:00 AM"
 }
 ```
 
 Emitted when a configured usage budget crosses any new warn threshold.
 Re-fires once per generation while still over budget so dismissed
-warnings come back.
+warnings come back. `reset_at` is RFC 3339 UTC for machine consumers;
+`reset_at_display` is the same instant rendered in the daemon's local
+time (`YYYY-MM-DD HH:MM AM|PM`) — clients that show the reset time should
+prefer it.
 
 ### 7.13 `ping`
 
@@ -824,12 +837,12 @@ with that role.
   }
   ```
 - **errors:** `busy` when a compaction is already running for this
-  character, `invalid_request` for a private conversation or
-  insufficient messages.
+  character, `invalid_request` for insufficient messages.
 
 #### `config`
 - **read:**
-  - `{}` → `{ "config": <whole app config JSON> }`
+  - `{}` → `{ "config": <whole app config JSON>, "defaults": <built-in default config JSON> }`
+    (`defaults` lets clients distinguish user-customized values from defaults).
   - `{ "key": "<section>" }` → `{ "key": "<section>", "config": <subtree> }` or `not_found`.
 - **set:** `{ "key": "<key>", "value": "<string>" }`. Only a focused
   set of keys is settable at runtime:
@@ -841,8 +854,16 @@ with that role.
 #### `config_check`
 - **args:** none
 - **data:** validation result with `valid`, `warnings`, `info`, plus
-  config-dir / data-dir / cache-dir paths, `chat_models`,
-  `tool_models`, `memory_mode`.
+  `config_dir` / `data_dir` / `cache_dir` paths, `chat_models` (count),
+  `memory_mode`.
+
+#### `tools`
+- **args:** none
+- **data:** the effective tool surface:
+  `{ "tools": [ { "tool", "main", "subagents" } ], "subagents": [ { "name", "enabled", "tools", "model" } ], "exec_allowlist": [ "…" ], "warnings": [ "…" ] }`.
+  `main` is whether the primary character offers the tool; `subagents` lists
+  which enabled sub-agents own it. `warnings` surfaces dangling
+  `enabled_tools` / `enabled_subagents` / sub-agent tool references.
 
 #### `config_reset`
 - **args:** none

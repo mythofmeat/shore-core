@@ -214,6 +214,10 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 # [memory.dreaming]
 # enabled = false
 # frequency = "0 3 * * *"                 # Five-field cron; e.g. "0 6 * * 1" = Mondays 06:00
+# minimum_inactive_time = "45m"           # Min time since the last user message before a sweep fires
+# max_lateness = "2h"                     # Missed occurrences older than this are skipped (no catch-up)
+# compact_before = true                   # Run idle-style compaction (if eligible) before the sweep
+# compact_to_zero = false                 # With compact_before: archive every turn, not just the tail
 # Librarian tool-round budget is the per-model `max_tool_iterations` cap
 # (unset = unlimited). Optionally pin a model via [defaults.background].dreaming.
 
@@ -384,14 +388,6 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 # Telegram / Discord (reserved for future use)
 # [connections.telegram]
 # [connections.discord]
-
-# ── Services ─────────────────────────────────────────────────────────────
-# Supervised helper processes the daemon manages. Currently only the LLM
-# service slot is used (reserved for an external LLM proxy).
-
-# [services.llm]
-# command = "node shore-llm/dist/index.js"  # Command to spawn the LLM service
-# socket = "/run/shore-llm.sock"            # Unix socket the service listens on
 
 # ── Advanced ─────────────────────────────────────────────────────────────
 

@@ -307,7 +307,7 @@ pub async fn run_librarian_sweep(
         "Dreaming: starting AI librarian pass"
     );
 
-    let loop_result = run_private_librarian_loop(
+    let loop_result = run_librarian_loop(
         llm_client,
         loaded_config,
         &mut request,
@@ -891,7 +891,7 @@ fn build_librarian_request(
         request.rid = None;
         // Append the librarian's user turn and pin the librarian system
         // instruction at a fixed slot via `push_inline_system`. The
-        // private tool loop in `run_private_librarian_loop` pushes
+        // librarian tool loop in `run_librarian_loop` pushes
         // `assistant` + `user(tool_result)` after this, so the system
         // entry's index must not depend on tail length. (The removed
         // `system_suffix` affordance re-expanded the suffix at the
@@ -1020,7 +1020,7 @@ fn build_librarian_tool_defs(character: &str, display_name: &str, dry_run: bool)
         enabled_tools: names,
         ..Default::default()
     };
-    tool_system::render_tool_defs(false, &tools_cfg, character, display_name)
+    tool_system::render_tool_defs(&tools_cfg, character, display_name)
 }
 
 fn build_librarian_tool_context(
@@ -1074,7 +1074,7 @@ fn build_librarian_tool_context(
     }
 }
 
-async fn run_private_librarian_loop(
+async fn run_librarian_loop(
     client: &LedgerClient,
     loaded_config: &LoadedConfig,
     request: &mut LlmRequest,
@@ -1121,7 +1121,7 @@ async fn run_private_librarian_loop(
                 iteration,
                 tool = %name,
                 input = %input,
-                "Dreaming: executing private librarian tool"
+                "Dreaming: executing librarian tool"
             );
 
             let (output, is_error) =
@@ -1153,7 +1153,7 @@ async fn run_private_librarian_loop(
     warn!(
         character,
         max = ?max_tool_iterations,
-        "Dreaming: private librarian tool loop hit configured cap"
+        "Dreaming: librarian tool loop hit configured cap"
     );
     Ok(loop_result)
 }
@@ -2865,7 +2865,7 @@ mod tests {
     }
 
     /// Regression contract for issue #84 (the librarian counterpart of the
-    /// compaction fix in #80): across a private librarian tool-loop round,
+    /// compaction fix in #80): across a librarian tool-loop round,
     /// the bytes at the librarian's leading user slot MUST be byte-identical
     /// between iter-0 and iter-1.
     ///

@@ -440,7 +440,6 @@ async fn prepare_and_run_compaction(
         char_name,
         messages,
         &active_content,
-        false,
         &system_template,
         &prompt_template,
         char_name,
@@ -622,9 +621,7 @@ fn build_swp_compaction_tool_context(
 
 fn compaction_err(e: &CompactionError) -> (ErrorCode, String) {
     match e {
-        CompactionError::PrivateConversation | CompactionError::InsufficientMessages => {
-            (ErrorCode::InvalidRequest, e.to_string())
-        }
+        CompactionError::InsufficientMessages => (ErrorCode::InvalidRequest, e.to_string()),
         CompactionError::Llm(_)
         | CompactionError::Parse(_)
         | CompactionError::ConversationManager(_)

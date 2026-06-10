@@ -131,7 +131,6 @@ pub async fn run_compaction(
             character,
             &messages,
             &content,
-            false,
             &system_template,
             &prompt_template,
             character,
