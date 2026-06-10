@@ -867,6 +867,11 @@ async fn enumerate_search_candidates(
         }
 
         if meta.is_dir() {
+            // The workspace carries a git history of memory changes; the
+            // object store is machine state, not searchable memory.
+            if path.file_name().is_some_and(|name| name == ".git") {
+                continue;
+            }
             let mut entries = Vec::new();
             let Ok(mut read_dir) = tokio::fs::read_dir(&path).await else {
                 continue;
@@ -2451,6 +2456,28 @@ mod tests {
         let result = handle_delete(json!({"path": "foo.md"}), &ws_str, "").await;
         assert!(result.is_err());
         assert!(ws.join("foo.md").exists(), "file should not be moved");
+    }
+
+    #[tokio::test]
+    async fn search_skips_git_object_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        let _written = handle_write(
+            json!({"path": "note.md", "content": "jasmine tea preferences"}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
+        std::fs::write(ws.join(".git").join("config"), "jasmine tea in git state").unwrap();
+
+        let result = handle_search(json!({"query": "jasmine"}), &ws_str, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(result["count"], 1, "git internals must not be searched");
+        assert_eq!(result["results"][0]["path"], "note.md");
     }
 
     #[test]

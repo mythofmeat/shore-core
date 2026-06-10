@@ -318,8 +318,8 @@ from ordinary memory-source ingestion.
 Search is lexical or hybrid semantic+lexical. The workspace-wide hybrid index is
 stored at `$XDG_CACHE_HOME/shore/characters/<Character>/workspace_index.json`;
 markdown files remain authoritative and the index can be deleted and rebuilt.
-Search/index walks the whole workspace tree (including `memory/`) with
-configurable file-size, file count, and total-byte limits.
+Search/index walks the whole workspace tree (including `memory/`, excluding
+`.git`) with configurable file-size, file count, and total-byte limits.
 
 ## Tools And Security
 

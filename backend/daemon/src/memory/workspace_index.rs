@@ -501,6 +501,12 @@ async fn enumerate_files(
         }
 
         if meta.is_dir() {
+            // The workspace carries a git history of memory changes; the
+            // object store is machine state, not indexable memory. Skipping
+            // it keeps .git churn from eating the file/byte caps.
+            if path.file_name().is_some_and(|name| name == ".git") {
+                continue;
+            }
             let Ok(mut read_dir) = tokio::fs::read_dir(&path).await else {
                 continue;
             };
@@ -1290,5 +1296,28 @@ mod tests {
             !parsed.entries.contains_key("b.md"),
             "deleted file must be pruned from on-disk index"
         );
+    }
+
+    #[tokio::test]
+    async fn walk_skips_git_object_store() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path();
+        fs::write(ws.join("note.md"), "tea preferences")
+            .await
+            .unwrap();
+        fs::create_dir_all(ws.join(".git").join("objects"))
+            .await
+            .unwrap();
+        fs::write(ws.join(".git").join("objects").join("blob"), "tea")
+            .await
+            .unwrap();
+        fs::write(ws.join(".git").join("config"), "[core]")
+            .await
+            .unwrap();
+
+        let config = RetrievalConfig::default();
+        let candidates = enumerate_files(&ws.to_string_lossy(), &config).await;
+        let paths: Vec<&str> = candidates.iter().map(|c| c.display_path.as_str()).collect();
+        assert_eq!(paths, ["note.md"], "git internals must not be indexed");
     }
 }
