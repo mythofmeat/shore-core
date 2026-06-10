@@ -275,6 +275,9 @@ model = "anthropic:claude-sonnet-4-6"   # Chat default as provider:model_id; als
 # [memory.compaction]
 # enabled = true
 # idle_trigger = "30m"        # Trigger after this much inactivity
+# archive_after = "0s"        # Deep-idle archive: after this much inactivity, archive the
+#                             # remaining conversation for a clean slate (keeps unanswered
+#                             # autonomous messages visible; 0 disables; not gated by min_turns)
 # min_turns = 8               # Don't compact below this many user turns
 # max_turns = 16              # Force compaction at this many user turns
 # max_context_tokens = 200000 # Force compaction when last-turn prompt context reaches this

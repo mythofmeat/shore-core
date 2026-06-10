@@ -385,6 +385,13 @@ pub struct CompactionConfig {
     /// Idle time before compaction triggers.
     #[serde(default = "default_idle_trigger")]
     pub idle_trigger: ConfigDuration,
+    /// Extended idle time after which the remaining active conversation is
+    /// archived outright (equivalent to a keep-0 compaction), so the next
+    /// exchange starts from a clean slate. Not gated by `min_turns`. Trailing
+    /// autonomous messages the user has not yet responded to are retained in
+    /// the active conversation so they stay visible. 0 disables (the default).
+    #[serde(default = "default_archive_after")]
+    pub archive_after: ConfigDuration,
     /// Minimum user turns before any compaction trigger fires.
     #[serde(default = "default_min_turns")]
     pub min_turns: usize,
@@ -402,6 +409,7 @@ pub struct CompactionConfig {
 }
 
 serde_default!(default_idle_trigger -> ConfigDuration { ConfigDuration::from_secs(1800) });
+serde_default!(default_archive_after -> ConfigDuration { ConfigDuration::from_secs(0) });
 serde_default!(default_min_turns -> usize { 8 });
 serde_default!(default_max_turns -> usize { 16 });
 serde_default!(default_max_context_tokens -> usize { 200_000 });
@@ -412,6 +420,7 @@ impl Default for CompactionConfig {
         Self {
             enabled: true,
             idle_trigger: default_idle_trigger(),
+            archive_after: default_archive_after(),
             min_turns: default_min_turns(),
             max_turns: default_max_turns(),
             max_context_tokens: default_max_context_tokens(),

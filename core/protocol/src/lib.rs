@@ -187,6 +187,7 @@ mod tests {
             rid: None,
             messages: vec![Message {
                 msg_id: "m1".into(),
+                origin: None,
                 role: Role::User,
                 content: "hi".into(),
                 images: vec![],
@@ -365,9 +366,9 @@ mod tests {
         let msg = ServerMessage::NewMessage(NewMessage {
             revision: 3,
             character: Some("Alice".into()),
-            origin: Some(MessageOrigin::Autonomous),
             message: Message {
                 msg_id: "m2".into(),
+                origin: Some(MessageOrigin::Autonomous),
                 role: Role::Assistant,
                 content: "autonomous msg".into(),
                 images: vec![],
@@ -474,6 +475,7 @@ mod tests {
     fn message_with_all_fields() {
         let msg = Message {
             msg_id: "m3".into(),
+            origin: None,
             role: Role::Assistant,
             content: "response".into(),
             images: vec![ImageRef {
@@ -514,6 +516,7 @@ mod tests {
     fn message_without_alts_omits_fields() {
         let msg = Message {
             msg_id: "m4".into(),
+            origin: None,
             role: Role::User,
             content: "hi".into(),
             images: vec![],
@@ -739,6 +742,7 @@ mod tests {
     fn message_with_content_blocks_round_trip() {
         let msg = Message {
             msg_id: "m_test".into(),
+            origin: None,
             role: Role::Assistant,
             content: "The time is noon.".into(),
             images: vec![],
@@ -779,6 +783,7 @@ mod tests {
     fn message_always_includes_content_blocks() {
         let msg = Message {
             msg_id: "m_old".into(),
+            origin: None,
             role: Role::User,
             content: "hello".into(),
             images: vec![],

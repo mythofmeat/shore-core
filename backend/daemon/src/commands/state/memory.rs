@@ -324,6 +324,7 @@ pub async fn compact(
             content: m.content.clone(),
             timestamp: m.timestamp.clone(),
             is_tool_result_only: m.is_tool_result_only(),
+            is_autonomous: m.origin == Some(shore_protocol::types::MessageOrigin::Autonomous),
         })
         .collect();
 
@@ -449,6 +450,7 @@ async fn prepare_and_run_compaction(
         markdown_store.as_ref(),
         dry_run,
         keep_turns_override,
+        false,
         chat_request,
         Some(&ctx.config.dirs.data),
         tool_ctx.as_ref(),
@@ -493,6 +495,13 @@ fn build_compaction_response(
                     "Failed to apply deferred edits after compaction"
                 );
             }
+
+            // Same post-compaction bookkeeping as the handler and idle-tick
+            // paths: invalidates the cached pre-compaction LLM request,
+            // records memory coverage of the retained turns, and resets the
+            // compaction trigger flags.
+            ctx.autonomy
+                .notify_compaction_complete(char_name, result.retained_turns);
 
             Ok(json!({
                 "status": "compacted",

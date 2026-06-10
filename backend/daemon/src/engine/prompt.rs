@@ -569,6 +569,7 @@ mod tests {
     fn make_msg(role: Role, content: &str) -> Message {
         Message {
             msg_id: uuid::Uuid::new_v4().to_string(),
+            origin: None,
             role,
             content: content.to_owned(),
             images: vec![],
@@ -743,6 +744,7 @@ mod tests {
     fn estimate_message_tokens_redacted_thinking_is_zero() {
         let msg = Message {
             msg_id: "m1".into(),
+            origin: None,
             role: Role::Assistant,
             content: String::new(),
             images: vec![],
@@ -762,6 +764,7 @@ mod tests {
     fn estimate_message_tokens_mixed_blocks_sums_all() {
         let msg = Message {
             msg_id: "m1".into(),
+            origin: None,
             role: Role::Assistant,
             content: String::new(),
             images: vec![],
@@ -799,6 +802,7 @@ mod tests {
     fn estimate_message_tokens_uses_content_blocks_when_present() {
         let msg = Message {
             msg_id: "m1".into(),
+            origin: None,
             role: Role::Assistant,
             content: "short".into(),
             images: vec![],
@@ -832,6 +836,7 @@ mod tests {
     fn estimate_message_tokens_tool_use_block() {
         let msg = Message {
             msg_id: "m1".into(),
+            origin: None,
             role: Role::Assistant,
             content: String::new(),
             images: vec![],
@@ -853,6 +858,7 @@ mod tests {
     fn estimate_message_tokens_tool_result_block() {
         let msg = Message {
             msg_id: "m1".into(),
+            origin: None,
             role: Role::User,
             content: String::new(),
             images: vec![],
@@ -877,6 +883,7 @@ mod tests {
         let small_msg = make_msg(Role::User, "Hello");
         let big_msg = Message {
             msg_id: "m_big".into(),
+            origin: None,
             role: Role::Assistant,
             content: String::new(),
             images: vec![],
@@ -951,6 +958,7 @@ mod tests {
     fn make_msg_at(role: Role, content: &str, timestamp: &str) -> Message {
         Message {
             msg_id: uuid::Uuid::new_v4().to_string(),
+            origin: None,
             role,
             content: content.to_owned(),
             images: vec![],
@@ -1414,6 +1422,7 @@ mod tests {
     fn make_tool_result_msg() -> Message {
         Message {
             msg_id: uuid::Uuid::new_v4().to_string(),
+            origin: None,
             role: Role::User,
             content: String::new(),
             images: vec![],
@@ -1433,6 +1442,7 @@ mod tests {
     fn make_tool_use_only_msg() -> Message {
         Message {
             msg_id: uuid::Uuid::new_v4().to_string(),
+            origin: None,
             role: Role::Assistant,
             content: String::new(),
             images: vec![],

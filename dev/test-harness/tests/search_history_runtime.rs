@@ -38,6 +38,7 @@ fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
 fn msg(id: &str, role: Role, text: &str, ts: &str) -> Message {
     Message {
         msg_id: id.to_owned(),
+        origin: None,
         role,
         content: text.to_owned(),
         images: vec![],

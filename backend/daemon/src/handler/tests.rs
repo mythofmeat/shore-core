@@ -300,6 +300,7 @@ async fn switch_character_pushes_authoritative_history_to_session() {
         .await
         .append_message(Message {
             msg_id: "m1".into(),
+            origin: None,
             role: Role::Assistant,
             content: "hello from bob".into(),
             images: vec![],
@@ -1144,11 +1145,12 @@ async fn pipeline_user_message_to_persisted_response() {
         "Should have broadcast at least one NewMessage"
     );
     assert!(new_messages.iter().any(|msg| {
-        msg.character.as_deref() == Some("Alice") && msg.origin == Some(MessageOrigin::UserInput)
+        msg.character.as_deref() == Some("Alice")
+            && msg.message.origin == Some(MessageOrigin::UserInput)
     }));
     assert!(new_messages.iter().any(|msg| {
         msg.character.as_deref() == Some("Alice")
-            && msg.origin == Some(MessageOrigin::AssistantReply)
+            && msg.message.origin == Some(MessageOrigin::AssistantReply)
     }));
 }
 

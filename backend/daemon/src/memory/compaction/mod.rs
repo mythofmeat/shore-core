@@ -173,6 +173,37 @@ impl CompactionManager {
             .count()
     }
 
+    /// Compute the archive split index: retain `keep_turns` user turns at the
+    /// tail, optionally clamped so a trailing run of unanswered autonomous
+    /// messages stays in the active conversation. The clamp only matters for
+    /// keep-0 splits — any keep >= 1 split already lands at or before the
+    /// last real user turn, which precedes the trailing autonomous run.
+    fn archive_split_index(
+        messages: &[ConversationMessage],
+        keep_turns: usize,
+        retain_trailing_autonomous: bool,
+    ) -> usize {
+        let split_at = Self::find_turn_split(messages, keep_turns);
+        if !retain_trailing_autonomous {
+            return split_at;
+        }
+        let tail = Self::trailing_autonomous_len(messages);
+        split_at.min(messages.len().saturating_sub(tail))
+    }
+
+    /// Length of the trailing run of autonomous assistant messages — heartbeat
+    /// `<sendMessage>` output the user has not yet responded to (any user
+    /// message after it would terminate the run). Deep-idle archiving keeps
+    /// this tail in the active conversation so the user still sees the
+    /// message when they return.
+    pub fn trailing_autonomous_len(messages: &[ConversationMessage]) -> usize {
+        messages
+            .iter()
+            .rev()
+            .take_while(|msg| msg.role == "assistant" && msg.is_autonomous)
+            .count()
+    }
+
     /// Signal that a new message was received, resetting the idle timer.
     pub fn notify_activity(&self) {
         self.activity_notify.notify_one();
@@ -376,6 +407,7 @@ impl CompactionManager {
         markdown_store: Option<&MarkdownMemoryStore>,
         dry_run: bool,
         keep_turns_override: Option<usize>,
+        retain_trailing_autonomous: bool,
         chat_request: shore_llm::types::LlmRequest,
         data_dir: Option<&Path>,
         tool_ctx: &dyn ToolContext,
@@ -402,7 +434,7 @@ impl CompactionManager {
 
         // Split messages: compact the older portion, retain the recent tail.
         let keep_turns = keep_turns_override.unwrap_or(self.config.keep_recent_turns);
-        let split_at = Self::find_turn_split(messages, keep_turns);
+        let split_at = Self::archive_split_index(messages, keep_turns, retain_trailing_autonomous);
         if split_at == 0 {
             return Err(CompactionError::InsufficientMessages);
         }
@@ -1054,6 +1086,7 @@ mod tests {
                 content: format!("Message {i}"),
                 timestamp: Local::now().to_rfc3339(),
                 is_tool_result_only: false,
+                is_autonomous: false,
             })
             .collect()
     }
@@ -1433,12 +1466,14 @@ mod tests {
                 content: "Hello!".to_owned(),
                 timestamp: "2026-03-25T10:00:00Z".to_owned(),
                 is_tool_result_only: false,
+                is_autonomous: false,
             },
             ConversationMessage {
                 role: "assistant".to_owned(),
                 content: "Hi there!".to_owned(),
                 timestamp: "2026-03-25T10:00:01Z".to_owned(),
                 is_tool_result_only: false,
+                is_autonomous: false,
             },
         ];
 
@@ -1556,36 +1591,42 @@ mod tests {
                 content: "Hello".to_owned(),
                 timestamp: "t0".to_owned(),
                 is_tool_result_only: false,
+                is_autonomous: false,
             },
             ConversationMessage {
                 role: "assistant".to_owned(),
                 content: String::new(),
                 timestamp: "t1".to_owned(),
                 is_tool_result_only: false,
+                is_autonomous: false,
             },
             ConversationMessage {
                 role: "user".to_owned(),
                 content: "tool output here".to_owned(),
                 timestamp: "t2".to_owned(),
                 is_tool_result_only: true,
+                is_autonomous: false,
             },
             ConversationMessage {
                 role: "assistant".to_owned(),
                 content: "Based on the tool result...".to_owned(),
                 timestamp: "t3".to_owned(),
                 is_tool_result_only: false,
+                is_autonomous: false,
             },
             ConversationMessage {
                 role: "user".to_owned(),
                 content: "Thanks!".to_owned(),
                 timestamp: "t4".to_owned(),
                 is_tool_result_only: false,
+                is_autonomous: false,
             },
             ConversationMessage {
                 role: "assistant".to_owned(),
                 content: "You're welcome!".to_owned(),
                 timestamp: "t5".to_owned(),
                 is_tool_result_only: false,
+                is_autonomous: false,
             },
         ];
 
@@ -1601,12 +1642,14 @@ mod tests {
                 content: "a".to_owned(),
                 timestamp: "t0".to_owned(),
                 is_tool_result_only: false,
+                is_autonomous: false,
             },
             ConversationMessage {
                 role: "user".to_owned(),
                 content: "b".to_owned(),
                 timestamp: "t1".to_owned(),
                 is_tool_result_only: false,
+                is_autonomous: false,
             },
         ];
         assert_eq!(CompactionManager::find_turn_split(&all_user, 0), 2);
@@ -1623,12 +1666,14 @@ mod tests {
                 content: "tool output".to_owned(),
                 timestamp: "t0".to_owned(),
                 is_tool_result_only: true,
+                is_autonomous: false,
             },
             ConversationMessage {
                 role: "assistant".to_owned(),
                 content: "response".to_owned(),
                 timestamp: "t1".to_owned(),
                 is_tool_result_only: false,
+                is_autonomous: false,
             },
         ];
 
@@ -1675,6 +1720,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                false,
                 make_chat_request(&[]),
                 Some(&data_dir),
                 &ctx,
@@ -1742,6 +1788,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                false,
                 make_chat_request(&[]),
                 Some(&data_dir),
                 &ctx,
@@ -1810,6 +1857,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                false,
                 make_chat_request(&[]),
                 None,
                 &ctx,
@@ -1882,6 +1930,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                false,
                 make_chat_request(&[]),
                 Some(&data_dir),
                 &ctx,
@@ -1943,6 +1992,7 @@ mod tests {
                 Some(&store),
                 true,
                 None,
+                false,
                 make_chat_request(&[]),
                 None,
                 &ctx,
@@ -1999,6 +2049,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                false,
                 make_chat_request(&[]),
                 None,
                 &ctx,
@@ -2051,6 +2102,7 @@ mod tests {
                 Some(&store),
                 false,
                 Some(0),
+                false,
                 make_chat_request(&[]),
                 None,
                 &ctx,
@@ -2101,6 +2153,7 @@ mod tests {
                 Some(&store),
                 false,
                 Some(3),
+                false,
                 make_chat_request(&[]),
                 None,
                 &ctx,
@@ -2120,6 +2173,182 @@ mod tests {
 
 
         );
+    }
+
+    fn autonomous_msg(i: usize) -> ConversationMessage {
+        ConversationMessage {
+            role: "assistant".to_owned(),
+            content: format!("Autonomous {i}"),
+            timestamp: Local::now().to_rfc3339(),
+            is_tool_result_only: false,
+            is_autonomous: true,
+        }
+    }
+
+    #[test]
+    fn test_trailing_autonomous_len() {
+        let mut messages = make_messages(4);
+        assert_eq!(CompactionManager::trailing_autonomous_len(&messages), 0);
+
+        messages.push(autonomous_msg(0));
+        messages.push(autonomous_msg(1));
+        assert_eq!(CompactionManager::trailing_autonomous_len(&messages), 2);
+
+        // A user message after the autonomous run terminates the tail.
+        messages.extend(make_messages(1));
+        assert_eq!(CompactionManager::trailing_autonomous_len(&messages), 0);
+    }
+
+    #[tokio::test]
+    async fn test_compact_keep_zero_retains_autonomous_tail() {
+        let llm = ScriptedLlm::writing(&[("memory/notes/x.md", "# x")]);
+        let conv_mgr = MockConversationMgr::new("new-conv-deep");
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
+            .await
+            .unwrap();
+        let ctx = TestCtx::new(tmp.path().to_string_lossy().into_owned());
+
+        // 3 user turns, then 2 unanswered autonomous messages.
+        let mut messages = make_messages(6);
+        messages.push(autonomous_msg(0));
+        messages.push(autonomous_msg(1));
+
+        let result = mgr
+            .compact(
+                "conv-1",
+                &messages,
+                "",
+                false,
+                DEFAULT_COMPACT_SYSTEM,
+                DEFAULT_COMPACT_PROMPT,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &conv_mgr,
+                Some(&store),
+                false,
+                Some(0),
+                true,
+                make_chat_request(&[]),
+                None,
+                &ctx,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_variant!(
+
+
+            result,
+            CompactionOutcome::Compacted(r) => {
+                assert_eq!(r.compacted_turns, 3);
+                assert_eq!(r.retained_count, 2);
+                assert_eq!(r.retained_turns, 0);
+            }
+
+
+        );
+
+        // The archive call must keep exactly the autonomous tail.
+        let calls = conv_mgr.archived_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, 2);
+    }
+
+    #[tokio::test]
+    async fn test_compact_keep_zero_without_retain_archives_everything() {
+        let llm = ScriptedLlm::writing(&[("memory/notes/x.md", "# x")]);
+        let conv_mgr = MockConversationMgr::new("new-conv-full");
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
+            .await
+            .unwrap();
+        let ctx = TestCtx::new(tmp.path().to_string_lossy().into_owned());
+
+        let mut messages = make_messages(6);
+        messages.push(autonomous_msg(0));
+
+        let result = mgr
+            .compact(
+                "conv-1",
+                &messages,
+                "",
+                false,
+                DEFAULT_COMPACT_SYSTEM,
+                DEFAULT_COMPACT_PROMPT,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &conv_mgr,
+                Some(&store),
+                false,
+                Some(0),
+                false,
+                make_chat_request(&[]),
+                None,
+                &ctx,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_variant!(
+
+
+            result,
+            CompactionOutcome::Compacted(r) => {
+                assert_eq!(r.retained_count, 0);
+            }
+
+
+        );
+    }
+
+    #[tokio::test]
+    async fn test_compact_only_autonomous_tail_is_insufficient() {
+        // Nothing but unanswered autonomous messages: with tail retention
+        // there is nothing to archive, so the pass must refuse instead of
+        // burning an LLM call.
+        let llm = ScriptedLlm::new(vec![]);
+        let conv_mgr = MockConversationMgr::new("must-not-be-used");
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
+            .await
+            .unwrap();
+        let ctx = TestCtx::new(tmp.path().to_string_lossy().into_owned());
+
+        let messages = vec![autonomous_msg(0), autonomous_msg(1)];
+
+        let result = mgr
+            .compact(
+                "conv-1",
+                &messages,
+                "",
+                false,
+                DEFAULT_COMPACT_SYSTEM,
+                DEFAULT_COMPACT_PROMPT,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &conv_mgr,
+                Some(&store),
+                false,
+                Some(0),
+                true,
+                make_chat_request(&[]),
+                None,
+                &ctx,
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(CompactionError::InsufficientMessages)));
+        assert!(conv_mgr.archived_calls().is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2149,6 +2378,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                false,
                 make_chat_request(&[]),
                 None,
                 &ctx,
@@ -2215,6 +2445,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                false,
                 make_chat_request(&[]),
                 None,
                 &ctx,
@@ -2252,6 +2483,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                false,
                 make_chat_request(&[]),
                 None,
                 &ctx,
@@ -2288,6 +2520,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                false,
                 make_chat_request(&[]),
                 None,
                 &ctx,
@@ -2356,6 +2589,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                false,
                 chat_request,
                 None,
                 &ctx,
@@ -2476,6 +2710,7 @@ mod tests {
                 Some(&store),
                 false,
                 None,
+                false,
                 make_chat_request(&[]),
                 None,
                 &ctx,

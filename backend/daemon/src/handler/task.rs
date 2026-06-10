@@ -180,6 +180,7 @@ async fn append_user_turn(
 
     let user_msg = Message {
         msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+        origin: None,
         role: Role::User,
         content: body.text.clone(),
         images,
@@ -193,6 +194,7 @@ async fn append_user_turn(
     engine.append_message(user_msg.clone())?;
     let revision = engine.current_revision();
     let mut wire_msg = user_msg;
+    wire_msg.origin = Some(shore_protocol::server_msg::MessageOrigin::UserInput);
     embed_image_data(&mut wire_msg.images);
     let _ignored = ctx
         .event_tx
@@ -200,7 +202,6 @@ async fn append_user_turn(
             shore_protocol::server_msg::NewMessage {
                 revision,
                 character: Some(char_name.to_owned()),
-                origin: Some(shore_protocol::server_msg::MessageOrigin::UserInput),
                 message: wire_msg,
             },
         ));
@@ -558,6 +559,7 @@ async fn run_inline_compaction(
         &ctx.notifier,
         cached_request,
         None,
+        false,
     )
     .await
     {

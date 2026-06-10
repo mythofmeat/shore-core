@@ -448,6 +448,7 @@ fn message_from_alternative(template: &Message, index: u32) -> Option<Message> {
     let alt = template.alternatives.get(alt_pos)?.clone();
     let mut msg = Message {
         msg_id: template.msg_id.clone(),
+        origin: template.origin,
         role: Role::Assistant,
         content: alt.content,
         images: alt.images,
@@ -484,6 +485,7 @@ mod tests {
         use shore_protocol::types::ContentBlock;
         Message {
             msg_id: id.to_owned(),
+            origin: None,
             role,
             content: content.to_owned(),
             images: vec![],
@@ -865,6 +867,7 @@ mod tests {
         // Tool result (NOT a real user turn).
         let mut tool_msg = Message {
             msg_id: "m3".to_owned(),
+            origin: None,
             role: Role::User,
             content: String::new(),
             images: vec![],

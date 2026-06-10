@@ -139,6 +139,7 @@ fn arb_message() -> impl Strategy<Value = Message> {
         prop::collection::vec(arb_message_alternative(), 0..2),
         prop::option::of(arb_ident()),
         arb_small_string(),
+        prop::option::of(arb_message_origin()),
     )
         .prop_map(
             |(
@@ -152,6 +153,7 @@ fn arb_message() -> impl Strategy<Value = Message> {
                 alternatives,
                 provider_key,
                 timestamp,
+                origin,
             )| Message {
                 msg_id,
                 role,
@@ -163,6 +165,7 @@ fn arb_message() -> impl Strategy<Value = Message> {
                 alternatives,
                 timestamp,
                 provider_key,
+                origin,
             },
         )
 }
@@ -400,20 +403,15 @@ fn arb_server_message() -> BoxedStrategy<ServerMessage> {
                 phase,
                 model
             }),),
-        (
-            0_u64..100,
-            prop::option::of(arb_ident()),
-            prop::option::of(arb_message_origin()),
-            arb_message()
-        )
-            .prop_map(|(revision, character, origin, message)| {
+        (0_u64..100, prop::option::of(arb_ident()), arb_message()).prop_map(
+            |(revision, character, message)| {
                 ServerMessage::NewMessage(NewMessage {
                     revision,
                     character,
-                    origin,
                     message,
                 })
-            }),
+            }
+        ),
         (
             prop::option::of(arb_ident()),
             arb_ident(),

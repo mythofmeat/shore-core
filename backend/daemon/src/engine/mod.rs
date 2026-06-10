@@ -378,6 +378,7 @@ mod tests {
         use shore_protocol::types::ContentBlock;
         Message {
             msg_id: id.to_owned(),
+            origin: None,
             role,
             content: content.to_owned(),
             images: vec![],

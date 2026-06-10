@@ -8,6 +8,21 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **Deep-idle archive: `[memory.compaction] archive_after` (default off).**
+  After the configured stretch with no new messages, the daemon archives the
+  remaining active conversation so the next exchange starts from a clean
+  slate — the automated equivalent of running `shore memory compact 0` before
+  stepping away. When a regular idle compaction already covered everything,
+  the archive is a pure file move with no LLM call; uncovered turns (e.g.
+  conversations below `min_turns`) get a keep-0 compaction pass first.
+  Unanswered autonomous (heartbeat) messages are kept in the active
+  conversation across the boundary so they stay visible when the user
+  returns. Autonomous messages are now persisted with `origin: "autonomous"`
+  on the `Message` itself (additive protocol field, see PROTOCOL.md §9.1).
+  Rust API note for client crates: `NewMessage` no longer has its own
+  `origin` field — read `new_msg.message.origin` instead. The wire shape is
+  unchanged (the flattened `Message` puts `origin` at the same top-level
+  position the envelope field occupied).
 - **`[connections.matrix] mirror_all` (default `true`).** New config key
   controlling what each character's bound Matrix room shows. When enabled, the
   room mirrors the character's full conversation regardless of which client drove

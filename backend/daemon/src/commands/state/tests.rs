@@ -158,6 +158,7 @@ model_id = "gpt-4o"
 fn make_msg(id: &str, role: Role, content: &str) -> Message {
     Message {
         msg_id: id.to_owned(),
+        origin: None,
         role,
         content: content.to_owned(),
         images: vec![],
@@ -173,6 +174,7 @@ fn make_msg(id: &str, role: Role, content: &str) -> Message {
 fn tool_use_msg(id: &str) -> Message {
     Message {
         msg_id: id.to_owned(),
+        origin: None,
         role: Role::Assistant,
         content: String::new(),
         images: vec![],
@@ -192,6 +194,7 @@ fn tool_use_msg(id: &str) -> Message {
 fn tool_result_msg(id: &str) -> Message {
     Message {
         msg_id: id.to_owned(),
+        origin: None,
         role: Role::User,
         content: "ok".to_owned(),
         images: vec![],

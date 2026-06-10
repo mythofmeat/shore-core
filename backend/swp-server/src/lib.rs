@@ -936,6 +936,7 @@ mod tests {
                     let messages = match selected_character.as_deref() {
                         Some("alice") => vec![Message {
                             msg_id: "m1".into(),
+                            origin: None,
                             role: Role::Assistant,
                             content: "hello from alice".into(),
                             images: vec![],
@@ -1353,9 +1354,9 @@ mod tests {
             ServerMessage::NewMessage(NewMessage {
                 revision: 2,
                 character: Some("Alice".into()),
-                origin: None,
                 message: Message {
                     msg_id: "m1".into(),
+                    origin: None,
                     role: Role::Assistant,
                     content: "auto msg".into(),
                     images: vec![],

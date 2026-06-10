@@ -268,6 +268,7 @@ impl TestHarness {
             &self.notifier,
             cached_request,
             None,
+            false,
         )
         .await
         {

@@ -24,6 +24,7 @@ pub async fn run_compaction(
     notifier: &crate::notifications::NotificationService,
     cached_request: Option<shore_llm::types::LlmRequest>,
     keep_turns_override: Option<usize>,
+    retain_trailing_autonomous: bool,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     use crate::engine::messages::MessageStore;
     use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
@@ -56,6 +57,7 @@ pub async fn run_compaction(
             content: msg.content.clone(),
             timestamp: msg.timestamp.clone(),
             is_tool_result_only: msg.is_tool_result_only(),
+            is_autonomous: msg.origin == Some(shore_protocol::types::MessageOrigin::Autonomous),
         })
         .collect();
 
@@ -139,6 +141,7 @@ pub async fn run_compaction(
             markdown_store.as_ref(),
             false,
             keep_turns_override,
+            retain_trailing_autonomous,
             chat_request,
             Some(data_dir),
             tool_ctx.as_ref(),
