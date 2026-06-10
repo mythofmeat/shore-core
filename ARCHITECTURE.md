@@ -296,12 +296,19 @@ dreaming pass, the daemon ensures the workspace is a git repository
 repositories, including their identity config, are left alone). Both passes
 are prompted to commit their changes in small, explained chunks through the
 exec tool, which is gated to `git` commands there — the commit messages carry
-the reasoning and sources for each memory change. Remotes are never
-configured; history is local unless the user adds a remote themselves. If a
-compaction archive fails after the model already committed, the daemon records
-the rolled-back file restores as a `revert:` commit so history matches the
-tree. Git bootstrap and commits are best-effort: a host without git still
-compacts and dreams normally, just without history.
+the reasoning and sources for each memory change. The daemon never configures
+a remote, and the model cannot push (it is blocked at the exec layer): history
+is local unless the operator adds a remote. If a compaction archive fails after
+the model already committed, the daemon records the rolled-back file restores as
+a `revert:` commit so history matches the tree. Git bootstrap and commits are
+best-effort: a host without git still compacts and dreams normally, just
+without history.
+
+Pushing is daemon policy, not the model's: with `[memory] git_push` enabled,
+the daemon runs a plain `git push` (honoring the repo's own remote/upstream)
+after a successful pass. It is off by default, skips silently when no remote is
+configured, and a failed push is logged but never fails the pass — the commit
+is already durable locally (and offsite if the operator backs up the workspace).
 
 The dreams audit log lives at:
 
@@ -369,9 +376,10 @@ Load-bearing invariants:
   rejected at dispatch, and dry runs block `exec` entirely
 - git invocations through `exec` additionally forbid destructive or
   history-rewriting operations (`reset --hard`, `clean -f`, `rebase`,
-  `filter-*`, branch/tag/ref deletion, `gc`, `reflog expire`, force/delete
-  push), remote modification (`remote add`/`set-url`), `config`, and the
-  `-c`/`--config-env`/`--exec-path` injection flags
+  `filter-*`, branch/tag/ref deletion, `gc`, `reflog expire`), `push` (network
+  egress is daemon policy, not the model's — see below), remote modification
+  (`remote add`/`set-url`), `config`, and the `-c`/`--config-env`/`--exec-path`
+  injection flags
 - the `write`, `edit`, and `delete` tools reject paths under `.git/`
 
 Remote daemon access is explicit. Non-loopback binding requires:

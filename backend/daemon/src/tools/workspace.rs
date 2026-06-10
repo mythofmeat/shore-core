@@ -1616,19 +1616,12 @@ fn validate_git_subcommand(sub: &[String]) -> Result<(), ToolError> {
                 Ok(())
             }
         }
-        "push" => {
-            if rest_has("-f")
-                || rest_has("--force")
-                || rest_has("--force-with-lease")
-                || rest_has("--delete")
-            {
-                Err(ToolError::InvalidArgs(
-                    "git force/delete push is not allowed".into(),
-                ))
-            } else {
-                Ok(())
-            }
-        }
+        // Pushing is not the model's job: network egress is daemon policy.
+        // The daemon pushes after a successful pass when `[memory] git_push`
+        // is enabled; the model only commits.
+        "push" => Err(ToolError::InvalidArgs(
+            "git push is not allowed (the daemon pushes after a pass when [memory] git_push is enabled)".into(),
+        )),
         "remote" => match rest.first().map(String::as_str) {
             Some("add" | "set-url" | "rename" | "remove" | "rm") => Err(ToolError::InvalidArgs(
                 "modifying git remotes is not allowed".into(),
@@ -1823,6 +1816,44 @@ pub async fn git_commit_all(workspace_dir: &Path, message: &str) -> std::io::Res
         return Err(git_output_err("git commit failed", &commit));
     }
     Ok(true)
+}
+
+/// Push the workspace repository to its configured remote, honoring the repo's
+/// own push config (remote, branch, upstream). Skips silently when the
+/// workspace is not a repo or has no remote configured — the daemon never
+/// invents a remote; pushing is opt-in (`[memory] git_push`) to a remote the
+/// operator set up. Returns `true` if a push was attempted and succeeded.
+pub async fn git_push_workspace(workspace_dir: &Path) -> std::io::Result<bool> {
+    if !workspace_dir.join(".git").exists() {
+        return Ok(false);
+    }
+    // No remote → nothing to push to. Skip without noise (a freshly
+    // bootstrapped repo has none until the operator adds one).
+    let remotes = run_git(workspace_dir, &["remote"]).await?;
+    if !remotes.status.success() || String::from_utf8_lossy(&remotes.stdout).trim().is_empty() {
+        return Ok(false);
+    }
+    let push = run_git(workspace_dir, &["push"]).await?;
+    if !push.status.success() {
+        return Err(git_output_err("git push failed", &push));
+    }
+    Ok(true)
+}
+
+/// Best-effort wrapper around [`git_push_workspace`] for the memory passes.
+/// Failures (no upstream, network down, remote rejects) are logged, never
+/// fatal — the pass already committed; a failed push must not undo it.
+pub async fn git_push_workspace_best_effort(workspace_dir: &Path, character: &str, pass: &str) {
+    match git_push_workspace(workspace_dir).await {
+        Ok(true) => tracing::info!(character, pass, "pushed workspace memory history"),
+        Ok(false) => {}
+        Err(e) => tracing::warn!(
+            character,
+            pass,
+            error = %e,
+            "failed to push workspace memory history"
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2840,6 +2871,52 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "first commit");
     }
 
+    #[tokio::test]
+    async fn git_push_workspace_skips_and_pushes() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+
+        // No repo: silently does nothing.
+        assert!(!git_push_workspace(&ws).await.unwrap());
+
+        let _created = ensure_workspace_git_repo(&ws, "test").await.unwrap();
+        std::fs::write(ws.join("note.md"), "hello").unwrap();
+        let _committed = git_commit_all(&ws, "first").await.unwrap();
+
+        // Repo but no remote configured: skip without error.
+        assert!(!git_push_workspace(&ws).await.unwrap());
+
+        // Add a bare remote and an upstream, then push reaches it.
+        let bare = tmp.path().join("remote.git");
+        let init_bare = run_git(tmp.path(), &["init", "--quiet", "--bare", "remote.git"])
+            .await
+            .unwrap();
+        assert!(init_bare.status.success());
+        let add_remote = run_git(&ws, &["remote", "add", "origin", &bare.to_string_lossy()])
+            .await
+            .unwrap();
+        assert!(add_remote.status.success());
+        // Establish upstream so a bare `git push` knows where to go.
+        let set_upstream = run_git(&ws, &["push", "-u", "origin", "HEAD"])
+            .await
+            .unwrap();
+        assert!(set_upstream.status.success());
+        // A subsequent commit + bare push lands on the remote.
+        std::fs::write(ws.join("note.md"), "updated").unwrap();
+        let _second = git_commit_all(&ws, "second").await.unwrap();
+        assert!(git_push_workspace(&ws).await.unwrap());
+
+        let remote_log = run_git(&bare, &["log", "--format=%s"]).await.unwrap();
+        let log = String::from_utf8_lossy(&remote_log.stdout);
+        assert!(
+            log.contains("second"),
+            "remote should have the pushed commit"
+        );
+    }
+
     // -- validate_git_command allow list --------------------------------------
 
     fn vgc_ok(cmd: &str) {
@@ -2868,7 +2945,7 @@ mod tests {
         vgc_ok("git status");
         vgc_ok("git add memory/foo.md");
         vgc_ok(r#"git commit -m "reset the counter""#); // "reset" inside message must not trip the reset rule
-        vgc_ok("git push origin main");
+                                                        // push is daemon-only; see git_validate_blocks_destructive
         vgc_ok("git checkout main");
         vgc_ok("git remote -v");
         vgc_ok("git -C . status");
@@ -2898,6 +2975,8 @@ mod tests {
         vgc_err("git config alias.x '!sh'");
         vgc_err("git remote add origin git@x:y");
         vgc_err("git push --force");
+        vgc_err("git push origin main"); // all push is daemon-only, even plain push
+        vgc_err("git push");
         vgc_err("git branch -D main");
         vgc_err("git restore .");
         vgc_err("git gc");

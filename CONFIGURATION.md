@@ -701,6 +701,15 @@ both a quick direct lookup and a deep delegated dig.
 > of English→query→summary translation. Use them for domains with a real schema
 > worth knowing; keep atomic, precisely-known operations as direct tools.
 
+## `[memory]`
+
+```toml
+[memory]
+git_push = false  # push the workspace repo after a successful pass
+```
+
+The character workspace is a git repository; compaction and dreaming passes commit their memory changes there (the model commits via the git-gated `exec` tool — it cannot `push`). `git_push` is the only top-level `[memory]` key: when `true`, the daemon runs a plain `git push` (honoring the repo's own remote/upstream) after each successful compaction or dreaming pass. It is **off by default**, the daemon never configures a remote for you, a repo with no remote is skipped silently, and a failed push is logged but never fails the pass. Leave it off unless you have set up a remote you want the memory history mirrored to; offsite durability is better served by backing up the workspace directory directly.
+
 ## `[memory.compaction]`
 
 ```toml

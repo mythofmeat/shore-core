@@ -436,27 +436,34 @@ async fn prepare_and_run_compaction(
     // view.
     let tool_ctx = build_swp_compaction_tool_context(ctx, char_name);
 
-    mgr.compact(
-        char_name,
-        messages,
-        &active_content,
-        &system_template,
-        &prompt_template,
-        char_name,
-        &display_name,
-        &llm,
-        &conv_mgr,
-        markdown_store.as_ref(),
-        dry_run,
-        keep_turns_override,
-        false,
-        chat_request,
-        Some(&ctx.config.dirs.data),
-        tool_ctx.as_ref(),
-        max_tool_iterations,
-    )
-    .await
-    .map_err(|e| compaction_err(&e))
+    let outcome = mgr
+        .compact(
+            char_name,
+            messages,
+            &active_content,
+            &system_template,
+            &prompt_template,
+            char_name,
+            &display_name,
+            &llm,
+            &conv_mgr,
+            markdown_store.as_ref(),
+            dry_run,
+            keep_turns_override,
+            false,
+            chat_request,
+            Some(&ctx.config.dirs.data),
+            tool_ctx.as_ref(),
+            max_tool_iterations,
+        )
+        .await
+        .map_err(|e| compaction_err(&e))?;
+
+    // Opt-in, best-effort push after a successful manual compaction, mirroring
+    // the background path.
+    crate::memory::compaction::push_after_compaction(&ctx.config, char_name, &outcome).await;
+
+    Ok(outcome)
 }
 
 /// Render a compaction outcome into the command's JSON result. On a successful

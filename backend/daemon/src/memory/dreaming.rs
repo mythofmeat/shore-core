@@ -334,18 +334,29 @@ pub async fn run_librarian_sweep(
         )));
     }
 
-    Ok(Some(
-        finalize_librarian_sweep(
-            &store,
+    let result = finalize_librarian_sweep(
+        &store,
+        character,
+        &ran_at,
+        state,
+        before,
+        loop_result,
+        &paths,
+    )
+    .await?;
+
+    // Opt-in: push the workspace memory history after a successful sweep.
+    // Best-effort — a failed push never fails the pass.
+    if loaded_config.app.memory.git_push {
+        crate::tools::workspace::git_push_workspace_best_effort(
+            &workspace_dir,
             character,
-            &ran_at,
-            state,
-            before,
-            loop_result,
-            &paths,
+            "dreaming",
         )
-        .await?,
-    ))
+        .await;
+    }
+
+    Ok(Some(result))
 }
 
 /// Paths referenced while writing and reporting a librarian sweep.

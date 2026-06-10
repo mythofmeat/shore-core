@@ -148,6 +148,10 @@ pub async fn run_compaction(
         )
         .await?;
 
+    // Opt-in, best-effort push of the workspace memory history after a
+    // successful compaction (a failed push never undoes the archive).
+    super::push_after_compaction(&effective, character, &outcome).await;
+
     Ok(handle_compaction_outcome(character, notifier, outcome))
 }
 

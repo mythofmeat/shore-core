@@ -847,6 +847,26 @@ async fn run_compaction_tool_loop(
 
 /// Queue a MEMORY.md prompt refresh when the compaction wrote the memory index
 /// but the tool context did not already `defer_edit` it (e.g. test stubs).
+/// Push the workspace memory history after a successful compaction, when
+/// `[memory] git_push` is enabled. No-op for non-`Compacted` outcomes;
+/// best-effort (a failed push never fails the pass). Shared by the background
+/// and manual compaction paths.
+pub(crate) async fn push_after_compaction(
+    config: &shore_config::LoadedConfig,
+    character: &str,
+    outcome: &CompactionOutcome,
+) {
+    if config.app.memory.git_push && matches!(outcome, CompactionOutcome::Compacted(_)) {
+        let workspace = shore_config::character_workspace_dir(&config.dirs.config, character);
+        crate::tools::workspace::git_push_workspace_best_effort(
+            &workspace,
+            character,
+            "compaction",
+        )
+        .await;
+    }
+}
+
 fn queue_memory_index_refresh(
     memory_index_updated: bool,
     tool_ctx: &dyn ToolContext,
