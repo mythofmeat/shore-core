@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5](https://github.com/mythofmeat/shore-core/compare/shore-swp-client-v0.3.4...shore-swp-client-v0.3.5) - 2026-06-10
+
+### Added
+
+- *(memory)* deep-idle archive with autonomous-message retention ([#235](https://github.com/mythofmeat/shore-core/pull/235))
+
 ## [0.3.4](https://github.com/mythofmeat/shore-core/compare/shore-swp-client-v0.3.3...shore-swp-client-v0.3.4) - 2026-06-09
 
 ### Fixed

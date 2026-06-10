@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/mythofmeat/shore-core/compare/shore-protocol-v0.9.0...shore-protocol-v0.10.0) - 2026-06-10
+
+### Added
+
+- *(memory)* deep-idle archive with autonomous-message retention ([#235](https://github.com/mythofmeat/shore-core/pull/235))
+
 ## [0.9.0](https://github.com/mythofmeat/shore-core/compare/shore-protocol-v0.8.0...shore-protocol-v0.9.0) - 2026-06-09
 
 ### Added
