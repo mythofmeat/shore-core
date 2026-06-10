@@ -32,10 +32,16 @@ is a JSON array; each element has the shape:
   "id": "default",
   "addr": "127.0.0.1:7320",
   "pid": 12345,
+  "started_at": "2026-01-01T00:00:00Z",
   "data_dir": "/home/user/.local/share/shore",
   "config_dir": "/home/user/.config/shore"
 }
 ```
+
+The daemon also writes `started_at` (an RFC 3339 timestamp). Clients may
+ignore it — the bundled `swp-client` deserializer treats every field except
+`addr` as optional and does not read `started_at` — so treat it as opaque
+additive metadata.
 
 Clients are expected to:
 
@@ -315,11 +321,11 @@ A non-empty generation emits the sequence:
 
 ```
 stream_start
-[ phase ]*
-( stream_chunk | tool_call | tool_result | phase )*
+( stream_chunk | tool_call | tool_result )*
 stream_end (is_final = false)        ← if the daemon ran a tool loop
 ( stream_chunk | tool_call | tool_result )*
 stream_end (is_final = true)
+[ phase ]                            ← only if the turn triggers inline compaction
 ```
 
 When the model calls a sub-agent (`ask_<name>`; see §7.4.5), the sub-agent's
@@ -351,11 +357,14 @@ no `content_type` field — treat missing as `"text"`.
 #### 7.4.3 `phase`
 
 ```json
-{ "type": "phase", "rid": "rid_…", "phase": "tool_use", "model": "claude-sonnet-4-6" }
+{ "type": "phase", "rid": "rid_…", "phase": "compacting", "model": null }
 ```
 
-`phase` is one of `"thinking"`, `"text_generation"`, `"tool_use"`. Useful
-for UI affordances. `model` may be `null`.
+`phase` carries the literal `"compacting"`. It is emitted once, after the
+final `stream_end`, when the just-completed turn crosses the compaction
+threshold and the daemon begins an inline compaction pass — a UI affordance
+so clients can show a "compacting memory" indicator. `model` is currently
+always `null`.
 
 #### 7.4.4 `stream_end`
 
