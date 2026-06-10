@@ -269,7 +269,7 @@ the session (edit/delete, compaction, autonomy messages, etc.).
   "rid": null,
   "messages": [ /* Message[] */ ],
   "active_start": 0,
-  "config": { "active_model": "claude-sonnet", "private": false },
+  "config": { "active_model": "claude-sonnet" },
   "selected_character": "Alice",
   "revision": 42
 }
@@ -280,7 +280,7 @@ the session (edit/delete, compaction, autonomy messages, etc.).
 | `rid` | string \| null | Set only when the snapshot is the response to a `switch_character` command; otherwise omitted. |
 | `messages` | `Message[]` | See §9. |
 | `active_start` | usize | Index of the first message still in the model's active context. Zero on push snapshots (active-only); paged history responses may include archive scrollback below this index. |
-| `config` | object | At minimum `active_model` (string \| null) and `private` (bool). Treat as opaque additive metadata. |
+| `config` | object | At minimum `active_model` (string \| null). Treat as opaque additive metadata. (A legacy `private` bool, always `false`, has been removed; tolerate its absence.) |
 | `selected_character` | string \| null | Character the snapshot belongs to. |
 | `revision` | u64 | Monotonic per-character revision counter. Use to detect stale snapshots. |
 
@@ -824,8 +824,7 @@ with that role.
   }
   ```
 - **errors:** `busy` when a compaction is already running for this
-  character, `invalid_request` for a private conversation or
-  insufficient messages.
+  character, `invalid_request` for insufficient messages.
 
 #### `config`
 - **read:**

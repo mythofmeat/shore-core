@@ -39,6 +39,16 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   forward-compatibility note in `docs/PROTOCOL.md` §3.
 
 ### Changed
+- **Removed the vestigial "private conversations" concept.** Nothing could
+  ever mark a conversation private (every code path hardcoded `false`), so the
+  dead plumbing is gone: the `is_private` tool filter (which would have hidden
+  `search_chat_logs`/`exec`), the prompt-side memory-index suppression, the
+  unreachable `PrivateConversation` compaction error, and the always-`false`
+  `private` field in the `history` snapshot's `config` object (additive
+  removal; clients should tolerate its absence — see PROTOCOL.md §7.2).
+  Dreaming/librarian strings that used "private" to mean "background, not
+  user-facing" now say "background"; heartbeat's "private autonomous time"
+  wording is unrelated and unchanged.
 - **`shore log` now shows only message text by default.** Reasoning/thinking,
   tool calls and their results, and a sub-agent's nested tool activity are
   hidden unless opted in with the new `--reasoning`, `--tools`, and

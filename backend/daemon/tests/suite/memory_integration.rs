@@ -271,7 +271,6 @@ async fn test_markdown_memory_compaction_end_to_end() {
             "Shore",
             &messages,
             &active,
-            false,
             DEFAULT_COMPACT_SYSTEM,
             DEFAULT_COMPACT_PROMPT,
             "Shore",
@@ -307,47 +306,4 @@ async fn test_markdown_memory_compaction_end_to_end() {
     let direct =
         markdown_query::format_direct_response("ramen", &store.search_text("ramen").await.unwrap());
     assert!(direct.contains("people/user.md"));
-}
-
-#[tokio::test]
-async fn test_compaction_rejects_private_conversation() {
-    let tmp = TempDir::new().unwrap();
-    let char_dir = tmp.path().join("Shore");
-    std::fs::create_dir_all(&char_dir).unwrap();
-    let store = MarkdownMemoryStore::open(char_dir.join("memory"))
-        .await
-        .unwrap();
-    let conv_mgr = RealConversationManager::new(&char_dir);
-    let llm = ScriptedCompactionLlm::writing(&[(
-        "memory/people/user.md",
-        "# User\n\n- Should not exist",
-    )]);
-    let mgr = CompactionManager::new(CompactionConfig::default());
-    let tool_ctx = IntegrationToolContext::new(char_dir.to_string_lossy().into_owned());
-
-    let result = mgr
-        .compact(
-            "private-conv",
-            &make_conversation(),
-            "",
-            true,
-            DEFAULT_COMPACT_SYSTEM,
-            DEFAULT_COMPACT_PROMPT,
-            "Shore",
-            "User",
-            &llm,
-            &conv_mgr,
-            Some(&store),
-            false,
-            None,
-            false,
-            make_chat_request_for_test(),
-            None,
-            &tool_ctx,
-            None,
-        )
-        .await;
-
-    assert!(matches!(result, Err(CompactionError::PrivateConversation)));
-    assert!(store.read("people/user.md").await.is_err());
 }

@@ -296,7 +296,6 @@ async fn e2e_conversation_milestone() {
     // the qualified form uniquely picks one entry out of the model
     // catalog when two providers expose the same alias name.
     assert_eq!(history.config["active_model"], "chat.openrouter.haiku");
-    assert_eq!(history.config["private"], false);
     assert_eq!(history.revision, 0);
     test_err!(
         "  Handshake OK: v={}, server={}",

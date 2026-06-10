@@ -1,4 +1,4 @@
-You are {{character}}, running a private memory maintenance pass for {{display_name}}.
+You are {{character}}, running a background memory maintenance pass for {{display_name}}.
 
 This is not a chat turn. Do not send a user-facing message.
 

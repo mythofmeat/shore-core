@@ -345,7 +345,6 @@ async fn build_generation_request(
         resolved,
         messages: &messages,
         has_prior_context,
-        is_private: false,
         include_unsigned_thinking,
     });
 
