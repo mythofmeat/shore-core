@@ -63,6 +63,7 @@ struct CompactionArchiveInputs<'inputs> {
     conversation_id: &'inputs str,
     active_content: &'inputs str,
     char_name: &'inputs str,
+    workspace_dir: &'inputs str,
     data_dir: Option<&'inputs Path>,
     split_at: usize,
     compacted_turns: usize,
@@ -364,6 +365,36 @@ impl CompactionManager {
             })
     }
 
+    /// Workspace dir for path resolution + previous-content snapshots.
+    /// Prefers the markdown store's parent (canonical for production); falls
+    /// back to `tool_ctx.workspace_dir()` for tests / dry runs without a
+    /// store. Live passes commit their memory writes through the (git-gated)
+    /// exec tool, so this also ensures the workspace is a git repository
+    /// before the loop starts.
+    async fn prepare_pass_workspace(
+        markdown_store: Option<&MarkdownMemoryStore>,
+        tool_ctx: &dyn ToolContext,
+        char_name: &str,
+        dry_run: bool,
+    ) -> Result<String, CompactionError> {
+        let workspace_dir = if let Some(store) = markdown_store {
+            Self::workspace_dir_from_store(store)?
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            tool_ctx.workspace_dir().to_owned()
+        };
+        if !dry_run {
+            crate::tools::workspace::ensure_workspace_git_repo_best_effort(
+                Path::new(&workspace_dir),
+                char_name,
+                "compaction",
+            )
+            .await;
+        }
+        Ok(workspace_dir)
+    }
+
     async fn write_workspace_file(path: &Path, content: &str) -> Result<(), CompactionError> {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -466,17 +497,8 @@ impl CompactionManager {
         let compact_now_user = json!({"role": "user", "content": final_msg});
         let mut request = llm.build_initial_request(&system, compact_now_user, chat_request)?;
 
-        // Workspace dir for path resolution + previous-content snapshots.
-        // Prefer the markdown store's parent (canonical for production);
-        // fall back to `tool_ctx.workspace_dir()` for tests / dry runs
-        // without a store.
-        let workspace_dir = if let Some(store) = markdown_store {
-            Self::workspace_dir_from_store(store)?
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            tool_ctx.workspace_dir().to_owned()
-        };
+        let workspace_dir =
+            Self::prepare_pass_workspace(markdown_store, tool_ctx, char_name, dry_run).await?;
 
         let compacted_turns = Self::count_turns(compacted_part);
         let retained_turns = Self::count_turns(messages.get(split_at..).unwrap_or(&[]));
@@ -539,6 +561,7 @@ impl CompactionManager {
                 conversation_id,
                 active_content,
                 char_name,
+                workspace_dir: &workspace_dir,
                 data_dir,
                 split_at,
                 compacted_turns,
@@ -565,6 +588,7 @@ impl CompactionManager {
             conversation_id,
             active_content,
             char_name,
+            workspace_dir,
             data_dir,
             split_at,
             compacted_turns,
@@ -588,6 +612,22 @@ impl CompactionManager {
             Ok(id) => id,
             Err(e) => {
                 Self::rollback_compaction(&loop_state.writes_applied).await;
+                // The model may have committed its writes before the archive
+                // failed; record the restoration so git history matches the
+                // tree instead of silently diverging. Best-effort.
+                match crate::tools::workspace::git_commit_all(
+                    Path::new(workspace_dir),
+                    "revert: compaction rolled back after archive failure",
+                )
+                .await
+                {
+                    Ok(true) => info!("compaction: recorded rollback commit"),
+                    Ok(false) => {}
+                    Err(git_err) => warn!(
+                        error = %git_err,
+                        "compaction: failed to record rollback commit"
+                    ),
+                }
                 return Err(e);
             }
         };
@@ -878,9 +918,9 @@ fn extract_memory_write_intent(name: &str, input: &Value) -> Option<(String, Opt
 /// Dispatch a single tool call from the compaction tool loop. Wraps the
 /// canonical `tool_system::dispatch_tool`:
 ///
-/// * `exec` / `delete` are always blocked from compaction — both are
-///   destructive surfaces that the compaction pass has no business
-///   touching.
+/// * `delete` is always blocked from compaction, and `exec` is gated to
+///   `git` commands so the pass can commit its memory writes — compaction
+///   curates files, it does not run other programs.
 /// * In dry-run mode, `write`/`edit` are blocked but the intended path is
 ///   still recorded in `dry_run_previews` for the returned outcome.
 /// * For live `write`/`edit`, the compaction path filter
@@ -896,8 +936,23 @@ async fn dispatch_compaction_tool(
     state: &mut ToolLoopState,
 ) -> (String, bool) {
     // Always-blocked tools.
-    if matches!(name, "exec" | "delete") {
+    if name == "delete" {
         return (format!("{name} is not available during compaction"), true);
+    }
+    if name == "exec" {
+        if state.dry_run {
+            return (
+                "exec blocked: dry-run compaction does not run commands".to_owned(),
+                true,
+            );
+        }
+        if !crate::tools::workspace::exec_input_is_git(input) {
+            return (
+                "exec during compaction is limited to git commands".to_owned(),
+                true,
+            );
+        }
+        // Falls through to the canonical dispatch below.
     }
 
     let is_write_like = matches!(name, "write" | "edit");
@@ -1894,6 +1949,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dispatch_gates_exec_to_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_string_lossy().into_owned();
+        let ctx = TestCtx::new(ws.clone());
+
+        // Non-git exec is blocked.
+        let mut state = ToolLoopState::new(false);
+        let (blocked_msg, blocked_is_error) =
+            dispatch_compaction_tool("exec", &json!({"command": "ls -la"}), &ctx, &ws, &mut state)
+                .await;
+        assert!(blocked_is_error);
+        assert!(blocked_msg.contains("limited to git"));
+
+        // Dry run blocks exec entirely, git included.
+        let mut dry_state = ToolLoopState::new(true);
+        let (dry_msg, dry_is_error) = dispatch_compaction_tool(
+            "exec",
+            &json!({"command": "git status"}),
+            &ctx,
+            &ws,
+            &mut dry_state,
+        )
+        .await;
+        assert!(dry_is_error);
+        assert!(dry_msg.contains("dry-run"));
+
+        // Live git reaches the real exec handler.
+        let _created = crate::tools::workspace::ensure_workspace_git_repo(tmp.path(), "test")
+            .await
+            .unwrap();
+        let (out, is_error) = dispatch_compaction_tool(
+            "exec",
+            &json!({"command": "git status"}),
+            &ctx,
+            &ws,
+            &mut state,
+        )
+        .await;
+        assert!(!is_error, "git exec should dispatch: {out}");
+        assert!(out.contains("\"exit_code\""));
+
+        // Exec calls never count as memory writes.
+        assert!(state.writes_applied.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_tool_loop_mixed_writes_only_allowed_paths_count() {
         // A mix of allowed + rejected writes: the allowed ones should
         // archive normally and the rejected ones should land on
@@ -2725,5 +2826,63 @@ mod tests {
 
         let restored = store.read("preferences/beverages.md").await.unwrap();
         assert_eq!(restored.content, original);
+    }
+
+    #[tokio::test]
+    async fn test_compact_rollback_records_git_revert_commit() {
+        let llm = ScriptedLlm::writing(&[("memory/notes/today.md", "# Today\n- new note")]);
+        let conv_mgr = FailingConversationMgr;
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
+            .await
+            .unwrap();
+        let ctx = TestCtx::new(tmp.path().to_string_lossy().into_owned());
+
+        // Pre-existing (never committed) content; the rollback restores it,
+        // so the tree differs from the empty history and the daemon records
+        // a revert commit.
+        store
+            .write("notes/today.md", "# Today\n- original note\n")
+            .await
+            .unwrap();
+
+        let result = mgr
+            .compact(
+                "conv-1",
+                &make_messages(10),
+                "",
+                false,
+                DEFAULT_COMPACT_SYSTEM,
+                DEFAULT_COMPACT_PROMPT,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &conv_mgr,
+                Some(&store),
+                false,
+                None,
+                false,
+                make_chat_request(&[]),
+                None,
+                &ctx,
+                None,
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(CompactionError::ConversationManager(_))
+        ));
+
+        // The pass bootstrapped a repo, and the rollback recorded a commit so
+        // history matches the restored tree.
+        assert!(tmp.path().join(".git").exists());
+        let log = std::process::Command::new("git")
+            .args(["log", "--format=%s"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&log.stdout)
+            .contains("revert: compaction rolled back after archive failure"));
     }
 }
