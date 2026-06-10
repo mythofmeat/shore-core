@@ -568,6 +568,15 @@ pub struct MemoryConfig {
 
     #[serde(default)]
     pub retrieval: RetrievalConfig,
+
+    /// After a successful compaction or dreaming pass, push the character's
+    /// workspace git repository to its configured remote (a plain `git push`
+    /// honoring the repo's own upstream). Off by default: the daemon never
+    /// invents a remote, and pushing is opt-in to one the operator set up. A
+    /// repo with no remote is skipped silently; a failed push is logged but
+    /// never fails the pass.
+    #[serde(default)]
+    pub git_push: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

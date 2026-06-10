@@ -500,6 +500,15 @@ async fn enumerate_files(
             continue;
         }
 
+        // The workspace carries a git history of memory changes; the git store
+        // is machine state, not indexable memory. Skip `.git` whether it is a
+        // directory or a `.git` *file* (linked worktrees expose it as a file).
+        // Keeps .git churn from eating the file/byte caps and from leaking the
+        // worktree `gitdir:` path into the index.
+        if path.file_name().is_some_and(|name| name == ".git") {
+            continue;
+        }
+
         if meta.is_dir() {
             let Ok(mut read_dir) = tokio::fs::read_dir(&path).await else {
                 continue;
@@ -1290,5 +1299,47 @@ mod tests {
             !parsed.entries.contains_key("b.md"),
             "deleted file must be pruned from on-disk index"
         );
+    }
+
+    #[tokio::test]
+    async fn walk_skips_git_object_store() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path();
+        fs::write(ws.join("note.md"), "tea preferences")
+            .await
+            .unwrap();
+        fs::create_dir_all(ws.join(".git").join("objects"))
+            .await
+            .unwrap();
+        fs::write(ws.join(".git").join("objects").join("blob"), "tea")
+            .await
+            .unwrap();
+        fs::write(ws.join(".git").join("config"), "[core]")
+            .await
+            .unwrap();
+
+        let config = RetrievalConfig::default();
+        let candidates = enumerate_files(&ws.to_string_lossy(), &config).await;
+        let paths: Vec<&str> = candidates.iter().map(|c| c.display_path.as_str()).collect();
+        assert_eq!(paths, ["note.md"], "git internals must not be indexed");
+    }
+
+    #[tokio::test]
+    async fn walk_skips_git_worktree_file() {
+        // Linked worktrees expose `.git` as a file, not a directory; it must
+        // still be skipped so the `gitdir:` path is not indexed.
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path();
+        fs::write(ws.join("note.md"), "tea preferences")
+            .await
+            .unwrap();
+        fs::write(ws.join(".git"), "gitdir: /abs/secret/path\n")
+            .await
+            .unwrap();
+
+        let config = RetrievalConfig::default();
+        let candidates = enumerate_files(&ws.to_string_lossy(), &config).await;
+        let paths: Vec<&str> = candidates.iter().map(|c| c.display_path.as_str()).collect();
+        assert_eq!(paths, ["note.md"], "worktree .git file must not be indexed");
     }
 }

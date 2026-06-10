@@ -484,6 +484,7 @@ fn arb_memory_config() -> impl Strategy<Value = MemoryConfig> {
         0_u64..1_000_000_000,
         0_usize..100_000,
         arb_retrieval_binary_mode(),
+        proptest::bool::ANY,
     )
         .prop_map(
             |(
@@ -496,6 +497,7 @@ fn arb_memory_config() -> impl Strategy<Value = MemoryConfig> {
                 max_total_indexed_bytes,
                 max_embed_chars_per_file,
                 binary,
+                git_push,
             )| MemoryConfig {
                 compaction,
                 dreaming,
@@ -510,6 +512,7 @@ fn arb_memory_config() -> impl Strategy<Value = MemoryConfig> {
                     max_embed_chars_per_file,
                     binary,
                 },
+                git_push,
             },
         )
 }

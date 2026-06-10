@@ -16,7 +16,9 @@ license=('custom')
 # `#!/usr/bin/env bun` shebang rather than a ~70MB --compile binary (the
 # embedded Bun runtime dwarfed the ~1.4MB of actual code). Trades the
 # self-contained binary for a shared bun package.
-depends=('gcc-libs' 'openssl' 'bun')
+# git is a runtime dep: the daemon shells out to it for workspace memory
+# history (compaction/dreaming commits) and the exec tool.
+depends=('gcc-libs' 'openssl' 'bun' 'git')
 makedepends=('bun' 'cargo' 'git')
 provides=('shore-daemon')
 conflicts=('shore-daemon' 'shore-core' 'shore-git')

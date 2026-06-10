@@ -25,6 +25,15 @@ Writes to other paths (`SOUL.md`, `USER.md`, `AGENTS.md`, `DREAMS.md`, anything 
 - Update `MEMORY.md` (workspace root) with the conversational throughline: ongoing topics, unresolved threads, anything future-you should remember to continue.
 - Include timestamps or session context when relevant.
 
+## Committing your writes
+
+Your workspace is a git repository. After writing, commit your changes with the `exec` tool — during this pass `exec` accepts `git` commands only.
+
+- Group related writes into small commits (`git add <path> ...` then `git commit`); one topic or person per commit is a good default.
+- The commit message is the explanation: say what you saved and *why it matters* — what in this conversation produced it, what it supersedes or corrects. Reference files by workspace-relative path.
+- Do not configure remotes, push, or rewrite history. Local commits only.
+- Commits are bookkeeping, not memory: only `write`/`edit` calls count as memory writes for the archive decision below.
+
 ## Ending the pass
 
 Finish when you have written everything that needs to survive. End your final turn with a brief plain-text summary (no tool calls) of what you wrote — that signals the loop is done.
