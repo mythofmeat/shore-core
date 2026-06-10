@@ -1270,7 +1270,8 @@ pub struct AdvancedConfig {
     /// Maximum LLM retry attempts before giving up. Overrides the default (2).
     pub max_retries: Option<u32>,
 
-    /// Time to wait between retry attempts. Overrides the default (no backoff).
+    /// Base delay between retry attempts; doubled on each subsequent attempt.
+    /// Overrides the default (500ms).
     pub retry_backoff: Option<ConfigDuration>,
 
     /// Maximum image file size (bytes) before resizing for LLM upload.

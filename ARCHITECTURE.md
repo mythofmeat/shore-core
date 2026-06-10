@@ -484,6 +484,7 @@ Persistent surfaces:
 | Compacted segments | `$XDG_DATA_HOME/shore/<Character>/segments/` |
 | Active prompt snapshot | `$XDG_DATA_HOME/shore/<Character>/active_prompt/` |
 | Deferred prompt edits | `$XDG_DATA_HOME/shore/<Character>/deferred_edits.jsonl` |
+| Dreams audit log | `$XDG_DATA_HOME/shore/<Character>/DREAMS.md` |
 | Dreaming state | `$XDG_DATA_HOME/shore/<Character>/dreams/` |
 | Image attachments and generated outputs | `$XDG_DATA_HOME/shore/<Character>/images/` |
 

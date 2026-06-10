@@ -828,7 +828,8 @@ with that role.
 
 #### `config`
 - **read:**
-  - `{}` → `{ "config": <whole app config JSON> }`
+  - `{}` → `{ "config": <whole app config JSON>, "defaults": <built-in default config JSON> }`
+    (`defaults` lets clients distinguish user-customized values from defaults).
   - `{ "key": "<section>" }` → `{ "key": "<section>", "config": <subtree> }` or `not_found`.
 - **set:** `{ "key": "<key>", "value": "<string>" }`. Only a focused
   set of keys is settable at runtime:
@@ -840,8 +841,16 @@ with that role.
 #### `config_check`
 - **args:** none
 - **data:** validation result with `valid`, `warnings`, `info`, plus
-  config-dir / data-dir / cache-dir paths, `chat_models`,
-  `tool_models`, `memory_mode`.
+  `config_dir` / `data_dir` / `cache_dir` paths, `chat_models` (count),
+  `memory_mode`.
+
+#### `tools`
+- **args:** none
+- **data:** the effective tool surface:
+  `{ "tools": [ { "tool", "main", "subagents" } ], "subagents": [ { "name", "enabled", "tools", "model" } ], "exec_allowlist": [ "…" ], "warnings": [ "…" ] }`.
+  `main` is whether the primary character offers the tool; `subagents` lists
+  which enabled sub-agents own it. `warnings` surfaces dangling
+  `enabled_tools` / `enabled_subagents` / sub-agent tool references.
 
 #### `config_reset`
 - **args:** none

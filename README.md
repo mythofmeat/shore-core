@@ -137,6 +137,8 @@ from crates.io):
 - [ARCHITECTURE.md](ARCHITECTURE.md) — runtime model, invariants, security,
   observability, and validation guidance.
 - [CONFIGURATION.md](CONFIGURATION.md) — config reference and examples.
+- [docs/PROTOCOL.md](docs/PROTOCOL.md) — SWP wire protocol reference for
+  client authors.
 - [CLAUDE.md](CLAUDE.md) — short entry map for coding agents.
 - [CHANGELOG.md](CHANGELOG.md) — release history.
 

@@ -38,6 +38,23 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   predates (the wire version stays at `1` for such additive changes). See the
   forward-compatibility note in `docs/PROTOCOL.md` §3.
 
+### Fixed
+- **Documentation freshness pass.** CONFIGURATION.md now documents the full
+  `[memory.dreaming]` surface (`minimum_inactive_time`, `max_lateness`,
+  `compact_before`, `compact_to_zero`), the `[notifications]` sub-tables
+  (`ntfy`, `command`, per-event toggles with real defaults), the complete
+  `[advanced]` section (`editor`, `max_retries`, `retry_backoff` —
+  exponential, 500ms base, not "no backoff" — `max_image_size`,
+  `llm_sidecar`), and the remaining `[connections.matrix.embedded]` keys
+  (`admin_user`, `data_dir`, `binary`). PROTOCOL.md gained the missing
+  `tools` command, the `defaults` payload of bare `config` reads, and lost
+  the no-longer-emitted `tool_models` field from `config_check`. README now
+  links docs/PROTOCOL.md. The generated starter `config.toml` no longer
+  teaches the deprecated `[chat.*]` syntax. `shore config --check` no longer
+  warns about `[services.llm]` — that key is a parse-only stub nothing
+  consumes (the sidecar is governed by `[advanced].llm_sidecar`) — and its
+  no-models hint now points at `[providers.*]` + `provider:model_id`.
+
 ### Changed
 - **Removed the vestigial "private conversations" concept.** Nothing could
   ever mark a conversation private (every code path hardcoded `false`), so the
