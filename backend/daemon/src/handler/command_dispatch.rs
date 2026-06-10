@@ -466,14 +466,6 @@ impl MessageHandler {
                             .cloned()
                             .unwrap_or(serde_json::Value::Null),
                     );
-                    _ = data.insert(
-                        "private".into(),
-                        snapshot
-                            .config
-                            .get("private")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Bool(false)),
-                    );
                 }
 
                 _ = self

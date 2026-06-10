@@ -57,8 +57,8 @@ future work. It keeps the previous runtime config if the changed files fail to
 parse or validate.
 
 Startup-owned settings still require a daemon restart, including `[daemon]`
-listener settings, `[connections.matrix]`, `[notifications]`, `[services]`,
-and startup-only `[advanced]` diagnostics toggles. Shore logs these as
+listener settings, `[connections.matrix]`, `[notifications]`, and
+startup-only `[advanced]` diagnostics toggles. Shore logs these as
 restart-required when it sees them change.
 
 The watcher deliberately ignores `characters/<Character>/workspace/**`,
@@ -633,7 +633,6 @@ model knows output was dropped. The truncation is persisted, so the shortened
 result — not the original — is what gets replayed on later turns, capping its
 context cost for the rest of the conversation.
 
-- In private conversations, `search_chat_logs` and `exec` are hidden.
 - Workspace file tools (`read`, `write`, `edit`, `list_files`, `search`, `delete`) treat `memory/...` as an ordinary workspace subdirectory.
 - There is no `send_image` toggle for uploaded attachments; generated-image sending is controlled by `generate_image`.
 
@@ -733,19 +732,65 @@ Either way, a trailing run of **unanswered autonomous messages** (heartbeat `<se
 [memory.dreaming]
 enabled = false
 frequency = "0 3 * * *"
+minimum_inactive_time = "45m"
+max_lateness = "2h"
+compact_before = true
+compact_to_zero = false
 ```
 
 `frequency` is a five-field cron schedule: `minute hour day-of-month month day-of-week`.
 It supports `*`, lists, ranges, steps, month/day names, and `0` or `7` for Sunday;
 for example, `0 6 * * 1` runs Mondays at 06:00.
 
-Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a private AI librarian pass. The librarian tool loop is bounded by the per-model `max_tool_iterations` cap (see [Model Sections](#model-sections)), which defaults to **unlimited**. The character uses memory tools to inspect the existing flexible markdown layout, consolidate and dedupe durable notes, mark stale/superseded material, and update the canonical `MEMORY.md`. The daemon writes a timestamped audit entry to the dreams log automatically once the pass finishes — the model itself does not write `DREAMS.md`. Dreaming may also edit the protected prompt files (`SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`); those edits are staged through the active-prompt snapshot and take effect at the next compaction/reload boundary. When a cached chat request is available, the private librarian instruction is appended after that request prefix so the existing provider-side prompt cache can be reused.
+- `minimum_inactive_time` — minimum time since the last *user* message before a
+  scheduled sweep may fire. Heartbeat/autonomy turns do not reset this clock.
+- `max_lateness` — how long a missed cron occurrence stays eligible to fire
+  late (daemon was down or the character was active). Beyond this the
+  occurrence is skipped and the next cron tick takes over; there is no
+  catch-up queue.
+- `compact_before` — run an idle-style compaction (if eligible) immediately
+  before the sweep so the librarian sees consolidated memory. A compaction
+  failure aborts the sweep.
+- `compact_to_zero` — with `compact_before`, the pre-dream compaction archives
+  every chat turn instead of retaining the configured `keep_recent_turns`
+  tail.
+
+Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a background AI librarian pass. The librarian tool loop is bounded by the per-model `max_tool_iterations` cap (see [Model Sections](#model-sections)), which defaults to **unlimited**. The character uses memory tools to inspect the existing flexible markdown layout, consolidate and dedupe durable notes, mark stale/superseded material, and update the canonical `MEMORY.md`. The daemon writes a timestamped audit entry to the dreams log automatically once the pass finishes — the model itself does not write `DREAMS.md`. Dreaming may also edit the protected prompt files (`SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`); those edits are staged through the active-prompt snapshot and take effect at the next compaction/reload boundary. When a cached chat request is available, the librarian instruction is appended after that request prefix so the existing provider-side prompt cache can be reused.
 
 `MEMORY.md` is the index/map and replaces the old recap/digest concept. Normal chat reads `active_prompt/MEMORY.md`; edits to `workspace/MEMORY.md` only become prompt-active after compaction/reload. It should not duplicate `USER.md` or `AGENTS.md`, which remain pinned prompt files.
 
 The dreams audit log lives at `$XDG_DATA_HOME/shore/<Character>/DREAMS.md` (data dir, not workspace) so it never bleeds into prompts or memory snapshots. Use `shore memory dreams [--limit N]` to inspect recent entries. Machine-readable dreaming staging/debug state is written under `$XDG_DATA_HOME/shore/<Character>/dreams/`.
 
-## Advanced Diagnostics
+## `[advanced]`
+
+```toml
+[advanced]
+api_payload_logging = false
+cache_forensics = false
+# editor = "nvim"          # editor override, checked before $VISUAL / $EDITOR
+# max_retries = 2          # LLM retry attempts before giving up
+# retry_backoff = "500ms"  # base retry delay; doubles on each attempt
+max_image_size = 2000000   # bytes; larger images are resized to JPEG before upload (0 = never resize)
+
+[advanced.llm_sidecar]
+enabled = true
+# socket_path = "/run/user/1000/shore/llm.sock"   # default: <runtime_dir>/llm.sock
+```
+
+- `editor` — command used for editor-based flows; checked before the `$VISUAL`
+  and `$EDITOR` environment variables.
+- `max_retries` / `retry_backoff` — LLM retry policy. Defaults: 2 retries with
+  a 500ms base delay that doubles on each attempt (exponential backoff).
+- `max_image_size` — images larger than this many bytes are scaled down and
+  re-encoded as JPEG before being sent to a provider. `0` disables resizing.
+- `[advanced.llm_sidecar]` — the supervised TypeScript LLM wire process.
+  Enabled by default; the daemon resolves the `shore-llm-sidecar` binary via
+  `SHORE_LLM_SIDECAR_BIN`, then `$PATH` / next to `shore-daemon`, then the
+  packaged `/usr/lib/shore` location, and supervises it over a Unix socket.
+  Set `socket_path` to override the socket location (default
+  `<runtime_dir>/llm.sock`).
+
+### Diagnostics toggles
 
 `[advanced].api_payload_logging = true` writes per-call provider request and
 response JSON under `$XDG_CACHE_HOME/shore/debug/api_logs/` for chat traffic
@@ -820,14 +865,32 @@ This value is the **global fallback**. The quality effect is model-dependent —
 ```toml
 [notifications]
 enabled = false
-backend = "notify_send"
+backend = "notify_send"   # notify_send | ntfy | command
 generation_threshold = "0s"
+
+[notifications.ntfy]
+url = "https://ntfy.sh"
+topic = ""                # required for the ntfy backend
+token = ""                # optional auth token for self-hosted instances
+
+[notifications.command]
+template = ""             # shell command; {title} and {body} are substituted
+
+[notifications.events]
+autonomous_message = true
+cache_warning = true
+compaction_complete = true
+error = true
+message_complete = false
+usage_warning = true
 ```
 
-Backends include `notify_send`, `ntfy`, and `command`.
+`generation_threshold` only applies to `message_complete`: the notification
+fires only when generation took longer than the threshold (`"0s"` = always).
 
-Per-event toggles live under `[notifications.events]`. Usage budget threshold
-crossings use `usage_warning = true` by default.
+Per-event toggles live under `[notifications.events]`; every event defaults to
+`true` except `message_complete` (off by default — it fires on every assistant
+reply, so opt in deliberately).
 
 ## `[usage]`
 
@@ -951,16 +1014,22 @@ Embedded mode manages a conduwuit-compatible homeserver:
 trusted_user = "@user:shore.local"
 
 [connections.matrix.embedded]
-server_name = "shore.local"
-bind_address = "127.0.0.1"
+server_name = "shore.local"   # cannot be changed after first run
+bind_address = "127.0.0.1"    # "0.0.0.0" / "::" exposes the homeserver to LAN
 port = 6167
+admin_user = "shore-admin"    # admin username, without @ or :server (default)
 admin_password = "change-me"
+# data_dir = "..."            # default: $XDG_DATA_HOME/shore/matrix-server/
+# binary = "continuwuity"     # default: auto-detect (continuwuity, conduwuit, tuwunel)
 ```
 
 When the daemon supervises `shore-matrix`, it sets the bridge process log filter
 from `SHORE_MATRIX_RUST_LOG`. The default keeps Shore bridge lifecycle logs but
 suppresses routine Matrix SDK sync and key-backup chatter:
 `warn,shore_matrix=info,matrix_sdk_crypto::backups=error`.
+
+`[connections.telegram]` and `[connections.discord]` parse (arbitrary keys are
+accepted) but are reserved stubs — nothing consumes them yet.
 
 ## Validation
 

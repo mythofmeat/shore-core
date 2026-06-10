@@ -579,34 +579,30 @@ fn create_default_config(config_dir: &Path) {
         warn!(error = %e, "Could not create config directory");
         return;
     }
-    let content = r#"# Shore V2 configuration
+    let content = r#"# Shore configuration
 # See examples/config.toml for all available options.
 #
 # Characters are discovered from the characters/ directory.
 # Create characters/<name>/workspace/SOUL.md to define a character.
 #
-# Models are configured inline under [chat.<provider>.<model>].
+# Models are referenced as `provider:model_id` against a [providers.*] entry.
 # You can also use `include = ["extra.toml"]` or conf.d/*.toml for modular config.
 
 # include = ["models.toml"]  # optional explicit includes
 
 # [defaults]
-# model = "opus"              # must match a model key below
+# model = "anthropic:claude-sonnet-4-6"   # provider:model_id
 
-# [chat.anthropic]
-# sdk = "anthropic"
+# [providers.anthropic]
 # api_key_env = "ANTHROPIC_API_KEY"
 #
-# [chat.anthropic.sonnet]
-# model_id = "claude-sonnet-4-6"
+# [providers.anthropic.defaults]
+# cache_ttl = "1h"
 
 # [daemon]
 # addr = "127.0.0.1:7320"
 # unsafe_allow_remote_access = false  # required for non-loopback binds
 # allowed_hosts = []                  # IP allowlist only; not auth/TLS
-
-# [services.llm]
-# command = "node /path/to/shore-llm/dist/index.js"
 "#;
     let path = config_dir.join("config.toml");
     match std::fs::write(&path, content) {
@@ -2040,9 +2036,11 @@ max_output_tokens = 16384
         assert!(config_path.exists(), "config.toml should be created");
 
         let content = std::fs::read_to_string(&config_path).unwrap();
-        assert!(content.contains("Shore V2 configuration"));
+        assert!(content.contains("Shore configuration"));
         assert!(content.contains("[defaults]"));
-        assert!(content.contains("[chat.anthropic]"));
+        assert!(content.contains("[providers.anthropic]"));
+        // The starter template must not teach deprecated syntax.
+        assert!(!content.contains("[chat."));
     }
 
     #[test]

@@ -397,7 +397,6 @@ impl CompactionManager {
         conversation_id: &str,
         messages: &[ConversationMessage],
         active_content: &str,
-        is_private: bool,
         system_template: &str,
         prompt_template: &str,
         char_name: &str,
@@ -422,11 +421,6 @@ impl CompactionManager {
             dry_run,
             "Compaction started"
         );
-
-        // Skip private conversations entirely.
-        if is_private {
-            return Err(CompactionError::PrivateConversation);
-        }
 
         if messages.is_empty() {
             return Err(CompactionError::InsufficientMessages);
@@ -1710,7 +1704,6 @@ mod tests {
                 "conv-1",
                 &make_messages(10),
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -1778,7 +1771,6 @@ mod tests {
                 "conv-no-writes",
                 &make_messages(10),
                 "active content untouched",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -1847,7 +1839,6 @@ mod tests {
                 "conv-rejected",
                 &make_messages(10),
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -1920,7 +1911,6 @@ mod tests {
                 "conv-mixed",
                 &make_messages(10),
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -1982,7 +1972,6 @@ mod tests {
                 "conv-dry",
                 &make_messages(10),
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -2039,7 +2028,6 @@ mod tests {
                 "old-conv",
                 &make_messages(10),
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -2092,7 +2080,6 @@ mod tests {
                 "conv-1",
                 &make_messages(10),
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -2143,7 +2130,6 @@ mod tests {
                 "conv-1",
                 &make_messages(10),
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -2220,7 +2206,6 @@ mod tests {
                 "conv-1",
                 &messages,
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -2277,7 +2262,6 @@ mod tests {
                 "conv-1",
                 &messages,
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -2329,7 +2313,6 @@ mod tests {
                 "conv-1",
                 &messages,
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -2368,7 +2351,6 @@ mod tests {
                 "conv-1",
                 &make_messages(10),
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -2420,44 +2402,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_private_conversation_skips_compaction() {
-        let llm = ScriptedLlm::writing(&[("memory/notes/x.md", "# x")]);
-        let conv_mgr = MockConversationMgr::new("must-not-be-used");
-        let mgr = CompactionManager::new(CompactionConfig::default());
-        let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memory"))
-            .await
-            .unwrap();
-        let ctx = TestCtx::new(tmp.path().to_string_lossy().into_owned());
-
-        let result = mgr
-            .compact(
-                "private-conv",
-                &make_messages(10),
-                "",
-                true,
-                DEFAULT_COMPACT_SYSTEM,
-                DEFAULT_COMPACT_PROMPT,
-                "TestChar",
-                "TestUser",
-                &llm,
-                &conv_mgr,
-                Some(&store),
-                false,
-                None,
-                false,
-                make_chat_request(&[]),
-                None,
-                &ctx,
-                None,
-            )
-            .await;
-
-        assert!(matches!(result, Err(CompactionError::PrivateConversation)));
-        assert!(conv_mgr.archived_calls().is_empty());
-    }
-
-    #[tokio::test]
     async fn test_compact_empty_messages() {
         let llm = ScriptedLlm::new(vec![end_turn("never called")]);
         let conv_mgr = MockConversationMgr::new("must-not-be-used");
@@ -2473,7 +2417,6 @@ mod tests {
                 "conv-1",
                 &[],
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -2510,7 +2453,6 @@ mod tests {
                 "conv-1",
                 &make_messages(5),
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -2579,7 +2521,6 @@ mod tests {
                 "conv-cached",
                 &messages,
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
@@ -2700,7 +2641,6 @@ mod tests {
                 "conv-1",
                 &make_messages(10),
                 "",
-                false,
                 DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",

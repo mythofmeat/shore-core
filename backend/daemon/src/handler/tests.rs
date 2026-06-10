@@ -335,7 +335,6 @@ async fn switch_character_pushes_authoritative_history_to_session() {
             assert_eq!(output.name, "switch_character");
             assert_eq!(output.data["character"], "Bob");
             assert_eq!(output.data["selected_character"], "Bob");
-            assert_eq!(output.data["private"], false);
         }
         other => panic!("Expected CommandOutput, got {other:?}"),
     }
@@ -350,7 +349,6 @@ async fn switch_character_pushes_authoritative_history_to_session() {
             assert_eq!(history.selected_character.as_deref(), Some("Bob"));
             assert_eq!(history.messages.len(), 1);
             assert_eq!(history.messages[0].content, "hello from bob");
-            assert_eq!(history.config["private"], false);
         }
         other => panic!("Expected direct History, got {other:?}"),
     }

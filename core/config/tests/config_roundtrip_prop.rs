@@ -12,9 +12,9 @@ use shore_config::app::{
     BudgetWeekday, CommandNotifyConfig, CompactionConfig, ConnectionsConfig, DaemonConfig,
     DefaultsConfig, DreamingConfig, EmbeddedConfig, HeartbeatConfig, LlmSidecarConfig,
     MatrixConfig, MemoryConfig, NotificationBackend, NotificationEventsConfig, NotificationsConfig,
-    NtfyConfig, RetrievalBinaryMode, RetrievalConfig, RetrievalMode, SearchConfig, ServiceEntry,
-    ServicesConfig, SubagentConfig, ThinkingConfig, ToolOverride, ToolsConfig, UsageBudgetAction,
-    UsageBudgetConfig, UsageBudgetPeriod, UsageConfig, UsageSpikeWarningsConfig,
+    NtfyConfig, RetrievalBinaryMode, RetrievalConfig, RetrievalMode, SearchConfig, SubagentConfig,
+    ThinkingConfig, ToolOverride, ToolsConfig, UsageBudgetAction, UsageBudgetConfig,
+    UsageBudgetPeriod, UsageConfig, UsageSpikeWarningsConfig,
 };
 use shore_config::models::{CacheKeepaliveSetting, ModelConfigFields, Sdk};
 use shore_config::providers::{ProviderDiscovery, ProviderEntry, ProviderKeyEntry};
@@ -798,7 +798,6 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
         arb_tools_config(),
         arb_memory_config(),
         arb_connections_config(),
-        prop::option::of(arb_nonempty_text()),
         arb_notifications_config(),
         arb_usage_config(),
         arb_advanced_config(),
@@ -812,7 +811,6 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
                 tools,
                 memory,
                 connections,
-                service_command,
                 notifications,
                 usage,
                 advanced,
@@ -824,12 +822,6 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
                 tools,
                 memory,
                 connections,
-                services: ServicesConfig {
-                    llm: ServiceEntry {
-                        command: service_command,
-                        socket: None,
-                    },
-                },
                 notifications,
                 usage,
                 advanced,

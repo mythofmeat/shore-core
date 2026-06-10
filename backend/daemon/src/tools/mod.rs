@@ -182,7 +182,6 @@ pub fn all_tools() -> Vec<ToolDef> {
 /// autonomy manager) and guarantees that `{{user}}` in a description
 /// actually substitutes instead of shipping literally to the model.
 pub fn render_tool_defs(
-    is_private: bool,
     tools_cfg: &shore_config::app::ToolsConfig,
     char_name: &str,
     user_name: &str,
@@ -192,7 +191,7 @@ pub fn render_tool_defs(
     let _ignored = vars.insert("char".into(), char_name.to_owned());
     _ = vars.insert("character_name".into(), char_name.to_owned());
     _ = vars.insert("user".into(), user_name.to_owned());
-    available_tools(is_private, tools_cfg)
+    available_tools(tools_cfg)
         .iter()
         .map(|t| {
             serde_json::json!({
@@ -204,22 +203,12 @@ pub fn render_tool_defs(
         .collect()
 }
 
-/// Returns tool definitions offered for the current privacy mode and the
-/// `enabled_tools` allowlist. Tools are opt-in: only names present in
-/// `tools_cfg.enabled_tools` are offered (and `search_chat_logs` / `exec` are
-/// additionally suppressed in private conversations).
-pub fn available_tools(
-    is_private: bool,
-    tools_cfg: &shore_config::app::ToolsConfig,
-) -> Vec<ToolDef> {
+/// Returns tool definitions offered for the `enabled_tools` allowlist. Tools
+/// are opt-in: only names present in `tools_cfg.enabled_tools` are offered.
+pub fn available_tools(tools_cfg: &shore_config::app::ToolsConfig) -> Vec<ToolDef> {
     all_tools()
         .into_iter()
-        .filter(|t| {
-            if is_private && matches!(t.name, "search_chat_logs" | "exec") {
-                return false;
-            }
-            tools_cfg.tool_enabled(t.name)
-        })
+        .filter(|t| tools_cfg.tool_enabled(t.name))
         .collect()
 }
 
@@ -425,7 +414,7 @@ mod tests {
         // {{user}} appears in check_time and must resolve, not ship
         // literal to the model.
         let cfg = all_enabled();
-        let defs = render_tool_defs(false, &cfg, "qifei", "ren");
+        let defs = render_tool_defs(&cfg, "qifei", "ren");
         let check_time = defs
             .iter()
             .find(|d| d["name"] == "check_time")
@@ -445,7 +434,7 @@ mod tests {
     fn render_tool_defs_substitutes_char_placeholder() {
         // Future-proof guard: {{char}} also resolves through render_tool_defs.
         let cfg = all_enabled();
-        let defs = render_tool_defs(false, &cfg, "qifei", "ren");
+        let defs = render_tool_defs(&cfg, "qifei", "ren");
         for def in &defs {
             let desc = def["description"].as_str().unwrap();
             assert!(
@@ -464,19 +453,6 @@ mod tests {
     }
 
     #[test]
-    fn test_available_tools_filters_private() {
-        let cfg = all_enabled();
-        let all = all_tools();
-        let private = available_tools(true, &cfg);
-        let public = available_tools(false, &cfg);
-
-        assert_eq!(public.len(), all.len());
-        assert!(private.len() < public.len());
-        assert!(private.iter().all(|tool| tool.name != "search_chat_logs"));
-        assert!(private.iter().all(|tool| tool.name != "exec"));
-    }
-
-    #[test]
     fn enabled_tools_allowlist_offers_only_listed() {
         // Opt-in: only the listed tools are offered, in registry order.
         let cfg = ToolsConfig {
@@ -487,7 +463,7 @@ mod tests {
             ],
             ..ToolsConfig::default()
         };
-        let tools = available_tools(false, &cfg);
+        let tools = available_tools(&cfg);
         let names: Vec<&str> = tools.iter().map(|t| t.name).collect();
 
         assert!(names.contains(&"search"));
@@ -502,7 +478,7 @@ mod tests {
     #[test]
     fn empty_allowlist_offers_nothing() {
         let cfg = ToolsConfig::default();
-        assert!(available_tools(false, &cfg).is_empty());
+        assert!(available_tools(&cfg).is_empty());
     }
 
     #[test]
@@ -512,10 +488,7 @@ mod tests {
             enabled_tools: vec!["read".to_owned(), "not_a_tool".to_owned()],
             ..ToolsConfig::default()
         };
-        let names: Vec<&str> = available_tools(false, &cfg)
-            .iter()
-            .map(|t| t.name)
-            .collect();
+        let names: Vec<&str> = available_tools(&cfg).iter().map(|t| t.name).collect();
         assert_eq!(names, vec!["read"]);
     }
 

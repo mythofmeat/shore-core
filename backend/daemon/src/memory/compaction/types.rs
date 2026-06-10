@@ -121,8 +121,6 @@ pub enum CompactionError {
     Llm(String),
     #[error("parse: {0}")]
     Parse(String),
-    #[error("private conversation: skipped")]
-    PrivateConversation,
     #[error("insufficient messages")]
     InsufficientMessages,
     #[error("conversation: {0}")]

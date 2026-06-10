@@ -104,7 +104,6 @@ fn history_config_snapshot(
         "active_model": active_model
             .or_else(|| config.app.defaults.model.clone())
             .or_else(|| config.models.first_chat_model().map(|m| m.qualified_name.clone())),
-        "private": false,
     })
 }
 

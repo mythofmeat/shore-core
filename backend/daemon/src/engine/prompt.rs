@@ -94,8 +94,6 @@ pub struct PromptParams<'prompt> {
     pub user_definition: Option<&'prompt str>,
     /// Prompt-visible memory index from workspace/MEMORY.md.
     pub memory_index: Option<&'prompt str>,
-    /// Whether this is a private conversation.
-    pub is_private: bool,
     /// Whether there is conversation history outside of `messages` that the
     /// model can no longer see — typically true when prior turns have been
     /// archived by compaction. When set, the first user message in the
@@ -209,21 +207,19 @@ fn build_system_blocks(params: &PromptParams<'_>, template: &str) -> Vec<SystemB
         });
     }
 
-    // Block 5: prompt-visible memory index (suppressed for private conversations).
-    if !params.is_private {
-        if let Some(index) = params.memory_index.filter(|s| !s.is_empty()) {
-            system.push(SystemBlock {
-                label: "memory_index".into(),
-                content: format!(
-                    "<memory_index>\n\
-                     The following is your prompt-visible memory index from workspace/MEMORY.md. \
-                     It is a map of memory files, recently updated files, and still-relevant conversational throughlines; \
-                     it does not replace SOUL.md, USER.md, AGENTS.md, TOOLS.md, or HEARTBEAT.md.\n\n\
-                     {index}\n\
-                     </memory_index>"
-                ),
-            });
-        }
+    // Block 5: prompt-visible memory index.
+    if let Some(index) = params.memory_index.filter(|s| !s.is_empty()) {
+        system.push(SystemBlock {
+            label: "memory_index".into(),
+            content: format!(
+                "<memory_index>\n\
+                 The following is your prompt-visible memory index from workspace/MEMORY.md. \
+                 It is a map of memory files, recently updated files, and still-relevant conversational throughlines; \
+                 it does not replace SOUL.md, USER.md, AGENTS.md, TOOLS.md, or HEARTBEAT.md.\n\n\
+                 {index}\n\
+                 </memory_index>"
+            ),
+        });
     }
 
     system
@@ -599,7 +595,6 @@ mod tests {
             character_definition: None,
             user_definition: None,
             memory_index: None,
-            is_private: false,
             has_prior_context: false,
             messages,
             max_context_tokens: None,
@@ -1226,7 +1221,6 @@ mod tests {
             character_definition: Some("A friendly test character."),
             user_definition: Some("A developer."),
             memory_index: None,
-            is_private: false,
             has_prior_context: false,
             messages: &messages,
             max_context_tokens: Some(200_000),
@@ -1332,39 +1326,6 @@ mod tests {
         assert_eq!(result.system[2].label, "character");
         assert_eq!(result.system[3].label, "user");
         assert_eq!(result.system[4].label, "memory_index");
-    }
-
-    // ── Private conversation suppression ──────────────────────────────
-
-    #[test]
-    fn private_conversation_suppresses_memory_index() {
-        let params = PromptParams {
-            memory_index: Some("We talked about Rust."),
-            is_private: true,
-            ..make_params(&[])
-        };
-
-        let result = assemble_prompt(&params);
-        assert!(
-            result.system.iter().all(|b| b.label != "memory_index"),
-            "Private conversation should not include memory index"
-        );
-    }
-
-    #[test]
-    fn private_conversation_suppresses_memory() {
-        let params = PromptParams {
-            character_definition: Some("Friendly character"),
-            is_private: true,
-            ..make_params(&[])
-        };
-
-        let result = assemble_prompt(&params);
-        let all_text: String = result.system.iter().map(|b| b.content.as_str()).collect();
-        assert!(
-            !all_text.contains("Relevant Memories"),
-            "Private conversation should not include memory context"
-        );
     }
 
     // ── Token budget ──────────────────────────────────────────────────
