@@ -459,9 +459,15 @@ async fn prepare_and_run_compaction(
         .await
         .map_err(|e| compaction_err(&e))?;
 
-    // Opt-in, best-effort push after a successful manual compaction, mirroring
-    // the background path.
-    crate::memory::compaction::push_after_compaction(&ctx.config, char_name, &outcome).await;
+    // Opt-in, best-effort push after a successful manual compaction. Resolve
+    // the character-effective config (per-character overlays merged over
+    // global) so a per-character `[memory] git_push` override is honored here
+    // exactly as it is on the background path.
+    let push_config = shore_config::load_character_config(&ctx.config, char_name)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| ctx.config.clone());
+    crate::memory::compaction::push_after_compaction(&push_config, char_name, &outcome).await;
 
     Ok(outcome)
 }
