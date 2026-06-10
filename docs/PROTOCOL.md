@@ -531,13 +531,17 @@ or the key value. Only keys with `warn_on_fallback = true` raise this.
   "crossed_warn_at": [0.8],
   "period": "day",
   "period_start": "2026-05-20T00:00:00Z",
-  "reset_at": "2026-05-21T00:00:00Z"
+  "reset_at": "2026-05-21T00:00:00Z",
+  "reset_at_display": "2026-05-21 12:00 AM"
 }
 ```
 
 Emitted when a configured usage budget crosses any new warn threshold.
 Re-fires once per generation while still over budget so dismissed
-warnings come back.
+warnings come back. `reset_at` is RFC 3339 UTC for machine consumers;
+`reset_at_display` is the same instant rendered in the daemon's local
+time (`YYYY-MM-DD HH:MM AM|PM`) — clients that show the reset time should
+prefer it.
 
 ### 7.13 `ping`
 
