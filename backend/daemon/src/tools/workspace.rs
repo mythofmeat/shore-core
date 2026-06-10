@@ -454,6 +454,36 @@ fn excerpt_line(line: &str, raw_match_start: usize, raw_match_end: usize) -> Str
 }
 
 // ---------------------------------------------------------------------------
+// .git path rejection
+// ---------------------------------------------------------------------------
+
+/// Reject paths whose first path component is `.git` (the git internal
+/// directory).  `.gitignore`, `.gitattributes`, and files inside
+/// subdirectories are unaffected — only an exact leading `.git` component
+/// (after an optional `workspace/` prefix) is blocked.
+fn reject_git_internal_path(path_str: &str) -> Result<(), ToolError> {
+    let trimmed = path_str.strip_prefix("workspace/").unwrap_or(path_str);
+    let path = Path::new(trimmed);
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(name) => {
+                if name == ".git" {
+                    return Err(ToolError::InvalidArgs(
+                        "writing to .git/ is not allowed".into(),
+                    ));
+                }
+                return Ok(());
+            }
+            std::path::Component::Prefix(_)
+            | std::path::Component::RootDir
+            | std::path::Component::ParentDir => return Ok(()),
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -533,6 +563,7 @@ pub async fn handle_write(input: Value, workspace_dir: &str) -> Result<Value, To
         .get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ToolError::InvalidArgs("missing required field: path".into()))?;
+    reject_git_internal_path(path_str)?;
     let content = input
         .get("content")
         .and_then(|v| v.as_str())
@@ -561,6 +592,7 @@ pub async fn handle_edit(input: Value, workspace_dir: &str) -> Result<Value, Too
         .get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ToolError::InvalidArgs("missing required field: path".into()))?;
+    reject_git_internal_path(path_str)?;
 
     let edits = input
         .get("edits")
@@ -1169,6 +1201,7 @@ pub async fn handle_delete(
         .get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ToolError::InvalidArgs("missing required field: path".into()))?;
+    reject_git_internal_path(path_str)?;
 
     if crate::memory::deferred_edits::is_prompt_visible_path(path_str) {
         return Err(ToolError::InvalidArgs(format!(
@@ -1397,6 +1430,212 @@ fn validate_exec_args(workspace_dir: &str, argv: &[String]) -> Result<(), ToolEr
     Ok(())
 }
 
+/// Validate a `git` invocation via exec: block destructive/history-rewriting
+/// operations, remote modification, config manipulation, and ACE-injection
+/// flags.  Non-git programs are unaffected — only argv[0] == "git" is checked.
+fn validate_git_command(argv: &[String]) -> Result<(), ToolError> {
+    debug_assert!(
+        argv.first().is_some_and(|p| p == "git"),
+        "validate_git_command called for non-git program"
+    );
+
+    // Walk argv[1..] to find the subcommand, skipping global options.
+    let mut i = 1_usize;
+    while i < argv.len() {
+        let Some(tok_arg) = argv.get(i) else {
+            return Ok(());
+        };
+        let tok = tok_arg.as_str();
+
+        // ACE-injection global flags — block outright.
+        if tok == "-c" || tok.starts_with("--config-env") {
+            return Err(ToolError::InvalidArgs(
+                "git config/exec-path injection is not allowed".into(),
+            ));
+        }
+        if tok == "--exec-path" || tok.starts_with("--exec-path=") {
+            return Err(ToolError::InvalidArgs(
+                "git config/exec-path injection is not allowed".into(),
+            ));
+        }
+
+        // value-consuming global flags (separate-token value form): skip flag + value
+        if tok == "-C"
+            || tok == "--git-dir"
+            || tok == "--work-tree"
+            || tok == "--namespace"
+            || tok == "--super-prefix"
+        {
+            i = i.saturating_add(2);
+            continue;
+        }
+
+        // attached-value form (--flag=value): skip one token
+        if tok.starts_with("--git-dir=")
+            || tok.starts_with("--work-tree=")
+            || tok.starts_with("--namespace=")
+            || tok.starts_with("--super-prefix=")
+        {
+            i = i.saturating_add(1);
+            continue;
+        }
+
+        // any other option token: skip it (bare global flag like -p, --bare, --no-pager)
+        if tok.starts_with('-') {
+            i = i.saturating_add(1);
+            continue;
+        }
+
+        // first non-option token = subcommand
+        let Some(sub_slice) = argv.get(i..) else {
+            return Ok(());
+        };
+        return validate_git_subcommand(sub_slice);
+    }
+
+    // bare `git` with no subcommand (prints usage) — harmless
+    Ok(())
+}
+
+/// Validate a git subcommand + its arguments against the destructive denylist.
+/// `sub[0]` is the subcommand name; `rest = &sub[1..]`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "validates all blocked git subcommands in one place"
+)]
+fn validate_git_subcommand(sub: &[String]) -> Result<(), ToolError> {
+    let Some(cmd_arg) = sub.first() else {
+        return Ok(());
+    };
+    let cmd = cmd_arg.as_str();
+    let rest = sub.get(1..).unwrap_or(&[]);
+
+    let rest_has = |flag: &str| -> bool { rest.iter().any(|a| a == flag) };
+
+    match cmd {
+        "config" => Err(ToolError::InvalidArgs(
+            "git config is not allowed (use the daemon's identity setup)".into(),
+        )),
+        "reset" => {
+            if rest_has("--hard") || rest_has("--merge") || rest_has("--keep") {
+                Err(ToolError::InvalidArgs(
+                    "git reset --hard/--merge/--keep is not allowed".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        "clean" => {
+            if rest_has("-f")
+                || rest_has("--force")
+                || rest_has("-d")
+                || rest_has("-x")
+                || rest_has("-X")
+            {
+                return Err(ToolError::InvalidArgs(
+                    "git clean (forced) is not allowed".into(),
+                ));
+            }
+            // combined short flags like -fd, -fdx, -xd etc. contain any of f, d, x, X
+            for a in rest
+                .iter()
+                .filter(|a| a.starts_with('-') && !a.starts_with("--"))
+            {
+                if a.contains('f') || a.contains('d') || a.contains('x') || a.contains('X') {
+                    return Err(ToolError::InvalidArgs(
+                        "git clean (forced) is not allowed".into(),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        "rebase" | "filter-branch" | "filter-repo" => {
+            Err(ToolError::InvalidArgs(format!("git {cmd} is not allowed")))
+        }
+        "checkout" => {
+            if rest_has("-f") || rest_has("--force") {
+                Err(ToolError::InvalidArgs(
+                    "git checkout --force is not allowed".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        "switch" => {
+            if rest_has("-f") || rest_has("--force") || rest_has("--discard-changes") {
+                Err(ToolError::InvalidArgs(
+                    "git switch --force is not allowed".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        "restore" => Err(ToolError::InvalidArgs(
+            "git restore is not allowed (discards changes)".into(),
+        )),
+        "branch" => {
+            if rest_has("-D") || rest_has("-d") || rest_has("--delete") {
+                Err(ToolError::InvalidArgs(
+                    "git branch deletion is not allowed".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        "tag" => {
+            if rest_has("-d") || rest_has("--delete") {
+                Err(ToolError::InvalidArgs(
+                    "git tag deletion is not allowed".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        "stash" => match rest.first().map(String::as_str) {
+            Some("drop" | "clear" | "pop") => Err(ToolError::InvalidArgs(
+                "git stash drop/clear/pop is not allowed".into(),
+            )),
+            _ => Ok(()),
+        },
+        "reflog" => match rest.first().map(String::as_str) {
+            Some("expire" | "delete") => Err(ToolError::InvalidArgs(
+                "git reflog expire/delete is not allowed".into(),
+            )),
+            _ => Ok(()),
+        },
+        "gc" => Err(ToolError::InvalidArgs("git gc is not allowed".into())),
+        "update-ref" => {
+            if rest_has("-d") || rest_has("--delete") {
+                Err(ToolError::InvalidArgs(
+                    "git update-ref -d is not allowed".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        "push" => {
+            if rest_has("-f")
+                || rest_has("--force")
+                || rest_has("--force-with-lease")
+                || rest_has("--delete")
+            {
+                Err(ToolError::InvalidArgs(
+                    "git force/delete push is not allowed".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        "remote" => match rest.first().map(String::as_str) {
+            Some("add" | "set-url" | "rename" | "remove" | "rm") => Err(ToolError::InvalidArgs(
+                "modifying git remotes is not allowed".into(),
+            )),
+            _ => Ok(()),
+        },
+        _ => Ok(()),
+    }
+}
+
 pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, ToolError> {
     let command = input
         .get("command")
@@ -1412,6 +1651,10 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
         return Err(ToolError::InvalidArgs(format!(
             "command '{program}' is not in the allowlist"
         )));
+    }
+
+    if program == "git" {
+        validate_git_command(&argv)?;
     }
 
     validate_exec_args(workspace_dir, &argv)?;
@@ -2532,5 +2775,179 @@ mod tests {
 
         let log = run_git(&ws, &["log", "--format=%s"]).await.unwrap();
         assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "first commit");
+    }
+
+    // -- validate_git_command allow list --------------------------------------
+
+    fn vgc_ok(cmd: &str) {
+        let argv = parse_command(cmd).unwrap();
+        assert!(
+            argv.first().is_some_and(|p| p == "git"),
+            "not a git command: {cmd}"
+        );
+        validate_git_command(&argv).unwrap();
+    }
+
+    fn vgc_err(cmd: &str) {
+        let argv = parse_command(cmd).unwrap();
+        assert!(
+            argv.first().is_some_and(|p| p == "git"),
+            "not a git command: {cmd}"
+        );
+        assert!(
+            validate_git_command(&argv).is_err(),
+            "expected Err for: {cmd}"
+        );
+    }
+
+    #[test]
+    fn git_validate_allows_basic_commands() {
+        vgc_ok("git status");
+        vgc_ok("git add memory/foo.md");
+        vgc_ok(r#"git commit -m "reset the counter""#); // "reset" inside message must not trip the reset rule
+        vgc_ok("git push origin main");
+        vgc_ok("git checkout main");
+        vgc_ok("git remote -v");
+        vgc_ok("git -C . status");
+        vgc_ok("git log --oneline");
+        vgc_ok("git diff");
+        vgc_ok("git branch");
+        vgc_ok("git stash");
+        vgc_ok("git tag -l");
+        vgc_ok("git reflog");
+        vgc_ok("git merge feature");
+        vgc_ok("git fetch");
+        vgc_ok("git pull");
+        vgc_ok("git blame README.md");
+        vgc_ok("git show HEAD");
+        vgc_ok("git rev-parse HEAD");
+        // bare git (no subcommand) is harmless
+        vgc_ok("git");
+    }
+
+    #[test]
+    fn git_validate_blocks_destructive() {
+        vgc_err("git reset --hard HEAD~3");
+        vgc_err("git clean -fdx");
+        vgc_err("git rebase main");
+        vgc_err(r"git -c core.pager='!sh' log");
+        vgc_err("git --exec-path=. foo");
+        vgc_err("git config alias.x '!sh'");
+        vgc_err("git remote add origin git@x:y");
+        vgc_err("git push --force");
+        vgc_err("git branch -D main");
+        vgc_err("git restore .");
+        vgc_err("git gc");
+        vgc_err("git reflog expire --all");
+        vgc_err("git filter-branch --tree-filter 'rm secrets' HEAD");
+        vgc_err("git filter-repo --path secrets");
+        vgc_err("git reset --merge HEAD~1");
+        vgc_err("git reset --keep HEAD~1");
+        vgc_err("git checkout -f main");
+        vgc_err("git checkout --force other");
+        vgc_err("git switch -f topic");
+        vgc_err("git switch --force topic");
+        vgc_err("git switch --discard-changes topic");
+        vgc_err("git branch -d old");
+        vgc_err("git branch --delete old");
+        vgc_err("git tag -d v1");
+        vgc_err("git tag --delete v1");
+        vgc_err("git stash drop");
+        vgc_err("git stash clear");
+        vgc_err("git stash pop");
+        vgc_err("git reflog delete HEAD@{1}");
+        vgc_err("git update-ref -d refs/heads/bad");
+        vgc_err("git update-ref --delete refs/heads/bad");
+        vgc_err("git push --force-with-lease");
+        vgc_err("git push --delete origin bad");
+        vgc_err("git remote set-url origin git@x:z");
+        vgc_err("git remote rename origin upstream");
+        vgc_err("git remote remove origin");
+        vgc_err("git remote rm origin");
+        vgc_err("git clean -fd");
+        vgc_err("git clean -xd");
+        vgc_err("git clean -X");
+        vgc_err("git clean -xdf");
+        vgc_err("git --config-env=GIT_CONFIG env status");
+        // Note: the spec mentions blocking -c without a value too
+        vgc_err("git -c status");
+    }
+
+    // -- reject_git_internal_path --------------------------------------------
+
+    fn rgip_err(path: &str) {
+        assert!(
+            reject_git_internal_path(path).is_err(),
+            "expected Err for path: {path}"
+        );
+    }
+
+    fn rgip_ok(path: &str) {
+        reject_git_internal_path(path).unwrap();
+    }
+
+    #[test]
+    fn reject_git_internal_blocks_dot_git() {
+        rgip_err(".git/config");
+        rgip_err(".git/hooks/pre-commit");
+        rgip_err("workspace/.git/hooks/x");
+        rgip_err(".git/objects/ab/cdef1234");
+    }
+
+    #[test]
+    fn reject_git_internal_allows_normal_paths() {
+        rgip_ok("memory/note.md");
+        rgip_ok(".gitignore");
+        rgip_ok("MEMORY.md");
+        rgip_ok(".gitattributes");
+        rgip_ok("notes/.git.md");
+        rgip_ok("workspace/notes.md");
+        rgip_ok("memory/people/ren.md");
+    }
+
+    #[tokio::test]
+    async fn handle_write_rejects_dot_git_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        let result = handle_write(
+            json!({"path": ".git/hooks/pre-commit", "content": "#!/bin/sh\necho hacked"}),
+            &ws_str,
+        )
+        .await;
+        assert!(result.is_err(), "write to .git/ must be rejected");
+        assert!(
+            !ws.join(".git/hooks/pre-commit").exists(),
+            ".git file must not be created"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_edit_rejects_dot_git_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        let result = handle_edit(
+            json!({
+                "path": ".git/config",
+                "edits": [{"old_string": "foo", "new_string": "bar"}]
+            }),
+            &ws_str,
+        )
+        .await;
+        assert!(result.is_err(), "edit of .git/ must be rejected");
+    }
+
+    #[tokio::test]
+    async fn handle_delete_rejects_dot_git_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+        let data_str = tmp.path().join("data").to_string_lossy().to_string();
+
+        let result = handle_delete(json!({"path": ".git/HEAD"}), &ws_str, &data_str).await;
+        assert!(result.is_err(), "delete of .git/ must be rejected");
     }
 }

@@ -16,7 +16,10 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   commands only; dry runs still block it entirely. If a compaction archive
   fails after writes were committed, the daemon records the rollback as a
   `revert:` commit. History stays local: remotes are never configured, and a
-  host without git keeps working, just without history.
+  host without git keeps working, just without history. Git access through
+  `exec` is further restricted: destructive/history-rewriting ops, remote
+  modification, `config`, and config-injection flags are blocked, and the
+  file tools reject `.git/` writes.
 - **Deep-idle archive: `[memory.compaction] archive_after` (default off).**
   After the configured stretch with no new messages, the daemon archives the
   remaining active conversation so the next exchange starts from a clean

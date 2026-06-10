@@ -367,6 +367,12 @@ Load-bearing invariants:
 - background memory passes (compaction, dreaming) gate `exec` to `git`
   commands so they can commit memory changes; every other program is
   rejected at dispatch, and dry runs block `exec` entirely
+- git invocations through `exec` additionally forbid destructive or
+  history-rewriting operations (`reset --hard`, `clean -f`, `rebase`,
+  `filter-*`, branch/tag/ref deletion, `gc`, `reflog expire`, force/delete
+  push), remote modification (`remote add`/`set-url`), `config`, and the
+  `-c`/`--config-env`/`--exec-path` injection flags
+- the `write`, `edit`, and `delete` tools reject paths under `.git/`
 
 Remote daemon access is explicit. Non-loopback binding requires:
 
