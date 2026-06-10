@@ -1445,6 +1445,120 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
 }
 
 // ---------------------------------------------------------------------------
+// Workspace git history
+// ---------------------------------------------------------------------------
+
+/// True when an exec tool input's command line invokes `git`. The memory
+/// passes (compaction, dreaming) use this as their exec gate: git is allowed
+/// through so the model can commit its memory changes; everything else stays
+/// blocked. The full exec validation (allowlist, argv parsing, path
+/// confinement) still runs at dispatch.
+pub fn exec_input_is_git(input: &Value) -> bool {
+    input
+        .get("command")
+        .and_then(Value::as_str)
+        .and_then(|command| parse_command(command).ok())
+        .and_then(|argv| argv.into_iter().next())
+        .is_some_and(|program| program == "git")
+}
+
+async fn run_git(workspace_dir: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
+    tokio::process::Command::new("git")
+        .args(args)
+        .current_dir(workspace_dir)
+        .output()
+        .await
+}
+
+fn git_output_err(context: &str, output: &std::process::Output) -> std::io::Error {
+    std::io::Error::other(format!(
+        "{context}: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
+/// Ensure the character workspace is a git repository so memory passes can
+/// commit their changes. When `.git` is missing, initializes a repository and
+/// sets a local identity (so commits never fail on hosts without a global
+/// `user.name`/`user.email`). Pre-existing repositories are left untouched,
+/// including their identity config. Returns `true` if a repository was
+/// created.
+pub async fn ensure_workspace_git_repo(
+    workspace_dir: &Path,
+    character: &str,
+) -> std::io::Result<bool> {
+    if workspace_dir.join(".git").exists() {
+        return Ok(false);
+    }
+    tokio::fs::create_dir_all(workspace_dir).await?;
+    let init = run_git(workspace_dir, &["init", "--quiet"]).await?;
+    if !init.status.success() {
+        return Err(git_output_err("git init failed", &init));
+    }
+    let email_local: String = character
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_whitespace() { '-' } else { c })
+        .collect();
+    for (key, value) in [
+        ("user.name", character),
+        ("user.email", &format!("{email_local}@shore.local")),
+    ] {
+        let config = run_git(workspace_dir, &["config", key, value]).await?;
+        if !config.status.success() {
+            return Err(git_output_err("git config failed", &config));
+        }
+    }
+    Ok(true)
+}
+
+/// Best-effort wrapper around [`ensure_workspace_git_repo`] for the memory
+/// passes (`pass` names the caller in logs). Failures are logged, never
+/// fatal: a host without git still gets a full pass, just without history.
+pub async fn ensure_workspace_git_repo_best_effort(
+    workspace_dir: &Path,
+    character: &str,
+    pass: &str,
+) {
+    match ensure_workspace_git_repo(workspace_dir, character).await {
+        Ok(true) => {
+            tracing::info!(character, pass, "initialized workspace git repository");
+        }
+        Ok(false) => {}
+        Err(e) => tracing::warn!(
+            character,
+            pass,
+            error = %e,
+            "failed to ensure workspace git repository"
+        ),
+    }
+}
+
+/// Stage and commit everything in the workspace repository. Used by the
+/// daemon for bookkeeping commits (e.g. recording a compaction rollback) —
+/// model-authored commits go through the exec tool instead. A clean tree is
+/// not an error; returns `true` only when a commit was created.
+pub async fn git_commit_all(workspace_dir: &Path, message: &str) -> std::io::Result<bool> {
+    if !workspace_dir.join(".git").exists() {
+        return Ok(false);
+    }
+    let add = run_git(workspace_dir, &["add", "--all"]).await?;
+    if !add.status.success() {
+        return Err(git_output_err("git add failed", &add));
+    }
+    // `diff --cached --quiet` exits 0 when nothing is staged.
+    let staged = run_git(workspace_dir, &["diff", "--cached", "--quiet"]).await?;
+    if staged.status.success() {
+        return Ok(false);
+    }
+    let commit = run_git(workspace_dir, &["commit", "--quiet", "-m", message]).await?;
+    if !commit.status.success() {
+        return Err(git_output_err("git commit failed", &commit));
+    }
+    Ok(true)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2337,5 +2451,59 @@ mod tests {
         let result = handle_delete(json!({"path": "foo.md"}), &ws_str, "").await;
         assert!(result.is_err());
         assert!(ws.join("foo.md").exists(), "file should not be moved");
+    }
+
+    #[test]
+    fn exec_input_is_git_matches_program_only() {
+        assert!(exec_input_is_git(&json!({"command": "git status"})));
+        assert!(exec_input_is_git(
+            &json!({"command": "git commit -m 'move notes'"})
+        ));
+        assert!(!exec_input_is_git(&json!({"command": "ls -la"})));
+        assert!(!exec_input_is_git(&json!({"command": "/usr/bin/git log"})));
+        assert!(!exec_input_is_git(&json!({"command": ""})));
+        assert!(!exec_input_is_git(&json!({})));
+    }
+
+    #[tokio::test]
+    async fn ensure_workspace_git_repo_initializes_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+
+        let created = ensure_workspace_git_repo(&ws, "Test Char").await.unwrap();
+        assert!(created);
+        assert!(ws.join(".git").exists());
+
+        // Local identity is set so commits work without global config.
+        let name = run_git(&ws, &["config", "user.name"]).await.unwrap();
+        assert_eq!(String::from_utf8_lossy(&name.stdout).trim(), "Test Char");
+        let email = run_git(&ws, &["config", "user.email"]).await.unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&email.stdout).trim(),
+            "test-char@shore.local"
+        );
+
+        // Second call is a no-op on the existing repo.
+        let created_again = ensure_workspace_git_repo(&ws, "Test Char").await.unwrap();
+        assert!(!created_again);
+    }
+
+    #[tokio::test]
+    async fn git_commit_all_commits_and_skips_clean_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+
+        // No repo: silently does nothing.
+        assert!(!git_commit_all(&ws, "noop").await.unwrap());
+
+        let _created = ensure_workspace_git_repo(&ws, "test").await.unwrap();
+        std::fs::write(ws.join("note.md"), "hello").unwrap();
+        assert!(git_commit_all(&ws, "first commit").await.unwrap());
+
+        // Clean tree: no commit, no error.
+        assert!(!git_commit_all(&ws, "empty").await.unwrap());
+
+        let log = run_git(&ws, &["log", "--format=%s"]).await.unwrap();
+        assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "first commit");
     }
 }
