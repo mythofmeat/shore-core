@@ -51,9 +51,16 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   the no-longer-emitted `tool_models` field from `config_check`. README now
   links docs/PROTOCOL.md. The generated starter `config.toml` no longer
   teaches the deprecated `[chat.*]` syntax. `shore config --check` no longer
-  warns about `[services.llm]` — that key is a parse-only stub nothing
-  consumes (the sidecar is governed by `[advanced].llm_sidecar`) — and its
-  no-models hint now points at `[providers.*]` + `provider:model_id`.
+  warns about `[services.llm]`, and its no-models hint now points at
+  `[providers.*]` + `provider:model_id`.
+
+### Removed (BREAKING)
+- **The `[services]` config section is gone.** It was a parse-only stub:
+  nothing ever consumed `[services.llm].command` / `.socket` — the LLM
+  sidecar is located via `SHORE_LLM_SIDECAR_BIN` / `$PATH` / the packaged
+  libexec path and governed by `[advanced].llm_sidecar`. Because the config
+  parser rejects unknown sections, a `config.toml` that still contains
+  `[services]` will now fail to load — delete the section.
 
 ### Changed
 - **Removed the vestigial "private conversations" concept.** Nothing could

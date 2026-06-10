@@ -16,7 +16,7 @@ macro_rules! serde_default {
 /// Top-level daemon configuration loaded from config.toml.
 ///
 /// Covers all sections from §8: [defaults], [models], [behavior.autonomy],
-/// [behavior.tools], [memory], [connections], [services], [advanced].
+/// [behavior.tools], [memory], [connections], [advanced].
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
@@ -38,9 +38,6 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub connections: ConnectionsConfig,
-
-    #[serde(default)]
-    pub services: ServicesConfig,
 
     #[serde(default)]
     pub notifications: NotificationsConfig,
@@ -910,26 +907,6 @@ pub struct TelegramConfig {
 pub struct DiscordConfig {
     #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
-}
-
-// ── [services] ──────────────────────────────────────────────────────────
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ServicesConfig {
-    #[serde(default)]
-    pub llm: ServiceEntry,
-}
-
-/// Configuration for a supervised service.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ServiceEntry {
-    /// Command to spawn the service (e.g. "node shore-llm/dist/index.js").
-    pub command: Option<String>,
-
-    /// Unix socket path the service listens on.
-    pub socket: Option<String>,
 }
 
 // ── [notifications] ─────────────────────────────────────────────────────

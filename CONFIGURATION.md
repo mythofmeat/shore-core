@@ -57,8 +57,8 @@ future work. It keeps the previous runtime config if the changed files fail to
 parse or validate.
 
 Startup-owned settings still require a daemon restart, including `[daemon]`
-listener settings, `[connections.matrix]`, `[notifications]`, `[services]`,
-and startup-only `[advanced]` diagnostics toggles. Shore logs these as
+listener settings, `[connections.matrix]`, `[notifications]`, and
+startup-only `[advanced]` diagnostics toggles. Shore logs these as
 restart-required when it sees them change.
 
 The watcher deliberately ignores `characters/<Character>/workspace/**`,

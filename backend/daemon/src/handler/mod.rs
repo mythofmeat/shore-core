@@ -696,9 +696,6 @@ fn restart_required_changes(old: &LoadedConfig, new: &LoadedConfig) -> Vec<&'sta
     if old.app.notifications != new.app.notifications {
         changes.push("[notifications]");
     }
-    if old.app.services != new.app.services {
-        changes.push("[services]");
-    }
     if old.app.advanced.api_payload_logging != new.app.advanced.api_payload_logging {
         changes.push("[advanced].api_payload_logging");
     }
