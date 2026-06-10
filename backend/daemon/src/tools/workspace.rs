@@ -1632,7 +1632,11 @@ fn validate_git_subcommand(sub: &[String]) -> Result<(), ToolError> {
     }
 }
 
-pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, ToolError> {
+pub async fn handle_exec(
+    input: Value,
+    workspace_dir: &str,
+    character: &str,
+) -> Result<Value, ToolError> {
     let command = input
         .get("command")
         .and_then(|v| v.as_str())
@@ -1663,6 +1667,18 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
 
     let mut cmd = tokio::process::Command::new(program);
     let _ignored = cmd.args(program_args);
+
+    // exec runs as the character: attribute any git commits to it (per-process
+    // env, ignored by non-git programs), keeping them distinct from operator
+    // commits in the same repo.
+    if program == "git" {
+        let (name, email) = character_git_identity(character);
+        let _env = cmd
+            .env("GIT_AUTHOR_NAME", &name)
+            .env("GIT_AUTHOR_EMAIL", &email)
+            .env("GIT_COMMITTER_NAME", &name)
+            .env("GIT_COMMITTER_EMAIL", &email);
+    }
 
     if let Some(dir) = workdir {
         _ = cmd.current_dir(dir);
@@ -1733,15 +1749,29 @@ fn git_output_err(context: &str, output: &std::process::Output) -> std::io::Erro
     ))
 }
 
+/// The git author/committer identity (name, email) the daemon attributes its
+/// own and the model's memory commits to. Deliberately *not* written to the
+/// repo's local config: identity is injected per-process only onto git
+/// commands the daemon spawns, so an operator's own `git commit` in the same
+/// workspace keeps their global identity and stays distinguishable in the log.
+pub(crate) fn character_git_identity(character: &str) -> (String, String) {
+    let email_local: String = character
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_whitespace() { '-' } else { c })
+        .collect();
+    (character.to_owned(), format!("{email_local}@shore.local"))
+}
+
 /// Ensure the character workspace is a git repository so memory passes can
-/// commit their changes. When `.git` is missing, initializes a repository and
-/// sets a local identity (so commits never fail on hosts without a global
-/// `user.name`/`user.email`). Pre-existing repositories are left untouched,
-/// including their identity config. Returns `true` if a repository was
-/// created.
+/// commit their changes. When `.git` is missing, initializes a bare-config
+/// repository. Deliberately sets **no** local identity: the daemon injects the
+/// character identity per-commit (see [`character_git_identity`]), leaving an
+/// operator's own commits attributed to their global git identity. Pre-existing
+/// repositories are left untouched. Returns `true` if a repository was created.
 pub async fn ensure_workspace_git_repo(
     workspace_dir: &Path,
-    character: &str,
+    _character: &str,
 ) -> std::io::Result<bool> {
     if workspace_dir.join(".git").exists() {
         return Ok(false);
@@ -1750,20 +1780,6 @@ pub async fn ensure_workspace_git_repo(
     let init = run_git(workspace_dir, &["init", "--quiet"]).await?;
     if !init.status.success() {
         return Err(git_output_err("git init failed", &init));
-    }
-    let email_local: String = character
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_whitespace() { '-' } else { c })
-        .collect();
-    for (key, value) in [
-        ("user.name", character),
-        ("user.email", &format!("{email_local}@shore.local")),
-    ] {
-        let config = run_git(workspace_dir, &["config", key, value]).await?;
-        if !config.status.success() {
-            return Err(git_output_err("git config failed", &config));
-        }
     }
     Ok(true)
 }
@@ -1790,11 +1806,16 @@ pub async fn ensure_workspace_git_repo_best_effort(
     }
 }
 
-/// Stage and commit everything in the workspace repository. Used by the
+/// Stage and commit everything in the workspace repository, attributed to the
+/// character (identity injected per-commit, not via repo config). Used by the
 /// daemon for bookkeeping commits (e.g. recording a compaction rollback) —
 /// model-authored commits go through the exec tool instead. A clean tree is
 /// not an error; returns `true` only when a commit was created.
-pub async fn git_commit_all(workspace_dir: &Path, message: &str) -> std::io::Result<bool> {
+pub async fn git_commit_all(
+    workspace_dir: &Path,
+    character: &str,
+    message: &str,
+) -> std::io::Result<bool> {
     if !workspace_dir.join(".git").exists() {
         return Ok(false);
     }
@@ -1807,9 +1828,24 @@ pub async fn git_commit_all(workspace_dir: &Path, message: &str) -> std::io::Res
     if staged.status.success() {
         return Ok(false);
     }
+    // Attribute the commit to the character via `-c` overrides (both author
+    // and committer) rather than repo config, so operator commits stay theirs.
+    let (name, email) = character_git_identity(character);
+    let name_arg = format!("user.name={name}");
+    let email_arg = format!("user.email={email}");
     let commit = run_git(
         workspace_dir,
-        &["commit", "--quiet", "--no-verify", "-m", message],
+        &[
+            "-c",
+            &name_arg,
+            "-c",
+            &email_arg,
+            "commit",
+            "--quiet",
+            "--no-verify",
+            "-m",
+            message,
+        ],
     )
     .await?;
     if !commit.status.success() {
@@ -2498,7 +2534,7 @@ mod tests {
         tokio::fs::create_dir_all(&ws).await.unwrap();
         let ws_str = ws.to_string_lossy().to_string();
 
-        let result = handle_exec(json!({"command": "pwd"}), &ws_str)
+        let result = handle_exec(json!({"command": "pwd"}), &ws_str, "test")
             .await
             .unwrap();
         let stdout = result["stdout"].as_str().unwrap();
@@ -2514,7 +2550,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ws_str = tmp.path().to_string_lossy().to_string();
 
-        let result = handle_exec(json!({"command": "rm -rf /"}), &ws_str).await;
+        let result = handle_exec(json!({"command": "rm -rf /"}), &ws_str, "test").await;
         assert!(result.is_err());
     }
 
@@ -2525,7 +2561,7 @@ mod tests {
         tokio::fs::create_dir_all(&ws).await.unwrap();
         let ws_str = ws.to_string_lossy().to_string();
 
-        let result = handle_exec(json!({"command": "cat /etc/passwd"}), &ws_str).await;
+        let result = handle_exec(json!({"command": "cat /etc/passwd"}), &ws_str, "test").await;
         assert!(result.is_err());
     }
 
@@ -2536,7 +2572,7 @@ mod tests {
         tokio::fs::create_dir_all(&ws).await.unwrap();
         let ws_str = ws.to_string_lossy().to_string();
 
-        let result = handle_exec(json!({"command": "rg tea ../"}), &ws_str).await;
+        let result = handle_exec(json!({"command": "rg tea ../"}), &ws_str, "test").await;
         assert!(result.is_err());
     }
 
@@ -2547,7 +2583,7 @@ mod tests {
         tokio::fs::create_dir_all(&ws).await.unwrap();
         let ws_str = ws.to_string_lossy().to_string();
 
-        let result = handle_exec(json!({"command": "git -C /tmp status"}), &ws_str).await;
+        let result = handle_exec(json!({"command": "git -C /tmp status"}), &ws_str, "test").await;
         assert!(result.is_err());
     }
 
@@ -2561,6 +2597,7 @@ mod tests {
         let result = handle_exec(
             json!({"command": "cargo --manifest-path=/tmp/Cargo.toml test"}),
             &ws_str,
+            "test",
         )
         .await;
         assert!(result.is_err());
@@ -2576,7 +2613,7 @@ mod tests {
             .unwrap();
         let ws_str = ws.to_string_lossy().to_string();
 
-        let result = handle_exec(json!({"command": "cat src/note.txt"}), &ws_str)
+        let result = handle_exec(json!({"command": "cat src/note.txt"}), &ws_str, "test")
             .await
             .unwrap();
         assert_eq!(result["stdout"], "tea");
@@ -2589,7 +2626,7 @@ mod tests {
         tokio::fs::create_dir_all(&ws).await.unwrap();
         let ws_str = ws.to_string_lossy().to_string();
 
-        let result = handle_exec(json!({"command": "pwd; pwd"}), &ws_str).await;
+        let result = handle_exec(json!({"command": "pwd; pwd"}), &ws_str, "test").await;
         assert!(result.is_err());
     }
 
@@ -2601,9 +2638,13 @@ mod tests {
 
         tokio::fs::create_dir_all(ws.join("subdir")).await.unwrap();
 
-        let result = handle_exec(json!({"command": "pwd", "workdir": "subdir"}), &ws_str)
-            .await
-            .unwrap();
+        let result = handle_exec(
+            json!({"command": "pwd", "workdir": "subdir"}),
+            &ws_str,
+            "test",
+        )
+        .await
+        .unwrap();
         let stdout = result["stdout"].as_str().unwrap();
         assert!(
             stdout.contains("subdir"),
@@ -2835,13 +2876,26 @@ mod tests {
         assert!(created);
         assert!(ws.join(".git").exists());
 
-        // Local identity is set so commits work without global config.
-        let name = run_git(&ws, &["config", "user.name"]).await.unwrap();
-        assert_eq!(String::from_utf8_lossy(&name.stdout).trim(), "Test Char");
-        let email = run_git(&ws, &["config", "user.email"]).await.unwrap();
+        // No *local* identity is written — so an operator's own commits keep
+        // their global identity. (`--local` errors when the key is unset.)
+        let local = run_git(&ws, &["config", "--local", "user.name"])
+            .await
+            .unwrap();
+        assert!(
+            !local.status.success(),
+            "ensure_workspace_git_repo must not set a local identity"
+        );
+
+        // Daemon commits are still attributed to the character via per-commit
+        // injection (works even with no local/global identity configured).
+        std::fs::write(ws.join("note.md"), "hi").unwrap();
+        let _committed = git_commit_all(&ws, "Test Char", "first").await.unwrap();
+        let author = run_git(&ws, &["log", "-1", "--format=%an <%ae>"])
+            .await
+            .unwrap();
         assert_eq!(
-            String::from_utf8_lossy(&email.stdout).trim(),
-            "test-char@shore.local"
+            String::from_utf8_lossy(&author.stdout).trim(),
+            "Test Char <test-char@shore.local>"
         );
 
         // Second call is a no-op on the existing repo.
@@ -2858,14 +2912,14 @@ mod tests {
         let ws = tmp.path().join("workspace");
 
         // No repo: silently does nothing.
-        assert!(!git_commit_all(&ws, "noop").await.unwrap());
+        assert!(!git_commit_all(&ws, "test", "noop").await.unwrap());
 
         let _created = ensure_workspace_git_repo(&ws, "test").await.unwrap();
         std::fs::write(ws.join("note.md"), "hello").unwrap();
-        assert!(git_commit_all(&ws, "first commit").await.unwrap());
+        assert!(git_commit_all(&ws, "test", "first commit").await.unwrap());
 
         // Clean tree: no commit, no error.
-        assert!(!git_commit_all(&ws, "empty").await.unwrap());
+        assert!(!git_commit_all(&ws, "test", "empty").await.unwrap());
 
         let log = run_git(&ws, &["log", "--format=%s"]).await.unwrap();
         assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "first commit");
@@ -2884,7 +2938,7 @@ mod tests {
 
         let _created = ensure_workspace_git_repo(&ws, "test").await.unwrap();
         std::fs::write(ws.join("note.md"), "hello").unwrap();
-        let _committed = git_commit_all(&ws, "first").await.unwrap();
+        let _committed = git_commit_all(&ws, "test", "first").await.unwrap();
 
         // Repo but no remote configured: skip without error.
         assert!(!git_push_workspace(&ws).await.unwrap());
@@ -2906,7 +2960,7 @@ mod tests {
         assert!(set_upstream.status.success());
         // A subsequent commit + bare push lands on the remote.
         std::fs::write(ws.join("note.md"), "updated").unwrap();
-        let _second = git_commit_all(&ws, "second").await.unwrap();
+        let _second = git_commit_all(&ws, "test", "second").await.unwrap();
         assert!(git_push_workspace(&ws).await.unwrap());
 
         let remote_log = run_git(&bare, &["log", "--format=%s"]).await.unwrap();

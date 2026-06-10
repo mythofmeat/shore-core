@@ -628,6 +628,7 @@ impl CompactionManager {
                 // tree instead of silently diverging. Best-effort.
                 match crate::tools::workspace::git_commit_all(
                     Path::new(workspace_dir),
+                    char_name,
                     "revert: compaction rolled back after archive failure",
                 )
                 .await

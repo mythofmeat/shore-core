@@ -328,7 +328,9 @@ pub fn dispatch_tool<'ctx>(
             "delete" => {
                 workspace::handle_delete(input, ctx.workspace_dir(), ctx.character_data_dir()).await
             }
-            "exec" => workspace::handle_exec(input, ctx.workspace_dir()).await,
+            "exec" => {
+                workspace::handle_exec(input, ctx.workspace_dir(), ctx.character_name()).await
+            }
             // set_next_wake is in the base tool set for cache stability but
             // only heartbeat-capable contexts are allowed to handle it.
             "set_next_wake" => ctx.schedule_next_wake(&input).unwrap_or_else(|| {

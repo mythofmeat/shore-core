@@ -296,9 +296,12 @@ dreaming pass, the daemon ensures the workspace is a git repository
 repositories, including their identity config, are left alone). Both passes
 are prompted to commit their changes in small, explained chunks through the
 exec tool, which is gated to `git` commands there — the commit messages carry
-the reasoning and sources for each memory change. The daemon never configures
-a remote, and the model cannot push (it is blocked at the exec layer): history
-is local unless the operator adds a remote. If a compaction archive fails after
+the reasoning and sources for each memory change. Those commits are attributed
+to the character (`<character> <slug@shore.local>`), injected per-commit rather
+than written to the repo's config, so an operator committing in the same
+workspace keeps their own git identity and stays distinguishable in the log.
+The daemon never configures a remote, and the model cannot push (it is blocked
+at the exec layer): history is local unless the operator adds a remote. If a compaction archive fails after
 the model already committed, the daemon records the rolled-back file restores as
 a `revert:` commit so history matches the tree. Git bootstrap and commits are
 best-effort: a host without git still compacts and dreams normally, just
