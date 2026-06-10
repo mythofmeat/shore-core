@@ -16,7 +16,7 @@ dispatcher (`backend/daemon/src/commands/mod.rs`).
   drop-the-connection check on `peer.ip()` after `accept()`.
 - **Non-loopback policy:** when the daemon binds to anything other than
   `127.0.0.1` / `::1` / `localhost`, startup requires an explicit
-  acknowledgement (`[daemon].allow_remote_access = true`) and ideally an
+  acknowledgement (`[daemon].unsafe_allow_remote_access = true`) and ideally an
   allowlist. Clients should not describe shore as authenticated or
   encrypted.
 

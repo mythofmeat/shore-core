@@ -1102,16 +1102,32 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 
     // -- deep-idle archive (async, outside lock) ---------------------------
     if deep_archive_needed {
+        // The trigger was computed at the top of the tick; the heartbeat and
+        // keepalive awaits above may have yielded long enough for a message
+        // to land. Revalidate idleness before drawing the archive boundary —
+        // same pattern as the dreaming inactivity recheck below.
+        let still_idle = {
+            let s = lock_state(&ctx.state);
+            let archive_after_secs = ctx.compaction.archive_after.as_secs();
+            archive_after_secs > 0
+                && !s.deep_archive_done
+                && Instant::now()
+                    .duration_since(s.last_compaction_activity)
+                    .as_secs()
+                    >= archive_after_secs
+        };
         let have_deps = ctx.llm_client.is_some()
             && ctx.loaded_config.is_some()
             && ctx.notifier.is_some()
             && ctx.registry.is_some();
-        if have_deps {
+        if still_idle && have_deps {
             execute_deep_idle_archive(character, ctx).await;
         } else {
-            // Unit-test contexts: release the single-flight flag so other
-            // triggers aren't wedged. There is no handler-pickup fallback for
-            // the deep archive — it only ever runs from the tick.
+            // Either the conversation became active during this tick's
+            // awaits, or this is a unit-test context without tick deps.
+            // Release the single-flight flag so other triggers aren't
+            // wedged. There is no handler-pickup fallback for the deep
+            // archive — it only ever runs from the tick.
             let mut s = lock_state(&ctx.state);
             s.compaction_triggered = false;
             s.mark_dirty();
