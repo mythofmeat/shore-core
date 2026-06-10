@@ -267,6 +267,17 @@ pub async fn run_librarian_sweep(
     let now = Local::now();
     let ran_at = now.to_rfc3339();
 
+    // The librarian commits its changes through the exec tool, so the
+    // workspace must be a git repository before the pass starts.
+    if !dry_run {
+        crate::tools::workspace::ensure_workspace_git_repo_best_effort(
+            &workspace_dir,
+            character,
+            "dreaming",
+        )
+        .await;
+    }
+
     let mut request =
         build_librarian_request(loaded_config, character, cached_request, dry_run, &ran_at)?;
     request.forensic_character = Some(character.to_owned());
@@ -1001,6 +1012,9 @@ fn build_librarian_tool_defs(character: &str, display_name: &str, dry_run: bool)
     if !dry_run {
         names.push("write".to_owned());
         names.push("edit".to_owned());
+        // Offered for git commits only; the dispatch gate in
+        // `blocked_librarian_tool_result` rejects every other program.
+        names.push("exec".to_owned());
     }
     let tools_cfg = shore_config::app::ToolsConfig {
         enabled_tools: names,
@@ -1175,14 +1189,23 @@ fn push_assistant_response(request: &mut LlmRequest, resp: &GenerateResponse) {
 
 fn blocked_librarian_tool_result(
     name: &str,
-    _input: &Value,
+    input: &Value,
     dry_run: bool,
 ) -> Option<(String, bool)> {
     if name == "exec" {
-        return Some((
-            "exec is not available during private dreaming passes".to_owned(),
-            true,
-        ));
+        if dry_run {
+            return Some(("dry-run dreaming does not run commands".to_owned(), true));
+        }
+        // Git is allowed through so the librarian can commit its memory
+        // changes. Everything else stays blocked: the dreaming pass curates
+        // files, it does not run programs.
+        if !crate::tools::workspace::exec_input_is_git(input) {
+            return Some((
+                "exec during dreaming passes is limited to git commands".to_owned(),
+                true,
+            ));
+        }
+        return None;
     }
     if dry_run && matches!(name, "write" | "edit") {
         return Some((
@@ -3504,5 +3527,41 @@ mod tests {
             Err(DreamingError::Io(_))
         ));
         assert!(!outside.join("state.json").exists());
+    }
+
+    #[test]
+    fn librarian_exec_gate_allows_only_git() {
+        let git = json!({"command": "git commit -m 'memory: dedupe tea notes'"});
+        assert!(blocked_librarian_tool_result("exec", &git, false).is_none());
+
+        let (blocked_msg, blocked_is_error) =
+            blocked_librarian_tool_result("exec", &json!({"command": "ls -la"}), false).unwrap();
+        assert!(blocked_is_error);
+        assert!(blocked_msg.contains("limited to git"));
+
+        // Dry run blocks exec entirely, git included.
+        let (dry_msg, dry_is_error) = blocked_librarian_tool_result("exec", &git, true).unwrap();
+        assert!(dry_is_error);
+        assert!(dry_msg.contains("dry-run"));
+
+        // Malformed input does not slip through the gate.
+        assert!(blocked_librarian_tool_result("exec", &json!({}), false).is_some());
+    }
+
+    #[test]
+    fn librarian_tool_defs_offer_exec_only_when_live() {
+        let names = |dry_run: bool| -> Vec<String> {
+            build_librarian_tool_defs("alice", "Alice", dry_run)
+                .iter()
+                .filter_map(|def| def.get("name").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect()
+        };
+        let live = names(false);
+        assert!(live.iter().any(|n| n == "exec"));
+        assert!(live.iter().any(|n| n == "write"));
+        let dry = names(true);
+        assert!(!dry.iter().any(|n| n == "exec"));
+        assert!(!dry.iter().any(|n| n == "write"));
     }
 }

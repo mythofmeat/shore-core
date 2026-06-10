@@ -22,6 +22,16 @@ Finish with a concise summary covering:
 - unresolved issues
 - whether `MEMORY.md` was updated
 
+## Committing your changes
+
+Your workspace is a git repository, and your memory has a history. Use the `exec` tool to commit as you work — during this pass `exec` accepts `git` commands only.
+
+- Start by running `git status`. If earlier passes left uncommitted changes, commit those first as their own commit (e.g. `chore: carry-over from previous pass`) so they don't mix with this pass's work.
+- Commit after each logical unit of work — one dedupe, one move, one supersession, one index update — rather than one bulk commit at the end. Stage the specific files involved (`git add <path> ...`), not `git add -A`.
+- The commit message is the explanation. Say what changed and *why*: the reasoning behind a supersession, the source of a new fact (which conversation or file it came from), what a moved fact was deduplicated against. Reference files by workspace-relative path.
+- Do not configure remotes, push, or rewrite history. Local commits only.
+- Finish the pass with `git status` clean.
+
 The daemon writes a timestamped audit entry to the dreams log automatically once you finish — you do not (and cannot) write `DREAMS.md` yourself.
 
 Generated dreaming artifacts are not durable memory sources. Do not mine legacy `.dreams/**`, `dreams.md`, `MEMORY.md`, or `dreaming/**` as facts; you may read `MEMORY.md` for index continuity.
