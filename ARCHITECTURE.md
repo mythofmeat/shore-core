@@ -289,6 +289,19 @@ tools to inspect, dedupe, consolidate, and mark stale or superseded memory.
 The schedule is a five-field cron expression. Dreaming may edit prompt-visible
 files; those edits follow the same deferred activation rule.
 
+The workspace carries its own git history. Before a live compaction or
+dreaming pass, the daemon ensures the workspace is a git repository
+(initializing one with a local identity when `.git` is missing; pre-existing
+repositories, including their identity config, are left alone). Both passes
+are prompted to commit their changes in small, explained chunks through the
+exec tool, which is gated to `git` commands there — the commit messages carry
+the reasoning and sources for each memory change. Remotes are never
+configured; history is local unless the user adds a remote themselves. If a
+compaction archive fails after the model already committed, the daemon records
+the rolled-back file restores as a `revert:` commit so history matches the
+tree. Git bootstrap and commits are best-effort: a host without git still
+compacts and dreams normally, just without history.
+
 The dreams audit log lives at:
 
 ```text
@@ -350,6 +363,9 @@ Load-bearing invariants:
 - executable paths are rejected
 - path-like arguments must stay inside the character workspace
 - the command runs in the workspace or a validated subdirectory
+- background memory passes (compaction, dreaming) gate `exec` to `git`
+  commands so they can commit memory changes; every other program is
+  rejected at dispatch, and dry runs block `exec` entirely
 
 Remote daemon access is explicit. Non-loopback binding requires:
 

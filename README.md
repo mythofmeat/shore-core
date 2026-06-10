@@ -22,7 +22,9 @@ For release history, read [CHANGELOG.md](CHANGELOG.md).
   bounded CLI/TUI scrollback pages, with a boundary showing what is outside
   active context.
 - **Markdown memory.** Long-term memory lives under each character's
-  `workspace/memory/` as ordinary git-diffable files.
+  `workspace/memory/` as ordinary git-diffable files. The workspace is a real
+  git repository: compaction and dreaming passes commit their memory changes
+  in small chunks, with the reasoning and sources in the commit messages.
 - **Cache-safe prompt edits.** Character self-edits to prompt-visible files are
   staged and only activate at compaction/reload boundaries.
 - **Heartbeat autonomy.** Characters can use private heartbeat ticks to reflect,

@@ -8,6 +8,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **Workspace git history for memory passes.** The daemon initializes a git
+  repository in the character workspace (when `.git` is missing) before live
+  compaction and dreaming passes, and both passes now commit their memory
+  changes as they work — small commits with the reasoning and sources in the
+  messages. The `exec` tool is offered to these passes gated to `git`
+  commands only; dry runs still block it entirely. If a compaction archive
+  fails after writes were committed, the daemon records the rollback as a
+  `revert:` commit. History stays local: remotes are never configured, and a
+  host without git keeps working, just without history.
 - **Deep-idle archive: `[memory.compaction] archive_after` (default off).**
   After the configured stretch with no new messages, the daemon archives the
   remaining active conversation so the next exchange starts from a clean
