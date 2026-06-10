@@ -708,6 +708,7 @@ both a quick direct lookup and a deep delegated dig.
 [memory.compaction]
 enabled = true
 idle_trigger = "30m"
+archive_after = "0s" # deep-idle archive; 0 disables (e.g. "3h")
 min_turns = 8
 max_turns = 16
 max_context_tokens = 200000
@@ -717,6 +718,14 @@ keep_recent_turns = 2
 Compaction writes markdown memory notes, archives old turns, and activates staged prompt-visible edits. It also updates `MEMORY.md` with the conversational throughline so the next conversation can pick up where this one left off; dreaming reorganizes the index later. When the autonomy manager has a cached chat request, compaction reuses that prefix and appends only the carry-forward instruction (the trailing `role:"system"` message is wrapped to a `<system_instruction>` user turn by the Anthropic provider), preserving the live conversation's prompt cache. After compaction, cache keepalive keeps its existing deadline and rebuilds the request from disk if needed, so stable pinned system prompt sections can stay warm even though the old conversation tail was discarded.
 
 Compaction runs a tool loop: the model calls `write` / `edit` on files under `memory/` and on the workspace-root `MEMORY.md`. Writes to any other path (`SOUL.md`, `USER.md`, `DREAMS.md`, paths outside `memory/`, etc.) are rejected at the dispatch wrapper. The per-model `max_tool_iterations` cap (see [Model Sections](#model-sections)) limits how many tool-use rounds a single pass may run; it defaults to **unlimited**, so the pass normally ends when the model stops calling tools. If the pass finishes with **zero** allowed memory writes — because the model used only read-only tools, only attempted disallowed paths, or hit a finite `max_tool_iterations` cap — the active conversation is **not** archived and the next trigger will retry. This is by design: silent "archive with no writes" was the failure mode of the pre-tool-loop XML path.
+
+### Deep-idle archive (`archive_after`)
+
+`archive_after` (default `0` = disabled) adds a second, longer idle boundary on top of `idle_trigger`: once that much time passes with no new messages, the daemon archives whatever is left of the active conversation so the next exchange starts from a clean slate — the automated equivalent of running `shore memory compact 0` before stepping away. Unlike the other triggers it is **not** gated by `min_turns`; short conversations that the regular idle trigger never picks up are exactly the ones it exists for.
+
+The mechanism depends on memory coverage. The compaction LLM always sees the full conversation (the `keep_recent_turns` split only controls what stays in `active.jsonl`), so when the regular idle trigger has already compacted and nothing arrived since, the leftover tail is already covered by memory — the deep-idle archive then moves it to a segment file directly, with **no LLM call**. This is the one sanctioned bypass of the zero-writes guard above: the guard protects uncovered content, and coverage was established by the earlier pass. If uncovered turns do exist (a short conversation below `min_turns`, or a brief exchange after the last compaction), a real keep-0 compaction pass runs first so those turns reach memory.
+
+Either way, a trailing run of **unanswered autonomous messages** (heartbeat `<sendMessage>` output the user never responded to) is retained in the active conversation rather than archived, so the message is still visible in the chat when the user returns — and a leftover autonomous tail alone never re-triggers the archive.
 
 ## `[memory.dreaming]`
 

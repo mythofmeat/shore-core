@@ -58,6 +58,21 @@ pub enum ContentBlock {
     },
 }
 
+/// How a message entered the conversation.
+///
+/// Persisted on [`Message`] (and echoed on `NewMessage` pushes) so that
+/// history consumers can distinguish autonomous (heartbeat-initiated)
+/// assistant messages from replies. `None` on a stored message means the
+/// origin was not recorded (messages persisted before origin tracking, or
+/// ordinary user/assistant turns where the role already implies it).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageOrigin {
+    UserInput,
+    AssistantReply,
+    Autonomous,
+}
+
 /// A chat message. One shape everywhere — no polymorphism.
 ///
 /// `content_blocks` is the canonical content representation.
@@ -89,6 +104,12 @@ pub struct Message {
     /// (user turns, system recaps) that carry no provider-bound data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_key: Option<String>,
+    /// How this message entered the conversation. Currently only
+    /// `Some(Autonomous)` is persisted (heartbeat `<sendMessage>` output);
+    /// compaction's deep-idle archive uses it to keep unanswered autonomous
+    /// messages visible across an archive boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<MessageOrigin>,
 }
 
 /// Stored alternate body for a regenerated assistant message.
@@ -394,6 +415,7 @@ mod tests {
     fn make_msg(content: &str, blocks: Vec<ContentBlock>) -> Message {
         Message {
             msg_id: "m1".into(),
+            origin: None,
             role: Role::User,
             content: content.into(),
             images: vec![],

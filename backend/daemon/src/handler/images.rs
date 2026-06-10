@@ -393,6 +393,7 @@ mod tests {
 
         let mut message = Message {
             msg_id: "m1".into(),
+            origin: None,
             role: Role::Assistant,
             content: "hello".into(),
             images: vec![ImageRef {

@@ -556,6 +556,7 @@ pub fn inject_system(
 
     let msg = Message {
         msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+        origin: None,
         role: Role::System,
         content: text.to_owned(),
         images: vec![],
@@ -641,6 +642,7 @@ mod tests {
     fn make_msg(id: &str, role: Role, content: &str) -> Message {
         Message {
             msg_id: id.to_owned(),
+            origin: None,
             role,
             content: content.to_owned(),
             images: vec![],

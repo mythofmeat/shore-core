@@ -266,9 +266,22 @@ Archived segments stay available to client history/log views through bounded,
 lazy pages, but prompt assembly and normal history snapshots use only the
 retained active tail.
 
-Compaction is single-flight per character. Manual `shore memory compact` and
-idle-triggered compaction share the same guard, so a second pass returns `busy`
-instead of racing against the same active transcript and memory files.
+Compaction is single-flight per character. Manual `shore memory compact`,
+idle-triggered compaction, and the deep-idle archive share the same guard, so
+a second pass returns `busy` instead of racing against the same active
+transcript and memory files.
+
+An optional deep-idle archive (`[memory.compaction] archive_after`) draws a
+clean-slate boundary after extended inactivity: the remaining active tail is
+archived to `segments/` so the next exchange starts fresh. Because the
+compaction LLM always sees the full conversation (the keep-N split only
+controls retention), a tail left by a prior compaction is already covered by
+memory and is archived as a pure file move with no LLM pass — the one
+sanctioned bypass of the "zero memory writes → no archive" guard, which exists
+to protect *uncovered* content. Uncovered turns get a real keep-0 compaction
+pass first. A trailing run of unanswered autonomous messages (persisted with
+`origin: "autonomous"`) is always retained so the user still sees it on
+return, and a leftover autonomous tail alone never re-triggers the archive.
 
 Dreaming is an opt-in scheduled AI librarian pass. When autonomy and
 `[memory.dreaming]` are enabled, the character privately uses memory/workspace

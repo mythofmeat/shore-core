@@ -139,6 +139,7 @@ mod tests {
                 rid: None,
                 messages: vec![Message {
                     msg_id: "m1".into(),
+                    origin: None,
                     role: Role::User,
                     content: "hello".into(),
                     images: vec![],

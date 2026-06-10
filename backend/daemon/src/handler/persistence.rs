@@ -254,11 +254,11 @@ fn emit_new_message_event(
     msg: &Message,
 ) {
     let mut wire_msg = msg.clone();
+    wire_msg.origin = Some(origin);
     crate::handler::embed_image_data(&mut wire_msg.images);
     let _ignored = event_tx.send(ServerMessage::NewMessage(NewMessage {
         revision,
         character: Some(character.to_owned()),
-        origin: Some(origin),
         message: wire_msg,
     }));
 }
@@ -267,6 +267,7 @@ fn message_from_response(response_msg: CompletedResponseMessage, provider_key: &
     let content = derive_content_from_blocks(&response_msg.content_blocks);
     Message {
         msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+        origin: None,
         role: response_msg.role,
         content,
         images: vec![],

@@ -511,6 +511,7 @@ mod tests {
     fn msg(id: &str, role: Role, content: &str) -> Message {
         Message {
             msg_id: id.to_owned(),
+            origin: None,
             role,
             content: content.to_owned(),
             images: vec![],

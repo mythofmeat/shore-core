@@ -305,7 +305,9 @@ Push: an assistant or autonomous message has been appended.
 
 `origin` is one of `"user_input"`, `"assistant_reply"`, `"autonomous"` (or
 omitted on legacy daemons). The `Message` body is flattened into the
-envelope.
+envelope; `origin` is carried by the flattened `Message` (§9.1), which puts
+it at the same top-level position the envelope-level field historically
+occupied — the wire shape is unchanged.
 
 ### 7.4 Stream frames
 
@@ -970,7 +972,8 @@ unspecified mode runs the default `summary`.
   "alt_index": 1,
   "alt_count": 2,
   "alternatives": [ MessageAlternative, … ],
-  "timestamp": "2026-05-20T12:00:00Z"
+  "timestamp": "2026-05-20T12:00:00Z",
+  "origin": "autonomous"
 }
 ```
 
@@ -984,6 +987,13 @@ unspecified mode runs the default `summary`.
 - `alt_index` / `alt_count` / `alternatives` are present only when the
   message has more than one stored response. `alt_index` is 0-based;
   `alternatives[alt_index]` matches the top-level `content`.
+- `origin` is optional: `"user_input"`, `"assistant_reply"`, or
+  `"autonomous"`. In `new_message` frames it is always stamped (§7.3). In
+  `history` snapshots it appears only on autonomous (heartbeat-initiated)
+  assistant messages — the daemon persists it only there — and is omitted on
+  ordinary turns and on messages stored before origin tracking. The
+  deep-idle archive uses it to keep unanswered autonomous messages in the
+  active conversation across an archive boundary.
 
 ### 9.2 `ContentBlock`
 

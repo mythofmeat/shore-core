@@ -390,7 +390,7 @@ fn new_message_golden() {
     ServerMessage::NewMessage(nm) => {
         assert_eq!(nm.revision, 8);
         assert_eq!(nm.character.as_deref(), Some("Alice"));
-        assert_eq!(nm.origin, Some(MessageOrigin::Autonomous));
+        assert_eq!(nm.message.origin, Some(MessageOrigin::Autonomous));
         assert_eq!(nm.message.msg_id, "m_auto_01");
         assert_eq!(nm.message.role, Role::Assistant);
         assert_eq!(nm.message.content, "I noticed something interesting.");
@@ -423,7 +423,7 @@ fn new_message_with_alts_golden() {
     ServerMessage::NewMessage(nm) => {
         assert_eq!(nm.revision, 9);
         assert_eq!(nm.character, None);
-        assert_eq!(nm.origin, None);
+        assert_eq!(nm.message.origin, None);
         assert_eq!(nm.message.msg_id, "m_auto_02");
         assert_eq!(nm.message.alt_index, Some(1));
         assert_eq!(nm.message.alt_count, Some(3));

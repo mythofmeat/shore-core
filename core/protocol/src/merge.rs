@@ -163,6 +163,7 @@ pub fn merge_tool_loop_messages(messages: &[Message]) -> Vec<Message> {
             alternatives: last_assistant.alternatives.clone(),
             timestamp: last_assistant.timestamp.clone(),
             provider_key: last_assistant.provider_key.clone(),
+            origin: last_assistant.origin,
         });
     }
 
@@ -187,6 +188,7 @@ mod tests {
             alt_count: None,
             alternatives: vec![],
             provider_key: None,
+            origin: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
         }
     }

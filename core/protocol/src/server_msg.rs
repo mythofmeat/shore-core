@@ -155,24 +155,22 @@ pub struct Phase {
     pub model: Option<String>,
 }
 
-/// Autonomous message arrived.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageOrigin {
-    UserInput,
-    AssistantReply,
-    Autonomous,
-}
+// Canonical definition lives in `types` so it can be persisted on `Message`;
+// re-exported here because clients historically import it from `server_msg`.
+pub use crate::types::MessageOrigin;
 
 /// Conversation message appended by the daemon.
+///
+/// The frame's `origin` lives on the flattened [`Message`] (`message.origin`).
+/// Because `message` is flattened, the wire shape is byte-identical to the
+/// envelope-level `origin` field this struct carried historically — only the
+/// Rust-side field moved.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NewMessage {
     #[serde(default)]
     pub revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub character: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<MessageOrigin>,
     #[serde(flatten)]
     pub message: Message,
 }

@@ -90,6 +90,7 @@ mod tests {
     fn message(id: &str) -> Message {
         Message {
             msg_id: id.into(),
+            origin: None,
             role: Role::Assistant,
             content: "hello".into(),
             images: vec![],
@@ -140,7 +141,6 @@ mod tests {
         let message = ServerMessage::NewMessage(NewMessage {
             revision: 6,
             character: Some("alice".into()),
-            origin: None,
             message: message("m2"),
         });
 
@@ -151,7 +151,6 @@ mod tests {
         ServerMessage::NewMessage(NewMessage {
             revision,
             character: Some("alice".into()),
-            origin: None,
             message: message("m"),
         })
     }

@@ -23,6 +23,10 @@ pub struct ConversationMessage {
     /// True when a user message's content_blocks are ALL ToolResult
     /// (i.e. a tool-loop intermediate, not a real user turn).
     pub is_tool_result_only: bool,
+    /// True when the message was sent autonomously (heartbeat
+    /// `<sendMessage>`), i.e. `Message::origin == Some(Autonomous)`.
+    /// Deep-idle archiving keeps a trailing run of these visible.
+    pub is_autonomous: bool,
 }
 
 /// Outcome of a compaction operation.

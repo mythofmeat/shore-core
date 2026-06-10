@@ -141,6 +141,16 @@ pub struct AutonomyState {
     /// Set by the idle trigger tick — the handler checks and clears this after
     /// each generation to run compaction inline (synchronously with the handler).
     compaction_pending: bool,
+    /// User turns in active.jsonl already covered by memory. Compaction's
+    /// LLM pass always sees the *full* conversation (the keep-N split only
+    /// controls what stays in active.jsonl), so on compaction completion this
+    /// equals the retained turn count. The deep-idle archive compares it
+    /// against the on-disk turn count to decide between a pure file archive
+    /// (everything covered — no LLM call) and a real keep-0 compaction pass.
+    covered_turn_count: usize,
+    /// Whether the deep-idle archive already ran (or found nothing archivable)
+    /// for this idle period. Cleared on any message activity.
+    deep_archive_done: bool,
     /// Cached last LLM request for heartbeat tick reuse.
     last_request: Option<LlmRequest>,
     /// Next allowed scheduled dreaming attempt after a failure.
@@ -176,6 +186,12 @@ struct PersistedState {
     next_wake_at: Option<String>,
     #[serde(default)]
     last_user_at: Option<String>,
+    /// See [`AutonomyState::covered_turn_count`]. Persisted so a daemon
+    /// restart between a compaction and the deep-idle archive doesn't force
+    /// a redundant LLM pass over already-covered turns. Defaults to 0 for
+    /// older state files, which fails safe (a pass is run when in doubt).
+    #[serde(default)]
+    covered_turn_count: usize,
 }
 
 fn state_path(data_dir: &Path, character: &str) -> PathBuf {
@@ -247,6 +263,7 @@ fn save_state(data_dir: &Path, character: &str, state: &mut AutonomyState) {
         ticks_without_user: state.heartbeat.ticks_without_user(),
         next_wake_at: state.heartbeat.next_wake().map(instant_to_rfc3339),
         last_user_at: state.heartbeat.last_user_at().map(instant_to_rfc3339),
+        covered_turn_count: state.covered_turn_count,
     };
 
     let path = state_path(data_dir, character);
@@ -459,8 +476,10 @@ impl AutonomyManager {
         let mut heartbeat = HeartbeatClock::with_config(&autonomy_cfg.heartbeat);
 
         // Restore persisted state if available.
+        let mut covered_turn_count = 0;
         if let Some(persisted) = load_state(&self.data_dir, character) {
             restore_from_persisted(&persisted, &mut heartbeat);
+            covered_turn_count = persisted.covered_turn_count;
             info!(character, "Autonomy state restored from disk");
         } else {
             info!(character, "Autonomy state created (no prior state)");
@@ -488,6 +507,8 @@ impl AutonomyManager {
             compaction_triggered: false,
             active_turn_count: 0,
             compaction_pending: false,
+            covered_turn_count,
+            deep_archive_done: false,
             last_request: None,
             next_dream_attempt_at: None,
             dream_failure_count: 0,
@@ -565,6 +586,7 @@ impl AutonomyManager {
             s.activity.record_message();
             s.last_compaction_activity = now;
             s.active_turn_count = message_count;
+            s.deep_archive_done = false;
             debug!(character, message_count, "User message notified");
 
             s.mark_dirty();
@@ -576,6 +598,7 @@ impl AutonomyManager {
         let _ignored = self.with_state(character, |s| {
             s.last_compaction_activity = Instant::now();
             s.active_turn_count = message_count;
+            s.deep_archive_done = false;
             debug!(character, message_count, "Assistant message notified");
             s.mark_dirty();
         });
@@ -626,6 +649,10 @@ impl AutonomyManager {
     pub fn notify_compaction_complete(&self, character: &str, new_turn_count: usize) {
         let _ignored = self.with_state(character, |s| {
             s.active_turn_count = new_turn_count;
+            // The compaction LLM saw the full conversation (the keep-N split
+            // only controls what stays in active.jsonl), so every retained
+            // turn is covered by memory.
+            s.covered_turn_count = new_turn_count;
             // Invalidate the cached request — it contains the pre-compaction
             // conversation. The next heartbeat/keepalive call can rebuild from
             // disk while preserving the existing keepalive deadline. Compaction
@@ -896,6 +923,7 @@ enum CachedRequestInvalidationReason {
     Compaction,
     IdleCompaction,
     PreDreamCompaction,
+    DeepIdleArchive,
 }
 
 /// Single point of invalidation for `AutonomyState::last_request`.
@@ -1003,7 +1031,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     let now = Instant::now();
 
     // Collect actions under the lock, then release before any async work.
-    let (int_action, mut keepalive_action, compaction_needed, dream_needed) =
+    let (int_action, mut keepalive_action, compaction_needed, deep_archive_needed, dream_needed) =
         collect_tick_actions(character, ctx, now);
 
     // Idle-triggered compaction: when the tick has the dependencies it needs
@@ -1072,6 +1100,24 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         execute_idle_compaction(character, ctx).await;
     }
 
+    // -- deep-idle archive (async, outside lock) ---------------------------
+    if deep_archive_needed {
+        let have_deps = ctx.llm_client.is_some()
+            && ctx.loaded_config.is_some()
+            && ctx.notifier.is_some()
+            && ctx.registry.is_some();
+        if have_deps {
+            execute_deep_idle_archive(character, ctx).await;
+        } else {
+            // Unit-test contexts: release the single-flight flag so other
+            // triggers aren't wedged. There is no handler-pickup fallback for
+            // the deep archive — it only ever runs from the tick.
+            let mut s = lock_state(&ctx.state);
+            s.compaction_triggered = false;
+            s.mark_dirty();
+        }
+    }
+
     if dream_needed {
         // Revalidate the inactivity gate: the keepalive/compaction awaits above
         // may have yielded long enough for a user message to land (updating
@@ -1107,7 +1153,7 @@ fn collect_tick_actions(
     character: &str,
     ctx: &TickContext,
     now: Instant,
-) -> (HeartbeatAction, CacheKeepaliveAction, bool, bool) {
+) -> (HeartbeatAction, CacheKeepaliveAction, bool, bool, bool) {
     let mut s = lock_state(&ctx.state);
     debug!(
         character,
@@ -1192,12 +1238,43 @@ fn collect_tick_actions(
         }
     }
 
+    // -- deep-idle archive trigger ----------------------------------------
+    // After an extended idle period (`archive_after`), archive what's left of
+    // the active conversation so the next exchange starts from a clean slate.
+    // Not gated by `min_turns` — short conversations are exactly the ones the
+    // regular idle trigger never picks up. Mutually exclusive with a normal
+    // compaction firing on the same tick; `deep_archive_done` suppresses
+    // re-fires until new message activity arrives.
+    let mut deep_archive_needed = false;
+    let archive_after_secs = ctx.compaction.archive_after.as_secs();
+    if ctx.config.enabled
+        && ctx.compaction.enabled
+        && archive_after_secs > 0
+        && !compaction_needed
+        && !s.compaction_triggered
+        && !s.deep_archive_done
+    {
+        let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
+        if idle_secs >= archive_after_secs {
+            s.compaction_triggered = true;
+            deep_archive_needed = true;
+            info!(
+                character = %character,
+                idle_secs,
+                archive_after_secs,
+                turn_count = s.active_turn_count,
+                "Compaction: deep-idle archive trigger fired"
+            );
+        }
+    }
+
     save_state(&ctx.data_dir, character, &mut s);
     s.heartbeat_log.flush_if_dirty();
     (
         int_action,
         keepalive_action,
         compaction_needed,
+        deep_archive_needed,
         dream_needed,
     )
 }
@@ -1277,7 +1354,9 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
     let Some(notifier) = ctx.notifier.as_ref() else {
         return;
     };
-    let Some(registry) = ctx.registry.as_ref() else {
+    // Required so the post-archive engine reload can actually happen; the
+    // reload helper itself treats the registry as optional.
+    let Some(_registry) = ctx.registry.as_ref() else {
         return;
     };
 
@@ -1295,50 +1374,13 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
         notifier,
         cached_request,
         None,
+        false,
     )
     .await
     {
         Ok(retained_count) => {
-            let engine_result = {
-                let mut r = registry.lock().await;
-                r.get_or_create(character)
-            };
-            match engine_result {
-                Ok(engine_arc) => {
-                    let mut engine = engine_arc.lock().await;
-                    if let Err(e) = engine.reload() {
-                        warn!(
-                            character,
-                            error = %e,
-                            "Idle compaction: engine reload failed"
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        character,
-                        error = %e,
-                        "Idle compaction: failed to fetch engine for reload"
-                    );
-                }
-            }
-
-            // Apply deferred character self-edits now that the cache has
-            // been bust by the engine reload.
-            let character_data_dir = character_data_dir(&ctx.data_dir, character);
-            if let Some(lc) = ctx.loaded_config.as_deref() {
-                if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
-                    &character_data_dir,
-                    &lc.dirs.config,
-                    character,
-                ) {
-                    warn!(
-                        character,
-                        error = %e,
-                        "Idle compaction: failed to apply deferred edits"
-                    );
-                }
-            }
+            reload_engine_and_apply_deferred(character, ctx, loaded_config, "Idle compaction")
+                .await;
 
             let mut s = lock_state(&ctx.state);
             invalidate_cached_request(
@@ -1347,6 +1389,7 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
                 CachedRequestInvalidationReason::IdleCompaction,
             );
             s.active_turn_count = retained_count;
+            s.covered_turn_count = retained_count;
             s.compaction_triggered = false;
             s.compaction_pending = false;
             s.last_compaction_activity = Instant::now();
@@ -1368,6 +1411,295 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
             s.last_compaction_activity = Instant::now();
             s.mark_dirty();
         }
+    }
+}
+
+/// Release the deep-idle single-flight flag after a failed or aborted attempt,
+/// pushing the activity clock forward so the next attempt waits a full
+/// `archive_after` window instead of retrying every tick.
+fn release_deep_archive_trigger(ctx: &TickContext) {
+    let mut s = lock_state(&ctx.state);
+    s.compaction_triggered = false;
+    s.last_compaction_activity = Instant::now();
+    s.mark_dirty();
+}
+
+/// Deep-idle archive: after `archive_after` of inactivity, archive what is
+/// left of the active conversation so the next exchange starts from a clean
+/// slate. A trailing run of unanswered autonomous messages (heartbeat
+/// `<sendMessage>` output with no user response yet) is retained in the
+/// active conversation so the user still sees it when they return.
+///
+/// Memory coverage decides the mechanism:
+/// * Every user turn already covered (the common case: the regular idle
+///   trigger compacted earlier and only the retained tail is left): archive
+///   the file directly — no LLM pass. This intentionally bypasses
+///   compaction's "zero memory writes → no archive" guard: that guard
+///   protects *uncovered* content, and coverage was established when the
+///   prior pass ran over the full conversation (the keep-N split only
+///   controls what stays in active.jsonl, not what the compaction model
+///   sees).
+/// * Uncovered turns present (the conversation never reached `min_turns`,
+///   or a short exchange happened after the last pass): run a real keep-0
+///   compaction so those turns reach memory first.
+async fn execute_deep_idle_archive(character: &str, ctx: &TickContext) {
+    let Some(loaded_config) = ctx.loaded_config.as_deref() else {
+        release_deep_archive_trigger(ctx);
+        return;
+    };
+
+    let data_dir = loaded_config.dirs.data.as_path();
+    let active_path = shore_config::character_active_jsonl(data_dir, character);
+    let (store, content) = match crate::engine::messages::MessageStore::load_with_raw(active_path) {
+        Ok(pair) => pair,
+        Err(e) => {
+            warn!(
+                character,
+                error = %e,
+                "Deep-idle archive: failed to read active conversation"
+            );
+            release_deep_archive_trigger(ctx);
+            return;
+        }
+    };
+
+    let messages = store.messages();
+    let tail = messages
+        .iter()
+        .rev()
+        .take_while(|m| {
+            m.role == Role::Assistant
+                && m.origin == Some(shore_protocol::types::MessageOrigin::Autonomous)
+        })
+        .count();
+    let archivable = messages.len().saturating_sub(tail);
+    if archivable == 0 {
+        // Empty conversation, or nothing but an unanswered autonomous tail
+        // (e.g. a previous deep archive already ran and the heartbeat spoke
+        // again). Quiesce until new message activity re-arms the trigger.
+        debug!(character, tail, "Deep-idle archive: nothing to archive");
+        let mut s = lock_state(&ctx.state);
+        s.deep_archive_done = true;
+        s.compaction_triggered = false;
+        s.mark_dirty();
+        return;
+    }
+
+    let user_turns = messages
+        .iter()
+        .filter(|m| m.role == Role::User && !m.is_tool_result_only())
+        .count();
+    let covered = lock_state(&ctx.state).covered_turn_count;
+
+    if user_turns == covered {
+        execute_deep_archive_pure(character, ctx, content, tail, archivable).await;
+    } else {
+        // Strict equality on purpose: a covered count that disagrees with the
+        // on-disk turn count in either direction means coverage is uncertain,
+        // and the safe direction is always to run the LLM pass.
+        execute_deep_archive_compaction(character, ctx).await;
+    }
+}
+
+/// Pure-archive arm of the deep-idle archive: every turn is already covered
+/// by memory, so move the active conversation to a segment file directly,
+/// keeping the last `tail` messages (the unanswered autonomous run).
+async fn execute_deep_archive_pure(
+    character: &str,
+    ctx: &TickContext,
+    active_content: String,
+    tail: usize,
+    archivable: usize,
+) {
+    use crate::memory::compaction::RetentionParams;
+
+    let Some(loaded_config) = ctx.loaded_config.as_deref() else {
+        release_deep_archive_trigger(ctx);
+        return;
+    };
+    let data_dir = loaded_config.dirs.data.as_path();
+
+    // Same single-flight guard as every other compaction entry point.
+    let Some(_guard) = crate::memory::compaction::try_begin_compaction(data_dir, character) else {
+        debug!(character, "Deep-idle archive: compaction already in flight");
+        release_deep_archive_trigger(ctx);
+        return;
+    };
+
+    let character_dir = character_data_dir(data_dir, character);
+    let conv_mgr = crate::memory::compaction_impls::RealConversationManager::new(&character_dir);
+    // Call through the trait so the archive runs on the blocking pool — the
+    // inherent method with the same name is the synchronous core.
+    let archive_result = crate::memory::compaction::ConversationManager::archive_and_retain(
+        &conv_mgr,
+        "deep-idle",
+        RetentionParams {
+            keep_last_n: tail,
+            active_content,
+        },
+    )
+    .await;
+
+    match archive_result {
+        Ok(_) => {
+            if let Err(e) = crate::memory::dreams_log::append_dream_entry(
+                data_dir,
+                character,
+                chrono::Local::now().fixed_offset(),
+                "deep-idle archive",
+                &format!(
+                    "Archived {archivable} message(s) after extended idle; \
+                     all turns were already covered by memory. Retained {tail} \
+                     unanswered autonomous message(s)."
+                ),
+            )
+            .await
+            {
+                warn!(character, error = %e, "Deep-idle archive: failed to append dreams log entry");
+            }
+
+            reload_engine_and_apply_deferred(character, ctx, loaded_config, "Deep-idle archive")
+                .await;
+
+            if let Some(notifier) = ctx.notifier.as_ref() {
+                notifier.notify(
+                    NotificationEvent::CompactionComplete,
+                    &format!("Shore — {character}"),
+                    &format!(
+                        "Idle conversation archived ({archivable} messages, no LLM pass needed)"
+                    ),
+                );
+            }
+
+            let mut s = lock_state(&ctx.state);
+            invalidate_cached_request(
+                &mut s,
+                character,
+                CachedRequestInvalidationReason::DeepIdleArchive,
+            );
+            s.active_turn_count = 0;
+            s.covered_turn_count = 0;
+            s.deep_archive_done = true;
+            s.compaction_triggered = false;
+            s.compaction_pending = false;
+            s.last_compaction_activity = Instant::now();
+            s.mark_dirty();
+            info!(
+                character,
+                archivable, tail, "Deep-idle archive complete (pure archive)"
+            );
+        }
+        Err(e) => {
+            warn!(
+                character,
+                error = %e,
+                "Deep-idle archive failed, will retry after the next archive_after window"
+            );
+            release_deep_archive_trigger(ctx);
+        }
+    }
+}
+
+/// LLM arm of the deep-idle archive: uncovered turns exist, so run a real
+/// keep-0 compaction (retaining the trailing autonomous run) to get them
+/// into memory before the conversation is archived.
+async fn execute_deep_archive_compaction(character: &str, ctx: &TickContext) {
+    let (Some(loaded_config), Some(llm_client), Some(notifier)) = (
+        ctx.loaded_config.as_deref(),
+        ctx.llm_client.as_ref(),
+        ctx.notifier.as_ref(),
+    ) else {
+        release_deep_archive_trigger(ctx);
+        return;
+    };
+
+    info!(
+        character,
+        "Deep-idle archive: running keep-0 compaction over uncovered turns"
+    );
+
+    let cached_request = lock_state(&ctx.state).last_request.clone();
+    match crate::memory::compaction::run_compaction(
+        character,
+        loaded_config,
+        llm_client,
+        notifier,
+        cached_request,
+        Some(0),
+        true,
+    )
+    .await
+    {
+        Ok(retained_count) => {
+            reload_engine_and_apply_deferred(character, ctx, loaded_config, "Deep-idle archive")
+                .await;
+
+            let mut s = lock_state(&ctx.state);
+            invalidate_cached_request(
+                &mut s,
+                character,
+                CachedRequestInvalidationReason::DeepIdleArchive,
+            );
+            s.active_turn_count = retained_count;
+            s.covered_turn_count = retained_count;
+            s.compaction_triggered = false;
+            s.compaction_pending = false;
+            s.last_compaction_activity = Instant::now();
+            // `deep_archive_done` is intentionally NOT set here: a
+            // NoMemoryWrites outcome is indistinguishable from success at
+            // this boundary (both return a 0 retained count). The next
+            // firing either finds nothing archivable and quiesces, or
+            // retries the pass on the still-intact conversation.
+            s.mark_dirty();
+            info!(
+                character,
+                retained_count, "Deep-idle archive complete (compaction pass)"
+            );
+        }
+        Err(e) => {
+            warn!(
+                character,
+                error = %e,
+                "Deep-idle archive compaction failed, will retry after the next archive_after window"
+            );
+            release_deep_archive_trigger(ctx);
+        }
+    }
+}
+
+/// Reload the character engine and apply any deferred prompt self-edits —
+/// the shared post-archive bookkeeping for every compaction boundary.
+async fn reload_engine_and_apply_deferred(
+    character: &str,
+    ctx: &TickContext,
+    loaded_config: &LoadedConfig,
+    log_context: &str,
+) {
+    if let Some(registry) = ctx.registry.as_ref() {
+        let engine_result = {
+            let mut r = registry.lock().await;
+            r.get_or_create(character)
+        };
+        match engine_result {
+            Ok(engine_arc) => {
+                let mut engine = engine_arc.lock().await;
+                if let Err(e) = engine.reload() {
+                    warn!(character, error = %e, "{log_context}: engine reload failed");
+                }
+            }
+            Err(e) => {
+                warn!(character, error = %e, "{log_context}: failed to fetch engine for reload");
+            }
+        }
+    }
+
+    let character_dir = character_data_dir(&ctx.data_dir, character);
+    if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
+        &character_dir,
+        &loaded_config.dirs.config,
+        character,
+    ) {
+        warn!(character, error = %e, "{log_context}: failed to apply deferred edits");
     }
 }
 
@@ -1489,7 +1821,7 @@ async fn run_pre_dream_compaction(
         .notifier
         .as_ref()
         .ok_or("no notifier for pre-dream compaction")?;
-    let registry = ctx
+    let _registry = ctx
         .registry
         .as_ref()
         .ok_or("no engine registry for pre-dream compaction")?;
@@ -1508,45 +1840,11 @@ async fn run_pre_dream_compaction(
         notifier,
         cached_request,
         keep_turns_override,
+        false,
     )
     .await?;
 
-    let engine_result = {
-        let mut r = registry.lock().await;
-        r.get_or_create(character)
-    };
-    match engine_result {
-        Ok(engine_arc) => {
-            let mut engine = engine_arc.lock().await;
-            if let Err(e) = engine.reload() {
-                warn!(
-                    character,
-                    error = %e,
-                    "Pre-dream compaction: engine reload failed"
-                );
-            }
-        }
-        Err(e) => {
-            warn!(
-                character,
-                error = %e,
-                "Pre-dream compaction: failed to fetch engine for reload"
-            );
-        }
-    }
-
-    let character_data_dir = character_data_dir(&ctx.data_dir, character);
-    if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
-        &character_data_dir,
-        &loaded_config.dirs.config,
-        character,
-    ) {
-        warn!(
-            character,
-            error = %e,
-            "Pre-dream compaction: failed to apply deferred edits"
-        );
-    }
+    reload_engine_and_apply_deferred(character, ctx, loaded_config, "Pre-dream compaction").await;
 
     let mut s = lock_state(&ctx.state);
     invalidate_cached_request(
@@ -1555,6 +1853,7 @@ async fn run_pre_dream_compaction(
         CachedRequestInvalidationReason::PreDreamCompaction,
     );
     s.active_turn_count = retained_count;
+    s.covered_turn_count = retained_count;
     s.last_compaction_activity = Instant::now();
     s.mark_dirty();
     info!(character, retained_count, "Pre-dream compaction complete");
@@ -2248,6 +2547,7 @@ async fn persist_heartbeat_message(
         let content = derive_content_from_blocks(&content_blocks);
         let msg = Message {
             msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+            origin: Some(shore_protocol::types::MessageOrigin::Autonomous),
             role: Role::Assistant,
             content,
             images: vec![],
@@ -2276,11 +2576,12 @@ async fn persist_heartbeat_message(
                     if let Err(e) = engine.append_message(msg.clone()) {
                         error!(character, error = %e, "Failed to persist autonomous message via engine");
                     } else if let Some(tx) = push_tx {
+                        // `msg.origin` already carries `Autonomous`; the
+                        // flattened message is what puts it on the wire.
                         _ = tx.send(ServerMessage::NewMessage(
                             shore_protocol::server_msg::NewMessage {
                                 revision: engine.current_revision(),
                                 character: Some(character.to_owned()),
-                                origin: Some(shore_protocol::server_msg::MessageOrigin::Autonomous),
                                 message: msg.clone(),
                             },
                         ));
@@ -2598,6 +2899,7 @@ mod tests {
     fn test_message(role: Role) -> Message {
         Message {
             msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+            origin: None,
             role,
             content: "hello".into(),
             images: vec![],
@@ -2970,6 +3272,8 @@ mod tests {
             compaction_triggered: false,
             active_turn_count: 0,
             compaction_pending: false,
+            covered_turn_count: 0,
+            deep_archive_done: false,
             last_request: None,
             next_dream_attempt_at: None,
             dream_failure_count: 0,
@@ -2997,6 +3301,7 @@ mod tests {
         let persisted = PersistedState {
             version: STATE_VERSION,
             ticks_without_user: 5,
+            covered_turn_count: 0,
             next_wake_at: Some("2026-04-08T20:00:00+00:00".into()),
             last_user_at: Some("2026-04-08T14:00:00+00:00".into()),
         };
@@ -3028,6 +3333,8 @@ mod tests {
             compaction_triggered: false,
             active_turn_count: 0,
             compaction_pending: false,
+            covered_turn_count: 0,
+            deep_archive_done: false,
             last_request: None,
             next_dream_attempt_at: None,
             dream_failure_count: 0,
@@ -3131,6 +3438,7 @@ mod tests {
         let persisted = PersistedState {
             version: STATE_VERSION,
             ticks_without_user: 7,
+            covered_turn_count: 0,
             next_wake_at: None,
             last_user_at: None,
         };
@@ -3204,6 +3512,8 @@ mod tests {
             compaction_triggered: false,
             active_turn_count: 0,
             compaction_pending: false,
+            covered_turn_count: 0,
+            deep_archive_done: false,
             last_request: None, // <-- no request → ping will be skipped
             next_dream_attempt_at: None,
             dream_failure_count: 0,
@@ -3329,6 +3639,7 @@ mod tests {
         let persisted = PersistedState {
             version: STATE_VERSION,
             ticks_without_user: 1,
+            covered_turn_count: 0,
             next_wake_at: Some(wake_time),
             last_user_at: Some(chrono::Utc::now().to_rfc3339()),
         };
@@ -3421,6 +3732,7 @@ mod tests {
         store
             .append(Message {
                 msg_id: "assistant-with-thinking".into(),
+                origin: None,
                 role: Role::Assistant,
                 content: "answer".into(),
                 images: vec![],
@@ -3941,6 +4253,8 @@ api_key_env = "{heartbeat_env}"
             compaction_triggered: false,
             active_turn_count: 8,
             compaction_pending: false,
+            covered_turn_count: 0,
+            deep_archive_done: false,
             last_request: None,
             next_dream_attempt_at: None,
             dream_failure_count: 0,
@@ -3970,6 +4284,200 @@ api_key_env = "{heartbeat_env}"
             s.compaction_triggered,
             "compaction_triggered should prevent double-fire"
         );
+    }
+
+    fn deep_archive_test_parts(
+        tmp: &tempfile::TempDir,
+        compaction: CompactionConfig,
+        active_turn_count: usize,
+        idle: Duration,
+        deep_archive_done: bool,
+    ) -> TickContext {
+        let mut config = test_config();
+        config.enabled = true;
+        let state = Arc::new(Mutex::new(AutonomyState {
+            heartbeat: HeartbeatClock::with_config(&HeartbeatConfig::default()),
+            cache_keepalive: CacheKeepalive::new(Duration::from_hours(12)),
+            activity: ActivityTracker::new(),
+            heartbeat_log: HeartbeatLog::new(),
+            paused: false,
+            dirty: false,
+            last_compaction_activity: Instant::now() - idle,
+            compaction_triggered: false,
+            active_turn_count,
+            compaction_pending: false,
+            covered_turn_count: 0,
+            deep_archive_done,
+            last_request: None,
+            next_dream_attempt_at: None,
+            dream_failure_count: 0,
+        }));
+        TickContext {
+            state,
+            config: Arc::new(config),
+            compaction: Arc::new(compaction),
+            data_dir: tmp.path().to_path_buf(),
+            llm_client: None,
+            push_tx: None,
+            loaded_config: None,
+            notifier: None,
+            registry: None,
+        }
+    }
+
+    fn deep_archive_compaction_config() -> CompactionConfig {
+        CompactionConfig {
+            enabled: true,
+            min_turns: 4,
+            max_turns: 20,
+            keep_recent_turns: 2,
+            idle_trigger: shore_config::ConfigDuration::from_secs(3600),
+            archive_after: shore_config::ConfigDuration::from_secs(5),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn deep_archive_trigger_fires_below_min_turns() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 1 turn (below min_turns=4) and 60s idle (past archive_after=5s,
+        // before idle_trigger=3600s): only the deep trigger may fire.
+        let ctx = deep_archive_test_parts(
+            &tmp,
+            deep_archive_compaction_config(),
+            1,
+            Duration::from_mins(1),
+            false,
+        );
+
+        let (_, _, compaction_needed, deep_archive_needed, _) =
+            collect_tick_actions("alice", &ctx, Instant::now());
+
+        assert!(!compaction_needed);
+        assert!(deep_archive_needed);
+        assert!(
+            lock_state(&ctx.state).compaction_triggered,
+            "deep trigger must take the compaction single-flight flag"
+        );
+    }
+
+    #[test]
+    fn deep_archive_trigger_suppressed_by_done_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = deep_archive_test_parts(
+            &tmp,
+            deep_archive_compaction_config(),
+            1,
+            Duration::from_mins(1),
+            true,
+        );
+
+        let (_, _, compaction_needed, deep_archive_needed, _) =
+            collect_tick_actions("alice", &ctx, Instant::now());
+
+        assert!(!compaction_needed);
+        assert!(!deep_archive_needed);
+    }
+
+    #[test]
+    fn deep_archive_trigger_disabled_when_archive_after_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compaction = CompactionConfig {
+            archive_after: shore_config::ConfigDuration::from_secs(0),
+            ..deep_archive_compaction_config()
+        };
+        let ctx = deep_archive_test_parts(&tmp, compaction, 1, Duration::from_hours(24), false);
+
+        let (_, _, _, deep_archive_needed, _) = collect_tick_actions("alice", &ctx, Instant::now());
+
+        assert!(!deep_archive_needed);
+    }
+
+    #[test]
+    fn deep_archive_trigger_yields_to_normal_idle_trigger() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compaction = CompactionConfig {
+            idle_trigger: shore_config::ConfigDuration::from_secs(1),
+            ..deep_archive_compaction_config()
+        };
+        // 8 turns >= min_turns and idle past both windows: the normal idle
+        // trigger wins the tick; the deep trigger must not also fire.
+        let ctx = deep_archive_test_parts(&tmp, compaction, 8, Duration::from_mins(1), false);
+
+        let (_, _, compaction_needed, deep_archive_needed, _) =
+            collect_tick_actions("alice", &ctx, Instant::now());
+
+        assert!(compaction_needed);
+        assert!(!deep_archive_needed);
+    }
+
+    #[test]
+    fn notify_user_message_rearms_deep_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr = AutonomyManager::new(
+            AutonomyConfig::default(),
+            deep_archive_compaction_config(),
+            tmp.path().to_path_buf(),
+            rx,
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice") });
+
+        assert!(mgr
+            .with_state("alice", |s| {
+                s.deep_archive_done = true;
+            })
+            .is_some());
+        mgr.notify_user_message("alice", 1);
+        assert_eq!(
+            mgr.with_state("alice", |s| s.deep_archive_done),
+            Some(false)
+        );
+
+        assert!(mgr
+            .with_state("alice", |s| {
+                s.deep_archive_done = true;
+            })
+            .is_some());
+        mgr.notify_assistant_message("alice", 2);
+        assert_eq!(
+            mgr.with_state("alice", |s| s.deep_archive_done),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn notify_compaction_complete_records_memory_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr = AutonomyManager::new(
+            AutonomyConfig::default(),
+            deep_archive_compaction_config(),
+            tmp.path().to_path_buf(),
+            rx,
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ignored = rt.block_on(async { mgr.ensure_state("alice") });
+
+        mgr.notify_compaction_complete("alice", 2);
+        assert_eq!(mgr.with_state("alice", |s| s.covered_turn_count), Some(2));
+
+        // Coverage must survive a state save/load round trip.
+        assert!(mgr
+            .with_state("alice", |s| {
+                s.mark_dirty();
+                save_state(tmp.path(), "alice", s);
+            })
+            .is_some());
+        let persisted = load_state(tmp.path(), "alice").expect("state file should load");
+        assert_eq!(persisted.covered_turn_count, 2);
     }
 
     /// The cache-prefix invariant: a keepalive ping must be byte-identical

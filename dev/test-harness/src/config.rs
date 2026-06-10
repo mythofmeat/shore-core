@@ -285,6 +285,7 @@ impl TestConfigBuilder {
             app.memory.compaction = CompactionConfig {
                 enabled: true,
                 idle_trigger: ConfigDuration::from_secs(86400),
+                archive_after: ConfigDuration::from_secs(0),
                 min_turns: self.compaction_min_turns.unwrap_or(2),
                 max_turns: self.compaction_max_turns.unwrap_or(16),
                 max_context_tokens: 0,

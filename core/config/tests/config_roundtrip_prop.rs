@@ -393,6 +393,7 @@ fn arb_compaction_config() -> impl Strategy<Value = CompactionConfig> {
     (
         any::<bool>(),
         arb_duration(),
+        arb_duration(),
         0_usize..100,
         0_usize..200,
         0_usize..500_000,
@@ -402,6 +403,7 @@ fn arb_compaction_config() -> impl Strategy<Value = CompactionConfig> {
             |(
                 enabled,
                 idle_trigger,
+                archive_after,
                 min_turns,
                 max_turns,
                 max_context_tokens,
@@ -409,6 +411,7 @@ fn arb_compaction_config() -> impl Strategy<Value = CompactionConfig> {
             )| CompactionConfig {
                 enabled,
                 idle_trigger,
+                archive_after,
                 min_turns,
                 max_turns,
                 max_context_tokens,

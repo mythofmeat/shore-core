@@ -206,6 +206,7 @@ fn append_assistant_tool_use_turn(
 
     intermediate_messages.push(Message {
         msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+        origin: None,
         role: Role::Assistant,
         content: derive_content_from_blocks(&assistant_blocks),
         images: vec![],
@@ -407,6 +408,7 @@ fn append_user_tool_result_turn(
 
     intermediate_messages.push(Message {
         msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+        origin: None,
         role: Role::User,
         content: derive_content_from_blocks(&tool_result_blocks),
         images: vec![],

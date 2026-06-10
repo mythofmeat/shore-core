@@ -970,11 +970,11 @@ fn should_notify_message(
     }
 
     match mode {
-        NotifyMode::AutonomousOnly => msg.origin == Some(MessageOrigin::Autonomous),
+        NotifyMode::AutonomousOnly => msg.message.origin == Some(MessageOrigin::Autonomous),
         NotifyMode::AllMessages => {
             msg.message.role == Role::Assistant
                 && matches!(
-                    msg.origin,
+                    msg.message.origin,
                     Some(MessageOrigin::AssistantReply | MessageOrigin::Autonomous)
                 )
         }
@@ -1530,9 +1530,9 @@ mod tests {
         NewMessage {
             revision: 1,
             character: Some(character.into()),
-            origin,
             message: Message {
                 msg_id: "m1".into(),
+                origin,
                 role,
                 content: "hello".into(),
                 images: vec![],
