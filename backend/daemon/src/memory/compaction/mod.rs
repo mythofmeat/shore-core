@@ -435,7 +435,7 @@ impl CompactionManager {
     /// dispatch wrapper; the intended paths are still recorded for the
     /// returned preview but no files are modified and the conversation is
     /// not archived.
-    #[instrument(skip(self, messages, active_content, system_template, prompt_template, llm, conversation_mgr, markdown_store, tool_ctx), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
+    #[instrument(skip(self, messages, active_content, system_template, prompt_template, llm, conversation_mgr, markdown_store, chat_request, tool_ctx), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
     #[expect(
         clippy::too_many_arguments,
         reason = "compaction boundary still carries storage, prompt, and tool-loop state"

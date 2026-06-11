@@ -54,6 +54,16 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   forward-compatibility note in `docs/PROTOCOL.md` §3.
 
 ### Fixed
+- **API key no longer leaks into tracing logs (#240).** `LlmRequest` and
+  `ImageGenerateParams` now have hand-written `Debug` impls that render
+  `api_key` as `<redacted>`, so any tracing span or log line that
+  debug-prints a request can no longer write the key to stderr/journald.
+  The confirmed leak site — the compaction span capturing `chat_request` —
+  additionally skips the field entirely. Serialization to the LLM sidecar
+  still carries the real key; the persisted API payload logs were already
+  redacted. If you run the daemon under journald, consider rotating keys
+  and vacuuming old journal entries
+  (`journalctl --user --vacuum-time=...`).
 - **Documentation freshness pass.** CONFIGURATION.md now documents the full
   `[memory.dreaming]` surface (`minimum_inactive_time`, `max_lateness`,
   `compact_before`, `compact_to_zero`), the `[notifications]` sub-tables
