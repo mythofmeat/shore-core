@@ -1027,10 +1027,6 @@ async fn character_tick_loop(
 }
 
 /// One tick for a single character.
-#[expect(
-    clippy::too_many_lines,
-    reason = "orchestrates per-tick heartbeat, keepalive, compaction, and dream scheduling in sequence"
-)]
 async fn tick_character(character: &str, ctx: &TickContext) {
     let now = Instant::now();
 
@@ -1038,36 +1034,80 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     let (int_action, mut keepalive_action, compaction_needed, deep_archive_needed, dream_needed) =
         collect_tick_actions(character, ctx, now);
 
-    // Idle-triggered compaction: when the tick has the dependencies it needs
-    // (LLM client, config, notifier, registry), run compaction inline so idle
-    // periods actually produce the work. When any dependency is missing
-    // (unit-test contexts), fall back to setting the pending flag so the
-    // handler's post-generation path picks it up on the user's next message.
-    let mut run_compaction_now = false;
-    if compaction_needed {
-        let have_deps = ctx.llm_client.is_some()
-            && ctx.loaded_config.is_some()
-            && ctx.notifier.is_some()
-            && ctx.registry.is_some();
-        if have_deps {
-            run_compaction_now = true;
-        } else {
-            let mut s = lock_state(&ctx.state);
-            s.compaction_pending = true;
-            s.mark_dirty();
-            info!(
-                character,
-                "Compaction pending flag set for handler pickup (tick missing deps)"
-            );
-        }
-    }
+    let run_compaction_now = resolve_idle_compaction(character, ctx, compaction_needed);
 
     // -- execute heartbeat action (async, outside lock) -----------------
     // No outer tokio::time::timeout wrapper: `execute_heartbeat_tick` enforces
     // its own soft deadline on the tool loop so a slow loop can't starve
     // later autonomy work.
-    match int_action {
-        HeartbeatAction::None => {}
+    if let Some(updated) = execute_heartbeat_action(character, ctx, int_action).await {
+        keepalive_action = updated;
+    }
+
+    // -- cache keepalive ping (async, outside lock) -------------------------
+    if keepalive_action == CacheKeepaliveAction::Ping {
+        execute_cache_keepalive_ping(character, ctx).await;
+    }
+
+    // -- idle-triggered compaction (async, outside lock) -------------------
+    if run_compaction_now {
+        execute_idle_compaction(character, ctx).await;
+    }
+
+    // -- deep-idle archive (async, outside lock) ---------------------------
+    if deep_archive_needed {
+        execute_deep_archive_if_still_idle(character, ctx).await;
+    }
+
+    if dream_needed {
+        execute_dream_if_still_inactive(character, ctx).await;
+    }
+
+    // -- final persist (in case async actions dirtied state) ---------------
+    {
+        let mut s = lock_state(&ctx.state);
+        save_state(&ctx.data_dir, character, &mut s);
+        s.heartbeat_log.flush_if_dirty();
+    }
+}
+
+/// Decide whether this tick can run idle compaction inline: when the tick has
+/// the dependencies it needs (LLM client, config, notifier, registry), idle
+/// periods produce the work directly. When any dependency is missing
+/// (unit-test contexts), fall back to setting the pending flag so the
+/// handler's post-generation path picks it up on the user's next message.
+fn resolve_idle_compaction(character: &str, ctx: &TickContext, compaction_needed: bool) -> bool {
+    if !compaction_needed {
+        return false;
+    }
+    let have_deps = ctx.llm_client.is_some()
+        && ctx.loaded_config.is_some()
+        && ctx.notifier.is_some()
+        && ctx.registry.is_some();
+    if have_deps {
+        return true;
+    }
+    let mut s = lock_state(&ctx.state);
+    s.compaction_pending = true;
+    s.mark_dirty();
+    info!(
+        character,
+        "Compaction pending flag set for handler pickup (tick missing deps)"
+    );
+    false
+}
+
+/// Execute a fired heartbeat action. Returns the re-evaluated cache-keepalive
+/// action after a tick ran: a tick that warmed the cache has already reset the
+/// keepalive timer, so the pre-heartbeat `Ping` decision is stale and must be
+/// re-derived to avoid a redundant ping right after the tick.
+async fn execute_heartbeat_action(
+    character: &str,
+    ctx: &TickContext,
+    action: HeartbeatAction,
+) -> Option<CacheKeepaliveAction> {
+    match action {
+        HeartbeatAction::None => None,
         HeartbeatAction::RunTick => {
             {
                 let mut s = lock_state(&ctx.state);
@@ -1086,93 +1126,69 @@ async fn tick_character(character: &str, ctx: &TickContext) {
             )
             .await;
 
-            // A heartbeat tick that warmed the cache has already reset the
-            // keepalive timer, so the pre-heartbeat `Ping` decision is stale —
-            // re-evaluate to avoid a redundant ping right after the tick.
             let mut s = lock_state(&ctx.state);
-            keepalive_action = s.cache_keepalive.tick(Instant::now());
+            Some(s.cache_keepalive.tick(Instant::now()))
         }
     }
+}
 
-    // -- cache keepalive ping (async, outside lock) -------------------------
-    if keepalive_action == CacheKeepaliveAction::Ping {
-        execute_cache_keepalive_ping(character, ctx).await;
-    }
-
-    // -- idle-triggered compaction (async, outside lock) -------------------
-    if run_compaction_now {
-        execute_idle_compaction(character, ctx).await;
-    }
-
-    // -- deep-idle archive (async, outside lock) ---------------------------
-    if deep_archive_needed {
-        // The trigger was computed at the top of the tick; the heartbeat and
-        // keepalive awaits above may have yielded long enough for a message
-        // to land. Revalidate idleness before drawing the archive boundary —
-        // same pattern as the dreaming inactivity recheck below.
-        let still_idle = {
-            let s = lock_state(&ctx.state);
-            let archive_after_secs = ctx.compaction.archive_after.as_secs();
-            archive_after_secs > 0
-                && !s.deep_archive_done
-                && Instant::now()
-                    .duration_since(s.last_compaction_activity)
-                    .as_secs()
-                    >= archive_after_secs
-        };
-        let have_deps = ctx.llm_client.is_some()
-            && ctx.loaded_config.is_some()
-            && ctx.notifier.is_some()
-            && ctx.registry.is_some();
-        if still_idle && have_deps {
-            execute_deep_idle_archive(character, ctx).await;
-        } else {
-            // Either the conversation became active during this tick's
-            // awaits, or this is a unit-test context without tick deps.
-            // Release the single-flight flag so other triggers aren't
-            // wedged. There is no handler-pickup fallback for the deep
-            // archive — it only ever runs from the tick.
-            let mut s = lock_state(&ctx.state);
-            s.compaction_triggered = false;
-            s.mark_dirty();
-        }
-    }
-
-    if dream_needed {
-        // Revalidate the inactivity gate: the keepalive/compaction awaits above
-        // may have yielded long enough for a user message to land (updating
-        // last_user_at). The `dream_needed` boolean was snapshotted before those
-        // awaits, so recheck now to avoid disturbing a freshly-active conversation.
-        let still_inactive = {
-            let s = lock_state(&ctx.state);
-            let dreaming_cfg = ctx.loaded_config.as_ref().map(|lc| &lc.app.memory.dreaming);
-            dream_inactivity_satisfied(dreaming_cfg, s.heartbeat.last_user_at(), Instant::now())
-        };
-        if still_inactive {
-            execute_scheduled_dream(character, ctx).await;
-        } else {
-            debug!(
-                character,
-                "Dreaming: skipping scheduled sweep — user became active during tick"
-            );
-        }
-    }
-
-    // -- final persist (in case async actions dirtied state) ---------------
-    {
+/// Revalidate idleness and tick dependencies, then run the deep-idle archive.
+/// The trigger was computed at the top of the tick; the heartbeat and
+/// keepalive awaits may have yielded long enough for a message to land, so the
+/// archive boundary is only drawn after a recheck (same pattern as the
+/// dreaming inactivity recheck).
+async fn execute_deep_archive_if_still_idle(character: &str, ctx: &TickContext) {
+    let still_idle = {
+        let s = lock_state(&ctx.state);
+        let archive_after_secs = ctx.compaction.archive_after.as_secs();
+        archive_after_secs > 0
+            && !s.deep_archive_done
+            && Instant::now()
+                .duration_since(s.last_compaction_activity)
+                .as_secs()
+                >= archive_after_secs
+    };
+    let have_deps = ctx.llm_client.is_some()
+        && ctx.loaded_config.is_some()
+        && ctx.notifier.is_some()
+        && ctx.registry.is_some();
+    if still_idle && have_deps {
+        execute_deep_idle_archive(character, ctx).await;
+    } else {
+        // Either the conversation became active during this tick's
+        // awaits, or this is a unit-test context without tick deps.
+        // Release the single-flight flag so other triggers aren't
+        // wedged. There is no handler-pickup fallback for the deep
+        // archive — it only ever runs from the tick.
         let mut s = lock_state(&ctx.state);
-        save_state(&ctx.data_dir, character, &mut s);
-        s.heartbeat_log.flush_if_dirty();
+        s.compaction_triggered = false;
+        s.mark_dirty();
+    }
+}
+
+/// Revalidate the inactivity gate, then run the scheduled dream. The
+/// keepalive/compaction awaits may have yielded long enough for a user message
+/// to land (updating last_user_at), and the dream gate was snapshotted before
+/// them — recheck now to avoid disturbing a freshly-active conversation.
+async fn execute_dream_if_still_inactive(character: &str, ctx: &TickContext) {
+    let still_inactive = {
+        let s = lock_state(&ctx.state);
+        let dreaming_cfg = ctx.loaded_config.as_ref().map(|lc| &lc.app.memory.dreaming);
+        dream_inactivity_satisfied(dreaming_cfg, s.heartbeat.last_user_at(), Instant::now())
+    };
+    if still_inactive {
+        execute_scheduled_dream(character, ctx).await;
+    } else {
+        debug!(
+            character,
+            "Dreaming: skipping scheduled sweep — user became active during tick"
+        );
     }
 }
 
 /// Snapshot the per-tick actions while holding the state lock, then release it
 /// before any async work runs. Returns the heartbeat action, cache-keepalive
 /// action, and the compaction-needed / dream-needed gates.
-#[expect(
-    clippy::too_many_lines,
-    reason = "snapshots every per-tick gate under lock: heartbeat phase, cache keepalive, and compaction/dream/archive readiness"
-)]
 fn collect_tick_actions(
     character: &str,
     ctx: &TickContext,
@@ -1187,34 +1203,7 @@ fn collect_tick_actions(
         "tick"
     );
 
-    // -- heartbeat ------------------------------------------------------
-    let int_action = if ctx.config.enabled && ctx.config.heartbeat.enabled && !s.paused {
-        let had_deadline = s.heartbeat.next_wake().is_some();
-        let action = s.heartbeat.tick(now);
-
-        if !matches!(action, HeartbeatAction::None) {
-            s.mark_dirty();
-        }
-
-        // Detect guard trip: had a deadline, tick returned None, deadline now cleared.
-        if had_deadline
-            && matches!(action, HeartbeatAction::None)
-            && s.heartbeat.next_wake().is_none()
-        {
-            let ticks = s.heartbeat.ticks_without_user();
-            s.heartbeat_log.push(
-                HeartbeatEventKind::Dormant,
-                format!("Abandonment guard tripped (ticks without user: {ticks})"),
-            );
-            // The cache keepalive is intentionally NOT stopped here: it is a
-            // standalone subsystem with its own idle ceiling
-            // (`cache_keepalive_max`), independent of the heartbeat dormancy
-            // guard. The guard governs heartbeat ticks, not cache warming.
-        }
-        action
-    } else {
-        HeartbeatAction::None
-    };
+    let int_action = heartbeat_tick_action(&mut s, ctx, now);
 
     // -- cache keepalive -------------------------------------------------
     let keepalive_action = s.cache_keepalive.tick(now);
@@ -1228,48 +1217,113 @@ fn collect_tick_actions(
         && dreaming_cfg.is_some_and(|cfg| cfg.enabled)
         && dream_inactivity_satisfied(dreaming_cfg, s.heartbeat.last_user_at(), now);
 
-    // -- compaction triggers ---------------------------------------------
-    let mut compaction_needed = false;
-    if ctx.config.enabled && ctx.compaction.enabled && !s.compaction_triggered {
-        if ctx.compaction.max_turns > 0
-            && s.active_turn_count >= ctx.compaction.max_turns
-            && s.active_turn_count >= ctx.compaction.min_turns
-        {
-            s.compaction_triggered = true;
-            compaction_needed = true;
-            info!(
-                character = %character,
-                turn_count = s.active_turn_count,
-                max_turns = ctx.compaction.max_turns,
-                "Compaction: max turns trigger fired"
-            );
-        } else if s.active_turn_count >= ctx.compaction.min_turns {
-            let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
-            let threshold_secs = ctx.compaction.idle_trigger.as_secs();
-            if threshold_secs > 0 && idle_secs >= threshold_secs {
-                s.compaction_triggered = true;
-                compaction_needed = true;
-                info!(
-                    character = %character,
-                    idle_secs,
-                    threshold_secs,
-                    turn_count = s.active_turn_count,
-                    "Compaction: idle trigger fired"
-                );
-            }
-        } else {
-            // Below min_turns: no compaction trigger applies.
-        }
+    let compaction_needed = compaction_trigger_fired(character, &mut s, ctx, now);
+    let deep_archive_needed =
+        deep_archive_trigger_fired(character, &mut s, ctx, now, compaction_needed);
+
+    save_state(&ctx.data_dir, character, &mut s);
+    s.heartbeat_log.flush_if_dirty();
+    (
+        int_action,
+        keepalive_action,
+        compaction_needed,
+        deep_archive_needed,
+        dream_needed,
+    )
+}
+
+/// Run the heartbeat scheduler for this tick (under the caller's state lock)
+/// and log an abandonment-guard trip: had a deadline, tick returned `None`,
+/// deadline now cleared.
+fn heartbeat_tick_action(
+    s: &mut AutonomyState,
+    ctx: &TickContext,
+    now: Instant,
+) -> HeartbeatAction {
+    if !(ctx.config.enabled && ctx.config.heartbeat.enabled && !s.paused) {
+        return HeartbeatAction::None;
+    }
+    let had_deadline = s.heartbeat.next_wake().is_some();
+    let action = s.heartbeat.tick(now);
+
+    if !matches!(action, HeartbeatAction::None) {
+        s.mark_dirty();
     }
 
-    // -- deep-idle archive trigger ----------------------------------------
-    // After an extended idle period (`archive_after`), archive what's left of
-    // the active conversation so the next exchange starts from a clean slate.
-    // Not gated by `min_turns` — short conversations are exactly the ones the
-    // regular idle trigger never picks up. Mutually exclusive with a normal
-    // compaction firing on the same tick; `deep_archive_done` suppresses
-    // re-fires until new message activity arrives.
-    let mut deep_archive_needed = false;
+    if had_deadline && matches!(action, HeartbeatAction::None) && s.heartbeat.next_wake().is_none()
+    {
+        let ticks = s.heartbeat.ticks_without_user();
+        s.heartbeat_log.push(
+            HeartbeatEventKind::Dormant,
+            format!("Abandonment guard tripped (ticks without user: {ticks})"),
+        );
+        // The cache keepalive is intentionally NOT stopped here: it is a
+        // standalone subsystem with its own idle ceiling
+        // (`cache_keepalive_max`), independent of the heartbeat dormancy
+        // guard. The guard governs heartbeat ticks, not cache warming.
+    }
+    action
+}
+
+/// Evaluate the max-turns and idle compaction triggers (under the caller's
+/// state lock). Sets `compaction_triggered` and returns whether compaction
+/// fired this tick.
+fn compaction_trigger_fired(
+    character: &str,
+    s: &mut AutonomyState,
+    ctx: &TickContext,
+    now: Instant,
+) -> bool {
+    if !(ctx.config.enabled && ctx.compaction.enabled && !s.compaction_triggered) {
+        return false;
+    }
+    if ctx.compaction.max_turns > 0
+        && s.active_turn_count >= ctx.compaction.max_turns
+        && s.active_turn_count >= ctx.compaction.min_turns
+    {
+        s.compaction_triggered = true;
+        info!(
+            character = %character,
+            turn_count = s.active_turn_count,
+            max_turns = ctx.compaction.max_turns,
+            "Compaction: max turns trigger fired"
+        );
+        return true;
+    }
+    if s.active_turn_count >= ctx.compaction.min_turns {
+        let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
+        let threshold_secs = ctx.compaction.idle_trigger.as_secs();
+        if threshold_secs > 0 && idle_secs >= threshold_secs {
+            s.compaction_triggered = true;
+            info!(
+                character = %character,
+                idle_secs,
+                threshold_secs,
+                turn_count = s.active_turn_count,
+                "Compaction: idle trigger fired"
+            );
+            return true;
+        }
+        return false;
+    }
+    // Below min_turns: no compaction trigger applies.
+    false
+}
+
+/// Evaluate the deep-idle archive trigger (under the caller's state lock).
+/// After an extended idle period (`archive_after`), archive what's left of
+/// the active conversation so the next exchange starts from a clean slate.
+/// Not gated by `min_turns` — short conversations are exactly the ones the
+/// regular idle trigger never picks up. Mutually exclusive with a normal
+/// compaction firing on the same tick; `deep_archive_done` suppresses
+/// re-fires until new message activity arrives.
+fn deep_archive_trigger_fired(
+    character: &str,
+    s: &mut AutonomyState,
+    ctx: &TickContext,
+    now: Instant,
+    compaction_needed: bool,
+) -> bool {
     let archive_after_secs = ctx.compaction.archive_after.as_secs();
     if ctx.config.enabled
         && ctx.compaction.enabled
@@ -1281,7 +1335,6 @@ fn collect_tick_actions(
         let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
         if idle_secs >= archive_after_secs {
             s.compaction_triggered = true;
-            deep_archive_needed = true;
             info!(
                 character = %character,
                 idle_secs,
@@ -1289,18 +1342,10 @@ fn collect_tick_actions(
                 turn_count = s.active_turn_count,
                 "Compaction: deep-idle archive trigger fired"
             );
+            return true;
         }
     }
-
-    save_state(&ctx.data_dir, character, &mut s);
-    s.heartbeat_log.flush_if_dirty();
-    (
-        int_action,
-        keepalive_action,
-        compaction_needed,
-        deep_archive_needed,
-        dream_needed,
-    )
+    false
 }
 
 /// Send a dormant cache-keepalive ping and fold the outcome back into per-tick
@@ -1727,10 +1772,6 @@ async fn reload_engine_and_apply_deferred(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "assembles the dream context, gates on compaction config, and dispatches the librarian or legacy sweep"
-)]
 async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
     let Some(loaded_config) = ctx.loaded_config.as_deref() else {
         return;
@@ -1739,44 +1780,16 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
         return;
     };
     let dreaming_cfg = &loaded_config.app.memory.dreaming;
-    // Gate on the sanitized compaction snapshot (ctx.compaction), not the raw
-    // loaded config — AutonomyManager::new / reload_runtime_config disable
-    // invalid compaction settings, and pre-dream compaction must honor that
-    // just like the idle-compaction path does.
-    let compaction_cfg = &ctx.compaction;
 
-    // Pre-dream compaction. Failure aborts the sweep this cycle so the
-    // librarian doesn't run against an oversized / stale prompt cache.
-    if dreaming_cfg.compact_before
-        && compaction_cfg.enabled
-        && lock_state(&ctx.state).active_turn_count >= compaction_cfg.min_turns
-    {
-        let keep_override = if dreaming_cfg.compact_to_zero {
-            Some(0)
-        } else {
-            None
-        };
-        if let Err(e) = run_pre_dream_compaction(character, ctx, keep_override).await {
-            warn!(
-                character,
-                error = %e,
-                "Dreaming: pre-dream compaction failed; skipping sweep this cycle"
-            );
-            let now = Instant::now();
-            let mut s = lock_state(&ctx.state);
-            s.dream_failure_count = s.dream_failure_count.saturating_add(1);
-            let delay = background_retry_delay(s.dream_failure_count);
-            s.next_dream_attempt_at = Some(now.checked_add(delay).unwrap_or(now));
-            s.mark_dirty();
-            return;
-        }
+    if !maybe_compact_before_dream(character, ctx, dreaming_cfg).await {
+        return;
     }
 
     let cached_request = {
         let s = lock_state(&ctx.state);
         s.last_request.clone()
     };
-    match crate::memory::dreaming::run_librarian_sweep(
+    let outcome = crate::memory::dreaming::run_librarian_sweep(
         loaded_config,
         &ctx.data_dir,
         llm_client,
@@ -1785,8 +1798,71 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
         false,
         false,
     )
-    .await
+    .await;
+    record_scheduled_dream_outcome(character, ctx, outcome);
+}
+
+/// Bump the dream failure count and push the next attempt out with backoff.
+/// Returns the chosen delay and the new failure count.
+fn back_off_dream_retry(state: &Mutex<AutonomyState>) -> (Duration, u32) {
+    let now = Instant::now();
+    let mut s = lock_state(state);
+    s.dream_failure_count = s.dream_failure_count.saturating_add(1);
+    let delay = background_retry_delay(s.dream_failure_count);
+    s.next_dream_attempt_at = Some(now.checked_add(delay).unwrap_or(now));
+    s.mark_dirty();
+    (delay, s.dream_failure_count)
+}
+
+/// Run pre-dream compaction when configured and the turn count clears the
+/// floor. Failure records retry backoff and returns `false`, aborting the
+/// sweep this cycle so the librarian doesn't run against an oversized / stale
+/// prompt cache.
+async fn maybe_compact_before_dream(
+    character: &str,
+    ctx: &TickContext,
+    dreaming_cfg: &DreamingConfig,
+) -> bool {
+    // Gate on the sanitized compaction snapshot (ctx.compaction), not the raw
+    // loaded config — AutonomyManager::new / reload_runtime_config disable
+    // invalid compaction settings, and pre-dream compaction must honor that
+    // just like the idle-compaction path does.
+    let compaction_cfg = &ctx.compaction;
+    if !(dreaming_cfg.compact_before
+        && compaction_cfg.enabled
+        && lock_state(&ctx.state).active_turn_count >= compaction_cfg.min_turns)
     {
+        return true;
+    }
+
+    let keep_override = if dreaming_cfg.compact_to_zero {
+        Some(0)
+    } else {
+        None
+    };
+    if let Err(e) = run_pre_dream_compaction(character, ctx, keep_override).await {
+        warn!(
+            character,
+            error = %e,
+            "Dreaming: pre-dream compaction failed; skipping sweep this cycle"
+        );
+        _ = back_off_dream_retry(&ctx.state);
+        return false;
+    }
+    true
+}
+
+/// Fold a scheduled sweep's outcome back into dream retry state: a completed
+/// or not-due sweep resets the backoff; a failure bumps it.
+fn record_scheduled_dream_outcome(
+    character: &str,
+    ctx: &TickContext,
+    outcome: Result<
+        Option<crate::memory::dreaming::DreamSweepResult>,
+        crate::memory::dreaming::DreamingError,
+    >,
+) {
+    match outcome {
         Ok(Some(result)) => {
             let mut s = lock_state(&ctx.state);
             s.dream_failure_count = 0;
@@ -1811,16 +1887,11 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
         }
         Err(e) => {
             warn!(character, error = %e, "Dreaming: scheduled sweep failed");
-            let now = Instant::now();
-            let mut s = lock_state(&ctx.state);
-            s.dream_failure_count = s.dream_failure_count.saturating_add(1);
-            let delay = background_retry_delay(s.dream_failure_count);
-            s.next_dream_attempt_at = Some(now.checked_add(delay).unwrap_or(now));
-            s.mark_dirty();
+            let (delay, failure_count) = back_off_dream_retry(&ctx.state);
             debug!(
                 character,
                 retry_in_secs = delay.as_secs(),
-                failure_count = s.dream_failure_count,
+                failure_count,
                 "Dreaming: scheduled retry backed off"
             );
         }
@@ -2353,10 +2424,6 @@ fn heartbeat_budget_break(
 /// tool dispatch, a soft deadline, and a wrap-up grace window. Tool-loop
 /// messages are appended to `request` ephemerally. Returns the last-wins
 /// `<sendMessage>` text (if any) and whether any LLM call warmed the cache.
-#[expect(
-    clippy::too_many_lines,
-    reason = "runs the full heartbeat tool-loop with deadline, grace window, and wrap-up nudge"
-)]
 async fn run_heartbeat_tool_loop(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
@@ -2414,42 +2481,14 @@ async fn run_heartbeat_tool_loop(
             CallType::HeartbeatToolLoop
         };
 
-        let (resp, fallback_events) = match client
-            .generate_with_config_fallback(request, lc, call_type, character, false)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                error!(character, error = %e, iteration, "Heartbeat: LLM call failed");
-                break;
-            }
+        let Some(resp) =
+            heartbeat_llm_call(character, state, request, client, lc, call_type, iteration).await
+        else {
+            break;
         };
-        if !fallback_events.is_empty() {
-            let mut s = lock_state(state);
-            push_provider_fallback_events(&mut s, HeartbeatEventKind::ToolUse, &fallback_events);
-            s.mark_dirty();
-        }
         cache_warmed = true;
 
-        info!(
-            character,
-            iteration,
-            finish_reason = %resp.finish_reason,
-            input_tokens = resp.usage.input_tokens,
-            output_tokens = resp.usage.output_tokens,
-            cache_read = resp.usage.cache_read_tokens,
-            "Heartbeat: LLM response"
-        );
-
-        // Log text blocks.
-        for block in &resp.content_blocks {
-            if let ContentBlock::Text { text } = block {
-                if !text.trim().is_empty() {
-                    let preview: String = text.chars().take(200).collect();
-                    info!(character, iteration, content = %preview, "Heartbeat: thought");
-                }
-            }
-        }
+        log_heartbeat_response(character, iteration, &resp);
 
         // Check for <sendMessage> in this response (last-wins).
         let text = resp.extract_text();
@@ -2457,24 +2496,7 @@ async fn run_heartbeat_tool_loop(
             send_message_text = Some(msg);
         }
 
-        // Build assistant message from content blocks (filter unsigned thinking)
-        // and push it before any exit path. Every successful generate() must
-        // land in the ephemeral heartbeat history before any exit path, keeping
-        // later tool-loop requests well formed.
-        //
-        // Uses content_block_to_api_json (Anthropic path) — heartbeat always
-        // uses Anthropic models. ZAI would need content_block_to_json.
-        let assistant_content: Vec<Value> = resp
-            .content_blocks
-            .iter()
-            .filter_map(crate::content_util::content_block_to_api_json)
-            .collect();
-        if !assistant_content.is_empty() {
-            request.messages.push(json!({
-                "role": "assistant",
-                "content": assistant_content,
-            }));
-        }
+        push_heartbeat_assistant_message(request, &resp);
 
         // Extract tool uses.
         let tool_uses = crate::content_util::extract_tool_uses(&resp.content_blocks);
@@ -2494,6 +2516,85 @@ async fn run_heartbeat_tool_loop(
     }
 
     (send_message_text, cache_warmed)
+}
+
+/// One heartbeat LLM call with config fallback; provider-fallback events are
+/// folded into the heartbeat log. Returns `None` when the call fails, ending
+/// the loop.
+async fn heartbeat_llm_call(
+    character: &str,
+    state: &Arc<Mutex<AutonomyState>>,
+    request: &mut LlmRequest,
+    client: &LedgerClient,
+    lc: &LoadedConfig,
+    call_type: CallType,
+    iteration: u32,
+) -> Option<shore_llm::types::GenerateResponse> {
+    let (resp, fallback_events) = match client
+        .generate_with_config_fallback(request, lc, call_type, character, false)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            error!(character, error = %e, iteration, "Heartbeat: LLM call failed");
+            return None;
+        }
+    };
+    if !fallback_events.is_empty() {
+        let mut s = lock_state(state);
+        push_provider_fallback_events(&mut s, HeartbeatEventKind::ToolUse, &fallback_events);
+        s.mark_dirty();
+    }
+    Some(resp)
+}
+
+/// Log the heartbeat response summary and any non-empty thought text blocks.
+fn log_heartbeat_response(
+    character: &str,
+    iteration: u32,
+    resp: &shore_llm::types::GenerateResponse,
+) {
+    info!(
+        character,
+        iteration,
+        finish_reason = %resp.finish_reason,
+        input_tokens = resp.usage.input_tokens,
+        output_tokens = resp.usage.output_tokens,
+        cache_read = resp.usage.cache_read_tokens,
+        "Heartbeat: LLM response"
+    );
+
+    for block in &resp.content_blocks {
+        if let ContentBlock::Text { text } = block {
+            if !text.trim().is_empty() {
+                let preview: String = text.chars().take(200).collect();
+                info!(character, iteration, content = %preview, "Heartbeat: thought");
+            }
+        }
+    }
+}
+
+/// Build the assistant message from the response's content blocks (filtering
+/// unsigned thinking) and push it onto the ephemeral heartbeat history. Every
+/// successful generate() must land in the history before any exit path,
+/// keeping later tool-loop requests well formed. Uses content_block_to_api_json
+/// (Anthropic path) — heartbeat always uses Anthropic models; ZAI would need
+/// content_block_to_json.
+fn push_heartbeat_assistant_message(
+    request: &mut LlmRequest,
+    resp: &shore_llm::types::GenerateResponse,
+) {
+    let assistant_content: Vec<Value> = resp
+        .content_blocks
+        .iter()
+        .filter_map(crate::content_util::content_block_to_api_json)
+        .collect();
+    if !assistant_content.is_empty() {
+        request.messages.push(json!({
+            "role": "assistant",
+            "content": assistant_content,
+        }));
+    }
 }
 
 /// Dispatch every tool call from one heartbeat iteration and collect the
