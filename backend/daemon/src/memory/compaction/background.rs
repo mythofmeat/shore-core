@@ -4,49 +4,25 @@ use super::CompactionManager;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-/// Run compaction for a single character (called from the background task).
-/// Returns the number of retained turns on success.
-///
-/// `cached_request` is the live conversation's cached LLM request (typically
-/// from `AutonomyManager::cached_last_request`). When `Some`, compaction
-/// extends it with the compact-now tail and hits the cache chat seeded for
-/// this conversation. When `None`, we rebuild the chat-shape request from
-/// disk via `handler::build_chat_shape_request_from_disk` — same wire
-/// shape chat would have sent, no separate "fresh" code path.
-///
-/// The data directory comes from `config.dirs.data` — callers should not
-/// thread a separate `data_dir` argument; the two would have to stay
-/// manually in sync.
-#[expect(
-    clippy::too_many_lines,
-    reason = "assembles compaction dependencies and runs the background compaction pipeline end-to-end"
-)]
-pub async fn run_compaction(
-    character: &str,
-    config: &shore_config::LoadedConfig,
-    llm_client: &shore_ledger::LedgerClient,
-    notifier: &crate::notifications::NotificationService,
-    cached_request: Option<shore_llm::types::LlmRequest>,
-    keep_turns_override: Option<usize>,
-    retain_trailing_autonomous: bool,
-) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    use crate::engine::messages::MessageStore;
-    use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
-    use shore_config::{
-        character_active_jsonl, character_data_dir, load_character_config, resolve_prompt_template,
-    };
+/// Result of loading conversation messages from the active JSONL file.
+struct LoadedConversation {
+    store: crate::engine::messages::MessageStore,
+    character_dir: std::path::PathBuf,
+    raw_content: String,
+    messages: Vec<ConversationMessage>,
+}
 
-    let data_dir = config.dirs.data.as_path();
-    let _compaction_guard = super::try_begin_compaction(data_dir, character).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            format!("Compaction already running for {character}"),
-        )
-    })?;
+/// Load conversation messages from the active JSONL for a character.
+fn load_messages_for_compaction(
+    data_dir: &std::path::Path,
+    character: &str,
+) -> Result<LoadedConversation, Box<dyn std::error::Error + Send + Sync>> {
+    use crate::engine::messages::MessageStore;
+    use shore_config::{character_active_jsonl, character_data_dir};
+    use shore_protocol::types::MessageOrigin;
 
     let character_dir = character_data_dir(data_dir, character);
     let active_path = character_active_jsonl(data_dir, character);
-
     // Single read: parse messages + capture raw bytes for segment archival.
     // Prior to this we did `MessageStore::load(...)` followed by a separate
     // `tokio::fs::read_to_string(...)`, which read the same potentially
@@ -61,14 +37,39 @@ pub async fn run_compaction(
             content: msg.content.clone(),
             timestamp: msg.timestamp.clone(),
             is_tool_result_only: msg.is_tool_result_only(),
-            is_autonomous: msg.origin == Some(shore_protocol::types::MessageOrigin::Autonomous),
+            is_autonomous: msg.origin == Some(MessageOrigin::Autonomous),
         })
         .collect();
 
-    if messages.is_empty() {
-        info!(character = %character, "No messages to compact, skipping");
-        return Ok(0);
-    }
+    Ok(LoadedConversation {
+        store,
+        character_dir,
+        raw_content: content,
+        messages,
+    })
+}
+
+/// Resolved compaction dependencies (config, model, traits, manager).
+struct CompactionDeps {
+    effective: shore_config::LoadedConfig,
+    system_template: String,
+    prompt_template: String,
+    llm: crate::memory::compaction_impls::RealCompactionLlm,
+    conv_mgr: crate::memory::compaction_impls::RealConversationManager,
+    mgr: CompactionManager,
+    display_name: String,
+    max_tool_iterations: Option<u32>,
+}
+
+/// Resolve effective config, templates, model, and trait implementations.
+fn resolve_compaction_deps(
+    config: &shore_config::LoadedConfig,
+    character: &str,
+    character_dir: &std::path::Path,
+    llm_client: &shore_ledger::LedgerClient,
+) -> Result<CompactionDeps, Box<dyn std::error::Error + Send + Sync>> {
+    use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
+    use shore_config::{load_character_config, resolve_prompt_template};
 
     // Resolve effective config: merge per-character overrides over global.
     let effective = load_character_config(config, character)
@@ -76,7 +77,6 @@ pub async fn run_compaction(
         .flatten()
         .unwrap_or_else(|| config.clone());
 
-    // Resolve prompt templates.
     let system_template =
         resolve_prompt_template(&effective.dirs.config, character, "compact_system.md")
             .unwrap_or_else(|| DEFAULT_COMPACT_SYSTEM.to_owned());
@@ -91,22 +91,72 @@ pub async fn run_compaction(
     .ok_or("No model configured for background compaction")?;
     let max_tool_iterations = model.max_tool_iterations;
 
-    // Create trait implementations.
     let llm = RealCompactionLlm::new(
         llm_client.clone(),
         model,
         effective.providers.clone(),
         character.to_owned(),
     );
-    let conv_mgr = RealConversationManager::new(&character_dir);
+    let conv_mgr = RealConversationManager::new(character_dir);
 
     let mgr = CompactionManager::new(effective.app.memory.compaction.clone());
 
     let display_name = effective.app.defaults.resolve_display_name();
 
+    Ok(CompactionDeps {
+        effective,
+        system_template,
+        prompt_template,
+        llm,
+        conv_mgr,
+        mgr,
+        display_name,
+        max_tool_iterations,
+    })
+}
+
+/// Run compaction for a single character (called from the background task).
+/// Returns the number of retained turns on success.
+///
+/// `cached_request` is the live conversation's cached LLM request (typically
+/// from `AutonomyManager::cached_last_request`). When `Some`, compaction
+/// extends it with the compact-now tail and hits the cache chat seeded for
+/// this conversation. When `None`, we rebuild the chat-shape request from
+/// disk via `handler::build_chat_shape_request_from_disk` — same wire
+/// shape chat would have sent, no separate "fresh" code path.
+///
+/// The data directory comes from `config.dirs.data` — callers should not
+/// thread a separate `data_dir` argument; the two would have to stay
+/// manually in sync.
+pub async fn run_compaction(
+    character: &str,
+    config: &shore_config::LoadedConfig,
+    llm_client: &shore_ledger::LedgerClient,
+    notifier: &crate::notifications::NotificationService,
+    cached_request: Option<shore_llm::types::LlmRequest>,
+    keep_turns_override: Option<usize>,
+    retain_trailing_autonomous: bool,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let data_dir = config.dirs.data.as_path();
+    let _compaction_guard = super::try_begin_compaction(data_dir, character).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            format!("Compaction already running for {character}"),
+        )
+    })?;
+
+    let loaded = load_messages_for_compaction(data_dir, character)?;
+
+    if loaded.messages.is_empty() {
+        info!(character = %character, "No messages to compact, skipping");
+        return Ok(0);
+    }
+
+    let deps = resolve_compaction_deps(config, character, &loaded.character_dir, llm_client)?;
+
     // Open markdown memory store for existing-memory context and file writes.
     let markdown_store = crate::memory::markdown_store::MarkdownMemoryStore::open(
-        shore_config::character_memory_dir(&effective.dirs.config, character),
+        shore_config::character_memory_dir(&deps.effective.dirs.config, character),
     )
     .await
     .ok();
@@ -115,7 +165,7 @@ pub async fn run_compaction(
     // Mirrors the heartbeat/librarian wiring so write/edit dispatch
     // resolves paths, queues prompt-visible refreshes, and routes search
     // through the configured embedder.
-    let tool_ctx = build_compaction_tool_context(&effective, data_dir, llm_client, character);
+    let tool_ctx = build_compaction_tool_context(&deps.effective, data_dir, llm_client, character);
 
     // Resolve the chat-shape request compaction will extend. Prefer the
     // in-memory cached `last_request` — it's already warmed against the
@@ -125,22 +175,23 @@ pub async fn run_compaction(
     let chat_request = resolve_compaction_chat_request(
         cached_request,
         character,
-        &character_dir,
-        &effective,
-        store.messages(),
+        &loaded.character_dir,
+        &deps.effective,
+        loaded.store.messages(),
     )?;
 
-    let outcome = mgr
+    let outcome = deps
+        .mgr
         .compact(
             character,
-            &messages,
-            &content,
-            &system_template,
-            &prompt_template,
+            &loaded.messages,
+            &loaded.raw_content,
+            &deps.system_template,
+            &deps.prompt_template,
             character,
-            &display_name,
-            &llm,
-            &conv_mgr,
+            &deps.display_name,
+            &deps.llm,
+            &deps.conv_mgr,
             markdown_store.as_ref(),
             false,
             keep_turns_override,
@@ -148,13 +199,13 @@ pub async fn run_compaction(
             chat_request,
             Some(data_dir),
             tool_ctx.as_ref(),
-            max_tool_iterations,
+            deps.max_tool_iterations,
         )
         .await?;
 
     // Opt-in, best-effort push of the workspace memory history after a
     // successful compaction (a failed push never undoes the archive).
-    super::push_after_compaction(&effective, character, &outcome).await;
+    super::push_after_compaction(&deps.effective, character, &outcome).await;
 
     Ok(handle_compaction_outcome(character, notifier, outcome))
 }
