@@ -6,7 +6,12 @@ pub use shore_protocol::types::ContentBlock;
 ///
 /// The daemon sends fully-resolved config per-request because shore-llm is
 /// zero-config — it has no model database or API key storage.
-#[derive(Debug, Clone, Serialize)]
+///
+/// `Debug` is hand-written (below) to redact `api_key`: tracing spans
+/// capture arguments via `Debug`, so a derived impl would write the key
+/// verbatim to stderr/journald. Only `Debug` is redacted — `Serialize`
+/// must keep the real key for sidecar transport.
+#[derive(Clone, Serialize)]
 pub struct LlmRequest {
     /// SDK/wire protocol to use for this request.
     pub sdk: Sdk,
@@ -87,6 +92,30 @@ pub struct LlmRequest {
     /// `last_request` to drive the standalone keepalive subsystem.
     #[serde(skip)]
     pub keepalive_interval: Option<std::time::Duration>,
+}
+
+impl std::fmt::Debug for LlmRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmRequest")
+            .field("sdk", &self.sdk)
+            .field("model", &self.model)
+            .field("api_key", &"<redacted>")
+            .field("api_key_name", &self.api_key_name)
+            .field("base_url", &self.base_url)
+            .field("messages", &self.messages)
+            .field("system", &self.system)
+            .field("tools", &self.tools)
+            .field("max_tokens", &self.max_tokens)
+            .field("temperature", &self.temperature)
+            .field("top_p", &self.top_p)
+            .field("provider_options", &self.provider_options)
+            .field("provider_key", &self.provider_key)
+            .field("rid", &self.rid)
+            .field("forensic_character", &self.forensic_character)
+            .field("retain_long", &self.retain_long)
+            .field("keepalive_interval", &self.keepalive_interval)
+            .finish()
+    }
 }
 
 impl LlmRequest {
@@ -244,7 +273,9 @@ pub struct StreamResult {
 }
 
 /// Parameters for an image generation request.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is hand-written to redact `api_key`, same as [`LlmRequest`].
+#[derive(Clone)]
 pub struct ImageGenerateParams<'val> {
     pub provider_key: &'val str,
     pub model: &'val str,
@@ -255,6 +286,22 @@ pub struct ImageGenerateParams<'val> {
     pub quality: Option<&'val str>,
     pub aspect_ratio: Option<&'val str>,
     pub image_size: Option<&'val str>,
+}
+
+impl std::fmt::Debug for ImageGenerateParams<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImageGenerateParams")
+            .field("provider_key", &self.provider_key)
+            .field("model", &self.model)
+            .field("api_key", &"<redacted>")
+            .field("base_url", &self.base_url)
+            .field("prompt", &self.prompt)
+            .field("size", &self.size)
+            .field("quality", &self.quality)
+            .field("aspect_ratio", &self.aspect_ratio)
+            .field("image_size", &self.image_size)
+            .finish()
+    }
 }
 
 /// Response from shore-llm's POST /v1/image/generate endpoint.
@@ -357,6 +404,58 @@ mod tests {
         assert!(!json.as_object().unwrap().contains_key("provider_options"));
         assert_eq!(field(&json, "temperature"), 0.7);
         assert_eq!(field(&json, "max_tokens"), 4096);
+    }
+
+    /// Tracing spans capture arguments via `Debug`; the key must never
+    /// appear there. Serialization, by contrast, must carry the real key
+    /// to the sidecar. See issue #240.
+    #[test]
+    fn debug_redacts_api_key_but_serialize_keeps_it() {
+        let req = LlmRequest {
+            sdk: Sdk::Anthropic,
+            model: "claude-sonnet-4-20250514".into(),
+            api_key: "sk-super-secret".into(),
+            api_key_name: Some("default".into()),
+            base_url: None,
+            messages: vec![],
+            system: None,
+            tools: None,
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+            rid: None,
+            forensic_character: None,
+            retain_long: false,
+            keepalive_interval: None,
+        };
+        let debug = format!("{req:?}");
+        assert!(!debug.contains("sk-super-secret"));
+        assert!(debug.contains("<redacted>"));
+        // The friendly key name is attribution metadata, not a secret.
+        assert!(debug.contains("default"));
+
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(field(&json, "api_key"), "sk-super-secret");
+    }
+
+    #[test]
+    fn debug_redacts_image_params_api_key() {
+        let params = ImageGenerateParams {
+            provider_key: "openai",
+            model: "gpt-image-1",
+            api_key: "sk-super-secret",
+            base_url: None,
+            prompt: "a narwhal",
+            size: None,
+            quality: None,
+            aspect_ratio: None,
+            image_size: None,
+        };
+        let debug = format!("{params:?}");
+        assert!(!debug.contains("sk-super-secret"));
+        assert!(debug.contains("<redacted>"));
     }
 
     #[test]
