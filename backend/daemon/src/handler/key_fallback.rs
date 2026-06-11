@@ -42,6 +42,91 @@ use shore_protocol::server_msg::{ProviderFallbackWarning, ServerMessage};
 use super::generation::stream_with_retry;
 use super::GenContext;
 
+/// Outcome of trying one provider key candidate during credential fallback.
+enum CandidateResult {
+    /// Streaming succeeded.
+    Success(StreamResult),
+    /// Non-credential failure — do not rotate keys.
+    NonCredentialFailure(LlmError),
+    /// Credential failure — rotate to the next key.
+    CredentialFailure(LlmError),
+}
+
+/// Bundled parameters for a single candidate attempt during key fallback.
+struct CandidateAttempt<'att> {
+    ctx: &'att GenContext,
+    request: &'att mut LlmRequest,
+    resolved: &'att ResolvedModel,
+    effective_config: &'att LoadedConfig,
+    regen: bool,
+    char_name: &'att str,
+    thinking_enabled: bool,
+}
+
+/// Try one provider key candidate. On success returns `Success`. On failure
+/// classifies the error: credential failures (rotate) return `CredentialFailure`;
+/// non-credential failures return `NonCredentialFailure`.
+async fn try_candidate(
+    att: &mut CandidateAttempt<'_>,
+    cand: &KeyCandidate,
+    next_cand: Option<&KeyCandidate>,
+) -> CandidateResult {
+    // A missing/empty env value is a credential failure (`MissingKey`) —
+    // rotate without touching the network.
+    let Some(api_key) = read_candidate_env(cand) else {
+        let err = record_missing_key_fallback(
+            att.ctx,
+            att.request,
+            att.resolved,
+            att.char_name,
+            cand,
+            next_cand,
+        );
+        return CandidateResult::CredentialFailure(err);
+    };
+
+    att.request.api_key = api_key;
+    att.request.api_key_name = Some(cand.name.clone());
+
+    match stream_with_retry(
+        att.ctx,
+        att.request,
+        att.resolved,
+        att.effective_config,
+        att.regen,
+        att.char_name,
+        att.thinking_enabled,
+    )
+    .await
+    {
+        Ok(r) => CandidateResult::Success(r),
+        Err(e) => {
+            let kind = classify_credential_failure(&att.resolved.provider_key, &e);
+            if !kind.should_rotate() {
+                // Transient retries already exhausted, OR this is a
+                // 4xx/refusal/etc. that key rotation cannot help.
+                return CandidateResult::NonCredentialFailure(e);
+            }
+            let status = llm_http_status(&e);
+            let reason = sanitize_reason(&e);
+            record_fallback(
+                att.ctx,
+                FallbackRecord {
+                    request: att.request,
+                    resolved: att.resolved,
+                    char_name: att.char_name,
+                    from: cand,
+                    to: next_cand,
+                    kind,
+                    status,
+                    reason: &reason,
+                },
+            );
+            CandidateResult::CredentialFailure(e)
+        }
+    }
+}
+
 /// Stream the request with multi-key credential fallback.
 ///
 /// Resolves candidate keys for the request's provider, then walks them
@@ -49,10 +134,6 @@ use super::GenContext;
 /// `stream_with_retry`; only credential-classified failures rotate to
 /// the next candidate. The request's `api_key` is rewritten in-place
 /// before each attempt — callers must pass `&mut`.
-#[expect(
-    clippy::too_many_lines,
-    reason = "walks credential candidates with retry budget per candidate for streaming"
-)]
 pub(super) async fn stream_with_credential_fallback(
     ctx: &GenContext,
     request: &mut LlmRequest,
@@ -85,40 +166,20 @@ pub(super) async fn stream_with_credential_fallback(
 
     let total = candidates.len();
     let mut last_err: Option<LlmError> = None;
+    let mut att = CandidateAttempt {
+        ctx,
+        request,
+        resolved,
+        effective_config,
+        regen,
+        char_name,
+        thinking_enabled,
+    };
 
     for (i, cand) in candidates.iter().enumerate() {
         let next_cand = candidates.get(i.saturating_add(1));
-
-        // Step 1: resolve the env var. A missing/empty value is a
-        // credential failure (`MissingKey`) — rotate without touching
-        // the network.
-        let Some(api_key) = read_candidate_env(cand) else {
-            last_err = Some(record_missing_key_fallback(
-                ctx, request, resolved, char_name, cand, next_cand,
-            ));
-            if next_cand.is_some() {
-                continue;
-            }
-            break;
-        };
-
-        request.api_key = api_key;
-        request.api_key_name = Some(cand.name.clone());
-
-        // Step 2: dispatch through the existing transient-retry path.
-        // If it returns Ok, we're done. If it returns Err, classify.
-        match stream_with_retry(
-            ctx,
-            request,
-            resolved,
-            effective_config,
-            regen,
-            char_name,
-            thinking_enabled,
-        )
-        .await
-        {
-            Ok(r) => {
+        match try_candidate(&mut att, cand, next_cand).await {
+            CandidateResult::Success(r) => {
                 if i > 0 {
                     debug!(
                         provider = %resolved.provider_key,
@@ -129,28 +190,8 @@ pub(super) async fn stream_with_credential_fallback(
                 }
                 return Ok(r);
             }
-            Err(e) => {
-                let kind = classify_credential_failure(&resolved.provider_key, &e);
-                if !kind.should_rotate() {
-                    // Transient retries already exhausted, OR this is a
-                    // 4xx/refusal/etc. that key rotation cannot help.
-                    return Err(e);
-                }
-                let status = llm_http_status(&e);
-                let reason = sanitize_reason(&e);
-                record_fallback(
-                    ctx,
-                    FallbackRecord {
-                        request,
-                        resolved,
-                        char_name,
-                        from: cand,
-                        to: next_cand,
-                        kind,
-                        status,
-                        reason: &reason,
-                    },
-                );
+            CandidateResult::NonCredentialFailure(e) => return Err(e),
+            CandidateResult::CredentialFailure(e) => {
                 last_err = Some(e);
                 if next_cand.is_none() {
                     break;
