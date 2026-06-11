@@ -458,10 +458,60 @@ pub(crate) fn print_log_plain_with_boundary(
     write_log_plain_with_boundary(&mut out, messages, active_start, character_name, filter);
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "formats archived and active messages with boundary markers for plain-text output"
-)]
+/// Render plain-text content blocks (or fallback to the plain `content` string).
+fn write_plain_message_content(
+    out: &mut impl Write,
+    content_blocks: Option<&Vec<serde_json::Value>>,
+    content: &str,
+    filter: LogFilter,
+) {
+    if let Some(blocks) = content_blocks {
+        if !blocks.is_empty() {
+            for block in blocks {
+                match block["type"].as_str().unwrap_or("text") {
+                    "text" => {
+                        let text = block["text"].as_str().unwrap_or("");
+                        if !text.is_empty() {
+                            _ = writeln!(out, "{text}");
+                        }
+                    }
+                    "thinking" if filter.reasoning => {
+                        let t = block["thinking"].as_str().unwrap_or("");
+                        if !t.is_empty() {
+                            _ = writeln!(out, "[thinking] {t}");
+                        }
+                    }
+                    // redacted_thinking is a content-free placeholder — hide it.
+                    "tool_use" if filter.tools => {
+                        let tool_name = block["name"].as_str().unwrap_or("?");
+                        _ = writeln!(out, "[tool: {tool_name}]");
+                        if let Some(input_str) = format_tool_input(&block["input"]) {
+                            write_tool_body_plain(out, &input_str);
+                        }
+                    }
+                    "tool_result" if filter.tools => {
+                        let output = block["content"].as_str().unwrap_or("");
+                        let is_error = block["is_error"].as_bool().unwrap_or(false);
+                        let label = if is_error { "error" } else { "result" };
+                        _ = writeln!(out, "[{label}]");
+                        let formatted = format_tool_output(output);
+                        write_tool_body_plain(out, &formatted);
+                    }
+                    _ => {}
+                }
+            }
+        } else if !content.is_empty() {
+            _ = writeln!(out, "{content}");
+        } else {
+            // No blocks and no plain content: nothing to print.
+        }
+    } else if !content.is_empty() {
+        _ = writeln!(out, "{content}");
+    } else {
+        // No content_blocks field and no plain content: nothing to print.
+    }
+}
+
 fn write_log_plain_with_boundary(
     out: &mut impl Write,
     messages: &[serde_json::Value],
@@ -513,51 +563,7 @@ fn write_log_plain_with_boundary(
 
         let _ignored = writeln!(out, "{name} [{time_str}]:");
 
-        if let Some(blocks) = content_blocks {
-            if !blocks.is_empty() {
-                for block in blocks {
-                    match block["type"].as_str().unwrap_or("text") {
-                        "text" => {
-                            let text = block["text"].as_str().unwrap_or("");
-                            if !text.is_empty() {
-                                _ = writeln!(out, "{text}");
-                            }
-                        }
-                        "thinking" if filter.reasoning => {
-                            let t = block["thinking"].as_str().unwrap_or("");
-                            if !t.is_empty() {
-                                _ = writeln!(out, "[thinking] {t}");
-                            }
-                        }
-                        // redacted_thinking is a content-free placeholder — hide it.
-                        "tool_use" if filter.tools => {
-                            let tool_name = block["name"].as_str().unwrap_or("?");
-                            _ = writeln!(out, "[tool: {tool_name}]");
-                            if let Some(input_str) = format_tool_input(&block["input"]) {
-                                write_tool_body_plain(out, &input_str);
-                            }
-                        }
-                        "tool_result" if filter.tools => {
-                            let output = block["content"].as_str().unwrap_or("");
-                            let is_error = block["is_error"].as_bool().unwrap_or(false);
-                            let label = if is_error { "error" } else { "result" };
-                            _ = writeln!(out, "[{label}]");
-                            let formatted = format_tool_output(output);
-                            write_tool_body_plain(out, &formatted);
-                        }
-                        _ => {}
-                    }
-                }
-            } else if !content.is_empty() {
-                _ = writeln!(out, "{content}");
-            } else {
-                // No blocks and no plain content: nothing to print.
-            }
-        } else if !content.is_empty() {
-            _ = writeln!(out, "{content}");
-        } else {
-            // No content_blocks field and no plain content: nothing to print.
-        }
+        write_plain_message_content(out, content_blocks, content, filter);
 
         _ = writeln!(out);
     }
