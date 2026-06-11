@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7](https://github.com/mythofmeat/shore-core/compare/shore-swp-client-v0.3.6...shore-swp-client-v0.3.7) - 2026-06-11
+
+### Other
+
+- *(swp-client)* decompose the connection.rs long-function waiver ([#263](https://github.com/mythofmeat/shore-core/pull/263))
+
 ## [0.3.6](https://github.com/mythofmeat/shore-core/compare/shore-swp-client-v0.3.5...shore-swp-client-v0.3.6) - 2026-06-11
 
 ### Other

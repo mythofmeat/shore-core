@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/mythofmeat/shore-core/compare/shore-swp-server-v0.1.2...shore-swp-server-v0.1.3) - 2026-06-11
+
+### Other
+
+- *(swp-server)* decompose the lib.rs long-function waiver ([#262](https://github.com/mythofmeat/shore-core/pull/262))
+
 ## [0.1.2](https://github.com/mythofmeat/shore-core/compare/shore-swp-server-v0.1.1...shore-swp-server-v0.1.2) - 2026-06-11
 
 ### Other
