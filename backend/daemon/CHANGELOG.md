@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.2...shore-daemon-v0.1.3) - 2026-06-11
+
+### Added
+
+- *(memory)* workspace git history — compaction and dreaming passes commit their changes ([#239](https://github.com/mythofmeat/shore-core/pull/239))
+
+### Fixed
+
+- *(llm)* redact api_key from Debug output to stop tracing-log leak ([#242](https://github.com/mythofmeat/shore-core/pull/242))
+
+### Other
+
+- *(memory)* decompose the six dreaming.rs long-function waivers ([#247](https://github.com/mythofmeat/shore-core/pull/247))
+- burn down production string_slice panic-safety waivers ([#243](https://github.com/mythofmeat/shore-core/pull/243))
+- too_many_lines threshold 100 -> 80 ([#199](https://github.com/mythofmeat/shore-core/pull/199)) ([#244](https://github.com/mythofmeat/shore-core/pull/244))
+- Remove vestigial private-conversation plumbing and bring docs up to date ([#238](https://github.com/mythofmeat/shore-core/pull/238))
+
 ## [0.1.2](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.1...shore-daemon-v0.1.2) - 2026-06-10
 
 ### Added

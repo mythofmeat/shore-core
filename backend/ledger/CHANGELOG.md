@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v0.1.1...shore-ledger-v0.1.2) - 2026-06-11
+
+### Other
+
+- burn down production string_slice panic-safety waivers ([#243](https://github.com/mythofmeat/shore-core/pull/243))
+- too_many_lines threshold 100 -> 80 ([#199](https://github.com/mythofmeat/shore-core/pull/199)) ([#244](https://github.com/mythofmeat/shore-core/pull/244))
+
 ## [0.1.1](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v0.1.0...shore-ledger-v0.1.1) - 2026-06-10
 
 ### Other

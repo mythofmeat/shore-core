@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/mythofmeat/shore-core/compare/shore-diagnostics-v0.2.3...shore-diagnostics-v0.2.4) - 2026-06-11
+
+### Other
+
+- burn down production string_slice panic-safety waivers ([#243](https://github.com/mythofmeat/shore-core/pull/243))
+
 ## [0.2.3](https://github.com/mythofmeat/shore-core/compare/shore-diagnostics-v0.2.2...shore-diagnostics-v0.2.3) - 2026-06-04
 
 ### Other
