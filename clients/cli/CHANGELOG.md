@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.1](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.5.0...shore-cli-v2.5.1) - 2026-06-11
+
+### Fixed
+
+- *(cli)* scaffold canonical workspace layout in character --create ([#248](https://github.com/mythofmeat/shore-core/pull/248))
+
+### Other
+
+- burn down production string_slice panic-safety waivers ([#243](https://github.com/mythofmeat/shore-core/pull/243))
+- too_many_lines threshold 100 -> 80 ([#199](https://github.com/mythofmeat/shore-core/pull/199)) ([#244](https://github.com/mythofmeat/shore-core/pull/244))
+
 ## [2.5.0](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.4.0...shore-cli-v2.5.0) - 2026-06-10
 
 ### Added

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6](https://github.com/mythofmeat/shore-core/compare/shore-swp-client-v0.3.5...shore-swp-client-v0.3.6) - 2026-06-11
+
+### Other
+
+- too_many_lines threshold 100 -> 80 ([#199](https://github.com/mythofmeat/shore-core/pull/199)) ([#244](https://github.com/mythofmeat/shore-core/pull/244))
+
 ## [0.3.5](https://github.com/mythofmeat/shore-core/compare/shore-swp-client-v0.3.4...shore-swp-client-v0.3.5) - 2026-06-10
 
 ### Added
