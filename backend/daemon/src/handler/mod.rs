@@ -338,10 +338,6 @@ impl MessageHandler {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "dispatches every client message variant to the generation, cancel, or command path"
-    )]
     async fn handle_engine_message(&mut self, msg: ClientMessage, meta: RequestMeta) {
         let msg_kind = match &msg {
             ClientMessage::Message(_) => "message",
@@ -407,6 +403,22 @@ impl MessageHandler {
             );
         }
 
+        self.launch_generation(meta, body, regen, char_name, effective_config)
+            .await;
+    }
+
+    /// Wire up and spawn the generation task for a normalized engine message:
+    /// sanitize the rid, resolve the session's direct sender (bailing if the
+    /// session vanished), build the fanout, and hand the assembled
+    /// [`GenerationParams`] to the generation task.
+    async fn launch_generation(
+        &mut self,
+        meta: RequestMeta,
+        body: ClientMessageBody,
+        regen: bool,
+        char_name: String,
+        effective_config: LoadedConfig,
+    ) {
         let rid = body
             .rid
             .clone()
