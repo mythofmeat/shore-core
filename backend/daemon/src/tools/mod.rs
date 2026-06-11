@@ -242,11 +242,27 @@ fn apply_default_search_mode(input: &mut Value, ctx: &dyn ToolContext, index_pat
     }
 }
 
+/// Annotate a workspace-mutation result when the target is a prompt-visible
+/// file: register the deferred edit with the context and flag the result so
+/// the model learns the write won't reach the prompt until compaction.
+fn annotate_deferred_edit(path: &str, result: &mut Value, ctx: &dyn ToolContext) {
+    let Some(deferred_path) = crate::memory::deferred_edits::normalize_prompt_visible_path(path)
+    else {
+        return;
+    };
+    ctx.defer_edit(path);
+    if let Some(obj) = result.as_object_mut() {
+        let _ignored = obj.insert("prompt_visible_file".into(), serde_json::json!(true));
+        if crate::memory::deferred_edits::normalize_protected_path(path).is_some() {
+            _ = obj.insert("protected_file".into(), serde_json::json!(true));
+        }
+        _ = obj.insert("deferred_until_compaction".into(), serde_json::json!(true));
+        _ = obj.insert("deferred_path".into(), serde_json::json!(deferred_path));
+        _ = obj.insert("prompt_reload_required".into(), serde_json::json!(true));
+    }
+}
+
 /// Dispatch a tool call by name to its handler.
-#[expect(
-    clippy::too_many_lines,
-    reason = "dispatches every tool name to its handler with mode injection and input rewriting"
-)]
 pub fn dispatch_tool<'ctx>(
     name: &'ctx str,
     mut input: Value,
@@ -273,22 +289,7 @@ pub fn dispatch_tool<'ctx>(
                     .unwrap_or("")
                     .to_owned();
                 let mut result = workspace::handle_write(input, ctx.workspace_dir()).await?;
-                if let Some(deferred_path) =
-                    crate::memory::deferred_edits::normalize_prompt_visible_path(&path)
-                {
-                    ctx.defer_edit(&path);
-                    if let Some(obj) = result.as_object_mut() {
-                        let _ignored =
-                            obj.insert("prompt_visible_file".into(), serde_json::json!(true));
-                        if crate::memory::deferred_edits::normalize_protected_path(&path).is_some()
-                        {
-                            _ = obj.insert("protected_file".into(), serde_json::json!(true));
-                        }
-                        _ = obj.insert("deferred_until_compaction".into(), serde_json::json!(true));
-                        _ = obj.insert("deferred_path".into(), serde_json::json!(deferred_path));
-                        _ = obj.insert("prompt_reload_required".into(), serde_json::json!(true));
-                    }
-                }
+                annotate_deferred_edit(&path, &mut result, ctx);
                 Ok(result)
             }
             "edit" => {
@@ -298,22 +299,7 @@ pub fn dispatch_tool<'ctx>(
                     .unwrap_or("")
                     .to_owned();
                 let mut result = workspace::handle_edit(input, ctx.workspace_dir()).await?;
-                if let Some(deferred_path) =
-                    crate::memory::deferred_edits::normalize_prompt_visible_path(&path)
-                {
-                    ctx.defer_edit(&path);
-                    if let Some(obj) = result.as_object_mut() {
-                        let _ignored =
-                            obj.insert("prompt_visible_file".into(), serde_json::json!(true));
-                        if crate::memory::deferred_edits::normalize_protected_path(&path).is_some()
-                        {
-                            _ = obj.insert("protected_file".into(), serde_json::json!(true));
-                        }
-                        _ = obj.insert("deferred_until_compaction".into(), serde_json::json!(true));
-                        _ = obj.insert("deferred_path".into(), serde_json::json!(deferred_path));
-                        _ = obj.insert("prompt_reload_required".into(), serde_json::json!(true));
-                    }
-                }
+                annotate_deferred_edit(&path, &mut result, ctx);
                 Ok(result)
             }
             "list_files" => workspace::handle_list_files(input, ctx.workspace_dir()).await,
