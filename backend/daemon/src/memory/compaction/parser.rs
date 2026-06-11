@@ -31,17 +31,16 @@ pub const DEFAULT_COMPACT_PROMPT: &str =
 // ---------------------------------------------------------------------------
 
 /// Extract content between `<tag>` and `</tag>` (first occurrence).
-#[expect(
-    clippy::string_slice,
-    reason = "byte offsets derive from find()/literal-len() on `text` itself, so every slice bound lands on a char boundary"
-)]
 pub(super) fn extract_xml_tag(text: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let start = text.find(&open)?;
     let content_start = start.saturating_add(open.len());
-    let end = text[content_start..].find(&close)?;
-    let content = text[content_start..content_start.saturating_add(end)].trim();
+    let end = text.get(content_start..).unwrap_or("").find(&close)?;
+    let content = text
+        .get(content_start..content_start.saturating_add(end))
+        .unwrap_or("")
+        .trim();
     if content.is_empty() {
         None
     } else {

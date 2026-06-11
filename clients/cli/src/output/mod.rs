@@ -158,10 +158,6 @@ const MIN_BODY_WRAP: usize = 16;
 /// text at column 5. Each line is word-wrapped to the terminal width with its
 /// leading indentation preserved on continuation rows, so long lines stay in
 /// the gutter instead of soft-wrapping back to column 0.
-#[expect(
-    clippy::string_slice,
-    reason = "`indent_len` counts leading ASCII spaces, so it is a char-boundary byte offset into `line`"
-)]
 pub(crate) fn write_process_body(out: &mut impl Write, body: &str) {
     if body.is_empty() {
         return;
@@ -174,7 +170,7 @@ pub(crate) fn write_process_body(out: &mut impl Write, body: &str) {
         }
         // Preserve the line's own indentation; wrap only the content after it.
         let indent_len = line.chars().take_while(|c| *c == ' ').count();
-        let content = &line[indent_len..];
+        let content = line.get(indent_len..).unwrap_or("");
         let avail = base.saturating_sub(indent_len).max(MIN_BODY_WRAP);
         let indent = " ".repeat(indent_len);
         if use_color() {

@@ -370,14 +370,10 @@ fn find_case_insensitive_match(line: &str, query_lower: &str) -> Option<(usize, 
     ))
 }
 
-#[expect(
-    clippy::string_slice,
-    reason = "`end` is a char-boundary byte offset (caller passes char_indices/len-derived positions), so `text[..end]` is valid"
-)]
 fn byte_index_before_chars(text: &str, end: usize, count: usize) -> usize {
     let mut start = end;
     for _ in 0..count {
-        let Some((idx, _)) = text[..start].char_indices().next_back() else {
+        let Some((idx, _)) = text.get(..start).unwrap_or("").char_indices().next_back() else {
             return 0;
         };
         start = idx;
@@ -385,14 +381,10 @@ fn byte_index_before_chars(text: &str, end: usize, count: usize) -> usize {
     start
 }
 
-#[expect(
-    clippy::string_slice,
-    reason = "`start` is a char-boundary byte offset (caller passes char_indices/len-derived positions), so `text[start..]` is valid"
-)]
 fn byte_index_after_chars(text: &str, start: usize, count: usize) -> usize {
     let mut end = start;
     for _ in 0..count {
-        let Some((offset, ch)) = text[end..].char_indices().next() else {
+        let Some((offset, ch)) = text.get(end..).unwrap_or("").char_indices().next() else {
             return text.len();
         };
         end = end.saturating_add(offset).saturating_add(ch.len_utf8());
@@ -400,10 +392,6 @@ fn byte_index_after_chars(text: &str, start: usize, count: usize) -> usize {
     end
 }
 
-#[expect(
-    clippy::string_slice,
-    reason = "match offsets are clamped to `trimmed.len()` and excerpt bounds come from byte_index_*_chars(), so every slice bound lands on a char boundary"
-)]
 fn excerpt_line(line: &str, raw_match_start: usize, raw_match_end: usize) -> String {
     let trimmed_start = line.trim_start();
     let leading_trimmed_bytes = line.len().saturating_sub(trimmed_start.len());
@@ -417,9 +405,11 @@ fn excerpt_line(line: &str, raw_match_start: usize, raw_match_end: usize) -> Str
         .min(trimmed.len())
         .max(match_start);
 
-    let match_chars = trimmed[match_start..match_end].chars().count();
-    let available_before = trimmed[..match_start].chars().count();
-    let available_after = trimmed[match_end..].chars().count();
+    let match_chars = trimmed
+        .get(match_start..match_end)
+        .map_or(0, |s| s.chars().count());
+    let available_before = trimmed.get(..match_start).map_or(0, |s| s.chars().count());
+    let available_after = trimmed.get(match_end..).map_or(0, |s| s.chars().count());
     let context_chars = SEARCH_EXCERPT_CHARS.saturating_sub(match_chars);
     let half_context_chars = context_chars.checked_div(2).unwrap_or_default();
     let mut before_chars = half_context_chars.min(available_before);
@@ -450,7 +440,7 @@ fn excerpt_line(line: &str, raw_match_start: usize, raw_match_end: usize) -> Str
     if excerpt_start > 0 {
         excerpt.push_str("...");
     }
-    excerpt.push_str(&trimmed[excerpt_start..excerpt_end]);
+    excerpt.push_str(trimmed.get(excerpt_start..excerpt_end).unwrap_or(""));
     if excerpt_end < trimmed.len() {
         excerpt.push_str("...");
     }

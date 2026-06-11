@@ -342,10 +342,6 @@ fn build_anthropic_models_url(base_url: &str) -> String {
 /// Truncate a response body for logging so we don't drag huge payloads
 /// (or, in pathological cases, secrets that a buggy provider might echo)
 /// into error chains.
-#[expect(
-    clippy::string_slice,
-    reason = "slice end comes from floor_char_boundary(), which is guaranteed to be a char boundary"
-)]
 fn truncate_for_log(body: &str) -> String {
     const MAX: usize = 512;
     if body.len() <= MAX {
@@ -354,7 +350,7 @@ fn truncate_for_log(body: &str) -> String {
         // Round down to the nearest UTF-8 char boundary so a multibyte
         // character straddling byte 512 doesn't panic the slice.
         let end = body.floor_char_boundary(MAX);
-        format!("{}…", &body[..end])
+        format!("{}…", body.get(..end).unwrap_or(body))
     }
 }
 

@@ -2627,16 +2627,15 @@ fn round_score(value: f32) -> f32 {
     (value * 100.0).round() / 100.0
 }
 
-#[expect(
-    clippy::string_slice,
-    reason = "`cycle_start` is a find() byte offset into `existing`, so the slice start lands on a char boundary"
-)]
 fn normalize_dream_diary(existing: String) -> String {
     if existing.contains("human-readable Dream Diary") {
         let mut body = if existing.contains("prompt-visible memory index") {
             existing
         } else if let Some(cycle_start) = existing.find("## Dream Cycle") {
-            format!("{DREAM_DIARY_HEADER}{}", &existing[cycle_start..])
+            format!(
+                "{DREAM_DIARY_HEADER}{}",
+                existing.get(cycle_start..).unwrap_or("")
+            )
         } else {
             DREAM_DIARY_HEADER.to_owned()
         };

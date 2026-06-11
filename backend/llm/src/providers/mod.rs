@@ -35,13 +35,9 @@ pub(crate) fn format_reqwest_error(err: &reqwest::Error) -> String {
 }
 
 /// Truncate a string for log preview, respecting UTF-8 char boundaries.
-#[expect(
-    clippy::string_slice,
-    reason = "slice end comes from floor_char_boundary(), which is guaranteed to be a char boundary"
-)]
 fn body_preview(body: &str, max: usize) -> &str {
     if body.len() > max {
-        &body[..body.floor_char_boundary(max)]
+        body.get(..body.floor_char_boundary(max)).unwrap_or(body)
     } else {
         body
     }
