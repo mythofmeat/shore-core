@@ -241,10 +241,6 @@ pub async fn dream_status(
     })
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "collects memory entries, runs light/REM/deep dream phases, and persists results"
-)]
 pub async fn run_librarian_sweep(
     loaded_config: &LoadedConfig,
     data_dir: &Path,
@@ -254,55 +250,32 @@ pub async fn run_librarian_sweep(
     dry_run: bool,
     force: bool,
 ) -> Result<Option<DreamSweepResult>, DreamingError> {
-    let cfg = &loaded_config.app.memory.dreaming;
-    let memory_dir = character_memory_dir(&loaded_config.dirs.config, character);
-    let workspace_dir = character_workspace_dir(&loaded_config.dirs.config, character);
-    let memory_index_path = workspace_dir.join(MEMORY_INDEX_FILE);
-    let state_path = dream_state_path(data_dir, character);
-    let state = read_state(data_dir, &loaded_config.dirs.config, character).await?;
-    if !force && !dry_run && !is_due(cfg, state.last_run_at.as_deref())? {
+    let Some(setup) =
+        prepare_librarian_sweep(loaded_config, data_dir, character, dry_run, force).await?
+    else {
         return Ok(None);
-    }
-
-    let store = MarkdownMemoryStore::open(&memory_dir)
-        .await
-        .map_err(|e| DreamingError::Memory(e.to_string()))?;
-    let before = snapshot_memory_files(&store, &memory_index_path).await?;
-    let now = Local::now();
-    let ran_at = now.to_rfc3339();
+    };
 
     // The librarian commits its changes through the exec tool, so the
     // workspace must be a git repository before the pass starts.
     if !dry_run {
         crate::tools::workspace::ensure_workspace_git_repo_best_effort(
-            &workspace_dir,
+            &setup.workspace_dir,
             character,
             "dreaming",
         )
         .await;
     }
 
-    let mut request =
-        build_librarian_request(loaded_config, character, cached_request, dry_run, &ran_at)?;
-    request.forensic_character = Some(character.to_owned());
-    request.rid = None;
-    let tool_ctx = std::sync::Arc::new(build_librarian_tool_context(
+    let (mut request, tool_ctx, max_tool_iterations) = prepare_librarian_call(
         loaded_config,
         data_dir,
         llm_client,
         character,
+        cached_request,
         dry_run,
-    ));
-
-    // Per-model tool-iteration cap (the single unified surface). `None` =
-    // unlimited (default); the librarian loop then ends only when the model
-    // stops requesting tools.
-    let max_tool_iterations = crate::preferences::resolve_background_model(
-        loaded_config,
-        shore_config::app::BackgroundTask::Dreaming,
-        character,
-    )
-    .and_then(|m| m.max_tool_iterations);
+        &setup.ran_at,
+    )?;
 
     info!(
         character,
@@ -324,26 +297,26 @@ pub async fn run_librarian_sweep(
 
     let paths = LibrarianSweepPaths {
         data_dir,
-        memory_dir: &memory_dir,
-        memory_index_path: &memory_index_path,
-        state_path: &state_path,
+        memory_dir: &setup.memory_dir,
+        memory_index_path: &setup.memory_index_path,
+        state_path: &setup.state_path,
     };
 
     if dry_run {
         return Ok(Some(build_dry_run_dream_result(
             character,
-            ran_at,
+            setup.ran_at,
             &paths,
             loop_result,
         )));
     }
 
     let result = finalize_librarian_sweep(
-        &store,
+        &setup.store,
         character,
-        &ran_at,
-        state,
-        before,
+        &setup.ran_at,
+        setup.state,
+        setup.before,
         loop_result,
         &paths,
     )
@@ -353,7 +326,7 @@ pub async fn run_librarian_sweep(
     // Best-effort — a failed push never fails the pass.
     if loaded_config.app.memory.git_push {
         crate::tools::workspace::git_push_workspace_best_effort(
-            &workspace_dir,
+            &setup.workspace_dir,
             character,
             "dreaming",
         )
@@ -361,6 +334,94 @@ pub async fn run_librarian_sweep(
     }
 
     Ok(Some(result))
+}
+
+/// Per-sweep context loaded before the librarian runs: resolved paths, the
+/// prior dream state, and a pre-pass snapshot of the memory files.
+struct LibrarianSweepSetup {
+    memory_dir: PathBuf,
+    workspace_dir: PathBuf,
+    memory_index_path: PathBuf,
+    state_path: PathBuf,
+    state: DreamState,
+    store: MarkdownMemoryStore,
+    before: MemorySnapshot,
+    ran_at: String,
+}
+
+/// Resolve the sweep's paths, load the dream state, and snapshot the memory
+/// files. Returns `None` when dreaming is not yet due and the run is neither
+/// forced nor a dry run.
+async fn prepare_librarian_sweep(
+    loaded_config: &LoadedConfig,
+    data_dir: &Path,
+    character: &str,
+    dry_run: bool,
+    force: bool,
+) -> Result<Option<LibrarianSweepSetup>, DreamingError> {
+    let cfg = &loaded_config.app.memory.dreaming;
+    let memory_dir = character_memory_dir(&loaded_config.dirs.config, character);
+    let workspace_dir = character_workspace_dir(&loaded_config.dirs.config, character);
+    let memory_index_path = workspace_dir.join(MEMORY_INDEX_FILE);
+    let state_path = dream_state_path(data_dir, character);
+    let state = read_state(data_dir, &loaded_config.dirs.config, character).await?;
+    if !force && !dry_run && !is_due(cfg, state.last_run_at.as_deref())? {
+        return Ok(None);
+    }
+
+    let store = MarkdownMemoryStore::open(&memory_dir)
+        .await
+        .map_err(|e| DreamingError::Memory(e.to_string()))?;
+    let before = snapshot_memory_files(&store, &memory_index_path).await?;
+    let now = Local::now();
+    let ran_at = now.to_rfc3339();
+
+    Ok(Some(LibrarianSweepSetup {
+        memory_dir,
+        workspace_dir,
+        memory_index_path,
+        state_path,
+        state,
+        store,
+        before,
+        ran_at,
+    }))
+}
+
+/// Assemble the librarian LLM request, shared tool context, and per-model
+/// tool-iteration cap for one sweep.
+fn prepare_librarian_call(
+    loaded_config: &LoadedConfig,
+    data_dir: &Path,
+    llm_client: &LedgerClient,
+    character: &str,
+    cached_request: Option<&LlmRequest>,
+    dry_run: bool,
+    ran_at: &str,
+) -> Result<(LlmRequest, std::sync::Arc<SharedToolContext>, Option<u32>), DreamingError> {
+    let mut request =
+        build_librarian_request(loaded_config, character, cached_request, dry_run, ran_at)?;
+    request.forensic_character = Some(character.to_owned());
+    request.rid = None;
+    let tool_ctx = std::sync::Arc::new(build_librarian_tool_context(
+        loaded_config,
+        data_dir,
+        llm_client,
+        character,
+        dry_run,
+    ));
+
+    // Per-model tool-iteration cap (the single unified surface). `None` =
+    // unlimited (default); the librarian loop then ends only when the model
+    // stops requesting tools.
+    let max_tool_iterations = crate::preferences::resolve_background_model(
+        loaded_config,
+        shore_config::app::BackgroundTask::Dreaming,
+        character,
+    )
+    .and_then(|m| m.max_tool_iterations);
+
+    Ok((request, tool_ctx, max_tool_iterations))
 }
 
 /// Paths referenced while writing and reporting a librarian sweep.
@@ -454,10 +515,6 @@ fn librarian_phase_summary(
 /// Apply a completed librarian sweep's writes — fallback MEMORY.md, the
 /// daemon-controlled DREAMS.md audit, and the dream state — then snapshot the
 /// changes and assemble the final `DreamSweepResult`.
-#[expect(
-    clippy::too_many_lines,
-    reason = "applies all librarian sweep writes and snapshots the final dream result"
-)]
 async fn finalize_librarian_sweep(
     store: &MarkdownMemoryStore,
     character: &str,
@@ -506,7 +563,29 @@ async fn finalize_librarian_sweep(
     write_state(paths.data_dir, character, &next_state).await?;
 
     let after = snapshot_memory_files(store, paths.memory_index_path).await?;
-    let mut changed = changed_paths(&before, &after);
+    Ok(build_librarian_sweep_result(
+        character,
+        ran_at,
+        &before,
+        &after,
+        loop_result,
+        paths,
+        audit_appended,
+    ))
+}
+
+/// Diff the before/after memory snapshots and assemble the completed sweep's
+/// `DreamSweepResult`.
+fn build_librarian_sweep_result(
+    character: &str,
+    ran_at: &str,
+    before: &MemorySnapshot,
+    after: &MemorySnapshot,
+    loop_result: LibrarianLoopResult,
+    paths: &LibrarianSweepPaths<'_>,
+    audit_appended: bool,
+) -> DreamSweepResult {
+    let mut changed = changed_paths(before, after);
     if !changed.iter().any(|path| path == DREAM_STATE_REL) {
         changed.push(DREAM_STATE_REL.to_owned());
     }
@@ -524,7 +603,7 @@ async fn finalize_librarian_sweep(
         .collect::<Vec<_>>();
     let indexed_count = usize::from(after.contains_key(MEMORY_INDEX_FILE));
 
-    Ok(DreamSweepResult {
+    DreamSweepResult {
         character: character.to_owned(),
         dry_run: false,
         ran_at: ran_at.to_owned(),
@@ -565,7 +644,7 @@ async fn finalize_librarian_sweep(
         tool_rounds: loop_result.tool_rounds,
         audit_appended,
         final_report: loop_result.final_report,
-    })
+    }
 }
 
 /// Legacy deterministic sweep retained only for dry-run diagnostics and
@@ -762,10 +841,6 @@ fn build_legacy_dry_run_result(character: &str, run: LegacyDreamRun) -> DreamSwe
 /// Persist a legacy diagnostic sweep's artifacts (candidate/signal/promotion
 /// JSON, phase reports, dream diary, memory index, and dream state) and
 /// assemble the final result.
-#[expect(
-    clippy::too_many_lines,
-    reason = "persists legacy dream artifacts and assembles the final DreamSweepResult"
-)]
 async fn persist_and_build_legacy_result(
     store: &MarkdownMemoryStore,
     data_dir: &Path,
@@ -773,6 +848,8 @@ async fn persist_and_build_legacy_result(
     run: LegacyDreamRun,
     paths: &LegacyDreamPaths,
 ) -> Result<DreamSweepResult, DreamingError> {
+    write_legacy_artifacts(store, data_dir, character, &run, paths).await?;
+
     let LegacyDreamRun {
         ran_at,
         state,
@@ -782,38 +859,6 @@ async fn persist_and_build_legacy_result(
         promoted,
         would_write_paths,
     } = run;
-    let character_data_dir = character_data_dir(data_dir, character);
-
-    write_data_json(
-        &character_data_dir,
-        &paths.candidates_path,
-        &deep.candidates,
-    )
-    .await?;
-    write_data_json(&character_data_dir, &paths.signals_path, &rem).await?;
-    write_data_json(&character_data_dir, &paths.promotions_path, &deep).await?;
-    append_dream_diary(data_dir, character, &ran_at, &light, &rem, &deep).await?;
-    write_phase_reports(
-        &character_data_dir,
-        &ran_at,
-        (
-            &paths.light_report_path,
-            &paths.rem_report_path,
-            &paths.deep_report_path,
-        ),
-        &light,
-        &rem,
-        &deep,
-    )
-    .await?;
-    write_memory_index(
-        store,
-        &paths.memory_index_path,
-        character,
-        &ran_at,
-        &deep.promoted,
-    )
-    .await?;
 
     let mut next_state = state;
     next_state.last_run_at = Some(ran_at.clone());
@@ -858,6 +903,57 @@ async fn persist_and_build_legacy_result(
         audit_appended: false,
         final_report: None,
     })
+}
+
+/// Write the legacy sweep's artifacts: candidate/signal/promotion JSON, the
+/// dream diary, the per-phase reports, and the regenerated memory index.
+async fn write_legacy_artifacts(
+    store: &MarkdownMemoryStore,
+    data_dir: &Path,
+    character: &str,
+    run: &LegacyDreamRun,
+    paths: &LegacyDreamPaths,
+) -> Result<(), DreamingError> {
+    let character_data_dir = character_data_dir(data_dir, character);
+
+    write_data_json(
+        &character_data_dir,
+        &paths.candidates_path,
+        &run.deep.candidates,
+    )
+    .await?;
+    write_data_json(&character_data_dir, &paths.signals_path, &run.rem).await?;
+    write_data_json(&character_data_dir, &paths.promotions_path, &run.deep).await?;
+    append_dream_diary(
+        data_dir,
+        character,
+        &run.ran_at,
+        &run.light,
+        &run.rem,
+        &run.deep,
+    )
+    .await?;
+    write_phase_reports(
+        &character_data_dir,
+        &run.ran_at,
+        (
+            &paths.light_report_path,
+            &paths.rem_report_path,
+            &paths.deep_report_path,
+        ),
+        &run.light,
+        &run.rem,
+        &run.deep,
+    )
+    .await?;
+    write_memory_index(
+        store,
+        &paths.memory_index_path,
+        character,
+        &run.ran_at,
+        &run.deep.promoted,
+    )
+    .await
 }
 
 #[derive(Debug, Default)]
@@ -1596,10 +1692,6 @@ async fn ensure_data_write_path(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "scans all memory entries to build deduplicated candidate set for dreaming"
-)]
 fn run_light_phase(
     entries: Vec<MarkdownEntry>,
     state: &DreamState,
@@ -1643,45 +1735,8 @@ fn run_light_phase(
                 continue;
             }
 
-            let prior = state.seen_candidates.get(&key);
-            let mut recall_count = prior.map_or(1, |seen| seen.recall_count.saturating_add(1));
-            if recall_count == 0 {
-                recall_count = 1;
-            }
-            let mut evidence_sources = prior
-                .map(|seen| seen.sources.iter().cloned().collect::<BTreeSet<_>>())
-                .unwrap_or_default();
-            let _ignored = evidence_sources.insert(evidence.source.clone());
-            let first_seen_at = match prior {
-                Some(seen) if !seen.first_seen_at.is_empty() => seen.first_seen_at.clone(),
-                Some(_) | None => ran_at.to_owned(),
-            };
-            let themes = detect_themes(&text);
-            let recency = recency_score(&entry.modified_at);
-            let durability = durability_score(&text, &themes);
-            let specificity = specificity_score(&text);
-            let candidate = DreamCandidate {
-                id: candidate_id(&key),
-                text: text.clone(),
-                source: entry.path.clone(),
-                line: Some(idx.saturating_add(1)),
-                source_kind: source_kind(&entry.path).to_owned(),
-                first_seen_at,
-                last_seen_at: ran_at.to_owned(),
-                recall_count,
-                unique_source_count: evidence_sources.len(),
-                unique_query_count: 0,
-                theme_hits: themes,
-                recency_score: recency,
-                durability_score: durability,
-                specificity_score: specificity,
-                promotion_score: 0.0,
-                score: 0.0,
-                gates: Vec::new(),
-                promote: false,
-                decision_reason: "staged by Light Sleep; Deep has not evaluated it yet".to_owned(),
-                evidence: vec![evidence],
-            };
+            let candidate =
+                stage_new_candidate(state, &key, &text, evidence, &entry.modified_at, ran_at);
             _ = by_key.insert(key, candidate);
         }
     }
@@ -1702,6 +1757,59 @@ fn run_light_phase(
         duplicates_ignored,
         generated_sources_ignored,
         candidates,
+    }
+}
+
+/// Build a fresh `DreamCandidate` for a line the sweep has not staged yet,
+/// seeding recall counts and first-seen time from prior dream state. The
+/// candidate's source, line, and kind come from `evidence`, which becomes its
+/// first evidence entry.
+fn stage_new_candidate(
+    state: &DreamState,
+    key: &str,
+    text: &str,
+    evidence: DreamEvidence,
+    modified_at: &str,
+    ran_at: &str,
+) -> DreamCandidate {
+    let prior = state.seen_candidates.get(key);
+    let mut recall_count = prior.map_or(1, |seen| seen.recall_count.saturating_add(1));
+    if recall_count == 0 {
+        recall_count = 1;
+    }
+    let mut evidence_sources = prior
+        .map(|seen| seen.sources.iter().cloned().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
+    let _ignored = evidence_sources.insert(evidence.source.clone());
+    let first_seen_at = match prior {
+        Some(seen) if !seen.first_seen_at.is_empty() => seen.first_seen_at.clone(),
+        Some(_) | None => ran_at.to_owned(),
+    };
+    let themes = detect_themes(text);
+    let recency = recency_score(modified_at);
+    let durability = durability_score(text, &themes);
+    let specificity = specificity_score(text);
+    DreamCandidate {
+        id: candidate_id(key),
+        text: text.to_owned(),
+        source: evidence.source.clone(),
+        line: evidence.line,
+        source_kind: evidence.source_kind.clone(),
+        first_seen_at,
+        last_seen_at: ran_at.to_owned(),
+        recall_count,
+        unique_source_count: evidence_sources.len(),
+        unique_query_count: 0,
+        theme_hits: themes,
+        recency_score: recency,
+        durability_score: durability,
+        specificity_score: specificity,
+        promotion_score: 0.0,
+        score: 0.0,
+        gates: Vec::new(),
+        promote: false,
+        decision_reason: "staged by Light Sleep; Deep has not evaluated it yet".to_owned(),
+        evidence: vec![evidence],
     }
 }
 
@@ -2018,10 +2126,6 @@ async fn write_data_markdown(
         .map_err(|e| DreamingError::Io(e.to_string()))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "writes the full dream diary entry with light/REM/deep phase summaries"
-)]
 async fn append_dream_diary(
     data_dir: &Path,
     character: &str,
@@ -2037,6 +2141,26 @@ async fn append_dream_diary(
     };
 
     let _ignored = write!(body, "## Dream Cycle - {ran_at}\n\n");
+    push_light_diary_section(&mut body, light);
+    push_rem_diary_section(&mut body, rem);
+    push_deep_diary_section(&mut body, deep);
+    body.push_str("\n### Notes for Review\n\n");
+    body.push_str("- Safe to edit/delete for human review.\n");
+    body.push_str("- Does not directly control memory notes or the prompt-visible index.\n\n");
+
+    let path = crate::memory::dreams_log::dreams_log_path(data_dir, character);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| DreamingError::Io(e.to_string()))?;
+    }
+    fs::write(&path, body)
+        .await
+        .map_err(|e| DreamingError::Io(e.to_string()))
+}
+
+/// Append the diary's "Light Sleep - Staging" section.
+fn push_light_diary_section(body: &mut String, light: &LightPhaseOutput) {
     body.push_str("### Light Sleep - Staging\n\n");
     _ = writeln!(body, "- Sources reviewed: {}", light.sources_reviewed);
     _ = writeln!(body, "- Candidates staged: {}", light.candidates_staged);
@@ -2059,7 +2183,10 @@ async fn append_dream_diary(
         }
         body.push('\n');
     }
+}
 
+/// Append the diary's "REM Sleep - Reflection" section.
+fn push_rem_diary_section(body: &mut String, rem: &RemPhaseOutput) {
     body.push_str("### REM Sleep - Reflection\n\n");
     if rem.themes.is_empty() {
         body.push_str("- Themes noticed: none\n");
@@ -2078,7 +2205,10 @@ async fn append_dream_diary(
         }
     }
     body.push_str("- No durable memory was written\n\n");
+}
 
+/// Append the diary's "Deep Sleep - Indexing" section.
+fn push_deep_diary_section(body: &mut String, deep: &DeepPhaseOutput) {
     body.push_str("### Deep Sleep - Indexing\n\n");
     body.push_str("Indexed in `MEMORY.md`:\n\n");
     if deep.promoted.is_empty() {
@@ -2114,19 +2244,6 @@ async fn append_dream_diary(
             _ = writeln!(body, "  - reason: {}", rejection.reason);
         }
     }
-    body.push_str("\n### Notes for Review\n\n");
-    body.push_str("- Safe to edit/delete for human review.\n");
-    body.push_str("- Does not directly control memory notes or the prompt-visible index.\n\n");
-
-    let path = crate::memory::dreams_log::dreams_log_path(data_dir, character);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| DreamingError::Io(e.to_string()))?;
-    }
-    fs::write(&path, body)
-        .await
-        .map_err(|e| DreamingError::Io(e.to_string()))
 }
 
 async fn write_phase_reports(
@@ -2194,10 +2311,6 @@ async fn write_phase_reports(
     write_data_markdown(character_data_dir, deep_report_rel, &deep_report).await
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "regenerates the MEMORY.md index from the markdown store"
-)]
 async fn write_memory_index(
     store: &MarkdownMemoryStore,
     memory_index_path: &Path,
@@ -2228,6 +2341,29 @@ async fn write_memory_index(
     body.push_str("This file is the prompt-visible memory index. It maps durable memory files in workspace/memory, recent updates, and still-relevant conversational throughlines.\n\n");
     body.push_str("It is not the character definition, user profile, standing behavior, tool guide, or heartbeat guide. Those roles stay in SOUL.md, USER.md, AGENTS.md, TOOLS.md, and HEARTBEAT.md.\n\n");
 
+    push_memory_files_section(&mut body, &entries);
+    push_recent_updates_section(&mut body, &recent);
+    push_throughlines_section(&mut body, throughlines);
+
+    body.push_str("\n## Use\n\n");
+    body.push_str("- Treat this as a map, not a full memory dump.\n");
+    body.push_str(
+        "- Read or search the referenced memory files for details before relying on them.\n",
+    );
+
+    if let Some(parent) = memory_index_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| DreamingError::Io(e.to_string()))?;
+    }
+    fs::write(memory_index_path, body)
+        .await
+        .map_err(|e| DreamingError::Io(e.to_string()))
+}
+
+/// Append the index's "Memory Files" section: path-sorted entries, capped at
+/// `MAX_INDEX_FILES` with an omission note.
+fn push_memory_files_section(body: &mut String, entries: &[MarkdownEntry]) {
     body.push_str("## Memory Files\n\n");
     if entries.is_empty() {
         body.push_str("- No memory files yet.\n");
@@ -2243,7 +2379,11 @@ async fn write_memory_index(
             );
         }
     }
+}
 
+/// Append the index's "Recently Updated" section from the recency-sorted
+/// entry list.
+fn push_recent_updates_section(body: &mut String, recent: &[MarkdownEntry]) {
     body.push_str("\n## Recently Updated\n\n");
     if recent.is_empty() {
         body.push_str("- No recent memory file updates.\n");
@@ -2257,7 +2397,11 @@ async fn write_memory_index(
             );
         }
     }
+}
 
+/// Append the index's "Conversational Throughlines" section from the latest
+/// dream cycle's promotions.
+fn push_throughlines_section(body: &mut String, throughlines: &[DreamPromotion]) {
     body.push_str("\n## Conversational Throughlines\n\n");
     if throughlines.is_empty() {
         body.push_str("- No high-confidence throughlines selected in the latest dream cycle.\n");
@@ -2277,21 +2421,6 @@ async fn write_memory_index(
             }
         }
     }
-
-    body.push_str("\n## Use\n\n");
-    body.push_str("- Treat this as a map, not a full memory dump.\n");
-    body.push_str(
-        "- Read or search the referenced memory files for details before relying on them.\n",
-    );
-
-    if let Some(parent) = memory_index_path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| DreamingError::Io(e.to_string()))?;
-    }
-    fs::write(memory_index_path, body)
-        .await
-        .map_err(|e| DreamingError::Io(e.to_string()))
 }
 
 fn memory_file_summary(entry: &MarkdownEntry) -> String {
