@@ -160,10 +160,71 @@ fn track_cache_state(
     (Some(state_str.to_owned()), anomaly_str.map(String::from))
 }
 
+/// Build a [`CallRow`] from a record, computing cost and assembling all fields.
+fn build_call_row(
+    pricing: &PricingEngine,
+    record: &RecordCall<'_>,
+    ts: String,
+    cache_state: Option<String>,
+    cache_anomaly: Option<String>,
+) -> CallRow {
+    // Cost calculation (sync — cached pricing only, no fetch)
+    let priced_cost = pricing
+        .calculate_cost(crate::pricing::CostRequest {
+            provider: record.provider,
+            model: record.model,
+            input_tokens: record.usage.input_tokens,
+            output_tokens: record.usage.output_tokens,
+            cache_read_tokens: record.usage.cache_read_tokens,
+            cache_write_tokens: record.usage.cache_creation_tokens,
+            cache_ttl: record.cache_ttl.as_deref(),
+        })
+        .ok()
+        .flatten();
+    let total_cost_override = record.usage.total_cost_usd;
+    let cost_source = if total_cost_override.is_some() {
+        "provider_reported"
+    } else {
+        "pricing_catalog"
+    };
+    // Per-component costs are recorded only when we priced the call ourselves; a
+    // provider-reported total leaves the breakdown null.
+    let breakdown = total_cost_override
+        .is_none()
+        .then_some(())
+        .and(priced_cost.as_ref());
+
+    CallRow {
+        ts,
+        character: record.character.to_owned(),
+        provider: record.provider.to_owned(),
+        api_key_name: record.api_key_name.clone(),
+        model: record.model.to_owned(),
+        call_type: record.call_type.as_str().to_owned(),
+        input_tokens: record.usage.input_tokens,
+        output_tokens: record.usage.output_tokens,
+        cache_read_tokens: record.usage.cache_read_tokens,
+        cache_write_tokens: record.usage.cache_creation_tokens,
+        cache_ttl: record.cache_ttl.clone(),
+        total_ms: record.timing.total_ms,
+        ttft_ms: record.timing.time_to_first_token_ms,
+        finish_reason: record.finish_reason.to_owned(),
+        thinking_enabled: record.thinking_enabled,
+        cache_state,
+        cache_anomaly,
+        input_cost: breakdown.map(|c| c.input),
+        output_cost: breakdown.map(|c| c.output),
+        cache_read_cost: breakdown.map(|c| c.cache_read),
+        cache_write_cost: breakdown.map(|c| c.cache_write),
+        cost_source: Some(cost_source.to_owned()),
+        total_cost: total_cost_override.or_else(|| priced_cost.as_ref().map(|c| c.total)),
+    }
+}
+
 #[instrument(skip(ledger, pricing, cache_trackers, record), fields(call_type = record.call_type.as_str()))]
 #[expect(
-    clippy::too_many_lines,
-    reason = "assembles usage records, pricing, cache tracking, and anomaly detection in one write path"
+    clippy::needless_pass_by_value,
+    reason = "record is logically consumed by this sink; callers pass ownership"
 )]
 pub(crate) fn record_call(
     ledger: &Ledger,
@@ -179,70 +240,16 @@ pub(crate) fn record_call(
     let (cache_state, cache_anomaly) =
         track_cache_state(cache_trackers, &record, &ts, has_cache_metrics);
 
+    let row = build_call_row(pricing, &record, ts, cache_state, cache_anomaly);
+
     let RecordCall {
         provider,
-        api_key_name,
         model,
-        call_type,
         character,
+        call_type,
         usage,
-        timing,
-        finish_reason,
-        thinking_enabled,
-        cache_ttl,
+        ..
     } = record;
-
-    // Cost calculation (sync — cached pricing only, no fetch)
-    let priced_cost = pricing
-        .calculate_cost(crate::pricing::CostRequest {
-            provider,
-            model,
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            cache_read_tokens: usage.cache_read_tokens,
-            cache_write_tokens: usage.cache_creation_tokens,
-            cache_ttl: cache_ttl.as_deref(),
-        })
-        .ok()
-        .flatten();
-    let total_cost_override = usage.total_cost_usd;
-    let cost_source = if total_cost_override.is_some() {
-        "provider_reported"
-    } else {
-        "pricing_catalog"
-    };
-    // Per-component costs are recorded only when we priced the call ourselves; a
-    // provider-reported total leaves the breakdown null.
-    let breakdown = total_cost_override
-        .is_none()
-        .then_some(())
-        .and(priced_cost.as_ref());
-
-    let row = CallRow {
-        ts,
-        character: character.to_owned(),
-        provider: provider.to_owned(),
-        api_key_name,
-        model: model.to_owned(),
-        call_type: call_type.as_str().to_owned(),
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        cache_read_tokens: usage.cache_read_tokens,
-        cache_write_tokens: usage.cache_creation_tokens,
-        cache_ttl,
-        total_ms: timing.total_ms,
-        ttft_ms: timing.time_to_first_token_ms,
-        finish_reason: finish_reason.to_owned(),
-        thinking_enabled,
-        cache_state,
-        cache_anomaly,
-        input_cost: breakdown.map(|c| c.input),
-        output_cost: breakdown.map(|c| c.output),
-        cache_read_cost: breakdown.map(|c| c.cache_read),
-        cache_write_cost: breakdown.map(|c| c.cache_write),
-        cost_source: Some(cost_source.to_owned()),
-        total_cost: total_cost_override.or_else(|| priced_cost.as_ref().map(|c| c.total)),
-    };
 
     // Cache forensics: log response-side data for ALL cache events.
     // Uses call_id=0 since we don't have the request-side correlation ID
@@ -267,7 +274,7 @@ pub(crate) fn record_call(
         call_type = call_type.as_str(),
         input_tokens = usage.input_tokens,
         output_tokens = usage.output_tokens,
-        total_cost = total_cost_override.or_else(|| priced_cost.as_ref().map(|c| c.total)),
+        total_cost = row.total_cost,
         "LLM call recorded"
     );
     if let Err(e) = ledger.insert(&row) {
@@ -518,10 +525,6 @@ impl LedgerClient {
     /// budget rotate to the next configured key. Transient/provider failures
     /// still return normally so callers can apply their own retry/backoff
     /// policy.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "iterates credential candidates with retry, budget checks, and fallback events"
-    )]
     pub async fn generate_with_credential_fallback(
         &self,
         request: &mut LlmRequest,
@@ -554,24 +557,17 @@ impl LedgerClient {
             let next_cand = i.checked_add(1).and_then(|index| candidates.get(index));
 
             let Some(api_key) = read_candidate_env(cand) else {
-                let kind = CredentialFailureKind::MissingKey;
-                let reason = format!("env {:?} unset or empty", cand.env);
-                events.push(record_generate_fallback_event(
+                last_err = Some(record_missing_key_fallback(
+                    cand,
+                    next_cand,
                     FallbackContext {
                         request,
                         resolved,
                         call_type,
                         character,
                     },
-                    cand,
-                    next_cand,
-                    kind,
-                    None,
-                    &reason,
+                    &mut events,
                 ));
-                last_err = Some(LlmError::MissingApiKey {
-                    var: cand.env.clone(),
-                });
                 if next_cand.is_some() {
                     continue;
                 }
@@ -615,19 +611,9 @@ impl LedgerClient {
             }
         }
 
-        let final_err = last_err.unwrap_or_else(|| LlmError::MissingApiKey {
-            var: format!("all keys for provider '{}' failed", resolved.provider_key),
-        });
-        error!(
-            provider = %resolved.provider_key,
-            model = %resolved.qualified_name,
-            call_type = call_type.as_str(),
-            character,
-            candidates = total,
-            error = %final_err,
-            "generate_with_credential_fallback exhausted all keys"
-        );
-        Err(final_err)
+        Err(report_key_exhaustion(
+            resolved, call_type, character, total, last_err,
+        ))
     }
 
     /// Resolve the request's model from a loaded config, then apply
@@ -865,6 +851,47 @@ fn sanitize_fallback_reason(err: &LlmError) -> String {
         LlmError::Serialize(_) => "request serialization failed".into(),
         LlmError::Deserialize(_) => "response deserialization failed".into(),
     }
+}
+
+/// Record a missing-key fallback event and return the error to store in
+/// `last_err`.
+fn record_missing_key_fallback(
+    cand: &KeyCandidate,
+    next_cand: Option<&KeyCandidate>,
+    ctx: FallbackContext<'_>,
+    events: &mut Vec<CredentialFallbackEvent>,
+) -> LlmError {
+    let kind = CredentialFailureKind::MissingKey;
+    let reason = format!("env {:?} unset or empty", cand.env);
+    events.push(record_generate_fallback_event(
+        ctx, cand, next_cand, kind, None, &reason,
+    ));
+    LlmError::MissingApiKey {
+        var: cand.env.clone(),
+    }
+}
+
+/// Build the error returned when all credential candidates are exhausted.
+fn report_key_exhaustion(
+    resolved: &ResolvedModel,
+    call_type: CallType,
+    character: &str,
+    total: usize,
+    last_err: Option<LlmError>,
+) -> LlmError {
+    let final_err = last_err.unwrap_or_else(|| LlmError::MissingApiKey {
+        var: format!("all keys for provider '{}' failed", resolved.provider_key),
+    });
+    error!(
+        provider = %resolved.provider_key,
+        model = %resolved.qualified_name,
+        call_type = call_type.as_str(),
+        character,
+        candidates = total,
+        error = %final_err,
+        "generate_with_credential_fallback exhausted all keys"
+    );
+    final_err
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
