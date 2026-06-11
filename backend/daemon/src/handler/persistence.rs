@@ -32,10 +32,6 @@ struct CompletedResponseMessage {
     clippy::too_many_arguments,
     reason = "generation persistence boundary mirrors handler state; parameter object tracked in #109"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "persists messages, records diagnostics, applies deferred edits, and sends notifications"
-)]
 pub(super) async fn persist_and_notify(
     ctx: &GenContext,
     engine_arc: &Arc<Mutex<crate::engine::ConversationEngine>>,
@@ -64,20 +60,14 @@ pub(super) async fn persist_and_notify(
         // here to keep the next-turn cache prefix consistent with what
         // `build_llm_messages` will emit. Skip the strip only when the
         // user has explicitly opted to preserve prior-turn thinking.
-        {
-            let mut full_request = request.clone();
-            append_response_messages_to_request(
-                &mut full_request,
-                &completed_messages,
-                &request.sdk,
-            );
-            crate::content_util::maybe_strip_prior_thinking(
-                &mut full_request.messages,
-                replay_prior_thinking,
-                &resolved.provider_key,
-            );
-            ctx.autonomy.notify_last_request(char_name, full_request);
-        }
+        update_last_request_with_response(
+            ctx,
+            request,
+            &completed_messages,
+            replay_prior_thinking,
+            &resolved.provider_key,
+            char_name,
+        );
         let notify_content = notify_content_from_response_messages(&completed_messages);
         let mut generated_messages = tool_intermediate_messages;
         // The provider that actually minted this turn (matching the diagnostics
@@ -96,47 +86,14 @@ pub(super) async fn persist_and_notify(
             .map(|msg| msg.msg_id.clone())
             .collect();
         generated_messages.extend(response_messages);
-        if let Some(pending) = regen_alt {
-            let _ignored =
-                MessageStore::attach_generated_alt(&mut generated_messages, pending.alternatives);
-            let event_messages: Vec<Message> = generated_messages
-                .iter()
-                .filter(|msg| {
-                    response_event_ids
-                        .iter()
-                        .any(|msg_id| msg_id == &msg.msg_id)
-                })
-                .cloned()
-                .collect();
-            _ = engine.replace_after_last_user_turn(generated_messages)?;
-            let revision = engine.current_revision();
-            for msg in &event_messages {
-                emit_new_message_event(
-                    &ctx.event_tx,
-                    char_name,
-                    MessageOrigin::AssistantReply,
-                    revision,
-                    msg,
-                );
-            }
-        } else {
-            for msg in generated_messages {
-                let event_msg = response_event_ids
-                    .iter()
-                    .any(|msg_id| msg_id == &msg.msg_id)
-                    .then(|| msg.clone());
-                engine.append_message(msg)?;
-                if let Some(emitted) = event_msg {
-                    emit_new_message_event(
-                        &ctx.event_tx,
-                        char_name,
-                        MessageOrigin::AssistantReply,
-                        engine.current_revision(),
-                        &emitted,
-                    );
-                }
-            }
-        }
+        apply_generated_messages_to_engine(
+            &mut engine,
+            generated_messages,
+            regen_alt,
+            &response_event_ids,
+            &ctx.event_tx,
+            char_name,
+        )?;
         ctx.autonomy
             .notify_assistant_message(char_name, engine.turn_count());
         notify_content
@@ -150,6 +107,80 @@ pub(super) async fn persist_and_notify(
     );
     emit_usage_budget_warnings(ctx, request.rid.as_deref());
 
+    Ok(())
+}
+
+/// Update the last-request cache with the completed response so the
+/// heartbeat system sees a complete conversation.
+fn update_last_request_with_response(
+    ctx: &GenContext,
+    request: &shore_llm::types::LlmRequest,
+    completed_messages: &[CompletedResponseMessage],
+    replay_prior_thinking: shore_config::app::ThinkingReplay,
+    provider_key: &str,
+    char_name: &str,
+) {
+    let mut full_request = request.clone();
+    append_response_messages_to_request(&mut full_request, completed_messages, &request.sdk);
+    crate::content_util::maybe_strip_prior_thinking(
+        &mut full_request.messages,
+        replay_prior_thinking,
+        provider_key,
+    );
+    ctx.autonomy.notify_last_request(char_name, full_request);
+}
+
+/// Apply generated messages to the engine, handling regeneration
+/// alternatives versus standard append.
+fn apply_generated_messages_to_engine(
+    engine: &mut crate::engine::ConversationEngine,
+    mut generated_messages: Vec<Message>,
+    regen_alt: Option<PendingAlt>,
+    response_event_ids: &[String],
+    event_tx: &broadcast::Sender<ServerMessage>,
+    char_name: &str,
+) -> Result<(), crate::engine::EngineError> {
+    if let Some(pending) = regen_alt {
+        let _ignored =
+            MessageStore::attach_generated_alt(&mut generated_messages, pending.alternatives);
+        let event_messages: Vec<Message> = generated_messages
+            .iter()
+            .filter(|msg| {
+                response_event_ids
+                    .iter()
+                    .any(|msg_id| msg_id == &msg.msg_id)
+            })
+            .cloned()
+            .collect();
+        _ = engine.replace_after_last_user_turn(generated_messages)?;
+        let revision = engine.current_revision();
+        for msg in &event_messages {
+            emit_new_message_event(
+                event_tx,
+                char_name,
+                MessageOrigin::AssistantReply,
+                revision,
+                msg,
+            );
+        }
+    } else {
+        for msg in generated_messages {
+            let event_msg = response_event_ids
+                .iter()
+                .any(|msg_id| msg_id == &msg.msg_id)
+                .then(|| msg.clone());
+            engine.append_message(msg)?;
+            if let Some(emitted) = event_msg {
+                emit_new_message_event(
+                    event_tx,
+                    char_name,
+                    MessageOrigin::AssistantReply,
+                    engine.current_revision(),
+                    &emitted,
+                );
+            }
+        }
+    }
     Ok(())
 }
 
