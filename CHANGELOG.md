@@ -64,6 +64,11 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   redacted. If you run the daemon under journald, consider rotating keys
   and vacuuming old journal entries
   (`journalctl --user --vacuum-time=...`).
+- **`shore character <name> --create` scaffolds the canonical workspace
+  layout.** It now writes `characters/<name>/workspace/SOUL.md` directly
+  instead of the legacy `character.md` (which relied on the daemon's
+  first-load migration), and the already-exists check detects characters in
+  either layout, matching `discover_characters`.
 - **Documentation freshness pass.** CONFIGURATION.md now documents the full
   `[memory.dreaming]` surface (`minimum_inactive_time`, `max_lateness`,
   `compact_before`, `compact_to_zero`), the `[notifications]` sub-tables
