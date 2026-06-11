@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
+use shore_config::app::SubagentConfig;
+use shore_config::models::ResolvedModel;
 use shore_config::LoadedConfig;
 use shore_diagnostics::Diagnostics;
 use shore_ledger::{CallType, LedgerClient};
@@ -53,10 +55,6 @@ pub(crate) struct SubagentRuntime {
 }
 
 /// Run sub-agent `name` with `query`, returning its final text.
-#[expect(
-    clippy::too_many_lines,
-    reason = "boots the sub-agent with model resolution, system prompt assembly, and the full tool-loop cycle"
-)]
 pub(crate) async fn run(
     ctx: &SharedToolContext,
     runtime: &SubagentRuntime,
@@ -64,59 +62,8 @@ pub(crate) async fn run(
     query: &str,
 ) -> Result<Value, ToolError> {
     let config = &runtime.config;
-    let spec = config
-        .app
-        .subagents
-        .get(name)
-        .ok_or_else(|| ToolError::NotImplemented(format!("ask_{name}")))?;
-
-    // Model resolution: spec → defaults.subagent_model → defaults.model. Stop
-    // there rather than chaining to the (expensive) active chat model — the
-    // whole point is to land on something cheap.
-    let model_name = spec
-        .model
-        .as_deref()
-        .or(config.app.defaults.subagent_model.as_deref())
-        .or(config.app.defaults.model.as_deref())
-        .ok_or_else(|| {
-            ToolError::InvalidArgs(format!(
-                "subagent '{name}' has no model; set subagents.{name}.model or defaults.subagent_model"
-            ))
-        })?;
-    let resolved = crate::effective_catalog::find_effective_model(
-        config,
-        &config.dirs.cache,
-        model_name,
-        true,
-    )
-    .map_err(|e| ToolError::InvalidArgs(format!("subagent '{name}' model '{model_name}': {e}")))?;
-
-    let display_name = config.app.defaults.resolve_display_name();
-    let vars = template_vars(ctx.character_name(), &display_name);
-    let system_text = crate::engine::prompt::render_template(&spec.prompt, &vars);
-    let tools = subagent_tool_subset(&spec.tools, &vars);
-
-    // Mirror the dreaming/compaction shape: Anthropic-cache SDKs take the
-    // system prompt as an inline `role:"system"` entry (kept byte-stable
-    // across iterations); everyone else takes it top-level.
-    let uses_anthropic_cache = resolved.sdk.uses_anthropic_prompt_cache();
-    let system_arg = if uses_anthropic_cache {
-        None
-    } else {
-        Some(json!(system_text))
-    };
-    let mut request = LedgerClient::build_request_with_provider_keys(
-        &resolved,
-        &config.providers,
-        vec![json!({ "role": "user", "content": query })],
-        system_arg,
-        Some(tools),
-        None,
-    )
-    .map_err(|e| ToolError::Http(e.to_string()))?;
-    if uses_anthropic_cache {
-        request.push_inline_system(system_text);
-    }
+    let (spec, resolved) = resolve_spec_and_model(config, name)?;
+    let mut request = build_request(&resolved, config, spec, ctx, query)?;
 
     let thinking = thinking_enabled(&request);
     let char_name = ctx.character_name();
@@ -186,6 +133,79 @@ pub(crate) async fn run(
     drop(tx);
     let _ignored = forward.await;
     Ok(Value::String(loop_result?.result.content))
+}
+
+/// Resolve the subagent config entry and effective model.
+fn resolve_spec_and_model<'conf>(
+    config: &'conf LoadedConfig,
+    name: &str,
+) -> Result<(&'conf SubagentConfig, ResolvedModel), ToolError> {
+    let spec = config
+        .app
+        .subagents
+        .get(name)
+        .ok_or_else(|| ToolError::NotImplemented(format!("ask_{name}")))?;
+
+    // Model resolution: spec → defaults.subagent_model → defaults.model. Stop
+    // there rather than chaining to the (expensive) active chat model — the
+    // whole point is to land on something cheap.
+    let model_name = spec
+        .model
+        .as_deref()
+        .or(config.app.defaults.subagent_model.as_deref())
+        .or(config.app.defaults.model.as_deref())
+        .ok_or_else(|| {
+            ToolError::InvalidArgs(format!(
+                "subagent '{name}' has no model; set subagents.{name}.model or defaults.subagent_model"
+            ))
+        })?;
+    let resolved = crate::effective_catalog::find_effective_model(
+        config,
+        &config.dirs.cache,
+        model_name,
+        true,
+    )
+    .map_err(|e| ToolError::InvalidArgs(format!("subagent '{name}' model '{model_name}': {e}")))?;
+
+    Ok((spec, resolved))
+}
+
+/// Build the LLM request for the sub-agent, assembling system prompt and tools.
+fn build_request(
+    resolved: &ResolvedModel,
+    config: &LoadedConfig,
+    spec: &SubagentConfig,
+    ctx: &SharedToolContext,
+    query: &str,
+) -> Result<LlmRequest, ToolError> {
+    let display_name = config.app.defaults.resolve_display_name();
+    let vars = template_vars(ctx.character_name(), &display_name);
+    let system_text = crate::engine::prompt::render_template(&spec.prompt, &vars);
+    let tools = subagent_tool_subset(&spec.tools, &vars);
+
+    // Mirror the dreaming/compaction shape: Anthropic-cache SDKs take the
+    // system prompt as an inline `role:"system"` entry (kept byte-stable
+    // across iterations); everyone else takes it top-level.
+    let uses_anthropic_cache = resolved.sdk.uses_anthropic_prompt_cache();
+    let system_arg = if uses_anthropic_cache {
+        None
+    } else {
+        Some(json!(system_text))
+    };
+    let mut request = LedgerClient::build_request_with_provider_keys(
+        resolved,
+        &config.providers,
+        vec![json!({ "role": "user", "content": query })],
+        system_arg,
+        Some(tools),
+        None,
+    )
+    .map_err(|e| ToolError::Http(e.to_string()))?;
+    if uses_anthropic_cache {
+        request.push_inline_system(system_text);
+    }
+
+    Ok(request)
 }
 
 /// Spawn the task that tags each frame from the sub-agent's nested loop with
