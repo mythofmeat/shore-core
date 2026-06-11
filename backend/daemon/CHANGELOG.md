@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.3...shore-daemon-v0.1.4) - 2026-06-11
+
+### Other
+
+- *(tools)* extract the deferred-edit annotation from dispatch_tool ([#245](https://github.com/mythofmeat/shore-core/pull/245)) ([#266](https://github.com/mythofmeat/shore-core/pull/266))
+- *(handler)* extract the generation-launch tail from handle_engine_message ([#245](https://github.com/mythofmeat/shore-core/pull/245)) ([#265](https://github.com/mythofmeat/shore-core/pull/265))
+- *(autonomy)* decompose the four manager.rs long-function waivers ([#246](https://github.com/mythofmeat/shore-core/pull/246)) ([#249](https://github.com/mythofmeat/shore-core/pull/249))
+- *(memory)* decompose the two compaction/mod.rs long-function waivers ([#250](https://github.com/mythofmeat/shore-core/pull/250))
+- *(memory)* decompose the compaction/background.rs long-function waiver ([#251](https://github.com/mythofmeat/shore-core/pull/251))
+- *(memory)* decompose the retrieval.rs long-function waiver ([#253](https://github.com/mythofmeat/shore-core/pull/253))
+- *(commands)* decompose the two commands/state/memory.rs long-function waivers ([#254](https://github.com/mythofmeat/shore-core/pull/254))
+- *(handler)* decompose the handler/generation.rs long-function waiver ([#255](https://github.com/mythofmeat/shore-core/pull/255))
+- *(handler)* decompose the handler/key_fallback.rs long-function waiver ([#256](https://github.com/mythofmeat/shore-core/pull/256))
+- *(handler)* decompose the handler/persistence.rs long-function waiver ([#257](https://github.com/mythofmeat/shore-core/pull/257))
+- *(handler)* decompose the handler/task.rs long-function waiver ([#258](https://github.com/mythofmeat/shore-core/pull/258))
+- *(tools)* decompose the tools/subagent.rs long-function waiver ([#259](https://github.com/mythofmeat/shore-core/pull/259))
+- *(daemon)* decompose the main.rs long-function waiver ([#260](https://github.com/mythofmeat/shore-core/pull/260))
+
 ## [0.1.3](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.2...shore-daemon-v0.1.3) - 2026-06-11
 
 ### Added

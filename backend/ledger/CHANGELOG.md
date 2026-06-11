@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v0.1.2...shore-ledger-v0.1.3) - 2026-06-11
+
+### Other
+
+- *(ledger)* decompose the two client.rs long-function waivers ([#261](https://github.com/mythofmeat/shore-core/pull/261))
+
 ## [0.1.2](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v0.1.1...shore-ledger-v0.1.2) - 2026-06-11
 
 ### Other

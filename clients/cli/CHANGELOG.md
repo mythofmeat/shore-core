@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.2](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.5.1...shore-cli-v2.5.2) - 2026-06-11
+
+### Other
+
+- *(cli)* extract branch bodies from handle_log_command ([#245](https://github.com/mythofmeat/shore-core/pull/245)) ([#267](https://github.com/mythofmeat/shore-core/pull/267))
+- *(cli)* decompose the transcript.rs long-function waiver ([#264](https://github.com/mythofmeat/shore-core/pull/264))
+
 ## [2.5.1](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.5.0...shore-cli-v2.5.1) - 2026-06-11
 
 ### Fixed
