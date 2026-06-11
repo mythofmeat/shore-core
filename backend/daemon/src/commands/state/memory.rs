@@ -1,11 +1,12 @@
 use serde_json::json;
+use shore_llm::types::LlmRequest;
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::Role;
 use tracing::{debug, info};
 
 use crate::engine::ConversationEngine;
 use crate::memory::compaction::{
-    CompactionError, CompactionManager, CompactionOutcome, ConversationMessage,
+    CompactionError, CompactionManager, CompactionOutcome, CompactionResult, ConversationMessage,
     DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM,
 };
 use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
@@ -348,13 +349,44 @@ pub async fn compact(
     build_compaction_response(engine, ctx, &char_name, outcome)
 }
 
+/// Resolve the chat-shape request compaction will extend. Prefer the
+/// in-memory cached `last_request`; fall back to rebuilding from disk via the
+/// same path chat would have used. The wire shape — system, tools, messages —
+/// is identical either way; only the source differs. (A sibling of the
+/// background task's `resolve_compaction_chat_request`, plumbed through
+/// `CommandContext` and command error codes.)
+fn resolve_command_chat_request(
+    ctx: &CommandContext,
+    engine: &ConversationEngine,
+    char_name: &str,
+) -> Result<LlmRequest, (ErrorCode, String)> {
+    if let Some(req) = ctx.autonomy.cached_last_request(char_name) {
+        return Ok(req);
+    }
+    let chat_model = crate::preferences::resolve_chat_model_for_character(&ctx.config, char_name)
+        .ok_or_else(|| {
+        (
+            ErrorCode::InternalError,
+            "No chat model configured for compaction prefix rebuild".to_owned(),
+        )
+    })?;
+    let character_dir = engine.character_dir().clone();
+    let has_prior_context = crate::engine::segments::SegmentReader::load(&character_dir)
+        .is_ok_and(|r| r.segment_count() > 0);
+    crate::handler::build_chat_shape_request_from_disk(
+        char_name,
+        &character_dir,
+        &ctx.config,
+        &chat_model,
+        engine.messages(),
+        has_prior_context,
+    )
+    .map_err(|e| (ErrorCode::InternalError, e.to_string()))
+}
+
 /// Assemble the compaction inputs (templates, model, LLM/conversation managers,
 /// active conversation, chat-shape prefix request, tool context) and run the
 /// compaction loop. Returns the raw outcome for the caller to render.
-#[expect(
-    clippy::too_many_lines,
-    reason = "assembles compaction inputs, runs the LLM loop, and applies post-compaction pushes"
-)]
 async fn prepare_and_run_compaction(
     engine: &ConversationEngine,
     ctx: &CommandContext,
@@ -405,34 +437,7 @@ async fn prepare_and_run_compaction(
             .await
             .ok();
 
-    // Resolve the chat-shape request compaction will extend. Prefer the
-    // in-memory cached `last_request`; fall back to rebuilding from disk
-    // via the same path chat would have used. The wire shape — system,
-    // tools, messages — is identical either way; only the source differs.
-    let chat_request = if let Some(req) = ctx.autonomy.cached_last_request(char_name) {
-        req
-    } else {
-        let chat_model =
-            crate::preferences::resolve_chat_model_for_character(&ctx.config, char_name)
-                .ok_or_else(|| {
-                    (
-                        ErrorCode::InternalError,
-                        "No chat model configured for compaction prefix rebuild".to_owned(),
-                    )
-                })?;
-        let character_dir = engine.character_dir().clone();
-        let has_prior_context = crate::engine::segments::SegmentReader::load(&character_dir)
-            .is_ok_and(|r| r.segment_count() > 0);
-        crate::handler::build_chat_shape_request_from_disk(
-            char_name,
-            &character_dir,
-            &ctx.config,
-            &chat_model,
-            engine.messages(),
-            has_prior_context,
-        )
-        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
-    };
+    let chat_request = resolve_command_chat_request(ctx, engine, char_name)?;
 
     // Build the canonical tool context for the compaction loop. Mirrors
     // the background-task wiring so manual `swp memory_compact` and the
@@ -478,10 +483,6 @@ async fn prepare_and_run_compaction(
 
 /// Render a compaction outcome into the command's JSON result. On a successful
 /// compaction this reloads the engine and applies any deferred self-edits.
-#[expect(
-    clippy::too_many_lines,
-    reason = "renders compaction outcome into full command-result JSON with engine reload and deferred edits"
-)]
 fn build_compaction_response(
     engine: &mut ConversationEngine,
     ctx: &CommandContext,
@@ -497,45 +498,7 @@ fn build_compaction_response(
                 retained_count = result.retained_count,
                 "Compaction complete"
             );
-            engine
-                .reload()
-                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-
-            // Apply deferred character self-edits now that the cache has
-            // been bust by the engine reload.
-            let character_data_dir = ctx.config.dirs.data.join(char_name);
-            if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
-                &character_data_dir,
-                &ctx.config.dirs.config,
-                char_name,
-            ) {
-                tracing::warn!(
-                    character = %char_name,
-                    error = %e,
-                    "Failed to apply deferred edits after compaction"
-                );
-            }
-
-            // Same post-compaction bookkeeping as the handler and idle-tick
-            // paths: invalidates the cached pre-compaction LLM request,
-            // records memory coverage of the retained turns, and resets the
-            // compaction trigger flags.
-            ctx.autonomy
-                .notify_compaction_complete(char_name, result.retained_turns);
-
-            Ok(json!({
-                "status": "compacted",
-                "character": char_name,
-                "memory_files_written": result.memory_files_written,
-                "message_count": result.message_count,
-                "turn_count": result.compacted_turns,
-                "compacted_turns": result.compacted_turns,
-                "retained_count": result.retained_count,
-                "retained_turns": result.retained_turns,
-                "new_conversation_id": result.new_conversation_id,
-                "tool_rounds": result.tool_rounds,
-                "tools_called": result.tools_called,
-            }))
+            complete_compaction(engine, ctx, char_name, &result)
         }
         CompactionOutcome::NoMemoryWrites(result) => {
             tracing::warn!(
@@ -584,6 +547,55 @@ fn build_compaction_response(
             }))
         }
     }
+}
+
+/// Complete a successful compaction: reload the engine, apply
+/// deferred edits, notify autonomy, and build the JSON response.
+fn complete_compaction(
+    engine: &mut ConversationEngine,
+    ctx: &CommandContext,
+    char_name: &str,
+    result: &CompactionResult,
+) -> CommandResult {
+    engine
+        .reload()
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+
+    // Apply deferred character self-edits now that the cache has
+    // been bust by the engine reload.
+    let character_data_dir = ctx.config.dirs.data.join(char_name);
+    if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
+        &character_data_dir,
+        &ctx.config.dirs.config,
+        char_name,
+    ) {
+        tracing::warn!(
+            character = %char_name,
+            error = %e,
+            "Failed to apply deferred edits after compaction"
+        );
+    }
+
+    // Same post-compaction bookkeeping as the handler and idle-tick
+    // paths: invalidates the cached pre-compaction LLM request,
+    // records memory coverage of the retained turns, and resets the
+    // compaction trigger flags.
+    ctx.autonomy
+        .notify_compaction_complete(char_name, result.retained_turns);
+
+    Ok(json!({
+        "status": "compacted",
+        "character": char_name,
+        "memory_files_written": result.memory_files_written,
+        "message_count": result.message_count,
+        "turn_count": result.compacted_turns,
+        "compacted_turns": result.compacted_turns,
+        "retained_count": result.retained_count,
+        "retained_turns": result.retained_turns,
+        "new_conversation_id": result.new_conversation_id,
+        "tool_rounds": result.tool_rounds,
+        "tools_called": result.tools_called,
+    }))
 }
 
 /// Build the compaction tool context for a manual `swp memory_compact`
