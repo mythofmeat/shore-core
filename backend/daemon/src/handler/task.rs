@@ -22,6 +22,78 @@ use crate::handler::resize::warm_image_cache;
 
 use super::{GenContext, GenerationParams, PrepareChatContextParams, PreparedChatContext};
 
+/// Set up the generation engine: get or create the character engine,
+/// record the incoming user turn (or capture regen alternatives), resolve
+/// the active model, backfill autonomy state, and notify on new user
+/// messages.
+async fn setup_generation(
+    ctx: &GenContext,
+    params: &GenerationParams,
+) -> Result<
+    (
+        Arc<Mutex<ConversationEngine>>,
+        Option<PendingAlt>,
+        shore_config::models::ResolvedModel,
+    ),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    let engine_arc = {
+        let mut registry = ctx.registry.lock().await;
+        registry
+            .get_or_create(&params.char_name)
+            .map_err(|e| e.to_string())?
+    };
+
+    let regen_alt = append_user_turn(
+        ctx,
+        &engine_arc,
+        &params.data_dir,
+        &params.char_name,
+        &params.body,
+        params.regen,
+    )
+    .await?;
+
+    // The handler resolves the active model (via preferences +
+    // discovery) and passes the `ResolvedModel` through directly, so we
+    // do not re-run `find_effective_model` here — discovered-only models
+    // have a synthetic `qualified_name` that the resolver does not
+    // accept as input. If nothing was passed, fall back to the
+    // configured app default, then the first static chat model.
+    let resolved_owned = resolve_generation_model(
+        params.active_model.clone(),
+        &params.effective_config,
+        &params.sampler_overlay,
+    )?;
+    debug!(
+        model = %resolved_owned.qualified_name,
+        provider = %resolved_owned.provider_key,
+        reasoning_effort = ?resolved_owned.reasoning_effort,
+        sampler_overlay_active = !params.sampler_overlay.is_empty(),
+        "model resolved"
+    );
+
+    ensure_and_backfill_autonomy(
+        ctx,
+        &engine_arc,
+        &params.char_name,
+        &params.effective_config,
+    )
+    .await;
+
+    if !params.regen
+        && (!params.body.text.is_empty()
+            || !params.body.images.is_empty()
+            || !params.body.image_data.is_empty())
+    {
+        let turn_count = engine_arc.lock().await.turn_count();
+        ctx.autonomy
+            .notify_user_message(&params.char_name, turn_count);
+    }
+
+    Ok((engine_arc, regen_alt, resolved_owned))
+}
+
 #[instrument(
     skip(ctx, params),
     fields(
@@ -32,96 +104,50 @@ use super::{GenContext, GenerationParams, PrepareChatContextParams, PreparedChat
         rid = params.rid.as_deref().unwrap_or("-")
     )
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "orchestrates the full generation pipeline from history update through streaming and persistence"
-)]
 pub(super) async fn handle_generation(
     ctx: GenContext,
     params: GenerationParams,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let GenerationParams {
-        request: _request,
-        body,
-        regen,
-        char_name,
-        rid,
-        effective_config,
-        data_dir,
-        active_model,
-        sampler_overlay,
-    } = params;
     info!(
-        character = %char_name,
-        regen,
-        text_len = body.text.len(),
-        image_count = body.images.len().saturating_add(body.image_data.len()),
+        character = %params.char_name,
+        regen = params.regen,
+        text_len = params.body.text.len(),
+        image_count = params.body.images.len().saturating_add(params.body.image_data.len()),
         "handle_generation starting"
     );
     let wall_clock_start = Instant::now();
 
-    let engine_arc = {
-        let mut registry = ctx.registry.lock().await;
-        registry
-            .get_or_create(&char_name)
-            .map_err(|e| e.to_string())?
-    };
-
-    let regen_alt =
-        append_user_turn(&ctx, &engine_arc, &data_dir, &char_name, &body, regen).await?;
-
-    // The handler resolves the active model (via preferences +
-    // discovery) and passes the `ResolvedModel` through directly, so we
-    // do not re-run `find_effective_model` here — discovered-only models
-    // have a synthetic `qualified_name` that the resolver does not
-    // accept as input. If nothing was passed, fall back to the
-    // configured app default, then the first static chat model.
-    let resolved_owned =
-        resolve_generation_model(active_model, &effective_config, &sampler_overlay)?;
+    let (engine_arc, regen_alt, resolved_owned) = setup_generation(&ctx, &params).await?;
     let resolved = &resolved_owned;
-    debug!(
-        model = %resolved.qualified_name,
-        provider = %resolved.provider_key,
-        reasoning_effort = ?resolved.reasoning_effort,
-        sampler_overlay_active = !sampler_overlay.is_empty(),
-        "model resolved"
-    );
-
-    ensure_and_backfill_autonomy(&ctx, &engine_arc, &char_name, &effective_config).await;
-
-    if !regen && (!body.text.is_empty() || !body.images.is_empty() || !body.image_data.is_empty()) {
-        let turn_count = engine_arc.lock().await.turn_count();
-        ctx.autonomy.notify_user_message(&char_name, turn_count);
-    }
 
     let mut request = build_generation_request(
         &engine_arc,
-        &data_dir,
-        &char_name,
-        &effective_config,
+        &params.data_dir,
+        &params.char_name,
+        &params.effective_config,
         resolved,
-        &body,
-        regen,
+        &params.body,
+        params.regen,
     )
     .await;
-    request.rid = rid;
-    request.forensic_character = Some(char_name.clone());
+    request.rid = params.rid.clone();
+    request.forensic_character = Some(params.char_name.clone());
 
     let (result, tool_intermediate_messages) = run_generation_stream(
         &ctx,
-        &data_dir,
-        &char_name,
-        &effective_config,
+        &params.data_dir,
+        &params.char_name,
+        &params.effective_config,
         &mut request,
         resolved,
-        regen,
+        params.regen,
     )
     .await?;
 
     persist_and_notify(
         &ctx,
         &engine_arc,
-        &char_name,
+        &params.char_name,
         resolved,
         &result,
         &request,
@@ -129,9 +155,14 @@ pub(super) async fn handle_generation(
         wall_clock_start,
         // Per-model override (preferences overlay) falls back to the global
         // `[memory.thinking]` default. The effect is model-dependent — see #129.
-        resolved
-            .replay_prior_thinking
-            .unwrap_or(effective_config.app.memory.thinking.replay_prior_thinking),
+        resolved.replay_prior_thinking.unwrap_or(
+            params
+                .effective_config
+                .app
+                .memory
+                .thinking
+                .replay_prior_thinking,
+        ),
         regen_alt,
     )
     .await?;
@@ -141,9 +172,9 @@ pub(super) async fn handle_generation(
     maybe_schedule_compaction(
         &ctx,
         &engine_arc,
-        &char_name,
-        &effective_config,
-        &data_dir,
+        &params.char_name,
+        &params.effective_config,
+        &params.data_dir,
         &result,
         request.rid.clone(),
     )
