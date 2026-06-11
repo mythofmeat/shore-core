@@ -212,10 +212,6 @@ async fn handle_generic_swp_command(
 
 /// Handle every `shore log` form: edit/delete subcommands, a single message
 /// ref, the heartbeat log, or the message list (optionally `--follow`).
-#[expect(
-    clippy::too_many_lines,
-    reason = "dispatches every log subcommand variant: edit, delete, msg-ref, heartbeat, and list with follow"
-)]
 async fn handle_log_command(
     conn: &mut SWPConnection,
     cmd: &CliCommand,
@@ -248,41 +244,11 @@ async fn handle_log_command(
     };
 
     if let Some(sub) = subcommand {
-        let (name, args) = match sub {
-            crate::cli::LogCommand::Edit {
-                msg_ref: edit_ref,
-                content: edit_content,
-            } => (
-                "edit",
-                serde_json::json!({ "ref": edit_ref, "content": edit_content.join(" ") }),
-            ),
-            crate::cli::LogCommand::Delete {
-                msg_ref: delete_ref,
-            } => ("delete", serde_json::json!({ "refs": delete_ref })),
-        };
-        _ = conn.send_command(name, args).await?;
-        let data = recv_command_data(conn).await?;
-        if *json {
-            cli_out!("{}", serde_json::to_string_pretty(&data)?);
-        } else {
-            output::format_command(name, &data);
-        }
-        return Ok(());
+        return run_log_subcommand(conn, sub, *json).await;
     }
 
     if let Some(r) = msg_ref {
-        let mut args = serde_json::Map::new();
-        _ = args.insert("ref".into(), serde_json::json!(r));
-        if let Some(role_filter) = role {
-            _ = args.insert(
-                "role".into(),
-                serde_json::json!(role_filter.as_protocol_role()),
-            );
-        }
-        _ = conn
-            .send_command("get", serde_json::Value::Object(args))
-            .await?;
-        let data = recv_command_data(conn).await?;
+        let data = fetch_single_message(conn, r, role.as_ref()).await?;
         if *json {
             cli_out!("{}", serde_json::to_string_pretty(&data)?);
         } else if *content {
@@ -296,16 +262,7 @@ async fn handle_log_command(
     }
 
     if *heartbeat {
-        _ = conn
-            .send_command("heartbeat_log", serde_json::json!({ "count": count }))
-            .await?;
-        let data = recv_command_data(conn).await?;
-        if *json {
-            cli_out!("{}", serde_json::to_string_pretty(&data)?);
-        } else {
-            output::print_heartbeat_log(&data);
-        }
-        return Ok(());
+        return show_heartbeat_log(conn, *count, *json).await;
     }
 
     let mut args = serde_json::Map::new();
@@ -325,6 +282,69 @@ async fn handle_log_command(
 
     if *follow {
         follow_log_stream(conn, role.as_ref(), display_character, filter).await?;
+    }
+    Ok(())
+}
+
+/// Send a `shore log edit`/`delete` subcommand and print the acknowledgement.
+async fn run_log_subcommand(
+    conn: &mut SWPConnection,
+    sub: &crate::cli::LogCommand,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (name, args) = match sub {
+        crate::cli::LogCommand::Edit { msg_ref, content } => (
+            "edit",
+            serde_json::json!({ "ref": msg_ref, "content": content.join(" ") }),
+        ),
+        crate::cli::LogCommand::Delete { msg_ref } => {
+            ("delete", serde_json::json!({ "refs": msg_ref }))
+        }
+    };
+    _ = conn.send_command(name, args).await?;
+    let data = recv_command_data(conn).await?;
+    if json {
+        cli_out!("{}", serde_json::to_string_pretty(&data)?);
+    } else {
+        output::format_command(name, &data);
+    }
+    Ok(())
+}
+
+/// Fetch a single message by ref (`get`), optionally filtered to one role.
+async fn fetch_single_message(
+    conn: &mut SWPConnection,
+    msg_ref: &str,
+    role: Option<&LogRole>,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut args = serde_json::Map::new();
+    _ = args.insert("ref".into(), serde_json::json!(msg_ref));
+    if let Some(role_filter) = role {
+        _ = args.insert(
+            "role".into(),
+            serde_json::json!(role_filter.as_protocol_role()),
+        );
+    }
+    _ = conn
+        .send_command("get", serde_json::Value::Object(args))
+        .await?;
+    recv_command_data(conn).await
+}
+
+/// Fetch and print the heartbeat event log.
+async fn show_heartbeat_log(
+    conn: &mut SWPConnection,
+    count: u32,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    _ = conn
+        .send_command("heartbeat_log", serde_json::json!({ "count": count }))
+        .await?;
+    let data = recv_command_data(conn).await?;
+    if json {
+        cli_out!("{}", serde_json::to_string_pretty(&data)?);
+    } else {
+        output::print_heartbeat_log(&data);
     }
     Ok(())
 }
