@@ -49,6 +49,10 @@ use super::GenContext;
 /// `stream_with_retry`; only credential-classified failures rotate to
 /// the next candidate. The request's `api_key` is rewritten in-place
 /// before each attempt — callers must pass `&mut`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "walks credential candidates with retry budget per candidate for streaming"
+)]
 pub(super) async fn stream_with_credential_fallback(
     ctx: &GenContext,
     request: &mut LlmRequest,

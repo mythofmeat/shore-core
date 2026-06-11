@@ -458,6 +458,10 @@ pub(crate) fn print_log_plain_with_boundary(
     write_log_plain_with_boundary(&mut out, messages, active_start, character_name, filter);
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "formats archived and active messages with boundary markers for plain-text output"
+)]
 fn write_log_plain_with_boundary(
     out: &mut impl Write,
     messages: &[serde_json::Value],

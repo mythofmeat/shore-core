@@ -351,6 +351,10 @@ pub async fn compact(
 /// Assemble the compaction inputs (templates, model, LLM/conversation managers,
 /// active conversation, chat-shape prefix request, tool context) and run the
 /// compaction loop. Returns the raw outcome for the caller to render.
+#[expect(
+    clippy::too_many_lines,
+    reason = "assembles compaction inputs, runs the LLM loop, and applies post-compaction pushes"
+)]
 async fn prepare_and_run_compaction(
     engine: &ConversationEngine,
     ctx: &CommandContext,
@@ -474,6 +478,10 @@ async fn prepare_and_run_compaction(
 
 /// Render a compaction outcome into the command's JSON result. On a successful
 /// compaction this reloads the engine and applies any deferred self-edits.
+#[expect(
+    clippy::too_many_lines,
+    reason = "renders compaction outcome into full command-result JSON with engine reload and deferred edits"
+)]
 fn build_compaction_response(
     engine: &mut ConversationEngine,
     ctx: &CommandContext,

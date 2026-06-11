@@ -32,6 +32,10 @@ struct CompletedResponseMessage {
     clippy::too_many_arguments,
     reason = "generation persistence boundary mirrors handler state; parameter object tracked in #109"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "persists messages, records diagnostics, applies deferred edits, and sends notifications"
+)]
 pub(super) async fn persist_and_notify(
     ctx: &GenContext,
     engine_arc: &Arc<Mutex<crate::engine::ConversationEngine>>,

@@ -124,6 +124,10 @@ impl CacheTracker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "classifies every observation type to update cache state and anomaly tracking"
+    )]
     pub fn observe(&mut self, obs: &Observation) -> ObservationResult {
         let obs_ts = DateTime::parse_from_rfc3339(&obs.ts)
             .map(|dt| dt.with_timezone(&Utc))

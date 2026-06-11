@@ -17,6 +17,10 @@ use tracing::{info, warn};
 /// The data directory comes from `config.dirs.data` — callers should not
 /// thread a separate `data_dir` argument; the two would have to stay
 /// manually in sync.
+#[expect(
+    clippy::too_many_lines,
+    reason = "assembles compaction dependencies and runs the background compaction pipeline end-to-end"
+)]
 pub async fn run_compaction(
     character: &str,
     config: &shore_config::LoadedConfig,

@@ -53,6 +53,10 @@ pub(crate) struct SubagentRuntime {
 }
 
 /// Run sub-agent `name` with `query`, returning its final text.
+#[expect(
+    clippy::too_many_lines,
+    reason = "boots the sub-agent with model resolution, system prompt assembly, and the full tool-loop cycle"
+)]
 pub(crate) async fn run(
     ctx: &SharedToolContext,
     runtime: &SubagentRuntime,

@@ -32,6 +32,10 @@ use super::{GenContext, GenerationParams, PrepareChatContextParams, PreparedChat
         rid = params.rid.as_deref().unwrap_or("-")
     )
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "orchestrates the full generation pipeline from history update through streaming and persistence"
+)]
 pub(super) async fn handle_generation(
     ctx: GenContext,
     params: GenerationParams,

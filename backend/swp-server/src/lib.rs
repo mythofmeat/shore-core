@@ -450,6 +450,10 @@ struct ClientCtx {
 
 /// Handle a single client connection: handshake → message loop.
 #[instrument(skip(reader, writer, ctx), fields(client_id = ctx.client_id))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "drives the full client lifecycle: handshake, message loop, and shutdown"
+)]
 async fn handle_client<R, W>(
     reader: R,
     mut writer: W,

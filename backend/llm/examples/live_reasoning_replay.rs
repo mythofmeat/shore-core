@@ -178,6 +178,10 @@ fn replay_messages() -> Vec<serde_json::Value> {
 }
 
 #[tokio::main]
+#[expect(
+    clippy::too_many_lines,
+    reason = "sets up provider, builds chat request with tools, and replays the response stream"
+)]
 async fn main() -> ExitCode {
     load_env_file();
 

@@ -691,6 +691,10 @@ struct E2EHarness {
 }
 
 impl E2EHarness {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "boots the full daemon stack in-process for end-to-end tests"
+    )]
     async fn start(loaded: LoadedConfig, tmp: tempfile::TempDir) -> Self {
         let addr = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

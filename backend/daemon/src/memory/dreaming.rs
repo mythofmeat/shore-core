@@ -241,6 +241,10 @@ pub async fn dream_status(
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "collects memory entries, runs light/REM/deep dream phases, and persists results"
+)]
 pub async fn run_librarian_sweep(
     loaded_config: &LoadedConfig,
     data_dir: &Path,
@@ -450,6 +454,10 @@ fn librarian_phase_summary(
 /// Apply a completed librarian sweep's writes — fallback MEMORY.md, the
 /// daemon-controlled DREAMS.md audit, and the dream state — then snapshot the
 /// changes and assemble the final `DreamSweepResult`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "applies all librarian sweep writes and snapshots the final dream result"
+)]
 async fn finalize_librarian_sweep(
     store: &MarkdownMemoryStore,
     character: &str,
@@ -754,6 +762,10 @@ fn build_legacy_dry_run_result(character: &str, run: LegacyDreamRun) -> DreamSwe
 /// Persist a legacy diagnostic sweep's artifacts (candidate/signal/promotion
 /// JSON, phase reports, dream diary, memory index, and dream state) and
 /// assemble the final result.
+#[expect(
+    clippy::too_many_lines,
+    reason = "persists legacy dream artifacts and assembles the final DreamSweepResult"
+)]
 async fn persist_and_build_legacy_result(
     store: &MarkdownMemoryStore,
     data_dir: &Path,
@@ -1584,6 +1596,10 @@ async fn ensure_data_write_path(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "scans all memory entries to build deduplicated candidate set for dreaming"
+)]
 fn run_light_phase(
     entries: Vec<MarkdownEntry>,
     state: &DreamState,
@@ -2002,6 +2018,10 @@ async fn write_data_markdown(
         .map_err(|e| DreamingError::Io(e.to_string()))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "writes the full dream diary entry with light/REM/deep phase summaries"
+)]
 async fn append_dream_diary(
     data_dir: &Path,
     character: &str,
@@ -2174,6 +2194,10 @@ async fn write_phase_reports(
     write_data_markdown(character_data_dir, deep_report_rel, &deep_report).await
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "regenerates the MEMORY.md index from the markdown store"
+)]
 async fn write_memory_index(
     store: &MarkdownMemoryStore,
     memory_index_path: &Path,

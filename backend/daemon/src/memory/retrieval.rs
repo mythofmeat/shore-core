@@ -33,6 +33,10 @@ use shore_llm::embed::{Embedder, OpenAIEmbedder};
 /// Returns `Err` when no embedding model is configured, the identity is not a
 /// hosted `provider:model_id`, or no API key is set. Callers degrade hybrid
 /// search to lexical mode on any error.
+#[expect(
+    clippy::too_many_lines,
+    reason = "resolves the embedding provider identity and builds the embedder from config"
+)]
 pub fn resolve_embedder(
     default_ref: Option<&str>,
     embedding: &BTreeMap<String, EmbeddingSettings>,

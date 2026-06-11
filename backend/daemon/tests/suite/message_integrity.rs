@@ -9,6 +9,10 @@ use shore_test_harness::{AnthropicStreamBuilder, TestHarness};
     clippy::indexing_slicing,
     reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario drives multiple turns with tool calls through the full pipeline"
+)]
 #[tokio::test]
 async fn test_multi_turn_tool_conversation_valid() {
     let mut harness = TestHarness::boot().await;
@@ -252,6 +256,10 @@ async fn test_system_prompt_always_array_format() {
 #[expect(
     clippy::indexing_slicing,
     reason = "indexes known-shape command-output JSON / Vec fixtures and panics on mismatch"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end scenario verifies two simultaneous tool_use blocks get unique IDs"
 )]
 #[tokio::test]
 async fn test_multiple_tool_calls_have_unique_ids() {

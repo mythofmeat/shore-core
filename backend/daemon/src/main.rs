@@ -179,6 +179,10 @@ enum StartupError {
 }
 
 #[tokio::main]
+#[expect(
+    clippy::too_many_lines,
+    reason = "initializes logging, resolves startup config, binds the server, and runs the daemon"
+)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
