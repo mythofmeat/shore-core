@@ -179,10 +179,6 @@ enum StartupError {
 }
 
 #[tokio::main]
-#[expect(
-    clippy::too_many_lines,
-    reason = "initializes logging, resolves startup config, binds the server, and runs the daemon"
-)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
@@ -225,13 +221,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
     spawn_shutdown_signal_listener(shutdown_tx);
 
-    // ── Create server and message handler ─────────────────────────────
+    let ServerAndHandler {
+        server,
+        llm_client,
+        llm_sidecar_socket,
+        autonomy,
+        handler_handle,
+        handler_control_tx,
+    } = build_server_and_handler(server_config, &loaded, &config_path, notifier, &shutdown_rx)?;
+
+    let services = spawn_background_services(
+        &loaded,
+        &config_path,
+        handler_control_tx,
+        &shutdown_rx,
+        &llm_client,
+        llm_sidecar_socket,
+    );
+
+    let result = run_server(server, listener, shutdown_rx, &resolved_addr).await;
+
+    await_background_shutdown(services, handler_handle, autonomy).await;
+    unregister_instance(&registry, &instance_id);
+    info!("Daemon shut down cleanly");
+
+    result?;
+    Ok(())
+}
+
+/// Runtime components returned by [`build_server_and_handler`].
+struct ServerAndHandler {
+    server: Server,
+    llm_client: LedgerClient,
+    llm_sidecar_socket: Option<PathBuf>,
+    autonomy: AutonomyManager,
+    handler_handle: tokio::task::JoinHandle<()>,
+    handler_control_tx: tokio::sync::mpsc::Sender<shore_daemon::handler::HandlerControl>,
+}
+
+/// Build the SWP server, character registry, LLM client, autonomy manager,
+/// diagnostics, command context, and message handler. Returns the components
+/// needed by the remaining startup and shutdown phases.
+fn build_server_and_handler(
+    server_config: ServerConfig,
+    loaded: &LoadedConfig,
+    config_path: &Path,
+    notifier: NotificationService,
+    shutdown_rx: &tokio::sync::watch::Receiver<()>,
+) -> Result<ServerAndHandler, Box<dyn std::error::Error>> {
     let mut server = Server::new(server_config);
     let push_tx = server.event_sender();
     let session_router = server.session_router();
     let route_rx = server.take_route_rx();
 
-    // Create character registry for multi-character management.
     let char_registry = Arc::new(tokio::sync::Mutex::new(CharacterRegistry::new(
         loaded.dirs.config.clone(),
         loaded.dirs.data.clone(),
@@ -240,11 +282,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )));
     server.set_handshake_provider(build_handshake_provider(Arc::clone(&char_registry)));
 
-    let (llm_client, llm_sidecar_socket) = build_llm_client(&loaded)?;
+    let (llm_client, llm_sidecar_socket) = build_llm_client(loaded)?;
 
     // Autonomy manager: shared between handler, commands, and per-character ticks.
     let autonomy = build_autonomy_manager(
-        &loaded,
+        loaded,
         shutdown_rx.clone(),
         &llm_client,
         &push_tx,
@@ -260,8 +302,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session_tokens = Arc::new(std::sync::Mutex::new(SessionTokens::default()));
 
     let cmd_ctx = build_command_context(
-        &loaded,
-        &config_path,
+        loaded,
+        config_path,
         &push_tx,
         &autonomy,
         &llm_client,
@@ -282,28 +324,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         control_rx: handler_control_rx,
     });
 
-    // Spawn message handler as a background task.
     let handler_handle = tokio::spawn(async move {
         msg_handler.run(route_rx).await;
     });
 
-    let services = spawn_background_services(
-        &loaded,
-        &config_path,
-        handler_control_tx,
-        &shutdown_rx,
-        &llm_client,
+    Ok(ServerAndHandler {
+        server,
+        llm_client,
         llm_sidecar_socket,
-    );
-
-    let result = run_server(server, listener, shutdown_rx, &resolved_addr).await;
-
-    await_background_shutdown(services, handler_handle, autonomy).await;
-    unregister_instance(&registry, &instance_id);
-    info!("Daemon shut down cleanly");
-
-    result?;
-    Ok(())
+        autonomy,
+        handler_handle,
+        handler_control_tx,
+    })
 }
 
 /// Initialise human-readable tracing (journalctl already adds timestamps).
