@@ -124,6 +124,29 @@ fn build_no_memory_writes_outcome(
     })
 }
 
+/// Build the compaction system prompt + the single "compact now" user
+/// message. `chat_request` carries chat's full prefix (`system`, `tools`,
+/// `messages`); the LLM impl rebuilds it against the compaction model and
+/// appends this one user turn plus the compaction system instruction as an
+/// inline `role:"system"` entry at a fixed slot — see
+/// `compaction_impls::COMPACTION_TAIL_ENTRY_COUNT`. The inline shape (instead
+/// of `system_suffix`) is what keeps the compact-now slot byte-stable across
+/// the compaction tool loop, so chat's cache prefix continues to extend
+/// cleanly.
+fn build_compact_llm_request(
+    llm: &dyn CompactionLlm,
+    system_template: &str,
+    prompt_template: &str,
+    char_name: &str,
+    user_name: &str,
+    chat_request: shore_llm::types::LlmRequest,
+) -> Result<shore_llm::types::LlmRequest, CompactionError> {
+    let system = CompactionManager::build_system(system_template, char_name, user_name);
+    let final_msg = CompactionManager::build_final_message(prompt_template, char_name, user_name);
+    let compact_now_user = json!({"role": "user", "content": final_msg});
+    llm.build_initial_request(&system, compact_now_user, chat_request)
+}
+
 impl CompactionManager {
     pub fn new(config: CompactionConfig) -> Self {
         Self {
@@ -438,10 +461,6 @@ impl CompactionManager {
         clippy::too_many_arguments,
         reason = "compaction boundary still carries storage, prompt, and tool-loop state"
     )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "runs the full compaction LLM loop with tool dispatch and archive"
-    )]
     pub async fn compact(
         &self,
         conversation_id: &str,
@@ -482,7 +501,6 @@ impl CompactionManager {
         if split_at == 0 {
             return Err(CompactionError::InsufficientMessages);
         }
-        let compacted_part = messages.get(..split_at).unwrap_or(messages);
         debug!(
             compacted = split_at,
             retained = messages.len().saturating_sub(split_at),
@@ -495,25 +513,19 @@ impl CompactionManager {
             ));
         }
 
-        // Build the compaction system prompt + the single "compact now"
-        // user message. `chat_request` carries chat's full prefix
-        // (`system`, `tools`, `messages`); the LLM impl rebuilds it
-        // against the compaction model and appends this one user turn
-        // plus the compaction system instruction as an inline
-        // `role:"system"` entry at a fixed slot — see
-        // `compaction_impls::COMPACTION_TAIL_ENTRY_COUNT`. The inline
-        // shape (instead of `system_suffix`) is what keeps the
-        // compact-now slot byte-stable across the compaction tool loop,
-        // so chat's cache prefix continues to extend cleanly.
-        let system = Self::build_system(system_template, char_name, user_name);
-        let final_msg = Self::build_final_message(prompt_template, char_name, user_name);
-        let compact_now_user = json!({"role": "user", "content": final_msg});
-        let mut request = llm.build_initial_request(&system, compact_now_user, chat_request)?;
+        let mut request = build_compact_llm_request(
+            llm,
+            system_template,
+            prompt_template,
+            char_name,
+            user_name,
+            chat_request,
+        )?;
 
         let workspace_dir =
             Self::prepare_pass_workspace(markdown_store, tool_ctx, char_name, dry_run).await?;
 
-        let compacted_turns = Self::count_turns(compacted_part);
+        let compacted_turns = Self::count_turns(messages.get(..split_at).unwrap_or(messages));
         let retained_turns = Self::count_turns(messages.get(split_at..).unwrap_or(&[]));
 
         // Drive the tool loop. Tracks: real writes (for archive + rollback),
@@ -541,35 +553,12 @@ impl CompactionManager {
             "compaction: tool loop done"
         );
 
-        // Dry-run: return the would-write preview without archiving.
-        if dry_run {
-            return Ok(build_dry_run_outcome(
-                loop_state,
-                split_at,
-                compacted_turns,
-                messages.len().saturating_sub(split_at),
-                retained_turns,
-            ));
-        }
-
-        // NoMemoryWrites: leave the active conversation intact. This is
-        // the primary fix for issue #43 — the parser path used to fall
-        // through to archive when the model emitted tool_use blocks
-        // instead of an XML payload, silently clearing active.jsonl
-        // without updating any memory file.
-        if loop_state.writes_applied.is_empty() {
-            return Ok(build_no_memory_writes_outcome(
-                conversation_id,
-                loop_state,
-                split_at,
-                compacted_turns,
-            ));
-        }
-
-        self.archive_and_build_result(
+        self.try_complete_compact(
+            dry_run,
+            loop_state,
+            conversation_id,
             conversation_mgr,
             tool_ctx,
-            loop_state,
             CompactionArchiveInputs {
                 conversation_id,
                 active_content,
@@ -586,14 +575,47 @@ impl CompactionManager {
         .await
     }
 
+    /// Route the tool-loop result to the appropriate outcome: dry-run preview,
+    /// no-memory-writes rejection, or archive+finalize via [`archive_and_build_result`].
+    async fn try_complete_compact(
+        &self,
+        dry_run: bool,
+        loop_state: ToolLoopState,
+        conversation_id: &str,
+        conversation_mgr: &dyn ConversationManager,
+        tool_ctx: &dyn ToolContext,
+        inputs: CompactionArchiveInputs<'_>,
+    ) -> Result<CompactionOutcome, CompactionError> {
+        if dry_run {
+            return Ok(build_dry_run_outcome(
+                loop_state,
+                inputs.split_at,
+                inputs.compacted_turns,
+                inputs.retained,
+                inputs.retained_turns,
+            ));
+        }
+        // NoMemoryWrites: leave the active conversation intact. This is
+        // the primary fix for issue #43 — the parser path used to fall
+        // through to archive when the model emitted tool_use blocks
+        // instead of an XML payload, silently clearing active.jsonl
+        // without updating any memory file.
+        if loop_state.writes_applied.is_empty() {
+            return Ok(build_no_memory_writes_outcome(
+                conversation_id,
+                loop_state,
+                inputs.split_at,
+                inputs.compacted_turns,
+            ));
+        }
+        self.archive_and_build_result(conversation_mgr, tool_ctx, loop_state, inputs)
+            .await
+    }
+
     /// Archive the compacted prefix, retain the recent tail, queue any
     /// MEMORY.md prompt refresh, append a dreams-log entry, and assemble the
     /// `Compacted` outcome. On archive failure the applied writes are rolled
     /// back.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "archives the compacted prefix, retains the recent tail, and assembles the Compacted outcome"
-    )]
     async fn archive_and_build_result(
         &self,
         conversation_mgr: &dyn ConversationManager,
@@ -616,39 +638,16 @@ impl CompactionManager {
 
         // Archive compacted messages and retain recent context.
         let archive_started = std::time::Instant::now();
-        let new_conversation_id = match conversation_mgr
-            .archive_and_retain(
-                conversation_id,
-                RetentionParams {
-                    keep_last_n: retained,
-                    active_content: active_content.to_owned(),
-                },
-            )
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                Self::rollback_compaction(&loop_state.writes_applied).await;
-                // The model may have committed its writes before the archive
-                // failed; record the restoration so git history matches the
-                // tree instead of silently diverging. Best-effort.
-                match crate::tools::workspace::git_commit_all(
-                    Path::new(workspace_dir),
-                    char_name,
-                    "revert: compaction rolled back after archive failure",
-                )
-                .await
-                {
-                    Ok(true) => info!("compaction: recorded rollback commit"),
-                    Ok(false) => {}
-                    Err(git_err) => warn!(
-                        error = %git_err,
-                        "compaction: failed to record rollback commit"
-                    ),
-                }
-                return Err(e);
-            }
-        };
+        let new_conversation_id = archive_compact_prefix(
+            conversation_mgr,
+            conversation_id,
+            retained,
+            active_content,
+            &loop_state.writes_applied,
+            workspace_dir,
+            char_name,
+        )
+        .await?;
         debug!(
             retained,
             elapsed = ?archive_started.elapsed(),
@@ -740,6 +739,58 @@ impl CompactionManager {
             activity_notify: Arc::clone(&self.activity_notify),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Archive helpers
+// ---------------------------------------------------------------------------
+
+/// Archive the compacted message prefix, retaining the recent tail.
+/// On failure, rolls back all applied writes and records a git revert
+/// commit so history matches the restored tree.
+async fn archive_compact_prefix(
+    conversation_mgr: &dyn ConversationManager,
+    conversation_id: &str,
+    retained: usize,
+    active_content: &str,
+    writes_applied: &[AppliedCompactionWrite],
+    workspace_dir: &str,
+    char_name: &str,
+) -> Result<String, CompactionError> {
+    let new_conversation_id = match conversation_mgr
+        .archive_and_retain(
+            conversation_id,
+            RetentionParams {
+                keep_last_n: retained,
+                active_content: active_content.to_owned(),
+            },
+        )
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            CompactionManager::rollback_compaction(writes_applied).await;
+            // The model may have committed its writes before the archive
+            // failed; record the restoration so git history matches the
+            // tree instead of silently diverging. Best-effort.
+            match crate::tools::workspace::git_commit_all(
+                Path::new(workspace_dir),
+                char_name,
+                "revert: compaction rolled back after archive failure",
+            )
+            .await
+            {
+                Ok(true) => info!("compaction: recorded rollback commit"),
+                Ok(false) => {}
+                Err(git_err) => warn!(
+                    error = %git_err,
+                    "compaction: failed to record rollback commit"
+                ),
+            }
+            return Err(e);
+        }
+    };
+    Ok(new_conversation_id)
 }
 
 // ---------------------------------------------------------------------------
