@@ -448,23 +448,17 @@ struct ClientCtx {
     shutdown: tokio::sync::watch::Receiver<()>,
 }
 
-/// Handle a single client connection: handshake → message loop.
-#[instrument(skip(reader, writer, ctx), fields(client_id = ctx.client_id))]
-#[expect(
-    clippy::too_many_lines,
-    reason = "drives the full client lifecycle: handshake, message loop, and shutdown"
-)]
-async fn handle_client<R, W>(
-    reader: R,
-    mut writer: W,
-    mut ctx: ClientCtx,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+/// Perform the SWP handshake: exchange hellos, resolve character, load history, register client.
+async fn perform_handshake<R, W>(
+    reader: &mut BufReader<R>,
+    writer: &mut W,
+    ctx: &mut ClientCtx,
+) -> Result<SessionMeta, Box<dyn std::error::Error + Send + Sync>>
 where
     R: tokio::io::AsyncRead + Unpin + Send,
     W: tokio::io::AsyncWrite + Unpin + Send,
 {
     let client_id = ctx.client_id;
-    let mut buf_reader = BufReader::new(reader);
 
     let hello_snapshot = load_hello_snapshot(ctx.handshake.as_ref()).await;
 
@@ -474,11 +468,11 @@ where
         server_name: ctx.server_name.clone(),
         characters: hello_snapshot.characters.clone(),
     });
-    write_message(&mut writer, &server_hello).await?;
+    write_message(writer, &server_hello).await?;
     info!(client_id, "Sent server hello");
 
     // ── Step 2: Receive client Hello ─────────────────────────────────
-    let hello_msg = read_message(&mut buf_reader).await?;
+    let hello_msg = read_message(reader).await?;
     let client_hello = match hello_msg {
         Some(ClientMessage::Hello(hello)) => {
             info!(
@@ -496,7 +490,7 @@ where
                 code: ErrorCode::ProtocolError,
                 message: format!("Expected hello, got {:?}", msg_type_name(&other)),
             });
-            write_message(&mut writer, &err).await?;
+            write_message(writer, &err).await?;
             return Err("Protocol error: expected hello".into());
         }
         None => {
@@ -534,8 +528,28 @@ where
         selected_character: history_snapshot.selected_character,
         revision: history_snapshot.revision,
     });
-    write_message(&mut writer, &history).await?;
+    write_message(writer, &history).await?;
     info!(client_id, "Handshake complete");
+
+    Ok(session)
+}
+
+/// Handle a single client connection: handshake → message loop.
+#[instrument(skip(reader, writer, ctx), fields(client_id = ctx.client_id))]
+async fn handle_client<R, W>(
+    reader: R,
+    mut writer: W,
+    mut ctx: ClientCtx,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    R: tokio::io::AsyncRead + Unpin + Send,
+    W: tokio::io::AsyncWrite + Unpin + Send,
+{
+    let client_id = ctx.client_id;
+    let mut buf_reader = BufReader::new(reader);
+
+    let session = perform_handshake(&mut buf_reader, &mut writer, &mut ctx).await?;
+
     let loop_ctx = MessageLoopContext {
         client_id,
         clients: &ctx.clients,
