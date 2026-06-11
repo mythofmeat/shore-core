@@ -122,10 +122,6 @@ pub struct DiceNotation {
 }
 
 /// Parse dice notation like `2d6+3`, `1d20`, `4d6-1`, `d8`.
-#[expect(
-    clippy::string_slice,
-    reason = "byte offsets derive from find('d')/char_indices() on the same string, so every slice bound lands on a char boundary"
-)]
 pub fn parse_dice_notation(notation: &str) -> Result<DiceNotation, String> {
     let s = notation.trim().to_lowercase();
 
@@ -133,7 +129,7 @@ pub fn parse_dice_notation(notation: &str) -> Result<DiceNotation, String> {
         .find('d')
         .ok_or_else(|| format!("Missing 'd' in notation: {notation}"))?;
 
-    let count_str = &s[..d_pos];
+    let count_str = s.get(..d_pos).unwrap_or("");
     let count = if count_str.is_empty() {
         1
     } else {
@@ -145,7 +141,7 @@ pub fn parse_dice_notation(notation: &str) -> Result<DiceNotation, String> {
         return Err("Dice count must be at least 1".into());
     }
 
-    let after_d = &s[d_pos.saturating_add(1)..];
+    let after_d = s.get(d_pos.saturating_add(1)..).unwrap_or("");
     if after_d.is_empty() {
         return Err("Missing sides after 'd'".into());
     }
@@ -155,8 +151,8 @@ pub fn parse_dice_notation(notation: &str) -> Result<DiceNotation, String> {
         .find_map(|(i, c)| (i > 0 && (c == '+' || c == '-')).then_some(i));
 
     let (sides_str, modifier) = if let Some(byte_pos) = modifier_pos {
-        let sides = &after_d[..byte_pos];
-        let mod_str = &after_d[byte_pos..];
+        let sides = after_d.get(..byte_pos).unwrap_or("");
+        let mod_str = after_d.get(byte_pos..).unwrap_or("");
         let modifier = mod_str
             .parse::<i32>()
             .map_err(|_| format!("Invalid modifier: {mod_str}"))?;

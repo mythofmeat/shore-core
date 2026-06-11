@@ -356,10 +356,6 @@ fn build_warning_message(
 /// keep the status code but never leak provider response payloads
 /// (which can include partial credentials, internal IDs, or quota
 /// quotas verbatim).
-#[expect(
-    clippy::string_slice,
-    reason = "slice end comes from floor_char_boundary(), which is guaranteed to be a char boundary"
-)]
 fn sanitize_reason(err: &LlmError) -> String {
     match err {
         LlmError::HttpStatus { status, .. } => format!("HTTP {status}"),
@@ -369,7 +365,7 @@ fn sanitize_reason(err: &LlmError) -> String {
             // length defensively in case a backend returns a verbose body.
             let truncated = if message.len() > 200 {
                 let end = message.floor_char_boundary(200);
-                format!("{}…", &message[..end])
+                format!("{}…", message.get(..end).unwrap_or(message))
             } else {
                 message.clone()
             };

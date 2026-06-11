@@ -837,10 +837,6 @@ fn http_status_code(err: &LlmError) -> Option<u16> {
     }
 }
 
-#[expect(
-    clippy::string_slice,
-    reason = "slice end comes from floor_char_boundary(), which is guaranteed to be a char boundary"
-)]
 fn sanitize_fallback_reason(err: &LlmError) -> String {
     match err {
         LlmError::HttpStatus { status, .. } => format!("HTTP {status}"),
@@ -848,7 +844,7 @@ fn sanitize_fallback_reason(err: &LlmError) -> String {
         LlmError::Provider { message } => {
             let truncated = if message.len() > 200 {
                 let end = message.floor_char_boundary(200);
-                format!("{}...", &message[..end])
+                format!("{}...", message.get(..end).unwrap_or(message))
             } else {
                 message.clone()
             };

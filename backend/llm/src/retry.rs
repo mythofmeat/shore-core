@@ -187,16 +187,12 @@ const REFUSAL_PATTERNS: &[&str] = &[
     "i must refuse",
 ];
 
-#[expect(
-    clippy::string_slice,
-    reason = "slice end comes from floor_char_boundary(), which is guaranteed to be a char boundary"
-)]
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_owned()
     } else {
         let end = s.floor_char_boundary(max);
-        format!("{}…", &s[..end])
+        format!("{}…", s.get(..end).unwrap_or(s))
     }
 }
 

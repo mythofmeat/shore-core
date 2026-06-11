@@ -237,10 +237,6 @@ impl CompactionManager {
     /// Existing memory is no longer inlined here: the model already has the
     /// `MEMORY.md` index in its system prompt and reaches full files via its
     /// `read`/`list_files`/`search` tools on demand.
-    #[expect(
-        clippy::string_slice,
-        reason = "byte offsets derive from find()/literal-len() on `final_msg` itself, so every slice bound lands on a char boundary"
-    )]
     pub fn build_final_message(
         final_message_template: &str,
         char_name: &str,
@@ -255,8 +251,10 @@ impl CompactionManager {
         {
             final_msg = format!(
                 "{}{}",
-                &final_msg[..if_start],
-                &final_msg[endif_pos.saturating_add("{{/if}}".len())..],
+                final_msg.get(..if_start).unwrap_or(""),
+                final_msg
+                    .get(endif_pos.saturating_add("{{/if}}".len())..)
+                    .unwrap_or(""),
             );
         }
         final_msg.replace("{{recap}}", "")
