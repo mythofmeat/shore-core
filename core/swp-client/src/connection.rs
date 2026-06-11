@@ -69,10 +69,6 @@ impl SWPConnection {
     }
 
     /// Perform the 3-step SWP handshake on an already-open connection.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "implements the full 3-step SWP handshake with forward-compat skipping and history epoch"
-    )]
     async fn do_handshake(
         &mut self,
         client_type: String,
@@ -81,8 +77,28 @@ impl SWPConnection {
     ) -> Result<(ServerHello, History)> {
         debug!(client_type = %client_type, client_name = %client_name, character = ?character, "starting SWP handshake");
 
-        // Step 1: receive server hello, skipping any unknown frames a newer
-        // daemon may emit ahead of the hello (forward-compat, see PROTOCOL.md §3).
+        let server_hello = self.recv_server_hello().await?;
+
+        // Step 2: send client hello
+        let hello = ClientMessage::Hello(ClientHello {
+            client_type,
+            client_name,
+            capabilities: vec!["streaming".into()],
+            character,
+        });
+        self.send(&hello).await?;
+        debug!("sent client hello");
+
+        let history = self.recv_history().await?;
+
+        debug!("SWP handshake complete");
+        Ok((server_hello, history))
+    }
+
+    /// Handshake step 1: receive the server hello, skipping any unknown
+    /// frames a newer daemon may emit ahead of the hello (forward-compat,
+    /// see PROTOCOL.md §3).
+    async fn recv_server_hello(&mut self) -> Result<ServerHello> {
         let server_hello = loop {
             match self.recv().await? {
                 ServerMessage::Hello(h) => {
@@ -130,18 +146,12 @@ impl SWPConnection {
                 }
             }
         };
+        Ok(server_hello)
+    }
 
-        // Step 2: send client hello
-        let hello = ClientMessage::Hello(ClientHello {
-            client_type,
-            client_name,
-            capabilities: vec!["streaming".into()],
-            character,
-        });
-        self.send(&hello).await?;
-        debug!("sent client hello");
-
-        // Step 3: receive history, skipping any unknown frames (forward-compat).
+    /// Handshake step 3: receive the history, skipping any unknown frames
+    /// (forward-compat, see PROTOCOL.md §3).
+    async fn recv_history(&mut self) -> Result<History> {
         let history = loop {
             match self.recv().await? {
                 ServerMessage::History(h) => {
@@ -174,9 +184,7 @@ impl SWPConnection {
                 }
             }
         };
-
-        debug!("SWP handshake complete");
-        Ok((server_hello, history))
+        Ok(history)
     }
 
     /// Send a client message as a JSON line.
