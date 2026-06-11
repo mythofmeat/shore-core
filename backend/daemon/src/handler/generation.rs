@@ -140,22 +140,13 @@ pub(super) async fn stream_with_retry(
     }
 }
 
-/// Phase 11: Set up tool context and run the tool loop.
-#[instrument(skip(ctx, effective_config, request, result), fields(char = char_name))]
-#[expect(
-    clippy::too_many_lines,
-    reason = "sets up the tool context and drives the full tool loop for a generation response"
-)]
-pub(super) async fn run_tool_phase(
+/// Build the `HandlerToolContext` for a tool loop invocation.
+fn build_tool_context(
     ctx: &GenContext,
     data_dir: &std::path::Path,
     char_name: &str,
     effective_config: &LoadedConfig,
-    request: &mut shore_llm::types::LlmRequest,
-    result: shore_llm::types::StreamResult,
-    resolved: &shore_config::models::ResolvedModel,
-) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
-    debug!(character = char_name, "run_tool_phase starting");
+) -> HandlerToolContext {
     let image_gen_config = resolve_image_gen_config(
         effective_config.app.defaults.image_generation.as_deref(),
         &effective_config.models.image_generation,
@@ -186,7 +177,7 @@ pub(super) async fn run_tool_phase(
         warn!(character = %char_name, error = %e, "Failed to prepare active prompt snapshot");
     }
 
-    let tool_ctx = HandlerToolContext {
+    HandlerToolContext {
         inner: SharedToolContext {
             image_dir: character_data_dir
                 .join("images")
@@ -222,7 +213,22 @@ pub(super) async fn run_tool_phase(
             },
         },
         autonomy_val: ctx.autonomy.clone(),
-    };
+    }
+}
+
+/// Phase 11: Set up tool context and run the tool loop.
+#[instrument(skip(ctx, effective_config, request, result), fields(char = char_name))]
+pub(super) async fn run_tool_phase(
+    ctx: &GenContext,
+    data_dir: &std::path::Path,
+    char_name: &str,
+    effective_config: &LoadedConfig,
+    request: &mut shore_llm::types::LlmRequest,
+    result: shore_llm::types::StreamResult,
+    resolved: &shore_config::models::ResolvedModel,
+) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
+    debug!(character = char_name, "run_tool_phase starting");
+    let tool_ctx = build_tool_context(ctx, data_dir, char_name, effective_config);
 
     let thinking_enabled = thinking_enabled_from_request(request);
 
