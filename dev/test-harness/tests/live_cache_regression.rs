@@ -324,6 +324,10 @@ fn print_stats(stats: &[CallStat]) {
     clippy::too_many_arguments,
     reason = "live regression helper keeps request state explicit for cache-forensics readability"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "exercises the live tool loop with cold/warm cache tracking for regression detection"
+)]
 async fn run_tool_loop(
     client: &LlmClient,
     api_key: &str,

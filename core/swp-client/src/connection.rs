@@ -69,6 +69,10 @@ impl SWPConnection {
     }
 
     /// Perform the 3-step SWP handshake on an already-open connection.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "implements the full 3-step SWP handshake with forward-compat skipping and history epoch"
+    )]
     async fn do_handshake(
         &mut self,
         client_type: String,

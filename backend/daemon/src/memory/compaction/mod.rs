@@ -440,6 +440,10 @@ impl CompactionManager {
         clippy::too_many_arguments,
         reason = "compaction boundary still carries storage, prompt, and tool-loop state"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "runs the full compaction LLM loop with tool dispatch and archive"
+    )]
     pub async fn compact(
         &self,
         conversation_id: &str,
@@ -588,6 +592,10 @@ impl CompactionManager {
     /// MEMORY.md prompt refresh, append a dreams-log entry, and assemble the
     /// `Compacted` outcome. On archive failure the applied writes are rolled
     /// back.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "archives the compacted prefix, retains the recent tail, and assembles the Compacted outcome"
+    )]
     async fn archive_and_build_result(
         &self,
         conversation_mgr: &dyn ConversationManager,

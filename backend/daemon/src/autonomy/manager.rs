@@ -1027,6 +1027,10 @@ async fn character_tick_loop(
 }
 
 /// One tick for a single character.
+#[expect(
+    clippy::too_many_lines,
+    reason = "orchestrates per-tick heartbeat, keepalive, compaction, and dream scheduling in sequence"
+)]
 async fn tick_character(character: &str, ctx: &TickContext) {
     let now = Instant::now();
 
@@ -1165,6 +1169,10 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 /// Snapshot the per-tick actions while holding the state lock, then release it
 /// before any async work runs. Returns the heartbeat action, cache-keepalive
 /// action, and the compaction-needed / dream-needed gates.
+#[expect(
+    clippy::too_many_lines,
+    reason = "snapshots every per-tick gate under lock: heartbeat phase, cache keepalive, and compaction/dream/archive readiness"
+)]
 fn collect_tick_actions(
     character: &str,
     ctx: &TickContext,
@@ -1719,6 +1727,10 @@ async fn reload_engine_and_apply_deferred(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "assembles the dream context, gates on compaction config, and dispatches the librarian or legacy sweep"
+)]
 async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
     let Some(loaded_config) = ctx.loaded_config.as_deref() else {
         return;
@@ -2341,6 +2353,10 @@ fn heartbeat_budget_break(
 /// tool dispatch, a soft deadline, and a wrap-up grace window. Tool-loop
 /// messages are appended to `request` ephemerally. Returns the last-wins
 /// `<sendMessage>` text (if any) and whether any LLM call warmed the cache.
+#[expect(
+    clippy::too_many_lines,
+    reason = "runs the full heartbeat tool-loop with deadline, grace window, and wrap-up nudge"
+)]
 async fn run_heartbeat_tool_loop(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,

@@ -243,6 +243,10 @@ fn apply_default_search_mode(input: &mut Value, ctx: &dyn ToolContext, index_pat
 }
 
 /// Dispatch a tool call by name to its handler.
+#[expect(
+    clippy::too_many_lines,
+    reason = "dispatches every tool name to its handler with mode injection and input rewriting"
+)]
 pub fn dispatch_tool<'ctx>(
     name: &'ctx str,
     mut input: Value,

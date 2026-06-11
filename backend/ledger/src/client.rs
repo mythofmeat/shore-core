@@ -161,6 +161,10 @@ fn track_cache_state(
 }
 
 #[instrument(skip(ledger, pricing, cache_trackers, record), fields(call_type = record.call_type.as_str()))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "assembles usage records, pricing, cache tracking, and anomaly detection in one write path"
+)]
 pub(crate) fn record_call(
     ledger: &Ledger,
     pricing: &PricingEngine,
@@ -514,6 +518,10 @@ impl LedgerClient {
     /// budget rotate to the next configured key. Transient/provider failures
     /// still return normally so callers can apply their own retry/backoff
     /// policy.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "iterates credential candidates with retry, budget checks, and fallback events"
+    )]
     pub async fn generate_with_credential_fallback(
         &self,
         request: &mut LlmRequest,

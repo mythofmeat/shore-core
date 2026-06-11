@@ -441,6 +441,10 @@ async fn test_retain_long_routes_background_payloads_to_long_tier() {
 /// to a downstream helper). Such a regression would write/read from a
 /// sibling directory and only surface here, not in unit tests.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end compaction test that verifies character data directory paths survive the full stack"
+)]
 async fn test_character_data_dir_paths_through_full_stack() {
     let mut harness = TestHarness::boot_with(
         TestConfigBuilder::new()

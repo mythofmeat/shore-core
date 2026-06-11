@@ -1,3 +1,6 @@
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
+
+# Staged ratchet (#199): clippy default 100 -> 80 (current) -> 60 once the 80-cohort is clean.
+too-many-lines-threshold = 80

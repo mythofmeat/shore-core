@@ -26,6 +26,10 @@ pub fn tool_defs() -> Vec<ToolDef> {
 }
 
 /// `read` / `write` / `edit` workspace file tools.
+#[expect(
+    clippy::too_many_lines,
+    reason = "defines all workspace editing tool schemas with parameter specs"
+)]
 fn editing_tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {

@@ -338,6 +338,10 @@ impl MessageHandler {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "dispatches every client message variant to the generation, cancel, or command path"
+    )]
     async fn handle_engine_message(&mut self, msg: ClientMessage, meta: RequestMeta) {
         let msg_kind = match &msg {
             ClientMessage::Message(_) => "message",

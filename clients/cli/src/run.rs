@@ -212,6 +212,10 @@ async fn handle_generic_swp_command(
 
 /// Handle every `shore log` form: edit/delete subcommands, a single message
 /// ref, the heartbeat log, or the message list (optionally `--follow`).
+#[expect(
+    clippy::too_many_lines,
+    reason = "dispatches every log subcommand variant: edit, delete, msg-ref, heartbeat, and list with follow"
+)]
 async fn handle_log_command(
     conn: &mut SWPConnection,
     cmd: &CliCommand,
@@ -1332,6 +1336,10 @@ fn resolve_addr(cli: &Cli) -> Result<ServerAddr, shore_swp_client::ClientError> 
 }
 
 /// Receive and render a streaming response (for send/regen).
+#[expect(
+    clippy::too_many_lines,
+    reason = "receives every streaming server message and renders chunks, tool calls, and nested sub-agent output"
+)]
 async fn recv_streaming_response(
     conn: &mut SWPConnection,
 ) -> Result<(), Box<dyn std::error::Error>> {

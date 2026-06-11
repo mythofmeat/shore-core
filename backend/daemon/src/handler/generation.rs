@@ -142,6 +142,10 @@ pub(super) async fn stream_with_retry(
 
 /// Phase 11: Set up tool context and run the tool loop.
 #[instrument(skip(ctx, effective_config, request, result), fields(char = char_name))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "sets up the tool context and drives the full tool loop for a generation response"
+)]
 pub(super) async fn run_tool_phase(
     ctx: &GenContext,
     data_dir: &std::path::Path,
