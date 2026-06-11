@@ -1158,11 +1158,11 @@ async fn execute_deep_archive_if_still_idle(character: &str, ctx: &TickContext) 
         // Either the conversation became active during this tick's
         // awaits, or this is a unit-test context without tick deps.
         // Release the single-flight flag so other triggers aren't
-        // wedged. There is no handler-pickup fallback for the deep
-        // archive — it only ever runs from the tick.
-        let mut s = lock_state(&ctx.state);
-        s.compaction_triggered = false;
-        s.mark_dirty();
+        // wedged, and push the activity clock forward so a deps-less
+        // context doesn't re-fire the trigger every tick. There is no
+        // handler-pickup fallback for the deep archive — it only ever
+        // runs from the tick.
+        release_deep_archive_trigger(ctx);
     }
 }
 
