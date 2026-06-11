@@ -24,6 +24,61 @@ use shore_config::providers::ProviderRegistry;
 use shore_llm::credentials::{read_candidate_env, resolve_key_candidates_for};
 use shore_llm::embed::{Embedder, OpenAIEmbedder};
 
+/// Resolve the target embedding identity: the configured default, else the
+/// sole settings-overlay key. With multiple overlay entries and no default,
+/// fail rather than silently pick one — the choice would be arbitrary
+/// (BTreeMap order).
+fn resolve_embedder_target<'emb>(
+    default_ref: Option<&'emb str>,
+    embedding: &'emb BTreeMap<String, EmbeddingSettings>,
+) -> Result<&'emb str, String> {
+    if let Some(t) = default_ref {
+        return Ok(t);
+    }
+    let mut keys = embedding.keys();
+    match (keys.next(), keys.next()) {
+        (Some(only), None) => Ok(only.as_str()),
+        (Some(_), Some(_)) => Err(
+            "multiple [embedding.\"provider:model_id\"] entries are configured \
+             but defaults.embedding is unset; set defaults.embedding to choose one"
+                .to_owned(),
+        ),
+        _ => Err(
+            "no embedding model configured; semantic search disabled. Set \
+             defaults.embedding = \"provider:model_id\" pointing at an \
+             OpenAI-compatible embeddings endpoint and configure \
+             [providers.<provider>] (see CONFIGURATION.md)."
+                .to_owned(),
+        ),
+    }
+}
+
+/// Resolve the API key for an embedding provider via the
+/// `[providers.<p>].keys[]` fallback chain; the first env-set candidate wins.
+/// Mirrors chat's resolution so multi-key providers work.
+fn resolve_embedder_api_key(
+    provider_key: &str,
+    providers: &ProviderRegistry,
+) -> Result<String, String> {
+    let candidates = resolve_key_candidates_for(provider_key, providers, None);
+    if candidates.is_empty() {
+        return Err(format!(
+            "embedding provider '{provider_key}' is disabled in [providers.{provider_key}]"
+        ));
+    }
+    candidates
+        .iter()
+        .find_map(read_candidate_env)
+        .ok_or_else(|| {
+            let envs: Vec<&str> = candidates.iter().map(|c| c.env.as_str()).collect();
+            format!(
+                "embedding API key not set for provider '{provider_key}'; \
+             set one of these env vars: {}",
+                envs.join(", ")
+            )
+        })
+}
+
 /// Build (or fetch from the process-wide cache) the configured embedder.
 ///
 /// `default_ref` is `defaults.embedding` — a `provider:model_id` identity.
@@ -33,43 +88,13 @@ use shore_llm::embed::{Embedder, OpenAIEmbedder};
 /// Returns `Err` when no embedding model is configured, the identity is not a
 /// hosted `provider:model_id`, or no API key is set. Callers degrade hybrid
 /// search to lexical mode on any error.
-#[expect(
-    clippy::too_many_lines,
-    reason = "resolves the embedding provider identity and builds the embedder from config"
-)]
 pub fn resolve_embedder(
     default_ref: Option<&str>,
     embedding: &BTreeMap<String, EmbeddingSettings>,
     providers: &ProviderRegistry,
     http_client: &reqwest::Client,
 ) -> Result<Arc<dyn Embedder>, String> {
-    // Identity: the configured default, else the sole settings-overlay key.
-    // With multiple overlay entries and no default, fail rather than silently
-    // pick one — the choice would be arbitrary (BTreeMap order).
-    let target = if let Some(t) = default_ref {
-        t
-    } else {
-        let mut keys = embedding.keys();
-        match (keys.next(), keys.next()) {
-            (Some(only), None) => only.as_str(),
-            (Some(_), Some(_)) => {
-                return Err(
-                    "multiple [embedding.\"provider:model_id\"] entries are configured \
-                     but defaults.embedding is unset; set defaults.embedding to choose one"
-                        .to_owned(),
-                );
-            }
-            _ => {
-                return Err(
-                    "no embedding model configured; semantic search disabled. Set \
-                     defaults.embedding = \"provider:model_id\" pointing at an \
-                     OpenAI-compatible embeddings endpoint and configure \
-                     [providers.<provider>] (see CONFIGURATION.md)."
-                        .to_owned(),
-                );
-            }
-        }
-    };
+    let target = resolve_embedder_target(default_ref, embedding)?;
 
     let Some((provider_key, model_id)) = target.split_once(':') else {
         return Err(format!(
@@ -108,25 +133,7 @@ pub fn resolve_embedder(
         .and_then(|e| e.base_url.clone())
         .or_else(|| hardcoded_provider_defaults(provider_key).fields.base_url);
 
-    // Credentials: the `[providers.<p>].keys[]` fallback chain; first env-set
-    // candidate wins. Mirrors chat's resolution so multi-key providers work.
-    let candidates = resolve_key_candidates_for(provider_key, providers, None);
-    if candidates.is_empty() {
-        return Err(format!(
-            "embedding provider '{provider_key}' is disabled in [providers.{provider_key}]"
-        ));
-    }
-    let api_key = candidates
-        .iter()
-        .find_map(read_candidate_env)
-        .ok_or_else(|| {
-            let envs: Vec<&str> = candidates.iter().map(|c| c.env.as_str()).collect();
-            format!(
-                "embedding API key not set for provider '{provider_key}'; \
-             set one of these env vars: {}",
-                envs.join(", ")
-            )
-        })?;
+    let api_key = resolve_embedder_api_key(provider_key, providers)?;
 
     let cache_key = format!(
         "{provider_key}::{model_id}::{}::{}",
