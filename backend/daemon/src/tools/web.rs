@@ -135,8 +135,8 @@ pub async fn handle_web_search(input: Value, ctx: &dyn ToolContext) -> Result<Va
     Ok(result)
 }
 
-/// Maximum content length returned to the model (chars).
-const MAX_CONTENT_CHARS: usize = 50_000;
+/// Maximum content length returned to the model (bytes, truncated on a char boundary).
+const MAX_CONTENT_BYTES: usize = 50_000;
 
 /// Handle `fetch_url` — fetch a webpage and extract readable text.
 pub async fn handle_fetch_url(input: Value) -> Result<Value, ToolError> {
@@ -178,9 +178,9 @@ pub async fn handle_fetch_url(input: Value) -> Result<Value, ToolError> {
     let is_html = content_type.contains("html");
     let extracted = if is_html { strip_html(&body) } else { body };
 
-    let truncated = extracted.len() > MAX_CONTENT_CHARS;
+    let truncated = extracted.len() > MAX_CONTENT_BYTES;
     let content = if truncated {
-        let boundary = extracted.floor_char_boundary(MAX_CONTENT_CHARS);
+        let boundary = extracted.floor_char_boundary(MAX_CONTENT_BYTES);
         extracted.get(..boundary).unwrap_or(&extracted).to_owned()
     } else {
         extracted
