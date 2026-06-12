@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9](https://github.com/mythofmeat/shore-core/compare/shore-swp-client-v0.3.8...shore-swp-client-v0.3.9) - 2026-06-12
+
+### Fixed
+
+- *(daemon)* classify image uploads by magic bytes and declared mime type ([#272](https://github.com/mythofmeat/shore-core/pull/272))
+
 ## [0.3.8](https://github.com/mythofmeat/shore-core/compare/shore-swp-client-v0.3.7...shore-swp-client-v0.3.8) - 2026-06-12
 
 ### Other
