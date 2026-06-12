@@ -38,8 +38,17 @@ pub(crate) fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
 }
 
 /// Map a known image media type to its canonical file extension.
+///
+/// Tolerates case and parameters in declared values off the wire
+/// (`Image/PNG; charset=binary`).
 fn extension_for_media_type(media_type: &str) -> Option<&'static str> {
-    match media_type {
+    let essence = media_type
+        .split(';')
+        .next()
+        .unwrap_or(media_type)
+        .trim()
+        .to_ascii_lowercase();
+    match essence.as_str() {
         "image/jpeg" | "image/jpg" => Some("jpg"),
         "image/png" => Some("png"),
         "image/gif" => Some("gif"),
@@ -254,6 +263,8 @@ fn save_attachment(
     declared_mime: Option<&str>,
     bytes: &[u8],
 ) -> Option<ImageRef> {
+    use std::io::Write as _;
+
     if let Err(e) = std::fs::create_dir_all(attachments_dir) {
         warn!(error = %e, "Failed to create attachments directory");
         return None;
@@ -263,25 +274,67 @@ fn save_attachment(
         "{timestamp}_{}",
         attachment_file_name(source_name, declared_mime, bytes)
     );
-    let dest_path = attachments_dir.join(&dest_name);
-    match std::fs::write(&dest_path, bytes) {
-        Ok(()) => {
-            info!(
-                source = %source_name,
-                dest = %format!("attachments/{dest_name}"),
-                "Saved incoming image to attachments"
-            );
-            Some(ImageRef {
-                path: dest_path.to_string_lossy().to_string(),
-                caption: None,
-                data: None,
-            })
-        }
+    let (dest_path, mut file) = match create_attachment_file(attachments_dir, &dest_name) {
+        Ok(pair) => pair,
         Err(e) => {
-            warn!(source = %source_name, error = %e, "Failed to write image to attachments");
-            None
+            warn!(source = %source_name, error = %e, "Failed to create attachment file");
+            return None;
+        }
+    };
+    if let Err(e) = file.write_all(bytes) {
+        warn!(source = %source_name, error = %e, "Failed to write image to attachments");
+        let _ignored = std::fs::remove_file(&dest_path);
+        return None;
+    }
+    info!(
+        source = %source_name,
+        dest = %dest_path.display(),
+        "Saved incoming image to attachments"
+    );
+    Some(ImageRef {
+        path: dest_path.to_string_lossy().to_string(),
+        caption: None,
+        data: None,
+    })
+}
+
+/// Atomically claim a destination file for an attachment.
+///
+/// The timestamp in attachment names is second-granular, so two uploads
+/// sharing a filename in the same second would otherwise overwrite each
+/// other. `create_new` makes the claim atomic; on collision the name is
+/// de-duplicated with `_1`, `_2`, … before the extension.
+fn create_attachment_file(
+    attachments_dir: &std::path::Path,
+    file_name: &str,
+) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    use std::io::ErrorKind;
+
+    let (stem, dot_ext) = match file_name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem.to_owned(), format!(".{ext}")),
+        Some(_) | None => (file_name.to_owned(), String::new()),
+    };
+    for attempt in 0_u32..1000 {
+        let candidate = if attempt == 0 {
+            file_name.to_owned()
+        } else {
+            format!("{stem}_{attempt}{dot_ext}")
+        };
+        let path = attachments_dir.join(&candidate);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
         }
     }
+    Err(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        format!("could not find a free attachment name for {file_name}"),
+    ))
 }
 
 /// Populate the `data` field on ImageRefs by reading and base64-encoding files.
@@ -565,6 +618,66 @@ mod tests {
             "expected sniffed .jpg extension, got {}",
             images[0].path
         );
+    }
+
+    #[test]
+    fn ingest_images_normalizes_declared_mime_case_and_parameters() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let upload = ImageUpload {
+            filename: "snapshot".to_owned(),
+            data: STANDARD.encode(b"not really an image"),
+            mime_type: Some("Image/PNG; charset=binary".to_owned()),
+        };
+
+        let (images, _blocks) = ingest_images(tmp.path(), "Alice", &[], &[upload]);
+
+        assert_eq!(images.len(), 1);
+        assert!(
+            images[0].path.ends_with("snapshot.png"),
+            "expected normalized declared-mime .png extension, got {}",
+            images[0].path
+        );
+    }
+
+    #[test]
+    fn ingest_images_deduplicates_same_second_filename_collisions() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let jpeg = make_jpeg(16, 16);
+        let upload = ImageUpload {
+            filename: "photo.jpg".to_owned(),
+            data: STANDARD.encode(&jpeg),
+            mime_type: None,
+        };
+        let uploads = vec![upload.clone(), upload.clone(), upload];
+
+        let (images, _blocks) = ingest_images(tmp.path(), "Alice", &[], &uploads);
+
+        assert_eq!(images.len(), 3);
+        let mut paths: Vec<&str> = images.iter().map(|i| i.path.as_str()).collect();
+        paths.sort_unstable();
+        paths.dedup();
+        assert_eq!(paths.len(), 3, "colliding uploads must get distinct paths");
+        for img in &images {
+            let saved = std::path::Path::new(&img.path);
+            assert!(saved.exists());
+            assert_eq!(
+                std::fs::read(saved).unwrap(),
+                jpeg,
+                "every de-duplicated file must hold the full image bytes"
+            );
+            assert_eq!(media_type_for_path(&img.path), Some("image/jpeg"));
+        }
+    }
+
+    #[test]
+    fn extension_for_media_type_normalizes_input() {
+        assert_eq!(extension_for_media_type("image/png"), Some("png"));
+        assert_eq!(extension_for_media_type("Image/JPEG"), Some("jpg"));
+        assert_eq!(
+            extension_for_media_type(" image/webp ; q=0.8"),
+            Some("webp")
+        );
+        assert_eq!(extension_for_media_type("text/plain"), None);
     }
 
     #[test]

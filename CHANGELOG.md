@@ -19,7 +19,10 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   the attachment with the resolved extension. Applies to both `image_data`
   uploads and legacy `images` paths. Client-supplied upload filenames are
   also sanitized to a single path component so they can no longer escape the
-  attachments directory.
+  attachments directory, declared media types are normalized (case,
+  `;`-parameters) before matching, and attachments that collide on name
+  within the same second are de-duplicated atomically instead of
+  overwriting each other.
 - **Workspace git history for memory passes.** The daemon initializes a git
   repository in the character workspace (when `.git` is missing) before live
   compaction and dreaming passes, and both passes now commit their memory
