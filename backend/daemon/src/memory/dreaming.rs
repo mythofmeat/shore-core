@@ -241,6 +241,20 @@ pub async fn dream_status(
     })
 }
 
+/// Whether a scheduled (non-forced, non-dry-run) sweep is currently due per
+/// the cron schedule and the persisted `last_run_at`. Lets the autonomy
+/// manager skip pre-sweep work (e.g. pre-dream compaction) on ticks where
+/// `run_librarian_sweep` would decline anyway.
+pub async fn scheduled_sweep_due(
+    loaded_config: &LoadedConfig,
+    data_dir: &Path,
+    character: &str,
+) -> Result<bool, DreamingError> {
+    let cfg = &loaded_config.app.memory.dreaming;
+    let state = read_state(data_dir, &loaded_config.dirs.config, character).await?;
+    is_due(cfg, state.last_run_at.as_deref())
+}
+
 pub async fn run_librarian_sweep(
     loaded_config: &LoadedConfig,
     data_dir: &Path,
@@ -3675,6 +3689,43 @@ mod tests {
         // Stale prior run: walk past missed occurrences, skip the
         // out-of-window Monday, find no in-window occurrence — return false.
         assert!(!is_due_at(&cfg, Some(&stale_run), tuesday).unwrap());
+    }
+
+    #[tokio::test]
+    async fn scheduled_sweep_due_reads_persisted_last_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No LLM traffic in this path — the base URL is never dialed.
+        let mut config = TestConfigBuilder::new()
+            .character_name("alice")
+            .build(tmp.path(), "http://127.0.0.1:9");
+        config.app.memory.dreaming.enabled = true;
+
+        // A run recorded just now: the next daily occurrence is in the
+        // future, so a scheduled sweep is not due.
+        let just_ran = DreamState {
+            last_run_at: Some(Local::now().to_rfc3339()),
+            ..DreamState::default()
+        };
+        write_state(&config.dirs.data, "alice", &just_ran)
+            .await
+            .unwrap();
+        assert!(!scheduled_sweep_due(&config, &config.dirs.data, "alice")
+            .await
+            .unwrap());
+
+        // An every-minute schedule with a day-old last run always has an
+        // occurrence inside the lateness window — due.
+        config.app.memory.dreaming.frequency = "* * * * *".to_owned();
+        let day_old = DreamState {
+            last_run_at: Some((Local::now() - Duration::days(1)).to_rfc3339()),
+            ..DreamState::default()
+        };
+        write_state(&config.dirs.data, "alice", &day_old)
+            .await
+            .unwrap();
+        assert!(scheduled_sweep_due(&config, &config.dirs.data, "alice")
+            .await
+            .unwrap());
     }
 
     #[test]

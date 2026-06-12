@@ -1765,6 +1765,23 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
     };
     let dreaming_cfg = &loaded_config.app.memory.dreaming;
 
+    // The per-tick `dream_needed` gate only covers backoff and inactivity;
+    // the cron schedule is checked here, before any pre-sweep work. Without
+    // this, every sufficiently idle tick would run a pre-dream compaction
+    // only for the sweep itself to decline as not-due.
+    match crate::memory::dreaming::scheduled_sweep_due(loaded_config, &ctx.data_dir, character)
+        .await
+    {
+        Ok(true) => {}
+        not_due_or_err => {
+            // Not due (or dream state unreadable): route through the normal
+            // outcome bookkeeping — backoff reset on Ok, retry backoff on Err
+            // — without compacting.
+            record_scheduled_dream_outcome(character, ctx, not_due_or_err.map(|_| None));
+            return;
+        }
+    }
+
     if !maybe_compact_before_dream(character, ctx, dreaming_cfg).await {
         return;
     }

@@ -7,6 +7,16 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 
 ## [Unreleased]
 
+### Fixed
+- **Pre-dream compaction no longer runs when no dream is due.** The autonomy
+  tick gated scheduled dreaming on backoff and user inactivity but checked the
+  cron schedule (`memory.dreaming.frequency`) only inside the librarian sweep
+  — after the pre-dream compaction had already run. Every sufficiently idle
+  tick therefore paid a full compaction just for the sweep to decline as
+  not-due, and each orphaned compaction also reset the deep-idle clock,
+  pushing `archive_after` back by a full window. The schedule is now checked
+  before any pre-sweep work.
+
 ### Added
 - **Robust image-upload classification (fixes Matrix image sending).** Image
   uploads whose filename lacks a usable extension — routine for Matrix, where
