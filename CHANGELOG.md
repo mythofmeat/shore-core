@@ -54,6 +54,13 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   forward-compatibility note in `docs/PROTOCOL.md` §3.
 
 ### Fixed
+- **Invalid compaction turn thresholds now fail config load instead of
+  silently disabling compaction.** With compaction enabled, `min_turns` and
+  `max_turns` must exceed `keep_recent_turns` and `max_turns` must be at
+  least `min_turns`. Previously a violation logged one startup ERROR and
+  disabled compaction for the whole run — which also silently disabled the
+  deep-idle archive (`archive_after`). Now the daemon refuses to start, and
+  a runtime reload rejects the new config and keeps the previous one.
 - **API key no longer leaks into tracing logs (#240).** `LlmRequest` and
   `ImageGenerateParams` now have hand-written `Debug` impls that render
   `api_key` as `<redacted>`, so any tracing span or log line that
