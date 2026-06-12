@@ -61,6 +61,16 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   disabled compaction for the whole run — which also silently disabled the
   deep-idle archive (`archive_after`). Now the daemon refuses to start, and
   a runtime reload rejects the new config and keeps the previous one.
+- **Background model pins are honored by heartbeat and dreaming.** Two bugs
+  let background work silently bill the chat model despite an explicit
+  `[defaults.background]` pin. Heartbeat pre-checked the pin against the
+  static `[chat.*]` catalog, so a pin written as `provider:model_id` — the
+  only shape modern configs can express — never resolved and heartbeat
+  stayed on the chat model; the check now goes through the effective
+  catalog. Dreaming cloned the cached chat request wholesale (model
+  included) whenever the chat cache was warm; it now keeps the cached
+  conversation content but rebuilds the request on the resolved background
+  model when a pin points elsewhere, matching compaction's behavior.
 - **API key no longer leaks into tracing logs (#240).** `LlmRequest` and
   `ImageGenerateParams` now have hand-written `Debug` impls that render
   `api_key` as `<redacted>`, so any tracing span or log line that

@@ -2113,7 +2113,17 @@ fn apply_heartbeat_model_override(
     // model the user is currently using and warn so the misconfig is
     // visible. (resolve_background_model's silent fallback is fine for
     // compaction/dreaming where some model is better than none.)
-    if let Err(e) = config.models.find_model(configured_name) {
+    //
+    // Resolve through the *effective* catalog: pins are written as
+    // `provider:model_id` with no static `[chat.*]` entry backing them
+    // (#139), so the static `config.models.find_model` lookup rejected
+    // every valid pin and heartbeat never left the chat model.
+    if let Err(e) = crate::effective_catalog::find_effective_model(
+        config,
+        &config.dirs.cache,
+        configured_name,
+        true,
+    ) {
         warn!(
             character,
             configured_model = %configured_name,
@@ -4056,6 +4066,44 @@ api_key_env = "{heartbeat_env}"
 
         std::env::remove_var(chat_env);
         std::env::remove_var(int_env);
+    }
+
+    /// Regression: a pin written as `provider:model_id` with no static
+    /// `[chat.*]` entry backing it resolves only through the *effective*
+    /// catalog. The pre-check used the static `config.models.find_model`
+    /// lookup, so it rejected every such pin and heartbeat silently stayed
+    /// on the chat model — the only pin shape modern configs can express.
+    #[test]
+    fn heartbeat_override_resolves_provider_prefixed_pin_without_static_entry() {
+        let chat_env = "HEARTBEAT_OVERRIDE_DYN_CHAT";
+        let pin_env = "HEARTBEAT_OVERRIDE_DYN_PIN";
+        std::env::set_var(chat_env, "chat-secret");
+        std::env::set_var(pin_env, "pin-secret");
+
+        let mut config =
+            loaded_config_with_two_chat_models(Some("testdyn:dyn-model"), chat_env, chat_env);
+        let providers: toml::Table =
+            format!("[testdyn]\nbase_url = \"http://127.0.0.1:9\"\napi_key_env = \"{pin_env}\"\n")
+                .parse()
+                .unwrap();
+        config.providers =
+            shore_config::providers::ProviderRegistry::from_section(Some(&providers)).unwrap();
+
+        let mut request = minimal_request("claude-sonnet-chat");
+        let original_messages = request.messages.clone();
+
+        let applied = apply_heartbeat_model_override(&mut request, &config, "alice");
+
+        assert!(
+            applied.is_some(),
+            "a provider-prefixed pin must resolve through the effective catalog"
+        );
+        assert_eq!(request.model, "dyn-model");
+        assert_eq!(request.api_key, "pin-secret");
+        assert_eq!(request.messages, original_messages);
+
+        std::env::remove_var(chat_env);
+        std::env::remove_var(pin_env);
     }
 
     /// Configuring `max_turns < min_turns` should disable compaction or
