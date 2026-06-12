@@ -287,7 +287,9 @@ Dreaming is an opt-in scheduled AI librarian pass. When autonomy and
 `[memory.dreaming]` are enabled, the character uses memory/workspace tools in
 a background pass to inspect, dedupe, consolidate, and mark stale or
 superseded memory.
-The schedule is a five-field cron expression. Dreaming may edit prompt-visible
+The schedule is a five-field cron expression. The due-check gates the entire
+pass, including the optional pre-dream compaction — an idle tick where no
+dream is due does no pre-sweep work. Dreaming may edit prompt-visible
 files; those edits follow the same deferred activation rule.
 
 The workspace carries its own git history. Before a live compaction or
