@@ -704,6 +704,10 @@ fn validate_config(
 
     validate_cron_schedule(&app.memory.dreaming.frequency)?;
     validate_usage_config(&app.usage)?;
+    app.memory
+        .compaction
+        .validate()
+        .map_err(ConfigError::Validation)?;
 
     Ok(())
 }
@@ -1232,6 +1236,42 @@ frequency = "0 6 * * 1"
         let config_path = tmp.path().join("config.toml");
         let loaded = load_config(Some(&config_path)).unwrap();
         assert_eq!(loaded.app.memory.dreaming.frequency, "0 6 * * 1");
+    }
+
+    #[test]
+    fn compaction_turns_not_above_keep_recent_fails_validation() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r"
+[memory.compaction]
+min_turns = 4
+keep_recent_turns = 4
+",
+        )]);
+
+        let config_path = tmp.path().join("config.toml");
+        let err = load_config(Some(&config_path)).unwrap_err();
+        assert!(
+            err.to_string().contains("memory.compaction.min_turns"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn disabled_compaction_skips_turn_validation() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r"
+[memory.compaction]
+enabled = false
+min_turns = 4
+keep_recent_turns = 4
+",
+        )]);
+
+        let config_path = tmp.path().join("config.toml");
+        let loaded = load_config(Some(&config_path)).unwrap();
+        assert!(!loaded.app.memory.compaction.enabled);
     }
 
     #[test]

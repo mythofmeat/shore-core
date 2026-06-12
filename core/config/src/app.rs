@@ -426,6 +426,38 @@ impl Default for CompactionConfig {
     }
 }
 
+impl CompactionConfig {
+    /// Check the turn-count invariants that make compaction meaningful: both
+    /// turn thresholds must exceed `keep_recent_turns` (otherwise a pass would
+    /// have nothing to compact) and `max_turns` must not undercut `min_turns`.
+    ///
+    /// Config load treats a violation as a hard error so the daemon refuses to
+    /// start (and a runtime reload keeps the previous config) instead of
+    /// silently disabling compaction — and with it the deep-idle archive.
+    /// A disabled config is always valid.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let k = self.keep_recent_turns;
+        if self.min_turns <= k || self.max_turns <= k {
+            return Err(format!(
+                "memory.compaction.min_turns ({}) and max_turns ({}) must both be \
+                 greater than keep_recent_turns ({}); raise the turn thresholds or \
+                 lower keep_recent_turns",
+                self.min_turns, self.max_turns, k
+            ));
+        }
+        if self.max_turns < self.min_turns {
+            return Err(format!(
+                "memory.compaction.max_turns ({}) must be >= min_turns ({})",
+                self.max_turns, self.min_turns
+            ));
+        }
+        Ok(())
+    }
+}
+
 // ── [tools] ─────────────────────────────────────────────────────────────
 
 /// Tool surface configuration.
@@ -1316,6 +1348,33 @@ serde_default!(default_max_image_size -> u64 { 2_000_000 });
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compaction_validate_enforces_turn_invariants() {
+        assert!(CompactionConfig::default().validate().is_ok());
+
+        let equal_keep = CompactionConfig {
+            min_turns: 4,
+            keep_recent_turns: 4,
+            ..CompactionConfig::default()
+        };
+        assert!(equal_keep.validate().is_err());
+
+        let max_below_min = CompactionConfig {
+            min_turns: 10,
+            max_turns: 5,
+            ..CompactionConfig::default()
+        };
+        assert!(max_below_min.validate().is_err());
+
+        let disabled = CompactionConfig {
+            enabled: false,
+            min_turns: 4,
+            keep_recent_turns: 4,
+            ..CompactionConfig::default()
+        };
+        assert!(disabled.validate().is_ok());
+    }
 
     #[test]
     fn defaults_are_sensible() {

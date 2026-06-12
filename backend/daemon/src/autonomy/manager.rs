@@ -334,27 +334,11 @@ fn dream_inactivity_satisfied(
 }
 
 fn sanitize_compaction_config(mut compaction: CompactionConfig) -> CompactionConfig {
-    // Validate: turns thresholds must exceed keep_recent_turns, otherwise
-    // there would never be anything to actually compact.
-    if compaction.enabled {
-        let k = compaction.keep_recent_turns;
-        if compaction.min_turns <= k || compaction.max_turns <= k {
-            tracing::error!(
-                min_turns = compaction.min_turns,
-                max_turns = compaction.max_turns,
-                keep_recent_turns = k,
-                "Compaction disabled: min_turns and max_turns must be greater than keep_recent_turns"
-            );
-            compaction.enabled = false;
-        }
-        if compaction.enabled && compaction.max_turns < compaction.min_turns {
-            tracing::error!(
-                min_turns = compaction.min_turns,
-                max_turns = compaction.max_turns,
-                "Compaction disabled: max_turns must be >= min_turns"
-            );
-            compaction.enabled = false;
-        }
+    // Config load rejects invalid turn thresholds outright (the daemon refuses
+    // to start), so this backstop only fires for directly constructed configs.
+    if let Err(reason) = compaction.validate() {
+        tracing::error!(%reason, "Compaction disabled: invalid configuration");
+        compaction.enabled = false;
     }
 
     compaction
