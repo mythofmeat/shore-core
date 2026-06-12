@@ -967,6 +967,51 @@ struct LibrarianLoopResult {
 
 type MemorySnapshot = BTreeMap<String, String>;
 
+/// Derive the librarian's base request from the cached chat request.
+///
+/// The cached request supplies the conversation prefix, but the *model*
+/// still follows the background resolution chain: an explicit
+/// `defaults.background.dreaming` (or blanket `background.model`) pin wins
+/// over cache reuse. Riding the chat model's warm prompt cache is an
+/// optimization for the no-pin default — where the chain resolves to the
+/// chat model anyway and the wholesale clone reuses the request as-is —
+/// not a license to run dreaming on a model the user pinned it away from.
+fn librarian_base_from_cached(
+    loaded_config: &LoadedConfig,
+    character: &str,
+    cached: &LlmRequest,
+) -> Result<LlmRequest, DreamingError> {
+    let resolved = crate::preferences::resolve_background_model(
+        loaded_config,
+        shore_config::app::BackgroundTask::Dreaming,
+        character,
+    )
+    .ok_or_else(|| DreamingError::Config("no chat model configured for dreaming".into()))?;
+    if resolved.model_id == cached.model {
+        return Ok(cached.clone());
+    }
+    info!(
+        character,
+        dreaming_model = %resolved.name,
+        cached_model = %cached.model,
+        "Dreaming: background model pin overrides cached chat request model"
+    );
+    // Same content as the wholesale clone — messages, system, and tool
+    // definitions are kept byte-identical so the pinned model's own
+    // provider-side cache stays stable across daily passes — but the
+    // request envelope (SDK, credentials, sampler settings) is rebuilt
+    // for the pinned model.
+    LedgerClient::build_request_with_provider_keys(
+        &resolved,
+        &loaded_config.providers,
+        cached.messages.clone(),
+        cached.system.clone(),
+        cached.tools.clone(),
+        None,
+    )
+    .map_err(|e| DreamingError::Llm(e.to_string()))
+}
+
 fn build_librarian_request(
     loaded_config: &LoadedConfig,
     character: &str,
@@ -1006,7 +1051,7 @@ fn build_librarian_request(
         "Run the memory librarian pass now. Use memory tools to inspect and improve workspace/memory, update MEMORY.md (at the workspace root), and finish with a concise summary of what you inspected and changed. The daemon writes the dreams audit log automatically; do not try to write DREAMS.md yourself. Do not emit a user-facing message."
     };
     if let Some(cached) = cached_request {
-        let mut request = cached.clone();
+        let mut request = librarian_base_from_cached(loaded_config, character, cached)?;
         request.rid = None;
         // Append the librarian's user turn and pin the librarian system
         // instruction at a fixed slot via `push_inline_system`. The
@@ -3021,6 +3066,78 @@ mod tests {
         assert!(messages[3].to_string().contains("This is not a chat turn."));
         assert!(body["system"].to_string().contains("cached system prefix"));
         assert_eq!(body["tools"][0]["name"], "read");
+        assert!(body["tools"][0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("sentinel cached"));
+    }
+
+    /// Regression: an explicit `defaults.background.dreaming` pin was
+    /// silently ignored whenever a cached chat request existed — the
+    /// librarian cloned the cached request wholesale, model and all, so a
+    /// character with a warm chat cache could never dream on the pinned
+    /// model. The pin must win: keep the cached conversation content but
+    /// rebuild the request envelope on the resolved background model.
+    #[tokio::test]
+    async fn ai_librarian_background_pin_overrides_cached_request_model() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = MockLlmSidecar::start().await;
+        let mut config = TestConfigBuilder::new()
+            .character_name("alice")
+            .extra_chat_alias("pinned", "deepseek/test-pin")
+            .build(tmp.path(), &mock.base_url());
+        config.app.memory.dreaming.enabled = true;
+        config.app.defaults.background.dreaming = Some("pinned".into());
+
+        let chat_model = config.models.find_model("haiku").unwrap();
+        let cached_request = LedgerClient::build_request(
+            chat_model,
+            vec![
+                json!({"role": "user", "content": "original user turn"}),
+                json!({"role": "assistant", "content": "original assistant turn"}),
+            ],
+            Some(json!([{ "type": "text", "text": "cached system prefix" }])),
+            Some(vec![json!({
+                "name": "read",
+                "description": "sentinel cached tool definition",
+                "input_schema": { "type": "object", "properties": {} }
+            })]),
+            None,
+        )
+        .unwrap();
+
+        mock.enqueue_json_text("Librarian pass complete.").await;
+
+        let _ignored = run_librarian_sweep(
+            &config,
+            &config.dirs.data,
+            &test_ledger(&tmp, &mock),
+            "alice",
+            Some(&cached_request),
+            false,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let requests = mock.received_requests().await;
+        assert_eq!(requests.len(), 1);
+        let body = &requests[0];
+        assert_eq!(
+            body["model"], "deepseek/test-pin",
+            "librarian must run on the pinned background model, not the cached chat model"
+        );
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 4);
+        assert!(messages[0].to_string().contains("original user turn"));
+        assert!(messages[1].to_string().contains("original assistant turn"));
+        assert!(messages[2].to_string().contains("memory librarian pass"));
+        assert_eq!(messages[3]["role"], "system");
+        assert!(
+            body["system"].to_string().contains("cached system prefix"),
+            "cached system prefix must be preserved on the rebuilt request"
+        );
         assert!(body["tools"][0]["description"]
             .as_str()
             .unwrap()
