@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.4...shore-daemon-v0.1.5) - 2026-06-12
+
+### Fixed
+
+- *(daemon)* honor background model pins in heartbeat and dreaming ([#270](https://github.com/mythofmeat/shore-core/pull/270))
+- *(config)* reject invalid compaction turn thresholds at config load ([#269](https://github.com/mythofmeat/shore-core/pull/269))
+
 ## [0.1.4](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.3...shore-daemon-v0.1.4) - 2026-06-11
 
 ### Other
