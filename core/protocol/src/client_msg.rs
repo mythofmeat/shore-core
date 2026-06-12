@@ -31,6 +31,12 @@ pub struct ImageUpload {
     pub filename: String,
     /// Base64-encoded image file bytes.
     pub data: String,
+    /// Declared media type (e.g. `image/png`). Optional: bridges whose source
+    /// protocol carries a media type but no reliable filename extension
+    /// (Matrix `info.mimetype`) should set it. The daemon also sniffs magic
+    /// bytes, so this is a fallback, not a requirement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
 }
 
 /// Send a user message.

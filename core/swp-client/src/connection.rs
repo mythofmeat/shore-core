@@ -260,7 +260,11 @@ impl SWPConnection {
                     .file_name()
                     .map_or_else(|| "image".to_owned(), |f| f.to_string_lossy().into_owned());
                 let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                Some(ImageUpload { filename, data })
+                Some(ImageUpload {
+                    filename,
+                    data,
+                    mime_type: None,
+                })
             })
             .collect();
 

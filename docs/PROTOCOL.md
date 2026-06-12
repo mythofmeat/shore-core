@@ -178,7 +178,7 @@ All variants share `"type": "<snake_case>"`.
   "text": "Hello, Alice.",
   "stream": true,
   "image_data": [
-    { "filename": "snap.png", "data": "<base64>" }
+    { "filename": "snap.png", "data": "<base64>", "mime_type": "image/png" }
   ],
   "images": [],
   "absence_seconds": 86400,
@@ -192,7 +192,7 @@ All variants share `"type": "<snake_case>"`.
 | `text` | string | User message body. |
 | `stream` | bool | When `true`, the daemon emits `StreamStart`/`StreamChunk`/`StreamEnd`. When `false` (or omitted), the daemon still emits a `NewMessage` push when the assistant reply lands; see §7. |
 | `images` | string[] | Legacy: filesystem paths visible to the daemon. Avoid unless daemon and client share a filesystem. |
-| `image_data` | `ImageUpload[]` | Preferred. Base64 image bytes, each `{filename, data}`. |
+| `image_data` | `ImageUpload[]` | Preferred. Base64 image bytes, each `{filename, data, mime_type?}`. `mime_type` is optional (e.g. `"image/png"`); set it when the source protocol carries a media type but no reliable filename extension (Matrix `info.mimetype`). The daemon classifies uploads by recognized filename extension first, then magic-byte sniffing (PNG/JPEG/GIF/WebP), then `mime_type`, and stores the attachment with the resolved extension; an upload that fails all three is kept on disk but skipped when building LLM requests. |
 | `absence_seconds` | u64 \| null | Optional. Time since last interaction; the daemon may inject framing. |
 | `overrides` | `MessageOverrides` \| null | One-shot sampler overrides: `temperature` (f64), `top_p` (f64), `thinking_budget` (u32). Any omitted field uses the model default. |
 

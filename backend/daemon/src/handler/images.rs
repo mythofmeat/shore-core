@@ -20,6 +20,82 @@ pub(crate) fn media_type_for_path(path: &str) -> Option<&'static str> {
     }
 }
 
+/// Sniff an image media type from magic bytes (PNG/JPEG/GIF/WebP).
+pub(crate) fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP".as_slice()) {
+        return Some("image/webp");
+    }
+    None
+}
+
+/// Map a known image media type to its canonical file extension.
+fn extension_for_media_type(media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/png" => Some("png"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+/// Reduce a client-supplied filename to a safe single path component.
+///
+/// Upload filenames come straight off the wire (e.g. a Matrix event body), so
+/// they may carry path separators or be empty; joined into the attachments
+/// dir unchecked they could escape it or fail the write.
+fn sanitize_filename(name: &str) -> String {
+    let base: String = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(name)
+        .chars()
+        .filter(|c| *c != '\0')
+        .collect();
+    if base.is_empty() || base == "." || base == ".." {
+        "image".to_owned()
+    } else {
+        base
+    }
+}
+
+/// Choose the attachment file name for incoming image bytes.
+///
+/// Keeps a recognized extension as-is; otherwise appends one derived from the
+/// bytes (magic sniff) or the client-declared media type. Everything
+/// downstream (LLM block encoding, resize cache, TS sidecar) keys the media
+/// type off the saved extension, so an upload without one — routine for
+/// Matrix, where media is content-addressed and the mime type travels
+/// out-of-band — would otherwise be silently dropped from LLM requests.
+fn attachment_file_name(filename: &str, declared_mime: Option<&str>, bytes: &[u8]) -> String {
+    let safe = sanitize_filename(filename);
+    if media_type_for_path(&safe).is_some() {
+        return safe;
+    }
+    let extension = sniff_media_type(bytes)
+        .and_then(extension_for_media_type)
+        .or_else(|| declared_mime.and_then(extension_for_media_type));
+    if let Some(ext) = extension {
+        format!("{safe}.{ext}")
+    } else {
+        warn!(
+            filename = %safe,
+            "Could not determine image type from bytes, declared mime, or extension; \
+             the LLM pipeline will skip this attachment"
+        );
+        safe
+    }
+}
+
 /// Build a `content` value for an LLM message.
 ///
 /// If `images` is non-empty, returns a JSON array containing image blocks
@@ -90,91 +166,122 @@ pub(super) fn ingest_images(
     image_paths: &[String],
     image_data: &[shore_protocol::client_msg::ImageUpload],
 ) -> (Vec<ImageRef>, Vec<ContentBlock>) {
-    use base64::Engine;
     use shore_config::character_data_dir;
 
-    let character_data_dir = character_data_dir(data_dir, char_name);
-    let attachments_dir = character_data_dir.join("images").join("attachments");
+    let attachments_dir = character_data_dir(data_dir, char_name)
+        .join("images")
+        .join("attachments");
     let mut images: Vec<ImageRef> =
         Vec::with_capacity(image_data.len().saturating_add(image_paths.len()));
 
     // Preferred path: base64-encoded uploads (works across machines).
     for upload in image_data {
-        if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
-            warn!(error = %e, "Failed to create attachments directory");
-            continue;
-        }
-        let bytes = match base64::engine::general_purpose::STANDARD.decode(&upload.data) {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(filename = %upload.filename, error = %e, "Failed to decode base64 image data");
-                continue;
-            }
-        };
-        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-        let dest_name = format!("{timestamp}_{}", upload.filename);
-        let dest_path = attachments_dir.join(&dest_name);
-
-        match std::fs::write(&dest_path, &bytes) {
-            Ok(()) => {
-                let abs_path = dest_path.to_string_lossy().to_string();
-                let rel_path = format!("attachments/{dest_name}");
-                images.push(ImageRef {
-                    path: abs_path,
-                    caption: None,
-                    data: None,
-                });
-                info!(filename = %upload.filename, dest = %rel_path, "Saved uploaded image to attachments");
-            }
-            Err(e) => {
-                warn!(filename = %upload.filename, error = %e, "Failed to write image to attachments");
-            }
+        if let Some(image_ref) = ingest_upload(&attachments_dir, upload) {
+            images.push(image_ref);
         }
     }
 
     // Legacy fallback: copy from filesystem paths (same-machine only).
     if image_data.is_empty() {
         for src_path_str in image_paths {
-            let src_path = std::path::Path::new(src_path_str);
-            if !src_path.exists() {
-                warn!(path = %src_path_str, "Skipping non-existent image");
-                continue;
-            }
-            if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
-                warn!(error = %e, "Failed to create attachments directory");
-                continue;
-            }
-            let original_name = src_path
-                .file_name()
-                .map_or_else(|| "image".to_owned(), |n| n.to_string_lossy().to_string());
-            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-            let dest_name = format!("{timestamp}_{original_name}");
-            let dest_path = attachments_dir.join(&dest_name);
-
-            match std::fs::copy(src_path, &dest_path) {
-                Ok(_) => {
-                    let abs_path = dest_path.to_string_lossy().to_string();
-                    let rel_path = format!("attachments/{dest_name}");
-                    images.push(ImageRef {
-                        path: abs_path,
-                        caption: None,
-                        data: None,
-                    });
-                    info!(src = %src_path_str, dest = %rel_path, "Copied incoming image to attachments");
-                }
-                Err(e) => {
-                    warn!(src = %src_path_str, error = %e, "Failed to copy image to attachments");
-                    images.push(ImageRef {
-                        path: src_path_str.clone(),
-                        caption: None,
-                        data: None,
-                    });
-                }
+            if let Some(image_ref) = ingest_legacy_path(&attachments_dir, src_path_str) {
+                images.push(image_ref);
             }
         }
     }
 
     (images, Vec::new())
+}
+
+/// Decode and persist one base64 upload. `None` = skipped (logged).
+fn ingest_upload(
+    attachments_dir: &std::path::Path,
+    upload: &shore_protocol::client_msg::ImageUpload,
+) -> Option<ImageRef> {
+    use base64::Engine;
+
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(&upload.data) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(filename = %upload.filename, error = %e, "Failed to decode base64 image data");
+            return None;
+        }
+    };
+    save_attachment(
+        attachments_dir,
+        &upload.filename,
+        upload.mime_type.as_deref(),
+        &bytes,
+    )
+}
+
+/// Copy one legacy filesystem path into attachments. Reads instead of
+/// `fs::copy` so an extension-less source still gets a usable extension from
+/// its magic bytes. Falls back to referencing the original path when the
+/// copy fails but the source exists.
+fn ingest_legacy_path(attachments_dir: &std::path::Path, src_path_str: &str) -> Option<ImageRef> {
+    let src_path = std::path::Path::new(src_path_str);
+    if !src_path.exists() {
+        warn!(path = %src_path_str, "Skipping non-existent image");
+        return None;
+    }
+    let original_name = src_path
+        .file_name()
+        .map_or_else(|| "image".to_owned(), |n| n.to_string_lossy().to_string());
+    let fallback = || {
+        Some(ImageRef {
+            path: src_path_str.to_owned(),
+            caption: None,
+            data: None,
+        })
+    };
+    match std::fs::read(src_path) {
+        Ok(bytes) => {
+            save_attachment(attachments_dir, &original_name, None, &bytes).or_else(fallback)
+        }
+        Err(e) => {
+            warn!(src = %src_path_str, error = %e, "Failed to read image for attachments copy");
+            fallback()
+        }
+    }
+}
+
+/// Write image bytes into the attachments dir under a timestamped,
+/// extension-corrected name. Returns the saved ImageRef, or `None` on failure.
+fn save_attachment(
+    attachments_dir: &std::path::Path,
+    source_name: &str,
+    declared_mime: Option<&str>,
+    bytes: &[u8],
+) -> Option<ImageRef> {
+    if let Err(e) = std::fs::create_dir_all(attachments_dir) {
+        warn!(error = %e, "Failed to create attachments directory");
+        return None;
+    }
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let dest_name = format!(
+        "{timestamp}_{}",
+        attachment_file_name(source_name, declared_mime, bytes)
+    );
+    let dest_path = attachments_dir.join(&dest_name);
+    match std::fs::write(&dest_path, bytes) {
+        Ok(()) => {
+            info!(
+                source = %source_name,
+                dest = %format!("attachments/{dest_name}"),
+                "Saved incoming image to attachments"
+            );
+            Some(ImageRef {
+                path: dest_path.to_string_lossy().to_string(),
+                caption: None,
+                data: None,
+            })
+        }
+        Err(e) => {
+            warn!(source = %source_name, error = %e, "Failed to write image to attachments");
+            None
+        }
+    }
 }
 
 /// Populate the `data` field on ImageRefs by reading and base64-encoding files.
@@ -332,6 +439,7 @@ mod tests {
         let upload = ImageUpload {
             filename: "photo.jpg".to_owned(),
             data: STANDARD.encode(&jpeg),
+            mime_type: None,
         };
 
         let (images, content_blocks) = ingest_images(tmp.path(), "Alice", &[], &[upload]);
@@ -366,6 +474,117 @@ mod tests {
             &content_blocks,
             &[&images[0].path, &src_path_str, "attachments/"],
         );
+    }
+
+    #[test]
+    fn ingest_images_appends_sniffed_extension_for_extensionless_upload() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let jpeg = make_jpeg(16, 16);
+        // Matrix-style upload: content-addressed name, no extension, no mime.
+        let upload = ImageUpload {
+            filename: "pasted_media_abc123".to_owned(),
+            data: STANDARD.encode(&jpeg),
+            mime_type: None,
+        };
+
+        let (images, _blocks) = ingest_images(tmp.path(), "Alice", &[], &[upload]);
+
+        assert_eq!(images.len(), 1);
+        assert!(std::path::Path::new(&images[0].path).exists());
+        assert!(
+            images[0].path.ends_with("pasted_media_abc123.jpg"),
+            "expected sniffed .jpg extension, got {}",
+            images[0].path
+        );
+        assert_eq!(media_type_for_path(&images[0].path), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn ingest_images_uses_declared_mime_when_bytes_unrecognized() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let upload = ImageUpload {
+            filename: "snapshot".to_owned(),
+            data: STANDARD.encode(b"not really an image"),
+            mime_type: Some("image/png".to_owned()),
+        };
+
+        let (images, _blocks) = ingest_images(tmp.path(), "Alice", &[], &[upload]);
+
+        assert_eq!(images.len(), 1);
+        assert!(
+            images[0].path.ends_with("snapshot.png"),
+            "expected declared-mime .png extension, got {}",
+            images[0].path
+        );
+    }
+
+    #[test]
+    fn ingest_images_sanitizes_path_traversal_filename() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let jpeg = make_jpeg(16, 16);
+        let upload = ImageUpload {
+            filename: "../../escape.jpg".to_owned(),
+            data: STANDARD.encode(&jpeg),
+            mime_type: None,
+        };
+
+        let (images, _blocks) = ingest_images(tmp.path(), "Alice", &[], &[upload]);
+
+        assert_eq!(images.len(), 1);
+        let saved = std::path::Path::new(&images[0].path);
+        assert!(saved.exists());
+        assert!(images[0].path.ends_with("escape.jpg"));
+        let attachments_dir = shore_config::character_data_dir(tmp.path(), "Alice")
+            .join("images")
+            .join("attachments");
+        assert_eq!(
+            saved.parent().unwrap().canonicalize().unwrap(),
+            attachments_dir.canonicalize().unwrap(),
+            "sanitized upload must land inside the attachments dir"
+        );
+    }
+
+    #[test]
+    fn ingest_images_legacy_path_gets_sniffed_extension() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src_path = tmp.path().join("legacy_no_extension");
+        std::fs::write(&src_path, make_jpeg(16, 16)).unwrap();
+        let src_path_str = src_path.to_string_lossy().to_string();
+
+        let (images, _blocks) = ingest_images(
+            tmp.path(),
+            "Alice",
+            std::slice::from_ref(&src_path_str),
+            &[],
+        );
+
+        assert_eq!(images.len(), 1);
+        assert!(std::path::Path::new(&images[0].path).exists());
+        assert!(
+            images[0].path.ends_with("legacy_no_extension.jpg"),
+            "expected sniffed .jpg extension, got {}",
+            images[0].path
+        );
+    }
+
+    #[test]
+    fn sniff_media_type_detects_known_formats() {
+        assert_eq!(
+            sniff_media_type(b"\x89PNG\r\n\x1a\n____"),
+            Some("image/png")
+        );
+        assert_eq!(
+            sniff_media_type(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some("image/jpeg")
+        );
+        assert_eq!(sniff_media_type(b"GIF89a______"), Some("image/gif"));
+        assert_eq!(
+            sniff_media_type(b"RIFF\x00\x00\x00\x00WEBP"),
+            Some("image/webp")
+        );
+        assert_eq!(sniff_media_type(b"RIFF\x00\x00\x00\x00WAVE"), None);
+        assert_eq!(sniff_media_type(b"plain text"), None);
+        assert_eq!(sniff_media_type(b""), None);
     }
 
     #[test]
