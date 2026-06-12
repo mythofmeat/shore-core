@@ -210,8 +210,16 @@ fn arb_client_message() -> BoxedStrategy<ClientMessage> {
             })
         });
 
-    let image_upload = (arb_ident(), arb_small_string())
-        .prop_map(|(filename, data)| ImageUpload { filename, data });
+    let image_upload = (
+        arb_ident(),
+        arb_small_string(),
+        prop::option::of(arb_ident()),
+    )
+        .prop_map(|(filename, data, mime_type)| ImageUpload {
+            filename,
+            data,
+            mime_type,
+        });
 
     let message = (
         prop::option::of(arb_ident()),

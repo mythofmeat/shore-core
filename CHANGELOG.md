@@ -8,6 +8,21 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **Robust image-upload classification (fixes Matrix image sending).** Image
+  uploads whose filename lacks a usable extension — routine for Matrix, where
+  media is content-addressed and the mime type travels out-of-band — were
+  saved to attachments but silently skipped when building LLM requests, so
+  the character responded as if no image was attached. The daemon now
+  classifies incoming images by recognized extension first, then magic-byte
+  sniffing (PNG/JPEG/GIF/WebP), then a new optional `mime_type` field on
+  `ImageUpload` (additive protocol field, see PROTOCOL.md §6.2), and stores
+  the attachment with the resolved extension. Applies to both `image_data`
+  uploads and legacy `images` paths. Client-supplied upload filenames are
+  also sanitized to a single path component so they can no longer escape the
+  attachments directory, declared media types are normalized (case,
+  `;`-parameters) before matching, and attachments that collide on name
+  within the same second are de-duplicated atomically instead of
+  overwriting each other.
 - **Workspace git history for memory passes.** The daemon initializes a git
   repository in the character workspace (when `.git` is missing) before live
   compaction and dreaming passes, and both passes now commit their memory
