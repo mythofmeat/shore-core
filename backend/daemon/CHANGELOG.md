@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.6...shore-daemon-v0.1.7) - 2026-06-13
+
+### Fixed
+
+- *(daemon)* gate pre-dream compaction on the dream cron schedule ([#274](https://github.com/mythofmeat/shore-core/pull/274))
+
 ## [0.1.6](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.5...shore-daemon-v0.1.6) - 2026-06-12
 
 ### Fixed
