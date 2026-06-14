@@ -1996,6 +1996,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shell-words",
+ "shore-call-store",
  "shore-config",
  "shore-diagnostics",
  "shore-ledger",
@@ -2052,6 +2053,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "shore-call-store",
  "shore-config",
  "shore-protocol",
  "tempfile",
@@ -2110,6 +2112,7 @@ version = "0.1.0"
 dependencies = [
  "rusqlite",
  "serde_json",
+ "shore-call-store",
  "shore-config",
  "shore-daemon",
  "shore-diagnostics",

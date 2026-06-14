@@ -9,6 +9,7 @@ description = "LLM provider abstraction and request orchestration for the Silver
 [dependencies]
 shore-protocol = { workspace = true }
 shore-config = { workspace = true }
+shore-call-store = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

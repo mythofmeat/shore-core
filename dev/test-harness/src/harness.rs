@@ -144,7 +144,11 @@ impl TestHarness {
         let mut raw_llm_client = fail_fast(LlmClient::try_new(), "failed to create LlmClient");
         if config.app.advanced.api_payload_logging {
             let _ignored = std::fs::create_dir_all(&config.dirs.cache).ok();
-            raw_llm_client.set_payload_log_dir(config.dirs.cache.clone());
+            if let Ok(store) =
+                shore_call_store::CallStore::open(&config.dirs.cache.join("calls.db"))
+            {
+                raw_llm_client.set_call_store(Arc::new(store));
+            }
         }
         raw_llm_client.set_sidecar_socket(mock_llm.socket_path().to_path_buf());
         let llm_client = fail_fast(

@@ -334,20 +334,16 @@ async fn test_compaction_cached_path_appends_exactly_one_tail() {
     harness.shutdown().await;
 }
 
-/// End-to-end pin for the `retain_long` payload-log routing introduced in
-/// the 2026-05-14 refactor. Every background call site (compaction,
-/// dreaming, heartbeat) must set `LlmRequest::retain_long = true` so
-/// `debug_log::log_request` routes the call to
-/// `<cache>/debug/api_logs_long/` instead of the chat-volume
-/// `<cache>/debug/api_logs/`.
-///
-/// A missing `request.retain_long = true` at any of the three sites is
-/// indistinguishable from "feature disabled" at the unit level — the
-/// chat payloads would still land in `api_logs/`. This test asserts the
-/// long-retention tier picks up the compaction call specifically; the
-/// chat warm-up sends are pinned to land in the chat tier.
+/// End-to-end pin for payload capture into the observability store. Every LLM
+/// call — chat sends and background tasks alike — must be recorded into the
+/// shared `calls.db`, tagged with the ledger `call_type` so the store can be
+/// filtered. Chat sends record as `message`; the compaction pass records as
+/// `compaction`. A missing `call_type` thread-through at the ledger boundary
+/// would show up here as compaction rows with no `call_type`.
 #[tokio::test]
-async fn test_retain_long_routes_background_payloads_to_long_tier() {
+async fn test_calls_recorded_in_store_with_call_type() {
+    use shore_call_store::{CallFilter, CallStore};
+
     let mut harness = TestHarness::boot_with(
         TestConfigBuilder::new()
             .compaction(true)
@@ -360,69 +356,47 @@ async fn test_retain_long_routes_background_payloads_to_long_tier() {
 
     send_n_messages(&mut harness, 3).await;
 
-    let cache_dir = harness.config.dirs.cache.clone();
-    let chat_logs = cache_dir.join("debug").join("api_logs");
-    let long_logs = cache_dir.join("debug").join("api_logs_long");
-
-    // Chat warm-up: every chat send must have written its request + response
-    // JSON under `api_logs/`. The long-tier directory must not have been
-    // created or remain empty.
-    let chat_files_before_compaction: Vec<_> = std::fs::read_dir(&chat_logs)
-        .expect("api_logs dir must exist after chat warm-up")
-        .filter_map(Result::ok)
-        .collect();
-    assert!(
-        chat_files_before_compaction.len() >= 3,
-        "expected at least 3 chat-tier files (one per chat send), got {} in {}",
-        chat_files_before_compaction.len(),
-        chat_logs.display(),
-    );
-    assert!(
-        !long_logs.exists() || std::fs::read_dir(&long_logs).map_or(0, Iterator::count) == 0,
-        "long-retention dir should be empty before any background task runs; \
-         path: {}",
-        long_logs.display(),
-    );
-
-    enqueue_compaction_write(&mut harness, "retain-long").await;
+    enqueue_compaction_write(&mut harness, "store-capture").await;
     harness.mock_llm.enqueue_embedding_optional(8).await;
-
     harness.trigger_compaction_now("TestChar").await;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // The compaction call must have landed in the long-retention tier.
-    let long_files: Vec<_> = std::fs::read_dir(&long_logs)
-        .unwrap_or_else(|e| {
-            panic!(
-                "api_logs_long dir must exist after compaction (the daemon \
-                 sets retain_long=true on compaction requests); error: {e}; \
-                 path: {}",
-                long_logs.display()
-            )
-        })
-        .filter_map(Result::ok)
-        .collect();
+    // Open a read-only handle on the same DB the daemon writes to.
+    let store = CallStore::open(&harness.config.dirs.cache.join("calls.db"))
+        .expect("call store DB must exist after capture");
+
+    let all = store
+        .query_calls(&CallFilter::default())
+        .expect("query all calls");
     assert!(
-        !long_files.is_empty(),
-        "compaction payload must land in {}; an empty dir here means \
-         `RealCompactionLlm::build_compaction_request` forgot to set \
-         `request.retain_long = true`",
-        long_logs.display(),
+        all.len() >= 3,
+        "every chat send plus the compaction call must be recorded; got {}",
+        all.len(),
     );
 
-    // Sanity-check that the chat-tier counter did NOT pick up the
-    // compaction call (i.e., we didn't double-route).
-    let chat_files_after: Vec<_> = std::fs::read_dir(&chat_logs)
-        .expect("chat tier dir present")
-        .filter_map(Result::ok)
-        .collect();
-    assert_eq!(
-        chat_files_after.len(),
-        chat_files_before_compaction.len(),
-        "compaction must not write into the chat-tier dir; \
-         before={}, after={}",
-        chat_files_before_compaction.len(),
-        chat_files_after.len(),
+    let chat = store
+        .query_calls(&CallFilter {
+            call_type: Some("message".to_owned()),
+            character: None,
+            limit: 0,
+        })
+        .expect("query chat calls");
+    assert!(
+        !chat.is_empty(),
+        "chat sends must be recorded with call_type=message",
+    );
+
+    let compaction = store
+        .query_calls(&CallFilter {
+            call_type: Some("compaction".to_owned()),
+            character: None,
+            limit: 0,
+        })
+        .expect("query compaction calls");
+    assert!(
+        !compaction.is_empty(),
+        "the compaction pass must be recorded with call_type=compaction \
+         (a miss means the ledger did not thread call_type into the store)",
     );
 
     harness.shutdown().await;

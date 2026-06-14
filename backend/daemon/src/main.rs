@@ -492,12 +492,18 @@ fn build_llm_client(
     loaded: &LoadedConfig,
 ) -> Result<(LedgerClient, Option<PathBuf>), Box<dyn std::error::Error>> {
     let mut raw_llm_client = LlmClient::try_new()?;
-    if loaded.app.advanced.api_payload_logging {
-        raw_llm_client.set_payload_log_dir(loaded.dirs.cache.clone());
-        info!(
-            "API payload logging enabled → {}/debug/api_logs/",
-            loaded.dirs.cache.display()
-        );
+    // Payload capture is always on: every LLM call is recorded to the
+    // compressed, bounded observability store. Best-effort — a store that fails
+    // to open disables capture but never blocks the daemon.
+    let call_store_path = loaded.dirs.cache.join("calls.db");
+    match shore_call_store::CallStore::open(&call_store_path) {
+        Ok(store) => {
+            raw_llm_client.set_call_store(Arc::new(store));
+            info!(path = %call_store_path.display(), "Call payload store enabled");
+        }
+        Err(e) => {
+            warn!(error = %e, path = %call_store_path.display(), "Failed to open call store; payload capture disabled");
+        }
     }
     let llm_sidecar_socket = loaded.app.advanced.llm_sidecar.enabled.then(|| {
         loaded
