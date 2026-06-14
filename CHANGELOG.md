@@ -18,6 +18,25 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   before any pre-sweep work.
 
 ### Added
+- **Unified observability store for LLM calls (`shore log --api` /
+  `--heartbeat` / `--dreaming`).** Every LLM call — chat, tool loops, heartbeat,
+  dreaming, compaction — is now recorded to a compressed SQLite store at
+  `$XDG_CACHE_HOME/shore/calls.db` (request + response as zstd blobs), and the
+  heartbeat/dreaming tool loops additionally record curated transcripts there
+  (reasoning, visible text, each tool call paired with its full output, and the
+  model/provider that actually served the call). This replaces the unbounded,
+  operator-pruned `debug/api_logs*` JSON dumps with one queryable, self-rotating
+  store: a 14-day window plus a 512 MiB disk backstop, pruned hourly. Inspect it
+  with `shore log --api` (recent calls; `--call-type` to filter; `--api <id>` to
+  dump one call's full request/response), `shore log --heartbeat` / `--dreaming`
+  (curated transcripts), and `--json` for raw rows. Compression collapses the
+  repeated prompt context across calls, so the footprint is a fraction of the
+  raw bytes. Capture is **always on**; the `[advanced].api_payload_logging`
+  config key is deprecated and ignored (still accepted so older configs load).
+  `shore log --heartbeat` now shows the transcript rather than the operational
+  event ring, which moves to the new `shore log --events`. New `call_log` and
+  `transcript` SWP commands (see PROTOCOL.md). `api_key` is redacted; the store
+  is observability only, never authoritative conversation state.
 - **Robust image-upload classification (fixes Matrix image sending).** Image
   uploads whose filename lacks a usable extension — routine for Matrix, where
   media is content-addressed and the mime type travels out-of-band — were
