@@ -349,6 +349,12 @@ fn append_response_messages_to_request(
                 crate::content_util::content_block_to_request_json_for_sdk(block, sdk)
             })
             .collect();
+        // Skip turns that filtered down to nothing (e.g. an empty-text-only
+        // response): an empty content array is rejected by the API and would
+        // poison the cached last-request the heartbeat replays.
+        if api_content.is_empty() {
+            continue;
+        }
         request.messages.push(json!({
             "role": request_role(&message.role),
             "content": api_content,

@@ -209,9 +209,16 @@ async fn append_user_turn(
 
     let (images, mut content_blocks) =
         ingest_images(data_dir, char_name, &body.images, &body.image_data);
-    content_blocks.push(ContentBlock::Text {
-        text: body.text.clone(),
-    });
+    // Only append a text block when there is text. An image-only message
+    // (empty `text`, non-empty images) must not carry an empty text block:
+    // it persists into history and later breaks Anthropic requests when a
+    // prompt-cache breakpoint lands on it ("cache_control cannot be set for
+    // empty text blocks").
+    if !body.text.is_empty() {
+        content_blocks.push(ContentBlock::Text {
+            text: body.text.clone(),
+        });
+    }
 
     let user_msg = Message {
         msg_id: format!("m_{}", uuid::Uuid::new_v4()),
@@ -683,13 +690,30 @@ pub(crate) fn build_llm_messages(
                     crate::content_util::thinking_block_portable_to(b, minting, active_provider_key)
                 });
                 if include_unsigned_thinking {
-                    blocks.extend(portable.map(crate::content_util::content_block_to_json));
+                    blocks.extend(portable.filter_map(|b| {
+                        // Drop empty text blocks even on the unsigned path
+                        // (they can't anchor a cache breakpoint).
+                        if matches!(b, ContentBlock::Text { text } if text.trim().is_empty()) {
+                            None
+                        } else {
+                            Some(crate::content_util::content_block_to_json(b))
+                        }
+                    }));
                 } else {
                     blocks.extend(
                         portable.filter_map(crate::content_util::content_block_to_api_json),
                     );
                 }
-                json!(blocks)
+
+                // If every block was dropped (e.g. a message whose only content
+                // was an empty text block), fall back to the string-content
+                // path so we never emit an empty content array, which the API
+                // also rejects.
+                if blocks.is_empty() {
+                    super::build_content(&m.content, &m.images, max_image_size, cache_dir)
+                } else {
+                    json!(blocks)
+                }
             };
             json!({ "role": role, "content": content })
         })
@@ -711,4 +735,69 @@ pub(crate) fn build_llm_messages(
     };
 
     (llm_messages, system)
+}
+
+#[cfg(test)]
+mod build_llm_messages_tests {
+    use super::*;
+    use crate::engine::prompt::{AssembledPrompt, PromptMessage};
+
+    fn pm(role: Role, content_blocks: Vec<ContentBlock>) -> PromptMessage {
+        PromptMessage {
+            role,
+            content: String::new(),
+            images: vec![],
+            content_blocks,
+            provider_key: None,
+        }
+    }
+
+    fn build(messages: Vec<PromptMessage>) -> Vec<Value> {
+        let prompt = AssembledPrompt {
+            system: vec![],
+            messages,
+        };
+        let (llm_messages, _) =
+            build_llm_messages(&prompt, false, 1024, Path::new("/tmp"), "anthropic");
+        llm_messages
+    }
+
+    fn content(m: &Value) -> &Vec<Value> {
+        m["content"].as_array().unwrap()
+    }
+
+    #[test]
+    fn empty_text_block_is_dropped_from_wire_content() {
+        let msgs = build(vec![pm(
+            Role::Assistant,
+            vec![
+                ContentBlock::Text {
+                    text: "look".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "search".into(),
+                    input: json!({}),
+                },
+                ContentBlock::Text {
+                    text: String::new(),
+                },
+            ],
+        )]);
+        let blocks = content(&msgs[0]);
+        // The trailing empty text block is gone; real blocks remain.
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks.iter().all(|b| b["text"] != ""));
+        assert_eq!(blocks[1]["type"], "tool_use");
+    }
+
+    #[test]
+    fn message_of_only_empty_text_falls_back_to_non_empty_string_content() {
+        // A degenerate message whose only block is empty text must not produce
+        // an empty content array (the API rejects that too).
+        let mut msg = pm(Role::User, vec![ContentBlock::Text { text: "  ".into() }]);
+        msg.content = "fallback".into();
+        let msgs = build(vec![msg]);
+        assert_eq!(msgs[0]["content"], json!("fallback"));
+    }
 }
