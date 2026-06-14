@@ -2498,6 +2498,9 @@ async fn run_heartbeat_tool_loop(
             break;
         };
         cache_warmed = true;
+        // Provider may have changed under config fallback; read it back from the
+        // request the call actually ran on.
+        let provider = request.provider_key.clone();
 
         log_heartbeat_response(character, iteration, &resp);
 
@@ -2511,19 +2514,38 @@ async fn run_heartbeat_tool_loop(
 
         // Extract tool uses.
         let tool_uses = crate::content_util::extract_tool_uses(&resp.content_blocks);
+        let has_tools = !tool_uses.is_empty() && resp.finish_reason == "tool_use";
 
-        // If no tool use or finish_reason != "tool_use", we're done.
-        if tool_uses.is_empty() || resp.finish_reason != "tool_use" {
-            break;
+        // Dispatch tools (when any) before recording so the transcript entry
+        // carries each tool's full output for this iteration.
+        let captured = if has_tools {
+            let (tool_results, captured) =
+                dispatch_heartbeat_tools(character, state, iteration, &tool_uses, tool_ctx).await;
+            request.messages.push(json!({
+                "role": "user",
+                "content": tool_results,
+            }));
+            captured
+        } else {
+            Vec::new()
+        };
+
+        if let Some(store) = client.inner().call_store() {
+            crate::transcript_capture::record(
+                store,
+                "heartbeat",
+                call_type.as_str(),
+                iteration,
+                provider.as_deref(),
+                &resp,
+                &captured,
+            );
         }
 
-        // Dispatch each tool, then append the results as a user message.
-        let tool_results =
-            dispatch_heartbeat_tools(character, state, iteration, &tool_uses, tool_ctx).await;
-        request.messages.push(json!({
-            "role": "user",
-            "content": tool_results,
-        }));
+        // No tool use (or a non-tool finish): the tick is complete.
+        if !has_tools {
+            break;
+        }
     }
 
     (send_message_text, cache_warmed)
@@ -2617,8 +2639,9 @@ async fn dispatch_heartbeat_tools(
     iteration: u32,
     tool_uses: &[(String, String, Value)],
     tool_ctx: &Arc<HeartbeatToolContext>,
-) -> Vec<Value> {
+) -> (Vec<Value>, Vec<crate::transcript_capture::CapturedTool>) {
     let mut tool_results: Vec<Value> = Vec::new();
+    let mut captured: Vec<crate::transcript_capture::CapturedTool> = Vec::new();
 
     for (id, name, input) in tool_uses {
         let input_str = serde_json::to_string(input).unwrap_or_default();
@@ -2655,6 +2678,12 @@ async fn dispatch_heartbeat_tools(
             &output_str,
             is_error,
         ));
+        captured.push(crate::transcript_capture::CapturedTool {
+            name: name.clone(),
+            input: input.clone(),
+            output: output_str.clone(),
+            is_error,
+        });
 
         // Log to ring buffer (skip set_next_wake — already logged above).
         if name.as_str() != "set_next_wake" {
@@ -2666,7 +2695,7 @@ async fn dispatch_heartbeat_tools(
         }
     }
 
-    tool_results
+    (tool_results, captured)
 }
 
 /// Persist a heartbeat tick's `<sendMessage>` output (if any) to the engine and

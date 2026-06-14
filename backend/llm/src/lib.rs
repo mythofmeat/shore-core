@@ -161,6 +161,13 @@ impl LlmClient {
         self.call_store = Some(store);
     }
 
+    /// The observability store, if capture is enabled. Lets higher layers
+    /// (e.g. the daemon's heartbeat/dreaming loops) record curated transcript
+    /// rows into the same store without separate handle threading.
+    pub fn call_store(&self) -> Option<&Arc<CallStore>> {
+        self.call_store.as_ref()
+    }
+
     /// Route stream/generate/image calls through a sidecar listening on `path`.
     pub fn set_sidecar_socket(&mut self, path: PathBuf) {
         self.sidecar_socket = Some(path);
