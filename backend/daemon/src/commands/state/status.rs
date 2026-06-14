@@ -96,6 +96,99 @@ pub fn heartbeat_log(
     Ok(json!({ "events": events_json }))
 }
 
+/// Query the raw call-payload store. With `id`, return that one call's
+/// decompressed request/response; otherwise return an index of recent calls
+/// (newest first) filtered by `call_type` and `character` (defaulting to the
+/// active character).
+pub fn call_log(engine: &ConversationEngine, ctx: &CommandContext, args: &Value) -> CommandResult {
+    use shore_call_store::CallFilter;
+
+    let Some(store) = ctx.llm_client.inner().call_store() else {
+        return Ok(json!({ "enabled": false, "entries": [] }));
+    };
+
+    if let Some(id) = args.get("id").and_then(Value::as_i64) {
+        return match store.get_call(id) {
+            Ok(Some(payload)) => Ok(json!({
+                "enabled": true,
+                "call": serde_json::to_value(&payload).unwrap_or(Value::Null),
+            })),
+            Ok(None) => Err((ErrorCode::InvalidRequest, format!("no call with id {id}"))),
+            Err(e) => Err((
+                ErrorCode::InternalError,
+                format!("call store query failed: {e}"),
+            )),
+        };
+    }
+
+    let character = args
+        .get("character")
+        .and_then(Value::as_str)
+        .map_or_else(|| engine.character_name().to_owned(), str::to_owned);
+    let filter = CallFilter {
+        call_type: args
+            .get("call_type")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        character: Some(character),
+        limit: count_arg(args, 20),
+    };
+    match store.query_calls(&filter) {
+        Ok(rows) => {
+            let entries: Vec<Value> = rows
+                .iter()
+                .map(|row| serde_json::to_value(row).unwrap_or(Value::Null))
+                .collect();
+            Ok(json!({ "enabled": true, "entries": entries }))
+        }
+        Err(e) => Err((
+            ErrorCode::InternalError,
+            format!("call store query failed: {e}"),
+        )),
+    }
+}
+
+/// Query curated background transcripts (`source` = `heartbeat` or `dreaming`)
+/// for the active character, newest first.
+pub fn transcript(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    args: &Value,
+) -> CommandResult {
+    let source = args
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("heartbeat");
+    if source != "heartbeat" && source != "dreaming" {
+        return Err((
+            ErrorCode::InvalidRequest,
+            format!("unknown transcript source '{source}' (expected 'heartbeat' or 'dreaming')"),
+        ));
+    }
+    let char_name = engine.character_name();
+    let Some(store) = ctx.llm_client.inner().call_store() else {
+        return Ok(json!({ "enabled": false, "source": source, "entries": [] }));
+    };
+    match store.query_transcripts(source, Some(char_name), count_arg(args, 20)) {
+        Ok(rows) => {
+            let entries: Vec<Value> = rows
+                .iter()
+                .map(|row| serde_json::to_value(row).unwrap_or(Value::Null))
+                .collect();
+            Ok(json!({
+                "enabled": true,
+                "source": source,
+                "character": char_name,
+                "entries": entries,
+            }))
+        }
+        Err(e) => Err((
+            ErrorCode::InternalError,
+            format!("transcript query failed: {e}"),
+        )),
+    }
+}
+
 pub fn heartbeat_tick_now(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let char_name = engine.character_name();
     match ctx.autonomy.heartbeat_tick_now(char_name) {

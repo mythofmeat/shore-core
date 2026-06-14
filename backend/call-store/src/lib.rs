@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
     ts                TEXT NOT NULL,
     ts_unix           INTEGER NOT NULL,
     source            TEXT NOT NULL,
+    character         TEXT,
     call_type         TEXT,
     iteration         INTEGER,
     model             TEXT,
@@ -115,7 +116,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
     entry_zstd        BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_transcripts_ts ON transcripts (ts_unix);
-CREATE INDEX IF NOT EXISTS idx_transcripts_source ON transcripts (source, ts_unix);
+CREATE INDEX IF NOT EXISTS idx_transcripts_source ON transcripts (source, character, ts_unix);
 ";
 
 /// Errors from the call store.
@@ -164,6 +165,7 @@ pub struct CallRecord<'rec> {
 pub struct TranscriptRecord<'rec> {
     pub ts: DateTime<Utc>,
     pub source: &'rec str,
+    pub character: Option<&'rec str>,
     pub call_type: Option<&'rec str>,
     pub iteration: u32,
     pub model: Option<&'rec str>,
@@ -209,6 +211,7 @@ pub struct TranscriptRow {
     pub id: i64,
     pub ts: String,
     pub source: String,
+    pub character: Option<String>,
     pub call_type: Option<String>,
     pub iteration: u32,
     pub model: Option<String>,
@@ -326,13 +329,14 @@ impl CallStore {
         let conn = self.lock_conn();
         let _ = conn.execute(
             "INSERT INTO transcripts (
-                ts, ts_unix, source, call_type, iteration, model, provider,
+                ts, ts_unix, source, character, call_type, iteration, model, provider,
                 finish_reason, input_tokens, output_tokens, cache_read_tokens, entry_zstd
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 entry.ts.to_rfc3339(),
                 entry.ts.timestamp(),
                 entry.source,
+                entry.character,
                 entry.call_type,
                 entry.iteration,
                 entry.model,
@@ -409,9 +413,14 @@ impl CallStore {
         }))
     }
 
-    /// Return transcript rows (newest first) for `source`, decompressed.
-    /// `limit == 0` means no limit.
-    pub fn query_transcripts(&self, source: &str, limit: usize) -> Result<Vec<TranscriptRow>> {
+    /// Return transcript rows (newest first) for `source`, decompressed. A
+    /// `None` `character` matches every character; `limit == 0` means no limit.
+    pub fn query_transcripts(
+        &self,
+        source: &str,
+        character: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<TranscriptRow>> {
         let bound = if limit == 0 {
             -1_i64
         } else {
@@ -419,15 +428,15 @@ impl CallStore {
         };
         let conn = self.lock_conn();
         let mut stmt = conn.prepare(
-            "SELECT id, ts, source, call_type, iteration, model, provider,
+            "SELECT id, ts, source, character, call_type, iteration, model, provider,
                     finish_reason, input_tokens, output_tokens, cache_read_tokens, entry_zstd
              FROM transcripts
-             WHERE source = ?1
+             WHERE source = ?1 AND (?2 IS NULL OR character = ?2)
              ORDER BY ts_unix DESC, id DESC
-             LIMIT ?2",
+             LIMIT ?3",
         )?;
         let blobs = stmt
-            .query_map(params![source, bound], row_to_transcript_blob)?
+            .query_map(params![source, character, bound], row_to_transcript_blob)?
             .collect::<rusqlite::Result<Vec<TranscriptBlobRow>>>()?;
         let mut out = Vec::with_capacity(blobs.len());
         for blob in blobs {
@@ -438,6 +447,7 @@ impl CallStore {
                 id: blob.id,
                 ts: blob.ts,
                 source: blob.source,
+                character: blob.character,
                 call_type: blob.call_type,
                 iteration: blob.iteration,
                 model: blob.model,
@@ -529,6 +539,7 @@ struct TranscriptBlobRow {
     id: i64,
     ts: String,
     source: String,
+    character: Option<String>,
     call_type: Option<String>,
     iteration: u32,
     model: Option<String>,
@@ -543,17 +554,18 @@ fn row_to_transcript_blob(row: &rusqlite::Row<'_>) -> rusqlite::Result<Transcrip
         id: row.get(0)?,
         ts: row.get(1)?,
         source: row.get(2)?,
-        call_type: row.get(3)?,
-        iteration: row.get(4)?,
-        model: row.get(5)?,
-        provider: row.get(6)?,
-        finish_reason: row.get(7)?,
+        character: row.get(3)?,
+        call_type: row.get(4)?,
+        iteration: row.get(5)?,
+        model: row.get(6)?,
+        provider: row.get(7)?,
+        finish_reason: row.get(8)?,
         usage: Usage {
-            input_tokens: i64_to_u64(row.get(8)?),
-            output_tokens: i64_to_u64(row.get(9)?),
-            cache_read_tokens: i64_to_u64(row.get(10)?),
+            input_tokens: i64_to_u64(row.get(9)?),
+            output_tokens: i64_to_u64(row.get(10)?),
+            cache_read_tokens: i64_to_u64(row.get(11)?),
         },
-        entry_zstd: row.get(11)?,
+        entry_zstd: row.get(12)?,
     })
 }
 
@@ -699,6 +711,7 @@ mod tests {
             .record_transcript(&TranscriptRecord {
                 ts: Utc::now(),
                 source: "dreaming",
+                character: Some("poppy"),
                 call_type: Some("dreaming"),
                 iteration: 0,
                 model: Some("deepseek"),
@@ -709,12 +722,27 @@ mod tests {
             })
             .unwrap();
 
-        let rows = store.query_transcripts("dreaming", 0).unwrap();
+        let rows = store.query_transcripts("dreaming", None, 0).unwrap();
         assert_eq!(rows.len(), 1, "one dreaming row");
         let row = rows.first().expect("row present");
         assert_eq!(row.entry, entry, "entry JSON round-trips parsed");
+        assert_eq!(
+            row.character.as_deref(),
+            Some("poppy"),
+            "character recorded"
+        );
         assert!(
-            store.query_transcripts("heartbeat", 0).unwrap().is_empty(),
+            store
+                .query_transcripts("dreaming", Some("other"), 0)
+                .unwrap()
+                .is_empty(),
+            "character filter isolates rows"
+        );
+        assert!(
+            store
+                .query_transcripts("heartbeat", None, 0)
+                .unwrap()
+                .is_empty(),
             "source filter isolates rows"
         );
     }

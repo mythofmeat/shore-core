@@ -17,6 +17,7 @@ security boundaries, observability, and validation expectations.
 | `backend/daemon` | `shore-daemon` | engine, memory, autonomy, tools, generation |
 | `backend/llm` | `shore-llm` | provider request/stream handling |
 | `backend/ledger` | `shore-ledger` | usage, pricing, Anthropic cache tracking |
+| `backend/call-store` | `shore-call-store` | compressed SQLite store for call payloads + transcripts |
 | `backend/diagnostics` | `shore-diagnostics` | shared diagnostic formatting |
 | `clients/cli` | `shore-cli` | CLI client |
 | `dev/test-harness` | `shore-test-harness` | integration harness and mock server |

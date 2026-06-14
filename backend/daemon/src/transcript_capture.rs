@@ -66,9 +66,14 @@ fn build_entry_json(resp: &GenerateResponse, tools: &[CapturedTool]) -> String {
 
 /// Record one curated transcript entry to the store. Best-effort: a write
 /// failure is logged and never disturbs the tool loop.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "flat metadata for one transcript row; grouping into a struct adds no clarity"
+)]
 pub fn record(
     store: &Arc<CallStore>,
     source: &str,
+    character: &str,
     call_type: &str,
     iteration: u32,
     provider: Option<&str>,
@@ -84,6 +89,7 @@ pub fn record(
     let record = TranscriptRecord {
         ts: Utc::now(),
         source,
+        character: Some(character),
         call_type: Some(call_type),
         iteration,
         model: (!resp.model.is_empty()).then_some(resp.model.as_str()),

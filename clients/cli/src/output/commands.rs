@@ -128,7 +128,7 @@ fn write_activity_section(out: &mut impl Write, activity: &serde_json::Value, wi
     if use_color() {
         let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ignored = write!(out, "  {:<13}", "");
+    _ = write!(out, "  {:<13}", "");
     for (&density, classification) in histogram.iter().zip(classifications.iter()) {
         let linear = if max_val > 0.0 {
             density / max_val
@@ -215,7 +215,7 @@ pub(crate) fn print_status(data: &serde_json::Value, character_name: &str) {
         write_row(&mut out, "Prompt Edits", &detail);
     }
 
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 
     // -- Clients --
     if let Some(clients) = data.get("clients").and_then(|c| c.as_array()) {
@@ -283,11 +283,249 @@ pub(crate) fn format_command(name: &str, data: &serde_json::Value) {
         "inject_system" => cli_out!("System instruction injected."),
         "diagnostics" => print_diagnostics(data),
         "usage" => print_usage(data),
+        "heartbeat_log" => super::transcript::print_heartbeat_log(data),
+        "call_log" => print_call_log(data),
+        "transcript" => print_transcript(data),
         "heartbeat_tick_now" => print_heartbeat_tick_now(data),
         "heartbeat_set_dormant" => print_heartbeat_status_change(data, "dormant"),
         "heartbeat_set_active" => print_heartbeat_status_change(data, "active"),
         _ => print_command_output_fallback(name, data),
     }
+}
+
+/// Max characters of a stored payload body shown when dumping one call. The
+/// full body is always available via `--json`.
+const CALL_BODY_PREVIEW: usize = 4000;
+
+/// Render the raw call-payload store: either an index of recent calls or, when
+/// `data.call` is present, one call's decompressed request/response.
+fn print_call_log(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    if data.get("enabled").is_some_and(|v| v == false) {
+        print_dim_line(&mut out, "(call payload capture is disabled)");
+        return;
+    }
+
+    if let Some(call) = data.get("call").filter(|c| !c.is_null()) {
+        print_one_call(&mut out, call, width);
+        return;
+    }
+
+    let Some(entries) = data["entries"].as_array().filter(|e| !e.is_empty()) else {
+        print_dim_line(&mut out, "(no calls recorded)");
+        return;
+    };
+    write_section_header(
+        &mut out,
+        "call log",
+        &format!("{} calls", entries.len()),
+        width,
+    );
+    for entry in entries {
+        let usage = &entry["usage"];
+        write_fg(
+            &mut out,
+            Color::DarkGrey,
+            &format!("  #{:<6}", entry["id"].as_i64().unwrap_or(0)),
+        );
+        write_fg(
+            &mut out,
+            Color::Blue,
+            &format!("{:<18}", entry["call_type"].as_str().unwrap_or("?")),
+        );
+        write_fg(
+            &mut out,
+            Color::Magenta,
+            &format!(
+                "{}/{}",
+                entry["provider"].as_str().unwrap_or("?"),
+                abbreviate_model(entry["model"].as_str().unwrap_or("?"))
+            ),
+        );
+        _ = writeln!(out);
+        let err = entry["error"]
+            .as_str()
+            .map_or_else(String::new, |e| format!("  ERROR: {e}"));
+        write_dim(
+            &mut out,
+            &format!(
+                "          in={} out={} cache={}  {}ms  {}B{}",
+                usage["input_tokens"].as_u64().unwrap_or(0),
+                usage["output_tokens"].as_u64().unwrap_or(0),
+                usage["cache_read_tokens"].as_u64().unwrap_or(0),
+                entry["duration_ms"].as_u64().unwrap_or(0),
+                entry["request_bytes"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .saturating_add(entry["response_bytes"].as_u64().unwrap_or(0)),
+                err,
+            ),
+        );
+        _ = writeln!(out);
+    }
+    print_dim_line(
+        &mut out,
+        "(shore log --api <id> to dump one call; --json for raw)",
+    );
+}
+
+/// Dump one stored call's metadata and decompressed request/response bodies.
+fn print_one_call(out: &mut impl Write, call: &serde_json::Value, width: usize) {
+    write_section_header(
+        out,
+        "call payload",
+        call["call_id"].as_str().unwrap_or("?"),
+        width,
+    );
+    let usage = &call["usage"];
+    write_dim(
+        out,
+        &format!(
+            "  {}  {}/{}  {}  in={} out={} cache_read={}  {}ms",
+            call["ts"].as_str().unwrap_or("?"),
+            call["provider"].as_str().unwrap_or("?"),
+            abbreviate_model(call["model"].as_str().unwrap_or("?")),
+            call["call_type"].as_str().unwrap_or("?"),
+            usage["input_tokens"].as_u64().unwrap_or(0),
+            usage["output_tokens"].as_u64().unwrap_or(0),
+            usage["cache_read_tokens"].as_u64().unwrap_or(0),
+            call["duration_ms"].as_u64().unwrap_or(0),
+        ),
+    );
+    _ = writeln!(out);
+    for (label, key) in [("request", "request"), ("response", "response")] {
+        write_fg(out, Color::Cyan, &format!("  {label}:\n"));
+        let body = call[key].as_str().unwrap_or("");
+        _ = writeln!(out, "{}", truncate_display(body, CALL_BODY_PREVIEW));
+        _ = writeln!(out);
+    }
+    print_dim_line(out, "(--json for the full, untruncated payload)");
+}
+
+/// Render curated heartbeat/dreaming transcripts: per call, the model/provider
+/// and usage, the reasoning, visible text, and each tool call with its result.
+fn print_transcript(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+    let source = data["source"].as_str().unwrap_or("heartbeat");
+    let char_name = data["character"].as_str().unwrap_or("?");
+    write_section_header(&mut out, &format!("{source} transcript"), char_name, width);
+
+    if data.get("enabled").is_some_and(|v| v == false) {
+        print_dim_line(&mut out, "(payload capture is disabled)");
+        return;
+    }
+    let Some(entries) = data["entries"].as_array().filter(|e| !e.is_empty()) else {
+        print_dim_line(&mut out, "(no transcript entries yet)");
+        return;
+    };
+    let mut prev_date: Option<String> = None;
+    for entry in entries {
+        print_transcript_entry(&mut out, entry, &mut prev_date);
+    }
+}
+
+/// Render one transcript row: header (time, call type, provider/model, usage),
+/// reasoning, visible text, and tool calls with truncated outputs.
+fn print_transcript_entry(
+    out: &mut impl Write,
+    entry: &serde_json::Value,
+    prev_date: &mut Option<String>,
+) {
+    let ts = entry["ts"].as_str().unwrap_or("");
+    let time_str = parse_timestamp(ts).map_or_else(
+        || ts.chars().take(16).collect::<String>(),
+        |dt| {
+            let formatted = format_time(&dt, prev_date.as_deref());
+            *prev_date = Some(dt.format("%Y-%m-%d").to_string());
+            formatted
+        },
+    );
+    let usage = &entry["usage"];
+    write_fg(out, Color::DarkGrey, &format!("  {time_str:<14}"));
+    write_fg(
+        out,
+        Color::Blue,
+        &format!(
+            "{}#{}",
+            entry["call_type"].as_str().unwrap_or("?"),
+            entry["iteration"].as_u64().unwrap_or(0)
+        ),
+    );
+    write_fg(
+        out,
+        Color::Magenta,
+        &format!(
+            "  {}/{}",
+            entry["provider"].as_str().unwrap_or("?"),
+            abbreviate_model(entry["model"].as_str().unwrap_or("?"))
+        ),
+    );
+    _ = writeln!(out);
+    write_dim(
+        out,
+        &format!(
+            "                {}  in={} out={} cache_read={}",
+            entry["finish_reason"].as_str().unwrap_or(""),
+            usage["input_tokens"].as_u64().unwrap_or(0),
+            usage["output_tokens"].as_u64().unwrap_or(0),
+            usage["cache_read_tokens"].as_u64().unwrap_or(0),
+        ),
+    );
+    _ = writeln!(out);
+    let inner = &entry["entry"];
+    if let Some(reasoning) = inner["reasoning"].as_array() {
+        for block in reasoning.iter().filter_map(serde_json::Value::as_str) {
+            write_fg(out, Color::DarkCyan, "                reasoning: ");
+            _ = writeln!(out, "{}", block.trim());
+        }
+    }
+    let text = inner["text"].as_str().unwrap_or("");
+    if !text.trim().is_empty() {
+        write_fg(out, Color::White, "                text: ");
+        _ = writeln!(out, "{}", text.trim());
+    }
+    if let Some(tools) = inner["tool_calls"].as_array() {
+        for tool in tools {
+            let is_error = tool["is_error"].as_bool().unwrap_or(false);
+            let color = if is_error { Color::Red } else { Color::Cyan };
+            let tag = if is_error { " (error)" } else { "" };
+            write_fg(
+                out,
+                color,
+                &format!(
+                    "                tool {}{tag}: ",
+                    tool["name"].as_str().unwrap_or("?")
+                ),
+            );
+            _ = writeln!(out, "{}", truncate_display(&tool["input"].to_string(), 200));
+            write_dim(
+                out,
+                &format!(
+                    "                  → {}",
+                    truncate_display(tool["output"].as_str().unwrap_or(""), 600)
+                ),
+            );
+            _ = writeln!(out);
+        }
+    }
+    _ = writeln!(out);
+}
+
+/// Truncate `s` to at most `max` chars, flattening newlines, with a dropped
+/// count suffix when it overflows.
+fn truncate_display(s: &str, max: usize) -> String {
+    let flat = s.replace('\n', " ");
+    let count = flat.chars().count();
+    if count <= max {
+        return flat;
+    }
+    let kept: String = flat.chars().take(max).collect();
+    format!("{kept}… (+{} chars)", count.saturating_sub(max))
 }
 
 fn print_memory_dream(data: &serde_json::Value) {
@@ -356,7 +594,7 @@ fn print_memory_dream(data: &serde_json::Value) {
             );
         }
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 fn print_command_output_fallback(name: &str, data: &serde_json::Value) {
@@ -365,7 +603,7 @@ fn print_command_output_fallback(name: &str, data: &serde_json::Value) {
     if use_color() {
         let _ignored = crossterm::execute!(out, SetAttribute(Attribute::Bold));
     }
-    let _ignored = write!(out, "{name}");
+    _ = write!(out, "{name}");
     if use_color() {
         _ = crossterm::execute!(out, SetAttribute(Attribute::Reset));
     }
@@ -382,7 +620,7 @@ fn print_heartbeat_tick_now(data: &serde_json::Value) {
         let stdout = io::stdout();
         let mut out = stdout.lock();
         write_fg(&mut out, Color::Yellow, warning);
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
     }
 }
 
@@ -465,9 +703,9 @@ fn print_alt_list(data: &serde_json::Value) {
             " "
         };
         let preview = alt_preview(alt["content"].as_str().unwrap_or(""), preview_width);
-        let _ignored = writeln!(out, "  {marker} {position}/{count}  {preview}");
+        _ = writeln!(out, "  {marker} {position}/{count}  {preview}");
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 /// Print model list.
@@ -519,7 +757,7 @@ fn print_model_list(data: &serde_json::Value) {
             } else {
                 // No color: leave the default terminal foreground.
             }
-            let _ignored = write!(out, "  {marker} ");
+            _ = write!(out, "  {marker} ");
             if use_color() {
                 _ = crossterm::execute!(out, ResetColor);
             }
@@ -549,14 +787,14 @@ fn print_model_list(data: &serde_json::Value) {
     // Hint about hidden models the user is not currently seeing.
     let hidden_count = data["hidden_count"].as_u64().unwrap_or(0);
     if !include_hidden && hidden_count > 0 {
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
         write_dim(
             &mut out,
             &format!("  ({hidden_count} hidden — use `shore model --all` to include them)"),
         );
         _ = writeln!(out);
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 /// Print the model resolved for each background task, with its source.
@@ -584,7 +822,7 @@ fn print_background_models(data: &serde_json::Value) {
             let task = r["task"].as_str().unwrap_or("?");
             let model = r["model"].as_str().unwrap_or("?");
             let source = r["source"].as_str().unwrap_or("");
-            let _ignored = write!(out, "  {task:<task_w$}  {model:<model_w$}  ");
+            _ = write!(out, "  {task:<task_w$}  {model:<model_w$}  ");
             if use_color() {
                 _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
             }
@@ -597,7 +835,7 @@ fn print_background_models(data: &serde_json::Value) {
             _ = writeln!(out);
         }
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 /// Print model switch confirmation.
@@ -657,7 +895,7 @@ fn print_model_info(data: &serde_json::Value) {
     if let Some(mt) = data["max_output_tokens"].as_u64() {
         write_row(&mut out, "Max output tokens", &mt.to_string());
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 /// Print effective sampler settings + which scope set each value.
@@ -772,9 +1010,9 @@ fn print_model_settings(data: &serde_json::Value) {
         if let Some(domain) = &row.domain {
             write_dim(&mut out, &format!("   {{{domain}}}"));
         }
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 /// Print confirmation after `set_model_setting`.
@@ -802,7 +1040,7 @@ fn print_provider_list(data: &serde_json::Value) {
         Some(p) if !p.is_empty() => p,
         _ => {
             print_dim_line(&mut out, "(no providers configured)");
-            let _ignored = writeln!(out);
+            _ = writeln!(out);
             return;
         }
     };
@@ -818,7 +1056,7 @@ fn print_provider_list(data: &serde_json::Value) {
         if use_color() {
             let _ignored = crossterm::execute!(out, SetAttribute(Attribute::Bold));
         }
-        let _ignored = write!(out, "  {name}");
+        _ = write!(out, "  {name}");
         if use_color() {
             _ = crossterm::execute!(out, SetAttribute(Attribute::Reset));
         }
@@ -892,9 +1130,9 @@ fn print_provider_models(data: &serde_json::Value) {
         for m in &static_models {
             let name = m["name"].as_str().unwrap_or("?");
             let id = m["model_id"].as_str().unwrap_or("?");
-            let _ignored = writeln!(out, "    {name:<28}{id}");
+            _ = writeln!(out, "    {name:<28}{id}");
         }
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
     }
 
     let discovered = data["discovered"].as_array().cloned().unwrap_or_default();
@@ -904,12 +1142,12 @@ fn print_provider_models(data: &serde_json::Value) {
             let id = m["model_id"].as_str().unwrap_or("?");
             let display = m["display_name"].as_str().unwrap_or("");
             if display.is_empty() {
-                let _ignored = writeln!(out, "    {id}");
+                _ = writeln!(out, "    {id}");
             } else {
-                let _ignored = writeln!(out, "    {id:<48}{display}");
+                _ = writeln!(out, "    {id:<48}{display}");
             }
         }
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
     }
 
     let hidden = data["hidden"].as_array().cloned().unwrap_or_default();
@@ -920,9 +1158,9 @@ fn print_provider_models(data: &serde_json::Value) {
         );
         for m in &hidden {
             let id = m["model_id"].as_str().unwrap_or("?");
-            let _ignored = writeln!(out, "    {id}");
+            _ = writeln!(out, "    {id}");
         }
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
     }
 
     if static_models.is_empty() && discovered.is_empty() && hidden.is_empty() {
@@ -930,7 +1168,7 @@ fn print_provider_models(data: &serde_json::Value) {
             &mut out,
             "no models — run `shore provider refresh <name>` if discovery is configured",
         );
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
     }
 
     if let Some(cache) = data.get("cache") {
@@ -973,9 +1211,9 @@ fn print_provider_refresh_all(data: &serde_json::Value) {
                     _ = write!(out, "  ok  ");
                     _ = crossterm::execute!(out, ResetColor);
                 } else {
-                    let _ignored = write!(out, "  ok  ");
+                    _ = write!(out, "  ok  ");
                 }
-                let _ignored = writeln!(out, "{provider}: {count} models (fetched {fetched})");
+                _ = writeln!(out, "{provider}: {count} models (fetched {fetched})");
             } else {
                 fail_count = fail_count.saturating_add(1);
                 let err = r["error"].as_str().unwrap_or("unknown error");
@@ -984,16 +1222,16 @@ fn print_provider_refresh_all(data: &serde_json::Value) {
                     _ = write!(out, "  FAIL");
                     _ = crossterm::execute!(out, ResetColor);
                 } else {
-                    let _ignored = write!(out, "  FAIL");
+                    _ = write!(out, "  FAIL");
                 }
-                let _ignored = writeln!(out, " {provider}: {err}");
+                _ = writeln!(out, " {provider}: {err}");
             }
         }
     }
 
     if let Some(skipped) = data["skipped"].as_array() {
         if !skipped.is_empty() {
-            let _ignored = writeln!(out);
+            _ = writeln!(out);
             write_section_header(&mut out, "Skipped", "", width);
             for s in skipped {
                 let provider = s["provider"].as_str().unwrap_or("?");
@@ -1009,7 +1247,7 @@ fn print_provider_refresh_all(data: &serde_json::Value) {
         }
     }
 
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
     _ = writeln!(
         out,
         "Refreshed {ok_count} provider(s); {fail_count} failed."
@@ -1062,7 +1300,7 @@ fn print_character_info(data: &serde_json::Value) {
     // Definition preview
     if let Some(preview) = data["definition_preview"].as_str() {
         if !preview.is_empty() {
-            let _ignored = writeln!(out);
+            _ = writeln!(out);
             write_section_header(&mut out, "Preview", "", width);
             // Show first few lines, dimmed
             if use_color() {
@@ -1076,7 +1314,7 @@ fn print_character_info(data: &serde_json::Value) {
             }
         }
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 /// Print memory status or query result.
@@ -1087,7 +1325,7 @@ fn print_memory(data: &serde_json::Value) {
 
     // If there's a "result" field, this is a query response.
     if let Some(result) = data["result"].as_str() {
-        let _ignored = writeln!(out, "{result}");
+        _ = writeln!(out, "{result}");
         return;
     }
 
@@ -1108,7 +1346,7 @@ fn print_memory(data: &serde_json::Value) {
             &format!("{curated} curated, {daily} daily, {images} images"),
         );
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 /// Print memory changelog.
@@ -1125,7 +1363,7 @@ fn print_changelog(data: &serde_json::Value) {
             if use_color() {
                 let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
             }
-            let _ignored = writeln!(out, "  (no entries)");
+            _ = writeln!(out, "  (no entries)");
             if use_color() {
                 _ = crossterm::execute!(out, ResetColor);
             }
@@ -1141,7 +1379,7 @@ fn print_changelog(data: &serde_json::Value) {
                 if use_color() {
                     let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
                 }
-                let _ignored = write!(out, "  {time_display:<16}");
+                _ = write!(out, "  {time_display:<16}");
 
                 let op_color = match op {
                     s if s.starts_with("create") || s.starts_with("compaction") => Color::Green,
@@ -1165,7 +1403,7 @@ fn print_changelog(data: &serde_json::Value) {
             }
         }
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 /// Print compaction result.
@@ -1209,7 +1447,7 @@ fn print_compact_result(data: &serde_json::Value) {
         );
     }
 
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 /// Build a default-config baseline locally so `--all` and the hide-defaults
@@ -1227,7 +1465,7 @@ pub(crate) fn print_config(data: &serde_json::Value, show_all: bool) {
     // Config set confirmation: { "set": "key", "value": ... }
     if let Some(key) = data["set"].as_str() {
         let value = &data["value"];
-        let _ignored = writeln!(out, "Set {key} = {value}");
+        _ = writeln!(out, "Set {key} = {value}");
         return;
     }
 
@@ -1245,7 +1483,7 @@ pub(crate) fn print_config(data: &serde_json::Value, show_all: bool) {
         };
         write_section_header(&mut out, "Config", key, width);
         print_config_section(&mut out, &data["config"], section_default, 1, show_all);
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
         return;
     }
 
@@ -1260,7 +1498,7 @@ pub(crate) fn print_config(data: &serde_json::Value, show_all: bool) {
         };
         write_section_header(&mut out, "Config", "", width);
         print_config_section(&mut out, config, defaults, 1, show_all);
-        let _ignored = writeln!(out);
+        _ = writeln!(out);
     }
 }
 
@@ -1312,7 +1550,7 @@ fn print_config_section(
 ) {
     let indent = "  ".repeat(depth);
     let serde_json::Value::Object(map) = value else {
-        let _ignored = writeln!(out, "{indent}{value}");
+        _ = writeln!(out, "{indent}{value}");
         return;
     };
 
@@ -1360,7 +1598,7 @@ fn print_config_section(
             if use_color() {
                 let _ignored = crossterm::execute!(out, SetForegroundColor(Color::White));
             }
-            let _ignored = writeln!(out, "{indent}{k}:");
+            _ = writeln!(out, "{indent}{k}:");
             if use_color() {
                 _ = crossterm::execute!(out, ResetColor);
             }
@@ -1372,7 +1610,7 @@ fn print_config_section(
             if use_color() {
                 let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
             }
-            let _ignored = write!(out, "{indent}{k:<scalar_width$}");
+            _ = write!(out, "{indent}{k:<scalar_width$}");
             if use_color() && !is_default {
                 _ = crossterm::execute!(out, ResetColor);
             }
@@ -1500,7 +1738,7 @@ fn print_config_check(data: &serde_json::Value) {
         &format!("{chat} chat, {embed} embedding"),
     );
 
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 
     // Warnings
     if let Some(warnings) = data["warnings"].as_array() {
@@ -1565,7 +1803,7 @@ pub(crate) fn print_diagnostics(data: &serde_json::Value) {
             let total = call["total_ms"].as_u64().unwrap_or(0);
             let secs = format_millis_as_seconds_one_decimal(total);
 
-            let _ignored = write!(w, "{model:<24}");
+            _ = write!(w, "{model:<24}");
             write_dim(
                 w,
                 &format!("in:{input:<5} out:{output_t:<5} cache:{cr}/{cw}  {secs}s"),
@@ -1593,7 +1831,7 @@ pub(crate) fn print_diagnostics(data: &serde_json::Value) {
             let dur = call["duration_ms"].as_u64().unwrap_or(0);
             let ok = call["success"].as_bool().unwrap_or(true);
 
-            let _ignored = write!(w, "{name:<24}");
+            _ = write!(w, "{name:<24}");
             write_dim(w, &format!("{dur}ms  "));
             let (marker_color, marker_text) = if ok {
                 (Color::Green, "ok")
@@ -1611,7 +1849,7 @@ pub(crate) fn print_diagnostics(data: &serde_json::Value) {
         let msg = err["message"].as_str().unwrap_or("?");
 
         write_fg(w, Color::Red, &format!("{etype:<12}"));
-        let _ignored = writeln!(w, "{msg}");
+        _ = writeln!(w, "{msg}");
     });
 }
 
@@ -1643,7 +1881,7 @@ fn print_diagnostics_section<W: Write>(
             }
         }
     }
-    let _ignored = writeln!(out);
+    _ = writeln!(out);
 }
 
 fn format_k(tokens: u64) -> String {
@@ -2189,7 +2427,7 @@ fn write_autonomy_section(out: &mut impl Write, autonomy: &serde_json::Value, wi
     if use_color() {
         let _ignored = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
     }
-    let _ignored = write!(out, "  {:<13}", "Heartbeat");
+    _ = write!(out, "  {:<13}", "Heartbeat");
     if use_color() {
         _ = crossterm::execute!(out, ResetColor);
     }

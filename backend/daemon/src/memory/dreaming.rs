@@ -1289,7 +1289,15 @@ async fn run_librarian_loop(
         let provider = request.provider_key.clone();
         let tool_uses = crate::content_util::extract_tool_uses(&resp.content_blocks);
         if tool_uses.is_empty() || resp.finish_reason != "tool_use" {
-            record_dreaming_transcript(client, dry_run, iteration, provider.as_deref(), &resp, &[]);
+            record_dreaming_transcript(
+                client,
+                character,
+                dry_run,
+                iteration,
+                provider.as_deref(),
+                &resp,
+                &[],
+            );
             return Ok(loop_result);
         }
 
@@ -1305,6 +1313,7 @@ async fn run_librarian_loop(
         .await;
         record_dreaming_transcript(
             client,
+            character,
             dry_run,
             iteration,
             provider.as_deref(),
@@ -1383,6 +1392,7 @@ async fn dispatch_librarian_tools(
 /// which preview without writing artifacts; a no-op when capture is disabled).
 fn record_dreaming_transcript(
     client: &LedgerClient,
+    character: &str,
     dry_run: bool,
     iteration: u32,
     provider: Option<&str>,
@@ -1396,6 +1406,7 @@ fn record_dreaming_transcript(
         crate::transcript_capture::record(
             store,
             "dreaming",
+            character,
             CallType::Dreaming.as_str(),
             iteration,
             provider,

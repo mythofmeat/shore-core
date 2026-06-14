@@ -2530,17 +2530,15 @@ async fn run_heartbeat_tool_loop(
             Vec::new()
         };
 
-        if let Some(store) = client.inner().call_store() {
-            crate::transcript_capture::record(
-                store,
-                "heartbeat",
-                call_type.as_str(),
-                iteration,
-                provider.as_deref(),
-                &resp,
-                &captured,
-            );
-        }
+        record_heartbeat_transcript(
+            client,
+            character,
+            call_type,
+            iteration,
+            provider.as_deref(),
+            &resp,
+            &captured,
+        );
 
         // No tool use (or a non-tool finish): the tick is complete.
         if !has_tools {
@@ -2549,6 +2547,31 @@ async fn run_heartbeat_tool_loop(
     }
 
     (send_message_text, cache_warmed)
+}
+
+/// Record one heartbeat-call curated transcript entry to the store (no-op when
+/// capture is disabled).
+fn record_heartbeat_transcript(
+    client: &LedgerClient,
+    character: &str,
+    call_type: CallType,
+    iteration: u32,
+    provider: Option<&str>,
+    resp: &shore_llm::types::GenerateResponse,
+    captured: &[crate::transcript_capture::CapturedTool],
+) {
+    if let Some(store) = client.inner().call_store() {
+        crate::transcript_capture::record(
+            store,
+            "heartbeat",
+            character,
+            call_type.as_str(),
+            iteration,
+            provider,
+            resp,
+            captured,
+        );
+    }
 }
 
 /// One heartbeat LLM call with config fallback; provider-fallback events are

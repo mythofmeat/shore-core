@@ -110,7 +110,7 @@ async fn heartbeat_tick_records_transcript_row() {
     let mut rows = Vec::new();
     for _ in 0..100 {
         rows = store
-            .query_transcripts("heartbeat", 0)
+            .query_transcripts("heartbeat", Some(CHARACTER), 0)
             .expect("query heartbeat transcripts");
         if !rows.is_empty() {
             break;
