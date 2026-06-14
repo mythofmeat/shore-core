@@ -10,8 +10,8 @@ pub use models::{
     set_model_setting, switch_model,
 };
 pub use status::{
-    diagnostics, heartbeat_log, heartbeat_set_active, heartbeat_set_dormant, heartbeat_tick_now,
-    status,
+    background_transcript, diagnostics, heartbeat_log, heartbeat_set_active, heartbeat_set_dormant,
+    heartbeat_tick_now, status,
 };
 
 #[cfg(test)]

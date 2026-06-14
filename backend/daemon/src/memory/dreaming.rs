@@ -17,6 +17,7 @@ use shore_llm::types::{GenerateResponse, LlmRequest};
 use tokio::fs;
 use tracing::{debug, info, warn};
 
+use crate::background_transcript::{TranscriptEntry, TranscriptSource, TranscriptToolCall};
 use crate::convert::{u32_to_f32, usize_to_f32};
 use crate::memory::deferred_edits::MEMORY_INDEX_FILE;
 use crate::memory::markdown_store::{MarkdownEntry, MarkdownMemoryStore, MarkdownStoreError};
@@ -298,7 +299,7 @@ pub async fn run_librarian_sweep(
         "Dreaming: starting AI librarian pass"
     );
 
-    let loop_result = run_librarian_loop(
+    let (loop_result, transcript) = run_librarian_loop(
         llm_client,
         loaded_config,
         &mut request,
@@ -308,6 +309,8 @@ pub async fn run_librarian_sweep(
         dry_run,
     )
     .await?;
+
+    persist_dreaming_transcript(data_dir, character, dry_run, &transcript);
 
     let paths = LibrarianSweepPaths {
         data_dir,
@@ -1260,8 +1263,10 @@ async fn run_librarian_loop(
     character: &str,
     max_tool_iterations: Option<u32>,
     dry_run: bool,
-) -> Result<LibrarianLoopResult, DreamingError> {
+) -> Result<(LibrarianLoopResult, Vec<TranscriptEntry>), DreamingError> {
     let mut loop_result = LibrarianLoopResult::default();
+    // Full-fidelity transcript: one entry per LLM call this pass.
+    let mut transcript: Vec<TranscriptEntry> = Vec::new();
 
     let mut iteration: u32 = 0;
     loop {
@@ -1281,46 +1286,47 @@ async fn run_librarian_loop(
             )
             .await
             .map_err(|e| DreamingError::Llm(e.to_string()))?;
+        // Provider may have changed under config fallback; read it back from the
+        // request the call ran on.
+        let provider = request.provider_key.clone();
         remember_final_report(&mut loop_result, &resp);
         push_assistant_response(request, &resp);
 
         let tool_uses = crate::content_util::extract_tool_uses(&resp.content_blocks);
-        if tool_uses.is_empty() || resp.finish_reason != "tool_use" {
-            return Ok(loop_result);
+        let has_tools = !tool_uses.is_empty() && resp.finish_reason == "tool_use";
+
+        if !has_tools {
+            transcript.push(TranscriptEntry::from_response(
+                TranscriptSource::Dreaming,
+                CallType::Dreaming.as_str(),
+                iteration,
+                Local::now().to_rfc3339(),
+                provider,
+                &resp,
+                Vec::new(),
+            ));
+            return Ok((loop_result, transcript));
         }
 
         loop_result.tool_rounds = loop_result.tool_rounds.saturating_add(1);
-        let mut tool_results = Vec::new();
-        for (id, name, input) in tool_uses {
-            loop_result.tools_used.push(name.clone());
-            record_librarian_tool_intent(&mut loop_result, &name, &input);
-            debug!(
-                character,
-                iteration,
-                tool = %name,
-                input = %input,
-                "Dreaming: executing librarian tool"
-            );
-
-            let (output, is_error) =
-                if let Some(blocked) = blocked_librarian_tool_result(&name, &input, dry_run) {
-                    blocked
-                } else {
-                    crate::content_util::dispatch_result_to_output(
-                        tool_system::dispatch_tool(&name, input.clone(), tool_ctx).await,
-                    )
-                };
-
-            if !is_error && matches!(name.as_str(), "write" | "edit") {
-                if let Some(path) = tool_path(&input) {
-                    loop_result.changed.push(path.to_owned());
-                }
-            }
-
-            tool_results.push(crate::content_util::build_tool_result_json(
-                &id, &output, is_error,
-            ));
-        }
+        let (tool_results, transcript_calls) = dispatch_librarian_tools(
+            tool_ctx,
+            character,
+            iteration,
+            dry_run,
+            tool_uses,
+            &mut loop_result,
+        )
+        .await;
+        transcript.push(TranscriptEntry::from_response(
+            TranscriptSource::Dreaming,
+            CallType::Dreaming.as_str(),
+            iteration,
+            Local::now().to_rfc3339(),
+            provider,
+            &resp,
+            transcript_calls,
+        ));
         request
             .messages
             .push(json!({"role": "user", "content": tool_results}));
@@ -1333,7 +1339,83 @@ async fn run_librarian_loop(
         max = ?max_tool_iterations,
         "Dreaming: librarian tool loop hit configured cap"
     );
-    Ok(loop_result)
+    Ok((loop_result, transcript))
+}
+
+/// Dispatch every tool call from one librarian iteration. Returns the
+/// `tool_result` JSON blocks (for the next request turn) and full-fidelity
+/// transcript records, while recording inspected/changed paths and tool intents
+/// on `loop_result`.
+async fn dispatch_librarian_tools(
+    tool_ctx: &dyn ToolContext,
+    character: &str,
+    iteration: u32,
+    dry_run: bool,
+    tool_uses: Vec<(String, String, Value)>,
+    loop_result: &mut LibrarianLoopResult,
+) -> (Vec<Value>, Vec<TranscriptToolCall>) {
+    let mut tool_results = Vec::new();
+    let mut transcript_calls = Vec::new();
+    for (id, name, input) in tool_uses {
+        loop_result.tools_used.push(name.clone());
+        record_librarian_tool_intent(loop_result, &name, &input);
+        debug!(
+            character,
+            iteration,
+            tool = %name,
+            input = %input,
+            "Dreaming: executing librarian tool"
+        );
+
+        let (output, is_error) =
+            if let Some(blocked) = blocked_librarian_tool_result(&name, &input, dry_run) {
+                blocked
+            } else {
+                crate::content_util::dispatch_result_to_output(
+                    tool_system::dispatch_tool(&name, input.clone(), tool_ctx).await,
+                )
+            };
+
+        if !is_error && matches!(name.as_str(), "write" | "edit") {
+            if let Some(path) = tool_path(&input) {
+                loop_result.changed.push(path.to_owned());
+            }
+        }
+
+        transcript_calls.push(TranscriptToolCall {
+            name: name.clone(),
+            input: input.clone(),
+            output: output.clone(),
+            is_error,
+        });
+        tool_results.push(crate::content_util::build_tool_result_json(
+            &id, &output, is_error,
+        ));
+    }
+    (tool_results, transcript_calls)
+}
+
+/// Persist the dreaming pass's full-fidelity transcript (reasoning + tool I/O +
+/// model) for `shore transcript --dreaming`. Skipped on dry runs, which preview
+/// without writing dream artifacts. Best-effort: a write failure never fails the
+/// pass.
+fn persist_dreaming_transcript(
+    data_dir: &Path,
+    character: &str,
+    dry_run: bool,
+    transcript: &[TranscriptEntry],
+) {
+    if dry_run {
+        return;
+    }
+    if let Err(e) = crate::background_transcript::append_entries(
+        data_dir,
+        character,
+        TranscriptSource::Dreaming,
+        transcript,
+    ) {
+        warn!(character, error = %e, "Dreaming: failed to write transcript log");
+    }
 }
 
 fn remember_final_report(loop_result: &mut LibrarianLoopResult, resp: &GenerateResponse) {

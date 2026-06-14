@@ -18,6 +18,20 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   before any pre-sweep work.
 
 ### Added
+- **Full-fidelity transcripts for heartbeat and dreaming.** Background LLM calls
+  (heartbeat ticks and the dreaming/librarian pass) previously left only
+  truncated summaries — the heartbeat event ring, the `DREAMS.md` audit log, and
+  200-char tracing previews — so their complete reasoning and tool use could not
+  be reviewed, and neither recorded which model/provider actually served the
+  call. The daemon now writes a capped ring-buffer transcript per source
+  (`heartbeat-transcript.jsonl`, `dreaming-transcript.jsonl` in the character's
+  data directory) with one entry per call: model, provider, finish reason, token
+  usage, full reasoning, and each tool call's complete input and output. View
+  them with `shore log --heartbeat` and `shore log --dreaming` (`--json` for raw
+  entries, `-n` to change the count). `shore log --heartbeat` now shows this
+  transcript rather than the operational event ring, which moves to the new
+  `shore log --events`. Always on; dry-run dreaming previews are not recorded.
+  New `background_transcript` SWP command (see PROTOCOL.md).
 - **Robust image-upload classification (fixes Matrix image sending).** Image
   uploads whose filename lacks a usable extension — routine for Matrix, where
   media is content-addressed and the mime type travels out-of-band — were

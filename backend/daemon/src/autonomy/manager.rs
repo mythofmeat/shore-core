@@ -23,6 +23,7 @@ use tracing::{debug, error, info, warn};
 use super::activity::ActivityTracker;
 use super::heartbeat::{HeartbeatAction, HeartbeatClock};
 use super::{AutonomyStatus, HeartbeatEventKind, HeartbeatLog};
+use crate::background_transcript::{TranscriptEntry, TranscriptSource, TranscriptToolCall};
 use crate::cache_keepalive::{CacheKeepalive, CacheKeepaliveAction};
 use crate::characters::CharacterRegistry;
 use crate::memory::compaction_impls::resolve_image_gen_config;
@@ -2223,7 +2224,7 @@ async fn execute_heartbeat_tick(
         state: Arc::clone(state),
     });
 
-    let (send_message_text, cache_warmed) = run_heartbeat_tool_loop(
+    let (send_message_text, cache_warmed, transcript) = run_heartbeat_tool_loop(
         character,
         state,
         &mut request,
@@ -2233,6 +2234,17 @@ async fn execute_heartbeat_tick(
         max_tool_iterations,
     )
     .await;
+
+    // Persist the full-fidelity transcript (reasoning + tool I/O + model) for
+    // `shore transcript`. Best-effort: a write failure must not abort the tick.
+    if let Err(e) = crate::background_transcript::append_entries(
+        data_dir,
+        character,
+        TranscriptSource::Heartbeat,
+        &transcript,
+    ) {
+        warn!(character, error = %e, "Heartbeat: failed to write transcript log");
+    }
 
     // -- Cache warmed: the tick itself was a cache-warming LLM call -----------
     if cache_warmed {
@@ -2443,7 +2455,7 @@ async fn run_heartbeat_tool_loop(
     lc: &LoadedConfig,
     tool_ctx: &Arc<HeartbeatToolContext>,
     max_tool_iterations: Option<u32>,
-) -> (Option<String>, bool) {
+) -> (Option<String>, bool, Vec<TranscriptEntry>) {
     // `None` = unlimited, so the round count is bounded only by the wall-clock
     // `HEARTBEAT_LOOP_DEADLINE`; `u32::MAX` makes the loop bound effectively
     // infinite while the deadline does the real work and still fires the
@@ -2463,6 +2475,8 @@ async fn run_heartbeat_tool_loop(
     // Collect <sendMessage> content across iterations (last-wins).
     let mut send_message_text: Option<String> = None;
     let mut cache_warmed = false;
+    // Full-fidelity transcript: one entry per LLM call this tick.
+    let mut transcript: Vec<TranscriptEntry> = Vec::new();
 
     let loop_start = std::time::Instant::now();
     let budget = HeartbeatLoopBudget {
@@ -2498,6 +2512,9 @@ async fn run_heartbeat_tool_loop(
             break;
         };
         cache_warmed = true;
+        // Provider may have changed under config fallback; read it back from the
+        // request the call ran on.
+        let provider = request.provider_key.clone();
 
         log_heartbeat_response(character, iteration, &resp);
 
@@ -2511,22 +2528,39 @@ async fn run_heartbeat_tool_loop(
 
         // Extract tool uses.
         let tool_uses = crate::content_util::extract_tool_uses(&resp.content_blocks);
+        let has_tools = !tool_uses.is_empty() && resp.finish_reason == "tool_use";
 
-        // If no tool use or finish_reason != "tool_use", we're done.
-        if tool_uses.is_empty() || resp.finish_reason != "tool_use" {
+        // Dispatch tools (when any) before recording the transcript entry so it
+        // carries the full tool I/O for this iteration.
+        let transcript_calls = if has_tools {
+            let (tool_results, transcript_calls) =
+                dispatch_heartbeat_tools(character, state, iteration, &tool_uses, tool_ctx).await;
+            request.messages.push(json!({
+                "role": "user",
+                "content": tool_results,
+            }));
+            transcript_calls
+        } else {
+            Vec::new()
+        };
+
+        transcript.push(TranscriptEntry::from_response(
+            TranscriptSource::Heartbeat,
+            call_type.as_str(),
+            iteration,
+            chrono::Local::now().to_rfc3339(),
+            provider,
+            &resp,
+            transcript_calls,
+        ));
+
+        // No tool use (or a non-tool finish): the tick is complete.
+        if !has_tools {
             break;
         }
-
-        // Dispatch each tool, then append the results as a user message.
-        let tool_results =
-            dispatch_heartbeat_tools(character, state, iteration, &tool_uses, tool_ctx).await;
-        request.messages.push(json!({
-            "role": "user",
-            "content": tool_results,
-        }));
     }
 
-    (send_message_text, cache_warmed)
+    (send_message_text, cache_warmed, transcript)
 }
 
 /// One heartbeat LLM call with config fallback; provider-fallback events are
@@ -2609,16 +2643,18 @@ fn push_heartbeat_assistant_message(
 }
 
 /// Dispatch every tool call from one heartbeat iteration and collect the
-/// `tool_result` JSON blocks. `set_next_wake` is intercepted and applied to
-/// state inline rather than routed through the tool system.
+/// `tool_result` JSON blocks plus full-fidelity transcript records.
+/// `set_next_wake` is intercepted and applied to state inline rather than
+/// routed through the tool system.
 async fn dispatch_heartbeat_tools(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
     iteration: u32,
     tool_uses: &[(String, String, Value)],
     tool_ctx: &Arc<HeartbeatToolContext>,
-) -> Vec<Value> {
+) -> (Vec<Value>, Vec<TranscriptToolCall>) {
     let mut tool_results: Vec<Value> = Vec::new();
+    let mut transcript_calls: Vec<TranscriptToolCall> = Vec::new();
 
     for (id, name, input) in tool_uses {
         let input_str = serde_json::to_string(input).unwrap_or_default();
@@ -2656,6 +2692,14 @@ async fn dispatch_heartbeat_tools(
             is_error,
         ));
 
+        // Full-fidelity transcript record (un-truncated input and output).
+        transcript_calls.push(TranscriptToolCall {
+            name: name.clone(),
+            input: input.clone(),
+            output: output_str.clone(),
+            is_error,
+        });
+
         // Log to ring buffer (skip set_next_wake — already logged above).
         if name.as_str() != "set_next_wake" {
             let mut s = lock_state(state);
@@ -2666,7 +2710,7 @@ async fn dispatch_heartbeat_tools(
         }
     }
 
-    tool_results
+    (tool_results, transcript_calls)
 }
 
 /// Persist a heartbeat tick's `<sendMessage>` output (if any) to the engine and

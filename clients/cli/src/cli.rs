@@ -105,7 +105,7 @@ pub(crate) enum CliCommand {
         count: u32,
 
         /// Show only messages from one role (`character` aliases `assistant`)
-        #[arg(long, value_enum, conflicts_with = "heartbeat")]
+        #[arg(long, value_enum, conflicts_with_all = ["heartbeat", "dreaming", "events"])]
         role: Option<LogRole>,
 
         /// Follow mode: keep listening for new messages
@@ -136,9 +136,19 @@ pub(crate) enum CliCommand {
         #[arg(long = "subagent-tools")]
         subagent_tools: bool,
 
-        /// Show heartbeat probe decisions and timing history
-        #[arg(long)]
+        /// Show the heartbeat transcript: what each tick thought, the tools it
+        /// called and their results, and the model/provider that served it
+        #[arg(long, conflicts_with_all = ["dreaming", "events"])]
         heartbeat: bool,
+
+        /// Show the dreaming/librarian transcript (full reasoning + tool I/O)
+        #[arg(long, conflicts_with_all = ["heartbeat", "events"])]
+        dreaming: bool,
+
+        /// Show the heartbeat operational event timeline (tick fired, dormant,
+        /// woke, timeout) instead of the transcript
+        #[arg(long, conflicts_with_all = ["heartbeat", "dreaming"])]
+        events: bool,
     },
 
     /// List or switch characters (no args = list, with name = switch)
@@ -810,7 +820,8 @@ pub(crate) fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_js
     }
 }
 
-/// `log` subcommands (edit/delete), single message ref, heartbeat, or list.
+/// `log` subcommands (edit/delete), single message ref, the heartbeat/dreaming
+/// transcript, the heartbeat event timeline, or the message list.
 fn log_to_swp(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
     use serde_json::{json, Map, Value};
     let CliCommand::Log {
@@ -818,6 +829,8 @@ fn log_to_swp(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
         msg_ref,
         role,
         heartbeat,
+        dreaming,
+        events,
         count,
         ..
     } = cmd
@@ -847,6 +860,18 @@ fn log_to_swp(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
         return Some(("get", Value::Object(args)));
     }
     if *heartbeat {
+        return Some((
+            "background_transcript",
+            json!({ "source": "heartbeat", "count": count }),
+        ));
+    }
+    if *dreaming {
+        return Some((
+            "background_transcript",
+            json!({ "source": "dreaming", "count": count }),
+        ));
+    }
+    if *events {
         return Some(("heartbeat_log", json!({ "count": count })));
     }
     let mut args = Map::new();
@@ -1239,6 +1264,8 @@ mod tests {
                 tools,
                 subagent_tools,
                 heartbeat,
+                dreaming,
+                events,
             } => {
                 assert!(subcommand.is_none());
                 assert!(msg_ref.is_none());
@@ -1252,6 +1279,8 @@ mod tests {
                 assert!(!tools);
                 assert!(!subagent_tools);
                 assert!(!heartbeat);
+                assert!(!dreaming);
+                assert!(!events);
             }
         );
     }
@@ -2386,6 +2415,8 @@ mod tests {
             tools: false,
             subagent_tools: false,
             heartbeat: false,
+            dreaming: false,
+            events: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "edit");
@@ -2410,6 +2441,8 @@ mod tests {
             tools: false,
             subagent_tools: false,
             heartbeat: false,
+            dreaming: false,
+            events: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "delete");
@@ -2456,6 +2489,8 @@ mod tests {
             tools: false,
             subagent_tools: false,
             heartbeat: false,
+            dreaming: false,
+            events: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "get");
@@ -2478,6 +2513,8 @@ mod tests {
             tools: false,
             subagent_tools: false,
             heartbeat: false,
+            dreaming: false,
+            events: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "log");
@@ -2554,6 +2591,8 @@ mod tests {
                 tools: false,
                 subagent_tools: false,
                 heartbeat: false,
+                dreaming: false,
+                events: false,
             },
             CliCommand::Log {
                 subcommand: Some(LogCommand::Edit {
@@ -2571,6 +2610,8 @@ mod tests {
                 tools: false,
                 subagent_tools: false,
                 heartbeat: false,
+                dreaming: false,
+                events: false,
             },
             CliCommand::Log {
                 subcommand: Some(LogCommand::Delete {
@@ -2587,6 +2628,8 @@ mod tests {
                 tools: false,
                 subagent_tools: false,
                 heartbeat: false,
+                dreaming: false,
+                events: false,
             },
             CliCommand::Log {
                 subcommand: None,
@@ -2601,6 +2644,8 @@ mod tests {
                 tools: false,
                 subagent_tools: false,
                 heartbeat: false,
+                dreaming: false,
+                events: false,
             },
             CliCommand::Status {
                 section: None,

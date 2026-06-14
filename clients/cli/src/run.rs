@@ -228,6 +228,8 @@ async fn handle_log_command(
         tools,
         subagent_tools,
         heartbeat,
+        dreaming,
+        events,
         count,
         follow,
         ..
@@ -262,7 +264,13 @@ async fn handle_log_command(
     }
 
     if *heartbeat {
-        return show_heartbeat_log(conn, *count, *json).await;
+        return show_background_transcript(conn, "heartbeat", *count, *json).await;
+    }
+    if *dreaming {
+        return show_background_transcript(conn, "dreaming", *count, *json).await;
+    }
+    if *events {
+        return show_heartbeat_events(conn, *count, *json).await;
     }
 
     let mut args = serde_json::Map::new();
@@ -331,8 +339,8 @@ async fn fetch_single_message(
     recv_command_data(conn).await
 }
 
-/// Fetch and print the heartbeat event log.
-async fn show_heartbeat_log(
+/// Fetch and print the heartbeat operational event timeline (`--events`).
+async fn show_heartbeat_events(
     conn: &mut SWPConnection,
     count: u32,
     json: bool,
@@ -345,6 +353,30 @@ async fn show_heartbeat_log(
         cli_out!("{}", serde_json::to_string_pretty(&data)?);
     } else {
         output::print_heartbeat_log(&data);
+    }
+    Ok(())
+}
+
+/// Fetch and print a full-fidelity background transcript (`--heartbeat` /
+/// `--dreaming`): reasoning, tool calls and results, and the model/provider that
+/// served each call. `source` is `heartbeat` or `dreaming`.
+async fn show_background_transcript(
+    conn: &mut SWPConnection,
+    source: &str,
+    count: u32,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    _ = conn
+        .send_command(
+            "background_transcript",
+            serde_json::json!({ "source": source, "count": count }),
+        )
+        .await?;
+    let data = recv_command_data(conn).await?;
+    if json {
+        cli_out!("{}", serde_json::to_string_pretty(&data)?);
+    } else {
+        output::format_command("background_transcript", &data);
     }
     Ok(())
 }
@@ -2012,6 +2044,8 @@ mod tests {
             tools: false,
             subagent_tools: false,
             heartbeat: false,
+            dreaming: false,
+            events: false,
         });
         let received = execute_with_mock(cli, command_response("edit")).await;
 
@@ -2044,6 +2078,8 @@ mod tests {
             tools: false,
             subagent_tools: false,
             heartbeat: false,
+            dreaming: false,
+            events: false,
         });
         let received = execute_with_mock(cli, command_response("delete")).await;
 

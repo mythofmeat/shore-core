@@ -283,11 +283,151 @@ pub(crate) fn format_command(name: &str, data: &serde_json::Value) {
         "inject_system" => cli_out!("System instruction injected."),
         "diagnostics" => print_diagnostics(data),
         "usage" => print_usage(data),
+        "background_transcript" => print_background_transcript(data),
         "heartbeat_tick_now" => print_heartbeat_tick_now(data),
         "heartbeat_set_dormant" => print_heartbeat_status_change(data, "dormant"),
         "heartbeat_set_active" => print_heartbeat_status_change(data, "active"),
         _ => print_command_output_fallback(name, data),
     }
+}
+
+/// Maximum tool-output length shown in the pretty transcript view. The full,
+/// un-truncated output is always on disk and available via `--json`.
+const TRANSCRIPT_TOOL_OUTPUT_PREVIEW: usize = 600;
+
+/// Print recent full-fidelity background-call transcripts (heartbeat ticks or
+/// dreaming passes): per call, the model/provider and finish reason, the
+/// reasoning, the visible text, and each tool call with its result.
+fn print_background_transcript(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let char_name = data["character"].as_str().unwrap_or("?");
+    let source = data["source"].as_str().unwrap_or("heartbeat");
+    write_section_header(&mut out, &format!("{source} transcript"), char_name, width);
+
+    let Some(entries) = data["entries"].as_array().filter(|e| !e.is_empty()) else {
+        print_dim_line(&mut out, "(no transcript entries yet)");
+        if let Some(path) = data["path"].as_str() {
+            print_dim_line(&mut out, &format!("file: {path}"));
+        }
+        _ = writeln!(out);
+        return;
+    };
+
+    let mut prev_date: Option<String> = None;
+    for entry in entries {
+        print_transcript_entry(&mut out, entry, &mut prev_date);
+    }
+
+    if let Some(path) = data["path"].as_str() {
+        print_dim_line(
+            &mut out,
+            &format!("file: {path}  (full fidelity; --json for raw)"),
+        );
+    }
+    _ = writeln!(out);
+}
+
+/// Render one transcript entry: a header row (time, call type, provider/model),
+/// the usage line, reasoning, visible text, and tool calls.
+fn print_transcript_entry(
+    out: &mut impl Write,
+    entry: &serde_json::Value,
+    prev_date: &mut Option<String>,
+) {
+    let ts = entry["timestamp"].as_str().unwrap_or("");
+    let time_str = parse_timestamp(ts).map_or_else(
+        || ts.chars().take(16).collect::<String>(),
+        |dt| {
+            let formatted = format_time(&dt, prev_date.as_deref());
+            *prev_date = Some(dt.format("%Y-%m-%d").to_string());
+            formatted
+        },
+    );
+    let call_type = entry["call_type"].as_str().unwrap_or("?");
+    let iteration = entry["iteration"].as_u64().unwrap_or(0);
+    let model = entry["model"].as_str().unwrap_or("?");
+    let provider = entry["provider"].as_str().unwrap_or("?");
+    let finish = entry["finish_reason"].as_str().unwrap_or("");
+    let usage = &entry["usage"];
+    let in_tok = usage["input_tokens"].as_u64().unwrap_or(0);
+    let out_tok = usage["output_tokens"].as_u64().unwrap_or(0);
+    let cache_tok = usage["cache_read_tokens"].as_u64().unwrap_or(0);
+
+    // Header row: time, call type + iteration, then provider/model.
+    write_fg(out, Color::DarkGrey, &format!("  {time_str:<14}"));
+    write_fg(out, Color::Blue, &format!("{call_type}#{iteration}"));
+    write_fg(
+        out,
+        Color::Magenta,
+        &format!("  {provider}/{}", abbreviate_model(model)),
+    );
+    _ = writeln!(out);
+    write_dim(
+        out,
+        &format!(
+            "                finish={finish}  in={in_tok} out={out_tok} cache_read={cache_tok}"
+        ),
+    );
+    _ = writeln!(out);
+
+    if let Some(reasoning) = entry["reasoning"].as_array() {
+        for block in reasoning {
+            if let Some(text) = block.as_str() {
+                write_fg(out, Color::DarkCyan, "                reasoning: ");
+                _ = writeln!(out, "{}", text.trim());
+            }
+        }
+    }
+
+    let text = entry["text"].as_str().unwrap_or("");
+    if !text.trim().is_empty() {
+        write_fg(out, Color::White, "                text: ");
+        _ = writeln!(out, "{}", text.trim());
+    }
+
+    if let Some(tool_calls) = entry["tool_calls"].as_array() {
+        for call in tool_calls {
+            print_transcript_tool_call(out, call);
+        }
+    }
+    _ = writeln!(out);
+}
+
+/// Render one tool call within a transcript entry: name, input, and a truncated
+/// result preview.
+fn print_transcript_tool_call(out: &mut impl Write, call: &serde_json::Value) {
+    let name = call["name"].as_str().unwrap_or("?");
+    let is_error = call["is_error"].as_bool().unwrap_or(false);
+    let input = call["input"].to_string();
+    let output = call["output"].as_str().unwrap_or("");
+    let color = if is_error { Color::Red } else { Color::Cyan };
+    let err_tag = if is_error { " (error)" } else { "" };
+    write_fg(
+        out,
+        color,
+        &format!("                tool {name}{err_tag}: "),
+    );
+    _ = writeln!(out, "{}", truncate_display(&input, 200));
+    let preview = truncate_display(output, TRANSCRIPT_TOOL_OUTPUT_PREVIEW);
+    write_dim(out, &format!("                  → {preview}"));
+    _ = writeln!(out);
+}
+
+/// Truncate `s` to at most `max` characters, appending an ellipsis with the
+/// dropped-character count when it overflows. Collapses inner newlines so a
+/// multi-line value stays on one display row.
+fn truncate_display(s: &str, max: usize) -> String {
+    let flat = s.replace('\n', " ");
+    let count = flat.chars().count();
+    if count <= max {
+        return flat;
+    }
+    let kept: String = flat.chars().take(max).collect();
+    let dropped = count.saturating_sub(max);
+    format!("{kept}… (+{dropped} chars)")
 }
 
 fn print_memory_dream(data: &serde_json::Value) {

@@ -113,6 +113,7 @@ pub async fn dispatch(
         "config_reset" => state::config_reset(ctx),
         "diagnostics" => state::diagnostics(ctx, &cmd.args),
         "heartbeat_log" => state::heartbeat_log(engine, ctx, &cmd.args),
+        "background_transcript" => state::background_transcript(engine, ctx, &cmd.args),
         "heartbeat_tick_now" => state::heartbeat_tick_now(engine, ctx),
         "heartbeat_set_dormant" => state::heartbeat_set_dormant(engine, ctx),
         "heartbeat_set_active" => state::heartbeat_set_active(engine, ctx),

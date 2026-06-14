@@ -877,6 +877,16 @@ with that role.
 - **args:** `{ "count"?: u64 }` — default `20`.
 - **data:** `{ "events": [ { "timestamp": "…", "kind": "…", "detail": "…" } ] }`.
 
+#### `background_transcript`
+- **args:** `{ "source"?: "heartbeat" | "dreaming", "count"?: u64 }` —
+  `source` defaults to `heartbeat`, `count` to `20`.
+- **data:** `{ character, source, entries, path, exists }`. `entries` is the
+  newest-first full-fidelity record of background LLM calls; each entry is
+  `{ timestamp, source, call_type, iteration, model?, provider?, finish_reason,
+  usage: { input_tokens, output_tokens, cache_read_tokens }, reasoning: […],
+  text?, tool_calls: [ { name, input, output, is_error } ] }`.
+- **errors:** `invalid_request` for an unknown `source`.
+
 #### `heartbeat_tick_now`
 - **args:** none. Schedules a heartbeat tick immediately for the active
   character.

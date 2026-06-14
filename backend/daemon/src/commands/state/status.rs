@@ -96,6 +96,43 @@ pub fn heartbeat_log(
     Ok(json!({ "events": events_json }))
 }
 
+/// Return recent full-fidelity transcript entries (reasoning, tool I/O, and the
+/// model/provider that served each call) for a background source. `source` is
+/// `heartbeat` (default) or `dreaming`.
+pub fn background_transcript(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    args: &Value,
+) -> CommandResult {
+    use crate::background_transcript::{read_recent, transcript_log_path, TranscriptSource};
+
+    let limit = count_arg(args, 20);
+    let source = match args.get("source").and_then(Value::as_str) {
+        None => TranscriptSource::Heartbeat,
+        Some(label) => TranscriptSource::from_label(label).ok_or_else(|| {
+            (
+                ErrorCode::InvalidRequest,
+                format!("unknown transcript source '{label}' (expected 'heartbeat' or 'dreaming')"),
+            )
+        })?,
+    };
+    let char_name = engine.character_name();
+    let data_dir = &ctx.config.dirs.data;
+    let path = transcript_log_path(data_dir, char_name, source);
+    let entries = read_recent(data_dir, char_name, source, limit);
+    let entries_json: Vec<Value> = entries
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+        .collect();
+    Ok(json!({
+        "character": char_name,
+        "source": source.as_str(),
+        "entries": entries_json,
+        "path": path.display().to_string(),
+        "exists": path.exists(),
+    }))
+}
+
 pub fn heartbeat_tick_now(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let char_name = engine.character_name();
     match ctx.autonomy.heartbeat_tick_now(char_name) {

@@ -474,6 +474,8 @@ shore usage --by-kind
 shore usage --by-api-key
 shore usage --anomalies
 shore log --heartbeat
+shore log --dreaming
+shore log --events
 shore memory dreams
 ```
 
@@ -510,6 +512,18 @@ Service logs use a single-line human format with the event sentence first,
 followed by structured event fields and span context:
 `LEVEL target: message | fields: key=value ... | spans: span{field=value}`.
 
+Background LLM calls (heartbeat ticks and the dreaming/librarian pass) run
+outside any user-facing conversation, so their reasoning and tool use would
+otherwise only survive as truncated summaries (the heartbeat operational event
+ring via `shore log --events`, the `DREAMS.md` audit log) and truncated tracing
+previews. The daemon also writes a full-fidelity, capped ring-buffer transcript
+per source — one entry per LLM call with the model/provider actually used, finish
+reason, token usage, complete reasoning, and every tool call's full input and
+output. `shore log --heartbeat` and `shore log --dreaming` read them (`--json`
+returns the raw entries). These files live in the character's data directory,
+never the workspace, so they never feed back into prompts or memory snapshots.
+Dry-run dreaming previews do not write a transcript.
+
 Persistent surfaces:
 
 | Surface | Location |
@@ -520,6 +534,8 @@ Persistent surfaces:
 | Active prompt snapshot | `$XDG_DATA_HOME/shore/<Character>/active_prompt/` |
 | Deferred prompt edits | `$XDG_DATA_HOME/shore/<Character>/deferred_edits.jsonl` |
 | Dreams audit log | `$XDG_DATA_HOME/shore/<Character>/DREAMS.md` |
+| Heartbeat transcript | `$XDG_DATA_HOME/shore/<Character>/heartbeat-transcript.jsonl` |
+| Dreaming transcript | `$XDG_DATA_HOME/shore/<Character>/dreaming-transcript.jsonl` |
 | Dreaming state | `$XDG_DATA_HOME/shore/<Character>/dreams/` |
 | Image attachments and generated outputs | `$XDG_DATA_HOME/shore/<Character>/images/` |
 
