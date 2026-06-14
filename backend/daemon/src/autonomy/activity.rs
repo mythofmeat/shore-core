@@ -153,6 +153,27 @@ impl ActivityTracker {
         self.timestamps.len()
     }
 
+    /// Wall-clock gap between the two most recent recorded messages, or `None`
+    /// with fewer than two (or if the clock ran backwards). The tracker records
+    /// only user turns, so this is the silence between consecutive user
+    /// messages — the tempo signal the response-delay curve scales from.
+    ///
+    /// Uses wall-clock rather than the monotonic instant on purpose: `backfill`
+    /// clusters all historical timestamps at ~`Instant::now()` (the monotonic
+    /// clock cannot represent the past), so a monotonic gap would read ~0 for
+    /// the first turn after a restart and wrongly treat a long-absent user as an
+    /// active conversation. Wall-clock survives the restart and reflects the
+    /// real silence.
+    pub fn last_gap(&self) -> Option<std::time::Duration> {
+        let mut recent = self.timestamps.iter().rev();
+        let last = recent.next()?;
+        let prev = recent.next()?;
+        last.wall_clock
+            .signed_duration_since(prev.wall_clock)
+            .to_std()
+            .ok()
+    }
+
     /// Get cached stats, recomputing if stale or absent.
     pub fn stats(&mut self) -> &ActivityStats {
         let need_recompute = self
@@ -556,6 +577,29 @@ mod tests {
             tracker.record_message_at(mono, *wall);
         }
         tracker
+    }
+
+    // -- last_gap -------------------------------------------------------------
+
+    #[test]
+    fn last_gap_none_with_fewer_than_two() {
+        assert_eq!(ActivityTracker::new().last_gap(), None);
+        let one = build_tracker_with_timestamps(&[dt(2026, 6, 14, 10, 0, 0)]);
+        assert_eq!(one.last_gap(), None);
+    }
+
+    #[test]
+    fn last_gap_uses_wall_clock_delta_of_recent_turns() {
+        // `build_tracker_with_timestamps` spaces the monotonic instants 1s
+        // apart, so a wall-clock result proves we are not reading monotonic.
+        let times = [
+            dt(2026, 6, 14, 9, 0, 0),
+            dt(2026, 6, 14, 9, 30, 0),
+            dt(2026, 6, 14, 9, 35, 0),
+        ];
+        let expected = times[2].signed_duration_since(times[1]).to_std().unwrap();
+        let tracker = build_tracker_with_timestamps(&times);
+        assert_eq!(tracker.last_gap(), Some(expected));
     }
 
     // -- tempo_score logistic -------------------------------------------------

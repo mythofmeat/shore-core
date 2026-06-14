@@ -561,6 +561,36 @@ Autonomy requires the master switch. Heartbeat controls private autonomous ticks
 
 The heartbeat's tool-round budget is the per-model `max_tool_iterations` cap (see [Model Sections](#model-sections)) — a single surface shared with chat, compaction, and dreaming. **Unset (the default) means unlimited rounds**, bounded only by the wall-clock loop deadline (~30 min). When a finite `max_tool_iterations` cap is exhausted without natural termination, the daemon appends a wrap-up nudge asking the character to record any unfinished work into `HEARTBEAT.md` and respond `HEARTBEAT_OK` (or send a final `<sendMessage>`), and `wrap_up_grace_rounds` grants that many extra rounds for the wrap-up turn. The wall-clock deadline is a separate backstop: when it is what trips, the nudge still fires once (if `wrap_up_grace_rounds > 0`) but the loop exits on the next deadline check — the grace rounds only meaningfully extend the finite-cap path, not a deadline-bounded tick. Notes the model leaves in `HEARTBEAT.md` are read into the prompt at the start of every subsequent heartbeat.
 
+## `[behavior.response_delay]`
+
+```toml
+[behavior.response_delay]
+enabled = false
+min = "2s"
+max = "1h"
+scale = 0.25
+jitter = 0.3
+notify_after = "30m"
+```
+
+An optional human-like pause before the character's reply begins streaming, so a conversation feels less like talking to an instant oracle. Disabled by default; replies stream as soon as they are ready.
+
+When enabled, the daemon holds each reply for a delay derived from how long the user was silent before their message (the gap between the two most recent user turns):
+
+- **base** = `scale` × that gap. Rapid back-and-forth → a short base; a message after a long silence → a long one. With the defaults, ~2h of silence yields a ~30m hold.
+- **jitter** then multiplies the base by a random factor in `[1 - jitter, 1 + jitter]`, so the exact arrival time is never predictable. `jitter` is a fraction in `[0, 1]` (0.3 = ±30%); `0` makes the delay deterministic.
+- the result is clamped to `[min, max]`. Because of the clamp, active conversation settles at the `min` floor and a cold re-engagement settles at the `max` ceiling, however large the gap.
+
+`min`/`max`/`notify_after` accept duration strings (`"2s"`, `"30m"`, `"1h"`). The daemon refuses to start if `min > max`, `scale` is negative/non-finite, or `jitter` is outside `[0, 1]`.
+
+**Telling the character.** When a hold reaches `notify_after`, the character is given an inline note that it kept the user waiting, so it can acknowledge the lateness naturally. Below that threshold the pause is silent. Set `notify_after` larger than `max` to disable the note. (This is separate from the prompt's existing time markers, which tell the character how long the *user* was away before their message; `notify_after` is about the character's *own* reply latency.)
+
+**Durability.** A held reply's deadline is persisted, so a daemon restart mid-hold does not lose the reply. After a restart, the reply is regenerated and streamed through the normal path the next time a client is connected for that character (checked roughly every 5s) — provided the conversation still ends on an unanswered user turn. Note the deliberate scope: the recovered reply is produced **only while a client is connected**, not delivered to an offline client via push.
+
+The delay applies only to fresh user turns — regenerations stream immediately. A new user message sent while a reply is being held cancels the pending generation, so rapid follow-ups collapse into a single reply rather than queueing.
+
+Toggle it at runtime without editing config with the `delay` command (`shore delay on|off|reset`, `shore delay` to show state). The runtime override is transient — a daemon restart reverts to the configured `enabled` value. `delay` (or `shore delay`) also reports the bounds, the `notify_after` threshold, and — when a reply is currently being held — the countdown until it is released (handy for debugging).
+
 ## `[tools]`
 
 Tools are **opt-in**: a tool is offered to the character only if its name

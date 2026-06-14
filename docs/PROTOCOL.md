@@ -886,6 +886,20 @@ with that role.
 - **args:** none. Toggle the dormancy guard.
 - **data:** `{ "status": "dormant" | "active", "character": "…" }`.
 
+#### `delay`
+Inspect or control the human-like response delay for the active character (see
+CONFIGURATION.md `[behavior.response_delay]`).
+- **args:** `{ "action"?: "on" | "off" | "reset" | "status" }` (default
+  `"status"`). `on`/`off` set a transient runtime override; `reset` clears it so
+  the configured default applies; `status` reports without changing anything.
+- **data:** `{ "enabled": bool, "configured": bool, "override_set"?: bool,
+  "min_secs": u64, "max_secs": u64, "notify_after_secs": u64,
+  "seconds_until_reply"?: i64, "character": "…" }`. `enabled` is the effective
+  state (override over config); `notify_after_secs` is the hold at which the
+  character is told it kept the user waiting; `seconds_until_reply` is present
+  only while a reply is currently being held (negative if the deadline is already
+  overdue, e.g. a reply awaiting recovery after a restart).
+
 #### `usage`
 A multi-mode usage / billing reporter. Argument switches pick a mode;
 unspecified mode runs the default `summary`.

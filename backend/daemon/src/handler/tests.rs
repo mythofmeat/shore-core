@@ -716,6 +716,7 @@ async fn handle_engine_message_regen_builds_empty_body() {
             },
             body,
             regen: is_regen,
+            recovery: false,
             char_name,
             rid: None,
             effective_config,
@@ -1083,6 +1084,7 @@ async fn pipeline_user_message_to_persisted_response() {
             },
             body,
             regen: false,
+            recovery: false,
             char_name: char_name.clone(),
             rid: Some("test-rid".into()),
             effective_config,
@@ -1150,6 +1152,123 @@ async fn pipeline_user_message_to_persisted_response() {
         msg.character.as_deref() == Some("Alice")
             && msg.message.origin == Some(MessageOrigin::AssistantReply)
     }));
+}
+
+// ── Response-delay recovery orchestration ─────────────────────────────
+//
+// These cover the connected-client recovery decision (`recover_due_pending_replies`):
+// the due-check, the idempotency guard, and the launch decision. They stop short
+// of the LLM stream itself — that leg runs through the out-of-process
+// `shore-llm-sidecar` socket and is exercised by `pipeline_user_message_to_persisted_response`
+// (which is `#[ignore]`d for the same reason). The manager-side state machine
+// (persist → restore → due → claim → release → clear) is covered by
+// `autonomy::manager::tests::restored_overdue_pending_reply_is_recoverable_and_claimable`.
+
+fn recovery_test_message(role: Role, text: &str) -> Message {
+    let is_user = matches!(role, Role::User);
+    Message {
+        msg_id: format!("m_{text}_{is_user}"),
+        origin: None,
+        role,
+        content: text.to_owned(),
+        images: vec![],
+        content_blocks: vec![ContentBlock::Text {
+            text: text.to_owned(),
+        }],
+        alt_index: None,
+        alt_count: None,
+        alternatives: vec![],
+        provider_key: None,
+        timestamp: chrono::Local::now().to_rfc3339(),
+    }
+}
+
+/// Common setup: a handler with one connected session (id 1) for "Alice", an
+/// overdue held-reply deadline, and a seeded conversation. Returns the handler
+/// and the resolved character name.
+async fn handler_with_overdue_reply(
+    tmp: &TempDir,
+    tail: &[(Role, &str)],
+) -> (MessageHandler, String) {
+    let models = mock_model_catalog("http://127.0.0.1:1");
+    let (handler, _push_rx, _direct_rx) = make_handler_with_models(tmp, &["Alice"], models).await;
+
+    let char_name = {
+        let registry = handler.registry.lock().await;
+        registry.resolve_character(Some("Alice")).unwrap()
+    };
+    let _ignored = handler.autonomy.ensure_state(&char_name);
+    handler.autonomy.force_overdue_pending_reply(&char_name);
+
+    let engine_arc = {
+        let mut registry = handler.registry.lock().await;
+        registry.get_or_create(&char_name).unwrap()
+    };
+    {
+        let mut engine = engine_arc.lock().await;
+        for (role, text) in tail {
+            engine
+                .append_message(recovery_test_message(role.clone(), text))
+                .unwrap();
+        }
+    }
+    (handler, char_name)
+}
+
+#[tokio::test]
+async fn recovery_clears_stale_deadline_when_already_answered() {
+    let tmp = TempDir::new().unwrap();
+    // Conversation already ends on an assistant turn — the reply was produced
+    // before the restart, the deadline is merely stale.
+    let (mut handler, char_name) =
+        handler_with_overdue_reply(&tmp, &[(Role::User, "hi"), (Role::Assistant, "hello")]).await;
+
+    assert!(handler.autonomy.recovery_reply_due(&char_name));
+    handler.recover_due_pending_replies().await;
+
+    // Idempotency guard: the stale deadline is dropped and no generation runs.
+    assert!(
+        !handler.autonomy.recovery_reply_due(&char_name),
+        "stale deadline should be cleared"
+    );
+    assert!(
+        handler
+            .sessions
+            .get(&SessionId(1))
+            .and_then(|s| s.generation_handle.as_ref())
+            .is_none(),
+        "no generation should be launched when the turn is already answered"
+    );
+}
+
+#[tokio::test]
+async fn recovery_launches_generation_for_unanswered_user_turn() {
+    let tmp = TempDir::new().unwrap();
+    // Conversation ends on an unanswered user turn — a reply is owed.
+    let (mut handler, _char_name) =
+        handler_with_overdue_reply(&tmp, &[(Role::User, "are you there?")]).await;
+
+    handler.recover_due_pending_replies().await;
+
+    // A recovery generation was launched to the connected session. (It then
+    // fails on the absent LLM sidecar — we assert only the launch decision,
+    // which is made synchronously before the spawn streams anything.)
+    let launched = handler
+        .sessions
+        .get(&SessionId(1))
+        .and_then(|s| s.generation_handle.as_ref())
+        .is_some();
+    assert!(launched, "a recovery generation should be launched");
+
+    // Abort the spawned task so it doesn't outlive the test reaching for the
+    // sidecar socket.
+    if let Some(handle) = handler
+        .sessions
+        .get_mut(&SessionId(1))
+        .and_then(|s| s.generation_handle.take())
+    {
+        handle.abort();
+    }
 }
 
 // ── Stream-fanout / per-character last-user-message lease ──────────────
