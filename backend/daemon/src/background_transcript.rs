@@ -11,11 +11,12 @@
 //! This module records that — one [`TranscriptEntry`] per LLM call — to a
 //! rolling JSONL file in the character's data directory, kept separate per
 //! [`TranscriptSource`] (heartbeat / dreaming). Retention is **time-based**:
-//! entries older than [`TRANSCRIPT_RETENTION_DAYS`] are pruned on each append.
-//! Tool input and output are stored **in full, untruncated** — these are meant
-//! to be complete, inspectable, debuggable logs. The file lives alongside
-//! `heartbeat.jsonl` and `DREAMS.md`, never inside the workspace, so it never
-//! bleeds into prompts or memory snapshots.
+//! entries older than [`TRANSCRIPT_RETENTION_DAYS`] are pruned on each append,
+//! with a [`TRANSCRIPT_MAX_BYTES`] per-file disk backstop (oldest evicted) for
+//! the pathological case. Tool input and output are stored **in full,
+//! untruncated** — these are meant to be complete, inspectable, debuggable logs.
+//! The file lives alongside `heartbeat.jsonl` and `DREAMS.md`, never inside the
+//! workspace, so it never bleeds into prompts or memory snapshots.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -33,8 +34,17 @@ use tracing::warn;
 /// count or size cap.
 const TRANSCRIPT_RETENTION_DAYS: i64 = 14;
 
+/// Hard per-file disk backstop (8 MiB). Time-based retention is the primary
+/// bound; this only fires if a pathological run produces enough volume within
+/// the window to threaten the disk. For reference, the largest full background
+/// API payload on disk is ~2.6 MB, and a transcript entry is far smaller than a
+/// full request, so 8 MiB holds thousands of entries. When exceeded, the oldest
+/// entries are evicted (newest always kept). Tool output is never truncated.
+const TRANSCRIPT_MAX_BYTES: usize = 8_388_608;
+
 /// Initial allocation hint for the in-memory entry list. Not a retention cap —
-/// the list grows as needed and is bounded only by [`TRANSCRIPT_RETENTION_DAYS`].
+/// the list grows as needed and is bounded by [`TRANSCRIPT_RETENTION_DAYS`] and
+/// [`TRANSCRIPT_MAX_BYTES`].
 const TRANSCRIPT_ALLOC_HINT: usize = 256;
 
 /// Which background subsystem produced a transcript entry. Each source has its
@@ -272,16 +282,58 @@ fn write_atomic(path: &Path, entries: &[TranscriptEntry]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut buf = String::with_capacity(entries.len().saturating_mul(256));
+    let mut lines: Vec<String> = Vec::with_capacity(entries.len());
     for entry in entries {
-        let line = serde_json::to_string(entry)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        buf.push_str(&line);
+        lines.push(
+            serde_json::to_string(entry)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+        );
+    }
+    // Disk backstop: 14-day retention normally bounds the file, but a
+    // pathological run (e.g. a tool returning hundreds of MB) could blow past
+    // it. Evict oldest-first until under the cap, always keeping the newest
+    // entry — output is never truncated, so a single oversized entry is kept
+    // whole rather than dropped.
+    let start = first_index_within_cap(&lines, TRANSCRIPT_MAX_BYTES);
+    if start > 0 {
+        warn!(
+            path = %path.display(),
+            evicted = start,
+            cap_bytes = TRANSCRIPT_MAX_BYTES,
+            "Transcript exceeded size cap; evicted oldest entries"
+        );
+    }
+    let kept = lines.get(start..).unwrap_or(&[]);
+    let mut buf = String::with_capacity(kept.len().saturating_mul(256));
+    for line in kept {
+        buf.push_str(line);
         buf.push('\n');
     }
     let tmp = path.with_extension("jsonl.tmp");
     std::fs::write(&tmp, buf)?;
     std::fs::rename(&tmp, path)
+}
+
+/// Index of the first entry to keep so the serialized file (one JSON line plus
+/// newline per entry) stays within `cap` bytes, evicting oldest-first. The
+/// newest entry is always kept, even if it alone exceeds `cap` — output is never
+/// truncated.
+fn first_index_within_cap(lines: &[String], cap: usize) -> usize {
+    let Some(last) = lines.len().checked_sub(1) else {
+        return 0;
+    };
+    let mut total = 0_usize;
+    let mut start = lines.len();
+    for (i, line) in lines.iter().enumerate().rev() {
+        let line_bytes = line.len().saturating_add(1); // trailing '\n'
+        let next = total.saturating_add(line_bytes);
+        if next > cap && i != last {
+            break;
+        }
+        total = next;
+        start = i;
+    }
+    start
 }
 
 #[cfg(test)]
@@ -436,6 +488,22 @@ mod tests {
         let kept: Vec<u32> = entries.iter().map(|e| e.iteration).collect();
         // Old (Jun 1) dropped; recent (Jun 20) and unparseable kept.
         assert_eq!(kept, vec![1, 2]);
+    }
+
+    #[test]
+    fn byte_cap_evicts_oldest_keeps_newest() {
+        // Four 10-byte lines → 11 bytes each on disk (+ newline). Cap of 25
+        // bytes fits the two newest (22 bytes); a third would reach 33 > 25.
+        let lines: Vec<String> = (0..4).map(|_| "0123456789".to_owned()).collect();
+        let start = first_index_within_cap(&lines, 25);
+        assert_eq!(start, 2, "keep the two newest lines");
+
+        // A single line larger than the cap is still kept (never truncated).
+        let huge = vec!["x".repeat(100)];
+        assert_eq!(first_index_within_cap(&huge, 10), 0);
+
+        // Empty input is well-defined.
+        assert_eq!(first_index_within_cap(&[], 10), 0);
     }
 
     #[test]

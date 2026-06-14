@@ -519,10 +519,11 @@ ring via `shore log --events`, the `DREAMS.md` audit log) and truncated tracing
 previews. The daemon also writes a full-fidelity transcript per source — one
 entry per LLM call with the model/provider actually used, finish reason, token
 usage, complete reasoning, and every tool call's full (untruncated) input and
-output. Retention is time-based: entries older than 14 days are pruned on append,
-and tool I/O is never truncated, so the transcript stays a complete, inspectable
-record. `shore log --heartbeat` and `shore log --dreaming` read them (`--json`
-returns the raw entries). These files live in the character's data directory,
+output. Retention is time-based: entries older than 14 days are pruned on append, with an
+8 MiB per-file disk backstop (oldest entries evicted, newest always kept) for the
+pathological case. Tool I/O is never truncated, so the transcript stays a
+complete, inspectable record. `shore log --heartbeat` and `shore log --dreaming`
+read them (`--json` returns the raw entries). These files live in the character's data directory,
 never the workspace, so they never feed back into prompts or memory snapshots.
 Dry-run dreaming previews do not write a transcript.
 

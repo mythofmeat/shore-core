@@ -28,7 +28,9 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   data directory) with one entry per call: model, provider, finish reason, token
   usage, full reasoning, and each tool call's complete (untruncated) input and
   output. Retention is time-based — entries older than 14 days are pruned on
-  append; tool I/O is never truncated, so these stay fully inspectable. View them
+  append, with an 8 MiB per-file disk backstop (oldest evicted) for the
+  pathological case; tool I/O is never truncated, so these stay fully
+  inspectable. View them
   with `shore log --heartbeat` and `shore log --dreaming` (`--json` for raw
   entries, `-n` to change how many are shown). `shore log --heartbeat` now shows
   this transcript rather than the operational event ring, which moves to the new
