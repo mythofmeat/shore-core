@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use shore_call_store::TranscriptRow;
 use shore_protocol::error::ErrorCode;
 
 use crate::autonomy::activity::HourClassification;
@@ -148,6 +149,33 @@ pub fn call_log(engine: &ConversationEngine, ctx: &CommandContext, args: &Value)
     }
 }
 
+/// Order transcript rows for display: ticks/passes newest-first, but the
+/// iterations *within* each tick in chronological order. Rows arrive
+/// newest-first from the store. Iterations run 0,1,2,… within a tick and reset
+/// at the next, so a tick boundary is any iteration that does not strictly
+/// increase over the previous (chronological) row.
+fn order_transcript_rows(rows: Vec<TranscriptRow>) -> Vec<TranscriptRow> {
+    let mut chronological = rows;
+    chronological.reverse();
+    let mut ticks: Vec<Vec<TranscriptRow>> = Vec::new();
+    let mut prev_iteration: Option<u32> = None;
+    for row in chronological {
+        let continues = prev_iteration.is_some_and(|prev| row.iteration > prev);
+        prev_iteration = Some(row.iteration);
+        if continues {
+            if let Some(tick) = ticks.last_mut() {
+                tick.push(row);
+            } else {
+                ticks.push(vec![row]);
+            }
+        } else {
+            ticks.push(vec![row]);
+        }
+    }
+    ticks.reverse();
+    ticks.into_iter().flatten().collect()
+}
+
 /// Query curated background transcripts (`source` = `heartbeat` or `dreaming`)
 /// for the active character, newest first.
 pub fn transcript(
@@ -171,7 +199,8 @@ pub fn transcript(
     };
     match store.query_transcripts(source, Some(char_name), count_arg(args, 20)) {
         Ok(rows) => {
-            let entries: Vec<Value> = rows
+            let ordered = order_transcript_rows(rows);
+            let entries: Vec<Value> = ordered
                 .iter()
                 .map(|row| serde_json::to_value(row).unwrap_or(Value::Null))
                 .collect();
@@ -245,5 +274,59 @@ pub fn heartbeat_set_active(engine: &ConversationEngine, ctx: &CommandContext) -
             ErrorCode::InvalidRequest,
             format!("No autonomy state for character '{char_name}'"),
         ))
+    }
+}
+
+#[cfg(test)]
+mod transcript_order_tests {
+    use super::order_transcript_rows;
+    use shore_call_store::{TranscriptRow, Usage};
+
+    fn row(iteration: u32, marker: &str) -> TranscriptRow {
+        TranscriptRow {
+            id: 0,
+            ts: marker.to_owned(),
+            source: "heartbeat".to_owned(),
+            character: Some("Tester".to_owned()),
+            call_type: Some("heartbeat".to_owned()),
+            iteration,
+            model: None,
+            provider: None,
+            finish_reason: None,
+            usage: Usage::default(),
+            entry: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn ticks_newest_first_iterations_chronological_within() {
+        // Store order is newest-first. Two ticks: older A (iter 0,1), newer B
+        // (iter 0,1) → store yields B1, B0, A1, A0.
+        let store_order = vec![row(1, "b1"), row(0, "b0"), row(1, "a1"), row(0, "a0")];
+        let display: Vec<String> = order_transcript_rows(store_order)
+            .into_iter()
+            .map(|r| r.ts)
+            .collect();
+        // Newest tick (B) first, but read 0→1 within each tick.
+        assert_eq!(
+            display,
+            vec!["b0", "b1", "a0", "a1"],
+            "ticks newest-first, iterations chronological within each"
+        );
+    }
+
+    #[test]
+    fn single_iteration_ticks_stay_newest_first() {
+        // Each tick is just iter 0 (no tool loop). Store: newest..oldest.
+        let store_order = vec![row(0, "t3"), row(0, "t2"), row(0, "t1")];
+        let display: Vec<String> = order_transcript_rows(store_order)
+            .into_iter()
+            .map(|r| r.ts)
+            .collect();
+        assert_eq!(
+            display,
+            vec!["t3", "t2", "t1"],
+            "newest single-iter tick first"
+        );
     }
 }
