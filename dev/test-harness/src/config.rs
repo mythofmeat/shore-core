@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use shore_config::{
-    app::{AppConfig, CompactionConfig, HeartbeatConfig, ToolsConfig},
+    app::{AppConfig, CompactionConfig, HeartbeatConfig, ResponseDelayConfig, ToolsConfig},
     duration::ConfigDuration,
     models::ModelCatalog,
     providers::ProviderRegistry,
@@ -57,6 +57,9 @@ pub struct TestConfigBuilder {
     /// the config dir before boot. Used by per-character preference tests
     /// that need to switch the active character without restarting.
     pub extra_characters: Vec<(String, String)>,
+    /// Optional `[behavior.response_delay]` config. `None` leaves it disabled
+    /// (the production default).
+    pub response_delay: Option<ResponseDelayConfig>,
 }
 
 impl Default for TestConfigBuilder {
@@ -87,7 +90,14 @@ impl TestConfigBuilder {
             provider_registry_toml: None,
             extra_chat_aliases: Vec::new(),
             extra_characters: Vec::new(),
+            response_delay: None,
         }
+    }
+
+    /// Enable `[behavior.response_delay]` with the given config.
+    pub fn response_delay(mut self, cfg: ResponseDelayConfig) -> Self {
+        self.response_delay = Some(cfg);
+        self
     }
 
     /// Inject a `[providers.<name>]` registry section. The string must be
@@ -269,6 +279,9 @@ impl TestConfigBuilder {
             ToolsConfig::default()
         };
         app.behavior.autonomy.enabled = self.autonomy_enabled;
+        if let Some(response_delay) = &self.response_delay {
+            app.behavior.response_delay = response_delay.clone();
+        }
         app.advanced.api_payload_logging = self.api_payload_logging;
 
         if self.max_tool_iterations.is_some() {

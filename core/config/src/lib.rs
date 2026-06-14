@@ -704,11 +704,23 @@ fn validate_config(
 
     validate_cron_schedule(&app.memory.dreaming.frequency)?;
     validate_usage_config(&app.usage)?;
+    validate_subsystem_invariants(app)?;
+
+    Ok(())
+}
+
+/// Subsystem self-checks whose invariants live on their own config structs.
+/// Kept out of [`validate_config`] so each subsystem owns its rule and the
+/// top-level validator stays focused on cross-cutting model/provider refs.
+fn validate_subsystem_invariants(app: &AppConfig) -> Result<(), ConfigError> {
     app.memory
         .compaction
         .validate()
         .map_err(ConfigError::Validation)?;
-
+    app.behavior
+        .response_delay
+        .validate()
+        .map_err(ConfigError::Validation)?;
     Ok(())
 }
 

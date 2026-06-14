@@ -286,6 +286,7 @@ pub(crate) fn format_command(name: &str, data: &serde_json::Value) {
         "heartbeat_tick_now" => print_heartbeat_tick_now(data),
         "heartbeat_set_dormant" => print_heartbeat_status_change(data, "dormant"),
         "heartbeat_set_active" => print_heartbeat_status_change(data, "active"),
+        "delay" => print_delay(data),
         _ => print_command_output_fallback(name, data),
     }
 }
@@ -389,6 +390,37 @@ fn print_heartbeat_tick_now(data: &serde_json::Value) {
 fn print_heartbeat_status_change(data: &serde_json::Value, status: &str) {
     let character = data["character"].as_str().unwrap_or("?");
     cli_out!("Heartbeat forced {status} for {character}.");
+}
+
+fn print_delay(data: &serde_json::Value) {
+    let character = data["character"].as_str().unwrap_or("?");
+    let enabled = data["enabled"].as_bool().unwrap_or(false);
+    let configured = data["configured"].as_bool().unwrap_or(false);
+    let on_off = |b: bool| if b { "on" } else { "off" };
+
+    cli_out!("Response delay: {} for {character}.", on_off(enabled));
+    match data["override_set"].as_bool() {
+        Some(ov) => cli_out!(
+            "  override: {} (config default: {})",
+            on_off(ov),
+            on_off(configured)
+        ),
+        None => cli_out!("  following config default ({})", on_off(configured)),
+    }
+    if enabled {
+        let min = data["min_secs"].as_u64().unwrap_or(0);
+        let max = data["max_secs"].as_u64().unwrap_or(0);
+        let notify = data["notify_after_secs"].as_u64().unwrap_or(0);
+        cli_out!("  bounds: {min}s to {max}s");
+        cli_out!("  tells the character once a hold reaches {notify}s");
+    }
+    if let Some(secs) = data["seconds_until_reply"].as_i64() {
+        if secs >= 0 {
+            cli_out!("  a reply is releasing in ~{secs}s");
+        } else {
+            cli_out!("  a held reply is overdue by ~{}s", secs.unsigned_abs());
+        }
+    }
 }
 
 /// Print edit confirmation.

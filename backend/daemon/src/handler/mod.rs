@@ -131,6 +131,11 @@ struct GenerationParams {
     request: RequestMeta,
     body: ClientMessageBody,
     regen: bool,
+    /// Recovery of a reply that was held by the response delay and orphaned by a
+    /// daemon restart. No user turn is appended (it is already on disk) and no
+    /// fresh delay is applied; the reply is generated from the persisted
+    /// conversation and the pending-reply deadline is cleared once it persists.
+    recovery: bool,
     char_name: String,
     rid: Option<String>,
     effective_config: LoadedConfig,
@@ -167,6 +172,10 @@ struct LastUserLease {
 }
 
 const LEASE_TTL: Duration = Duration::from_hours(1);
+
+/// How often the handler checks for response-delay replies that were held when
+/// the daemon last stopped and can now be delivered to a connected client.
+const PENDING_REPLY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Internal daemon control messages handled on the same task as SWP commands.
 #[derive(Debug)]
@@ -285,6 +294,12 @@ impl MessageHandler {
         info!("message handler started");
         let mut rx = route_rx.lock().await;
         let mut control_open = true;
+        // Periodically deliver any reply that the response delay was holding when
+        // the daemon last stopped — only to characters with a connected client,
+        // so the recovered reply has somewhere to stream (see
+        // `recover_due_pending_replies`).
+        let mut pending_reply_check = tokio::time::interval(PENDING_REPLY_CHECK_INTERVAL);
+        pending_reply_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 routed = rx.recv() => {
@@ -299,9 +314,98 @@ impl MessageHandler {
                         None => control_open = false,
                     }
                 }
+                _ = pending_reply_check.tick() => {
+                    self.recover_due_pending_replies().await;
+                }
             }
         }
         info!("Message handler shutting down (route channel closed)");
+    }
+
+    /// Deliver replies that the response delay was holding when the daemon
+    /// stopped. The deadline survives a restart in persisted autonomy state; for
+    /// each connected session whose character has a due, unclaimed deadline and
+    /// still ends on an unanswered user turn, generate the reply through the
+    /// normal streamed path. Replies are produced only while a client is
+    /// connected — that is the deliberate scope (see the `delay` design).
+    async fn recover_due_pending_replies(&mut self) {
+        for (session_id, selected_character) in self.session_router.sessions().await {
+            let char_name = {
+                let registry = self.registry.lock().await;
+                match registry.resolve_character(selected_character.as_deref()) {
+                    Ok(name) => name,
+                    Err(_) => continue,
+                }
+            };
+            // After a restart no user message has loaded this character's
+            // autonomy state yet, so the persisted deadline would be invisible.
+            // Ensure it is loaded (idempotent) before checking.
+            let _ignored = self.autonomy.ensure_state(&char_name);
+            if !self.autonomy.recovery_reply_due(&char_name) {
+                continue;
+            }
+            // Idempotency: only recover when the conversation still ends on an
+            // unanswered user turn. If it was already answered (the deadline is
+            // merely stale, e.g. cleared but not yet flushed before a crash),
+            // drop the deadline and move on.
+            if !self.conversation_tail_is_user(&char_name).await {
+                self.autonomy.clear_pending_reply(&char_name);
+                continue;
+            }
+            // Claim so a second connected session doesn't also produce it.
+            if !self.autonomy.claim_pending_reply(&char_name) {
+                continue;
+            }
+            let effective_config = {
+                let mut registry = self.registry.lock().await;
+                registry.effective_config(&char_name).clone()
+            };
+            info!(
+                character = %char_name,
+                session_id = session_id.0,
+                "recovering response-delay reply held across restart"
+            );
+            let meta = RequestMeta {
+                session: shore_swp_server::SessionMeta {
+                    client_id: shore_swp_server::ClientId(session_id.0),
+                    session_id,
+                    client_type: "recovery".to_owned(),
+                    client_name: "response-delay-recovery".to_owned(),
+                    capabilities: vec![],
+                    selected_character: Some(char_name.clone()),
+                },
+                rid: None,
+                kind: shore_swp_server::RequestKind::Message,
+            };
+            let body = ClientMessageBody {
+                rid: None,
+                text: String::new(),
+                stream: true,
+                images: vec![],
+                image_data: vec![],
+                absence_seconds: None,
+                overrides: None,
+            };
+            self.launch_generation_inner(meta, body, false, true, char_name, effective_config)
+                .await;
+        }
+    }
+
+    /// Whether the character's conversation currently ends on a user turn (a
+    /// reply is owed). Used as the recovery idempotency guard.
+    async fn conversation_tail_is_user(&self, char_name: &str) -> bool {
+        let engine_arc = {
+            let mut registry = self.registry.lock().await;
+            match registry.get_or_create(char_name) {
+                Ok(engine) => engine,
+                Err(_) => return false,
+            }
+        };
+        let engine = engine_arc.lock().await;
+        matches!(
+            engine.messages().last().map(|m| &m.role),
+            Some(shore_protocol::types::Role::User)
+        )
     }
 
     async fn handle_routed_message(&mut self, msg: RoutedMessage) {
@@ -419,6 +523,19 @@ impl MessageHandler {
         char_name: String,
         effective_config: LoadedConfig,
     ) {
+        self.launch_generation_inner(meta, body, regen, false, char_name, effective_config)
+            .await;
+    }
+
+    async fn launch_generation_inner(
+        &mut self,
+        meta: RequestMeta,
+        body: ClientMessageBody,
+        regen: bool,
+        recovery: bool,
+        char_name: String,
+        effective_config: LoadedConfig,
+    ) {
         let rid = body
             .rid
             .clone()
@@ -441,6 +558,7 @@ impl MessageHandler {
             request: meta.clone(),
             body,
             regen,
+            recovery,
             char_name,
             rid,
             effective_config,
@@ -548,6 +666,13 @@ impl MessageHandler {
         fanout_tx: mpsc::Sender<ServerMessage>,
         notifier: NotificationService,
     ) {
+        // On a failed *recovery* generation, release the claim (without clearing
+        // the deadline) so the held reply is retried on a later connected-client
+        // check rather than stranded until the next restart. The success path
+        // clears the deadline inside `handle_generation` after persistence.
+        let recovery_release = params
+            .recovery
+            .then(|| (self.autonomy.clone(), params.char_name.clone()));
         let session = self.session_state_mut(session_id);
         if let Some(prev) = session.generation_handle.take() {
             info!("Aborting previous generation (superseded by new request)");
@@ -558,6 +683,9 @@ impl MessageHandler {
             let request_rid = params.rid.clone();
             if let Err(e) = Box::pin(handle_generation(gen_ctx, params)).await {
                 error!(error = %e, "Error processing engine message");
+                if let Some((autonomy, character)) = &recovery_release {
+                    autonomy.release_pending_reply_claim(character);
+                }
                 let err_msg = e.to_string();
                 let _ignored = fanout_tx
                     .send(

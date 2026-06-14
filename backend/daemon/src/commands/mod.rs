@@ -116,6 +116,7 @@ pub async fn dispatch(
         "heartbeat_tick_now" => state::heartbeat_tick_now(engine, ctx),
         "heartbeat_set_dormant" => state::heartbeat_set_dormant(engine, ctx),
         "heartbeat_set_active" => state::heartbeat_set_active(engine, ctx),
+        "delay" => state::delay(engine, ctx, &cmd.args),
         "usage" => usage::usage(ctx, &cmd.args).await,
 
         // Provider discovery

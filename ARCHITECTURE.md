@@ -135,17 +135,60 @@ Generation:
 
 1. Receive an SWP client message.
 2. Append the user message to `active.jsonl`.
-3. Assemble the prompt from `active_prompt/` and active conversation messages.
-4. Stream the LLM response.
-5. Run tool loops if the provider returns tool calls.
-6. Persist assistant/tool messages.
-7. Emit final stream metadata after persistence.
-8. Trigger compaction if thresholds require it.
+3. Hold for the optional human-like response delay (fresh user turns only).
+4. Assemble the prompt from `active_prompt/` and active conversation messages.
+5. Stream the LLM response.
+6. Run tool loops if the provider returns tool calls.
+7. Persist assistant/tool messages.
+8. Emit final stream metadata after persistence.
+9. Trigger compaction if thresholds require it.
 
 The final `StreamEnd` is emitted only after persistence, so immediate follow-up
 commands see durable state. During tool use, clients may see intermediate
 `StreamEnd(tool_use)` events; they should buffer one assistant turn across tool
 phases.
+
+### Response delay
+
+When `[behavior.response_delay]` is enabled, step 3 holds the reply before
+streaming so it does not arrive the instant the user sends a message. The delay
+is computed daemon-side (clients only observe, so timing must be authoritative
+and consistent across every client) by `autonomy::response_delay::compute_delay`:
+the base is `scale ×` the gap between the two most recent user turns (read from
+the `ActivityTracker`, wall-clock so it survives a restart), jittered by a random
+factor in `[1 - jitter, 1 + jitter]`, then clamped to `[min, max]`. Active
+conversation therefore floors at `min` and a cold re-engagement caps at `max`.
+Regenerations skip the delay.
+
+The wait is a `tokio::time::sleep` inside the abortable per-session generation
+task, so a superseding user message cancels it mid-wait — rapid follow-ups
+collapse into one reply. Enable-state is the runtime override (`delay on|off`,
+transient — reverts to the configured default on restart) layered over
+`[behavior.response_delay].enabled`.
+
+**Telling the character.** When the hold (live) or the unanswered-elapsed time
+(recovery) reaches `notify_after`, an inline-system note
+(`format_delay_note`) is pushed onto the request via `LlmRequest::push_inline_system`
+— the same slot the heartbeat guide uses — so the character can own its
+lateness. This is distinct from the prompt's time markers, which report how long
+the *user* was away before their message (see
+[Prompt And Cache](#prompt-and-cache)); the note is about the character's *own*
+reply latency.
+
+**Durability and recovery.** The release deadline lives in `AutonomyState`
+(`pending_reply_at`) and is **persisted** to `autonomy_state.json` (written
+synchronously when a hold begins), so a restart mid-hold does not lose the reply.
+A transient `pending_reply_live` flag marks the in-process owner of the live
+sleep, so the recovery path never double-produces a reply the live task will. The
+deadline is cleared only **after** the assistant turn is persisted (live or
+recovered), so a crash mid-generation leaves it on disk to retry. Recovery is
+client-scoped: the message handler polls connected sessions
+(`recover_due_pending_replies`, ~5s) and, for a character whose restored deadline
+is due, unclaimed, and still ends on an unanswered user turn, regenerates the
+reply through the normal streamed path (a generation with `recovery = true` that
+skips the user-turn append and the delay). A recovered reply is produced only
+while a client is connected — it is not delivered to an offline client. The
+`delay status` command exposes the countdown from `pending_reply_at`.
 
 Regeneration uses the same prompt assembly path, but the prompt view stops at
 the last real user turn so the model does not see the response being

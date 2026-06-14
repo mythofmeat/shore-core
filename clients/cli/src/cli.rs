@@ -184,6 +184,22 @@ pub(crate) enum CliCommand {
         subcommand: DebugCommand,
     },
 
+    /// Control the human-like reply delay.
+    ///
+    /// `shore delay`           show the current delay state and any countdown
+    /// `shore delay on`        force the delay on for this session
+    /// `shore delay off`       force instant replies for this session
+    /// `shore delay reset`     revert to the configured default
+    Delay {
+        /// What to do: on, off, reset, or status (the default).
+        #[arg(value_parser = ["on", "off", "reset", "status"])]
+        action: Option<String>,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// List or switch models, or manage saved sampler settings.
     ///
     /// `shore model`                      list visible models
@@ -790,6 +806,11 @@ pub(crate) fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_js
             DebugCommand::StatusDormant => Some(("heartbeat_set_dormant", json!({}))),
             DebugCommand::StatusActive => Some(("heartbeat_set_active", json!({}))),
         },
+
+        CliCommand::Delay { action, .. } => Some((
+            "delay",
+            json!({ "action": action.as_deref().unwrap_or("status") }),
+        )),
 
         CliCommand::Model { .. } => model_to_swp(cmd),
 

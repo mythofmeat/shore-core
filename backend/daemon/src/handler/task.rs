@@ -44,15 +44,21 @@ async fn setup_generation(
             .map_err(|e| e.to_string())?
     };
 
-    let regen_alt = append_user_turn(
-        ctx,
-        &engine_arc,
-        &params.data_dir,
-        &params.char_name,
-        &params.body,
-        params.regen,
-    )
-    .await?;
+    // Recovery generates a reply to a user turn already on disk, so it appends
+    // nothing and captures no regen alternatives.
+    let regen_alt = if params.recovery {
+        None
+    } else {
+        append_user_turn(
+            ctx,
+            &engine_arc,
+            &params.data_dir,
+            &params.char_name,
+            &params.body,
+            params.regen,
+        )
+        .await?
+    };
 
     // The handler resolves the active model (via preferences +
     // discovery) and passes the `ResolvedModel` through directly, so we
@@ -82,6 +88,7 @@ async fn setup_generation(
     .await;
 
     if !params.regen
+        && !params.recovery
         && (!params.body.text.is_empty()
             || !params.body.images.is_empty()
             || !params.body.image_data.is_empty())
@@ -120,6 +127,15 @@ pub(super) async fn handle_generation(
     let (engine_arc, regen_alt, resolved_owned) = setup_generation(&ctx, &params).await?;
     let resolved = &resolved_owned;
 
+    // Optional human-like reply delay: hold before generating so the reply
+    // doesn't arrive the instant the user hits enter. The wait scales with how
+    // long they were silent and is jittered (see `response_delay`). Skipped for
+    // regen (no new user turn). Because the generation runs as an abortable
+    // spawned task, a superseding user message cancels this sleep mid-wait —
+    // rapid follow-ups collapse into a single reply. The deadline is persisted
+    // by `begin_response_delay`, so a restart mid-hold recovers via the tick.
+    let response_delay_held = hold_response_delay(&ctx, &params).await;
+
     let mut request = build_generation_request(
         &engine_arc,
         &params.data_dir,
@@ -132,6 +148,8 @@ pub(super) async fn handle_generation(
     .await;
     request.rid = params.rid.clone();
     request.forensic_character = Some(params.char_name.clone());
+
+    maybe_inject_delay_note(&mut request, &params, &engine_arc, response_delay_held).await;
 
     let (result, tool_intermediate_messages) = run_generation_stream(
         &ctx,
@@ -167,6 +185,14 @@ pub(super) async fn handle_generation(
     )
     .await?;
 
+    // Clear the held-reply deadline only now that the assistant turn is durably
+    // persisted — clearing after the sleep instead would drop the reply on a
+    // crash mid-generation (the deadline would be gone, so recovery couldn't
+    // re-fire it).
+    if response_delay_held.is_some() || params.recovery {
+        ctx.autonomy.clear_pending_reply(&params.char_name);
+    }
+
     emit_post_persist_stream_end(&ctx, &engine_arc, request.rid.clone(), &result).await;
 
     maybe_schedule_compaction(
@@ -181,6 +207,74 @@ pub(super) async fn handle_generation(
     .await;
 
     Ok(())
+}
+
+/// Apply the optional human-like reply delay before generating. Holds for the
+/// jittered, gap-scaled delay (persisted so a restart mid-hold recovers via the
+/// connected-client check), and returns the delay served — `None` when disabled,
+/// a regen, or a recovery (the wait was already paid before the restart).
+async fn hold_response_delay(
+    ctx: &GenContext,
+    params: &GenerationParams,
+) -> Option<std::time::Duration> {
+    if params.regen || params.recovery {
+        return None;
+    }
+    let delay_cfg = &params.effective_config.app.behavior.response_delay;
+    let delay = ctx
+        .autonomy
+        .begin_response_delay(&params.char_name, delay_cfg)?;
+    info!(
+        delay_secs = delay.as_secs(),
+        "holding reply for response delay"
+    );
+    tokio::time::sleep(delay).await;
+    Some(delay)
+}
+
+/// Tell the character it kept the user waiting, when the wait crossed
+/// `notify_after` — an inline-system note it can acknowledge (same mechanism as
+/// the heartbeat guide). For the live path the magnitude is the delay just
+/// served; for a restart-recovered reply it is how long the user's message has
+/// gone unanswered.
+async fn maybe_inject_delay_note(
+    request: &mut shore_llm::types::LlmRequest,
+    params: &GenerationParams,
+    engine_arc: &Arc<Mutex<ConversationEngine>>,
+    response_delay_held: Option<std::time::Duration>,
+) {
+    let waited = if let Some(delay) = response_delay_held {
+        Some(delay)
+    } else if params.recovery {
+        last_message_elapsed(engine_arc).await
+    } else {
+        None
+    };
+    let notify_after = params
+        .effective_config
+        .app
+        .behavior
+        .response_delay
+        .notify_after
+        .as_duration();
+    if let Some(elapsed) = waited.filter(|w| *w >= notify_after) {
+        request.push_inline_system(crate::autonomy::response_delay::format_delay_note(elapsed));
+    }
+}
+
+/// Wall-clock time since the most recent message — the dangling user turn for a
+/// recovered reply — used to tell the character how long it has gone unanswered.
+/// `None` if there are no messages or the timestamp can't be parsed.
+async fn last_message_elapsed(
+    engine_arc: &Arc<Mutex<ConversationEngine>>,
+) -> Option<std::time::Duration> {
+    let engine = engine_arc.lock().await;
+    let last = engine.messages().last()?;
+    let ts = chrono::DateTime::parse_from_rfc3339(&last.timestamp).ok()?;
+    chrono::Utc::now()
+        .signed_duration_since(ts.with_timezone(&chrono::Utc))
+        .to_std()
+        .ok()
 }
 
 /// Record the incoming user turn (or capture the pending regen alternatives).

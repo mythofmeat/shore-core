@@ -12,9 +12,9 @@ use shore_config::app::{
     BudgetWeekday, CommandNotifyConfig, CompactionConfig, ConnectionsConfig, DaemonConfig,
     DefaultsConfig, DreamingConfig, EmbeddedConfig, HeartbeatConfig, LlmSidecarConfig,
     MatrixConfig, MemoryConfig, NotificationBackend, NotificationEventsConfig, NotificationsConfig,
-    NtfyConfig, RetrievalBinaryMode, RetrievalConfig, RetrievalMode, SearchConfig, SubagentConfig,
-    ThinkingConfig, ToolOverride, ToolsConfig, UsageBudgetAction, UsageBudgetConfig,
-    UsageBudgetPeriod, UsageConfig, UsageSpikeWarningsConfig,
+    NtfyConfig, ResponseDelayConfig, RetrievalBinaryMode, RetrievalConfig, RetrievalMode,
+    SearchConfig, SubagentConfig, ThinkingConfig, ToolOverride, ToolsConfig, UsageBudgetAction,
+    UsageBudgetConfig, UsageBudgetPeriod, UsageConfig, UsageSpikeWarningsConfig,
 };
 use shore_config::models::{CacheKeepaliveSetting, ModelConfigFields, Sdk};
 use shore_config::providers::{ProviderDiscovery, ProviderEntry, ProviderKeyEntry};
@@ -377,16 +377,44 @@ fn arb_subagents() -> impl Strategy<Value = std::collections::BTreeMap<String, S
     prop::collection::btree_map(arb_nonempty_text(), arb_subagent_config(), 0..3)
 }
 
-fn arb_behavior_config() -> impl Strategy<Value = BehaviorConfig> {
-    (any::<bool>(), arb_heartbeat_config(), arb_duration()).prop_map(
-        |(enabled, heartbeat, cache_keepalive_max)| BehaviorConfig {
-            autonomy: AutonomyConfig {
-                enabled,
-                heartbeat,
-                cache_keepalive_max,
-            },
-        },
+fn arb_response_delay_config() -> impl Strategy<Value = ResponseDelayConfig> {
+    (
+        any::<bool>(),
+        arb_duration(),
+        arb_duration(),
+        0.0_f64..10.0,
+        0.0_f64..1.0,
+        arb_duration(),
     )
+        .prop_map(
+            |(enabled, min, max, scale, jitter, notify_after)| ResponseDelayConfig {
+                enabled,
+                min,
+                max,
+                scale,
+                jitter,
+                notify_after,
+            },
+        )
+}
+
+fn arb_behavior_config() -> impl Strategy<Value = BehaviorConfig> {
+    (
+        any::<bool>(),
+        arb_heartbeat_config(),
+        arb_duration(),
+        arb_response_delay_config(),
+    )
+        .prop_map(
+            |(enabled, heartbeat, cache_keepalive_max, response_delay)| BehaviorConfig {
+                autonomy: AutonomyConfig {
+                    enabled,
+                    heartbeat,
+                    cache_keepalive_max,
+                },
+                response_delay,
+            },
+        )
 }
 
 fn arb_compaction_config() -> impl Strategy<Value = CompactionConfig> {

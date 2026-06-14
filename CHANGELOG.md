@@ -18,6 +18,24 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   before any pre-sweep work.
 
 ### Added
+- **Optional human-like response delay.** A new `[behavior.response_delay]`
+  block makes the character pause before its reply begins streaming, so chatting
+  feels less like talking to an instant oracle. The wait scales with how long
+  the user was silent before their message (rapid back-and-forth → short delay,
+  a message after hours → a long one, up to `max`), is jittered so the exact
+  arrival is unpredictable, and is bounded by `min`/`max`. Disabled by default.
+  When a hold reaches `notify_after` (default 30m), the character is told it kept
+  the user waiting so it can acknowledge the lateness. The held reply's deadline
+  is persisted, so a daemon restart mid-hold doesn't lose it — the reply is
+  regenerated through the normal streamed path the next time a client is
+  connected for that character (it is not delivered to an offline client). Toggle
+  it per session without editing config via the new `delay` command (`shore delay
+  on|off|reset`; `shore delay` shows the current state, bounds, `notify_after`,
+  and — for debugging — the countdown to a reply currently being held). The
+  runtime override is transient and reverts to the configured default on restart.
+  Regenerations are never delayed, and a follow-up message sent during the pause
+  cancels the held reply so rapid messages collapse into one. See
+  CONFIGURATION.md and ARCHITECTURE.md "Response delay".
 - **Robust image-upload classification (fixes Matrix image sending).** Image
   uploads whose filename lacks a usable extension — routine for Matrix, where
   media is content-addressed and the mime type travels out-of-band — were

@@ -22,7 +22,8 @@ use tracing::{debug, error, info, warn};
 
 use super::activity::ActivityTracker;
 use super::heartbeat::{HeartbeatAction, HeartbeatClock};
-use super::{AutonomyStatus, HeartbeatEventKind, HeartbeatLog};
+use super::response_delay::{compute_delay, ResponseDelayParams};
+use super::{AutonomyStatus, HeartbeatEventKind, HeartbeatLog, ResponseDelayStatus};
 use crate::cache_keepalive::{CacheKeepalive, CacheKeepaliveAction};
 use crate::characters::CharacterRegistry;
 use crate::memory::compaction_impls::resolve_image_gen_config;
@@ -31,7 +32,7 @@ use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
 use crate::tools::context::SharedToolContext;
 use crate::tools::{ToolContext, ToolError};
-use shore_config::app::{AutonomyConfig, CompactionConfig, DreamingConfig};
+use shore_config::app::{AutonomyConfig, CompactionConfig, DreamingConfig, ResponseDelayConfig};
 use shore_config::LoadedConfig;
 use shore_config::{
     character_data_dir, character_memory_dir, character_workspace_dir, HEARTBEAT_FILE,
@@ -157,12 +158,34 @@ pub struct AutonomyState {
     next_dream_attempt_at: Option<Instant>,
     /// Consecutive scheduled dreaming failures.
     dream_failure_count: u32,
+    /// Runtime override for the human-like response delay (`delay on|off`).
+    /// `None` follows the configured `[behavior.response_delay].enabled`; `Some`
+    /// forces it on or off. Transient — not persisted, so a daemon restart
+    /// reverts to the configured default (matching the "temporary disable"
+    /// intent of the command).
+    response_delay_override: Option<bool>,
+    /// When a reply is currently being held by the response delay, the instant
+    /// it will be released. Read by `delay status` to show the countdown.
+    /// **Persisted** (as RFC3339) so a held reply survives a daemon restart and
+    /// is recovered by the tick. Cleared once the reply is produced.
+    pending_reply_at: Option<Instant>,
+    /// True only while *this* process owns the live `tokio::sleep` that will
+    /// produce the held reply. Transient (always false after a restore). The
+    /// recovery tick only fires for an unowned overdue deadline, so the live
+    /// task and the tick never both generate the same reply.
+    pending_reply_live: bool,
 }
 
 impl AutonomyState {
     fn mark_dirty(&mut self) {
         self.dirty = true;
     }
+}
+
+/// Whether a held reply deadline is due for recovery: set, reached, and not
+/// owned by a live sleep in this process (i.e. orphaned by a restart).
+fn pending_reply_due(s: &AutonomyState, now: Instant) -> bool {
+    matches!(s.pending_reply_at, Some(at) if !s.pending_reply_live && now >= at)
 }
 
 fn background_retry_delay(failure_count: u32) -> Duration {
@@ -192,6 +215,11 @@ struct PersistedState {
     /// older state files, which fails safe (a pass is run when in doubt).
     #[serde(default)]
     covered_turn_count: usize,
+    /// Deadline (RFC3339) of a reply currently held by the response delay, so a
+    /// daemon restart can recover and produce it. `None` when nothing is held.
+    /// Defaults to `None` for older state files.
+    #[serde(default)]
+    pending_reply_at: Option<String>,
 }
 
 fn state_path(data_dir: &Path, character: &str) -> PathBuf {
@@ -264,6 +292,7 @@ fn save_state(data_dir: &Path, character: &str, state: &mut AutonomyState) {
         next_wake_at: state.heartbeat.next_wake().map(instant_to_rfc3339),
         last_user_at: state.heartbeat.last_user_at().map(instant_to_rfc3339),
         covered_turn_count: state.covered_turn_count,
+        pending_reply_at: state.pending_reply_at.map(instant_to_rfc3339),
     };
 
     let path = state_path(data_dir, character);
@@ -461,9 +490,16 @@ impl AutonomyManager {
 
         // Restore persisted state if available.
         let mut covered_turn_count = 0;
+        let mut restored_pending_reply = None;
         if let Some(persisted) = load_state(&self.data_dir, character) {
             restore_from_persisted(&persisted, &mut heartbeat);
             covered_turn_count = persisted.covered_turn_count;
+            // A restored deadline is unowned (no live sleep in this fresh
+            // process), so the recovery tick will produce it when due.
+            restored_pending_reply = persisted
+                .pending_reply_at
+                .as_deref()
+                .and_then(rfc3339_to_instant);
             info!(character, "Autonomy state restored from disk");
         } else {
             info!(character, "Autonomy state created (no prior state)");
@@ -496,6 +532,9 @@ impl AutonomyManager {
             last_request: None,
             next_dream_attempt_at: None,
             dream_failure_count: 0,
+            response_delay_override: None,
+            pending_reply_at: restored_pending_reply,
+            pending_reply_live: false,
         }));
 
         let _ignored = self.states.insert(character.to_owned(), Arc::clone(&state));
@@ -837,6 +876,164 @@ impl AutonomyManager {
             s.heartbeat_log.recent(limit).into_iter().cloned().collect()
         })
         .unwrap_or_default()
+    }
+
+    // -- response delay -------------------------------------------------------
+
+    /// Whether the response delay is in effect for this character: the runtime
+    /// override if one is set, otherwise the configured default.
+    fn response_delay_enabled(s: &AutonomyState, cfg: &ResponseDelayConfig) -> bool {
+        s.response_delay_override.unwrap_or(cfg.enabled)
+    }
+
+    /// Compute the delay to hold before this character's reply begins streaming
+    /// and record the release deadline (for `delay status`). Returns `None`
+    /// when the delay is disabled or resolves to zero, in which case the caller
+    /// should stream immediately. Call [`Self::clear_pending_reply`] once the
+    /// delay has elapsed.
+    ///
+    /// The base scales with the gap since the previous user message (so active
+    /// conversation barely waits and a cold re-engagement waits longest, up to
+    /// the cap), jittered so the exact arrival is unpredictable.
+    pub fn begin_response_delay(
+        &self,
+        character: &str,
+        cfg: &ResponseDelayConfig,
+    ) -> Option<Duration> {
+        self.with_state(character, |s| {
+            if !Self::response_delay_enabled(s, cfg) {
+                Self::clear_pending_reply_in_state(s);
+                return None;
+            }
+            let params = ResponseDelayParams::from_config(cfg);
+            let last_gap = s.activity.last_gap();
+            let mut rng = rand::rng();
+            let delay = compute_delay(last_gap, &params, &mut rng);
+            if delay.is_zero() {
+                Self::clear_pending_reply_in_state(s);
+                return None;
+            }
+            s.pending_reply_at = Instant::now().checked_add(delay);
+            // This process owns the live sleep that will produce the reply, so
+            // the recovery tick must not also generate it.
+            s.pending_reply_live = true;
+            s.mark_dirty();
+            // Persist the deadline now so a crash partway through a long hold is
+            // still recoverable on restart.
+            save_state(&self.data_dir, character, s);
+            debug!(
+                character,
+                delay_secs = delay.as_secs(),
+                last_gap_secs = last_gap.map(|g| g.as_secs()),
+                "Holding reply for response delay"
+            );
+            Some(delay)
+        })
+        .flatten()
+    }
+
+    /// Clear the pending-reply deadline. Call once the assistant reply has been
+    /// persisted (live path) or recovered (tick) — not merely when the sleep
+    /// ends — so a crash mid-generation leaves the deadline on disk to recover.
+    /// Persists synchronously so the cleared state is durable. Safe to call when
+    /// nothing is pending.
+    pub fn clear_pending_reply(&self, character: &str) {
+        let _ignored = self.with_state(character, |s| {
+            if s.pending_reply_at.is_some() || s.pending_reply_live {
+                Self::clear_pending_reply_in_state(s);
+                s.mark_dirty();
+                save_state(&self.data_dir, character, s);
+            }
+        });
+    }
+
+    fn clear_pending_reply_in_state(s: &mut AutonomyState) {
+        s.pending_reply_at = None;
+        s.pending_reply_live = false;
+    }
+
+    /// Whether a restart-orphaned reply deadline is now due: set, past, and not
+    /// owned by a live sleep in this process. The recovery path uses this to
+    /// decide whether to produce the held reply itself.
+    pub fn recovery_reply_due(&self, character: &str) -> bool {
+        let now = Instant::now();
+        self.with_state(character, |s| pending_reply_due(s, now))
+            .unwrap_or(false)
+    }
+
+    /// Atomically claim a due, unowned pending reply for recovery: when due,
+    /// mark it owned (so a second connected session — or a later check — won't
+    /// also produce it) and return true. The deadline is *not* cleared here; it
+    /// is cleared only after the recovered reply persists, so a failed recovery
+    /// is retried (see [`Self::release_pending_reply_claim`]).
+    pub fn claim_pending_reply(&self, character: &str) -> bool {
+        let now = Instant::now();
+        self.with_state(character, |s| {
+            if pending_reply_due(s, now) {
+                s.pending_reply_live = true;
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false)
+    }
+
+    /// Release a recovery claim without clearing the deadline, so a recovery
+    /// that failed to produce a reply can be retried on a later check.
+    pub fn release_pending_reply_claim(&self, character: &str) {
+        let _ignored = self.with_state(character, |s| {
+            s.pending_reply_live = false;
+        });
+    }
+
+    /// Test-only: force an overdue, unowned held-reply deadline so the recovery
+    /// path can be exercised without waiting out a real delay.
+    #[cfg(test)]
+    pub(crate) fn force_overdue_pending_reply(&self, character: &str) {
+        let _ignored = self.with_state(character, |s| {
+            s.pending_reply_at = Instant::now().checked_sub(Duration::from_mins(1));
+            s.pending_reply_live = false;
+        });
+    }
+
+    /// Set or clear the runtime response-delay override (`delay on|off|reset`).
+    /// `Some(true)`/`Some(false)` force the delay on/off; `None` reverts to the
+    /// configured default. Returns true if the character has autonomy state.
+    pub fn set_response_delay_override(&self, character: &str, value: Option<bool>) -> bool {
+        info!(character, ?value, "Response delay override changed");
+        self.with_state(character, |s| {
+            s.response_delay_override = value;
+            // Not persisted, so no mark_dirty — transient by design.
+        })
+        .is_some()
+    }
+
+    /// Build a [`ResponseDelayStatus`] snapshot for the `delay` command.
+    pub fn response_delay_status(
+        &self,
+        character: &str,
+        cfg: &ResponseDelayConfig,
+    ) -> Option<ResponseDelayStatus> {
+        self.with_state(character, |s| {
+            let now = Instant::now();
+            let seconds_until_reply = s.pending_reply_at.map(|at| {
+                if at >= now {
+                    duration_secs_i64(at.duration_since(now))
+                } else {
+                    duration_secs_i64(now.duration_since(at)).saturating_neg()
+                }
+            });
+            ResponseDelayStatus {
+                enabled: Self::response_delay_enabled(s, cfg),
+                configured: cfg.enabled,
+                override_set: s.response_delay_override,
+                min_secs: cfg.min.as_secs(),
+                max_secs: cfg.max.as_secs(),
+                notify_after_secs: cfg.notify_after.as_secs(),
+                seconds_until_reply,
+            }
+        })
     }
 
     // -- shutdown -------------------------------------------------------------
@@ -3193,6 +3390,60 @@ mod tests {
     }
 
     #[test]
+    fn response_delay_override_status_and_pending() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = rt.block_on(async { test_manager(tmp.path()) });
+
+        rt.block_on(async {
+            assert!(mgr.ensure_state("alice"));
+
+            let off = ResponseDelayConfig::default();
+            let on = ResponseDelayConfig {
+                enabled: true,
+                ..ResponseDelayConfig::default()
+            };
+
+            // Disabled config, no override → not in effect, no delay held.
+            let disabled = mgr.response_delay_status("alice", &off).unwrap();
+            assert!(!disabled.enabled);
+            assert_eq!(disabled.override_set, None);
+            assert!(mgr.begin_response_delay("alice", &off).is_none());
+
+            // Enabled config → a delay is computed (floors to min with no
+            // recorded activity) and the pending deadline becomes visible.
+            let delay = mgr.begin_response_delay("alice", &on).expect("delay held");
+            assert!(delay >= Duration::from_secs(1));
+            let pending = mgr.response_delay_status("alice", &on).unwrap();
+            assert!(pending.enabled);
+            assert!(pending.seconds_until_reply.is_some());
+
+            // Clearing the deadline removes the countdown.
+            mgr.clear_pending_reply("alice");
+            assert!(mgr
+                .response_delay_status("alice", &on)
+                .unwrap()
+                .seconds_until_reply
+                .is_none());
+
+            // Override off beats an enabled config; override on beats a disabled
+            // config; reset reverts to the configured default.
+            assert!(mgr.set_response_delay_override("alice", Some(false)));
+            assert!(!mgr.response_delay_status("alice", &on).unwrap().enabled);
+            assert!(mgr.begin_response_delay("alice", &on).is_none());
+
+            assert!(mgr.set_response_delay_override("alice", Some(true)));
+            assert!(mgr.response_delay_status("alice", &off).unwrap().enabled);
+
+            assert!(mgr.set_response_delay_override("alice", None));
+            assert!(!mgr.response_delay_status("alice", &off).unwrap().enabled);
+        });
+    }
+
+    #[test]
     fn ensure_state_recovers_from_poisoned_handles_mutex() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3420,6 +3671,9 @@ mod tests {
             last_request: None,
             next_dream_attempt_at: None,
             dream_failure_count: 0,
+            response_delay_override: None,
+            pending_reply_at: Instant::now().checked_add(Duration::from_hours(1)),
+            pending_reply_live: true,
         };
         save_state(data_dir, "alice", &mut state);
         assert!(!state.dirty);
@@ -3433,6 +3687,52 @@ mod tests {
         assert_eq!(persisted.ticks_without_user, 0);
         // next_wake_at should be None (clock was fresh, no deadline set).
         assert!(persisted.next_wake_at.is_none());
+        // The held-reply deadline round-trips (the transient live flag does not).
+        assert!(persisted.pending_reply_at.is_some());
+    }
+
+    #[test]
+    fn restored_overdue_pending_reply_is_recoverable_and_claimable() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        std::fs::create_dir_all(data_dir.join("alice")).unwrap();
+
+        // Persist a deadline 5 minutes in the past, as a restart would leave it.
+        let past = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        let persisted = PersistedState {
+            version: STATE_VERSION,
+            ticks_without_user: 0,
+            covered_turn_count: 0,
+            pending_reply_at: Some(past),
+            next_wake_at: None,
+            last_user_at: None,
+        };
+        std::fs::write(
+            state_path(data_dir, "alice"),
+            serde_json::to_string(&persisted).unwrap(),
+        )
+        .unwrap();
+
+        let mgr = rt.block_on(async { test_manager(data_dir) });
+        rt.block_on(async {
+            assert!(mgr.ensure_state("alice"));
+            // A restored, overdue, unowned deadline is recoverable.
+            assert!(mgr.recovery_reply_due("alice"));
+            // Claiming marks it owned so a second connected session won't also
+            // produce it.
+            assert!(mgr.claim_pending_reply("alice"));
+            assert!(!mgr.recovery_reply_due("alice"));
+            // Releasing the claim (failed recovery) makes it due again.
+            mgr.release_pending_reply_claim("alice");
+            assert!(mgr.recovery_reply_due("alice"));
+            // Clearing it (reply produced) removes it for good.
+            mgr.clear_pending_reply("alice");
+            assert!(!mgr.recovery_reply_due("alice"));
+        });
     }
 
     #[test]
@@ -3445,6 +3745,7 @@ mod tests {
             version: STATE_VERSION,
             ticks_without_user: 5,
             covered_turn_count: 0,
+            pending_reply_at: None,
             next_wake_at: Some("2026-04-08T20:00:00+00:00".into()),
             last_user_at: Some("2026-04-08T14:00:00+00:00".into()),
         };
@@ -3481,6 +3782,9 @@ mod tests {
             last_request: None,
             next_dream_attempt_at: None,
             dream_failure_count: 0,
+            response_delay_override: None,
+            pending_reply_at: None,
+            pending_reply_live: false,
         }));
 
         {
@@ -3582,6 +3886,7 @@ mod tests {
             version: STATE_VERSION,
             ticks_without_user: 7,
             covered_turn_count: 0,
+            pending_reply_at: None,
             next_wake_at: None,
             last_user_at: None,
         };
@@ -3660,6 +3965,9 @@ mod tests {
             last_request: None, // <-- no request → ping will be skipped
             next_dream_attempt_at: None,
             dream_failure_count: 0,
+            response_delay_override: None,
+            pending_reply_at: None,
+            pending_reply_live: false,
         }));
 
         let ctx = tick_ctx_no_llm(Arc::clone(&state), tmp.path());
@@ -3783,6 +4091,7 @@ mod tests {
             version: STATE_VERSION,
             ticks_without_user: 1,
             covered_turn_count: 0,
+            pending_reply_at: None,
             next_wake_at: Some(wake_time),
             last_user_at: Some(chrono::Utc::now().to_rfc3339()),
         };
@@ -4439,6 +4748,9 @@ api_key_env = "{heartbeat_env}"
             last_request: None,
             next_dream_attempt_at: None,
             dream_failure_count: 0,
+            response_delay_override: None,
+            pending_reply_at: None,
+            pending_reply_live: false,
         }));
 
         let tick_ctx = TickContext {
@@ -4492,6 +4804,9 @@ api_key_env = "{heartbeat_env}"
             last_request: None,
             next_dream_attempt_at: None,
             dream_failure_count: 0,
+            response_delay_override: None,
+            pending_reply_at: None,
+            pending_reply_live: false,
         }));
         TickContext {
             state,

@@ -117,6 +117,7 @@ pub(crate) async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> 
         }
         other @ (CliCommand::Character { .. }
         | CliCommand::Debug { .. }
+        | CliCommand::Delay { .. }
         | CliCommand::Model { .. }
         | CliCommand::Provider { .. }
         | CliCommand::Memory { .. }
@@ -165,6 +166,7 @@ async fn handle_generic_swp_command(
         | CliCommand::Memory { json, .. }
         | CliCommand::Config { json, .. }
         | CliCommand::Tools { json, .. }
+        | CliCommand::Delay { json, .. }
         | CliCommand::Usage { json, .. } => *json,
         CliCommand::Send { .. }
         | CliCommand::Regen { .. }
@@ -1824,6 +1826,7 @@ mod tests {
             | CliCommand::Character { .. }
             | CliCommand::Status { .. }
             | CliCommand::Debug { .. }
+            | CliCommand::Delay { .. }
             | CliCommand::Model { .. }
             | CliCommand::Provider { .. }
             | CliCommand::Memory { .. }

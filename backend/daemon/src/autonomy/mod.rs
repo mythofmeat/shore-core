@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod heartbeat;
 pub mod manager;
+pub mod response_delay;
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -40,6 +41,28 @@ pub struct AutonomyStatus {
     /// Most recent heartbeat events (oldest first), capped to a small count.
     #[serde(default)]
     pub recent_events: Vec<HeartbeatEvent>,
+}
+
+/// Snapshot of the human-like response-delay state for the `delay` command.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResponseDelayStatus {
+    /// Whether the delay is currently in effect (override applied over config).
+    pub enabled: bool,
+    /// The configured default, before any runtime override.
+    pub configured: bool,
+    /// The runtime override, if one is set (`delay on|off`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub override_set: Option<bool>,
+    /// Floor on the delay (seconds).
+    pub min_secs: u64,
+    /// Hard ceiling on the delay (seconds).
+    pub max_secs: u64,
+    /// Delay at which the character is told it kept the user waiting (seconds).
+    pub notify_after_secs: u64,
+    /// Seconds until a currently-held reply is released, if one is pending.
+    /// Breaks the illusion deliberately — it exists for debugging.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds_until_reply: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
