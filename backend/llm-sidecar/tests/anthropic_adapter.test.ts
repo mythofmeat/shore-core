@@ -84,6 +84,46 @@ describe("cache placement (mirrors ts_default_placement)", () => {
     }
   });
 
+  test("empty trailing text block is skipped as anchor; breakpoint walks back", () => {
+    // An assistant turn that streamed a tool_use after an empty text block, or
+    // a message whose only trailing block is empty text. Anchoring cc on the
+    // empty text block makes Anthropic reject the whole request with
+    // "cache_control cannot be set for empty text blocks".
+    const withEmptyTail: SidecarRequest["messages"] = [
+      { role: "user", content: [{ type: "text", text: "go" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "working" },
+          { type: "tool_use", id: "tu_1", name: "search", input: { q: "x" } },
+          { type: "text", text: "" },
+        ],
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_1", content: "ok" }] },
+    ];
+    const p = buildAnthropicParams(
+      req({ system, messages: withEmptyTail, provider_options: { cache_ttl: "1h" } }),
+    );
+    const m = p.messages as Array<{ content: unknown }>;
+    // last stable assistant (idx 1): cc lands on the tool_use, NOT the empty text.
+    expect(blockCC(m[1]?.content)).toEqual([false, true, false]);
+    // last msg (idx 2): tool_result anchored as usual.
+    expect(blockCC(m[2]?.content)).toEqual([true]);
+  });
+
+  test("message with only an empty text block gets no breakpoint", () => {
+    const onlyEmpty: SidecarRequest["messages"] = [
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+      { role: "assistant", content: [{ type: "text", text: "  " }] },
+    ];
+    const p = buildAnthropicParams(
+      req({ system, messages: onlyEmpty, provider_options: { cache_ttl: "1h" } }),
+    );
+    const m = p.messages as Array<{ content: unknown }>;
+    // No eligible anchor → no cache_control on that message (request stays valid).
+    expect(blockCC(m[1]?.content).some(Boolean)).toBe(false);
+  });
+
   test("pre-existing markers → placement skipped (has_existing_markers gate)", () => {
     const marked: SidecarRequest["messages"] = [
       {

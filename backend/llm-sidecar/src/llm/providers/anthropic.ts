@@ -392,11 +392,19 @@ function placeBreakpoints(
 }
 
 /** Apply the breakpoint to the last text/tool_use/tool_result block (thinking
- * blocks reject cache_control). */
+ * blocks reject cache_control). Empty text blocks are skipped as anchors:
+ * Anthropic rejects "cache_control cannot be set for empty text blocks" and
+ * fails the whole request, so the breakpoint walks back to the previous
+ * eligible block (or is dropped if the message has none). */
 function applyMessageBreakpoint(content: ContentBlockParam[], cc: CacheControl): void {
   for (let i = content.length - 1; i >= 0; i--) {
     const b = content[i] as ContentBlockParam & { cache_control?: unknown };
-    if (b.type === "text" || b.type === "tool_use" || b.type === "tool_result") {
+    if (b.type === "text") {
+      if (((b as { text?: string }).text ?? "").trim() === "") continue;
+      b.cache_control = cc;
+      return;
+    }
+    if (b.type === "tool_use" || b.type === "tool_result") {
       b.cache_control = cc;
       return;
     }

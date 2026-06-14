@@ -8,6 +8,14 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Fixed
+- **Prompt-cache breakpoints no longer land on empty text blocks.** When a
+  message's trailing block was an empty text block (e.g. an assistant turn
+  that emitted a tool call after an empty text segment), the Anthropic sidecar
+  anchored its `cache_control` breakpoint there, and Anthropic rejected the
+  whole request with HTTP 400 "cache_control cannot be set for empty text
+  blocks" — failing the entire generation. Breakpoint placement now skips
+  empty (whitespace-only) text blocks, walking back to the previous eligible
+  block, or placing no breakpoint on that message if it has none.
 - **Pre-dream compaction no longer runs when no dream is due.** The autonomy
   tick gated scheduled dreaming on backoff and user inactivity but checked the
   cron schedule (`memory.dreaming.frequency`) only inside the librarian sweep
