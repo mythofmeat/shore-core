@@ -345,7 +345,7 @@ async fn run_tool_loop(
         let rid = format!("{rid_prefix}-iter-{iter}");
         let req = build_request(api_key, model, system, messages, &rid);
         let resp: GenerateResponse = client
-            .generate(&req)
+            .generate(&req, None)
             .await
             .map_err(|e| format!("generate failed: {e}"))?;
 

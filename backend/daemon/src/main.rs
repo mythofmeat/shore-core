@@ -82,6 +82,14 @@ mod supervisor;
 const DEFAULT_LOG_FILTER: &str =
     "warn,shore_daemon=info,shore_llm=info,shore_ledger=info,shore_swp_server=info";
 
+/// Observability store retention window: rows older than this are pruned.
+const CALL_STORE_RETENTION_DAYS: i64 = 14;
+/// Observability store disk backstop (512 MiB): if 14 days of capture exceeds
+/// this, the oldest calls are evicted. Compression keeps real usage well under.
+const CALL_STORE_MAX_BYTES: u64 = 536_870_912;
+/// How often the rotation task runs, in seconds (1 hour).
+const CALL_STORE_ROTATE_SECS: u64 = 3600;
+
 #[derive(Debug, Parser)]
 #[command(name = "shore-daemon", about = "Shore daemon")]
 struct Cli {
@@ -283,6 +291,8 @@ fn build_server_and_handler(
     server.set_handshake_provider(build_handshake_provider(Arc::clone(&char_registry)));
 
     let (llm_client, llm_sidecar_socket) = build_llm_client(loaded)?;
+
+    spawn_call_store_rotation(&llm_client);
 
     // Autonomy manager: shared between handler, commands, and per-character ticks.
     let autonomy = build_autonomy_manager(
@@ -488,16 +498,56 @@ fn spawn_shutdown_signal_listener(shutdown_tx: tokio::sync::watch::Sender<()>) {
 /// Build the ledger-wrapped LLM client: payload logging, the optional LLM
 /// sidecar transport, cache forensics, usage config, and per-character cache
 /// reconstruction. Returns the client and the resolved sidecar socket path.
+/// Spawn the detached observability-store rotation task (14-day window + size
+/// backstop), reaching the store through the llm client. No-op when capture is
+/// disabled. `interval`'s first tick fires immediately, so a prune runs at
+/// startup.
+fn spawn_call_store_rotation(client: &LedgerClient) {
+    let Some(store_ref) = client.inner().call_store() else {
+        return;
+    };
+    let store = Arc::clone(store_ref);
+    let _rotate = tokio::spawn(async move {
+        let mut tick =
+            tokio::time::interval(std::time::Duration::from_secs(CALL_STORE_ROTATE_SECS));
+        loop {
+            _ = tick.tick().await;
+            let Some(cutoff) = chrono::Utc::now()
+                .checked_sub_signed(chrono::Duration::days(CALL_STORE_RETENTION_DAYS))
+            else {
+                continue;
+            };
+            match store.rotate(cutoff, CALL_STORE_MAX_BYTES) {
+                Ok(stats) if stats.deleted_by_age > 0 || stats.deleted_by_size > 0 => {
+                    info!(
+                        deleted_by_age = stats.deleted_by_age,
+                        deleted_by_size = stats.deleted_by_size,
+                        "Call store rotation pruned rows"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => warn!(error = %e, "Call store rotation failed"),
+            }
+        }
+    });
+}
+
 fn build_llm_client(
     loaded: &LoadedConfig,
 ) -> Result<(LedgerClient, Option<PathBuf>), Box<dyn std::error::Error>> {
     let mut raw_llm_client = LlmClient::try_new()?;
-    if loaded.app.advanced.api_payload_logging {
-        raw_llm_client.set_payload_log_dir(loaded.dirs.cache.clone());
-        info!(
-            "API payload logging enabled → {}/debug/api_logs/",
-            loaded.dirs.cache.display()
-        );
+    // Payload capture is always on: every LLM call is recorded to the
+    // compressed, bounded observability store. Best-effort — a store that fails
+    // to open disables capture but never blocks the daemon.
+    let call_store_path = loaded.dirs.cache.join("calls.db");
+    match shore_call_store::CallStore::open(&call_store_path) {
+        Ok(store) => {
+            raw_llm_client.set_call_store(Arc::new(store));
+            info!(path = %call_store_path.display(), "Call payload store enabled");
+        }
+        Err(e) => {
+            warn!(error = %e, path = %call_store_path.display(), "Failed to open call store; payload capture disabled");
+        }
     }
     let llm_sidecar_socket = loaded.app.advanced.llm_sidecar.enabled.then(|| {
         loaded

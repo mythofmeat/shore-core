@@ -467,7 +467,7 @@ impl LedgerClient {
             .get_or_fetch(provider_key, &request.model)
             .await;
 
-        let resp = match self.inner.generate(request).await {
+        let resp = match self.inner.generate(request, Some(call_type.as_str())).await {
             Ok(r) => r,
             Err(e) => {
                 // Log the failure to the forensic log so keepalive and other
@@ -688,7 +688,11 @@ impl LedgerClient {
             .get_or_fetch(provider_key, &request.model)
             .await;
 
-        let reader = match self.inner.stream_raw(request).await {
+        let reader = match self
+            .inner
+            .stream_raw(request, Some(call_type.as_str()))
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 shore_llm::cache_forensics::log_error(

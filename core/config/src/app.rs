@@ -1268,10 +1268,11 @@ impl Default for UsageSpikeWarningsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AdvancedConfig {
-    /// Log every API request and response as individual JSON files under
-    /// `{cache_dir}/debug/api_logs/`. Filenames are `{call_id}.json` for the
-    /// request and `{call_id}_response.json` for the paired response or
-    /// error. No rotation — operators manage disk usage manually.
+    /// Deprecated and ignored. Per-call payload capture is now always on: every
+    /// LLM request/response is recorded to the compressed, self-rotating
+    /// observability store at `{cache_dir}/calls.db` (see `shore log --api`).
+    /// This key is still accepted so older `config.toml`s keep loading, but it
+    /// no longer gates anything.
     #[serde(default)]
     pub api_payload_logging: bool,
 

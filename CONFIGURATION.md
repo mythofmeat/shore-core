@@ -781,7 +781,6 @@ The dreams audit log lives at `$XDG_DATA_HOME/shore/<Character>/DREAMS.md` (data
 
 ```toml
 [advanced]
-api_payload_logging = false
 cache_forensics = false
 # editor = "nvim"          # editor override, checked before $VISUAL / $EDITOR
 # max_retries = 2          # LLM retry attempts before giving up
@@ -808,19 +807,17 @@ enabled = true
 
 ### Diagnostics toggles
 
-`[advanced].api_payload_logging = true` writes per-call provider request and
-response JSON under `$XDG_CACHE_HOME/shore/debug/api_logs/` for chat traffic
-and `$XDG_CACHE_HOME/shore/debug/api_logs_long/` for background tasks
-(compaction, dreaming, heartbeat). These files are diagnostic payload dumps,
-not durable user state. Rotation is operator-managed; the split lets you run
-different retention timers on the two tiers — chat churns fast and is rarely
-useful beyond a few days, while background payloads stay valuable for
-weeks-long forensic analysis. Example cron:
-
-```sh
-find ~/.cache/shore/debug/api_logs/      -type f -mtime +3  -delete
-find ~/.cache/shore/debug/api_logs_long/ -type f -mtime +30 -delete
-```
+Per-call payload capture is **always on** and needs no configuration. Every LLM
+request/response — chat, tool loops, heartbeat, dreaming, compaction — is
+recorded to a compressed SQLite store at `$XDG_CACHE_HOME/shore/calls.db`, and
+the heartbeat/dreaming tool loops additionally record curated transcripts there.
+The store self-rotates (14-day window plus a 512 MiB disk backstop), so no cron
+pruning is needed. Inspect it with `shore log --api` (raw payloads, filterable
+by `--call-type`; `shore log --api <id>` dumps one call) and `shore log
+--heartbeat` / `--dreaming` (curated transcripts). `api_key` is redacted; the
+store is observability only, never durable user state. The legacy
+`[advanced].api_payload_logging` key (and the old `debug/api_logs*` file dumps)
+is deprecated and ignored — accepted only so older configs keep loading.
 
 `[advanced].cache_forensics = true` writes Anthropic prompt-cache forensic
 events under `$XDG_CACHE_HOME/shore/cache_forensics.jsonl`. The durable cache
