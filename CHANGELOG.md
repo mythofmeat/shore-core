@@ -23,13 +23,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   truncated summaries — the heartbeat event ring, the `DREAMS.md` audit log, and
   200-char tracing previews — so their complete reasoning and tool use could not
   be reviewed, and neither recorded which model/provider actually served the
-  call. The daemon now writes a capped ring-buffer transcript per source
+  call. The daemon now writes a rolling transcript per source
   (`heartbeat-transcript.jsonl`, `dreaming-transcript.jsonl` in the character's
   data directory) with one entry per call: model, provider, finish reason, token
-  usage, full reasoning, and each tool call's complete input and output. View
-  them with `shore log --heartbeat` and `shore log --dreaming` (`--json` for raw
-  entries, `-n` to change the count). `shore log --heartbeat` now shows this
-  transcript rather than the operational event ring, which moves to the new
+  usage, full reasoning, and each tool call's complete (untruncated) input and
+  output. Retention is time-based — entries older than 14 days are pruned on
+  append; tool I/O is never truncated, so these stay fully inspectable. View them
+  with `shore log --heartbeat` and `shore log --dreaming` (`--json` for raw
+  entries, `-n` to change how many are shown). `shore log --heartbeat` now shows
+  this transcript rather than the operational event ring, which moves to the new
   `shore log --events`. Always on; dry-run dreaming previews are not recorded.
   New `background_transcript` SWP command (see PROTOCOL.md).
 - **Robust image-upload classification (fixes Matrix image sending).** Image

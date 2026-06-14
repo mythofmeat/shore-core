@@ -8,26 +8,34 @@
 //! background call thought, which tools it ran, what those tools returned, or
 //! which model/provider actually served the request.
 //!
-//! This module records that — one [`TranscriptEntry`] per LLM call — to a capped
-//! ring-buffer JSONL file in the character's data directory, kept separate per
-//! [`TranscriptSource`] so a chatty heartbeat cannot evict dreaming history and
-//! vice versa. The file lives alongside `heartbeat.jsonl` and `DREAMS.md`, never
-//! inside the workspace, so it never bleeds into prompts or memory snapshots.
+//! This module records that — one [`TranscriptEntry`] per LLM call — to a
+//! rolling JSONL file in the character's data directory, kept separate per
+//! [`TranscriptSource`] (heartbeat / dreaming). Retention is **time-based**:
+//! entries older than [`TRANSCRIPT_RETENTION_DAYS`] are pruned on each append.
+//! Tool input and output are stored **in full, untruncated** — these are meant
+//! to be complete, inspectable, debuggable logs. The file lives alongside
+//! `heartbeat.jsonl` and `DREAMS.md`, never inside the workspace, so it never
+//! bleeds into prompts or memory snapshots.
 
-use std::collections::VecDeque;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use shore_config::character_data_dir;
 use shore_llm::types::GenerateResponse;
 use shore_protocol::types::ContentBlock;
 use tracing::warn;
 
-/// Maximum number of transcript entries retained per source. Entries carry full
-/// reasoning and tool I/O, so the cap is the ring-buffer bound; older entries
-/// roll off oldest-first on each append.
-const TRANSCRIPT_CAPACITY: usize = 300;
+/// How long a transcript entry is retained. On each append, entries whose
+/// timestamp is older than this window are pruned. Bytes per entry are
+/// unbounded (full tool I/O is kept), so retention is time-based rather than a
+/// count or size cap.
+const TRANSCRIPT_RETENTION_DAYS: i64 = 14;
+
+/// Initial allocation hint for the in-memory entry list. Not a retention cap —
+/// the list grows as needed and is bounded only by [`TRANSCRIPT_RETENTION_DAYS`].
+const TRANSCRIPT_ALLOC_HINT: usize = 256;
 
 /// Which background subsystem produced a transcript entry. Each source has its
 /// own file so their ring buffers do not contend.
@@ -180,11 +188,11 @@ pub fn transcript_log_path(data_dir: &Path, character: &str, source: TranscriptS
     character_data_dir(data_dir, character).join(source.file_name())
 }
 
-/// Append `entries` to the source's transcript log, keeping only the most recent
-/// [`TRANSCRIPT_CAPACITY`] entries. Loads the existing file, appends, caps
-/// oldest-first, and rewrites atomically (tmp + rename). A no-op when `entries`
-/// is empty. Logs a warning and returns `Err` on I/O failure; callers treat
-/// transcript writes as best-effort.
+/// Append `entries` to the source's transcript log, then prune anything older
+/// than [`TRANSCRIPT_RETENTION_DAYS`]. Loads the existing file, appends, drops
+/// out-of-window entries, and rewrites atomically (tmp + rename). A no-op when
+/// `entries` is empty. Logs a warning and returns `Err` on I/O failure; callers
+/// treat transcript writes as best-effort.
 pub fn append_entries(
     data_dir: &Path,
     character: &str,
@@ -195,19 +203,20 @@ pub fn append_entries(
         return Ok(());
     }
     let path = transcript_log_path(data_dir, character, source);
-    let mut ring = load_entries(&path);
-    for entry in entries {
-        if ring.len() >= TRANSCRIPT_CAPACITY {
-            let _ignored = ring.pop_front();
-        }
-        ring.push_back(entry.clone());
+    let mut all = load_entries(&path);
+    all.extend(entries.iter().cloned());
+    // Prune anything outside the retention window. `checked_sub_signed` only
+    // returns `None` near the representable date floor (never for "now"); skip
+    // pruning rather than risk dropping everything in that impossible case.
+    if let Some(cutoff) = Utc::now().checked_sub_signed(Duration::days(TRANSCRIPT_RETENTION_DAYS)) {
+        retain_within(&mut all, cutoff);
     }
-    write_atomic(&path, &ring)
+    write_atomic(&path, &all)
 }
 
 /// Read the most recent `limit` entries (newest first) from a source's
 /// transcript log, or an empty vector when the file does not exist or cannot be
-/// read.
+/// read. `limit` is a display bound only — independent of the retention window.
 pub fn read_recent(
     data_dir: &Path,
     character: &str,
@@ -215,19 +224,29 @@ pub fn read_recent(
     limit: usize,
 ) -> Vec<TranscriptEntry> {
     let path = transcript_log_path(data_dir, character, source);
-    let ring = load_entries(&path);
-    let mut entries: Vec<TranscriptEntry> = ring.into_iter().collect();
+    let mut entries = load_entries(&path);
     entries.reverse();
     entries.truncate(limit);
     entries
 }
 
-/// Load entries from a JSONL file, skipping malformed lines. Returns an empty
-/// ring when the file is absent or unreadable.
-fn load_entries(path: &Path) -> VecDeque<TranscriptEntry> {
-    let mut ring: VecDeque<TranscriptEntry> = VecDeque::with_capacity(TRANSCRIPT_CAPACITY);
+/// Drop entries whose timestamp is older than `cutoff`. Entries with an
+/// unparseable timestamp are kept — a bad timestamp must never silently delete a
+/// log line.
+fn retain_within(entries: &mut Vec<TranscriptEntry>, cutoff: DateTime<Utc>) {
+    entries.retain(|e| match DateTime::parse_from_rfc3339(&e.timestamp) {
+        Ok(ts) => ts.with_timezone(&Utc) >= cutoff,
+        Err(_) => true,
+    });
+}
+
+/// Load entries from a JSONL file in file order, skipping malformed lines.
+/// Returns an empty list when the file is absent or unreadable. Pruning happens
+/// on append, so this returns whatever is currently on disk.
+fn load_entries(path: &Path) -> Vec<TranscriptEntry> {
+    let mut entries: Vec<TranscriptEntry> = Vec::with_capacity(TRANSCRIPT_ALLOC_HINT);
     let Ok(data) = std::fs::read_to_string(path) else {
-        return ring;
+        return entries;
     };
     for (idx, raw_line) in data.lines().enumerate() {
         let line = raw_line.trim();
@@ -235,12 +254,7 @@ fn load_entries(path: &Path) -> VecDeque<TranscriptEntry> {
             continue;
         }
         match serde_json::from_str::<TranscriptEntry>(line) {
-            Ok(entry) => {
-                if ring.len() >= TRANSCRIPT_CAPACITY {
-                    let _ignored = ring.pop_front();
-                }
-                ring.push_back(entry);
-            }
+            Ok(entry) => entries.push(entry),
             Err(e) => {
                 warn!(
                     path = %path.display(),
@@ -251,15 +265,15 @@ fn load_entries(path: &Path) -> VecDeque<TranscriptEntry> {
             }
         }
     }
-    ring
+    entries
 }
 
-fn write_atomic(path: &Path, ring: &VecDeque<TranscriptEntry>) -> io::Result<()> {
+fn write_atomic(path: &Path, entries: &[TranscriptEntry]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut buf = String::with_capacity(ring.len().saturating_mul(256));
-    for entry in ring {
+    let mut buf = String::with_capacity(entries.len().saturating_mul(256));
+    for entry in entries {
         let line = serde_json::to_string(entry)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         buf.push_str(&line);
@@ -303,12 +317,12 @@ mod tests {
         }
     }
 
-    fn entry(iteration: u32, source: TranscriptSource) -> TranscriptEntry {
+    fn entry_at(iteration: u32, source: TranscriptSource, timestamp: String) -> TranscriptEntry {
         TranscriptEntry::from_response(
             source,
             "heartbeat",
             iteration,
-            "2026-06-14T10:00:00+00:00".to_owned(),
+            timestamp,
             Some("anthropic".to_owned()),
             &resp("hello", "let me think", "claude-x", "end_turn"),
             vec![TranscriptToolCall {
@@ -318,6 +332,12 @@ mod tests {
                 is_error: false,
             }],
         )
+    }
+
+    /// Entry stamped "now" so retention (a 14-day window from the real clock)
+    /// never prunes it during a test run.
+    fn entry(iteration: u32, source: TranscriptSource) -> TranscriptEntry {
+        entry_at(iteration, source, Utc::now().to_rfc3339())
     }
 
     #[test]
@@ -373,25 +393,49 @@ mod tests {
     }
 
     #[test]
-    fn ring_caps_at_capacity() {
+    fn append_prunes_entries_older_than_window() {
         let dir = tempfile::tempdir().unwrap();
-        let cap = u32::try_from(TRANSCRIPT_CAPACITY).unwrap();
-        let batch: Vec<TranscriptEntry> = (0..(cap + 25))
-            .map(|i| entry(i, TranscriptSource::Heartbeat))
-            .collect();
-        append_entries(dir.path(), "alice", TranscriptSource::Heartbeat, &batch).unwrap();
-
-        let recent = read_recent(
+        let fresh = entry_at(1, TranscriptSource::Heartbeat, Utc::now().to_rfc3339());
+        let stale_ts = Utc::now()
+            .checked_sub_signed(Duration::days(TRANSCRIPT_RETENTION_DAYS.saturating_add(6)))
+            .unwrap()
+            .to_rfc3339();
+        let stale = entry_at(0, TranscriptSource::Heartbeat, stale_ts);
+        append_entries(
             dir.path(),
             "alice",
             TranscriptSource::Heartbeat,
-            TRANSCRIPT_CAPACITY + 100,
-        );
-        assert_eq!(recent.len(), TRANSCRIPT_CAPACITY);
-        // Newest first: the most recent appended iteration survives, the oldest
-        // 25 were evicted.
-        assert_eq!(recent[0].iteration, cap + 24);
-        assert_eq!(recent[TRANSCRIPT_CAPACITY - 1].iteration, 25);
+            &[stale, fresh],
+        )
+        .unwrap();
+
+        let recent = read_recent(dir.path(), "alice", TranscriptSource::Heartbeat, 100);
+        assert_eq!(recent.len(), 1, "stale entry should be pruned");
+        assert_eq!(recent[0].iteration, 1);
+    }
+
+    #[test]
+    fn retain_within_drops_old_keeps_recent_and_unparseable() {
+        let cutoff = DateTime::parse_from_rfc3339("2026-06-14T00:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut entries = vec![
+            entry_at(
+                0,
+                TranscriptSource::Heartbeat,
+                "2026-06-01T00:00:00+00:00".to_owned(),
+            ),
+            entry_at(
+                1,
+                TranscriptSource::Heartbeat,
+                "2026-06-20T00:00:00+00:00".to_owned(),
+            ),
+            entry_at(2, TranscriptSource::Heartbeat, "not-a-timestamp".to_owned()),
+        ];
+        retain_within(&mut entries, cutoff);
+        let kept: Vec<u32> = entries.iter().map(|e| e.iteration).collect();
+        // Old (Jun 1) dropped; recent (Jun 20) and unparseable kept.
+        assert_eq!(kept, vec![1, 2]);
     }
 
     #[test]
