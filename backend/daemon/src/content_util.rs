@@ -7,11 +7,18 @@ use shore_config::models::Sdk;
 use shore_protocol::types::ContentBlock;
 
 /// Convert a `ContentBlock` to its LLM API JSON representation, filtering
-/// out blocks the API would reject (unsigned thinking blocks).
+/// out blocks the API would reject (unsigned thinking blocks, empty text).
 ///
 /// Returns `None` for blocks that should be omitted from API requests.
+///
+/// Empty (whitespace-only) text blocks are dropped: Anthropic rejects them
+/// when a `cache_control` breakpoint lands on one ("cache_control cannot be
+/// set for empty text blocks"), failing the whole request. They carry no
+/// content, so omitting them is lossless and keeps already-persisted junk
+/// (e.g. from older builds or non-Anthropic providers) off the wire.
 pub fn content_block_to_api_json(block: &ContentBlock) -> Option<Value> {
     match block {
+        ContentBlock::Text { text } if text.trim().is_empty() => None,
         ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
         ContentBlock::Thinking {
             thinking,
@@ -98,6 +105,11 @@ pub fn content_block_to_json(block: &ContentBlock) -> Value {
 /// reasoning into `reasoning` / `reasoning_content`.
 pub fn content_block_to_request_json_for_sdk(block: &ContentBlock, sdk: &Sdk) -> Option<Value> {
     if matches!(sdk, Sdk::Openai | Sdk::Zai) {
+        // Drop empty text blocks here too: they carry nothing and only invite
+        // provider-side validation errors. See [`content_block_to_api_json`].
+        if matches!(block, ContentBlock::Text { text } if text.trim().is_empty()) {
+            return None;
+        }
         Some(content_block_to_json(block))
     } else {
         content_block_to_api_json(block)
@@ -389,6 +401,37 @@ mod tests {
         let result = content_block_to_api_json(&block).unwrap();
         assert_eq!(result["type"], "text");
         assert_eq!(result["text"], "hello");
+    }
+
+    #[test]
+    fn api_json_empty_text_block_returns_none() {
+        assert!(content_block_to_api_json(&ContentBlock::Text {
+            text: String::new()
+        })
+        .is_none());
+        assert!(content_block_to_api_json(&ContentBlock::Text {
+            text: "   \n".into()
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn request_json_for_sdk_drops_empty_text_all_sdks() {
+        let empty = ContentBlock::Text { text: "  ".into() };
+        for sdk in [Sdk::Anthropic, Sdk::Openai, Sdk::Zai] {
+            assert!(
+                content_block_to_request_json_for_sdk(&empty, &sdk).is_none(),
+                "empty text should be dropped for {sdk:?}"
+            );
+        }
+        // Non-empty text still passes through for every sdk.
+        let real = ContentBlock::Text { text: "hi".into() };
+        for sdk in [Sdk::Anthropic, Sdk::Openai, Sdk::Zai] {
+            assert_eq!(
+                content_block_to_request_json_for_sdk(&real, &sdk).unwrap()["text"],
+                "hi"
+            );
+        }
     }
 
     #[test]

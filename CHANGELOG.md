@@ -13,9 +13,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   that emitted a tool call after an empty text segment), the Anthropic sidecar
   anchored its `cache_control` breakpoint there, and Anthropic rejected the
   whole request with HTTP 400 "cache_control cannot be set for empty text
-  blocks" — failing the entire generation. Breakpoint placement now skips
-  empty (whitespace-only) text blocks, walking back to the previous eligible
-  block, or placing no breakpoint on that message if it has none.
+  blocks" — failing the entire generation. Fixed on both sides: the Anthropic
+  sidecar now skips empty (whitespace-only) text blocks when choosing a
+  breakpoint anchor (walking back to the previous eligible block, or placing
+  none), and the daemon no longer produces or replays empty text blocks —
+  image-only user messages stop appending an empty text block, and the wire
+  projection drops empty text blocks for every provider (with a non-empty
+  fallback so a message never serializes to an empty content array). The
+  sidecar guard also protects conversations whose history already contains
+  such blocks from older builds.
 - **Pre-dream compaction no longer runs when no dream is due.** The autonomy
   tick gated scheduled dreaming on backoff and user inactivity but checked the
   cron schedule (`memory.dreaming.frequency`) only inside the librarian sweep
