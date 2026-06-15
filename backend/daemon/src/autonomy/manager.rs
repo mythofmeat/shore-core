@@ -2375,10 +2375,12 @@ fn prepare_heartbeat_request(
     // 3-day prune.
     request.retain_long = true;
 
-    // NOTE: set_next_wake is in the base tool set (tools/basic.rs), so the
-    // tools array is identical between normal messages and heartbeat ticks.
-    // This prevents cache prefix invalidation. Instructions for using
-    // set_next_wake are in the heartbeat prompt.
+    // NOTE: the tools array is reused verbatim from the chat request and is
+    // never mutated here, so it stays byte-identical between chat and heartbeat
+    // (no cache-prefix invalidation). The heartbeat-only capabilities
+    // `set_next_wake` and `sendMessage` are deliberately NOT declared as tools;
+    // the heartbeat prompt instructs the model to call them and the tool loop
+    // intercepts the (undeclared) calls by name. See `dispatch_heartbeat_tools`.
 
     Some((request, max_tool_iterations))
 }
@@ -2527,6 +2529,10 @@ async fn run_heartbeat_tool_loop(
         // Extract tool uses.
         let tool_uses = crate::content_util::extract_tool_uses(&resp.content_blocks);
         let has_tools = !tool_uses.is_empty() && resp.finish_reason == "tool_use";
+
+        // Also accept `sendMessage` called as an (undeclared) tool, not just
+        // the `<sendMessage>` tag — see `capture_tool_send_message`.
+        send_message_text = capture_tool_send_message(&tool_uses).or(send_message_text);
 
         // Dispatch tools (when any) before recording so the transcript entry
         // carries each tool's full output for this iteration.
@@ -2694,6 +2700,14 @@ async fn dispatch_heartbeat_tools(
                 state.as_ref(),
                 input,
             )))
+        } else if is_send_message_tool(name) {
+            // Undeclared `sendMessage` tool: the text was already captured into
+            // the send-message sink by the loop; acknowledge success so the
+            // model doesn't see "not yet implemented" and retry.
+            crate::content_util::dispatch_result_to_output(Ok(json!({
+                "status": "delivered",
+                "detail": "Message will be delivered to the user when this tick ends.",
+            })))
         } else {
             crate::content_util::dispatch_result_to_output(
                 tool_system::dispatch_tool(name, input.clone(), tool_ctx.as_ref()).await,
@@ -2939,6 +2953,47 @@ fn extract_tag(content: &str, start_tag: &str, end_tag: &str) -> Option<String> 
 /// Extract text between `<sendMessage>` and `</sendMessage>` tags (last-wins).
 fn extract_send_message(content: &str) -> Option<String> {
     extract_tag(content, "<sendMessage>", "</sendMessage>")
+}
+
+/// True for the names the model reaches for when it calls `sendMessage` as a
+/// tool instead of using the `<sendMessage>` tag. The tool is intentionally
+/// undeclared (declaring it would make the heartbeat tools array asymmetric
+/// with chat and bust the prompt-cache prefix); the heartbeat dispatch
+/// intercepts these names rather than letting them fall through to
+/// `NotImplemented`.
+fn is_send_message_tool(name: &str) -> bool {
+    name.eq_ignore_ascii_case("sendmessage") || name.eq_ignore_ascii_case("send_message")
+}
+
+/// Scan one iteration's tool calls for a `sendMessage` and return its message
+/// text (last-wins), mirroring the `<sendMessage>` tag's last-wins semantics.
+fn capture_tool_send_message(tool_uses: &[(String, String, Value)]) -> Option<String> {
+    tool_uses
+        .iter()
+        .filter(|(_, name, _)| is_send_message_tool(name))
+        .filter_map(|(_, _, input)| extract_tool_send_message(input))
+        .next_back()
+}
+
+/// Pull the user-facing message out of a hallucinated `sendMessage` tool call.
+/// The model gets no input schema (the tool is undeclared), so accept the field
+/// names it commonly reaches for, plus a bare string input.
+fn extract_tool_send_message(input: &Value) -> Option<String> {
+    for key in ["message", "text", "content", "body"] {
+        if let Some(s) = input.get(key).and_then(Value::as_str) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    if let Some(s) = input.as_str() {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_owned());
+        }
+    }
+    None
 }
 
 const WRAP_UP_NUDGE_TEXT: &str = "[System nudge: heartbeat tool-use budget reached. Wrap up now — \
@@ -3676,6 +3731,36 @@ mod tests {
     }
 
     #[test]
+    fn send_message_tool_name_matching() {
+        assert!(is_send_message_tool("sendMessage"));
+        assert!(is_send_message_tool("send_message"));
+        assert!(is_send_message_tool("SendMessage"));
+        assert!(!is_send_message_tool("set_next_wake"));
+        assert!(!is_send_message_tool("search"));
+    }
+
+    #[test]
+    fn send_message_tool_input_extraction() {
+        // Common field names the undeclared tool reaches for.
+        assert_eq!(
+            extract_tool_send_message(&json!({"message": "  hi there  "})),
+            Some("hi there".into())
+        );
+        assert_eq!(
+            extract_tool_send_message(&json!({"text": "via text"})),
+            Some("via text".into())
+        );
+        // Bare string input.
+        assert_eq!(
+            extract_tool_send_message(&json!("bare string")),
+            Some("bare string".into())
+        );
+        // Empty / absent → None.
+        assert_eq!(extract_tool_send_message(&json!({"message": "   "})), None);
+        assert_eq!(extract_tool_send_message(&json!({"other": "x"})), None);
+    }
+
+    #[test]
     fn extract_tag_handles_nested_text() {
         let content = "<sendMessage>Hey <b>bold</b> text</sendMessage>";
         assert_eq!(
@@ -3890,8 +3975,10 @@ mod tests {
     /// ENTIRE cache prefix — system AND messages.  Every heartbeat tick
     /// with a different tools array pays full input price (20× expected).
     ///
-    /// The fix is to keep `set_next_wake` in the normal tool list and
-    /// intercept it during heartbeat execution.
+    /// The fix is to never declare heartbeat-only capabilities
+    /// (`set_next_wake`, `sendMessage`) as tools: the prompt instructs the
+    /// model to call them and the heartbeat loop intercepts the undeclared
+    /// calls, so the tools array stays identical to chat's.
     #[test]
     fn heartbeat_must_not_mutate_tools_array() {
         // Simulate what execute_heartbeat_tick does: clone last_request,
@@ -3921,18 +4008,17 @@ mod tests {
             keepalive_interval: None,
         };
 
-        // set_next_wake is now in the base tool set (tools/basic.rs),
-        // so execute_heartbeat_tick no longer pushes it at call time.
-        // This test documents the invariant: the tools array must be
-        // identical to the original conversation's tools to preserve
-        // the cache prefix.
+        // set_next_wake is undeclared and intercepted at execution time, so
+        // execute_heartbeat_tick never pushes it (or any tool) into the array.
+        // This test documents the invariant: the tools array must be identical
+        // to the original conversation's tools to preserve the cache prefix.
         assert_eq!(
             request.tools.as_ref().unwrap().len(),
             original_tools.len(),
             "Heartbeat must not add tools to the request. \
              Adding set_next_wake changes the tools prefix, which invalidates \
              the ENTIRE Anthropic cache (tools → system → messages). \
-             Use an XML tag like <sendMessage> instead."
+             Call it as an undeclared, intercepted tool instead."
         );
     }
 

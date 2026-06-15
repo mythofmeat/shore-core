@@ -321,8 +321,10 @@ pub fn dispatch_tool<'ctx>(
             "exec" => {
                 workspace::handle_exec(input, ctx.workspace_dir(), ctx.character_name()).await
             }
-            // set_next_wake is in the base tool set for cache stability but
-            // only heartbeat-capable contexts are allowed to handle it.
+            // set_next_wake is an undeclared, heartbeat-only capability: the
+            // heartbeat loop intercepts it before dispatch (see
+            // `dispatch_heartbeat_tools`). This arm only fires if some other
+            // context dispatches the name, and rejects it there.
             "set_next_wake" => ctx.schedule_next_wake(&input).unwrap_or_else(|| {
                 Err(ToolError::InvalidArgs(
                     "set_next_wake is only available during heartbeat ticks".into(),
@@ -440,8 +442,9 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // images(1) + web(2) + activity(1) + basic(3) + workspace(7) + history(1) = 15
-        assert_eq!(tools.len(), 15);
+        // images(1) + web(2) + activity(1) + basic(2) + workspace(7) + history(1) = 14
+        // (basic = check_time, roll_dice; set_next_wake is undeclared — see basic.rs)
+        assert_eq!(tools.len(), 14);
     }
 
     #[test]

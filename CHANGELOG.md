@@ -8,6 +8,29 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Fixed
+- **`sendMessage` during heartbeat ticks no longer returns "not yet
+  implemented".** The heartbeat prompt asks the character to deliver a message
+  by wrapping it in a `<sendMessage>` tag, but in a tool-use context the model
+  often calls a `sendMessage` *tool* instead. That tool is intentionally not
+  declared — declaring it would make the heartbeat tools array diverge from
+  chat's and bust the Anthropic prompt-cache prefix (tools render first in the
+  cached prefix, so any divergence invalidates the whole cache) — so the call
+  fell through to the catch-all and came back as `sendMessage: not yet
+  implemented`, which misled the model into thinking the capability was broken.
+  The heartbeat tool loop now intercepts the undeclared `sendMessage`/
+  `send_message` call, routes its text to the same delivery sink the
+  `<sendMessage>` tag feeds, and returns success. Both the tag and the tool
+  call now deliver; the tools array stays byte-identical to chat. (`generate_image`
+  failures during ticks are a separate provider/sidecar issue, not addressed here.)
+- **`set_next_wake` is no longer a declared (chat-visible) tool.** It was kept in
+  the base tool set purely so the chat and heartbeat tool arrays would match
+  (cache-prefix stability), which put a heartbeat-only capability on the chat
+  tool surface. It is now undeclared and handled the same way as `sendMessage`:
+  the heartbeat prompt instructs the call and the tool loop intercepts it by
+  name. The tools array is unchanged for chat (one fewer tool) and identical
+  between chat and heartbeat, so the cache invariant still holds — without the
+  asymmetric-feeling tool. Characters that listed `set_next_wake` in
+  `enabled_tools` no longer need to (the name is simply ignored there now).
 - **Sub-agents (`ask_*`) now work during heartbeat and dreaming ticks.**
   Previously the character was offered its `ask_<name>` tools during background
   ticks (the tool surface is identical to chat, by design, for cache
