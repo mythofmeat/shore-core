@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.2](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.15.1...shore-config-v0.15.2) - 2026-06-15
+
+### Added
+
+- unified observability store for LLM calls (shore log --api/--heartbeat/--dreaming) ([#278](https://github.com/mythofmeat/shore-core/pull/278))
+
 ## [0.15.1](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.15.0...shore-config-v0.15.1) - 2026-06-12
 
 ### Fixed
