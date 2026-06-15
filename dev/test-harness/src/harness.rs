@@ -142,14 +142,18 @@ impl TestHarness {
 
         // ── Ledger-wrapped LLM Client ────────────────────────────────
         let mut raw_llm_client = fail_fast(LlmClient::try_new(), "failed to create LlmClient");
-        if config.app.advanced.api_payload_logging {
-            let _ignored = std::fs::create_dir_all(&config.dirs.cache).ok();
-            if let Ok(store) =
-                shore_call_store::CallStore::open(&config.dirs.cache.join("calls.db"))
-            {
-                raw_llm_client.set_call_store(Arc::new(store));
-            }
-        }
+        // Mirror production: the call store is always-on, not gated on the
+        // deprecated `api_payload_logging` flag, so tests exercise the same
+        // observability path as the daemon.
+        fail_fast(
+            std::fs::create_dir_all(&config.dirs.cache),
+            "failed to create call-store cache dir",
+        );
+        let store = fail_fast(
+            shore_call_store::CallStore::open(&config.dirs.cache.join("calls.db")),
+            "failed to open harness call store",
+        );
+        raw_llm_client.set_call_store(Arc::new(store));
         raw_llm_client.set_sidecar_socket(mock_llm.socket_path().to_path_buf());
         let llm_client = fail_fast(
             LedgerClient::new(raw_llm_client, &config.dirs.data.join("ledger.db")),

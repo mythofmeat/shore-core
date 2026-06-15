@@ -485,8 +485,9 @@ impl CallStore {
         )?;
 
         // Keep the newest rows whose cumulative compressed size stays within the
-        // cap; delete the older overflow. `OFFSET 1` on the running total keeps
-        // the single newest row even if it alone exceeds the cap.
+        // cap; delete the older overflow. The single newest row (highest
+        // `(ts_unix, id)`) is excluded from the delete set so it is always kept,
+        // even when it alone exceeds the cap.
         let sized = conn.execute(
             "DELETE FROM calls WHERE id IN (
                  SELECT id FROM (
@@ -495,7 +496,9 @@ impl CallStore {
                                 OVER (ORDER BY ts_unix DESC, id DESC
                                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running
                      FROM calls
-                 ) WHERE running > ?1
+                 )
+                 WHERE running > ?1
+                   AND id != (SELECT id FROM calls ORDER BY ts_unix DESC, id DESC LIMIT 1)
              )",
             params![cap],
         )?;
@@ -814,5 +817,31 @@ mod tests {
             !remaining.iter().any(|s| s.call_id == "c0"),
             "oldest row (c0) is evicted"
         );
+    }
+
+    #[test]
+    fn rotate_keeps_newest_row_even_when_it_exceeds_cap() {
+        let store = CallStore::open_in_memory().unwrap();
+        let base = Utc::now();
+        let small = store
+            .record_call(&sample_call("old", base, "message", "tiny"))
+            .unwrap();
+        // The newest row alone is far larger than the cap below.
+        let big_ts = base.checked_add_signed(Duration::seconds(1)).unwrap();
+        let _ = store
+            .record_call(&sample_call("new", big_ts, "message", &"z".repeat(50_000)))
+            .unwrap();
+        let _ = small;
+
+        // Cap of 1 byte: every row's running total exceeds it, yet the newest
+        // row must survive (payloads are never truncated).
+        let stats = store
+            .rotate(base.checked_sub_signed(Duration::days(1)).unwrap(), 1)
+            .unwrap();
+        assert!(stats.deleted_by_size >= 1, "the older row is evicted");
+
+        let remaining = store.query_calls(&CallFilter::default()).unwrap();
+        assert_eq!(remaining.len(), 1, "exactly the newest row is kept");
+        assert_eq!(remaining[0].call_id, "new", "newest row survives the cap");
     }
 }

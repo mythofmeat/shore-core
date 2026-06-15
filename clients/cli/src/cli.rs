@@ -138,22 +138,26 @@ pub(crate) enum CliCommand {
 
         /// Show the heartbeat transcript: what each tick thought, the tools it
         /// called and their results, and the model/provider that served it
-        #[arg(long, conflicts_with_all = ["dreaming", "events", "api"])]
+        #[arg(long, conflicts_with_all = ["dreaming", "events", "api", "msg_ref"])]
         heartbeat: bool,
 
         /// Show the dreaming/librarian transcript (full reasoning + tool I/O)
-        #[arg(long, conflicts_with_all = ["heartbeat", "events", "api"])]
+        #[arg(long, conflicts_with_all = ["heartbeat", "events", "api", "msg_ref"])]
         dreaming: bool,
 
         /// Show the heartbeat operational event timeline (tick fired, dormant,
         /// woke, timeout) instead of the transcript
-        #[arg(long, conflicts_with_all = ["heartbeat", "dreaming", "api"])]
+        #[arg(long, conflicts_with_all = ["heartbeat", "dreaming", "api", "msg_ref"])]
         events: bool,
 
         /// Inspect raw LLM call payloads. Bare lists recent calls; pass an id
         /// (`--api 42`) to dump that call's full request/response
-        #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "ID")]
-        api: Option<String>,
+        #[expect(
+            clippy::option_option,
+            reason = "clap needs absent, present-without-value, and present-with-value states"
+        )]
+        #[arg(long, num_args = 0..=1, value_name = "ID", conflicts_with = "msg_ref")]
+        api: Option<Option<i64>>,
 
         /// Filter `--api` by ledger call type (e.g. message, heartbeat, dreaming)
         #[arg(long, requires = "api")]
@@ -889,7 +893,7 @@ fn log_to_swp(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
     if let Some(api_arg) = api {
         let mut args = Map::new();
         // `--api <id>` dumps one call; bare `--api` lists recent calls.
-        if let Ok(id) = api_arg.trim().parse::<i64>() {
+        if let Some(id) = api_arg {
             _ = args.insert("id".into(), json!(id));
         } else {
             _ = args.insert("count".into(), json!(count));

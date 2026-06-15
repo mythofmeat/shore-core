@@ -186,6 +186,7 @@ pub struct TeeReader<R> {
     inner: R,
     ctx: Option<CallContext>,
     buf: Vec<u8>,
+    read_error: Option<String>,
 }
 
 impl<R: std::fmt::Debug> std::fmt::Debug for TeeReader<R> {
@@ -194,6 +195,7 @@ impl<R: std::fmt::Debug> std::fmt::Debug for TeeReader<R> {
             .field("inner", &self.inner)
             .field("ctx", &self.ctx)
             .field("buffered_bytes", &self.buf.len())
+            .field("read_error", &self.read_error)
             .finish()
     }
 }
@@ -204,6 +206,7 @@ impl<R> TeeReader<R> {
             inner,
             ctx: Some(ctx),
             buf: Vec::new(),
+            read_error: None,
         }
     }
 }
@@ -216,7 +219,13 @@ impl<R> Drop for TeeReader<R> {
         let body = String::from_utf8_lossy(&self.buf).into_owned();
         let (finish, usage) = parse_stream_summary(&body);
         let duration = crate::convert::elapsed_ms_u64(ctx.started.elapsed());
-        ctx.record(Some(&body), None, finish.as_deref(), usage, duration);
+        ctx.record(
+            Some(&body),
+            self.read_error.as_deref(),
+            finish.as_deref(),
+            usage,
+            duration,
+        );
     }
 }
 
@@ -228,6 +237,9 @@ impl<R: AsyncRead + Unpin> AsyncRead for TeeReader<R> {
     ) -> Poll<std::io::Result<()>> {
         let before = buf.filled().len();
         let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(Err(e)) = &poll {
+            self.read_error = Some(e.to_string());
+        }
         if let Poll::Ready(Ok(())) = &poll {
             let after = buf.filled().len();
             if after > before {

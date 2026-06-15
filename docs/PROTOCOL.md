@@ -899,7 +899,9 @@ Query curated heartbeat/dreaming transcripts for the active character.
 - **data:** `{ "enabled": bool, "source": "…", "character": "…", "entries": [ {
   id, ts, source, character, call_type, iteration, model, provider,
   finish_reason, usage: {…}, entry: { reasoning: […], text, tool_calls: [ {
-  name, input, output, is_error } ] } } ] }`.
+  name, input, output, is_error } ] } } ] }`. `character` is present only when
+  `enabled` is `true`; when capture is unavailable the response is just
+  `{ "enabled": false, "source": "…", "entries": [] }`.
 - **errors:** `invalid_request` for an unknown `source`.
 
 #### `heartbeat_tick_now`

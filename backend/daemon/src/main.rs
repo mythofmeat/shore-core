@@ -517,16 +517,24 @@ fn spawn_call_store_rotation(client: &LedgerClient) {
             else {
                 continue;
             };
-            match store.rotate(cutoff, CALL_STORE_MAX_BYTES) {
-                Ok(stats) if stats.deleted_by_age > 0 || stats.deleted_by_size > 0 => {
+            // `rotate` runs synchronous SQLite maintenance (incremental_vacuum
+            // over a DB up to the size cap); keep it off the async worker.
+            let rotate_store = Arc::clone(&store);
+            let rotate_result = tokio::task::spawn_blocking(move || {
+                rotate_store.rotate(cutoff, CALL_STORE_MAX_BYTES)
+            })
+            .await;
+            match rotate_result {
+                Ok(Ok(stats)) if stats.deleted_by_age > 0 || stats.deleted_by_size > 0 => {
                     info!(
                         deleted_by_age = stats.deleted_by_age,
                         deleted_by_size = stats.deleted_by_size,
                         "Call store rotation pruned rows"
                     );
                 }
-                Ok(_) => {}
-                Err(e) => warn!(error = %e, "Call store rotation failed"),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => warn!(error = %e, "Call store rotation failed"),
+                Err(e) => warn!(error = %e, "Call store rotation task panicked"),
             }
         }
     });

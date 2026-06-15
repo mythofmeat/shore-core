@@ -359,15 +359,23 @@ async fn test_calls_recorded_in_store_with_call_type() {
     enqueue_compaction_write(&mut harness, "store-capture").await;
     harness.mock_llm.enqueue_embedding_optional(8).await;
     harness.trigger_compaction_now("TestChar").await;
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Open a read-only handle on the same DB the daemon writes to.
     let store = CallStore::open(&harness.config.dirs.cache.join("calls.db"))
         .expect("call store DB must exist after capture");
 
-    let all = store
-        .query_calls(&CallFilter::default())
-        .expect("query all calls");
+    // Persistence to calls.db is asynchronous; poll until the expected rows
+    // land rather than racing a fixed delay on slow runners.
+    let mut all = Vec::new();
+    for _ in 0..100 {
+        all = store
+            .query_calls(&CallFilter::default())
+            .expect("query all calls");
+        if all.len() >= 3 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     assert!(
         all.len() >= 3,
         "every chat send plus the compaction call must be recorded; got {}",
