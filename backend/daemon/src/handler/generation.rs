@@ -207,7 +207,7 @@ fn build_tool_context(
                         ledger_client: ctx.llm_client.clone(),
                         diagnostics: std::sync::Arc::clone(&ctx.diagnostics),
                         config: std::sync::Arc::new(effective_config.clone()),
-                        direct_tx: ctx.direct_tx.clone(),
+                        direct_tx: Some(ctx.direct_tx.clone()),
                     },
                 ))
             },

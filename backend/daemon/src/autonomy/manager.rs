@@ -110,6 +110,18 @@ impl ToolContext for HeartbeatToolContext {
     fn defer_edit(&self, path: &str) {
         self.inner.defer_edit(path);
     }
+    fn run_subagent<'ctx>(
+        &'ctx self,
+        name: &'ctx str,
+        query: &'ctx str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, ToolError>> + Send + 'ctx>>
+    {
+        // Delegate to the inner SharedToolContext, which carries the wired
+        // sub-agent runtime. Without this override the trait default would
+        // short-circuit to `NotImplemented` and `ask_*` would never reach the
+        // runtime during heartbeat ticks.
+        self.inner.run_subagent(name, query)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2880,7 +2892,20 @@ fn build_tool_context(
         ),
         config_dir: config.dirs.config.to_string_lossy().into_owned(),
         character_data_dir: char_dir.to_string_lossy().into_owned(),
-        subagent_runtime: None,
+        // Wire the sub-agent runtime so `ask_*` works during heartbeat ticks.
+        // Background context: no live client channel, so the nested loop's
+        // frames drain rather than stream (see `SubagentRuntime::background`).
+        // Gated on configured sub-agents to skip the config clone otherwise.
+        subagent_runtime: if config.app.subagents.is_empty() {
+            None
+        } else {
+            Some(Arc::new(
+                crate::tools::subagent::SubagentRuntime::background(
+                    client.clone(),
+                    Arc::new(config.clone()),
+                ),
+            ))
+        },
     }
 }
 

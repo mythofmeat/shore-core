@@ -360,9 +360,14 @@ Load-bearing invariants:
   guard context whose `run_subagent` is the trait default (`NotImplemented`), and
   the offered tool subset never contains `ask_*` (those are not in the static
   registry). A hallucinated `ask_*` call therefore errors instead of recursing.
-- **The runtime is chat-only.** Only the generation path wires a
-  `SubagentRuntime`; background contexts (heartbeat, compaction, dreaming) leave
-  it `None`, so `ask_*` there returns `NotImplemented`.
+- **Background ticks run sub-agents without a client channel.** The chat
+  generation path wires a `SubagentRuntime` with the live client channel; the
+  heartbeat and dreaming paths wire one via `SubagentRuntime::background`, whose
+  `direct_tx` is `None` so the nested loop's frames are drained (not streamed to
+  a UI) while the agent still runs and returns its summary. Only compaction
+  leaves the runtime `None`, so `ask_*` there returns `NotImplemented`. All
+  background wiring is gated on configured sub-agents to skip the config clone
+  when none exist.
 - **Tool ordering is stable.** `ask_*` defs are appended after the static tool
   surface in config (`BTreeMap`) order, keeping the cache prefix byte-stable.
 

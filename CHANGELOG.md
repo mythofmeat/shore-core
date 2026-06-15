@@ -8,6 +8,17 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Fixed
+- **Sub-agents (`ask_*`) now work during heartbeat and dreaming ticks.**
+  Previously the character was offered its `ask_<name>` tools during background
+  ticks (the tool surface is identical to chat, by design, for cache
+  stability), but invoking one returned `NotImplemented`: the background tool
+  contexts never wired a `SubagentRuntime`, and the heartbeat context didn't
+  even delegate `run_subagent` to its inner context. Both the heartbeat and
+  dreaming paths now wire a runtime via `SubagentRuntime::background`, so a
+  reflecting or dreaming character can actually consult its sub-agents. Because
+  background ticks have no live client turn, the nested tool-loop's frames are
+  drained rather than streamed to a UI; the agent still runs and its summary
+  returns as the tool result. Compaction still does not run sub-agents.
 - **Prompt-cache breakpoints no longer land on empty text blocks.** When a
   message's trailing block was an empty text block (e.g. an assistant turn
   that emitted a tool call after an empty text segment), the Anthropic sidecar
