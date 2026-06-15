@@ -42,7 +42,8 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   operator-pruned `debug/api_logs*` JSON dumps with one queryable, self-rotating
   store: a 14-day window plus a 512 MiB disk backstop, pruned hourly. Inspect it
   with `shore log --api` (recent calls; `--call-type` to filter; `--api <id>` to
-  dump one call's full request/response), `shore log --heartbeat` / `--dreaming`
+  dump one call's request/response — human-readable output is truncated, add
+  `--json` for the full payload), `shore log --heartbeat` / `--dreaming`
   (curated transcripts), and `--json` for raw rows. Compression collapses the
   repeated prompt context across calls, so the footprint is a fraction of the
   raw bytes. Capture is **always on**; the `[advanced].api_payload_logging`

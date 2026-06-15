@@ -382,22 +382,32 @@ impl CallStore {
 
     /// Fetch one call by id with its decompressed request/response bodies.
     pub fn get_call(&self, id: i64) -> Result<Option<CallPayload>> {
-        let conn = self.lock_conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, call_id, ts, call_type, character, model, provider,
-                    finish_reason, input_tokens, output_tokens, cache_read_tokens,
-                    duration_ms, error,
-                    COALESCE(LENGTH(request_zstd), 0), COALESCE(LENGTH(response_zstd), 0),
-                    request_zstd, response_zstd
-             FROM calls WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query(params![id])?;
-        let Some(row) = rows.next()? else {
+        // Pull the row (summary + compressed blobs) under the lock, then release
+        // it before decompressing so writes are not serialized behind zstd work.
+        let row_data = {
+            let conn = self.lock_conn();
+            let mut stmt = conn.prepare(
+                "SELECT id, call_id, ts, call_type, character, model, provider,
+                        finish_reason, input_tokens, output_tokens, cache_read_tokens,
+                        duration_ms, error,
+                        COALESCE(LENGTH(request_zstd), 0), COALESCE(LENGTH(response_zstd), 0),
+                        request_zstd, response_zstd
+                 FROM calls WHERE id = ?1",
+            )?;
+            let mut rows = stmt.query(params![id])?;
+            match rows.next()? {
+                Some(row) => {
+                    let summary = row_to_summary(row)?;
+                    let request_blob: Option<Vec<u8>> = row.get(15)?;
+                    let response_blob: Option<Vec<u8>> = row.get(16)?;
+                    Some((summary, request_blob, response_blob))
+                }
+                None => None,
+            }
+        };
+        let Some((summary, request_blob, response_blob)) = row_data else {
             return Ok(None);
         };
-        let summary = row_to_summary(row)?;
-        let request_blob: Option<Vec<u8>> = row.get(15)?;
-        let response_blob: Option<Vec<u8>> = row.get(16)?;
         let request = match request_blob {
             Some(blob) => Some(zstd_decompress(&blob)?),
             None => None,
@@ -426,18 +436,23 @@ impl CallStore {
         } else {
             usize_to_i64(limit)
         };
-        let conn = self.lock_conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, ts, source, character, call_type, iteration, model, provider,
-                    finish_reason, input_tokens, output_tokens, cache_read_tokens, entry_zstd
-             FROM transcripts
-             WHERE source = ?1 AND (?2 IS NULL OR character = ?2)
-             ORDER BY ts_unix DESC, id DESC
-             LIMIT ?3",
-        )?;
-        let blobs = stmt
-            .query_map(params![source, character, bound], row_to_transcript_blob)?
-            .collect::<rusqlite::Result<Vec<TranscriptBlobRow>>>()?;
+        // Collect the compressed rows under the lock, then release it before
+        // decompressing so writes are not serialized behind zstd work.
+        let blobs = {
+            let conn = self.lock_conn();
+            let mut stmt = conn.prepare(
+                "SELECT id, ts, source, character, call_type, iteration, model, provider,
+                        finish_reason, input_tokens, output_tokens, cache_read_tokens, entry_zstd
+                 FROM transcripts
+                 WHERE source = ?1 AND (?2 IS NULL OR character = ?2)
+                 ORDER BY ts_unix DESC, id DESC
+                 LIMIT ?3",
+            )?;
+            let collected = stmt
+                .query_map(params![source, character, bound], row_to_transcript_blob)?
+                .collect::<rusqlite::Result<Vec<TranscriptBlobRow>>>()?;
+            collected
+        };
         let mut out = Vec::with_capacity(blobs.len());
         for blob in blobs {
             let json = zstd_decompress(&blob.entry_zstd)?;

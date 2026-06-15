@@ -814,8 +814,10 @@ the heartbeat/dreaming tool loops additionally record curated transcripts there.
 The store self-rotates (14-day window plus a 512 MiB disk backstop), so no cron
 pruning is needed. Inspect it with `shore log --api` (raw payloads, filterable
 by `--call-type`; `shore log --api <id>` dumps one call) and `shore log
---heartbeat` / `--dreaming` (curated transcripts). `api_key` is redacted; the
-store is observability only, never durable user state. The legacy
+--heartbeat` / `--dreaming` (curated transcripts). API keys are redacted, but
+the store does retain raw request/response payloads (which can include user
+content) as bounded-retention observability data, pruned by age and total size —
+it is not authoritative application state. The legacy
 `[advanced].api_payload_logging` key (and the old `debug/api_logs*` file dumps)
 is deprecated and ignored — accepted only so older configs keep loading.
 
