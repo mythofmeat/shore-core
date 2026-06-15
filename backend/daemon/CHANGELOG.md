@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.7...shore-daemon-v0.1.8) - 2026-06-15
+
+### Added
+
+- unified observability store for LLM calls (shore log --api/--heartbeat/--dreaming) ([#278](https://github.com/mythofmeat/shore-core/pull/278))
+
+### Fixed
+
+- stop cache_control landing on empty text blocks (sidecar + daemon) ([#279](https://github.com/mythofmeat/shore-core/pull/279))
+
 ## [0.1.7](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.6...shore-daemon-v0.1.7) - 2026-06-13
 
 ### Fixed
