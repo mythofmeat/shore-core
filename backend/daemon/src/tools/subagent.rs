@@ -34,9 +34,11 @@ use crate::engine::tools::{run_tool_loop, ToolLoopRetry};
 
 /// Per-turn dependencies a [`SharedToolContext`] needs to run a sub-agent.
 ///
-/// Only the chat generation path populates this; background contexts
-/// (heartbeat, compaction, dreaming) leave it `None`, so calling `ask_*`
-/// there returns `NotImplemented` rather than panicking.
+/// The chat generation path populates this with a live client channel. The
+/// heartbeat and dreaming background paths populate it via
+/// [`SubagentRuntime::background`] (no client channel — frames drain). Only
+/// compaction leaves it `None`, so calling `ask_*` there returns
+/// `NotImplemented` rather than panicking.
 pub(crate) struct SubagentRuntime {
     /// Ledger-wrapped client so sub-agent spend is recorded and attributable
     /// (initial stream tagged [`CallType::Subagent`]).
@@ -51,7 +53,28 @@ pub(crate) struct SubagentRuntime {
     /// show the nested loop instead of appearing frozen. Intermediate tool
     /// *results* still never enter the primary model's context — this is a
     /// client-side view only.
-    pub(crate) direct_tx: mpsc::Sender<ServerMessage>,
+    ///
+    /// `None` for background contexts (heartbeat, dreaming): there is no live
+    /// client turn to stream into, so the nested loop's frames are drained and
+    /// dropped rather than forwarded. The sub-agent still runs and returns its
+    /// summary.
+    pub(crate) direct_tx: Option<mpsc::Sender<ServerMessage>>,
+}
+
+impl SubagentRuntime {
+    /// Build a runtime for a background context (heartbeat, dreaming) with no
+    /// live client channel. The nested tool-loop runs and returns its summary;
+    /// its streamed frames are drained and dropped. Diagnostics land in a
+    /// throwaway buffer — background ticks have no interactive `shore diagnose`
+    /// view to feed.
+    pub(crate) fn background(ledger_client: LedgerClient, config: Arc<LoadedConfig>) -> Self {
+        Self {
+            ledger_client,
+            diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
+            config,
+            direct_tx: None,
+        }
+    }
 }
 
 /// Run sub-agent `name` with `query`, returning its final text.
@@ -212,15 +235,23 @@ fn build_request(
 /// `name` and relays it to the client channel. It ends when every sender on
 /// `rx` is dropped (or the client channel closes), so the caller drops its
 /// senders and awaits the handle to flush.
+///
+/// `client_tx` is `None` for background contexts (heartbeat, dreaming): the
+/// frames are still drained off `rx` — otherwise the bounded channel would
+/// fill and stall the nested loop — but discarded rather than forwarded.
 fn spawn_forwarder(
     mut rx: mpsc::Receiver<ServerMessage>,
-    client_tx: mpsc::Sender<ServerMessage>,
+    client_tx: Option<mpsc::Sender<ServerMessage>>,
     name: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(mut msg) = rx.recv().await {
+            let Some(tx) = client_tx.as_ref() else {
+                // Background tick: drain and drop to keep the nested loop moving.
+                continue;
+            };
             msg.set_subagent(&name);
-            if client_tx.send(msg).await.is_err() {
+            if tx.send(msg).await.is_err() {
                 break;
             }
         }
@@ -361,7 +392,7 @@ mod tests {
 
         let (inner_tx, inner_rx) = mpsc::channel::<ServerMessage>(8);
         let (client_tx, mut client_rx) = mpsc::channel::<ServerMessage>(8);
-        let handle = spawn_forwarder(inner_rx, client_tx, "research".to_owned());
+        let handle = spawn_forwarder(inner_rx, Some(client_tx), "research".to_owned());
 
         inner_tx
             .send(ServerMessage::ToolCall(ToolCall {
@@ -393,6 +424,34 @@ mod tests {
         assert_eq!(result.subagent(), Some("research"));
         // Channel closes once all senders drop, so the task ends.
         assert!(client_rx.recv().await.is_none());
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn forwarder_drains_when_no_client_channel() {
+        // Background contexts (heartbeat, dreaming) pass `None`: frames must be
+        // drained off the bounded channel so the nested loop never stalls, but
+        // nothing is forwarded.
+        use shore_protocol::server_msg::ToolCall;
+
+        let (inner_tx, inner_rx) = mpsc::channel::<ServerMessage>(2);
+        let handle = spawn_forwarder(inner_rx, None, "research".to_owned());
+
+        // Push more frames than the channel capacity; draining keeps it flowing.
+        for i in 0..5 {
+            inner_tx
+                .send(ServerMessage::ToolCall(ToolCall {
+                    rid: None,
+                    tool_id: format!("t{i}"),
+                    tool_name: "search".into(),
+                    input: json!({}),
+                    subagent: None,
+                }))
+                .await
+                .unwrap();
+        }
+        drop(inner_tx);
+        // Drains cleanly and the task ends once all senders drop.
         handle.await.unwrap();
     }
 }

@@ -1248,7 +1248,20 @@ fn build_librarian_tool_context(
         ),
         config_dir: loaded_config.dirs.config.to_string_lossy().into_owned(),
         character_data_dir: character_data_dir.to_string_lossy().into_owned(),
-        subagent_runtime: None,
+        // Wire the sub-agent runtime so `ask_*` works during dreaming ticks.
+        // Background context: no live client channel, so the nested loop's
+        // frames drain rather than stream (see `SubagentRuntime::background`).
+        // Gated on configured sub-agents to skip the config clone otherwise.
+        subagent_runtime: if loaded_config.app.subagents.is_empty() {
+            None
+        } else {
+            Some(std::sync::Arc::new(
+                crate::tools::subagent::SubagentRuntime::background(
+                    llm_client.clone(),
+                    std::sync::Arc::new(loaded_config.clone()),
+                ),
+            ))
+        },
     }
 }
 

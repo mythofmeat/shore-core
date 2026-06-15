@@ -39,25 +39,15 @@ pub fn tool_defs() -> Vec<ToolDef> {
             }),
             category: ToolCategory::Other,
         },
-        ToolDef {
-            name: "set_next_wake",
-            description: crate::include_prompt!("../../prompts/tools/basic/set_next_wake.md"),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "hours_from_now": {
-                        "type": "number",
-                        "description": "Hours until your next private moment (1.0 to 48.0; clamped if outside range)."
-                    },
-                    "reason": {
-                        "type": "string",
-                        "description": "A brief note to your future self about why you chose this timing"
-                    }
-                },
-                "required": ["hours_from_now", "reason"]
-            }),
-            category: ToolCategory::Other,
-        },
+        // NOTE: `set_next_wake` is intentionally NOT declared here. It is a
+        // heartbeat-only capability — declaring it would put a tool that's
+        // meaningless in chat on the chat tool surface, and (because the tools
+        // array is the head of the Anthropic cache prefix) any chat/heartbeat
+        // divergence would bust the cache. Instead the heartbeat prompt
+        // instructs the model to call `set_next_wake(hours_from_now, reason)`,
+        // and the heartbeat tool loop intercepts that (undeclared) call by name
+        // (see `dispatch_heartbeat_tools`). The model emitting a tool_use for an
+        // undeclared name round-trips fine; the harness handles it.
     ]
 }
 

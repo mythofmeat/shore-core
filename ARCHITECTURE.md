@@ -360,9 +360,14 @@ Load-bearing invariants:
   guard context whose `run_subagent` is the trait default (`NotImplemented`), and
   the offered tool subset never contains `ask_*` (those are not in the static
   registry). A hallucinated `ask_*` call therefore errors instead of recursing.
-- **The runtime is chat-only.** Only the generation path wires a
-  `SubagentRuntime`; background contexts (heartbeat, compaction, dreaming) leave
-  it `None`, so `ask_*` there returns `NotImplemented`.
+- **Background ticks run sub-agents without a client channel.** The chat
+  generation path wires a `SubagentRuntime` with the live client channel; the
+  heartbeat and dreaming paths wire one via `SubagentRuntime::background`, whose
+  `direct_tx` is `None` so the nested loop's frames are drained (not streamed to
+  a UI) while the agent still runs and returns its summary. Only compaction
+  leaves the runtime `None`, so `ask_*` there returns `NotImplemented`. All
+  background wiring is gated on configured sub-agents to skip the config clone
+  when none exist.
 - **Tool ordering is stable.** `ask_*` defs are appended after the static tool
   surface in config (`BTreeMap`) order, keeping the cache prefix byte-stable.
 
@@ -413,8 +418,21 @@ Heartbeat ticks:
 1. Rebuild the latest prompt from disk.
 2. Inject active `HEARTBEAT.md` plus runtime affordances.
 3. Run a bounded tool loop.
-4. Extract an optional user-facing `<sendMessage>`.
+4. Extract an optional user-facing message — from a `<sendMessage>` tag or an
+   intercepted `sendMessage` tool call (last-wins).
 5. Schedule the next wake or fall back to the configured interval.
+
+The heartbeat-only capabilities `set_next_wake` and `sendMessage` are **not
+declared tools**. The tools array is the head of the Anthropic cache prefix, so
+declaring a heartbeat-only tool — or otherwise letting the chat and heartbeat
+tool arrays diverge — would invalidate the whole cache (tools → system →
+messages). Instead the heartbeat prompt instructs the model to call them, and
+the tool loop intercepts the (undeclared) calls by name: `set_next_wake` updates
+the wake schedule, `sendMessage` routes to the user-message sink. A model
+emitting a `tool_use` for an undeclared name round-trips through the API fine;
+the harness handles it. Sub-agents (`ask_*`), by contrast, **are** declared (so
+they're identical in both arrays) and are made to work in background ticks by
+wiring a runtime — see the sub-agents section.
 
 Heartbeat does not force recap files or daily memory notes. Durable notes happen
 only when the character uses write-capable tools. Dormancy stops autonomous LLM
