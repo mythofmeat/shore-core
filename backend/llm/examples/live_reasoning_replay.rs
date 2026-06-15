@@ -252,7 +252,7 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match client.generate(&request).await {
+    match client.generate(&request, None).await {
         Ok(resp) => {
             let text = resp.extract_text();
             example_out!(

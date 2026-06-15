@@ -7,6 +7,7 @@ members = [
     "backend/diagnostics",
     "backend/llm",
     "backend/ledger",
+    "backend/call-store",
     "backend/swp-server",
     "backend/daemon",
     "clients/cli",
@@ -74,7 +75,9 @@ shore-daemon = { path = "backend/daemon", version = "0.1.7" }
 # entirely, so the cycle vanishes for packaging while tests still link
 # against the harness via the path.
 shore-test-harness = { path = "dev/test-harness" }
+shore-call-store = { path = "backend/call-store", version = "0.1.0" }
 rusqlite = { version = "0.37", features = ["bundled"] }
+zstd = "0.13"
 
 [workspace.lints.clippy]
 # Pedantic is enabled workspace-wide as a quality ratchet. priority = -1 lets

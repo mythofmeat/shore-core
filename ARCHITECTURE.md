@@ -17,6 +17,7 @@ security boundaries, observability, and validation expectations.
 | `backend/daemon` | `shore-daemon` | engine, memory, autonomy, tools, generation |
 | `backend/llm` | `shore-llm` | provider request/stream handling |
 | `backend/ledger` | `shore-ledger` | usage, pricing, Anthropic cache tracking |
+| `backend/call-store` | `shore-call-store` | compressed SQLite store for call payloads + transcripts |
 | `backend/diagnostics` | `shore-diagnostics` | shared diagnostic formatting |
 | `clients/cli` | `shore-cli` | CLI client |
 | `dev/test-harness` | `shore-test-harness` | integration harness and mock server |
@@ -112,22 +113,19 @@ $XDG_CACHE_HOME/shore/cache_forensics.jsonl
 $XDG_CACHE_HOME/shore/providers/<Provider>/models.json
 $XDG_CACHE_HOME/shore/characters/<Character>/workspace_index.json
 $XDG_CACHE_HOME/shore/resized/
-$XDG_CACHE_HOME/shore/debug/api_logs/
-$XDG_CACHE_HOME/shore/debug/api_logs_long/
+$XDG_CACHE_HOME/shore/calls.db
 ```
 
-Per-call API payload logs split into two retention tiers. `api_logs/` is
-high-volume per-turn chat traffic — useful for a few days after a bug
-shows up. `api_logs_long/` holds background-task payloads (compaction,
-dreaming, heartbeat) flagged with `LlmRequest::retain_long`; those calls
-are low-frequency but high-value for forensic analysis of cache
-regressions and memory drift, so operators typically keep them longer.
-Pruning is operator-managed (no internal rotation):
-
-```sh
-find ~/.cache/shore/debug/api_logs/      -type f -mtime +3  -delete
-find ~/.cache/shore/debug/api_logs_long/ -type f -mtime +30 -delete
-```
+The observability store (`calls.db`, a compressed SQLite database owned by the
+`shore-call-store` crate) records every LLM call's request/response — chat, tool
+loops, heartbeat, dreaming, compaction — as zstd-compressed blobs, plus curated
+heartbeat/dreaming transcripts. It is always on and replaces the old
+operator-pruned `debug/api_logs*` JSON dumps. Payloads compress well (the
+repeated prompt context across calls collapses), so the footprint is a fraction
+of the raw bytes. The daemon self-rotates it on an hourly task: a 14-day window
+plus a 512 MiB disk backstop (oldest-first eviction, pages reclaimed via
+`incremental_vacuum`). `api_key` is redacted. It is observability only — never
+authoritative conversation state.
 
 ## Runtime Flow
 
@@ -474,6 +472,10 @@ shore usage --by-kind
 shore usage --by-api-key
 shore usage --anomalies
 shore log --heartbeat
+shore log --dreaming
+shore log --events
+shore log --api
+shore log --api <id>
 shore memory dreams
 ```
 
@@ -487,6 +489,18 @@ into user-facing categories such as `message_no_tools`, `message_with_tools`,
 `heartbeat`, `compaction`, and `dreaming`; `shore usage --by-api-key` groups
 spend by the friendly configured key name, with historical rows shown as
 `unknown`.
+
+The observability store (`calls.db`, see File Layout) captures the full
+request/response of every LLM call plus curated heartbeat/dreaming transcripts.
+`shore log --api` lists recent calls (filter with `--call-type`); `shore log
+--api <id>` dumps one call's decompressed request/response. `shore log
+--heartbeat` and `shore log --dreaming` render the curated transcripts — what
+each background tick/pass thought, the tools it ran with their results, and the
+model/provider that actually served it (the blind spot the raw ledger row can't
+show). `shore log --events` keeps the heartbeat operational event ring (tick
+fired / dormant / woke / timeout). `--json` on any of these returns the raw
+rows. Unlike the ledger (durable cost state in the data dir), the store is
+disposable observability in the cache dir and self-rotates.
 
 Usage budgets are configured under `[usage]` and evaluated directly against the
 ledger before each LLM call. Budget windows use the configured calendar
@@ -531,8 +545,7 @@ Disposable cache surfaces:
 | Provider model discovery | `$XDG_CACHE_HOME/shore/providers/<Provider>/models.json` |
 | Workspace embedding index | `$XDG_CACHE_HOME/shore/characters/<Character>/workspace_index.json` |
 | Resized image cache | `$XDG_CACHE_HOME/shore/resized/` |
-| API payload debug logs (chat) | `$XDG_CACHE_HOME/shore/debug/api_logs/` |
-| API payload debug logs (background, long-retention) | `$XDG_CACHE_HOME/shore/debug/api_logs_long/` |
+| Observability store (call payloads + transcripts) | `$XDG_CACHE_HOME/shore/calls.db` |
 
 Runtime surfaces:
 

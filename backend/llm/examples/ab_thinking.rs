@@ -590,7 +590,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
 
-        let resp = client.generate(&request).await?;
+        let resp = client.generate(&request, None).await?;
         let tools_used = print_result(&format!("Run {run} — effort={effort}"), &resp);
 
         if heartbeat || rut {

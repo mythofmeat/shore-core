@@ -84,6 +84,57 @@ async fn heartbeat_ok_is_one_call_and_writes_no_memory_file() {
     harness.shutdown().await;
 }
 
+/// A heartbeat tick records a curated transcript row in the observability
+/// store, tagged `source = heartbeat`, so `shore log --heartbeat` has data.
+#[tokio::test]
+async fn heartbeat_tick_records_transcript_row() {
+    use shore_call_store::CallStore;
+
+    init_tracing();
+    let mut harness = TestHarness::boot_with(
+        TestConfigBuilder::new()
+            .autonomy(true)
+            .heartbeat_max_tool_rounds(12)
+            .api_payload_logging(true),
+    )
+    .await;
+    harness.mock_llm.enqueue_text("ack").await;
+    let _ignored = harness.send_and_collect("hello").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    harness.mock_llm.enqueue_json_text("HEARTBEAT_OK").await;
+    fire_tick(&harness).await;
+
+    let store = CallStore::open(&harness.config.dirs.cache.join("calls.db"))
+        .expect("call store DB must exist once capture is on");
+    let mut rows = Vec::new();
+    for _ in 0..100 {
+        rows = store
+            .query_transcripts("heartbeat", Some(CHARACTER), 0)
+            .expect("query heartbeat transcripts");
+        if !rows.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !rows.is_empty(),
+        "a heartbeat tick must record at least one heartbeat transcript row"
+    );
+    let row = rows.first().expect("row present");
+    assert_eq!(
+        row.source, "heartbeat",
+        "row tagged with the heartbeat source"
+    );
+    assert!(
+        row.entry.get("tool_calls").is_some(),
+        "curated entry carries a tool_calls field: {}",
+        row.entry
+    );
+
+    harness.shutdown().await;
+}
+
 #[tokio::test]
 async fn send_message_is_delivered_without_recap() {
     init_tracing();

@@ -13,6 +13,7 @@ shore-swp-server = { workspace = true }
 shore-protocol = { workspace = true }
 shore-llm = { workspace = true }
 shore-ledger = { workspace = true }
+shore-call-store = { workspace = true }
 shore-diagnostics = { workspace = true }
 
 wiremock = "0.6"

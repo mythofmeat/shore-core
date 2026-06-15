@@ -877,6 +877,33 @@ with that role.
 - **args:** `{ "count"?: u64 }` — default `20`.
 - **data:** `{ "events": [ { "timestamp": "…", "kind": "…", "detail": "…" } ] }`.
 
+#### `call_log`
+Query the observability store of raw LLM call payloads.
+- **args:** `{ "id"?: i64, "call_type"?: string, "character"?: string, "count"?: u64 }`.
+  With `id`, returns that one call's decompressed payload. Otherwise returns an
+  index of recent calls (newest first); `character` defaults to the active
+  character, `count` to `20`.
+- **data (index):** `{ "enabled": bool, "entries": [ { id, call_id, ts,
+  call_type, character, model, provider, finish_reason, usage: { input_tokens,
+  output_tokens, cache_read_tokens }, duration_ms, error, request_bytes,
+  response_bytes } ] }` — `*_bytes` are the compressed blob sizes.
+- **data (by id):** `{ "enabled": bool, "call": { …index fields…, request,
+  response } }` where `request`/`response` are the decompressed bodies.
+- **errors:** `invalid_request` for an unknown `id`. `enabled` is `false` when
+  capture is unavailable (then `entries` is empty).
+
+#### `transcript`
+Query curated heartbeat/dreaming transcripts for the active character.
+- **args:** `{ "source"?: "heartbeat" | "dreaming", "count"?: u64 }` — `source`
+  defaults to `heartbeat`, `count` to `20`.
+- **data:** `{ "enabled": bool, "source": "…", "character": "…", "entries": [ {
+  id, ts, source, character, call_type, iteration, model, provider,
+  finish_reason, usage: {…}, entry: { reasoning: […], text, tool_calls: [ {
+  name, input, output, is_error } ] } } ] }`. `character` is present only when
+  `enabled` is `true`; when capture is unavailable the response is just
+  `{ "enabled": false, "source": "…", "entries": [] }`.
+- **errors:** `invalid_request` for an unknown `source`.
+
 #### `heartbeat_tick_now`
 - **args:** none. Schedules a heartbeat tick immediately for the active
   character.

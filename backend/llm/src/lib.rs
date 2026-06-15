@@ -58,10 +58,12 @@ pub mod types;
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tokio::io::{AsyncRead, BufReader};
 use tracing::{debug, warn};
 
+use shore_call_store::CallStore;
 use shore_config::models::ResolvedModel;
 use types::{ImageGenerateParams, ImageGenerateResponse, LlmRequest};
 
@@ -120,9 +122,9 @@ pub struct LlmClient {
     /// Unix socket for the Bun LLM sidecar. `None` makes chat/image calls
     /// return a clear configuration error; embeddings still use HTTP directly.
     sidecar_socket: Option<PathBuf>,
-    /// If set, per-call request/response files are written to
-    /// `{cache_dir}/debug/api_logs/`. See `debug_log` module.
-    payload_log_dir: Option<PathBuf>,
+    /// If set, every call's request/response is recorded to the observability
+    /// store as a compressed row. See the `debug_log` module.
+    call_store: Option<Arc<CallStore>>,
 }
 
 impl LlmClient {
@@ -150,20 +152,20 @@ impl LlmClient {
         Ok(Self {
             http_client,
             sidecar_socket: None,
-            payload_log_dir: None,
+            call_store: None,
         })
     }
 
-    /// Enable API payload logging under the given cache directory.
-    #[must_use]
-    pub fn with_payload_logging(mut self, dir: PathBuf) -> Self {
-        self.payload_log_dir = Some(dir);
-        self
+    /// Record every call's request/response into the observability store.
+    pub fn set_call_store(&mut self, store: Arc<CallStore>) {
+        self.call_store = Some(store);
     }
 
-    /// Set the cache directory used for payload logs.
-    pub fn set_payload_log_dir(&mut self, dir: PathBuf) {
-        self.payload_log_dir = Some(dir);
+    /// The observability store, if capture is enabled. Lets higher layers
+    /// (e.g. the daemon's heartbeat/dreaming loops) record curated transcript
+    /// rows into the same store without separate handle threading.
+    pub fn call_store(&self) -> Option<&Arc<CallStore>> {
+        self.call_store.as_ref()
     }
 
     /// Route stream/generate/image calls through a sidecar listening on `path`.
@@ -385,13 +387,18 @@ impl LlmClient {
     /// Send a streaming completion request to the LLM provider.
     ///
     /// Returns a `BufReader` over an `AsyncRead` that yields NDJSON
-    /// `StreamEvent` lines for consumption by the stream consumer. When
-    /// debug logging is enabled, the reader is transparently teed to a
-    /// per-call response file.
-    pub async fn stream_raw(&self, request: &LlmRequest) -> Result<StreamReader, LlmError> {
+    /// `StreamEvent` lines for consumption by the stream consumer. When a call
+    /// store is configured, the reader is transparently teed so the full
+    /// response is recorded on drop. `call_type` is the ledger call-type label,
+    /// threaded down for filtering in the store.
+    pub async fn stream_raw(
+        &self,
+        request: &LlmRequest,
+        call_type: Option<&str>,
+    ) -> Result<StreamReader, LlmError> {
         let prepared = preprocess_request(request);
         let body = serde_json::to_string(&*prepared).map_err(LlmError::Serialize)?;
-        let handle = debug_log::log_request(self.payload_log_dir.as_deref(), &prepared, &body);
+        let ctx = debug_log::start(self.call_store.as_ref(), &prepared, &body, call_type);
 
         debug!(
             sdk = %prepared.sdk.as_str(),
@@ -401,27 +408,29 @@ impl LlmClient {
 
         let read_half =
             providers::stream(&self.http_client, &prepared, self.sidecar_socket()).await?;
-        let reader: Box<dyn AsyncRead + Send + Unpin> = match handle {
-            Some(h) => Box::new(debug_log::TeeReader::new(read_half, &h)),
+        let reader: Box<dyn AsyncRead + Send + Unpin> = match ctx {
+            Some(context) => Box::new(debug_log::TeeReader::new(read_half, context)),
             None => Box::new(read_half),
         };
         Ok(BufReader::new(reader))
     }
 
-    /// Send a non-streaming completion request to the LLM provider.
+    /// Send a non-streaming completion request to the LLM provider. `call_type`
+    /// is the ledger call-type label, threaded down for filtering in the store.
     pub async fn generate(
         &self,
         request: &LlmRequest,
+        call_type: Option<&str>,
     ) -> Result<types::GenerateResponse, LlmError> {
         let prepared = preprocess_request(request);
         let body = serde_json::to_string(&*prepared).map_err(LlmError::Serialize)?;
-        let handle = debug_log::log_request(self.payload_log_dir.as_deref(), &prepared, &body);
+        let ctx = debug_log::start(self.call_store.as_ref(), &prepared, &body, call_type);
 
         let result = providers::generate(&self.http_client, &prepared, self.sidecar_socket()).await;
-        if let Some(h) = handle {
+        if let Some(context) = ctx {
             match &result {
-                Ok(resp) => debug_log::log_response(&h, resp),
-                Err(e) => debug_log::log_error(&h, e),
+                Ok(resp) => context.finish_response(resp),
+                Err(e) => context.finish_error(e),
             }
         }
         result

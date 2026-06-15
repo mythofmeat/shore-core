@@ -482,7 +482,7 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
         &chat_messages,
         "live-compaction-chat-1",
     );
-    let resp: GenerateResponse = client.generate(&req).await.expect("chat 1 generate");
+    let resp: GenerateResponse = client.generate(&req, None).await.expect("chat 1 generate");
     record(&mut stats, "chat#1 (cold)", &resp.usage);
     print_stat(stats.last().unwrap());
     let cold_w = resp.usage.cache_creation_tokens;
@@ -530,7 +530,8 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
             &chat_messages,
             "live-compaction-chat-1-cont",
         );
-        let cont_resp: GenerateResponse = client.generate(&cont_req).await.expect("chat 1 cont");
+        let cont_resp: GenerateResponse =
+            client.generate(&cont_req, None).await.expect("chat 1 cont");
         record(&mut stats, "chat#1 (tool_result)", &cont_resp.usage);
         print_stat(stats.last().unwrap());
         let cont_wire = content_blocks_to_wire(&cont_resp.content_blocks);
@@ -550,7 +551,10 @@ async fn compaction_tool_loop_preserves_cache_prefix() {
         &chat_messages,
         "live-compaction-chat-2",
     );
-    let chat2_resp: GenerateResponse = client.generate(&chat2_req).await.expect("chat 2 generate");
+    let chat2_resp: GenerateResponse = client
+        .generate(&chat2_req, None)
+        .await
+        .expect("chat 2 generate");
     record(&mut stats, "chat#2 (warm)", &chat2_resp.usage);
     print_stat(stats.last().unwrap());
     let chat2_read = chat2_resp.usage.cache_read_tokens;
@@ -589,7 +593,7 @@ Be concise — one file per pass. Path must start with memory/.";
         "live-compaction-iter-0",
     );
     let compaction0_resp: GenerateResponse = client
-        .generate(&compaction_req)
+        .generate(&compaction_req, None)
         .await
         .expect("compaction iter-0");
     record(&mut stats, "compaction#0", &compaction0_resp.usage);
@@ -671,7 +675,7 @@ Be concise — one file per pass. Path must start with memory/.";
 
     test_out!("── compaction iter-1 (after tool_result) ──");
     let compaction1_resp: GenerateResponse = client
-        .generate(&compaction_req)
+        .generate(&compaction_req, None)
         .await
         .expect("compaction iter-1");
     record(&mut stats, "compaction#1", &compaction1_resp.usage);

@@ -228,6 +228,9 @@ async fn handle_log_command(
         tools,
         subagent_tools,
         heartbeat,
+        dreaming,
+        events,
+        api,
         count,
         follow,
         ..
@@ -261,8 +264,20 @@ async fn handle_log_command(
         return Ok(());
     }
 
-    if *heartbeat {
-        return show_heartbeat_log(conn, *count, *json).await;
+    // Background observability views (heartbeat/dreaming transcript, the event
+    // ring, raw call payloads) map to their own SWP commands via `to_swp_command`.
+    if *heartbeat || *dreaming || *events || api.is_some() {
+        let Some((name, swp_args)) = crate::cli::to_swp_command(cmd) else {
+            return Ok(());
+        };
+        _ = conn.send_command(name, swp_args).await?;
+        let data = recv_command_data(conn).await?;
+        if *json {
+            cli_out!("{}", serde_json::to_string_pretty(&data)?);
+        } else {
+            output::format_command(name, &data);
+        }
+        return Ok(());
     }
 
     let mut args = serde_json::Map::new();
@@ -329,24 +344,6 @@ async fn fetch_single_message(
         .send_command("get", serde_json::Value::Object(args))
         .await?;
     recv_command_data(conn).await
-}
-
-/// Fetch and print the heartbeat event log.
-async fn show_heartbeat_log(
-    conn: &mut SWPConnection,
-    count: u32,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    _ = conn
-        .send_command("heartbeat_log", serde_json::json!({ "count": count }))
-        .await?;
-    let data = recv_command_data(conn).await?;
-    if json {
-        cli_out!("{}", serde_json::to_string_pretty(&data)?);
-    } else {
-        output::print_heartbeat_log(&data);
-    }
-    Ok(())
 }
 
 /// Render a `shore log` message list honoring `--json` / `--content` / `--plain`
@@ -2012,6 +2009,10 @@ mod tests {
             tools: false,
             subagent_tools: false,
             heartbeat: false,
+            dreaming: false,
+            events: false,
+            api: None,
+            call_type: None,
         });
         let received = execute_with_mock(cli, command_response("edit")).await;
 
@@ -2044,6 +2045,10 @@ mod tests {
             tools: false,
             subagent_tools: false,
             heartbeat: false,
+            dreaming: false,
+            events: false,
+            api: None,
+            call_type: None,
         });
         let received = execute_with_mock(cli, command_response("delete")).await;
 
