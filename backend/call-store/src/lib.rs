@@ -842,6 +842,7 @@ mod tests {
 
         let remaining = store.query_calls(&CallFilter::default()).unwrap();
         assert_eq!(remaining.len(), 1, "exactly the newest row is kept");
-        assert_eq!(remaining[0].call_id, "new", "newest row survives the cap");
+        let kept = remaining.first().expect("one row remains");
+        assert_eq!(kept.call_id, "new", "newest row survives the cap");
     }
 }
