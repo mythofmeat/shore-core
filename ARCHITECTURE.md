@@ -280,6 +280,11 @@ to protect *uncovered* content. Uncovered turns get a real keep-0 compaction
 pass first. A trailing run of unanswered autonomous messages (persisted with
 `origin: "autonomous"`) is always retained so the user still sees it on
 return, and a leftover autonomous tail alone never re-triggers the archive.
+A deep-idle archive empties `active.jsonl`, but the heartbeat does not go
+dormant as a result: when the active conversation is empty yet segments exist,
+the heartbeat request is rebuilt from memory against a synthetic anchor turn so
+ticks keep firing and reflecting on memory until the user returns. Only a
+character with neither live history nor segments (genuinely new) skips the tick.
 
 Dreaming is an opt-in scheduled AI librarian pass. When autonomy and
 `[memory.dreaming]` are enabled, the character uses memory/workspace tools in

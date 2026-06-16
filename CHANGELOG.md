@@ -8,6 +8,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Fixed
+- **Heartbeats no longer go silent after a deep-idle archive.** The deep-idle
+  archive (`[memory.compaction] archive_after`) empties `active.jsonl` to start
+  the next exchange from a clean slate. The heartbeat rebuild treated an empty
+  active conversation as "no prior conversation" and skipped every tick — even
+  though the conversation lived on in `segments/` — so the character went
+  dormant until the user sent the next message. The rebuild now reconstructs the
+  request from memory against a synthetic anchor turn whenever segments exist, so
+  ticks keep firing through extended idle. Only a genuinely new character (no
+  history and no segments) still skips.
 - **`shore log --heartbeat`/`--dreaming` no longer fail with `no such column:
   character`, and transcript capture works again on existing installs.** The
   `transcripts.character` column was added one commit after the `call-store`
