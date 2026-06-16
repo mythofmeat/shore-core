@@ -8,6 +8,18 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Fixed
+- **`shore log --heartbeat`/`--dreaming` no longer fail with `no such column:
+  character`, and transcript capture works again on existing installs.** The
+  `transcripts.character` column was added one commit after the `call-store`
+  table was first created, but the store only ever ran `CREATE TABLE IF NOT
+  EXISTS` with no migration step. A `calls.db` created by a build that predated
+  the column was therefore frozen on the old schema: every transcript insert and
+  both the heartbeat/dreaming read queries failed with `no such column:
+  character`, silently dropping all heartbeat/dreaming transcript capture (the
+  `calls` table and `shore log --api` were unaffected). `CallStore::init` now
+  runs an idempotent migration that adds the missing column and rebuilds the
+  covering index; affected databases are repaired automatically on the next
+  daemon start.
 - **`sendMessage` during heartbeat ticks no longer returns "not yet
   implemented".** The heartbeat prompt asks the character to deliver a message
   by wrapping it in a `<sendMessage>` tag, but in a tool-use context the model

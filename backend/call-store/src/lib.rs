@@ -268,6 +268,7 @@ impl CallStore {
              PRAGMA busy_timeout = 5000;",
         )?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -600,6 +601,46 @@ fn zstd_decompress(blob: &[u8]) -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Bring an existing on-disk schema up to current.
+///
+/// `CREATE TABLE IF NOT EXISTS` never alters a table that already exists, so a
+/// column added to [`SCHEMA`] after a DB was first created stays invisible to
+/// that DB forever — both reads and writes that name the column then fail. Each
+/// step here is idempotent: a fresh DB built straight from `SCHEMA` already has
+/// these columns, so the guards make migration a no-op. Add future column
+/// additions here, not just to `SCHEMA`.
+fn migrate(conn: &Connection) -> Result<()> {
+    // `transcripts.character` landed one commit after the table first shipped
+    // (foundation DBs lack it). Without it, every transcript insert and the
+    // heartbeat/dreaming queries fail with "no such column: character".
+    if !column_exists(conn, "transcripts", "character")? {
+        conn.execute_batch(
+            // Adding the column also lets us restore the covering index to its
+            // intended shape so a migrated DB matches a fresh install.
+            "ALTER TABLE transcripts ADD COLUMN character TEXT;
+             DROP INDEX IF EXISTS idx_transcripts_source;
+             CREATE INDEX idx_transcripts_source
+                 ON transcripts (source, character, ts_unix);",
+        )?;
+    }
+    Ok(())
+}
+
+/// Whether `table` has a column named `column`. `table` is always a hardcoded
+/// schema identifier here, never user input, so interpolating it into the
+/// `PRAGMA` (which cannot bind identifiers) is safe.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn u64_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -763,6 +804,69 @@ mod tests {
                 .is_empty(),
             "source filter isolates rows"
         );
+    }
+
+    /// A DB created by the foundation build (transcripts without `character`,
+    /// index over `(source, ts_unix)`) must migrate cleanly: the column gets
+    /// added so inserts and character-filtered queries work again.
+    #[test]
+    fn migrates_foundation_transcripts_missing_character() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Reproduce the exact foundation-era schema (pre-`character`).
+        conn.execute_batch(
+            "CREATE TABLE transcripts (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts                TEXT NOT NULL,
+                ts_unix           INTEGER NOT NULL,
+                source            TEXT NOT NULL,
+                call_type         TEXT,
+                iteration         INTEGER,
+                model             TEXT,
+                provider          TEXT,
+                finish_reason     TEXT,
+                input_tokens      INTEGER,
+                output_tokens     INTEGER,
+                cache_read_tokens INTEGER,
+                entry_zstd        BLOB NOT NULL
+            );
+            CREATE INDEX idx_transcripts_source ON transcripts (source, ts_unix);",
+        )
+        .unwrap();
+
+        // init() runs SCHEMA (a no-op against the existing table) then migrate().
+        let store = CallStore::init(conn).unwrap();
+
+        let entry = serde_json::json!({"text": "hi"});
+        let json = entry.to_string();
+        // Writing with a character would have failed pre-migration.
+        let _ = store
+            .record_transcript(&TranscriptRecord {
+                ts: Utc::now(),
+                source: "dreaming",
+                character: Some("poppy"),
+                call_type: Some("dreaming"),
+                iteration: 0,
+                model: Some("deepseek"),
+                provider: Some("deepseek"),
+                finish_reason: Some("end_turn"),
+                usage: Usage::default(),
+                entry_json: &json,
+            })
+            .unwrap();
+
+        let rows = store
+            .query_transcripts("dreaming", Some("poppy"), 0)
+            .unwrap();
+        assert_eq!(rows.len(), 1, "migrated DB stores and filters by character");
+    }
+
+    /// Migration must be idempotent: running it on an already-current DB (the
+    /// common case) changes nothing and never errors.
+    #[test]
+    fn migrate_is_noop_on_current_schema() {
+        let store = CallStore::open_in_memory().unwrap();
+        let conn = store.lock_conn();
+        migrate(&conn).expect("re-migrating a current schema is a no-op");
     }
 
     #[test]
