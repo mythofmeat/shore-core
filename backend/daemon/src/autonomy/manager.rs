@@ -2036,6 +2036,73 @@ fn history_is_between_turns(messages: &[Message]) -> bool {
     matches!(messages.last().map(|m| &m.role), Some(Role::Assistant))
 }
 
+/// Pick the message history a heartbeat/keepalive rebuild runs on, or `None` to
+/// skip the tick.
+///
+/// The normal case returns the live active conversation. A deep-idle archive
+/// (keep-0) leaves the active file in one of two states with no user turn for
+/// the heartbeat prompt to attach to: empty (everything archived), or holding
+/// only an unanswered autonomous assistant tail (the retained run). In either
+/// case the provider has no user message for `push_inline_system` to merge into,
+/// so a synthetic anchor turn is prepended (and `has_prior_context` stamps it
+/// with an absolute time marker). A character with no user turn, no retained
+/// tail, and no segments is genuinely new — nothing to build on, so skip.
+///
+/// Returns owned messages because the anchor paths prepend a fresh turn.
+fn heartbeat_rebuild_messages(
+    character: &str,
+    store: &crate::engine::messages::MessageStore,
+    has_prior_context: bool,
+) -> Option<Vec<Message>> {
+    let messages = store.messages();
+    let has_user_turn = messages
+        .iter()
+        .any(|m| m.role == Role::User && !m.is_tool_result_only());
+
+    if has_user_turn {
+        if !history_is_between_turns(messages) {
+            info!(
+                character,
+                "Heartbeat rebuild: skipping tick because conversation is mid-turn"
+            );
+            return None;
+        }
+        return Some(messages.to_vec());
+    }
+
+    // No user turn: empty, or only a retained autonomous tail. Skip only when
+    // there is genuinely nothing to anchor onto.
+    let empty = messages.is_empty();
+    if empty && !has_prior_context {
+        info!(
+            character,
+            "Heartbeat: skipping tick (no prior conversation)"
+        );
+        return None;
+    }
+    // Non-empty but no user turn and not at a turn boundary (e.g. a dangling
+    // tool-result tail): unsafe to anchor, leave it alone.
+    if !empty && !history_is_between_turns(messages) {
+        info!(
+            character,
+            "Heartbeat rebuild: skipping tick because conversation is mid-turn"
+        );
+        return None;
+    }
+
+    info!(
+        character,
+        "Heartbeat: no live user turn; rebuilding from memory with synthetic anchor"
+    );
+    // Anchor first so the request starts with a user turn, then any retained
+    // autonomous tail so the model still sees its own unanswered messages.
+    Some(
+        std::iter::once(heartbeat_idle_anchor_message())
+            .chain(messages.iter().cloned())
+            .collect(),
+    )
+}
+
 /// Rebuild an `LlmRequest` from the compacted conversation on disk.
 ///
 /// Called when `last_request` is `None` (e.g. after compaction invalidated the
@@ -2070,39 +2137,10 @@ fn rebuild_request_from_disk(
     let has_prior_context = crate::engine::segments::SegmentReader::load(&char_dir)
         .is_ok_and(|r| r.segment_count() > 0);
 
-    // Choose the messages to rebuild from. The normal case uses the live active
-    // conversation. After a deep-idle archive (keep-0) the active file is empty
-    // but the segment summaries remain: synthesize a single anchor user turn so
-    // the heartbeat still fires and reflects on memory. The anchor gives the
-    // provider a valid user turn for the heartbeat prompt to merge into (see
-    // `LlmRequest::push_inline_system`), and `has_prior_context` stamps it with
-    // an absolute time marker. A character with neither live history nor
-    // segments is genuinely new — nothing to build on.
-    let synthetic_anchor;
-    let messages: &[Message] = if store.messages().is_empty() {
-        if !has_prior_context {
-            info!(
-                character,
-                "Heartbeat: skipping tick (no prior conversation)"
-            );
-            return None;
-        }
-        info!(
-            character,
-            "Heartbeat: active conversation archived; rebuilding from memory"
-        );
-        synthetic_anchor = [heartbeat_idle_anchor_message()];
-        &synthetic_anchor
-    } else {
-        if !history_is_between_turns(store.messages()) {
-            info!(
-                character,
-                "Heartbeat rebuild: skipping tick because conversation is mid-turn"
-            );
-            return None;
-        }
-        store.messages()
-    };
+    // Choose the messages to rebuild from (or skip the tick). See
+    // `heartbeat_rebuild_messages` for the deep-idle anchor handling.
+    let rebuilt = heartbeat_rebuild_messages(character, &store, has_prior_context)?;
+    let messages: &[Message] = &rebuilt;
 
     // Resolve the normal chat model with the per-character preference
     // overlay applied. Heartbeat callers apply their background model
@@ -4257,6 +4295,68 @@ api_key_env = "{api_key_env}"
                 .iter()
                 .any(|m| m.get("role").and_then(Value::as_str) == Some("user")),
             "anchor must be a user turn for the heartbeat prompt to attach to"
+        );
+
+        std::env::remove_var(api_key_env);
+    }
+
+    /// A deep-idle archive can retain an unanswered autonomous assistant tail,
+    /// leaving the active conversation with no user turn. The rebuild must
+    /// prepend the synthetic anchor so the request still starts with a user turn
+    /// while keeping the retained autonomous message visible.
+    #[test]
+    fn rebuild_request_from_disk_anchors_autonomous_tail_with_no_user_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let character_dir = data_dir.join("alice");
+        std::fs::create_dir_all(&character_dir).unwrap();
+
+        // Active conversation holds only an unanswered autonomous assistant turn.
+        let mut store =
+            crate::engine::messages::MessageStore::new(character_dir.join("active.jsonl"));
+        store
+            .append(Message {
+                msg_id: "autonomous-tail".into(),
+                origin: Some(shore_protocol::types::MessageOrigin::Autonomous),
+                role: Role::Assistant,
+                content: "still thinking of you".into(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "still thinking of you".into(),
+                }],
+                alt_index: None,
+                alt_count: None,
+                alternatives: vec![],
+                provider_key: None,
+                timestamp: chrono::Local::now().to_rfc3339(),
+            })
+            .unwrap();
+
+        let api_key_env = "REBUILD_REQUEST_AUTONOMOUS_TAIL_ANTHROPIC";
+        let config = rebuild_test_config(
+            api_key_env,
+            tmp.path().join("config"),
+            data_dir.clone(),
+            tmp.path().join("runtime"),
+            tmp.path().join("cache"),
+        );
+
+        let request = rebuild_request_from_disk("alice", &data_dir, &config)
+            .expect("heartbeat should rebuild over an autonomous tail");
+        let roles: Vec<&str> = request
+            .messages
+            .iter()
+            .filter_map(|m| m.get("role").and_then(Value::as_str))
+            .collect();
+        assert_eq!(
+            roles.first(),
+            Some(&"user"),
+            "request must start with the synthetic user anchor, got roles: {roles:?}"
+        );
+        let serialized = serde_json::to_string(&request.messages).unwrap();
+        assert!(
+            serialized.contains("still thinking of you"),
+            "retained autonomous tail must remain in the rebuilt request"
         );
 
         std::env::remove_var(api_key_env);
