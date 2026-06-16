@@ -1926,7 +1926,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shore-call-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -1978,7 +1978,7 @@ dependencies = [
 
 [[package]]
 name = "shore-daemon"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "base64",
@@ -2028,7 +2028,7 @@ dependencies = [
 
 [[package]]
 name = "shore-ledger"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "chrono",
  "reqwest",
@@ -2043,7 +2043,7 @@ dependencies = [
 
 [[package]]
 name = "shore-llm"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "chrono",
