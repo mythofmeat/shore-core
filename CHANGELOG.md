@@ -8,6 +8,17 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **Built-in `opencode-go` provider for the OpenCode Go subscription.** Enable
+  `[providers.opencode-go]` and reference any served model as
+  `opencode-go:<model_id>` — transport defaults (base URL, `OPENCODE_API_KEY`)
+  are built in. Like OpenRouter it fronts many models behind one key, but it
+  spans two wire dialects: discovery auto-maps each model to the right SDK
+  (`qwen*`/`minimax*` → Anthropic `/messages`, everything else → OpenAI
+  `/chat/completions`). Because billing is a flat subscription, these calls are
+  **excluded from usage budgets and spend totals** — each is still recorded
+  (tokens, timing, transcripts) but with `total_cost = 0` and
+  `cost_source = "subscription"`, and no usage budget can throttle one. See
+  `[providers.opencode-go]` in CONFIGURATION.md.
 - **Sub-agent prompts can now anchor to the current date via `{{date}}` /
   `{{time}}`.** These template variables expand to the daemon's local date and
   time at dispatch (alongside the existing `{{char}}` / `{{user}}`). Because a

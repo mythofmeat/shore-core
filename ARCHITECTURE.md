@@ -518,6 +518,17 @@ into user-facing categories such as `message_no_tools`, `message_with_tools`,
 spend by the friendly configured key name, with historical rows shown as
 `unknown`.
 
+Subscription providers are a deliberate exception to per-token cost accounting.
+A flat-rate provider (currently `opencode-go`, OpenCode's subscription gateway)
+has no meaningful marginal cost per call, so its rows are recorded with
+`total_cost = 0` and `cost_source = "subscription"` — token counts, timing, and
+transcripts are still captured for observability, but the call contributes
+nothing to any usage budget or spend total. The same invariant runs in the
+other direction at enforcement time: a subscription call is never blocked by a
+usage budget, since throttling a zero-cost call would be meaningless. The
+predicate lives in one place (`shore_ledger::is_subscription_provider`) so the
+recording and enforcement paths can never disagree.
+
 The observability store (`calls.db`, see File Layout) captures the full
 request/response of every LLM call plus curated heartbeat/dreaming transcripts.
 `shore log --api` lists recent calls (filter with `--call-type`); `shore log

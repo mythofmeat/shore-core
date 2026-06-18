@@ -491,6 +491,7 @@ pub fn default_api_key_env(provider_key: &str) -> &'static str {
         "xai" => "XAI_API_KEY",
         "zai" => "ZAI_API_KEY",
         "nanogpt" => "NANOGPT_API_KEY",
+        "opencode-go" => "OPENCODE_API_KEY",
         _ => "LLM_API_KEY",
     }
 }
@@ -516,6 +517,11 @@ pub fn default_base_url(provider_key: &str) -> Option<&'static str> {
         // owns its own base URL and the `zai_subscription` coding-endpoint
         // switch — so this default never reaches a chat request.
         "zai" => Some("https://api.z.ai/api/paas/v4"),
+        // OpenCode Go subscription gateway. Discovery hits `{base}/models` and
+        // chat routes to `{base}/chat/completions` (openai SDK) or
+        // `{base}/messages` (anthropic SDK, after `stripTrailingV1`), per the
+        // per-model SDK that discovery's auto-map assigns.
+        "opencode-go" => Some("https://opencode.ai/zen/go/v1"),
         _ => None,
     }
 }
@@ -832,6 +838,7 @@ sdk = "openai"
         assert_eq!(default_api_key_env("xai"), "XAI_API_KEY");
         assert_eq!(default_api_key_env("zai"), "ZAI_API_KEY");
         assert_eq!(default_api_key_env("nanogpt"), "NANOGPT_API_KEY");
+        assert_eq!(default_api_key_env("opencode-go"), "OPENCODE_API_KEY");
         assert_eq!(default_api_key_env("unknown"), "LLM_API_KEY");
     }
 
@@ -854,6 +861,10 @@ sdk = "openai"
             Some("https://api.deepseek.com")
         );
         assert_eq!(default_base_url("xai"), Some("https://api.x.ai/v1"));
+        assert_eq!(
+            default_base_url("opencode-go"),
+            Some("https://opencode.ai/zen/go/v1")
+        );
         assert_eq!(
             default_base_url("zai"),
             Some("https://api.z.ai/api/paas/v4")

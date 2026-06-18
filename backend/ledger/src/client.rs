@@ -168,27 +168,43 @@ fn build_call_row(
     cache_state: Option<String>,
     cache_anomaly: Option<String>,
 ) -> CallRow {
-    // Cost calculation (sync — cached pricing only, no fetch)
-    let priced_cost = pricing
-        .calculate_cost(crate::pricing::CostRequest {
-            provider: record.provider,
-            model: record.model,
-            input_tokens: record.usage.input_tokens,
-            output_tokens: record.usage.output_tokens,
-            cache_read_tokens: record.usage.cache_read_tokens,
-            cache_write_tokens: record.usage.cache_creation_tokens,
-            cache_ttl: record.cache_ttl.as_deref(),
-        })
-        .ok()
-        .flatten();
-    let total_cost_override = record.usage.total_cost_usd;
-    let cost_source = if total_cost_override.is_some() {
+    // Subscription providers (e.g. opencode-go) bill a flat plan, not per token:
+    // record the usage for observability but zero the cost so it never accrues
+    // against usage budgets or spend reports. See `is_subscription_provider`.
+    let subscription = crate::is_subscription_provider(record.provider);
+
+    // Cost calculation (sync — cached pricing only, no fetch). Skipped entirely
+    // for subscription calls — metered pricing doesn't apply.
+    let priced_cost = if subscription {
+        None
+    } else {
+        pricing
+            .calculate_cost(crate::pricing::CostRequest {
+                provider: record.provider,
+                model: record.model,
+                input_tokens: record.usage.input_tokens,
+                output_tokens: record.usage.output_tokens,
+                cache_read_tokens: record.usage.cache_read_tokens,
+                cache_write_tokens: record.usage.cache_creation_tokens,
+                cache_ttl: record.cache_ttl.as_deref(),
+            })
+            .ok()
+            .flatten()
+    };
+    let total_cost_override = if subscription {
+        None
+    } else {
+        record.usage.total_cost_usd
+    };
+    let cost_source = if subscription {
+        "subscription"
+    } else if total_cost_override.is_some() {
         "provider_reported"
     } else {
         "pricing_catalog"
     };
     // Per-component costs are recorded only when we priced the call ourselves; a
-    // provider-reported total leaves the breakdown null.
+    // provider-reported total (and any subscription call) leaves the breakdown null.
     let breakdown = total_cost_override
         .is_none()
         .then_some(())
@@ -217,7 +233,11 @@ fn build_call_row(
         cache_read_cost: breakdown.map(|c| c.cache_read),
         cache_write_cost: breakdown.map(|c| c.cache_write),
         cost_source: Some(cost_source.to_owned()),
-        total_cost: total_cost_override.or_else(|| priced_cost.as_ref().map(|c| c.total)),
+        // Subscription calls record $0; otherwise prefer the provider-reported
+        // total, then our catalog estimate, else null (unpriced).
+        total_cost: total_cost_override
+            .or_else(|| priced_cost.as_ref().map(|c| c.total))
+            .or(subscription.then_some(0.0)),
     }
 }
 
@@ -998,6 +1018,48 @@ mod tests {
         assert!(row.output_cost.is_none());
         assert!(row.cache_read_cost.is_none());
         assert!(row.cache_write_cost.is_none());
+    }
+
+    #[test]
+    fn subscription_provider_records_zero_cost() {
+        let (ledger, pricing, trackers) = test_parts();
+        record_call(
+            &ledger,
+            &pricing,
+            &trackers,
+            RecordCall {
+                provider: "opencode-go",
+                api_key_name: Some("default".into()),
+                model: "kimi-k2.6",
+                call_type: CallType::Message,
+                character: "aria",
+                usage: &Usage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    // Even a provider-reported total is ignored under a flat plan.
+                    total_cost_usd: Some(0.0042),
+                },
+                timing: &Timing {
+                    total_ms: 1500,
+                    time_to_first_token_ms: 0,
+                },
+                finish_reason: "end_turn",
+                thinking_enabled: false,
+                cache_ttl: None,
+            },
+        );
+        let rows = ledger.recent(1).unwrap();
+        let row = first_item(&rows);
+        // Usage is still recorded for observability...
+        assert_eq!(row.input_tokens, 100);
+        assert_eq!(row.output_tokens, 50);
+        // ...but the call accrues $0 and is tagged as subscription.
+        assert_eq!(row.total_cost, Some(0.0));
+        assert_eq!(row.cost_source.as_deref(), Some("subscription"));
+        assert!(row.input_cost.is_none());
+        assert!(row.output_cost.is_none());
     }
 
     #[test]
