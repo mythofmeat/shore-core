@@ -95,7 +95,6 @@ fn track_cache_state(
     cache_trackers: &Mutex<HashMap<String, CacheTracker>>,
     record: &RecordCall<'_>,
     ts: &str,
-    has_cache_metrics: bool,
 ) -> (Option<String>, Option<String>) {
     // A `cancelled` row is a placeholder for a call whose stream future was
     // dropped before any terminal frame arrived (see `LedgerStream::drop`). It
@@ -107,11 +106,31 @@ fn track_cache_state(
     if record.finish_reason == "cancelled" {
         return (None, None);
     }
-    if !(record.call_type.affects_cache_tracker()
-        && (has_cache_metrics
-            || crate::pricing::is_anthropic_pricing(record.provider, record.model)))
-    {
+    if !record.call_type.affects_cache_tracker() {
         return (None, None);
+    }
+
+    // The warm/cold *state machine* encodes Anthropic-specific invariants (1h
+    // prompt-cache TTL, keepalive cadence, monotonic prefix growth). Other
+    // providers report cache metrics with different semantics (automatic prefix
+    // caching, variable hit rates) and generally need no babysitting, so running
+    // them through these invariants only produces non-actionable false
+    // anomalies. For non-Anthropic calls we still record a plain warm/cold
+    // `cache_state` for visibility — derived directly from this row's read —
+    // but never emit an anomaly. Native Anthropic and OpenRouter-routed
+    // Anthropic (`anthropic/...` model id) get the full machine.
+    if !crate::pricing::is_anthropic_pricing(record.provider, record.model) {
+        let has_metrics =
+            record.usage.cache_read_tokens > 0 || record.usage.cache_creation_tokens > 0;
+        if !has_metrics {
+            return (None, None);
+        }
+        let state = if record.usage.cache_read_tokens > 0 {
+            "warm"
+        } else {
+            "cold"
+        };
+        return (Some(state.to_owned()), None);
     }
 
     let obs = Observation {
@@ -253,12 +272,9 @@ pub(crate) fn record_call(
     record: RecordCall<'_>,
 ) {
     let ts = Utc::now().to_rfc3339();
-    // Cache tracking: run for any call that reports cache metrics (not just
-    // provider == "anthropic", which misses OpenRouter-routed Anthropic calls).
     let has_cache_metrics =
         record.usage.cache_read_tokens > 0 || record.usage.cache_creation_tokens > 0;
-    let (cache_state, cache_anomaly) =
-        track_cache_state(cache_trackers, &record, &ts, has_cache_metrics);
+    let (cache_state, cache_anomaly) = track_cache_state(cache_trackers, &record, &ts);
 
     let row = build_call_row(pricing, &record, ts, cache_state, cache_anomaly);
 
@@ -1196,6 +1212,45 @@ mod tests {
         let row = first_item(&rows);
         assert!(row.cache_state.is_none());
         assert!(!trackers.lock().unwrap().contains_key("aria"));
+    }
+
+    #[test]
+    fn non_anthropic_records_cache_state_without_anomaly() {
+        // Non-Anthropic providers get plain warm/cold visibility derived from
+        // the row, but never run the Anthropic-specific anomaly machine and
+        // never create a tracker entry (no false `unexpected_write`).
+        let (ledger, pricing, trackers) = test_parts();
+        record_call(
+            &ledger,
+            &pricing,
+            &trackers,
+            RecordCall {
+                provider: "deepseek",
+                api_key_name: Some("default".into()),
+                model: "deepseek-v4-pro",
+                call_type: CallType::Subagent,
+                character: "poppy",
+                usage: &Usage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_tokens: 512,
+                    cache_creation_tokens: 0,
+                    ..Default::default()
+                },
+                timing: &Timing {
+                    total_ms: 500,
+                    time_to_first_token_ms: 0,
+                },
+                finish_reason: "stop",
+                thinking_enabled: false,
+                cache_ttl: None,
+            },
+        );
+        let rows = ledger.recent(1).unwrap();
+        let row = first_item(&rows);
+        assert_eq!(row.cache_state.as_deref(), Some("warm"));
+        assert!(row.cache_anomaly.is_none());
+        assert!(!trackers.lock().unwrap().contains_key("poppy"));
     }
 
     #[test]
