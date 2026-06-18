@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v0.1.7...shore-ledger-v0.1.8) - 2026-06-18
+
+### Added
+
+- *(providers)* add opencode-go subscription provider ([#290](https://github.com/mythofmeat/shore-core/pull/290))
+
 ## [0.1.7](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v0.1.6...shore-ledger-v0.1.7) - 2026-06-16
 
 ### Other
