@@ -398,6 +398,33 @@ fn parse_models_response(
     Ok(out)
 }
 
+/// Resolve the wire SDK for a single discovered model.
+///
+/// OpenAI-compatible discovery stamps one blanket `sdk` for every model, which
+/// is correct for single-dialect gateways. OpenCode Go, however, fronts open
+/// models across two dialects behind one `/models` feed: MiniMax and Qwen speak
+/// the Anthropic `/messages` format, everything else the OpenAI
+/// `/chat/completions` format (per opencode.ai/docs/go). Auto-map those two
+/// families to `anthropic` so chat routes to the right adapter; all other
+/// providers keep the feed's `default_sdk` unchanged.
+fn effective_model_sdk<'sdk>(
+    provider_key: &str,
+    model_id: &str,
+    default_sdk: &'sdk str,
+) -> &'sdk str {
+    if provider_key != "opencode-go" {
+        return default_sdk;
+    }
+    let id = model_id.to_ascii_lowercase();
+    // Strip any leading `vendor/` namespace some feeds prepend before matching.
+    let bare = id.rsplit('/').next().unwrap_or(&id);
+    if bare.starts_with("qwen") || bare.starts_with("minimax") {
+        "anthropic"
+    } else {
+        "openai"
+    }
+}
+
 fn map_entry(
     provider_key: &str,
     base_url: &str,
@@ -406,6 +433,7 @@ fn map_entry(
     now: &str,
 ) -> Option<DiscoveredModel> {
     let id = raw.get("id").and_then(|v| v.as_str())?.to_owned();
+    let model_sdk = effective_model_sdk(provider_key, &id, sdk);
     let display_name = raw
         .get("name")
         .or_else(|| raw.get("display_name"))
@@ -453,7 +481,7 @@ fn map_entry(
         provider_key: provider_key.to_owned(),
         model_id: id,
         display_name,
-        sdk: sdk.to_owned(),
+        sdk: model_sdk.to_owned(),
         base_url: Some(base_url.to_owned()),
         created_at,
         owned_by,
@@ -659,6 +687,47 @@ mod tests {
             field(&m.raw_provider_metadata, "id"),
             &serde_json::json!("anthropic/claude-3.5-sonnet")
         );
+    }
+
+    #[test]
+    fn opencode_go_discovery_auto_maps_sdk_per_model_family() {
+        // OpenCode Go's `/models` feed is OpenAI-compatible (blanket "openai"),
+        // but MiniMax/Qwen must route through the Anthropic `/messages` adapter.
+        let body = r#"{
+            "data": [
+                { "id": "deepseek-v4-pro", "object": "model" },
+                { "id": "kimi-k2.6", "object": "model" },
+                { "id": "glm-5.1", "object": "model" },
+                { "id": "qwen3.7-max", "object": "model" },
+                { "id": "minimax-m2.7", "object": "model" }
+            ]
+        }"#;
+        let models =
+            parse_openai_models_response("opencode-go", "https://opencode.ai/zen/go/v1", body)
+                .unwrap();
+        let sdk_of = |id: &str| {
+            models
+                .iter()
+                .find(|m| m.model_id == id)
+                .map(|m| m.sdk.as_str())
+                .expect("model present")
+        };
+        assert_eq!(sdk_of("deepseek-v4-pro"), "openai");
+        assert_eq!(sdk_of("kimi-k2.6"), "openai");
+        assert_eq!(sdk_of("glm-5.1"), "openai");
+        assert_eq!(sdk_of("qwen3.7-max"), "anthropic");
+        assert_eq!(sdk_of("minimax-m2.7"), "anthropic");
+    }
+
+    #[test]
+    fn non_opencode_provider_keeps_blanket_discovery_sdk() {
+        // The auto-map must not leak into other OpenAI-compatible gateways:
+        // a qwen model discovered via OpenRouter still reports the feed sdk.
+        let body = r#"{ "data": [{ "id": "qwen/qwen3-max", "object": "model" }] }"#;
+        let models =
+            parse_openai_models_response("openrouter", "https://openrouter.ai/api/v1", body)
+                .unwrap();
+        assert_eq!(model(&models, 0).sdk, "openai");
     }
 
     #[test]

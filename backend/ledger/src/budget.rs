@@ -133,6 +133,13 @@ pub fn enforce_budget_for_call(
         return Ok(());
     }
 
+    // Subscription-provider calls cost nothing at the margin, so no budget may
+    // throttle them — mirrors the `$0`/`cost_source = "subscription"` row that
+    // `build_call_row` records for these providers.
+    if crate::is_subscription_provider(call.provider) {
+        return Ok(());
+    }
+
     for (idx, budget) in config.budgets.iter().enumerate() {
         if !budget_matches_call(budget, &call) {
             continue;
@@ -814,6 +821,38 @@ mod tests {
             "2026-05-18T12:00:00+00:00".parse().unwrap(),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn subscription_provider_call_is_never_blocked() {
+        // An unfiltered block budget is over limit from metered providers, but a
+        // flat-rate subscription call must still pass — it accrues no cost.
+        let ledger = Ledger::open_in_memory().unwrap();
+        insert_call(&ledger, "2026-05-18T03:00:00+00:00", 11.0, "message");
+        let config = UsageConfig {
+            timezone: "utc".into(),
+            budgets: vec![UsageBudgetConfig {
+                name: "daily".into(),
+                cost_usd: 10.0,
+                limit: UsageBudgetAction::Block,
+                ..usage_budget()
+            }],
+            ..UsageConfig::default()
+        };
+
+        let result = enforce_budget_for_call(
+            &ledger,
+            &config,
+            BudgetCallContext {
+                provider: "opencode-go",
+                api_key_name: Some("default"),
+                model: "kimi-k2.6",
+                call_type: CallType::Message,
+                character: "Alice",
+            },
+            "2026-05-18T12:00:00+00:00".parse().unwrap(),
+        );
+        assert!(result.is_ok(), "subscription calls bypass usage budgets");
     }
 
     #[test]

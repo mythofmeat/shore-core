@@ -1137,6 +1137,20 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
             base_url: Some("https://nano-gpt.com/api/v1".into()),
             ..base_provider_defaults()
         },
+        "opencode-go" => ModelConfigFields {
+            // OpenCode Go is a flat-rate subscription gateway that serves open
+            // models across two wire dialects behind one key: most via the
+            // OpenAI `/chat/completions` path (DeepSeek, Kimi, GLM, MiMo, …) and
+            // MiniMax/Qwen via the Anthropic `/messages` path. Deliberately
+            // leave `sdk` unset so the per-model SDK that discovery stamps
+            // (`map_entry` auto-map: qwen/minimax → anthropic, else → openai)
+            // wins via `disc.sdk` in `build_resolved_from_provider`, rather than
+            // a blanket provider default. Subscription billing means these calls
+            // are excluded from usage budgets (see `is_subscription_provider`).
+            api_key_env: Some("OPENCODE_API_KEY".into()),
+            base_url: Some("https://opencode.ai/zen/go/v1".into()),
+            ..base_provider_defaults()
+        },
         _ => ModelConfigFields::default(),
     };
     ProviderConfig { fields }

@@ -16,6 +16,7 @@ Common variables:
 | `SHORE_CHARACTER` | default CLI character |
 | `ANTHROPIC_API_KEY` | Anthropic provider key |
 | `OPENROUTER_API_KEY` | OpenRouter provider key |
+| `OPENCODE_API_KEY` | OpenCode Go subscription key |
 | `TAVILY_API_KEY` | web search key |
 
 A `.env` file in the config directory is loaded on startup.
@@ -170,6 +171,35 @@ max_output_tokens = 8192
 > **Removed:** the `[tools.<provider>.<model>]` tool-model catalog no longer
 > exists; `[tools]` is now the tool-surface config section. Define tool-loop
 > models the same way as chat models (`provider:model_id`).
+
+### OpenCode Go (subscription)
+
+`opencode-go` is a built-in provider for [OpenCode Go](https://opencode.ai/docs/go/),
+a flat-rate ($10/mo) gateway over open coding models. Like OpenRouter it fronts
+many models behind one key, but it spans **two wire dialects**: most models speak
+the OpenAI `/chat/completions` format (DeepSeek, Kimi, GLM, MiMo, …) while MiniMax
+and Qwen speak the Anthropic `/messages` format. Discovery auto-maps each
+discovered model to the right `sdk` (`qwen*`/`minimax*` → `anthropic`, everything
+else → `openai`), so a single enabled provider just works:
+
+```toml
+[providers.opencode-go]
+# Transport defaults are built in: base_url = https://opencode.ai/zen/go/v1,
+# api_key_env = OPENCODE_API_KEY. Leave `sdk` unset so the per-model auto-map
+# wins; set it only to force every model onto one dialect.
+[providers.opencode-go.discovery]
+enabled = true
+```
+
+Then run `shore provider refresh opencode-go` and reference any served model as
+`opencode-go:<model_id>` (e.g. `opencode-go:kimi-k2.6`,
+`opencode-go:minimax-m2.7`).
+
+Because billing is a flat subscription, opencode-go calls are **excluded from
+usage budgets and spend reports**: each call is still recorded (tokens, timing,
+transcripts) but with `total_cost = 0` and `cost_source = "subscription"`, and
+no [usage budget](#usage) can throttle one. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the cost-accounting invariant.
 
 ### Embedding
 
