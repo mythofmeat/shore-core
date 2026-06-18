@@ -258,12 +258,18 @@ fn spawn_forwarder(
     })
 }
 
-/// Build the `{{char}}` / `{{user}}` substitution table.
+/// Build the `{{char}}` / `{{user}}` / `{{date}}` / `{{time}}` substitution
+/// table. Unlike the main loop, a sub-agent runs in its own LLM call and never
+/// sees the conversation's injected time markers, so `{{date}}`/`{{time}}` are
+/// the only way its prompt can anchor freshness to "now" — populate them with
+/// the live local clock rather than leaving them blank.
 fn template_vars(char_name: &str, display_name: &str) -> HashMap<String, String> {
     let mut vars: HashMap<String, String> = HashMap::new();
     let _ = vars.insert("char".into(), char_name.to_owned());
     let _ = vars.insert("character_name".into(), char_name.to_owned());
     let _ = vars.insert("user".into(), display_name.to_owned());
+    let _ = vars.insert("date".into(), crate::tools::basic::format_friendly_date());
+    let _ = vars.insert("time".into(), crate::tools::basic::format_friendly_time());
     vars
 }
 
@@ -384,6 +390,18 @@ mod tests {
         let defs = subagent_tool_subset(&allowed, &vars);
         let names: Vec<&str> = defs.iter().map(|d| d["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["read"]);
+    }
+
+    #[test]
+    fn template_vars_populate_date_and_time() {
+        // A sub-agent never sees the conversation's time markers, so its prompt
+        // relies on these being live (non-empty) to anchor freshness to "now".
+        let vars = template_vars("qifei", "ren");
+        assert!(!vars["date"].is_empty(), "{{{{date}}}} must be populated");
+        assert!(!vars["time"].is_empty(), "{{{{time}}}} must be populated");
+        let rendered =
+            crate::engine::prompt::render_template("Today is {{date}} at {{time}}.", &vars);
+        assert!(!rendered.contains("{{date}}") && !rendered.contains("{{time}}"));
     }
 
     #[tokio::test]

@@ -74,6 +74,20 @@ pub(crate) fn format_friendly_datetime() -> String {
         .to_string()
 }
 
+/// Human-friendly local date, e.g. `"Friday, April 4th, 2026"`. Feeds the
+/// `{{date}}` template variable so prompts can anchor freshness to "today".
+pub(crate) fn format_friendly_date() -> String {
+    let now = Local::now();
+    let day = now.day();
+    let suffix = ordinal_suffix(day);
+    now.format(&format!("%A, %B {day}{suffix}, %Y")).to_string()
+}
+
+/// Human-friendly local time, e.g. `"4:34 PM"`. Feeds the `{{time}}` variable.
+pub(crate) fn format_friendly_time() -> String {
+    Local::now().format("%-I:%M %p").to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------

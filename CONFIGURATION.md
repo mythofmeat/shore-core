@@ -686,7 +686,12 @@ tools = ["search", "search_chat_logs", "read", "list_files"]
 delegates instead of doing the lookup itself. Leave them in only if you want
 both a quick direct lookup and a deep delegated dig.
 
-- `description` / `prompt` support `{{char}}` / `{{user}}` templating.
+- `description` / `prompt` support `{{char}}` / `{{user}}` templating, plus
+  `{{date}}` / `{{time}}` which expand to the daemon's local date (e.g.
+  `Friday, April 4th, 2026`) and time at dispatch. A sub-agent runs in its own
+  LLM call and never sees the conversation's injected time markers, so adding
+  `Today is {{date}}.` to a research prompt keeps it from treating its training
+  cutoff as "now" and accepting stale sources.
 - `tools` must name registered tools; unknown names are skipped with a warning.
   `ask_*` tools are never offered to a sub-agent, so **nesting is hard-capped at
   one level** — a sub-agent cannot delegate further.
