@@ -28,6 +28,21 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   prompt fixes that. See `[subagents]` in CONFIGURATION.md.
 
 ### Fixed
+- **Cache-anomaly reporting (`shore usage --anomalies`) no longer fires false
+  positives on non-Anthropic models and non-`message` calls.** The warm/cold
+  state machine encodes Anthropic-specific invariants (prompt-cache TTL,
+  keepalive cadence, monotonic prefix growth), but it was also being run on other
+  providers (e.g. `glm-*`, `deepseek-*` background/subagent calls) and comparing
+  every call type against the message cache-read baseline. That produced
+  contradictory `unexpected_write` rows with `write: 0` and flagged healthy
+  keepalive pings (which read a slightly shorter prefix than the last message).
+  Anomalies are now evaluated **only for Anthropic-family calls**, and only
+  `message` calls feed the baseline — keepalive, heartbeat, subagent, and memory
+  queries each run on their own prefix and are no longer compared against it.
+  Additionally, a `keepalive_miss` is no longer reported when the idle gap
+  exceeds the keepalive ceiling (`[behavior.autonomy].cache_keepalive_max`,
+  default 12h): past that point the keepalive subsystem deliberately stops, so a
+  cold start on the user's return is expected rather than a failure.
 - **Cache keepalive (and the heartbeat) no longer go silent when `active.jsonl`
   is empty.** The deep-idle archive (`[memory.compaction] archive_after`) empties
   `active.jsonl` to start the next exchange from a clean slate. The rebuild

@@ -45,12 +45,22 @@ pub struct CacheTracker {
     last_tool_loop_kind: Option<String>,
     last_tool_loop_cache_read: u64,
     ttl_secs: u64,
+    /// Longest idle stretch the keepalive subsystem keeps pinging over before it
+    /// deliberately stops (mirrors `[behavior.autonomy].cache_keepalive_max`,
+    /// default 12h). A cold start after a gap longer than this is the keepalive
+    /// ceiling working as designed, not a `KeepaliveMiss`.
+    max_idle_secs: u64,
     /// True when the cache was Warm and just transitioned to Cold via TTL
     /// expiry. The next non-keepalive call in this state triggers a
     /// `KeepaliveMiss` anomaly — the keepalive system should have prevented
     /// the cold start.
     ttl_expired_since_warm: bool,
 }
+
+/// Default keepalive idle ceiling in seconds (12h), mirroring the
+/// `[behavior.autonomy].cache_keepalive_max` config default. Past this gap the
+/// keepalive subsystem stops pinging, so a cold start is expected.
+const DEFAULT_MAX_IDLE_SECS: u64 = 12 * 3600;
 
 impl Default for CacheTracker {
     fn default() -> Self {
@@ -70,6 +80,7 @@ impl CacheTracker {
             last_tool_loop_kind: None,
             last_tool_loop_cache_read: 0,
             ttl_secs: 3600,
+            max_idle_secs: DEFAULT_MAX_IDLE_SECS,
             ttl_expired_since_warm: false,
         }
     }
@@ -120,6 +131,7 @@ impl CacheTracker {
             last_tool_loop_kind: None,
             last_tool_loop_cache_read: 0,
             ttl_secs,
+            max_idle_secs: DEFAULT_MAX_IDLE_SECS,
             ttl_expired_since_warm: false,
         }
     }
@@ -152,9 +164,16 @@ impl CacheTracker {
         // Tool loops still have an invariant of their own: within a single
         // loop the cacheable prefix should advance monotonically through
         // completed tool_result messages.
+        // Only normal `message` calls share the cacheable prefix the warm/cold
+        // baseline tracks. Keepalive pings, heartbeats, subagents, and memory
+        // queries each run on a *different* prefix, so their cache_read is not
+        // comparable to the message baseline — comparing them produced false
+        // `unexpected_write`s (e.g. a healthy keepalive reading a slightly
+        // shorter prefix, or a subagent's unrelated prompt). Tool loops keep
+        // their own short-lived baseline, handled separately below.
         let tool_loop_kind = tool_loop_kind(&obs.call_type);
         let skip_normal_cache_read_comparison =
-            obs.call_type == "heartbeat" || tool_loop_kind.is_some();
+            obs.call_type != "message" && tool_loop_kind.is_none();
 
         // 2. TTL expiry: Warm → Cold
         if self.state == CacheState::Warm {
@@ -208,16 +227,26 @@ impl CacheTracker {
         // next call is NOT a keepalive. This means the keepalive system failed
         // to bridge the gap — a cold start that should have been prevented.
         if self.ttl_expired_since_warm {
-            if obs.call_type == "keepalive" {
-                // Keepalive arrived (possibly late, but it tried). Not an anomaly.
-                self.ttl_expired_since_warm = false;
-            } else {
-                // A non-keepalive call is the first after TTL expiry → keepalive missed.
-                if anomaly.is_none() {
+            self.ttl_expired_since_warm = false;
+            if obs.call_type != "keepalive" {
+                // A non-keepalive call is the first after TTL expiry. This is
+                // only a miss if keepalive *should* have been pinging. Past the
+                // idle ceiling the keepalive subsystem deliberately stops (user
+                // presumed away), so a cold start beyond that gap is expected,
+                // not a failure. With no usable timestamps we can't prove a
+                // deliberate stop, so we keep the stricter behavior and flag.
+                let within_keepalive_window = match (self.last_ts, obs_ts) {
+                    (Some(last), Some(now)) => {
+                        now.signed_duration_since(last).num_seconds()
+                            <= u64_to_i64(self.max_idle_secs)
+                    }
+                    _ => true,
+                };
+                if anomaly.is_none() && within_keepalive_window {
                     anomaly = Some(Anomaly::KeepaliveMiss);
                 }
-                self.ttl_expired_since_warm = false;
             }
+            // else: keepalive arrived (possibly late, but it tried). Not an anomaly.
         }
 
         // 6. Update internal state — only update cache_read baseline from
@@ -286,7 +315,11 @@ impl CacheTracker {
             return None;
         }
 
-        if obs.call_type == "heartbeat" || obs.cache_read_tokens >= self.last_cache_read {
+        // Only `message` calls are comparable to the message baseline. Every
+        // other call type reaching here (heartbeat, keepalive, subagent,
+        // memory_query) runs a different prefix and must not fire an
+        // `unexpected_write` from a read that looks "smaller" than the baseline.
+        if obs.call_type != "message" || obs.cache_read_tokens >= self.last_cache_read {
             None
         } else {
             self.state = CacheState::Cold;
@@ -698,6 +731,113 @@ mod tests {
             CacheState::Cold,
             "UnexpectedWrite should transition Warm → Cold"
         );
+    }
+
+    #[test]
+    fn keepalive_with_smaller_read_is_not_unexpected_write() {
+        // A keepalive ping runs on a slightly shorter prefix than the last
+        // message, so its cache_read is legitimately below the message baseline.
+        // That must not be flagged as an UnexpectedWrite.
+        let mut tracker = CacheTracker::new();
+        _ = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 42_400,
+            cache_write_tokens: 0,
+            call_type: "message".into(),
+        });
+        assert_eq!(tracker.state(), CacheState::Warm);
+
+        let result = tracker.observe(&Observation {
+            ts: "2026-04-05T12:10:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 42_368,
+            cache_write_tokens: 4,
+            call_type: "keepalive".into(),
+        });
+        assert!(result.anomaly.is_none());
+        // The message baseline is untouched by the keepalive.
+        assert_eq!(tracker.last_cache_read(), 42_400);
+    }
+
+    #[test]
+    fn subagent_with_smaller_read_is_not_unexpected_write() {
+        // A subagent runs an entirely separate prompt; its cache_read is not
+        // comparable to the main message baseline.
+        let mut tracker = CacheTracker::new();
+        _ = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 40_000,
+            cache_write_tokens: 0,
+            call_type: "message".into(),
+        });
+
+        let result = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:10Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 512,
+            cache_write_tokens: 0,
+            call_type: "subagent".into(),
+        });
+        assert!(result.anomaly.is_none());
+        assert_eq!(tracker.last_cache_read(), 40_000);
+    }
+
+    #[test]
+    fn no_keepalive_miss_when_idle_exceeds_ceiling() {
+        // Gap longer than max_idle: the keepalive subsystem deliberately stopped
+        // pinging, so the cold start is expected, not a miss.
+        let mut tracker = CacheTracker::with_ttl_secs(3600);
+        _ = tracker.observe(&Observation {
+            ts: "2026-04-05T00:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 500,
+            call_type: "message".into(),
+        });
+        assert_eq!(tracker.state(), CacheState::Warm);
+
+        // 13h later — past the 12h ceiling. A cold message is expected.
+        let result = tracker.observe(&Observation {
+            ts: "2026-04-05T13:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 12_653,
+            call_type: "message".into(),
+        });
+        assert!(result.anomaly.is_none());
+    }
+
+    #[test]
+    fn keepalive_miss_still_fires_within_ceiling() {
+        // Gap past the TTL but within the keepalive ceiling: keepalive should
+        // have pinged and didn't → still a genuine miss.
+        let mut tracker = CacheTracker::with_ttl_secs(3600);
+        _ = tracker.observe(&Observation {
+            ts: "2026-04-05T00:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 500,
+            call_type: "message".into(),
+        });
+
+        let result = tracker.observe(&Observation {
+            ts: "2026-04-05T02:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 10_783,
+            call_type: "message".into(),
+        });
+        assert_eq!(result.anomaly, Some(Anomaly::KeepaliveMiss));
     }
 
     #[test]

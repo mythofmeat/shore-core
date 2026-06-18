@@ -231,11 +231,21 @@ those local invariants pass.
 An observed cache-read decrease while the ledger believes the cache is warm is
 not an expected invalidation path. It is recorded as `UnexpectedWrite` and must
 be treated as a regression signal unless explained by a known deliberate
-breakpoint above. Tool-loop calls keep a separate short-lived cache-read
-baseline because their request prefix advances through newly completed
-`tool_result` blocks; within a loop that baseline must not drop, and the first
-tool-loop continuation after a warm message must not rewrite the prefix with
-zero cache read. Request-shape tests should keep tools, system blocks, and
+breakpoint above. The warm/cold state machine encodes Anthropic-specific
+invariants (the provider-side prompt-cache TTL, keepalive cadence, and monotonic
+prefix growth), so anomalies are evaluated **only for Anthropic-family calls**
+(native or `anthropic/...`-routed). Other providers report cache metrics with
+different semantics and are not tracked. Only `message` calls feed the message
+cache-read baseline; keepalive pings, heartbeats, subagents, and memory queries
+each run on a different prefix and are never compared against it. A
+`KeepaliveMiss` (cache went cold without a keepalive bridging the gap) is
+suppressed when the idle gap exceeds the keepalive ceiling
+(`[behavior.autonomy].cache_keepalive_max`, default 12h): past that point the
+keepalive subsystem deliberately stops pinging, so the cold start is expected.
+Tool-loop calls keep a separate short-lived cache-read baseline because their
+request prefix advances through newly completed `tool_result` blocks; within a
+loop that baseline must not drop, and the first tool-loop continuation after a
+warm message must not rewrite the prefix with zero cache read. Request-shape tests should keep tools, system blocks, and
 already-existing messages byte-preserved for every generation variant; only
 configured tool-surface changes or explicit/manual history edits may change
 that prefix.
