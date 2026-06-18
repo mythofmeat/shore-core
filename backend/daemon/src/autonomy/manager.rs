@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shore_protocol::server_msg::ServerMessage;
-use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
+use shore_protocol::types::{derive_content_from_blocks, ContentBlock, ImageRef, Message, Role};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -2335,7 +2335,7 @@ async fn execute_heartbeat_tick(
         state: Arc::clone(state),
     });
 
-    let (send_message_text, cache_warmed) = run_heartbeat_tool_loop(
+    let (send_message_text, generated_images, cache_warmed) = run_heartbeat_tool_loop(
         character,
         state,
         &mut request,
@@ -2360,6 +2360,7 @@ async fn execute_heartbeat_tick(
         notifier,
         &request,
         send_message_text,
+        generated_images,
     )
     .await;
 }
@@ -2557,7 +2558,7 @@ async fn run_heartbeat_tool_loop(
     lc: &LoadedConfig,
     tool_ctx: &Arc<HeartbeatToolContext>,
     max_tool_iterations: Option<u32>,
-) -> (Option<String>, bool) {
+) -> (Option<String>, Vec<ImageRef>, bool) {
     // `None` = unlimited, so the round count is bounded only by the wall-clock
     // `HEARTBEAT_LOOP_DEADLINE`; `u32::MAX` makes the loop bound effectively
     // infinite while the deadline does the real work and still fires the
@@ -2576,6 +2577,9 @@ async fn run_heartbeat_tool_loop(
 
     // Collect <sendMessage> content across iterations (last-wins).
     let mut send_message_text: Option<String> = None;
+    // Images generated this tick — gathered here (a heartbeat has no live client
+    // channel) and attached to the autonomous message persisted at tick end.
+    let mut generated_images: Vec<ImageRef> = Vec::new();
     let mut cache_warmed = false;
 
     let loop_start = std::time::Instant::now();
@@ -2637,12 +2641,12 @@ async fn run_heartbeat_tool_loop(
         // Dispatch tools (when any) before recording so the transcript entry
         // carries each tool's full output for this iteration.
         let captured = if has_tools {
-            let (tool_results, captured) =
+            let (tool_results, captured, images) =
                 dispatch_heartbeat_tools(character, state, iteration, &tool_uses, tool_ctx).await;
-            request.messages.push(json!({
-                "role": "user",
-                "content": tool_results,
-            }));
+            request
+                .messages
+                .push(json!({ "role": "user", "content": tool_results }));
+            generated_images.extend(images);
             captured
         } else {
             Vec::new()
@@ -2664,7 +2668,7 @@ async fn run_heartbeat_tool_loop(
         }
     }
 
-    (send_message_text, cache_warmed)
+    (send_message_text, generated_images, cache_warmed)
 }
 
 /// Record one heartbeat-call curated transcript entry to the store (no-op when
@@ -2780,9 +2784,14 @@ async fn dispatch_heartbeat_tools(
     iteration: u32,
     tool_uses: &[(String, String, Value)],
     tool_ctx: &Arc<HeartbeatToolContext>,
-) -> (Vec<Value>, Vec<crate::transcript_capture::CapturedTool>) {
+) -> (
+    Vec<Value>,
+    Vec<crate::transcript_capture::CapturedTool>,
+    Vec<ImageRef>,
+) {
     let mut tool_results: Vec<Value> = Vec::new();
     let mut captured: Vec<crate::transcript_capture::CapturedTool> = Vec::new();
+    let mut images: Vec<ImageRef> = Vec::new();
 
     for (id, name, input) in tool_uses {
         let input_str = serde_json::to_string(input).unwrap_or_default();
@@ -2809,9 +2818,19 @@ async fn dispatch_heartbeat_tools(
                 "detail": "Message will be delivered to the user when this tick ends.",
             })))
         } else {
-            crate::content_util::dispatch_result_to_output(
-                tool_system::dispatch_tool(name, input.clone(), tool_ctx.as_ref()).await,
-            )
+            let result = tool_system::dispatch_tool(name, input.clone(), tool_ctx.as_ref()).await;
+            // Capture generated images so the tick can deliver them. Chat turns
+            // do this inline via `attach_generated_image`; a heartbeat has no
+            // live client channel, so the image rides out on the autonomous
+            // message persisted when the tick ends.
+            if name.as_str() == "generate_image" {
+                if let Ok(value) = &result {
+                    if let Some(image_ref) = generated_image_ref(value) {
+                        images.push(image_ref);
+                    }
+                }
+            }
+            crate::content_util::dispatch_result_to_output(result)
         };
 
         info!(
@@ -2844,12 +2863,63 @@ async fn dispatch_heartbeat_tools(
         }
     }
 
-    (tool_results, captured)
+    (tool_results, captured, images)
 }
 
-/// Persist a heartbeat tick's `<sendMessage>` output (if any) to the engine and
-/// notify clients, or record a skip in the ring buffer when the tick produced
-/// no message.
+/// Build an `ImageRef` from a successful `generate_image` tool result.
+///
+/// Mirrors the chat path's `attach_generated_image`: reads the saved `path`
+/// and optional `caption` from the tool's JSON output. `data` is left `None`
+/// and populated just before the message goes on the wire.
+fn generated_image_ref(value: &Value) -> Option<ImageRef> {
+    let path = value.get("path").and_then(Value::as_str)?;
+    Some(ImageRef {
+        path: path.to_owned(),
+        caption: value
+            .get("caption")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        data: None,
+    })
+}
+
+/// Build the autonomous assistant `Message` for a heartbeat tick from its
+/// `<sendMessage>` text and any generated images. Image `data` is populated
+/// later, just before the message goes on the wire.
+fn build_autonomous_message(
+    text: &str,
+    images: Vec<ImageRef>,
+    provider_key: Option<String>,
+) -> Message {
+    let content_blocks = vec![ContentBlock::Text {
+        text: text.to_owned(),
+    }];
+    let content = derive_content_from_blocks(&content_blocks);
+    Message {
+        msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+        origin: Some(shore_protocol::types::MessageOrigin::Autonomous),
+        role: Role::Assistant,
+        content,
+        images,
+        content_blocks,
+        alt_index: None,
+        alt_count: None,
+        alternatives: vec![],
+        provider_key,
+        timestamp: chrono::Local::now().to_rfc3339(),
+    }
+}
+
+/// Persist a heartbeat tick's `<sendMessage>` output and/or generated images to
+/// the engine and notify clients, or record a skip in the ring buffer when the
+/// tick produced neither.
+///
+/// A tick that only generated an image (no `<sendMessage>` text) still delivers
+/// — the image is the message, and any words ride along as its caption.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "heartbeat persistence boundary carries engine, push, and notifier dependencies"
+)]
 async fn persist_heartbeat_message(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
@@ -2858,27 +2928,18 @@ async fn persist_heartbeat_message(
     notifier: Option<&NotificationService>,
     request: &LlmRequest,
     send_message_text: Option<String>,
+    images: Vec<ImageRef>,
 ) {
-    if let Some(user_msg) = send_message_text {
-        info!(character, msg = %truncate_summary(&user_msg, 200), "Heartbeat: sending message to user");
+    if send_message_text.is_some() || !images.is_empty() {
+        let user_msg = send_message_text.unwrap_or_default();
+        info!(
+            character,
+            msg = %truncate_summary(&user_msg, 200),
+            image_count = images.len(),
+            "Heartbeat: sending message to user"
+        );
 
-        let content_blocks = vec![ContentBlock::Text {
-            text: user_msg.clone(),
-        }];
-        let content = derive_content_from_blocks(&content_blocks);
-        let msg = Message {
-            msg_id: format!("m_{}", uuid::Uuid::new_v4()),
-            origin: Some(shore_protocol::types::MessageOrigin::Autonomous),
-            role: Role::Assistant,
-            content,
-            images: vec![],
-            content_blocks,
-            alt_index: None,
-            alt_count: None,
-            alternatives: vec![],
-            provider_key: request.provider_key.clone(),
-            timestamp: chrono::Local::now().to_rfc3339(),
-        };
+        let msg = build_autonomous_message(&user_msg, images, request.provider_key.clone());
 
         // Persist via the engine lock to avoid racing with the handler's
         // MessageStore writes (atomic temp+rename). The engine's append_message
@@ -2898,12 +2959,18 @@ async fn persist_heartbeat_message(
                         error!(character, error = %e, "Failed to persist autonomous message via engine");
                     } else if let Some(tx) = push_tx {
                         // `msg.origin` already carries `Autonomous`; the
-                        // flattened message is what puts it on the wire.
+                        // flattened message is what puts it on the wire. Embed
+                        // image bytes so remote clients (TUI, matrix bridge)
+                        // render generated images without filesystem access to
+                        // the daemon's paths — the incremental NewMessage path
+                        // skips the embedding that `broadcast_history` applies.
+                        let mut wire_msg = msg.clone();
+                        crate::handler::embed_image_data(&mut wire_msg.images);
                         _ = tx.send(ServerMessage::NewMessage(
                             shore_protocol::server_msg::NewMessage {
                                 revision: engine.current_revision(),
                                 character: Some(character.to_owned()),
-                                message: msg.clone(),
+                                message: wire_msg,
                             },
                         ));
                     } else {
@@ -3769,6 +3836,35 @@ mod tests {
         );
         assert_eq!(extract_send_message("no tags here"), None);
         assert_eq!(extract_send_message("<sendMessage></sendMessage>"), None);
+    }
+
+    #[test]
+    fn generated_image_ref_extracts_path_and_caption() {
+        let value = json!({
+            "path": "/data/alice/images/generated/20260619_120000.png",
+            "caption": "a quiet harbor at dawn",
+            "sent": true,
+        });
+        let image = generated_image_ref(&value).expect("should build ImageRef");
+        assert_eq!(
+            image.path,
+            "/data/alice/images/generated/20260619_120000.png"
+        );
+        assert_eq!(image.caption.as_deref(), Some("a quiet harbor at dawn"));
+        assert!(image.data.is_none());
+    }
+
+    #[test]
+    fn generated_image_ref_allows_missing_caption() {
+        let value = json!({ "path": "/img.png", "sent": true });
+        let image = generated_image_ref(&value).expect("should build ImageRef");
+        assert_eq!(image.path, "/img.png");
+        assert!(image.caption.is_none());
+    }
+
+    #[test]
+    fn generated_image_ref_none_without_path() {
+        assert!(generated_image_ref(&json!({ "caption": "orphan" })).is_none());
     }
 
     // -- state resilience -----------------------------------------------------
