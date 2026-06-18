@@ -65,7 +65,7 @@ fn ordinal_suffix(n: u32) -> &'static str {
     }
 }
 
-/// Human-friendly datetime string, e.g. `"Friday, April 4th, 2026 at 4:34 PM"`.
+/// Human-friendly datetime string, e.g. `"Saturday, April 4th, 2026 at 4:34 PM"`.
 pub(crate) fn format_friendly_datetime() -> String {
     let now = Local::now();
     let day = now.day();
@@ -74,7 +74,7 @@ pub(crate) fn format_friendly_datetime() -> String {
         .to_string()
 }
 
-/// Human-friendly local date, e.g. `"Friday, April 4th, 2026"`. Feeds the
+/// Human-friendly local date, e.g. `"Saturday, April 4th, 2026"`. Feeds the
 /// `{{date}}` template variable so prompts can anchor freshness to "today".
 pub(crate) fn format_friendly_date() -> String {
     let now = Local::now();
@@ -288,7 +288,7 @@ mod tests {
     fn handle_check_time_returns_friendly_datetime() {
         let result = handle_check_time(json!({})).unwrap();
         let s = result.as_str().unwrap();
-        // e.g. "Friday, April 4th, 2026 at 4:34 PM"
+        // e.g. "Saturday, April 4th, 2026 at 4:34 PM"
         assert!(s.contains(" at "), "expected friendly format, got: {s}");
         assert!(s.contains(','), "expected friendly format, got: {s}");
     }
