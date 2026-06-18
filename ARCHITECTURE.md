@@ -281,10 +281,15 @@ pass first. A trailing run of unanswered autonomous messages (persisted with
 `origin: "autonomous"`) is always retained so the user still sees it on
 return, and a leftover autonomous tail alone never re-triggers the archive.
 A deep-idle archive empties `active.jsonl`, but the heartbeat does not go
-dormant as a result: when the active conversation is empty yet segments exist,
-the heartbeat request is rebuilt from memory against a synthetic anchor turn so
-ticks keep firing and reflecting on memory until the user returns. Only a
-character with neither live history nor segments (genuinely new) skips the tick.
+dormant as a result: whenever the active conversation has no usable user turn,
+the heartbeat request is rebuilt against a synthetic anchor turn so ticks keep
+firing and reflecting on memory until the user returns. This does not require a
+compaction segment to exist — the character's system prompt, `HEARTBEAT.md`, and
+memory are reason enough to act, and the same rebuild gives the keepalive ping a
+stable system+tools prefix to keep warm even with an empty `active.jsonl` (so the
+cache stays hot overnight rather than going cold the moment the conversation is
+archived). The only state that still skips is a conversation genuinely mid-turn
+(a dangling tool-result tail), where anchoring would build an invalid request.
 
 Dreaming is an opt-in scheduled AI librarian pass. When autonomy and
 `[memory.dreaming]` are enabled, the character uses memory/workspace tools in

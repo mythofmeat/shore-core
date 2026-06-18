@@ -2044,15 +2044,19 @@ fn history_is_between_turns(messages: &[Message]) -> bool {
 /// the heartbeat prompt to attach to: empty (everything archived), or holding
 /// only an unanswered autonomous assistant tail (the retained run). In either
 /// case the provider has no user message for `push_inline_system` to merge into,
-/// so a synthetic anchor turn is prepended (and `has_prior_context` stamps it
-/// with an absolute time marker). A character with no user turn, no retained
-/// tail, and no segments is genuinely new — nothing to build on, so skip.
+/// so a synthetic anchor turn is prepended.
+///
+/// An empty active conversation is **not** treated as "nothing to do": the
+/// character's system prompt, `HEARTBEAT.md`, and memory still give it plenty to
+/// act on, and the keepalive ping wants a stable system+tools prefix to keep
+/// warm regardless of whether compaction has written a segment yet. So the only
+/// reason to skip is a conversation that is genuinely mid-turn (a dangling
+/// tool-result tail), where anchoring would produce an invalid request.
 ///
 /// Returns owned messages because the anchor paths prepend a fresh turn.
 fn heartbeat_rebuild_messages(
     character: &str,
     store: &crate::engine::messages::MessageStore,
-    has_prior_context: bool,
 ) -> Option<Vec<Message>> {
     let messages = store.messages();
     let has_user_turn = messages
@@ -2070,16 +2074,11 @@ fn heartbeat_rebuild_messages(
         return Some(messages.to_vec());
     }
 
-    // No user turn: empty, or only a retained autonomous tail. Skip only when
-    // there is genuinely nothing to anchor onto.
+    // No user turn: empty, or only a retained autonomous tail. An empty active
+    // conversation still anchors onto the synthetic turn below — keeping the
+    // system+tools prefix warm and letting the heartbeat work from memory even
+    // before any segment exists.
     let empty = messages.is_empty();
-    if empty && !has_prior_context {
-        info!(
-            character,
-            "Heartbeat: skipping tick (no prior conversation)"
-        );
-        return None;
-    }
     // Non-empty but no user turn and not at a turn boundary (e.g. a dangling
     // tool-result tail): unsafe to anchor, leave it alone.
     if !empty && !history_is_between_turns(messages) {
@@ -2108,17 +2107,18 @@ fn heartbeat_rebuild_messages(
 /// Called when `last_request` is `None` (e.g. after compaction invalidated the
 /// conversation tail, or after a daemon restart).
 ///
-/// When the active conversation is empty but memory segments exist — the state
-/// a deep-idle keep-0 archive leaves behind — this rebuilds from memory using a
-/// synthetic anchor turn rather than bailing, so the heartbeat keeps firing
-/// instead of going dormant until the user returns. (Before, the empty-active
-/// guard silenced every tick after a deep-idle archive.) The anchor only ever
-/// appears in this archived, cold state, so it can never displace a warm chat
-/// prefix.
+/// When the active conversation is empty — the state a deep-idle keep-0 archive
+/// leaves behind, or simply a character that has never chatted in this session —
+/// this rebuilds using a synthetic anchor turn rather than bailing. That keeps
+/// the heartbeat firing from memory/`HEARTBEAT.md` and gives the keepalive ping a
+/// stable system+tools prefix to keep warm (so the cache stays hot overnight even
+/// with nothing in `active.jsonl`). It does not require any compaction segment to
+/// exist. The anchor only ever appears in this cold state, so it can never
+/// displace a warm chat prefix.
 ///
-/// Returns `None` only when there is genuinely nothing to build on (no live
-/// history *and* no segments), the conversation is mid-turn, or the model can't
-/// be resolved.
+/// Returns `None` only when the conversation is genuinely mid-turn (a dangling
+/// tool-result tail that would build an invalid request) or the model can't be
+/// resolved.
 fn rebuild_request_from_disk(
     character: &str,
     data_dir: &Path,
@@ -2139,7 +2139,7 @@ fn rebuild_request_from_disk(
 
     // Choose the messages to rebuild from (or skip the tick). See
     // `heartbeat_rebuild_messages` for the deep-idle anchor handling.
-    let rebuilt = heartbeat_rebuild_messages(character, &store, has_prior_context)?;
+    let rebuilt = heartbeat_rebuild_messages(character, &store)?;
     let messages: &[Message] = &rebuilt;
 
     // Resolve the normal chat model with the per-character preference
@@ -2391,7 +2391,7 @@ fn prepare_heartbeat_request(
             let Some(req) = rebuild_request_from_disk(character, data_dir, lc) else {
                 info!(
                     character,
-                    "Heartbeat: skipping tick (no prior conversation)"
+                    "Heartbeat: skipping tick (conversation mid-turn or model unresolved)"
                 );
                 return None;
             };
@@ -4362,10 +4362,14 @@ api_key_env = "{api_key_env}"
         std::env::remove_var(api_key_env);
     }
 
-    /// A character with neither live history nor any segments is genuinely new:
-    /// there is nothing to build on, so the rebuild still returns `None`.
+    /// An empty active conversation with no segments still rebuilds via the
+    /// synthetic anchor: the system prompt, `HEARTBEAT.md`, and memory give the
+    /// heartbeat something to act on, and the keepalive ping a stable
+    /// system+tools prefix to keep warm overnight. Previously this returned
+    /// `None`, which silenced both the heartbeat and the keepalive ping (the
+    /// "no cached or rebuildable request" skip-loop) until the user returned.
     #[test]
-    fn rebuild_request_from_disk_skips_when_no_history_and_no_segments() {
+    fn rebuild_request_from_disk_anchors_when_no_history_and_no_segments() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().join("data");
         let character_dir = data_dir.join("alice");
@@ -4381,9 +4385,14 @@ api_key_env = "{api_key_env}"
             tmp.path().join("cache"),
         );
 
+        let request = rebuild_request_from_disk("alice", &data_dir, &config)
+            .expect("empty active with no segments should still rebuild via the anchor");
         assert!(
-            rebuild_request_from_disk("alice", &data_dir, &config).is_none(),
-            "a brand-new character with no segments has nothing to build on"
+            request
+                .messages
+                .iter()
+                .any(|m| m.get("role").and_then(Value::as_str) == Some("user")),
+            "rebuilt request must start from a synthetic user anchor turn"
         );
 
         std::env::remove_var(api_key_env);

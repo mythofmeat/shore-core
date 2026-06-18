@@ -8,15 +8,19 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Fixed
-- **Heartbeats no longer go silent after a deep-idle archive.** The deep-idle
-  archive (`[memory.compaction] archive_after`) empties `active.jsonl` to start
-  the next exchange from a clean slate. The heartbeat rebuild treated an empty
-  active conversation as "no prior conversation" and skipped every tick — even
-  though the conversation lived on in `segments/` — so the character went
-  dormant until the user sent the next message. The rebuild now reconstructs the
-  request from memory against a synthetic anchor turn whenever segments exist, so
-  ticks keep firing through extended idle. Only a genuinely new character (no
-  history and no segments) still skips.
+- **Cache keepalive (and the heartbeat) no longer go silent when `active.jsonl`
+  is empty.** The deep-idle archive (`[memory.compaction] archive_after`) empties
+  `active.jsonl` to start the next exchange from a clean slate. The rebuild
+  treated an empty active conversation as "no prior conversation" and bailed
+  unless a compaction `segments/` entry happened to exist — so the keepalive ping
+  fell into a `no cached or rebuildable request` skip-loop and the prompt cache
+  went cold (and the heartbeat could go dormant) until the user returned. The
+  rebuild now reconstructs the request against a synthetic anchor turn whenever
+  the active conversation has no usable user turn, **without** requiring a
+  segment: the character's system prompt, `HEARTBEAT.md`, and memory are enough to
+  act on, and the keepalive gets a stable system+tools prefix to keep warm
+  overnight. The only state that still skips is a conversation genuinely mid-turn
+  (a dangling tool-result tail).
 - **`shore log --heartbeat`/`--dreaming` no longer fail with `no such column:
   character`, and transcript capture works again on existing installs.** The
   `transcripts.character` column was added one commit after the `call-store`
