@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.9...shore-daemon-v0.1.10) - 2026-06-18
+
+### Added
+
+- *(subagents)* expand {{date}}/{{time}} in sub-agent prompts ([#288](https://github.com/mythofmeat/shore-core/pull/288))
+
+### Fixed
+
+- *(autonomy)* keepalive survives an empty active.jsonl ([#289](https://github.com/mythofmeat/shore-core/pull/289))
+- *(autonomy)* heartbeat survives deep-idle archive ([#287](https://github.com/mythofmeat/shore-core/pull/287))
+
 ## [0.1.9](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.8...shore-daemon-v0.1.9) - 2026-06-16
 
 ### Other
