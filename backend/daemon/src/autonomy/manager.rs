@@ -2891,9 +2891,15 @@ fn build_autonomous_message(
     images: Vec<ImageRef>,
     provider_key: Option<String>,
 ) -> Message {
-    let content_blocks = vec![ContentBlock::Text {
-        text: text.to_owned(),
-    }];
+    // Omit the text block for an image-only tick — otherwise the persisted
+    // message carries a blank `ContentBlock::Text`.
+    let content_blocks = if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![ContentBlock::Text {
+            text: text.to_owned(),
+        }]
+    };
     let content = derive_content_from_blocks(&content_blocks);
     Message {
         msg_id: format!("m_{}", uuid::Uuid::new_v4()),
@@ -3865,6 +3871,28 @@ mod tests {
     #[test]
     fn generated_image_ref_none_without_path() {
         assert!(generated_image_ref(&json!({ "caption": "orphan" })).is_none());
+    }
+
+    #[test]
+    fn build_autonomous_message_image_only_has_no_text_block() {
+        let images = vec![ImageRef {
+            path: "/img.png".into(),
+            caption: Some("dawn".into()),
+            data: None,
+        }];
+        let msg = build_autonomous_message("", images, None);
+        assert!(
+            msg.content_blocks.is_empty(),
+            "image-only message should carry no blank text block"
+        );
+        assert_eq!(msg.images.len(), 1);
+    }
+
+    #[test]
+    fn build_autonomous_message_keeps_text_block_when_present() {
+        let msg = build_autonomous_message("hello", Vec::new(), None);
+        assert_eq!(msg.content_blocks.len(), 1);
+        assert_eq!(msg.content, "hello");
     }
 
     // -- state resilience -----------------------------------------------------
