@@ -29,7 +29,8 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 
 ### Fixed
 - **Cache-anomaly reporting (`shore usage --anomalies`) no longer fires false
-  positives on non-Anthropic models and non-`message` calls.** The warm/cold
+  positives on non-Anthropic models and on keepalive/heartbeat/subagent/
+  memory-query calls.** The warm/cold
   state machine encodes Anthropic-specific invariants (prompt-cache TTL,
   keepalive cadence, monotonic prefix growth), but it was also being run on other
   providers (e.g. `glm-*`, `deepseek-*` background/subagent calls) and comparing
