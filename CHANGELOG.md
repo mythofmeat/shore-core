@@ -7,6 +7,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 
 ## [Unreleased]
 
+### Added
+- **Sub-agent prompts can now anchor to the current date via `{{date}}` /
+  `{{time}}`.** These template variables expand to the daemon's local date and
+  time at dispatch (alongside the existing `{{char}}` / `{{user}}`). Because a
+  sub-agent runs in its own LLM call and never sees the conversation's injected
+  time markers, a research sub-agent previously fell back on its training cutoff
+  and accepted stale sources as current; adding `Today is {{date}}.` to the
+  prompt fixes that. See `[subagents]` in CONFIGURATION.md.
+
 ### Fixed
 - **Cache keepalive (and the heartbeat) no longer go silent when `active.jsonl`
   is empty.** The deep-idle archive (`[memory.compaction] archive_after`) empties
