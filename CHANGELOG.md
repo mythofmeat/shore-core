@@ -28,6 +28,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   prompt fixes that. See `[subagents]` in CONFIGURATION.md.
 
 ### Fixed
+- **Images generated during a heartbeat tick now reach the user.** A character
+  that called `generate_image` in a private heartbeat turn had the image saved
+  to disk and was told `"sent": true`, but nothing delivered it — only chat
+  turns ran the `attach_generated_image` path, while the heartbeat loop discarded
+  the result and `persist_heartbeat_message` hardcoded an empty image list. The
+  heartbeat tool loop now collects generated images and attaches them to the
+  autonomous message it persists and broadcasts (with image bytes embedded for
+  remote clients). A tick that produces an image but no `<sendMessage>` text now
+  delivers the image on its own.
 - **Cache-anomaly reporting (`shore usage --anomalies`) no longer fires false
   positives on non-Anthropic models and on keepalive/heartbeat/subagent/
   memory-query calls.** The warm/cold
