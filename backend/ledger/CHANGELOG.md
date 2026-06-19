@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v0.1.8...shore-ledger-v0.1.9) - 2026-06-19
+
+### Fixed
+
+- *(ledger)* stop false cache anomalies on non-Anthropic + non-message calls ([#292](https://github.com/mythofmeat/shore-core/pull/292))
+
 ## [0.1.8](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v0.1.7...shore-ledger-v0.1.8) - 2026-06-18
 
 ### Added
