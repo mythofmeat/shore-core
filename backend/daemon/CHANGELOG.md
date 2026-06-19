@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.10...shore-daemon-v0.1.11) - 2026-06-19
+
+### Fixed
+
+- *(heartbeat)* deliver generated images to the user ([#293](https://github.com/mythofmeat/shore-core/pull/293))
+
 ## [0.1.10](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.9...shore-daemon-v0.1.10) - 2026-06-18
 
 ### Added
