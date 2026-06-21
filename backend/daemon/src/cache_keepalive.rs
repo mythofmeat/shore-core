@@ -16,9 +16,13 @@ pub enum CacheKeepaliveAction {
 /// It observes exactly three things:
 ///
 /// - `set_interval`: the active model's `cache_keepalive` cadence (`None` = off).
-/// - `on_cache_warmed`: any *real* LLM call that touches the cached prompt
-///   (user message, heartbeat tick) — resets both the ping timer and the
-///   idle clock.
+/// - `on_cache_warmed`: a *real* LLM call that ran on the **same model** whose
+///   cache we keep warm (a foreground reply, or a heartbeat/background tick that
+///   happens to use that model) — resets both the ping timer and the idle
+///   clock. A call on a *different* model (e.g. a heartbeat pinned to a cheap
+///   background model) does NOT warm this model's prompt cache, so it is
+///   ignored: counting it would push the ping out while the real cache silently
+///   expires, turning every ping into a full cache recreation.
 /// - `on_cache_invalidated`: the cached prefix is known unusable (e.g. the
 ///   model switched and its prefix is cold).
 ///
@@ -36,6 +40,14 @@ pub enum CacheKeepaliveAction {
 pub struct CacheKeepalive {
     /// Active model's ping cadence. `None` means keepalive is off.
     interval: Option<Duration>,
+    /// The model whose prompt cache this keepalive keeps warm — i.e. the model
+    /// the ping itself runs on (the foreground chat model). Set from each cached
+    /// request via [`set_interval`]. A warm only counts when it ran on this same
+    /// model; a background tick on a different model does not refresh this
+    /// cache. `None` until the first request is cached.
+    ///
+    /// [`set_interval`]: CacheKeepalive::set_interval
+    target_model: Option<String>,
     /// Global upper bound on time since the last real activity to keep pinging.
     max_idle: Duration,
     /// Next time a keepalive ping should fire.
@@ -62,6 +74,7 @@ impl CacheKeepalive {
     pub fn new(max_idle: Duration) -> Self {
         Self {
             interval: None,
+            target_model: None,
             max_idle,
             next_ping_at: None,
             last_active_at: None,
@@ -83,7 +96,12 @@ impl CacheKeepalive {
     ///
     /// [`on_cache_invalidated`]: CacheKeepalive::on_cache_invalidated
     /// [`on_cache_warmed`]: CacheKeepalive::on_cache_warmed
-    pub fn set_interval(&mut self, interval: Option<Duration>, _now: Instant) {
+    pub fn set_interval(&mut self, interval: Option<Duration>, model: &str, _now: Instant) {
+        // Record the model the keepalive ping runs on. Warms are gated on this:
+        // only a call on this model actually refreshes the cache we maintain.
+        if self.target_model.as_deref() != Some(model) {
+            self.target_model = Some(model.to_owned());
+        }
         let changed = self.interval != interval;
         self.interval = interval;
         match interval {
@@ -101,7 +119,17 @@ impl CacheKeepalive {
     /// Called after ANY *real* LLM call involving the cached prompt — user
     /// message or heartbeat tick (NOT a keepalive ping). Resets the idle clock
     /// and schedules the next ping one interval out.
-    pub fn on_cache_warmed(&mut self, now: Instant) {
+    pub fn on_cache_warmed(&mut self, model: &str, now: Instant) {
+        // Only a call on the model we keep warm actually refreshed the cache.
+        // A heartbeat/background tick on a *different* model leaves this model's
+        // prompt cache untouched — counting it would reschedule the ping past
+        // the cache's own TTL, so the next ping lands cold and pays a full cache
+        // recreation. Reject only when a target is already established and the
+        // models differ; before any target exists (the first foreground turn,
+        // before its request is cached) the warm bootstraps the clock.
+        if self.target_model.as_deref().is_some_and(|t| t != model) {
+            return;
+        }
         self.last_active_at = Some(now);
         self.failure_count = 0;
         self.next_ping_at = self.interval.and_then(|iv| now.checked_add(iv));
@@ -178,6 +206,11 @@ impl CacheKeepalive {
 mod tests {
     use super::*;
 
+    /// The model whose cache the keepalive maintains in these tests.
+    const MODEL: &str = "opus";
+    /// A different model — a warm reported on this must NOT count.
+    const OTHER_MODEL: &str = "glm";
+
     fn hours(h: u64) -> Duration {
         Duration::from_secs(h.saturating_mul(3600))
     }
@@ -189,8 +222,8 @@ mod tests {
     /// A keepalive with a 12h idle ceiling and a 55m interval already armed.
     fn armed(now: Instant) -> CacheKeepalive {
         let mut ka = CacheKeepalive::new(hours(12));
-        ka.set_interval(Some(minutes(55)), now);
-        ka.on_cache_warmed(now);
+        ka.set_interval(Some(minutes(55)), MODEL, now);
+        ka.on_cache_warmed(MODEL, now);
         ka
     }
 
@@ -205,10 +238,10 @@ mod tests {
         let now = Instant::now();
         let mut ka = CacheKeepalive::new(hours(12));
         // No interval set (keepalive off) — warming does not schedule a ping.
-        ka.on_cache_warmed(now);
+        ka.on_cache_warmed(MODEL, now);
         assert_eq!(ka.tick(now + hours(2)), CacheKeepaliveAction::None);
         // Explicitly off.
-        ka.set_interval(None, now);
+        ka.set_interval(None, MODEL, now);
         assert_eq!(ka.tick(now + hours(2)), CacheKeepaliveAction::None);
     }
 
@@ -240,8 +273,8 @@ mod tests {
         // third scheduled ping lands past the ceiling and must be suppressed.
         let now = Instant::now();
         let mut ka = CacheKeepalive::new(hours(2));
-        ka.set_interval(Some(minutes(55)), now);
-        ka.on_cache_warmed(now);
+        ka.set_interval(Some(minutes(55)), MODEL, now);
+        ka.on_cache_warmed(MODEL, now);
 
         // Ping 1 at 55m — within 2h.
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::Ping);
@@ -259,11 +292,11 @@ mod tests {
     fn real_activity_resets_idle_clock_and_resumes() {
         let now = Instant::now();
         let mut ka = CacheKeepalive::new(hours(2));
-        ka.set_interval(Some(minutes(55)), now);
-        ka.on_cache_warmed(now);
+        ka.set_interval(Some(minutes(55)), MODEL, now);
+        ka.on_cache_warmed(MODEL, now);
 
         // Drift to just under the ceiling, then a real message arrives.
-        ka.on_cache_warmed(now + minutes(115));
+        ka.on_cache_warmed(MODEL, now + minutes(115));
         // The old 55m ping does not fire; the timer moved to 115+55=170m.
         assert_eq!(ka.tick(now + minutes(120)), CacheKeepaliveAction::None);
         // Fires at 170m, now measured against the fresh activity at 115m.
@@ -293,10 +326,43 @@ mod tests {
         let now = Instant::now();
         let mut ka = armed(now);
         // A user message warms the cache at 30min.
-        ka.on_cache_warmed(now + minutes(30));
+        ka.on_cache_warmed(MODEL, now + minutes(30));
         // The old ping at 55min should NOT fire (deadline moved to 30+55=85).
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
         assert_eq!(ka.tick(now + minutes(85)), CacheKeepaliveAction::Ping);
+    }
+
+    #[test]
+    fn warm_on_different_model_is_ignored() {
+        // Regression: a heartbeat/background tick on a DIFFERENT model than the
+        // keepalive target does not refresh the target's prompt cache, so it
+        // must neither reschedule the ping nor reset the idle clock. Counting it
+        // (the old bug) pushed the ping past the cache's TTL, turning every ping
+        // into a full cache recreation.
+        let now = Instant::now();
+        let mut ka = armed(now);
+        // Off-model "warm" at 30min must NOT move the deadline to 30+55=85m...
+        ka.on_cache_warmed(OTHER_MODEL, now + minutes(30));
+        // ...the original 55m ping (from the real warm at `now`) still stands.
+        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::Ping);
+    }
+
+    #[test]
+    fn warm_on_different_model_does_not_reset_idle_ceiling() {
+        // The idle ceiling counts from the last REAL target warm. An off-model
+        // tick must not push it back, or background noise would keep the cache
+        // warm forever while the user is away.
+        let now = Instant::now();
+        let mut ka = CacheKeepalive::new(hours(2));
+        ka.set_interval(Some(minutes(55)), MODEL, now);
+        ka.on_cache_warmed(MODEL, now);
+
+        // An off-model tick at 90min does not reset the 2h ceiling anchored at `now`.
+        ka.on_cache_warmed(OTHER_MODEL, now + minutes(90));
+        ka.on_ping_succeeded(now + minutes(55));
+        ka.on_ping_succeeded(now + minutes(110));
+        // Ping 3 at 165m is past the 2h ceiling (still measured from `now`) → stop.
+        assert_eq!(ka.tick(now + minutes(165)), CacheKeepaliveAction::None);
     }
 
     #[test]
@@ -307,7 +373,7 @@ mod tests {
         ka.on_cache_invalidated();
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
         // Next real call warms a new prefix — pings resume.
-        ka.on_cache_warmed(now + hours(1));
+        ka.on_cache_warmed(MODEL, now + hours(1));
         assert_eq!(
             ka.tick(now + hours(1) + minutes(55)),
             CacheKeepaliveAction::Ping
@@ -319,7 +385,7 @@ mod tests {
         let now = Instant::now();
         let mut ka = armed(now);
         // User switches to a model with keepalive off.
-        ka.set_interval(None, now + minutes(10));
+        ka.set_interval(None, MODEL, now + minutes(10));
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
         assert_eq!(ka.tick(now + hours(3)), CacheKeepaliveAction::None);
     }
@@ -330,7 +396,7 @@ mod tests {
         let mut ka = armed(now);
         // Switch to a 6h cadence at 30min; anchored to last activity (now),
         // the next ping moves to 6h.
-        ka.set_interval(Some(hours(6)), now + minutes(30));
+        ka.set_interval(Some(hours(6)), MODEL, now + minutes(30));
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
         assert_eq!(ka.tick(now + hours(6)), CacheKeepaliveAction::Ping);
     }
@@ -346,11 +412,11 @@ mod tests {
 
         // New request cached for the switched model, but nothing has warmed its
         // prefix yet → no ping armed, even far in the future.
-        ka.set_interval(Some(minutes(55)), now + minutes(5));
+        ka.set_interval(Some(minutes(55)), MODEL, now + minutes(5));
         assert_eq!(ka.tick(now + hours(2)), CacheKeepaliveAction::None);
 
         // A real call warms the new prefix → pinging resumes from there.
-        ka.on_cache_warmed(now + hours(1));
+        ka.on_cache_warmed(MODEL, now + hours(1));
         assert_eq!(
             ka.tick(now + hours(1) + minutes(55)),
             CacheKeepaliveAction::Ping

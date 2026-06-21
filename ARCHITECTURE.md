@@ -465,10 +465,14 @@ governed by exactly two knobs — a per-model ping cadence (`cache_keepalive`,
 `off`) and a global idle ceiling (`[behavior.autonomy].cache_keepalive_max`,
 default 12h). It pings the prompt cache every cadence-interval while the
 character is idle, and stops once `cache_keepalive_max` elapses since the last
-**real** activity (user message or heartbeat tick) — measured from the last real
-message, never reset by a ping. Real activity reschedules the timer and restarts
-the idle clock; a model switch updates the cadence (and pauses pinging if the new
-model's prefix is cold). Compaction clears any cached request body that contains
+**real** activity — measured from the last real message, never reset by a ping.
+Real activity reschedules the timer and restarts the idle clock, but only a call
+that ran on the **same model the keepalive pings** counts: a background tick
+(heartbeat/dreaming) pinned to a cheaper model does not warm the foreground
+model's cache, so it must not advance the ping or reset the idle clock —
+otherwise the cache silently expires between pings and every ping pays a full
+cache recreation. A model switch updates the cadence (and pauses pinging if the
+new model's prefix is cold). Compaction clears any cached request body that contains
 the old conversation tail, but does not cancel the keepalive deadline; a later
 keepalive can rebuild from disk to keep stable pinned system prompt sections
 warm. `cache_keepalive` is a literal cadence and is unrelated to the

@@ -28,6 +28,17 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   prompt fixes that. See `[subagents]` in CONFIGURATION.md.
 
 ### Fixed
+- **Cache keepalive no longer pays a full cache recreation on every other
+  ping.** The keepalive keeps the foreground chat model's prompt cache warm, but
+  it treated *any* successful background tick as proof the cache was refreshed.
+  Once heartbeat/dreaming were pinned to a cheaper background model, those ticks
+  warmed a *different* model's cache while still rescheduling the foreground
+  ping — pushing it past the cache's TTL, so roughly every other ping landed
+  cold and paid a full multi-thousand-token cache *write* on the expensive model
+  instead of a cheap read (observed at ~45% of one deployment's Anthropic spend).
+  A warm now only counts when it ran on the same model the keepalive pings; a
+  background tick on another model leaves the ping schedule and idle clock
+  untouched.
 - **Images generated during a heartbeat tick now reach the user.** A character
   that called `generate_image` in a private heartbeat turn had the image saved
   to disk and was told `"sent": true`, but nothing delivered it — only chat
