@@ -15,14 +15,14 @@ You may **only** write to:
 - `MEMORY.md` (workspace root) — the prompt-visible memory index. Keep it concise.
 - Anything under `memory/` — e.g. `memory/people/{{user}}.md`, `memory/topics/gaming/doom.md`.
 
-Writes to other paths (`SOUL.md`, `USER.md`, `AGENTS.md`, `DREAMS.md`, anything outside `memory/`) are blocked at the tool layer and will be rejected. Dreaming reorganizes `MEMORY.md` later; your job is to capture the carry-forward context.
+Writes to other paths (`SOUL.md`, `USER.md`, `AGENTS.md`, anything outside `memory/`) are blocked at the tool layer and will be rejected. Dreaming reorganizes `MEMORY.md` later; your job is to capture the carry-forward context.
 
 ## Guidelines
 
 - **Prefer updating existing files** over creating new ones. Inspect the current memory snapshot before deciding.
 - Use clear filenames and folder structure. Each memory file should have a heading and concise bullets.
 - If {{user}} corrected previous information, **edit** the file rather than appending.
-- Update `MEMORY.md` (workspace root) with the conversational throughline: ongoing topics, unresolved threads, anything future-you should remember to continue.
+- Update `MEMORY.md` (workspace root) with the conversational throughline: current state, ongoing topics, unresolved threads, anything future-you should remember to continue. `MEMORY.md` is the only memory always in your system prompt, so keep it to current state plus thin pointers to where deeper material lives — do not restate the contents of your `memory/` files, and prune anything no longer current.
 - Include timestamps or session context when relevant.
 
 ## Committing your writes
