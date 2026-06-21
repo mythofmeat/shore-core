@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.12...shore-daemon-v0.1.13) - 2026-06-21
+
+### Added
+
+- *(ledger)* flag cold keepalive pings as a cache anomaly ([#297](https://github.com/mythofmeat/shore-core/pull/297))
+
+### Fixed
+
+- *(prompts)* keep MEMORY.md an at-a-glance surface, not a store summary ([#298](https://github.com/mythofmeat/shore-core/pull/298))
+
 ## [0.1.12](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.11...shore-daemon-v0.1.12) - 2026-06-21
 
 ### Fixed
