@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v0.1.9...shore-ledger-v0.1.10) - 2026-06-21
+
+### Added
+
+- *(ledger)* flag cold keepalive pings as a cache anomaly ([#297](https://github.com/mythofmeat/shore-core/pull/297))
+
 ## [0.1.9](https://github.com/mythofmeat/shore-core/compare/shore-ledger-v0.1.8...shore-ledger-v0.1.9) - 2026-06-19
 
 ### Fixed
