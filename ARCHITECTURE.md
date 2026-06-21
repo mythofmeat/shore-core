@@ -242,6 +242,15 @@ each run on a different prefix and are never compared against it. A
 suppressed when the idle gap exceeds the keepalive ceiling
 (`[behavior.autonomy].cache_keepalive_max`, default 12h): past that point the
 keepalive subsystem deliberately stops pinging, so the cold start is expected.
+A `ColdKeepalive` (a keepalive ping with `cache_read == 0` and
+`cache_write > 0`) flags the keepalive *itself* paying a cache creation instead
+of refreshing a warm prefix — the keepalive's most expensive failure mode. It is
+judged per-observation (not from the warm/cold state machine, which interleaved
+multi-model traffic on the per-character timeline can thrash), so it stays
+reliable regardless of surrounding call types. Note the state machine is keyed by
+character, not by `(character, model)`; background ticks pinned to a different
+model share the timeline, which is why state-machine-derived anomalies are
+advisory and the per-observation `ColdKeepalive` check is the dependable signal.
 Tool-loop calls keep a separate short-lived cache-read baseline because their
 request prefix advances through newly completed `tool_result` blocks; within a
 loop that baseline must not drop, and the first tool-loop continuation after a

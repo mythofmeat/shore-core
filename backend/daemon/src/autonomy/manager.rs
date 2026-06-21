@@ -1380,11 +1380,26 @@ async fn execute_cache_keepalive_ping(character: &str, ctx: &TickContext) {
                 HeartbeatEventKind::DormantPing,
                 &fallback_events,
             );
+            // A ping that read nothing did not refresh a warm cache — it paid a
+            // full cache write. The HTTP call "succeeded", but the keepalive
+            // failed at its only job, so surface it loudly instead of burying a
+            // `cache_read: 0` inside a success line (the ledger also raises a
+            // `cold_keepalive` anomaly for the same row).
+            let cold = usage.cache_read_tokens == 0;
+            if cold {
+                warn!(
+                    character,
+                    cache_write_tokens = usage.cache_creation_tokens,
+                    "Cache keepalive ping landed cold (read 0) — paid a cache write instead of refreshing a warm prefix"
+                );
+            }
             s.heartbeat_log.push(
                 HeartbeatEventKind::DormantPing,
                 format!(
-                    "Cache refresh ping (cache_read: {}, input: {})",
-                    usage.cache_read_tokens, usage.input_tokens
+                    "Cache refresh ping ({}cache_read: {}, input: {})",
+                    if cold { "COLD — wrote cache; " } else { "" },
+                    usage.cache_read_tokens,
+                    usage.input_tokens
                 ),
             );
             s.mark_dirty();
@@ -3221,9 +3236,14 @@ fn append_wrap_up_nudge(request: &mut LlmRequest) {
 // Dormant ping executor
 // ---------------------------------------------------------------------------
 
+#[expect(
+    clippy::struct_field_names,
+    reason = "these are token counts; the `_tokens` suffix mirrors the upstream usage struct"
+)]
 struct DormantPingUsage {
     input_tokens: u64,
     cache_read_tokens: u64,
+    cache_creation_tokens: u64,
 }
 
 enum DormantPingOutcome {
@@ -3333,6 +3353,7 @@ async fn execute_dormant_ping(
                 usage: DormantPingUsage {
                     input_tokens: resp.usage.input_tokens,
                     cache_read_tokens: resp.usage.cache_read_tokens,
+                    cache_creation_tokens: resp.usage.cache_creation_tokens,
                 },
                 fallback_events,
             }

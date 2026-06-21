@@ -26,6 +26,15 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   time markers, a research sub-agent previously fell back on its training cutoff
   and accepted stale sources as current; adding `Today is {{date}}.` to the
   prompt fixes that. See `[subagents]` in CONFIGURATION.md.
+- **`cold_keepalive` cache anomaly + a loud log when a keepalive ping lands
+  cold.** A keepalive whose ping reads nothing and pays a cache write
+  (`cache_read == 0`, `cache_write > 0`) failed at its only job, but the previous
+  logic treated *any* keepalive arrival as success — so the most expensive
+  failure mode of the subsystem was invisible in `shore usage --anomalies` and
+  logged as a successful refresh. It is now flagged per-observation (independent
+  of the warm/cold state machine, which interleaved multi-model traffic on the
+  per-character timeline can thrash) and the dormant-ping path warns instead of
+  burying `cache_read: 0` in a success line.
 
 ### Fixed
 - **Cache keepalive no longer pays a full cache recreation on every other

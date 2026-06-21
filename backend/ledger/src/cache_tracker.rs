@@ -16,6 +16,14 @@ pub enum Anomaly {
     /// The cache was Warm, TTL expired (→ Cold), and the next call was NOT a
     /// keepalive — meaning the keepalive system failed to bridge the gap.
     KeepaliveMiss,
+    /// A keepalive ping that paid for a cache *write* with no read
+    /// (`cache_read == 0`, `cache_write > 0`). The keepalive exists to
+    /// read-refresh a warm prefix; a cold write means it fired too late (past
+    /// the TTL) or on a cold cache — the exact failure mode that turns the
+    /// keepalive from a cost-saver into a cost-center. Detected per-observation,
+    /// independent of the warm/cold state machine, so interleaved multi-model
+    /// traffic can't mask it.
+    ColdKeepalive,
 }
 
 #[derive(Debug, Clone)]
@@ -246,7 +254,24 @@ impl CacheTracker {
                     anomaly = Some(Anomaly::KeepaliveMiss);
                 }
             }
-            // else: keepalive arrived (possibly late, but it tried). Not an anomaly.
+            // else: keepalive arrived. Whether it actually refreshed the cache
+            // (a cheap read) or cold-missed (paid a write) is judged in 5c.
+        }
+
+        // 5c. Cold keepalive: the ping itself read nothing and wrote cache. A
+        // healthy keepalive reads a still-warm prefix (`cache_read > 0`,
+        // `cache_write == 0`); a write with no read means it landed on a cold
+        // cache and paid a full creation — the most expensive failure mode of
+        // the keepalive subsystem, and the one that used to be silent (the old
+        // logic treated *any* keepalive arrival as success). This is a pure
+        // function of the single observation, so interleaved models thrashing
+        // the warm/cold state machine cannot mask it.
+        if anomaly.is_none()
+            && obs.call_type == "keepalive"
+            && obs.cache_read_tokens == 0
+            && obs.cache_write_tokens > 0
+        {
+            anomaly = Some(Anomaly::ColdKeepalive);
         }
 
         // 6. Update internal state — only update cache_read baseline from
@@ -611,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn no_keepalive_miss_when_keepalive_arrives_after_ttl() {
+    fn no_keepalive_miss_when_keepalive_refreshes_warm_prefix() {
         let mut tracker = CacheTracker::with_ttl_secs(60);
         _ = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
@@ -622,16 +647,79 @@ mod tests {
             call_type: "message".into(),
         });
 
-        // TTL expired, but next call IS a keepalive — system is working.
+        // A keepalive that READS a still-warm prefix is the system working as
+        // intended — no anomaly. (Reading bridges the gap for free; only a cold
+        // *write* keepalive is a failure — see `cold_keepalive_*` below.)
+        let result = tracker.observe(&Observation {
+            ts: "2026-04-05T12:02:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 500,
+            cache_write_tokens: 0,
+            call_type: "keepalive".into(),
+        });
+        assert!(result.anomaly.is_none());
+    }
+
+    #[test]
+    fn cold_keepalive_flagged_when_ping_writes_instead_of_reads() {
+        // The regression that went silent: a keepalive that read nothing and
+        // paid a cache write. The HTTP call succeeds, but the keepalive missed
+        // its TTL window and recreated the prefix — flag it.
+        let mut tracker = CacheTracker::with_ttl_secs(60);
+        _ = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 500,
+            call_type: "message".into(),
+        });
         let result = tracker.observe(&Observation {
             ts: "2026-04-05T12:02:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
             cache_read_tokens: 0,
-            cache_write_tokens: 500,
+            cache_write_tokens: 13_000,
             call_type: "keepalive".into(),
         });
-        assert!(result.anomaly.is_none());
+        assert_eq!(result.anomaly, Some(Anomaly::ColdKeepalive));
+    }
+
+    #[test]
+    fn cold_keepalive_detected_despite_interleaved_model_thrash() {
+        // The detector keys on character, so a background-model heartbeat lands
+        // on the same timeline and would flip the warm/cold state machine. The
+        // cold-keepalive check is a pure per-observation rule, so it still fires
+        // through that noise — the exact scenario the live bug ran in.
+        let mut tracker = CacheTracker::with_ttl_secs(3600);
+        _ = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 40_000,
+            cache_write_tokens: 0,
+            call_type: "message".into(),
+        });
+        // A glm heartbeat on a different model interleaves (state thrash).
+        _ = tracker.observe(&Observation {
+            ts: "2026-04-05T12:01:00Z".into(),
+            model: "glm-5.2".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 8_000,
+            cache_write_tokens: 0,
+            call_type: "heartbeat".into(),
+        });
+        // The opus keepalive comes back cold — still flagged.
+        let result = tracker.observe(&Observation {
+            ts: "2026-04-05T12:02:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 13_000,
+            call_type: "keepalive".into(),
+        });
+        assert_eq!(result.anomaly, Some(Anomaly::ColdKeepalive));
     }
 
     #[test]

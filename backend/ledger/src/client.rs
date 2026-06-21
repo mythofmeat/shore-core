@@ -153,6 +153,7 @@ fn track_cache_state(
     let anomaly_str = result.anomaly.map(|a| match a {
         Anomaly::UnexpectedWrite => "unexpected_write",
         Anomaly::KeepaliveMiss => "keepalive_miss",
+        Anomaly::ColdKeepalive => "cold_keepalive",
     });
 
     if let Some(anomaly) = &anomaly_str {
