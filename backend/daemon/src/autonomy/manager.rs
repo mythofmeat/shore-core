@@ -568,10 +568,19 @@ impl AutonomyManager {
             let was_idle = s.heartbeat.ticks_without_user() > 0;
             let now = Instant::now();
             s.heartbeat.on_user_message(now);
-            // The user message will trigger an LLM response — cache-warming
-            // event. (The keepalive cadence itself is set when that response's
-            // request is cached, via `cache_last_request`.)
-            s.cache_keepalive.on_cache_warmed(now);
+            // The user message will trigger an LLM response on the foreground
+            // chat model — a real warm of the cache the keepalive maintains.
+            // (The cadence itself is (re)set when that response's request is
+            // cached, via `cache_last_request`.) Source the model from the last
+            // cached request, the foreground model the keepalive targets. On the
+            // very first turn there is no cached request yet and no target set —
+            // an empty model still bootstraps the clock (the gate only rejects a
+            // *mismatched* model once a target exists).
+            let fg_model = s
+                .last_request
+                .as_ref()
+                .map_or_else(String::new, |r| r.model.clone());
+            s.cache_keepalive.on_cache_warmed(&fg_model, now);
             if was_idle {
                 info!(character, "User returned — resetting idle counter");
                 s.heartbeat_log.push(
@@ -909,7 +918,7 @@ fn cache_last_request(state: &mut AutonomyState, character: &str, request: LlmRe
     // (or first request after restart) takes effect immediately.
     state
         .cache_keepalive
-        .set_interval(request.keepalive_interval, Instant::now());
+        .set_interval(request.keepalive_interval, &request.model, Instant::now());
     state.last_request = Some(request);
     debug!(character, "Cached last LLM request for heartbeat reuse");
 }
@@ -2347,9 +2356,15 @@ async fn execute_heartbeat_tick(
     .await;
 
     // -- Cache warmed: the tick itself was a cache-warming LLM call -----------
+    // Pass the model the heartbeat actually ran on. When it runs on a pinned
+    // background model (the common case), it does NOT warm the foreground
+    // model's cache, so the keepalive ignores it and lets the foreground ping
+    // schedule stand. Only when the heartbeat runs on the keepalive's own model
+    // does this count as a real warm.
     if cache_warmed {
         let mut s = lock_state(state);
-        s.cache_keepalive.on_cache_warmed(Instant::now());
+        s.cache_keepalive
+            .on_cache_warmed(&request.model, Instant::now());
     }
 
     persist_heartbeat_message(
@@ -4016,8 +4031,12 @@ mod tests {
     /// real activity 1h ago, well within the 12h idle ceiling).
     fn due_keepalive(now: Instant) -> CacheKeepalive {
         let mut ka = CacheKeepalive::new(Duration::from_hours(12));
-        ka.set_interval(Some(Duration::from_mins(55)), now - Duration::from_hours(1));
-        ka.on_cache_warmed(now - Duration::from_hours(1));
+        ka.set_interval(
+            Some(Duration::from_mins(55)),
+            "test-model",
+            now - Duration::from_hours(1),
+        );
+        ka.on_cache_warmed("test-model", now - Duration::from_hours(1));
         ka
     }
 
@@ -4098,10 +4117,13 @@ mod tests {
 
         let now = Instant::now();
         _ = mgr.with_state("alice", |s| {
+            s.cache_keepalive.set_interval(
+                Some(Duration::from_mins(55)),
+                "test-model",
+                now - Duration::from_hours(1),
+            );
             s.cache_keepalive
-                .set_interval(Some(Duration::from_mins(55)), now - Duration::from_hours(1));
-            s.cache_keepalive
-                .on_cache_warmed(now - Duration::from_hours(1));
+                .on_cache_warmed("test-model", now - Duration::from_hours(1));
             s.last_request = Some(empty_request());
         });
 
