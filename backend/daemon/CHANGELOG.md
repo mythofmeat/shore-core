@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.11...shore-daemon-v0.1.12) - 2026-06-21
+
+### Fixed
+
+- *(keepalive)* only count a warm from the keepalive's own model ([#295](https://github.com/mythofmeat/shore-core/pull/295))
+
 ## [0.1.11](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.10...shore-daemon-v0.1.11) - 2026-06-19
 
 ### Fixed
