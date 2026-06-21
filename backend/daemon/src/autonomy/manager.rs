@@ -1380,12 +1380,14 @@ async fn execute_cache_keepalive_ping(character: &str, ctx: &TickContext) {
                 HeartbeatEventKind::DormantPing,
                 &fallback_events,
             );
-            // A ping that read nothing did not refresh a warm cache — it paid a
-            // full cache write. The HTTP call "succeeded", but the keepalive
-            // failed at its only job, so surface it loudly instead of burying a
-            // `cache_read: 0` inside a success line (the ledger also raises a
-            // `cold_keepalive` anomaly for the same row).
-            let cold = usage.cache_read_tokens == 0;
+            // A ping that read nothing but paid a write did not refresh a warm
+            // cache — it recreated the prefix. The HTTP call "succeeded", but the
+            // keepalive failed at its only job, so surface it loudly instead of
+            // burying a `cache_read: 0` inside a success line. The predicate
+            // matches the ledger's `cold_keepalive` contract exactly (read 0 AND
+            // a write): read 0 with no write means caching was off / a non-cached
+            // fallback, which is not a cold *write* and must not warn.
+            let cold = usage.cache_read_tokens == 0 && usage.cache_creation_tokens > 0;
             if cold {
                 warn!(
                     character,
