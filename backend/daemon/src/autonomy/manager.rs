@@ -1380,11 +1380,28 @@ async fn execute_cache_keepalive_ping(character: &str, ctx: &TickContext) {
                 HeartbeatEventKind::DormantPing,
                 &fallback_events,
             );
+            // A ping that read nothing but paid a write did not refresh a warm
+            // cache — it recreated the prefix. The HTTP call "succeeded", but the
+            // keepalive failed at its only job, so surface it loudly instead of
+            // burying a `cache_read: 0` inside a success line. The predicate
+            // matches the ledger's `cold_keepalive` contract exactly (read 0 AND
+            // a write): read 0 with no write means caching was off / a non-cached
+            // fallback, which is not a cold *write* and must not warn.
+            let cold = usage.cache_read_tokens == 0 && usage.cache_creation_tokens > 0;
+            if cold {
+                warn!(
+                    character,
+                    cache_write_tokens = usage.cache_creation_tokens,
+                    "Cache keepalive ping landed cold (read 0) — paid a cache write instead of refreshing a warm prefix"
+                );
+            }
             s.heartbeat_log.push(
                 HeartbeatEventKind::DormantPing,
                 format!(
-                    "Cache refresh ping (cache_read: {}, input: {})",
-                    usage.cache_read_tokens, usage.input_tokens
+                    "Cache refresh ping ({}cache_read: {}, input: {})",
+                    if cold { "COLD — wrote cache; " } else { "" },
+                    usage.cache_read_tokens,
+                    usage.input_tokens
                 ),
             );
             s.mark_dirty();
@@ -3221,9 +3238,14 @@ fn append_wrap_up_nudge(request: &mut LlmRequest) {
 // Dormant ping executor
 // ---------------------------------------------------------------------------
 
+#[expect(
+    clippy::struct_field_names,
+    reason = "these are token counts; the `_tokens` suffix mirrors the upstream usage struct"
+)]
 struct DormantPingUsage {
     input_tokens: u64,
     cache_read_tokens: u64,
+    cache_creation_tokens: u64,
 }
 
 enum DormantPingOutcome {
@@ -3333,6 +3355,7 @@ async fn execute_dormant_ping(
                 usage: DormantPingUsage {
                     input_tokens: resp.usage.input_tokens,
                     cache_read_tokens: resp.usage.cache_read_tokens,
+                    cache_creation_tokens: resp.usage.cache_creation_tokens,
                 },
                 fallback_events,
             }
