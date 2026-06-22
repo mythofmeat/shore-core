@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.2](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.6.1...shore-cli-v2.6.2) - 2026-06-22
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [2.6.1](https://github.com/mythofmeat/shore-core/compare/shore-cli-v2.6.0...shore-cli-v2.6.1) - 2026-06-18
 
 ### Other
