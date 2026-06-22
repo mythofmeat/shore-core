@@ -60,6 +60,8 @@ pub enum Transport {
         command: String,
         args: Vec<String>,
         env: BTreeMap<String, String>,
+        /// Working directory for the child. `None` inherits the daemon's cwd.
+        cwd: Option<String>,
     },
     /// Connect to a remote streamable-HTTP endpoint.
     Http { url: String },
@@ -102,9 +104,17 @@ impl McpClient {
     /// Connect to `spec`, performing the MCP `initialize` handshake.
     pub async fn connect(spec: &McpServerSpec) -> Result<Self, McpError> {
         let service = match &spec.transport {
-            Transport::Stdio { command, args, env } => {
+            Transport::Stdio {
+                command,
+                args,
+                env,
+                cwd,
+            } => {
                 let mut cmd = tokio::process::Command::new(command);
                 let _ = cmd.args(args);
+                if let Some(dir) = cwd {
+                    let _ = cmd.current_dir(dir);
+                }
                 // Don't leak the daemon's environment (provider API keys, etc.)
                 // to MCP servers, which may be third-party code. Start from a
                 // clean slate and pass through only what a server needs to run

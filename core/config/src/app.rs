@@ -123,6 +123,12 @@ pub struct McpServerConfig {
     #[serde(default)]
     pub env: BTreeMap<String, String>,
 
+    /// Working directory for the spawned stdio server. When unset the server
+    /// inherits the daemon's cwd; set it to the server's own directory so it
+    /// resolves relative paths and loads its own `.env` from there. Ignored by
+    /// HTTP servers.
+    pub cwd: Option<String>,
+
     /// URL of a remote HTTP/SSE server. Mutually exclusive with `command`.
     pub url: Option<String>,
 }
@@ -1627,8 +1633,9 @@ enabled_tools = ["read", "mcp__hue__*"]
         let toml_str = r#"
 [mcp.hue]
 command = "node"
-args = ["/srv/hue-mcp/index.js"]
+args = ["index.js"]
 env = { HUE_API_KEY = "abc" }
+cwd = "/srv/hue-mcp"
 
 [mcp.remote]
 url = "http://localhost:9123/sse"
@@ -1636,12 +1643,14 @@ url = "http://localhost:9123/sse"
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let hue = config.mcp.get("hue").expect("hue server present");
         assert_eq!(hue.command.as_deref(), Some("node"));
-        assert_eq!(hue.args, vec!["/srv/hue-mcp/index.js".to_owned()]);
+        assert_eq!(hue.args, vec!["index.js".to_owned()]);
         assert_eq!(hue.env.get("HUE_API_KEY").map(String::as_str), Some("abc"));
+        assert_eq!(hue.cwd.as_deref(), Some("/srv/hue-mcp"));
         assert!(hue.url.is_none());
         let remote = config.mcp.get("remote").expect("remote server present");
         assert_eq!(remote.url.as_deref(), Some("http://localhost:9123/sse"));
         assert!(remote.command.is_none());
+        assert!(remote.cwd.is_none());
     }
 
     #[test]

@@ -15,7 +15,9 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   (`enabled_tools`) or behind a sub-agent (`[subagents.<name>].tools`), by exact
   name or `mcp__<server>__*` glob (a fail-closed whitelist). Servers are
   discovered once and pinned per session for cache-prefix stability, and
-  `[mcp.*]` edits hot-reload without a daemon restart. Servers stay external —
+  `[mcp.*]` edits hot-reload without a daemon restart. An optional per-server
+  `cwd` sets the stdio child's working directory (so it resolves relative paths
+  and loads its own `.env`). Servers stay external —
   anything speaking standard MCP works unchanged. MCP tools apply to the chat
   path, sub-agents, and the autonomous heartbeat (whose idle cache-keepalive
   rebuilds the same tool surface, so enabling MCP doesn't desync the warmed

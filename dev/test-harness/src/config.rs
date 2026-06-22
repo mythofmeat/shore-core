@@ -132,6 +132,7 @@ impl TestConfigBuilder {
                 command: Some(command.to_owned()),
                 args: args.iter().map(|s| (*s).to_owned()).collect(),
                 env: std::collections::BTreeMap::new(),
+                cwd: None,
                 url: None,
             },
         ));

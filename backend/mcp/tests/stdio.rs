@@ -14,6 +14,7 @@ fn stub_spec() -> McpServerSpec {
             command: env!("CARGO_BIN_EXE_mcp_stub_server").to_owned(),
             args: vec![],
             env: BTreeMap::new(),
+            cwd: None,
         },
     }
 }

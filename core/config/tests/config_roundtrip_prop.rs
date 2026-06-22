@@ -383,17 +383,20 @@ fn arb_mcp_server_config() -> impl Strategy<Value = McpServerConfig> {
         arb_nonempty_text(),
         prop::collection::vec(arb_nonempty_text(), 0..4),
         prop::collection::btree_map(arb_nonempty_text(), arb_text(), 0..3),
+        prop::option::of(arb_nonempty_text()),
     )
-        .prop_map(|(command, args, env)| McpServerConfig {
+        .prop_map(|(command, args, env, cwd)| McpServerConfig {
             command: Some(command),
             args,
             env,
+            cwd,
             url: None,
         });
     let http = arb_nonempty_text().prop_map(|url| McpServerConfig {
         command: None,
         args: vec![],
         env: std::collections::BTreeMap::new(),
+        cwd: None,
         url: Some(url),
     });
     prop_oneof![stdio, http]
