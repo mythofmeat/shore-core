@@ -819,6 +819,28 @@ fn build_content_with_image() {
 }
 
 #[test]
+fn build_content_image_only_omits_blank_text_block() {
+    // An image-only message (empty text) must not carry a blank text block —
+    // Anthropic rejects `{"type":"text","text":""}` with "text content blocks
+    // must be non-empty". Image-only messages persist with empty content_blocks
+    // (see build_autonomous_message), so they route through build_content here.
+    let tmp = TempDir::new().unwrap();
+    let img_path = tmp.path().join("test.png");
+    std::fs::write(&img_path, b"\x89PNG\r\n\x1a\n").unwrap();
+
+    let images = vec![ImageRef {
+        path: img_path.to_str().unwrap().to_owned(),
+        caption: None,
+        data: None,
+    }];
+
+    let result = build_content("", &images, 0, tmp.path());
+    let blocks = result.as_array().expect("Should be a JSON array");
+    assert_eq!(blocks.len(), 1, "image-only message carries only the image");
+    assert_eq!(blocks[0]["type"], "image");
+}
+
+#[test]
 fn build_content_skips_unsupported_and_missing() {
     let tmp = TempDir::new().unwrap();
     let images = vec![

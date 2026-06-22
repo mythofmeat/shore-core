@@ -37,6 +37,17 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   burying `cache_read: 0` in a success line.
 
 ### Fixed
+- **Image-only messages no longer break the next request with a blank text
+  block.** An image-only message (an image attachment with no accompanying
+  text) is persisted with empty `content_blocks`, so the wire builder rendered
+  it via the string-content path — which unconditionally appended a
+  `{"type":"text","text":""}` block after the image. Anthropic rejects that with
+  `messages: text content blocks must be non-empty`, failing the *entire*
+  request, so any conversation whose recent window contained such a message
+  (e.g. a heartbeat image tick) could no longer generate. The builder now omits
+  the text block when there is no text and falls back to string content if every
+  image fails to encode, so no empty content block or empty content array ever
+  reaches the API.
 - **Cache keepalive no longer pays a full cache recreation on every other
   ping.** The keepalive keeps the foreground chat model's prompt cache warm, but
   it treated *any* successful background tick as proof the cache was refreshed.
