@@ -157,7 +157,20 @@ pub(crate) fn build_content(
         }
     }
 
-    blocks.push(json!({ "type": "text", "text": text }));
+    // Only append a text block when there is actual text. An image-only
+    // message (empty text) must not carry a blank `{"type":"text","text":""}`
+    // block — Anthropic rejects it with "text content blocks must be
+    // non-empty", failing the whole request.
+    if !text.trim().is_empty() {
+        blocks.push(json!({ "type": "text", "text": text }));
+    }
+
+    // If every image failed to encode and there was no text, fall back to the
+    // string-content shape rather than emitting an empty content array (which
+    // the API also rejects).
+    if blocks.is_empty() {
+        return json!(text);
+    }
     json!(blocks)
 }
 
