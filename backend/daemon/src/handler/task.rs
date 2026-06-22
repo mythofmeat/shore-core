@@ -663,7 +663,7 @@ pub(crate) fn build_llm_messages(
     let llm_messages: Vec<Value> = prompt_result
         .messages
         .iter()
-        .map(|m| {
+        .filter_map(|m| {
             let role = match m.role {
                 Role::User => "user",
                 Role::Assistant => "assistant",
@@ -715,7 +715,28 @@ pub(crate) fn build_llm_messages(
                     json!(blocks)
                 }
             };
-            json!({ "role": role, "content": content })
+
+            // Drop a message that rendered to nothing — an empty string or an
+            // empty content array. This happens for a degenerate persisted
+            // turn that carries no usable content (e.g. an assistant turn that
+            // ended a tool loop without emitting any final text). Anthropic
+            // rejects such a turn with "messages: text content blocks must be
+            // non-empty", failing the *entire* request, so any conversation
+            // whose window contains one can no longer generate. Mirrors the
+            // empty-turn skip in `append_response_messages_to_request`.
+            // `content` is only ever a string (build_content) or an array of
+            // blocks here; the other JSON shapes never occur but are spelled
+            // out because wildcard enum arms are denied workspace-wide.
+            let is_empty = match &content {
+                Value::String(s) => s.trim().is_empty(),
+                Value::Array(a) => a.is_empty(),
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => false,
+            };
+            if is_empty {
+                return None;
+            }
+
+            Some(json!({ "role": role, "content": content }))
         })
         .collect();
 
@@ -799,5 +820,30 @@ mod build_llm_messages_tests {
         msg.content = "fallback".into();
         let msgs = build(vec![msg]);
         assert_eq!(msgs[0]["content"], json!("fallback"));
+    }
+
+    #[test]
+    fn fully_empty_message_is_dropped_from_the_wire() {
+        // A persisted assistant turn with no blocks, no content, and no images
+        // (e.g. a tool loop that ended without final text) renders to nothing.
+        // It must be dropped entirely — shipping `content: ""` makes Anthropic
+        // reject the whole request ("text content blocks must be non-empty").
+        let real = pm(Role::User, vec![ContentBlock::Text { text: "hi".into() }]);
+        let empty = pm(Role::Assistant, vec![]); // content "", no images
+        let msgs = build(vec![real, empty]);
+        assert_eq!(msgs.len(), 1, "the empty turn is dropped");
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(content(&msgs[0])[0]["text"], "hi");
+    }
+
+    #[test]
+    fn message_whose_blocks_all_drop_is_removed_when_no_string_fallback() {
+        // Blocks that all filter out (empty text only) and no `content` string
+        // to fall back to: the message must be dropped, not shipped empty.
+        let msgs = build(vec![pm(
+            Role::Assistant,
+            vec![ContentBlock::Text { text: "   ".into() }],
+        )]);
+        assert!(msgs.is_empty(), "message with no usable content is dropped");
     }
 }
