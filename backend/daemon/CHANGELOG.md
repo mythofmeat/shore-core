@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.13...shore-daemon-v0.1.14) - 2026-06-22
+
+### Fixed
+
+- *(handler)* drop blank text block from image-only messages on the wire ([#300](https://github.com/mythofmeat/shore-core/pull/300))
+
 ## [0.1.13](https://github.com/mythofmeat/shore-core/compare/shore-daemon-v0.1.12...shore-daemon-v0.1.13) - 2026-06-21
 
 ### Added
