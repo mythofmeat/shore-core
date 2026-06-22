@@ -794,9 +794,12 @@ model = "anthropic:claude-haiku-4-5"
   bloats the primary tool surface and context; `ask_<name>` collapses it to one
   affordance and keeps intermediate results out of the primary model's context.
   Small/hot servers are fine to expose directly.
-- **Trust:** an MCP server is arbitrary external code with whatever access its
-  transport and `env` grant. Prefer servers you author and keep nondestructive;
-  be deliberate about third-party servers and any that read the open internet.
+- **Trust:** an MCP server is arbitrary external code. To avoid leaking the
+  daemon's secrets (provider API keys live in its environment), stdio servers are
+  launched with a **cleared environment** — only `PATH`, `HOME`, and the
+  variables you list under `env` are passed through. Still prefer servers you
+  author and keep nondestructive; be deliberate about third-party servers and
+  any that read the open internet.
 - **Where MCP tools apply:** the **chat path** and the **heartbeat** (the
   character acting autonomously) both offer MCP tools, and the idle
   cache-keepalive rebuilds the *same* tool surface chat does, so enabling MCP

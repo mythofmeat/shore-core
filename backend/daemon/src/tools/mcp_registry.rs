@@ -77,11 +77,15 @@ impl McpRegistry {
             match client.list_tools().await {
                 Ok(discovered) => {
                     for tool in discovered {
+                        // Namespace on the config key (`name`), which the registry
+                        // owns, rather than the server-reported name — the two
+                        // match today, but keying both the full name and the
+                        // dispatch lookup on `name` keeps them authoritative here.
                         tools.push(McpToolDef {
-                            full_name: format!("mcp__{}__{}", tool.server, tool.name),
+                            full_name: format!("mcp__{}__{}", name, tool.name),
                             description: tool.description,
                             input_schema: tool.input_schema,
-                            server: tool.server,
+                            server: name.clone(),
                             tool: tool.name,
                         });
                     }

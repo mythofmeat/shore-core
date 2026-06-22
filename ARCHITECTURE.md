@@ -431,9 +431,10 @@ Load-bearing invariants:
   the source config the registry was built from), then swaps the `Arc`. In-flight
   generations keep their snapshot; the old registry is gracefully shut down if
   uniquely owned, else cleaned up on `Drop` (rmcp kills stdio children on drop).
-- **Trust boundary.** An MCP server is arbitrary external code with whatever
-  access its transport and `env` grant — the same risk class as `exec`. Exposure
-  is opt-in via the allowlists.
+- **Trust boundary.** An MCP server is arbitrary external code — the same risk
+  class as `exec`. Exposure is opt-in via the allowlists, and stdio servers are
+  spawned with a cleared environment (only `PATH`, `HOME`, and the configured
+  `env` pass through) so the daemon's provider keys are not leaked to them.
 - **Scope.** MCP applies to the chat path and the heartbeat (the character
   acting autonomously): both wire the registry into their `SharedToolContext`
   for execution, and the heartbeat keepalive rebuild (`rebuild_request_from_disk`)

@@ -105,6 +105,17 @@ impl McpClient {
             Transport::Stdio { command, args, env } => {
                 let mut cmd = tokio::process::Command::new(command);
                 let _ = cmd.args(args);
+                // Don't leak the daemon's environment (provider API keys, etc.)
+                // to MCP servers, which may be third-party code. Start from a
+                // clean slate and pass through only what a server needs to run
+                // (`PATH` for command resolution, `HOME` for tool caches/config)
+                // plus the explicitly configured `env`.
+                let _ = cmd.env_clear();
+                for passthrough in ["PATH", "HOME"] {
+                    if let Some(val) = std::env::var_os(passthrough) {
+                        let _ = cmd.env(passthrough, val);
+                    }
+                }
                 for (key, val) in env {
                     let _ = cmd.env(key, val);
                 }
