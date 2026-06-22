@@ -756,7 +756,8 @@ either an exact name or an `mcp__<server>__*` glob.
 # Stdio server (a child process the daemon launches).
 [mcp.hue]
 command = "node"
-args = ["/home/me/hue-mcp/dist/index.js"]   # or command = "npx", args = ["-y", "@me/hue-mcp"]
+args = ["dist/index.js"]                     # or command = "npx", args = ["-y", "@me/hue-mcp"]
+cwd = "/home/me/hue-mcp"                      # run the server from its own directory
 env = { HUE_BRIDGE_IP = "192.168.1.42", HUE_API_KEY = "..." }
 
 # Remote HTTP/SSE server.
@@ -778,8 +779,13 @@ model = "anthropic:claude-haiku-4-5"
 ```
 
 - Each server sets **exactly one** transport: `command` (stdio) **or** `url`
-  (HTTP). Setting both, or neither, is a config error. `args` and `env` apply to
-  stdio servers; secrets belong in `env`.
+  (HTTP). Setting both, or neither, is a config error. `args`, `env`, and `cwd`
+  apply to stdio servers; secrets belong in `env`.
+- **`cwd` sets the stdio server's working directory.** Unset, the server
+  inherits the daemon's cwd (the daemon does not chdir per server). Point it at
+  the server's own directory so relative `args` paths resolve and the server
+  loads its own `.env` from there — a tidier alternative to listing every secret
+  under `env`. Ignored by HTTP servers.
 - **Glob grants are fail-closed whitelists.** `mcp__hue__*` matches every current
   hue tool; a tool the server adds later is *not* granted until a pattern covers
   it. `mcp__*` grants every MCP tool from every server.

@@ -178,6 +178,7 @@ fn to_spec(name: &str, cfg: &McpServerConfig) -> Option<McpServerSpec> {
             command: command.clone(),
             args: cfg.args.clone(),
             env: cfg.env.clone(),
+            cwd: cfg.cwd.clone(),
         }
     } else if let Some(url) = &cfg.url {
         Transport::Http { url: url.clone() }
@@ -292,6 +293,7 @@ mod tests {
                 command: Some("node".to_owned()),
                 args: vec![],
                 env: BTreeMap::new(),
+                cwd: None,
                 url: None,
             },
         );

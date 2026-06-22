@@ -2574,6 +2574,7 @@ model = "sonnet"
             command: Some("node".to_owned()),
             args: vec![],
             env: std::collections::BTreeMap::default(),
+            cwd: None,
             url: Some("http://x".to_owned()),
         }))
         .unwrap_err();
@@ -2586,6 +2587,7 @@ model = "sonnet"
             command: None,
             args: vec![],
             env: std::collections::BTreeMap::default(),
+            cwd: None,
             url: None,
         }))
         .unwrap_err();
@@ -2598,6 +2600,7 @@ model = "sonnet"
             command: Some("node".to_owned()),
             args: vec![],
             env: std::collections::BTreeMap::default(),
+            cwd: None,
             url: None,
         }))
         .unwrap();
