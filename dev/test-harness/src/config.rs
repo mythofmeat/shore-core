@@ -57,6 +57,15 @@ pub struct TestConfigBuilder {
     /// the config dir before boot. Used by per-character preference tests
     /// that need to switch the active character without restarting.
     pub extra_characters: Vec<(String, String)>,
+    /// Override the `enabled_tools` allowlist verbatim (entries may be exact
+    /// names or `mcp__server__*` globs). `None` keeps the `tool_use` default
+    /// (all static tools when enabled, none when disabled).
+    pub enabled_tools_override: Option<Vec<String>>,
+    /// `[subagents.<name>]` definitions to install; each is also added to
+    /// `enabled_subagents` so its `ask_<name>` tool is exposed.
+    pub subagents: Vec<(String, shore_config::app::SubagentConfig)>,
+    /// `[mcp.<name>]` server definitions to install.
+    pub mcp_servers: Vec<(String, shore_config::app::McpServerConfig)>,
 }
 
 impl Default for TestConfigBuilder {
@@ -87,7 +96,46 @@ impl TestConfigBuilder {
             provider_registry_toml: None,
             extra_chat_aliases: Vec::new(),
             extra_characters: Vec::new(),
+            enabled_tools_override: None,
+            subagents: Vec::new(),
+            mcp_servers: Vec::new(),
         }
+    }
+
+    /// Override the `enabled_tools` allowlist (exact names or `mcp__server__*`
+    /// globs). Takes precedence over the `tool_use` toggle.
+    pub fn enabled_tools(mut self, tools: &[&str]) -> Self {
+        self.enabled_tools_override = Some(tools.iter().map(|s| (*s).to_owned()).collect());
+        self
+    }
+
+    /// Define a sub-agent and expose its `ask_<name>` tool.
+    pub fn with_subagent(mut self, name: &str, tools: &[&str]) -> Self {
+        self.subagents.push((
+            name.to_owned(),
+            shore_config::app::SubagentConfig {
+                description: format!("Ask the {name} sub-agent."),
+                prompt: format!("You are the {name} sub-agent."),
+                tools: tools.iter().map(|s| (*s).to_owned()).collect(),
+                model: None,
+                max_iterations: None,
+            },
+        ));
+        self
+    }
+
+    /// Define a stdio `[mcp.<name>]` server (e.g. a stub launched via `python3`).
+    pub fn with_mcp_stdio(mut self, name: &str, command: &str, args: &[&str]) -> Self {
+        self.mcp_servers.push((
+            name.to_owned(),
+            shore_config::app::McpServerConfig {
+                command: Some(command.to_owned()),
+                args: args.iter().map(|s| (*s).to_owned()).collect(),
+                env: std::collections::BTreeMap::new(),
+                url: None,
+            },
+        ));
+        self
     }
 
     /// Inject a `[providers.<name>]` registry section. The string must be
@@ -257,7 +305,12 @@ impl TestConfigBuilder {
         app.defaults.model = Some(self.model_alias.clone());
         // Tools are opt-in: when enabled, allowlist the whole registered set so
         // tests have the full surface; otherwise leave the allowlist empty.
-        app.tools = if self.tool_use_enabled {
+        app.tools = if let Some(ref tools) = self.enabled_tools_override {
+            ToolsConfig {
+                enabled_tools: tools.clone(),
+                ..ToolsConfig::default()
+            }
+        } else if self.tool_use_enabled {
             ToolsConfig {
                 enabled_tools: shore_daemon::tools::all_tools()
                     .iter()
@@ -268,6 +321,13 @@ impl TestConfigBuilder {
         } else {
             ToolsConfig::default()
         };
+        for (name, spec) in &self.subagents {
+            let _ignored = app.subagents.insert(name.clone(), spec.clone());
+            app.tools.enabled_subagents.push(name.clone());
+        }
+        for (name, spec) in &self.mcp_servers {
+            let _ignored = app.mcp.insert(name.clone(), spec.clone());
+        }
         app.behavior.autonomy.enabled = self.autonomy_enabled;
         app.advanced.api_payload_logging = self.api_payload_logging;
 

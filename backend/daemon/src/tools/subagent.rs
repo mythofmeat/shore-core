@@ -15,6 +15,8 @@
 //! against a hallucinated call.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -204,7 +206,7 @@ fn build_request(
     let display_name = config.app.defaults.resolve_display_name();
     let vars = template_vars(ctx.character_name(), &display_name);
     let system_text = crate::engine::prompt::render_template(&spec.prompt, &vars);
-    let tools = subagent_tool_subset(&spec.tools, &vars);
+    let tools = subagent_tool_subset(&spec.tools, &vars, ctx.mcp_registry.as_deref());
 
     // Mirror the dreaming/compaction shape: Anthropic-cache SDKs take the
     // system prompt as an inline `role:"system"` entry (kept byte-stable
@@ -279,13 +281,21 @@ fn template_vars(char_name: &str, display_name: &str) -> HashMap<String, String>
 /// config layer can't see the daemon tool registry, so the filter lands here)
 /// and `ask_*` can never appear because sub-agent tools are not in the static
 /// registry — both the offering guard and the recursion cap fall out of this.
-fn subagent_tool_subset(allowed: &[String], vars: &HashMap<String, String>) -> Vec<Value> {
+fn subagent_tool_subset(
+    allowed: &[String],
+    vars: &HashMap<String, String>,
+    mcp: Option<&super::mcp_registry::McpRegistry>,
+) -> Vec<Value> {
     let registry = super::all_tools();
-    allowed
+    let mut defs: Vec<Value> = allowed
         .iter()
         .filter_map(|name| {
             let def = registry.iter().find(|t| t.name == name).or_else(|| {
-                tracing::warn!(tool = %name, "subagent references unknown tool; skipping");
+                // Not a static tool. MCP names (`mcp__*`) are resolved below;
+                // anything else is genuinely unknown.
+                if !name.starts_with("mcp__") {
+                    tracing::warn!(tool = %name, "subagent references unknown tool; skipping");
+                }
                 None
             })?;
             Some(json!({
@@ -294,7 +304,18 @@ fn subagent_tool_subset(allowed: &[String], vars: &HashMap<String, String>) -> V
                 "input_schema": def.parameters.clone(),
             }))
         })
-        .collect()
+        .collect();
+    // Expand `mcp__server__*` grants against the live registry. Appended after
+    // static tools so the offered ordering is stable.
+    if let Some(mcp_reg) = mcp {
+        defs.extend(
+            mcp_reg
+                .names_matching(allowed)
+                .iter()
+                .map(|t| t.to_tool_json()),
+        );
+    }
+    defs
 }
 
 /// True when the request enables reasoning via either provider knob. Mirrors
@@ -362,6 +383,16 @@ impl ToolContext for SubagentGuardContext<'_> {
     fn defer_edit(&self, path: &str) {
         self.inner.defer_edit(path);
     }
+    // Forward MCP calls to the parent context so a sub-agent can use MCP tools.
+    // `run_subagent` is deliberately *not* overridden (falls back to the
+    // `NotImplemented` trait default), so the one-level nesting cap holds.
+    fn mcp_call<'ctx>(
+        &'ctx self,
+        name: &'ctx str,
+        input: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'ctx>> {
+        self.inner.mcp_call(name, input)
+    }
 }
 
 #[cfg(test)]
@@ -376,9 +407,27 @@ mod tests {
             "not_a_real_tool".to_owned(),
             "search".to_owned(),
         ];
-        let defs = subagent_tool_subset(&allowed, &vars);
+        let defs = subagent_tool_subset(&allowed, &vars, None);
         let names: Vec<&str> = defs.iter().map(|d| d["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["read", "search"]);
+    }
+
+    #[test]
+    fn tool_subset_expands_mcp_globs() {
+        // A sub-agent granted `mcp__hue__*` should be offered the live hue
+        // tools alongside its static tools.
+        let vars = template_vars("qifei", "ren");
+        let registry = super::super::mcp_registry::McpRegistry::from_tools_for_test(vec![
+            super::super::mcp_registry::McpToolDef::new_for_test("hue", "on"),
+            super::super::mcp_registry::McpToolDef::new_for_test("nanoleaf", "scene"),
+        ]);
+        let allowed = vec!["read".to_owned(), "mcp__hue__*".to_owned()];
+        let defs = subagent_tool_subset(&allowed, &vars, Some(&registry));
+        let names: Vec<&str> = defs.iter().map(|d| d["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"read"));
+        assert!(names.contains(&"mcp__hue__on"));
+        // The unmatched server's tool is not offered.
+        assert!(!names.contains(&"mcp__nanoleaf__scene"));
     }
 
     #[test]
@@ -387,7 +436,7 @@ mod tests {
         // one it is silently dropped — the recursion cap is structural.
         let vars = template_vars("qifei", "ren");
         let allowed = vec!["ask_music".to_owned(), "read".to_owned()];
-        let defs = subagent_tool_subset(&allowed, &vars);
+        let defs = subagent_tool_subset(&allowed, &vars, None);
         let names: Vec<&str> = defs.iter().map(|d| d["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["read"]);
     }

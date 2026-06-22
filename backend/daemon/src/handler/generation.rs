@@ -197,6 +197,7 @@ fn build_tool_context(
             ),
             config_dir: config_dir.to_string_lossy().into_owned(),
             character_data_dir: character_data_dir.to_string_lossy().into_owned(),
+            mcp_registry: Some(std::sync::Arc::clone(&ctx.mcp_registry)),
             // Wire the sub-agent runtime only when sub-agents are configured —
             // avoids cloning the config into an Arc for every turn otherwise.
             subagent_runtime: if effective_config.app.subagents.is_empty() {

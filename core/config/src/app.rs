@@ -55,6 +55,12 @@ pub struct AppConfig {
     /// in CONFIGURATION.md.
     #[serde(default)]
     pub subagents: BTreeMap<String, SubagentConfig>,
+
+    /// MCP server definitions, keyed by server name. Each connects as a client
+    /// and surfaces its tools as `mcp__<name>__<tool>`. See `[mcp]` in
+    /// CONFIGURATION.md.
+    #[serde(default)]
+    pub mcp: BTreeMap<String, McpServerConfig>,
 }
 
 // ── [subagents.<name>] ───────────────────────────────────────────────────
@@ -87,6 +93,38 @@ pub struct SubagentConfig {
     /// Max tool-loop iterations for this sub-agent. `None` uses the resolved
     /// model's own cap.
     pub max_iterations: Option<u32>,
+}
+
+// ── [mcp.<name>] ─────────────────────────────────────────────────────────
+
+/// One MCP (Model Context Protocol) server the daemon connects to as a client.
+///
+/// The server is an external process (stdio) or remote endpoint (HTTP) — never
+/// daemon code. On connect the daemon calls `tools/list` and registers each
+/// discovered tool as `mcp__<name>__<tool>`, which can then be granted to the
+/// character or a sub-agent via the `enabled_tools` / `[subagents.*].tools`
+/// allowlists (exact names or `mcp__<name>__*` globs).
+///
+/// Exactly one transport must be set: `command` (stdio) **or** `url` (HTTP).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerConfig {
+    /// Executable to launch for a stdio server (e.g. `"node"`, `"npx"`).
+    /// Mutually exclusive with `url`.
+    pub command: Option<String>,
+
+    /// Arguments passed to `command`.
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    /// Environment variables for the spawned stdio server. The natural home for
+    /// per-server secrets (API keys, endpoints) since the server reads them
+    /// from its environment.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+
+    /// URL of a remote HTTP/SSE server. Mutually exclusive with `command`.
+    pub url: Option<String>,
 }
 
 // ── [daemon] ────────────────────────────────────────────────────────────
@@ -511,10 +549,26 @@ impl Default for ToolsConfig {
     }
 }
 
+/// Whether allowlist `pattern` matches tool `name`.
+///
+/// A trailing `*` is a prefix glob (`mcp__hue__*` matches `mcp__hue__set`); any
+/// other pattern is an exact match. This is a deliberate fail-closed whitelist —
+/// a new tool a server adds later is not granted until a pattern covers it.
+#[must_use]
+pub fn tool_pattern_matches(pattern: &str, name: &str) -> bool {
+    match pattern.strip_suffix('*') {
+        Some(prefix) => name.starts_with(prefix),
+        None => pattern == name,
+    }
+}
+
 impl ToolsConfig {
-    /// Whether `name` is in the enabled-tools allowlist.
+    /// Whether `name` is allowed by the enabled-tools allowlist. Entries may be
+    /// exact names or trailing-`*` globs (e.g. `mcp__hue__*`).
     pub fn tool_enabled(&self, name: &str) -> bool {
-        self.enabled_tools.iter().any(|t| t == name)
+        self.enabled_tools
+            .iter()
+            .any(|t| tool_pattern_matches(t, name))
     }
 
     /// Whether sub-agent `name`'s `ask_<name>` tool is exposed.
@@ -1538,6 +1592,56 @@ enabled_tools = ["read", "search_chat_logs"]
         assert!(!config.tools.tool_enabled("roll_dice"));
         assert!(!config.tools.tool_enabled("web_search"));
         assert!(config.tools.any_enabled());
+    }
+
+    #[test]
+    fn tool_pattern_matches_exact_and_glob() {
+        // Exact patterns require full equality.
+        assert!(tool_pattern_matches("read", "read"));
+        assert!(!tool_pattern_matches("read", "ready"));
+        // Trailing `*` is a prefix glob.
+        assert!(tool_pattern_matches("mcp__hue__*", "mcp__hue__set_light"));
+        assert!(tool_pattern_matches("mcp__hue__*", "mcp__hue__"));
+        assert!(!tool_pattern_matches("mcp__hue__*", "mcp__nanoleaf__on"));
+        // Bare `*` matches anything.
+        assert!(tool_pattern_matches("mcp__*", "mcp__hue__set_light"));
+        assert!(tool_pattern_matches("*", "anything"));
+    }
+
+    #[test]
+    fn enabled_tools_supports_mcp_globs() {
+        let toml_str = r#"
+[tools]
+enabled_tools = ["read", "mcp__hue__*"]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.tools.tool_enabled("read"));
+        assert!(config.tools.tool_enabled("mcp__hue__set_light"));
+        assert!(config.tools.tool_enabled("mcp__hue__list_lights"));
+        // A different server is not covered by the hue glob.
+        assert!(!config.tools.tool_enabled("mcp__nanoleaf__on"));
+    }
+
+    #[test]
+    fn mcp_server_config_parses() {
+        let toml_str = r#"
+[mcp.hue]
+command = "node"
+args = ["/srv/hue-mcp/index.js"]
+env = { HUE_API_KEY = "abc" }
+
+[mcp.remote]
+url = "http://localhost:9123/sse"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let hue = config.mcp.get("hue").expect("hue server present");
+        assert_eq!(hue.command.as_deref(), Some("node"));
+        assert_eq!(hue.args, vec!["/srv/hue-mcp/index.js".to_owned()]);
+        assert_eq!(hue.env.get("HUE_API_KEY").map(String::as_str), Some("abc"));
+        assert!(hue.url.is_none());
+        let remote = config.mcp.get("remote").expect("remote server present");
+        assert_eq!(remote.url.as_deref(), Some("http://localhost:9123/sse"));
+        assert!(remote.command.is_none());
     }
 
     #[test]

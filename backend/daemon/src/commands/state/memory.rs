@@ -649,6 +649,7 @@ fn build_swp_compaction_tool_context(
         config_dir: ctx.config.dirs.config.to_string_lossy().into_owned(),
         character_data_dir: character_data_dir_path.to_string_lossy().into_owned(),
         subagent_runtime: None,
+        mcp_registry: None,
     })
 }
 

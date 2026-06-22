@@ -32,6 +32,8 @@ memory, Anthropic cache discipline, useful tools, and private autonomous time.
 - **Tool-rich conversations.** Characters can inspect and edit workspace files,
   search workspace/history, use web/image/time/activity tools, and run narrow
   workspace commands.
+- **MCP tools.** Characters can use external Model Context Protocol servers
+  (declared in `[mcp]`), directly or behind a sub-agent. See CONFIGURATION.md.
 - **Budget awareness.** Usage and cost are recorded in SQLite with model,
   call-kind, and configured API-key breakdowns; configurable hourly, daily,
   weekly, and monthly budgets can warn, block, or pause background work.

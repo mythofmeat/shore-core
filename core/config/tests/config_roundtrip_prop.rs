@@ -11,10 +11,10 @@ use shore_config::app::{
     AdvancedConfig, AppConfig, AutonomyConfig, BackgroundDefaultsConfig, BehaviorConfig,
     BudgetWeekday, CommandNotifyConfig, CompactionConfig, ConnectionsConfig, DaemonConfig,
     DefaultsConfig, DreamingConfig, EmbeddedConfig, HeartbeatConfig, LlmSidecarConfig,
-    MatrixConfig, MemoryConfig, NotificationBackend, NotificationEventsConfig, NotificationsConfig,
-    NtfyConfig, RetrievalBinaryMode, RetrievalConfig, RetrievalMode, SearchConfig, SubagentConfig,
-    ThinkingConfig, ToolOverride, ToolsConfig, UsageBudgetAction, UsageBudgetConfig,
-    UsageBudgetPeriod, UsageConfig, UsageSpikeWarningsConfig,
+    MatrixConfig, McpServerConfig, MemoryConfig, NotificationBackend, NotificationEventsConfig,
+    NotificationsConfig, NtfyConfig, RetrievalBinaryMode, RetrievalConfig, RetrievalMode,
+    SearchConfig, SubagentConfig, ThinkingConfig, ToolOverride, ToolsConfig, UsageBudgetAction,
+    UsageBudgetConfig, UsageBudgetPeriod, UsageConfig, UsageSpikeWarningsConfig,
 };
 use shore_config::models::{CacheKeepaliveSetting, ModelConfigFields, Sdk};
 use shore_config::providers::{ProviderDiscovery, ProviderEntry, ProviderKeyEntry};
@@ -375,6 +375,32 @@ fn arb_subagent_config() -> impl Strategy<Value = SubagentConfig> {
 
 fn arb_subagents() -> impl Strategy<Value = std::collections::BTreeMap<String, SubagentConfig>> {
     prop::collection::btree_map(arb_nonempty_text(), arb_subagent_config(), 0..3)
+}
+
+fn arb_mcp_server_config() -> impl Strategy<Value = McpServerConfig> {
+    // A server sets exactly one transport: `command` (stdio) or `url` (HTTP).
+    let stdio = (
+        arb_nonempty_text(),
+        prop::collection::vec(arb_nonempty_text(), 0..4),
+        prop::collection::btree_map(arb_nonempty_text(), arb_text(), 0..3),
+    )
+        .prop_map(|(command, args, env)| McpServerConfig {
+            command: Some(command),
+            args,
+            env,
+            url: None,
+        });
+    let http = arb_nonempty_text().prop_map(|url| McpServerConfig {
+        command: None,
+        args: vec![],
+        env: std::collections::BTreeMap::new(),
+        url: Some(url),
+    });
+    prop_oneof![stdio, http]
+}
+
+fn arb_mcp_map() -> impl Strategy<Value = std::collections::BTreeMap<String, McpServerConfig>> {
+    prop::collection::btree_map(arb_nonempty_text(), arb_mcp_server_config(), 0..3)
 }
 
 fn arb_behavior_config() -> impl Strategy<Value = BehaviorConfig> {
@@ -804,7 +830,9 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
         arb_notifications_config(),
         arb_usage_config(),
         arb_advanced_config(),
-        arb_subagents(),
+        // Nested: a 10-tuple is proptest's Strategy arity limit, so the last
+        // slot carries both subagents and the MCP map.
+        (arb_subagents(), arb_mcp_map()),
     )
         .prop_map(
             |(
@@ -817,7 +845,7 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
                 notifications,
                 usage,
                 advanced,
-                subagents,
+                (subagents, mcp),
             )| AppConfig {
                 daemon,
                 defaults,
@@ -826,6 +854,7 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
                 memory,
                 connections,
                 notifications,
+                mcp,
                 usage,
                 advanced,
                 subagents,

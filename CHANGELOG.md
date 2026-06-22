@@ -8,6 +8,19 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
 ## [Unreleased]
 
 ### Added
+- **MCP (Model Context Protocol) client support.** The daemon can now connect to
+  external MCP servers (stdio child processes or remote HTTP endpoints) declared
+  in `[mcp.<name>]` and surface their tools to characters as
+  `mcp__<server>__<tool>`. Grant them directly on the character
+  (`enabled_tools`) or behind a sub-agent (`[subagents.<name>].tools`), by exact
+  name or `mcp__<server>__*` glob (a fail-closed whitelist). Servers are
+  discovered once and pinned per session for cache-prefix stability, and
+  `[mcp.*]` edits hot-reload without a daemon restart. Servers stay external —
+  anything speaking standard MCP works unchanged. MCP tools apply to the chat
+  path, sub-agents, and the autonomous heartbeat (whose idle cache-keepalive
+  rebuilds the same tool surface, so enabling MCP doesn't desync the warmed
+  cache prefix); the dreaming/librarian memory sweep keeps its fixed toolset and
+  is excluded by design. See `[mcp]` in CONFIGURATION.md.
 - **Built-in `opencode-go` provider for the OpenCode Go subscription.** Enable
   `[providers.opencode-go]` and reference any served model as
   `opencode-go:<model_id>` — transport defaults (base URL, `OPENCODE_API_KEY`)

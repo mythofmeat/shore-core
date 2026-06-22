@@ -3,6 +3,7 @@ pub mod basic;
 pub(crate) mod context;
 pub mod history;
 pub mod images;
+pub mod mcp_registry;
 pub(crate) mod subagent;
 pub mod web;
 pub mod workspace;
@@ -155,6 +156,20 @@ pub trait ToolContext: Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'ctx>> {
         let _ = query;
         Box::pin(async move { Err(ToolError::NotImplemented(format!("ask_{name}"))) })
+    }
+
+    /// Invoke an MCP tool (`mcp__<server>__<tool>`) and return its result.
+    ///
+    /// Default: unavailable — only contexts wired with an MCP registry override
+    /// this. Like [`run_subagent`](Self::run_subagent), the `NotImplemented`
+    /// default keeps unconfigured/background contexts inert.
+    fn mcp_call<'ctx>(
+        &'ctx self,
+        name: &'ctx str,
+        input: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'ctx>> {
+        let _ = input;
+        Box::pin(async move { Err(ToolError::NotImplemented(name.to_owned())) })
     }
 }
 
@@ -337,6 +352,9 @@ pub fn dispatch_tool<'ctx>(
                         ToolError::InvalidArgs(format!("{name} requires a string `query`"))
                     })?;
                     ctx.run_subagent(agent, query).await
+                } else if name.starts_with("mcp__") {
+                    // Dynamic MCP tool: route to the wired registry.
+                    ctx.mcp_call(name, input).await
                 } else {
                     Err(ToolError::NotImplemented(name.to_owned()))
                 }
@@ -708,5 +726,14 @@ mod tests {
         let ctx = TestToolContext::new();
         let result = dispatch_tool("ask_music", serde_json::json!({}), &ctx).await;
         assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
+    }
+
+    #[tokio::test]
+    async fn dispatch_mcp_without_registry_is_not_implemented() {
+        // The `mcp__*` dispatch arm routes to `mcp_call`, whose trait default
+        // (no wired registry) returns NotImplemented — the no-runtime fallback.
+        let ctx = TestToolContext::new();
+        let result = dispatch_tool("mcp__hue__on", serde_json::json!({}), &ctx).await;
+        assert!(matches!(result, Err(ToolError::NotImplemented(_))));
     }
 }

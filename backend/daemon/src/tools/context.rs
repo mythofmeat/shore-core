@@ -17,6 +17,7 @@ use shore_llm::LlmClient;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::markdown_store::MarkdownMemoryStore;
 
+use super::mcp_registry::McpRegistry;
 use super::subagent::SubagentRuntime;
 use super::{ToolContext, ToolError};
 
@@ -44,6 +45,10 @@ pub(crate) struct SharedToolContext {
     /// Sub-agent delegation runtime. `Some` only on the chat generation path;
     /// background contexts leave it `None`, so `ask_*` there is `NotImplemented`.
     pub(crate) subagent_runtime: Option<Arc<SubagentRuntime>>,
+    /// Live MCP connections. `Some` on chat and background paths that wire it;
+    /// `None` leaves `mcp__*` tools `NotImplemented`. Shared (not per-turn) so
+    /// connections persist across turns.
+    pub(crate) mcp_registry: Option<Arc<McpRegistry>>,
 }
 
 impl ToolContext for SharedToolContext {
@@ -101,6 +106,18 @@ impl ToolContext for SharedToolContext {
             match self.subagent_runtime.as_ref() {
                 Some(runtime) => super::subagent::run(self, runtime, name, query).await,
                 None => Err(ToolError::NotImplemented(format!("ask_{name}"))),
+            }
+        })
+    }
+    fn mcp_call<'ctx>(
+        &'ctx self,
+        name: &'ctx str,
+        input: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'ctx>> {
+        Box::pin(async move {
+            match self.mcp_registry.as_ref() {
+                Some(registry) => registry.call(name, input).await,
+                None => Err(ToolError::NotImplemented(name.to_owned())),
             }
         })
     }

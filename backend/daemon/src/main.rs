@@ -236,7 +236,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         autonomy,
         handler_handle,
         handler_control_tx,
-    } = build_server_and_handler(server_config, &loaded, &config_path, notifier, &shutdown_rx)?;
+    } = build_server_and_handler(server_config, &loaded, &config_path, notifier, &shutdown_rx)
+        .await?;
 
     let services = spawn_background_services(
         &loaded,
@@ -270,7 +271,7 @@ struct ServerAndHandler {
 /// Build the SWP server, character registry, LLM client, autonomy manager,
 /// diagnostics, command context, and message handler. Returns the components
 /// needed by the remaining startup and shutdown phases.
-fn build_server_and_handler(
+async fn build_server_and_handler(
     server_config: ServerConfig,
     loaded: &LoadedConfig,
     config_path: &Path,
@@ -294,6 +295,14 @@ fn build_server_and_handler(
 
     spawn_call_store_rotation(&llm_client);
 
+    // Connect configured MCP servers and snapshot their tool surface. Failures
+    // are logged and skipped inside `from_config`; an empty `[mcp]` yields an
+    // empty (cheap) registry. Built before the autonomy manager so background
+    // ticks (heartbeat/dreaming) receive the same registry the chat path uses.
+    let mcp_registry = Arc::new(
+        shore_daemon::tools::mcp_registry::McpRegistry::from_config(&loaded.app.mcp).await,
+    );
+
     // Autonomy manager: shared between handler, commands, and per-character ticks.
     let autonomy = build_autonomy_manager(
         loaded,
@@ -302,6 +311,7 @@ fn build_server_and_handler(
         &push_tx,
         &notifier,
         &char_registry,
+        &mcp_registry,
     );
 
     // In-memory diagnostic ring buffers (API calls, tool calls, errors).
@@ -331,6 +341,7 @@ fn build_server_and_handler(
         session_router,
         autonomy: autonomy.clone(),
         notifier,
+        mcp_registry,
         control_rx: handler_control_rx,
     });
 
@@ -610,6 +621,7 @@ fn build_autonomy_manager(
     push_tx: &broadcast::Sender<ServerMessage>,
     notifier: &NotificationService,
     char_registry: &Arc<tokio::sync::Mutex<CharacterRegistry>>,
+    mcp_registry: &Arc<shore_daemon::tools::mcp_registry::McpRegistry>,
 ) -> AutonomyManager {
     let mut autonomy = AutonomyManager::new(
         loaded.app.behavior.autonomy.clone(),
@@ -624,6 +636,7 @@ fn build_autonomy_manager(
         notifier.clone(),
     );
     autonomy.set_registry(Arc::clone(char_registry));
+    autonomy.set_mcp_registry(Arc::clone(mcp_registry));
     autonomy
 }
 

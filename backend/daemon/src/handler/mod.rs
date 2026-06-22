@@ -125,6 +125,9 @@ struct GenContext {
     session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
     diagnostics: Arc<std::sync::Mutex<shore_diagnostics::Diagnostics>>,
     notifier: NotificationService,
+    /// Live MCP connections, snapshotted for this generation. Empty when no
+    /// `[mcp.*]` servers are configured.
+    mcp_registry: Arc<crate::tools::mcp_registry::McpRegistry>,
 }
 
 struct GenerationParams {
@@ -193,6 +196,9 @@ pub struct MessageHandler {
     pub session_router: SessionRouter,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
+    /// Live MCP connections. Swapped wholesale on config hot-reload; cloned
+    /// (Arc) into each `GenContext` so in-flight generations keep their snapshot.
+    mcp_registry: Arc<crate::tools::mcp_registry::McpRegistry>,
     control_rx: mpsc::Receiver<HandlerControl>,
     sessions: HashMap<SessionId, SessionState>,
     last_user_session: HashMap<String, LastUserLease>,
@@ -207,6 +213,7 @@ pub struct MessageHandlerDeps {
     pub session_router: SessionRouter,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
+    pub mcp_registry: Arc<crate::tools::mcp_registry::McpRegistry>,
     pub control_rx: mpsc::Receiver<HandlerControl>,
 }
 
@@ -220,6 +227,7 @@ impl MessageHandler {
             session_router: deps.session_router,
             autonomy: deps.autonomy,
             notifier: deps.notifier,
+            mcp_registry: deps.mcp_registry,
             control_rx: deps.control_rx,
             sessions: HashMap::new(),
             last_user_session: HashMap::new(),
@@ -652,6 +660,28 @@ impl MessageHandler {
             .autonomy
             .reload_runtime_config(reloaded_config.clone());
         self.autonomy.reload_runtime_config(reloaded_config.clone());
+
+        // Reconnect MCP servers only when the `[mcp]` section actually changed,
+        // so unrelated config edits don't churn live connections. In-flight
+        // generations keep their snapshot (Arc clone); the old registry is shut
+        // down here if uniquely owned, else cleaned up on Drop when they finish.
+        if !self.mcp_registry.matches_config(&reloaded_config.app.mcp) {
+            let new_registry = Arc::new(
+                crate::tools::mcp_registry::McpRegistry::from_config(&reloaded_config.app.mcp)
+                    .await,
+            );
+            let old = std::mem::replace(&mut self.mcp_registry, Arc::clone(&new_registry));
+            // Hand the new registry to autonomy too, so future heartbeat ticks
+            // (and their keepalive rebuilds) use the same surface as chat. Both
+            // autonomy handles are updated, mirroring `reload_runtime_config`.
+            // Running ticks keep their snapshot until restart (documented).
+            self.autonomy.set_mcp_registry(Arc::clone(&new_registry));
+            self.cmd_ctx.autonomy.set_mcp_registry(new_registry);
+            if let Ok(registry) = Arc::try_unwrap(old) {
+                registry.shutdown().await;
+            }
+            info!("MCP servers reconnected after config hot-reload");
+        }
 
         let summary = {
             let mut registry = self.registry.lock().await;
