@@ -320,6 +320,15 @@ fn completed_response_messages(
     _sdk: &Sdk,
 ) -> Vec<CompletedResponseMessage> {
     let content_blocks = content_blocks_for_result(result);
+    // Don't persist a degenerate empty assistant turn. A tool loop that ends
+    // without the model emitting any final text yields a result with no
+    // content blocks; persisting it as an empty assistant message poisons the
+    // conversation, since `build_llm_messages` would later ship a turn with
+    // empty content and Anthropic rejects the whole request ("text content
+    // blocks must be non-empty").
+    if content_blocks.is_empty() {
+        return Vec::new();
+    }
     vec![CompletedResponseMessage {
         role: Role::Assistant,
         content_blocks,
@@ -388,5 +397,42 @@ fn notify_content_from_response_messages(messages: &[CompletedResponseMessage]) 
             .join("\n")
     } else {
         text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result_with(
+        content: &str,
+        content_blocks: Vec<ContentBlock>,
+    ) -> shore_llm::types::StreamResult {
+        shore_llm::types::StreamResult {
+            content: content.to_owned(),
+            model: "test".to_owned(),
+            finish_reason: "end_turn".to_owned(),
+            usage: shore_llm::types::Usage::default(),
+            timing: shore_llm::types::Timing::default(),
+            tool_uses: vec![],
+            content_blocks,
+        }
+    }
+
+    #[test]
+    fn empty_result_produces_no_persisted_message() {
+        // A tool loop that ends without final text yields no content blocks and
+        // no content string; persisting an empty assistant turn would later
+        // poison the request, so nothing should be persisted.
+        let result = result_with("", vec![]);
+        assert!(completed_response_messages(&result, &Sdk::Anthropic).is_empty());
+    }
+
+    #[test]
+    fn text_result_produces_one_message() {
+        let result = result_with("hello", vec![]);
+        let msgs = completed_response_messages(&result, &Sdk::Anthropic);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, Role::Assistant);
     }
 }

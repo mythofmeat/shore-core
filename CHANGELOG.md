@@ -37,6 +37,19 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   burying `cache_read: 0` in a success line.
 
 ### Fixed
+- **An empty assistant turn no longer wedges a whole conversation.** A tool
+  loop that ended without the model emitting any closing text (e.g. the user
+  sent the next message before the assistant's final turn produced text)
+  persisted a degenerate assistant message with no content blocks, no text, and
+  no images. On the next request the wire builder shipped it as
+  `{"role":"assistant","content":""}`, which Anthropic rejects with
+  `messages: text content blocks must be non-empty` — failing the *entire*
+  request, so the conversation could no longer generate until the empty turn
+  scrolled out of the context window. Such turns are now both prevented at the
+  source (an empty result persists no assistant message) and dropped defensively
+  in the wire builder (any message that renders to an empty string or empty
+  content array is omitted), matching the empty-turn skip already used for the
+  heartbeat replay request.
 - **Image-only messages no longer break the next request with a blank text
   block.** An image-only message (an image attachment with no accompanying
   text) is persisted with empty `content_blocks`, so the wire builder rendered
