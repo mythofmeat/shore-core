@@ -60,6 +60,9 @@ struct TickContext {
     loaded_config: Option<Arc<LoadedConfig>>,
     notifier: Option<NotificationService>,
     registry: Option<Arc<tokio::sync::Mutex<CharacterRegistry>>>,
+    /// Live MCP registry snapshot for this character's ticks. Empty when no
+    /// `[mcp.*]` servers are configured.
+    mcp_registry: Arc<crate::tools::mcp_registry::McpRegistry>,
 }
 
 struct HeartbeatToolContext {
@@ -382,6 +385,12 @@ pub struct AutonomyManager {
     notifier: Option<NotificationService>,
     /// Character engine registry for safe message persistence.
     registry: Option<Arc<tokio::sync::Mutex<CharacterRegistry>>>,
+    /// Live MCP connections, snapshotted into each per-character `TickContext`
+    /// so background heartbeat/dreaming ticks can use MCP tools and the cache
+    /// keepalive rebuilds the same tool surface chat does. Updated on reload for
+    /// future `ensure_character` calls (running ticks keep their snapshot, like
+    /// `loaded_config`).
+    mcp_registry: Option<Arc<crate::tools::mcp_registry::McpRegistry>>,
 }
 
 impl AutonomyManager {
@@ -403,6 +412,7 @@ impl AutonomyManager {
             loaded_config: None,
             notifier: None,
             registry: None,
+            mcp_registry: None,
         }
     }
 
@@ -442,6 +452,13 @@ impl AutonomyManager {
     /// Called once after creation, before any characters are ensured.
     pub fn set_registry(&mut self, registry: Arc<tokio::sync::Mutex<CharacterRegistry>>) {
         self.registry = Some(registry);
+    }
+
+    /// Set (or replace, on hot-reload) the live MCP registry handed to future
+    /// per-character ticks. Like `reload_runtime_config`, already-running ticks
+    /// keep the snapshot they were spawned with until restart.
+    pub fn set_mcp_registry(&mut self, registry: Arc<crate::tools::mcp_registry::McpRegistry>) {
+        self.mcp_registry = Some(registry);
     }
 
     /// Ensure autonomy state exists for a character. On first call for a
@@ -525,6 +542,12 @@ impl AutonomyManager {
             .or_else(|| self.loaded_config.clone());
         let notifier = self.notifier.clone();
         let registry = self.registry.clone();
+        // Snapshot the MCP registry (empty Arc when unconfigured) for this
+        // character's ticks, mirroring how `loaded_config` is captured.
+        let mcp_registry = self
+            .mcp_registry
+            .clone()
+            .unwrap_or_else(|| Arc::new(crate::tools::mcp_registry::McpRegistry::default()));
 
         let tick_ctx = TickContext {
             state,
@@ -536,6 +559,7 @@ impl AutonomyManager {
             loaded_config,
             notifier,
             registry,
+            mcp_registry,
         };
         let handle = tokio::spawn(async move {
             character_tick_loop(name, tick_ctx, shutdown_rx).await;
@@ -1128,6 +1152,7 @@ async fn execute_heartbeat_action(
                 ctx.loaded_config.as_deref(),
                 ctx.notifier.as_ref(),
                 ctx.registry.as_ref(),
+                &ctx.mcp_registry,
             )
             .await;
 
@@ -1362,6 +1387,7 @@ async fn execute_cache_keepalive_ping(character: &str, ctx: &TickContext) {
         &ctx.data_dir,
         ctx.llm_client.as_ref(),
         ctx.loaded_config.as_deref(),
+        &ctx.mcp_registry,
     )
     .await;
     let mut s = lock_state(&ctx.state);
@@ -2149,6 +2175,7 @@ fn rebuild_request_from_disk(
     character: &str,
     data_dir: &Path,
     config: &LoadedConfig,
+    mcp_registry: &crate::tools::mcp_registry::McpRegistry,
 ) -> Option<LlmRequest> {
     use crate::engine::messages::MessageStore;
     use crate::handler::{prepare_chat_context, PrepareChatContextParams, PreparedChatContext};
@@ -2175,6 +2202,12 @@ fn rebuild_request_from_disk(
     // a heartbeat-only model or an un-overlaid `defaults.model`.
     let resolved = crate::preferences::resolve_chat_model_for_character(config, character)?;
 
+    // Mirror the chat path's MCP tool surface exactly. The keepalive's whole job
+    // is to keep the *chat* prefix warm; if it omitted MCP tools while chat
+    // included them, the warmed prefix would diverge and the next chat turn would
+    // still pay a cold cache write (a strictly-negative keepalive).
+    let mcp_tool_defs = mcp_registry.tool_defs_filtered(&config.app.tools.enabled_tools);
+
     let PreparedChatContext {
         llm_messages,
         system,
@@ -2193,6 +2226,7 @@ fn rebuild_request_from_disk(
         // prefix diverges from the chat-warmed prefix on OpenAI/Z.AI
         // SDKs, invalidating the cache the next chat call would have hit.
         include_unsigned_thinking: resolved.sdk.echoes_unsigned_thinking(),
+        mcp_tool_defs: &mcp_tool_defs,
     });
 
     match LedgerClient::build_request_with_provider_keys(
@@ -2345,17 +2379,18 @@ async fn execute_heartbeat_tick(
     loaded_config: Option<&LoadedConfig>,
     notifier: Option<&NotificationService>,
     registry: Option<&Arc<tokio::sync::Mutex<CharacterRegistry>>>,
+    mcp_registry: &Arc<crate::tools::mcp_registry::McpRegistry>,
 ) {
     let Some(client) = llm_client else { return };
     let Some(lc) = loaded_config else { return };
 
     let Some((mut request, max_tool_iterations)) =
-        prepare_heartbeat_request(character, state, data_dir, lc)
+        prepare_heartbeat_request(character, state, data_dir, lc, mcp_registry)
     else {
         return;
     };
 
-    let inner_ctx = build_tool_context(character, data_dir, client, lc);
+    let inner_ctx = build_tool_context(character, data_dir, client, lc, Arc::clone(mcp_registry));
     let tool_ctx = Arc::new(HeartbeatToolContext {
         inner: inner_ctx,
         state: Arc::clone(state),
@@ -2413,6 +2448,7 @@ fn prepare_heartbeat_request(
     state: &Arc<Mutex<AutonomyState>>,
     data_dir: &Path,
     lc: &LoadedConfig,
+    mcp_registry: &crate::tools::mcp_registry::McpRegistry,
 ) -> Option<(LlmRequest, Option<u32>)> {
     // Clone last_request under the lock, then release.
     let mut request = {
@@ -2421,7 +2457,7 @@ fn prepare_heartbeat_request(
             req.clone()
         } else {
             drop(s);
-            let Some(req) = rebuild_request_from_disk(character, data_dir, lc) else {
+            let Some(req) = rebuild_request_from_disk(character, data_dir, lc, mcp_registry) else {
                 info!(
                     character,
                     "Heartbeat: skipping tick (conversation mid-turn or model unresolved)"
@@ -3064,6 +3100,7 @@ fn build_tool_context(
     data_dir: &Path,
     client: &LedgerClient,
     config: &LoadedConfig,
+    mcp_registry: Arc<crate::tools::mcp_registry::McpRegistry>,
 ) -> SharedToolContext {
     let char_dir = character_data_dir(data_dir, character);
 
@@ -3125,6 +3162,7 @@ fn build_tool_context(
                 ),
             ))
         },
+        mcp_registry: Some(mcp_registry),
     }
 }
 
@@ -3294,6 +3332,7 @@ async fn execute_dormant_ping(
     data_dir: &Path,
     llm_client: Option<&LedgerClient>,
     loaded_config: Option<&LoadedConfig>,
+    mcp_registry: &crate::tools::mcp_registry::McpRegistry,
 ) -> DormantPingOutcome {
     let Some(client) = llm_client else {
         return DormantPingOutcome::Skipped("no LLM client available".to_owned());
@@ -3311,7 +3350,8 @@ async fn execute_dormant_ping(
                     "no cached request and no loaded config for rebuild".to_owned(),
                 );
             };
-            if let Some(req) = rebuild_request_from_disk(character, data_dir, config) {
+            if let Some(req) = rebuild_request_from_disk(character, data_dir, config, mcp_registry)
+            {
                 let mut write_guard = lock_state(state);
                 cache_last_request(&mut write_guard, character, req.clone());
                 drop(write_guard);
@@ -3842,6 +3882,7 @@ mod tests {
             loaded_config: None,
             notifier: None,
             registry: None,
+            mcp_registry: Arc::new(crate::tools::mcp_registry::McpRegistry::default()),
         };
         tick_character("alice", &tick_ctx).await;
     }
@@ -4047,6 +4088,7 @@ mod tests {
             loaded_config: None,
             notifier: None,
             registry: None,
+            mcp_registry: Arc::new(crate::tools::mcp_registry::McpRegistry::default()),
         }
     }
 
@@ -4355,7 +4397,13 @@ api_key_env = "{api_key_env}"
             },
         );
 
-        let request = rebuild_request_from_disk("alice", &data_dir, &config).unwrap();
+        let request = rebuild_request_from_disk(
+            "alice",
+            &data_dir,
+            &config,
+            &crate::tools::mcp_registry::McpRegistry::default(),
+        )
+        .unwrap();
         let assistant = request
             .messages
             .iter()
@@ -4415,6 +4463,67 @@ api_key_env = "{api_key_env}"
         )
     }
 
+    /// The heartbeat keepalive rebuild must offer the same MCP tools the chat
+    /// path does. If it omitted them while chat included them, the warmed prefix
+    /// would diverge: the ping pays a cache write and the next chat turn still
+    /// reads cold — a strictly-negative keepalive.
+    #[test]
+    fn rebuild_request_includes_enabled_mcp_tools_for_keepalive_parity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let character_dir = data_dir.join("alice");
+        std::fs::create_dir_all(&character_dir).unwrap();
+        let mut store =
+            crate::engine::messages::MessageStore::new(character_dir.join("active.jsonl"));
+        store.append(test_message(Role::User)).unwrap();
+        // A complete turn (not a dangling user message) so the rebuild doesn't
+        // treat the conversation as mid-turn and skip.
+        store.append(test_message(Role::Assistant)).unwrap();
+
+        let api_key_env = "REBUILD_REQUEST_MCP_PARITY_ANTHROPIC";
+        std::env::set_var(api_key_env, "test-secret");
+        let chat_toml = format!(
+            r#"
+[anthropic.sonnet]
+model_id = "claude-sonnet-test"
+api_key_env = "{api_key_env}"
+"#
+        );
+        let chat: toml::Table = chat_toml.parse().unwrap();
+        let catalog =
+            shore_config::models::ModelCatalog::from_sections(Some(&chat), None, None).unwrap();
+        let mut app = shore_config::app::AppConfig::default();
+        app.tools.enabled_tools = vec!["mcp__hue__*".to_owned()];
+        let config = LoadedConfig::new_for_test(
+            app,
+            catalog,
+            shore_config::ShoreDirs {
+                config: tmp.path().join("config"),
+                data: data_dir.clone(),
+                runtime: tmp.path().join("runtime"),
+                cache: tmp.path().join("cache"),
+            },
+        );
+
+        let registry = crate::tools::mcp_registry::McpRegistry::from_tools_for_test(vec![
+            crate::tools::mcp_registry::McpToolDef::new_for_test("hue", "on"),
+        ]);
+        let request = rebuild_request_from_disk("alice", &data_dir, &config, &registry)
+            .expect("rebuild should produce a request");
+        let tool_names: Vec<&str> = request
+            .tools
+            .as_ref()
+            .expect("tools present")
+            .iter()
+            .filter_map(|t| t.get("name").and_then(Value::as_str))
+            .collect();
+        assert!(
+            tool_names.contains(&"mcp__hue__on"),
+            "keepalive rebuild must include enabled MCP tools, got {tool_names:?}"
+        );
+        std::env::remove_var(api_key_env);
+    }
+
     /// A deep-idle keep-0 archive empties `active.jsonl` but leaves segment
     /// summaries behind. The heartbeat rebuild must still produce a request
     /// (anchored on a synthetic user turn) rather than going dormant.
@@ -4451,8 +4560,13 @@ api_key_env = "{api_key_env}"
             tmp.path().join("cache"),
         );
 
-        let request = rebuild_request_from_disk("alice", &data_dir, &config)
-            .expect("heartbeat should rebuild from memory when segments exist");
+        let request = rebuild_request_from_disk(
+            "alice",
+            &data_dir,
+            &config,
+            &crate::tools::mcp_registry::McpRegistry::default(),
+        )
+        .expect("heartbeat should rebuild from memory when segments exist");
         let serialized = serde_json::to_string(&request.messages).unwrap();
         assert!(
             serialized.contains("archived to memory"),
@@ -4510,8 +4624,13 @@ api_key_env = "{api_key_env}"
             tmp.path().join("cache"),
         );
 
-        let request = rebuild_request_from_disk("alice", &data_dir, &config)
-            .expect("heartbeat should rebuild over an autonomous tail");
+        let request = rebuild_request_from_disk(
+            "alice",
+            &data_dir,
+            &config,
+            &crate::tools::mcp_registry::McpRegistry::default(),
+        )
+        .expect("heartbeat should rebuild over an autonomous tail");
         let roles: Vec<&str> = request
             .messages
             .iter()
@@ -4554,8 +4673,13 @@ api_key_env = "{api_key_env}"
             tmp.path().join("cache"),
         );
 
-        let request = rebuild_request_from_disk("alice", &data_dir, &config)
-            .expect("empty active with no segments should still rebuild via the anchor");
+        let request = rebuild_request_from_disk(
+            "alice",
+            &data_dir,
+            &config,
+            &crate::tools::mcp_registry::McpRegistry::default(),
+        )
+        .expect("empty active with no segments should still rebuild via the anchor");
         assert!(
             request
                 .messages
@@ -5068,6 +5192,7 @@ api_key_env = "{heartbeat_env}"
             loaded_config: None,
             notifier: None,
             registry: None,
+            mcp_registry: Arc::new(crate::tools::mcp_registry::McpRegistry::default()),
         };
 
         tick_character("alice", &tick_ctx).await;
@@ -5120,6 +5245,7 @@ api_key_env = "{heartbeat_env}"
             loaded_config: None,
             notifier: None,
             registry: None,
+            mcp_registry: Arc::new(crate::tools::mcp_registry::McpRegistry::default()),
         }
     }
 

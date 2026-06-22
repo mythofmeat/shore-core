@@ -7,6 +7,7 @@ members = [
     "backend/diagnostics",
     "backend/llm",
     "backend/ledger",
+    "backend/mcp",
     "backend/call-store",
     "backend/swp-server",
     "backend/daemon",
@@ -78,6 +79,8 @@ shore-test-harness = { path = "dev/test-harness" }
 shore-call-store = { path = "backend/call-store", version = "0.1.1" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 zstd = "0.13"
+rmcp = { version = "1.7", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+shore-mcp-client = { path = "backend/mcp", version = "0.1.0" }
 
 [workspace.lints.clippy]
 # Pedantic is enabled workspace-wide as a quality ratchet. priority = -1 lets

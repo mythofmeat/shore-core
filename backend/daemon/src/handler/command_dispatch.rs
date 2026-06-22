@@ -75,6 +75,7 @@ impl MessageHandler {
             session_tokens,
             diagnostics: Arc::clone(&self.cmd_ctx.diagnostics),
             notifier: self.notifier.clone(),
+            mcp_registry: Arc::clone(&self.mcp_registry),
         }
     }
 

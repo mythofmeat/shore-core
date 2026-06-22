@@ -1262,6 +1262,8 @@ fn build_librarian_tool_context(
                 ),
             ))
         },
+        // Background ticks don't wire MCP yet (no live registry handle here).
+        mcp_registry: None,
     }
 }
 

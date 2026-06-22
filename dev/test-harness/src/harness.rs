@@ -206,6 +206,7 @@ impl TestHarness {
             session_router,
             autonomy,
             notifier,
+            mcp_registry: Arc::new(shore_daemon::tools::mcp_registry::McpRegistry::default()),
             control_rx,
         });
 

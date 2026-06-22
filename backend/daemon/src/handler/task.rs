@@ -128,6 +128,7 @@ pub(super) async fn handle_generation(
         resolved,
         &params.body,
         params.regen,
+        &ctx.mcp_registry,
     )
     .await;
     request.rid = params.rid.clone();
@@ -351,6 +352,10 @@ async fn ensure_and_backfill_autonomy(
 /// (sans API key — the credential-fallback wrapper resolves and rewrites the
 /// key just-in-time during rotation). Client-supplied overrides are applied
 /// last. The caller sets `rid` / `forensic_character` on the returned request.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "request assembly threads several independent inputs; bundling them would just relocate the noise"
+)]
 async fn build_generation_request(
     engine_arc: &Arc<Mutex<ConversationEngine>>,
     data_dir: &Path,
@@ -359,6 +364,7 @@ async fn build_generation_request(
     resolved: &shore_config::models::ResolvedModel,
     body: &ClientMessageBody,
     regen: bool,
+    mcp_registry: &crate::tools::mcp_registry::McpRegistry,
 ) -> shore_llm::types::LlmRequest {
     let (messages, has_prior_context) = {
         let engine = engine_arc.lock().await;
@@ -375,6 +381,9 @@ async fn build_generation_request(
 
     let character_data_dir = character_data_dir(data_dir, char_name);
     let include_unsigned_thinking = resolved.sdk.echoes_unsigned_thinking();
+    // Filter the live MCP surface by the character's `enabled_tools` allowlist
+    // (exact names or `mcp__server__*` globs); appended last for a stable prefix.
+    let mcp_tool_defs = mcp_registry.tool_defs_filtered(&effective_config.app.tools.enabled_tools);
     let PreparedChatContext {
         llm_messages,
         system,
@@ -388,6 +397,7 @@ async fn build_generation_request(
         messages: &messages,
         has_prior_context,
         include_unsigned_thinking,
+        mcp_tool_defs: &mcp_tool_defs,
     });
 
     warm_image_cache(

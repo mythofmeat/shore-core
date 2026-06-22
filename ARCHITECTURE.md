@@ -16,6 +16,7 @@ security boundaries, observability, and validation expectations.
 | `backend/swp-server` | `shore-swp-server` | TCP server, registry, session routing |
 | `backend/daemon` | `shore-daemon` | engine, memory, autonomy, tools, generation |
 | `backend/llm` | `shore-llm` | provider request/stream handling |
+| `backend/mcp` | `shore-mcp-client` | MCP client (connect external MCP servers, list/call tools) |
 | `backend/ledger` | `shore-ledger` | usage, pricing, Anthropic cache tracking |
 | `backend/call-store` | `shore-call-store` | compressed SQLite store for call payloads + transcripts |
 | `backend/diagnostics` | `shore-diagnostics` | shared diagnostic formatting |
@@ -32,7 +33,7 @@ library crates (`shore-protocol`, `shore-config`, `shore-swp-client`,
 | `shore-gui` (Tauri desktop) | [mythofmeat/shore-gui](https://github.com/mythofmeat/shore-gui) |
 | `shore-gui-godot` (Godot client) | [mythofmeat/shore-gui-godot](https://github.com/mythofmeat/shore-gui-godot) |
 | `shore-matrix` (Matrix bridge) | [mythofmeat/shore-matrix](https://github.com/mythofmeat/shore-matrix) |
-| `shore-mcp` (debug/development MCP) | [mythofmeat/shore-mcp](https://github.com/mythofmeat/shore-mcp) |
+| `shore-mcp` (debug/development MCP bridge — distinct from the in-tree `shore-mcp-client`) | [mythofmeat/shore-mcp](https://github.com/mythofmeat/shore-mcp) |
 
 ## State Model
 
@@ -399,6 +400,50 @@ Load-bearing invariants:
   when none exist.
 - **Tool ordering is stable.** `ask_*` defs are appended after the static tool
   surface in config (`BTreeMap`) order, keeping the cache prefix byte-stable.
+
+### MCP client
+
+`[mcp.<name>]` entries declare external MCP servers the daemon connects to as a
+client (`backend/mcp` = `shore-mcp-client`, over `rmcp`). At startup the
+`McpRegistry` connects every server, calls `tools/list`, and flattens the
+discovered tools into one list namespaced `mcp__<server>__<tool>`. Dispatch
+routes any `mcp__*` call to `ToolContext::mcp_call`, which the chat tool context
+forwards to the registry; the registry resolves the server/tool from the pinned
+list and issues the `tools/call`. Servers themselves are never daemon code.
+
+Load-bearing invariants:
+
+- **The tool surface is discovered once and pinned.** Tools are listed at connect
+  time, sorted by full name, and held for the registry's lifetime; MCP defs are
+  appended *after* the static + `ask_*` surface. This keeps the Anthropic cache
+  prefix byte-stable across turns — a live `tools/list` per turn would reshuffle
+  it. A reconnect (hot-reload) re-lists and may shift the prefix once.
+- **Grants are fail-closed globs.** `enabled_tools` / sub-agent `tools` entries
+  match MCP names exactly or by trailing-`*` glob (`tool_pattern_matches`). A tool
+  a server adds later is not granted until a pattern covers it.
+- **Sub-agents can use MCP; the nesting cap still holds.** The sub-agent guard
+  context forwards `mcp_call` to its parent (so a sub-agent's loop can call MCP
+  tools) but still leaves `run_subagent` at the `NotImplemented` default, so the
+  one-level recursion cap is unaffected. A sub-agent's `mcp__server__*` grant is
+  expanded against the live registry when its tool subset is built.
+- **Hot-reload swaps the registry atomically.** On config reload the handler
+  rebuilds the registry only when the `[mcp.*]` section changed (compared against
+  the source config the registry was built from), then swaps the `Arc`. In-flight
+  generations keep their snapshot; the old registry is gracefully shut down if
+  uniquely owned, else cleaned up on `Drop` (rmcp kills stdio children on drop).
+- **Trust boundary.** An MCP server is arbitrary external code with whatever
+  access its transport and `env` grant — the same risk class as `exec`. Exposure
+  is opt-in via the allowlists.
+- **Scope.** MCP applies to the chat path and the heartbeat (the character
+  acting autonomously): both wire the registry into their `SharedToolContext`
+  for execution, and the heartbeat keepalive rebuild (`rebuild_request_from_disk`)
+  includes the *same* filtered MCP defs chat does — so the warmed prefix matches
+  the chat prefix and the keepalive stays a net positive. The autonomy manager
+  holds the registry and snapshots it into each per-character `TickContext`
+  (refreshed on reload for future ticks; running ticks keep their snapshot, like
+  `loaded_config`). The **dreaming/librarian** sweep is intentionally excluded:
+  it uses a fixed, character-tool-independent toolset (`build_librarian_tool_defs`),
+  so MCP tools never enter memory maintenance.
 
 `exec` is intentionally narrow:
 

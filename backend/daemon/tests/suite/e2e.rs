@@ -258,6 +258,7 @@ async fn e2e_conversation_milestone() {
         notifier: shore_daemon::notifications::NotificationService::new(
             NotificationsConfig::default(),
         ),
+        mcp_registry: Arc::new(shore_daemon::tools::mcp_registry::McpRegistry::default()),
         control_rx,
     });
 
@@ -765,6 +766,7 @@ impl E2EHarness {
             notifier: shore_daemon::notifications::NotificationService::new(
                 NotificationsConfig::default(),
             ),
+            mcp_registry: Arc::new(shore_daemon::tools::mcp_registry::McpRegistry::default()),
             control_rx,
         });
 

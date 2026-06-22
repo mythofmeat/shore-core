@@ -122,6 +122,7 @@ async fn make_basic_handler_with_models(
         session_router,
         autonomy,
         notifier: NotificationService::new(NotificationsConfig::default()),
+        mcp_registry: Arc::new(crate::tools::mcp_registry::McpRegistry::default()),
         control_rx,
     });
 
@@ -1055,6 +1056,7 @@ async fn make_handler_with_models(
         session_router,
         autonomy,
         notifier: NotificationService::new(NotificationsConfig::default()),
+        mcp_registry: Arc::new(crate::tools::mcp_registry::McpRegistry::default()),
         control_rx,
     });
 

@@ -699,6 +699,7 @@ fn validate_config(
             );
         }
     }
+    validate_mcp_servers(app)?;
     validate_default_embedding(providers, app.defaults.embedding.as_deref())?;
     validate_default_image_generation(providers, app.defaults.image_generation.as_deref())?;
 
@@ -709,6 +710,49 @@ fn validate_config(
         .validate()
         .map_err(ConfigError::Validation)?;
 
+    Ok(())
+}
+
+/// Validate `[mcp.*]` server definitions: each must set exactly one transport
+/// (`command` xor `url`). Also warns when an `enabled_tools` / `[subagents.*]`
+/// pattern names an `mcp__<server>__*` server with no matching `[mcp.*]` entry,
+/// which would silently grant nothing.
+fn validate_mcp_servers(app: &AppConfig) -> Result<(), ConfigError> {
+    for (name, server) in &app.mcp {
+        match (server.command.is_some(), server.url.is_some()) {
+            (true, false) | (false, true) => {}
+            (true, true) => {
+                return Err(ConfigError::Validation(format!(
+                    "mcp.{name} sets both `command` and `url`; set exactly one transport"
+                )));
+            }
+            (false, false) => {
+                return Err(ConfigError::Validation(format!(
+                    "mcp.{name} sets neither `command` nor `url`; set exactly one transport"
+                )));
+            }
+        }
+    }
+
+    // Advisory: an `mcp__<server>__*` grant that names an undefined server.
+    let referenced = app
+        .tools
+        .enabled_tools
+        .iter()
+        .chain(app.subagents.values().flat_map(|s| s.tools.iter()));
+    for pattern in referenced {
+        if let Some(rest) = pattern.strip_prefix("mcp__") {
+            let server = rest.split("__").next().unwrap_or("");
+            if !server.is_empty() && server != "*" && !app.mcp.contains_key(server) {
+                warn!(
+                    pattern = %pattern,
+                    server = %server,
+                    "tool grant references MCP server with no [mcp.{server}] definition; \
+                     it will match no tools"
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2516,6 +2560,47 @@ model = "sonnet"
         assert!(
             format!("{err}").contains("reset_day_of_month is only valid for period = \"month\"")
         );
+    }
+
+    fn app_with_mcp(server: app::McpServerConfig) -> AppConfig {
+        let mut app = AppConfig::default();
+        let _ = app.mcp.insert("hue".to_owned(), server);
+        app
+    }
+
+    #[test]
+    fn mcp_server_with_both_transports_rejected() {
+        let err = validate_mcp_servers(&app_with_mcp(app::McpServerConfig {
+            command: Some("node".to_owned()),
+            args: vec![],
+            env: std::collections::BTreeMap::default(),
+            url: Some("http://x".to_owned()),
+        }))
+        .unwrap_err();
+        assert!(format!("{err}").contains("set exactly one transport"));
+    }
+
+    #[test]
+    fn mcp_server_with_no_transport_rejected() {
+        let err = validate_mcp_servers(&app_with_mcp(app::McpServerConfig {
+            command: None,
+            args: vec![],
+            env: std::collections::BTreeMap::default(),
+            url: None,
+        }))
+        .unwrap_err();
+        assert!(format!("{err}").contains("set exactly one transport"));
+    }
+
+    #[test]
+    fn mcp_server_with_single_transport_passes() {
+        validate_mcp_servers(&app_with_mcp(app::McpServerConfig {
+            command: Some("node".to_owned()),
+            args: vec![],
+            env: std::collections::BTreeMap::default(),
+            url: None,
+        }))
+        .unwrap();
     }
 
     #[test]

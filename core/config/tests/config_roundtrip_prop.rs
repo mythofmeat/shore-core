@@ -826,6 +826,7 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
                 memory,
                 connections,
                 notifications,
+                mcp: std::collections::BTreeMap::new(),
                 usage,
                 advanced,
                 subagents,

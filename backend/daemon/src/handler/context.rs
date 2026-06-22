@@ -39,6 +39,12 @@ pub(crate) struct PrepareChatContextParams<'ctx> {
     /// True for OpenAI/Z.ai (which echo `reasoning_content`), false for
     /// Anthropic and for any caller that doesn't need them.
     pub include_unsigned_thinking: bool,
+    /// Pre-filtered MCP tool defs to append after the static + sub-agent tool
+    /// surface. The caller builds these from the live registry (filtered by
+    /// `enabled_tools`); pass `&[]` when no registry is wired (background
+    /// rebuilds). Appended last so the tool ordering — and cache prefix — stays
+    /// stable.
+    pub mcp_tool_defs: &'ctx [Value],
 }
 
 /// Output of [`prepare_chat_context`]: the three pieces every chat-shaped
@@ -72,6 +78,7 @@ pub(crate) fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> Prep
         messages,
         has_prior_context,
         include_unsigned_thinking,
+        mcp_tool_defs,
     } = params;
 
     let display_name = config.app.defaults.resolve_display_name();
@@ -130,7 +137,7 @@ pub(crate) fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> Prep
         &resolved.provider_key,
     );
 
-    let tool_defs = if config.app.tools.any_enabled() {
+    let tool_defs = if config.app.tools.any_enabled() || !mcp_tool_defs.is_empty() {
         let mut defs = crate::tools::render_tool_defs(&config.app.tools, character, &display_name);
         // Append `ask_<name>` delegation tools (only for enabled sub-agents)
         // after the static surface so the tool ordering — and thus the cache
@@ -141,6 +148,9 @@ pub(crate) fn prepare_chat_context(params: PrepareChatContextParams<'_>) -> Prep
             character,
             &display_name,
         ));
+        // MCP tools land last (caller pre-filtered + pre-sorted), preserving a
+        // stable prefix for cache reuse.
+        defs.extend(mcp_tool_defs.iter().cloned());
         Some(defs)
     } else {
         None
@@ -190,6 +200,8 @@ pub(crate) fn build_chat_shape_request_from_disk(
         messages,
         has_prior_context,
         include_unsigned_thinking: resolved.sdk.echoes_unsigned_thinking(),
+        // Background disk rebuild: MCP tools are not wired on this path yet.
+        mcp_tool_defs: &[],
     });
 
     LedgerClient::build_request_with_provider_keys(

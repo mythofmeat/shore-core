@@ -639,6 +639,8 @@ The registered tool names are: `web_search`, `fetch_url`, `generate_image`,
 `check_time`, `roll_dice`, `activity_heatmap`, `read`, `write`, `edit`,
 `list_files`, `search`, `delete`, `search_chat_logs`, `exec`, `set_next_wake`.
 List exactly the ones you want; comment a line out to disable that tool.
+Dynamic MCP tools (`mcp__<server>__<tool>`, see [`[mcp]`](#mcp)) can also be
+listed here, by exact name or with a trailing-`*` glob (e.g. `mcp__hue__*`).
 (`set_next_wake` is only executable during heartbeat ticks, but must be listed
 for the autonomous heartbeat to schedule its own next wake.)
 
@@ -735,6 +737,75 @@ both a quick direct lookup and a deep delegated dig.
 > Sub-agents add an LLM round-trip per delegated question (latency) and a layer
 > of English→query→summary translation. Use them for domains with a real schema
 > worth knowing; keep atomic, precisely-known operations as direct tools.
+
+## `[mcp]`
+
+The daemon can act as an **MCP (Model Context Protocol) client**: each
+`[mcp.<name>]` entry points at an external MCP server — a stdio child process or
+a remote HTTP endpoint — and surfaces that server's tools to characters. The
+server is never daemon code; anything that speaks standard MCP (`initialize` /
+`tools/list` / `tools/call`) works unchanged.
+
+On connect the daemon calls `tools/list` and registers each discovered tool as
+**`mcp__<server>__<tool>`** (e.g. `mcp__hue__set_light`). Those names are then
+granted exactly like any other tool — directly on the character via
+`[tools].enabled_tools`, or to a sub-agent via `[subagents.<name>].tools` — using
+either an exact name or an `mcp__<server>__*` glob.
+
+```toml
+# Stdio server (a child process the daemon launches).
+[mcp.hue]
+command = "node"
+args = ["/home/me/hue-mcp/dist/index.js"]   # or command = "npx", args = ["-y", "@me/hue-mcp"]
+env = { HUE_BRIDGE_IP = "192.168.1.42", HUE_API_KEY = "..." }
+
+# Remote HTTP/SSE server.
+[mcp.docs]
+url = "http://localhost:9123/sse"
+
+[tools]
+# Grant the whole hue server to the character directly...
+enabled_tools = ["mcp__hue__*"]
+
+# ...or wrap it in a sub-agent (recommended for chatty servers):
+enabled_subagents = ["lights"]
+
+[subagents.lights]
+description = "Ask {{char}} to control the smart lights."
+prompt = "You control {{user}}'s Hue lights. Read state before changing it; confirm what you changed in one sentence."
+tools = ["mcp__hue__*"]
+model = "anthropic:claude-haiku-4-5"
+```
+
+- Each server sets **exactly one** transport: `command` (stdio) **or** `url`
+  (HTTP). Setting both, or neither, is a config error. `args` and `env` apply to
+  stdio servers; secrets belong in `env`.
+- **Glob grants are fail-closed whitelists.** `mcp__hue__*` matches every current
+  hue tool; a tool the server adds later is *not* granted until a pattern covers
+  it. `mcp__*` grants every MCP tool from every server.
+- **Naming stability matters.** The tool surface is discovered once at connect
+  and pinned for the session (sorted by full name) so the Anthropic cache prefix
+  stays stable. A server that renames or adds tools shifts that prefix on the
+  next reconnect.
+- **Hot-reload:** editing `[mcp.*]` reconnects the affected servers without a
+  daemon restart. Unrelated config edits don't churn live connections. In-flight
+  generations keep the snapshot they started with.
+- **Wrap chatty servers in a sub-agent.** A server exposing many verbose tools
+  bloats the primary tool surface and context; `ask_<name>` collapses it to one
+  affordance and keeps intermediate results out of the primary model's context.
+  Small/hot servers are fine to expose directly.
+- **Trust:** an MCP server is arbitrary external code with whatever access its
+  transport and `env` grant. Prefer servers you author and keep nondestructive;
+  be deliberate about third-party servers and any that read the open internet.
+- **Where MCP tools apply:** the **chat path** and the **heartbeat** (the
+  character acting autonomously) both offer MCP tools, and the idle
+  cache-keepalive rebuilds the *same* tool surface chat does, so enabling MCP
+  doesn't desync the warmed cache prefix. The **dreaming/librarian** memory sweep
+  deliberately uses a fixed, character-tool-independent toolset and does **not**
+  offer MCP tools.
+- **Hot-reload + running ticks:** a `[mcp.*]` edit reconnects immediately for the
+  chat path; an already-running heartbeat loop keeps the tool surface it was
+  spawned with until the daemon restarts (same semantics as other runtime config).
 
 ## `[memory]`
 
