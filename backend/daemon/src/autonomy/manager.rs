@@ -461,6 +461,26 @@ impl AutonomyManager {
         self.mcp_registry = Some(registry);
     }
 
+    /// Test/diagnostic seam: rebuild the keepalive request **from disk**
+    /// (bypassing any cached `last_request`) and send the ping. This exercises
+    /// exactly the cold-cache rebuild path the autonomous keepalive uses — the
+    /// one that must reproduce the chat prefix byte-for-byte — so a test can
+    /// assert the warmed surface matches what chat sends. Mirrors
+    /// `trigger_compaction_now` / `trigger_dreaming_now`. Returns the ping that
+    /// was sent, or `None` if nothing could be rebuilt (mid-turn / unresolved
+    /// model / missing resources).
+    pub async fn keepalive_rebuild_ping_now(&self, character: &str) -> Option<LlmRequest> {
+        let config = self.loaded_config.as_deref()?;
+        let client = self.llm_client.as_ref()?;
+        let mcp = self.mcp_registry.clone().unwrap_or_default();
+        let request = rebuild_request_from_disk(character, &self.data_dir, config, &mcp)?;
+        let mut ping = build_keepalive_ping(&request, character);
+        let _ignored = client
+            .generate_with_config_fallback(&mut ping, config, CallType::Keepalive, character, false)
+            .await;
+        Some(ping)
+    }
+
     /// Ensure autonomy state exists for a character. On first call for a
     /// character, creates the state (restoring from disk if available) and
     /// spawns a per-character tick task.

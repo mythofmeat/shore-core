@@ -10,6 +10,11 @@
 //! adapts the [`McpTool`]s discovered here into its own tool registry and
 //! namespaces them `mcp__<server>__<tool>` (that namespacing lives in the
 //! daemon, not here).
+//!
+//! [`stub`] is a tiny in-tree stdio MCP *server* used only by tests (this
+//! crate's and the daemon's) so the MCP test paths need no external runtime.
+
+pub mod stub;
 
 use std::collections::BTreeMap;
 

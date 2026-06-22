@@ -637,3 +637,135 @@ async fn test_no_early_ping() {
     tokio::time::resume();
     harness.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Cache-keepalive prefix parity
+// ---------------------------------------------------------------------------
+//
+// The keepalive's entire job is to keep the *chat* cache prefix warm. When it
+// rebuilds the request from disk (cold cache), the cacheable prefix it warms
+// (tools + system) MUST be byte-identical to what the chat path sends —
+// otherwise the ping pays a cache write for a prefix nothing reads, and the
+// next chat turn still reads cold. These tests drive both a real chat turn and
+// a forced cold keepalive rebuild through the mock server and assert the
+// prefixes match, across every tool-surface shape (none, static, sub-agent,
+// MCP, and all combined). The MCP cases are exactly what would have caught the
+// near-regression where the rebuild omitted MCP tools the chat path included.
+
+/// Path to the in-tree stub MCP server, built as a `shore-daemon` binary so it
+/// is always present for these tests (no external runtime needed).
+fn mcp_stub_path() -> &'static str {
+    env!("CARGO_BIN_EXE_mcp_stub_server")
+}
+
+/// Boot with `builder`, drive one chat turn, then force a cold keepalive
+/// rebuild ping, and assert the keepalive request's cacheable prefix
+/// (`tools` + `system`) matches the chat request's.
+async fn assert_keepalive_prefix_matches_chat(builder: TestConfigBuilder, label: &str) {
+    let mut harness = TestHarness::boot_with(builder).await;
+
+    // One real chat turn: captures the chat request (built from the live tool
+    // surface) and writes a complete user+assistant turn to disk so the cold
+    // rebuild has something non-mid-turn to reconstruct.
+    harness.mock_llm.enqueue_text("hi").await;
+    let _response = harness.send_and_collect("hello").await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let chat_requests = harness.mock_llm.received_requests().await;
+    let chat = chat_requests
+        .first()
+        .unwrap_or_else(|| panic!("[{label}] expected a chat request to the mock"));
+    let chat_tools = chat
+        .get("tools")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let chat_system = chat
+        .get("system")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let baseline = chat_requests.len();
+
+    // Force the COLD rebuild path (bypasses the cached last_request — that path
+    // is the one that can silently diverge from chat).
+    harness.mock_llm.enqueue_json_text_optional("ping").await;
+    let _ping = harness
+        .autonomy
+        .keepalive_rebuild_ping_now("TestChar")
+        .await
+        .unwrap_or_else(|| panic!("[{label}] keepalive rebuild produced no request"));
+
+    let all = harness.mock_llm.received_requests().await;
+    assert!(
+        all.len() > baseline,
+        "[{label}] keepalive ping should have hit the mock (baseline {baseline}, got {})",
+        all.len()
+    );
+    let ping = all.last().expect("ping request present");
+    let ping_tools = ping
+        .get("tools")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let ping_system = ping
+        .get("system")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    assert_eq!(
+        chat_tools, ping_tools,
+        "[{label}] keepalive tool prefix diverged from chat — the warmed cache \
+         prefix would not match the next chat turn.\n  chat tools: {chat_tools}\n  ping tools: {ping_tools}"
+    );
+    assert_eq!(
+        chat_system, ping_system,
+        "[{label}] keepalive system prefix diverged from chat"
+    );
+
+    harness.shutdown().await;
+}
+
+/// The keepalive rebuild must reproduce the chat cache prefix for every kind of
+/// tool surface. Catches the class of bug where one generation path includes a
+/// tool category (MCP, sub-agents, …) the other omits.
+#[tokio::test]
+async fn keepalive_prefix_matches_chat_across_tool_surfaces() {
+    // No tools at all.
+    assert_keepalive_prefix_matches_chat(TestConfigBuilder::new().tool_use(false), "no-tools")
+        .await;
+
+    // Static tools only.
+    assert_keepalive_prefix_matches_chat(
+        TestConfigBuilder::new().enabled_tools(&["read", "search", "check_time"]),
+        "static-tools",
+    )
+    .await;
+
+    // Sub-agent (`ask_*`) surface.
+    assert_keepalive_prefix_matches_chat(
+        TestConfigBuilder::new()
+            .enabled_tools(&["read"])
+            .with_subagent("memory", &["search"]),
+        "subagent",
+    )
+    .await;
+
+    // MCP tools granted directly on the character. The stub server is an
+    // in-tree binary, so this always runs (no external runtime).
+    let stub = mcp_stub_path();
+    assert_keepalive_prefix_matches_chat(
+        TestConfigBuilder::new()
+            .enabled_tools(&["read", "mcp__mcptest__*"])
+            .with_mcp_stdio("mcptest", stub, &[]),
+        "mcp",
+    )
+    .await;
+
+    // Everything at once: static + sub-agent + MCP.
+    assert_keepalive_prefix_matches_chat(
+        TestConfigBuilder::new()
+            .enabled_tools(&["read", "search", "mcp__mcptest__*"])
+            .with_subagent("memory", &["search", "mcp__mcptest__echo"])
+            .with_mcp_stdio("mcptest", stub, &[]),
+        "static+subagent+mcp",
+    )
+    .await;
+}

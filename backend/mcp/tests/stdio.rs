@@ -1,30 +1,18 @@
-//! End-to-end test of the MCP client against a Python stdio stub server.
-//!
-//! Skipped (not failed) when `python3` is unavailable, so the suite stays green
-//! on minimal CI images.
+//! End-to-end test of the MCP client against the in-tree `mcp_stub_server`
+//! stdio stub. No external runtime required — the stub is a Rust bin in this
+//! crate, located via `CARGO_BIN_EXE_*`.
 
 use std::collections::BTreeMap;
 
 use serde_json::json;
 use shore_mcp_client::{McpClient, McpError, McpServerSpec, Transport};
 
-fn python3_available() -> bool {
-    std::process::Command::new("python3")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
 fn stub_spec() -> McpServerSpec {
-    let fixture = format!(
-        "{}/tests/fixtures/stub_server.py",
-        env!("CARGO_MANIFEST_DIR")
-    );
     McpServerSpec {
         name: "stub".to_owned(),
         transport: Transport::Stdio {
-            command: "python3".to_owned(),
-            args: vec![fixture],
+            command: env!("CARGO_BIN_EXE_mcp_stub_server").to_owned(),
+            args: vec![],
             env: BTreeMap::new(),
         },
     }
@@ -32,11 +20,6 @@ fn stub_spec() -> McpServerSpec {
 
 #[tokio::test]
 async fn connect_list_call_and_error() {
-    if !python3_available() {
-        // No python3 on this host — skip rather than fail (minimal CI images).
-        return;
-    }
-
     let client = McpClient::connect(&stub_spec())
         .await
         .expect("connect to stub server");

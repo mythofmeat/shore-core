@@ -164,6 +164,13 @@ impl TestHarness {
         let notifier =
             shore_daemon::notifications::NotificationService::new(NotificationsConfig::default());
 
+        // Connect any configured MCP servers (mirrors main.rs). Empty `[mcp]`
+        // yields a cheap empty registry; a `[mcp.*]` table makes the harness
+        // exercise real MCP tool discovery.
+        let mcp_registry = Arc::new(
+            shore_daemon::tools::mcp_registry::McpRegistry::from_config(&config.app.mcp).await,
+        );
+
         // Wire up autonomy with LLM resources (mirrors main.rs wiring).
         autonomy.set_resources(
             llm_client.clone(),
@@ -172,6 +179,7 @@ impl TestHarness {
             notifier.clone(),
         );
         autonomy.set_registry(Arc::clone(&char_registry));
+        autonomy.set_mcp_registry(Arc::clone(&mcp_registry));
 
         // ── Command Context ──────────────────────────────────────────
         let diagnostics = Arc::new(std::sync::Mutex::new(
@@ -206,7 +214,7 @@ impl TestHarness {
             session_router,
             autonomy,
             notifier,
-            mcp_registry: Arc::new(shore_daemon::tools::mcp_registry::McpRegistry::default()),
+            mcp_registry,
             control_rx,
         });
 
