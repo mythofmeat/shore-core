@@ -138,10 +138,10 @@ fn blocks_outbound_network() {
     // can stop it is the seccomp network cut.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind listener");
     let port = listener.local_addr().expect("local addr").port();
-    let _accept_thread = std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            drop(stream);
-        }
+    // Only the control connect reaches the listener; the sandboxed connect is
+    // blocked at socket() and never arrives.
+    let accept_thread = std::thread::spawn(move || {
+        let _ = listener.accept();
     });
 
     let connect = format!("exec 3<>/dev/tcp/127.0.0.1/{port}");
@@ -162,6 +162,7 @@ fn blocks_outbound_network() {
         !status.success(),
         "outbound TCP connect must be blocked inside the sandbox"
     );
+    accept_thread.join().expect("accept thread join");
 }
 
 #[test]
@@ -177,9 +178,11 @@ fn allows_outbound_network_with_allow_network() {
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind listener");
     let port = listener.local_addr().expect("local addr").port();
-    let _accept_thread = std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            drop(stream);
+    // Two successful connections reach the listener: the unsandboxed control
+    // connect and the sandboxed --allow-network connect.
+    let accept_thread = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let _ = listener.accept();
         }
     });
 
@@ -203,4 +206,5 @@ fn allows_outbound_network_with_allow_network() {
         status.success(),
         "outbound TCP connect must be permitted with --allow-network"
     );
+    accept_thread.join().expect("accept thread join");
 }
