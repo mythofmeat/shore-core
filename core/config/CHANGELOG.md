@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.15.3...shore-config-v0.16.0) - 2026-06-22
+
+### Added
+
+- *(mcp)* per-server cwd for stdio MCP servers ([#305](https://github.com/mythofmeat/shore-core/pull/305))
+- *(mcp)* MCP client — surface external tools to characters ([#304](https://github.com/mythofmeat/shore-core/pull/304))
+
 ## [0.15.3](https://github.com/mythofmeat/shore-core/compare/shore-config-v0.15.2...shore-config-v0.15.3) - 2026-06-18
 
 ### Added
