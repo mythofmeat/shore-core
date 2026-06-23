@@ -225,9 +225,15 @@ Local regression tests should cover request-shape invariants before live
 provider checks are run. In particular, Anthropic cache-control placement tests
 must account for generated chat histories, tool-loop tails, system anchors, the
 four-breakpoint provider limit, and the rule that the active final user message
-is never itself a message breakpoint. Live cache scripts under
-`scripts/cache-tests/` validate provider behavior and economics only after
-those local invariants pass.
+is never itself a message breakpoint. Live cache economics are validated by the
+gated `#[ignore]` Rust probes in `dev/test-harness/tests/`
+(`live_cache_regression.rs`, `live_compaction_cache.rs`), which drive a real
+provider through a multi-turn tool loop; the long-running idle keepalive soak
+lives at `scripts/cache-tests/keepalive-24h.sh`. For driving a whole feature
+end-to-end against real providers and MCP servers — isolated from the live
+daemon — use the runnable harness at `scripts/e2e/` (`daemon.sh`); deterministic,
+in-CI coverage of the same paths (including MCP tools and sub-agents under a mock
+LLM) lives in `dev/test-harness` and `backend/daemon/tests/suite/`.
 
 An observed cache-read decrease while the ledger believes the cache is warm is
 not an expected invalidation path. It is recorded as `UnexpectedWrite` and must
