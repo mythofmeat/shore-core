@@ -348,6 +348,7 @@ fn arb_tools_config() -> impl Strategy<Value = ToolsConfig> {
                         search_depth,
                         include_answer,
                     },
+                    exec: shore_config::app::ExecConfig::default(),
                     config,
                 }
             },
