@@ -46,6 +46,13 @@ daemon.sh down [--name N]                       # stop + delete the instance
 
 ## Example — verify `ask_music` end-to-end
 
+**Setup:** the example points at an external MCP server, `mcp-listening-stats`
+(beets + ListenBrainz). It is not vendored here — check it out separately, then
+edit the `cwd` in `examples/music.toml` to your local path (`uv run` resolves the
+project from that directory; it's required because the daemon runs in a temp
+profile). The same pattern applies to any `[mcp.*]` server you point the harness
+at: install it, then set its `cwd`/`command`/`args` in your `--config`.
+
 ```sh
 scripts/e2e/daemon.sh up --name music \
     --config    scripts/e2e/examples/music.toml \

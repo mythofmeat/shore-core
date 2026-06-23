@@ -37,4 +37,7 @@ tools = ["mcp__listening_stats__*", "web_search", "fetch_url"]
 [mcp.listening_stats]
 command = "uv"
 args    = ["run", "mcp-listening-stats"]
+# EDIT: absolute path to your local mcp-listening-stats checkout. Required — `uv
+# run` resolves the project from this dir (the daemon runs in a temp profile, so a
+# relative path won't work). See "Setup" in scripts/e2e/README.md.
 cwd     = "/home/eshen/.local/opt/mcp/mcp-listening-stats"

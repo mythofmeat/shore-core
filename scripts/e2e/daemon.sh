@@ -52,6 +52,13 @@ say()  { echo -e "${CYN}[e2e]${NC} $*"; }
 warn() { echo -e "${YLW}[e2e] $*${NC}" >&2; }
 die()  { echo -e "${RED}[e2e] $*${NC}" >&2; exit 1; }
 
+# Reject instance names that could escape STATE_ROOT / the /tmp profile prefix.
+validate_name() {
+    [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid --name '$1' (letters, digits, '-' and '_' only)."
+}
+# Guard option values so a missing value dies cleanly instead of tripping set -u.
+need_val() { [[ -n "${2:-}" ]] || die "option $1 requires a value."; }
+
 state_file() { echo "$STATE_ROOT/$1.json"; }
 
 # Read one field from a state file via python3 (no jq dependency).
@@ -71,14 +78,15 @@ cmd_up() {
     local name="$DEFAULT_NAME" config="" character="" model="$DEFAULT_MODEL" profile="debug"
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --name)      name="$2"; shift 2 ;;
-            --config)    config="$2"; shift 2 ;;
-            --character) character="$2"; shift 2 ;;
-            --model)     model="$2"; shift 2 ;;
+            --name)      need_val "$1" "${2:-}"; name="$2"; shift 2 ;;
+            --config)    need_val "$1" "${2:-}"; config="$2"; shift 2 ;;
+            --character) need_val "$1" "${2:-}"; character="$2"; shift 2 ;;
+            --model)     need_val "$1" "${2:-}"; model="$2"; shift 2 ;;
             --release)   profile="release"; shift ;;
             *) die "up: unknown arg '$1'" ;;
         esac
     done
+    validate_name "$name"
 
     local f; f="$(state_file "$name")"
     if [[ -f "$f" ]] && kill -0 "$(state_get "$f" pid)" 2>/dev/null; then
@@ -197,7 +205,8 @@ PY
 # ── send / exec / logs / down / list ────────────────────────────────
 cmd_send() {
     local name="$DEFAULT_NAME"
-    [[ "${1:-}" == "--name" ]] && { name="$2"; shift 2; }
+    [[ "${1:-}" == "--name" ]] && { need_val --name "${2:-}"; name="$2"; shift 2; }
+    validate_name "$name"
     [[ $# -ge 1 ]] || die "send: need a message"
     require_instance "$name"
     "$(state_get "$(state_file "$name")" shore_bin)" --addr "$E_ADDR" -c "$E_CHAR" send "$*"
@@ -205,7 +214,8 @@ cmd_send() {
 
 cmd_exec() {
     local name="$DEFAULT_NAME"
-    [[ "${1:-}" == "--name" ]] && { name="$2"; shift 2; }
+    [[ "${1:-}" == "--name" ]] && { need_val --name "${2:-}"; name="$2"; shift 2; }
+    validate_name "$name"
     [[ "${1:-}" == "--" ]] && shift
     [[ $# -ge 1 ]] || die "exec: need a shore subcommand, e.g. exec -- status"
     require_instance "$name"
@@ -214,22 +224,32 @@ cmd_exec() {
 
 cmd_logs() {
     local name="$DEFAULT_NAME"
-    [[ "${1:-}" == "--name" ]] && { name="$2"; shift 2; }
+    [[ "${1:-}" == "--name" ]] && { need_val --name "${2:-}"; name="$2"; shift 2; }
+    validate_name "$name"
     require_instance "$name"
     tail -n 80 -f "$E_TMP/daemon.log"
 }
 
 cmd_down() {
     local name="$DEFAULT_NAME"
-    [[ "${1:-}" == "--name" ]] && { name="$2"; shift 2; }
+    [[ "${1:-}" == "--name" ]] && { need_val --name "${2:-}"; name="$2"; shift 2; }
+    validate_name "$name"
     local f; f="$(state_file "$name")"
     [[ -f "$f" ]] || { warn "no e2e instance named '$name'."; return 0; }
     require_instance "$name"
     if kill -0 "$E_PID" 2>/dev/null; then
-        kill "$E_PID" 2>/dev/null || true
         # Wait for the daemon to actually exit before removing its profile —
-        # otherwise its shutdown can recreate the runtime dir after the rm.
+        # otherwise its shutdown can recreate the runtime dir after the rm, and
+        # tearing down a still-running daemon would orphan it.
+        kill "$E_PID" 2>/dev/null || true
         local i; for i in $(seq 1 50); do kill -0 "$E_PID" 2>/dev/null || break; sleep 0.1; done
+        if kill -0 "$E_PID" 2>/dev/null; then
+            warn "pid $E_PID ignored SIGTERM; escalating to SIGKILL."
+            kill -9 "$E_PID" 2>/dev/null || true
+            for i in $(seq 1 20); do kill -0 "$E_PID" 2>/dev/null || break; sleep 0.1; done
+        fi
+        kill -0 "$E_PID" 2>/dev/null && \
+            die "pid $E_PID is still running — leaving its profile and state intact; kill it manually and retry 'down'."
         say "stopped pid $E_PID"
     fi
     [[ -n "$E_TMP" && "$E_TMP" == /tmp/shore-e2e-* ]] && rm -rf "$E_TMP"
