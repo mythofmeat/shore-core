@@ -56,8 +56,16 @@ die()  { echo -e "${RED}[e2e] $*${NC}" >&2; exit 1; }
 validate_name() {
     [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid --name '$1' (letters, digits, '-' and '_' only)."
 }
-# Guard option values so a missing value dies cleanly instead of tripping set -u.
-need_val() { [[ -n "${2:-}" ]] || die "option $1 requires a value."; }
+# Guard option values: a missing value (or the next option mistaken for one)
+# dies cleanly instead of tripping set -u or silently swallowing a flag.
+need_val() { [[ -n "${2:-}" && "${2:-}" != --* ]] || die "option $1 requires a value."; }
+
+# Confirm a PID is actually our daemon before signaling it — guards against the
+# OS having recycled a stale PID to an unrelated process.
+pid_matches_instance() {
+    local cmd; cmd="$(ps -p "$1" -o command= 2>/dev/null || true)"
+    [[ "$cmd" == *shore-daemon* && "$cmd" == *"--instance-id $2"* ]]
+}
 
 state_file() { echo "$STATE_ROOT/$1.json"; }
 
@@ -71,6 +79,7 @@ require_instance() {
     E_ADDR="$(state_get "$f" addr)"
     E_PID="$(state_get "$f" pid)"
     E_CHAR="$(state_get "$f" character)"
+    E_INSTANCE="$(state_get "$f" instance)"
 }
 
 # ── up ──────────────────────────────────────────────────────────────
@@ -89,8 +98,12 @@ cmd_up() {
     validate_name "$name"
 
     local f; f="$(state_file "$name")"
-    if [[ -f "$f" ]] && kill -0 "$(state_get "$f" pid)" 2>/dev/null; then
-        die "e2e instance '$name' is already up (pid $(state_get "$f" pid)). 'daemon.sh down --name $name' first."
+    if [[ -f "$f" ]]; then
+        local existing_pid; existing_pid="$(state_get "$f" pid)"
+        if kill -0 "$existing_pid" 2>/dev/null && pid_matches_instance "$existing_pid" "e2e-$name"; then
+            die "e2e instance '$name' is already up (pid $existing_pid). 'daemon.sh down --name $name' first."
+        fi
+        # Stale state (process gone, or PID recycled to something else) — overwrite.
     fi
     [[ -z "$config"    || -f "$config"    ]] || die "--config file not found: $config"
     [[ -z "$character" || -f "$character" ]] || die "--character file not found: $character"
@@ -237,20 +250,24 @@ cmd_down() {
     local f; f="$(state_file "$name")"
     [[ -f "$f" ]] || { warn "no e2e instance named '$name'."; return 0; }
     require_instance "$name"
-    if kill -0 "$E_PID" 2>/dev/null; then
+    if kill -0 "$E_PID" 2>/dev/null && pid_matches_instance "$E_PID" "$E_INSTANCE"; then
         # Wait for the daemon to actually exit before removing its profile —
         # otherwise its shutdown can recreate the runtime dir after the rm, and
         # tearing down a still-running daemon would orphan it.
         kill "$E_PID" 2>/dev/null || true
-        local i; for i in $(seq 1 50); do kill -0 "$E_PID" 2>/dev/null || break; sleep 0.1; done
+        for _ in $(seq 1 50); do kill -0 "$E_PID" 2>/dev/null || break; sleep 0.1; done
         if kill -0 "$E_PID" 2>/dev/null; then
             warn "pid $E_PID ignored SIGTERM; escalating to SIGKILL."
             kill -9 "$E_PID" 2>/dev/null || true
-            for i in $(seq 1 20); do kill -0 "$E_PID" 2>/dev/null || break; sleep 0.1; done
+            for _ in $(seq 1 20); do kill -0 "$E_PID" 2>/dev/null || break; sleep 0.1; done
         fi
         kill -0 "$E_PID" 2>/dev/null && \
             die "pid $E_PID is still running — leaving its profile and state intact; kill it manually and retry 'down'."
         say "stopped pid $E_PID"
+    elif kill -0 "$E_PID" 2>/dev/null; then
+        # PID is alive but not our daemon (recycled) — never signal it; just
+        # clean up our own stale profile/state.
+        warn "pid $E_PID is not the '$E_INSTANCE' daemon (PID reused?); not signaling it, cleaning up stale state only."
     fi
     [[ -n "$E_TMP" && "$E_TMP" == /tmp/shore-e2e-* ]] && rm -rf "$E_TMP"
     rm -f "$f"
