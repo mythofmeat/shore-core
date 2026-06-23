@@ -23,6 +23,14 @@ to advance the release-plz baseline past trees it couldn't `cargo package`.
   rebuilds the same tool surface, so enabling MCP doesn't desync the warmed
   cache prefix); the dreaming/librarian memory sweep keeps its fixed toolset and
   is excluded by design. See `[mcp]` in CONFIGURATION.md.
+- **Isolated e2e test-daemon harness (`scripts/e2e/daemon.sh`).** Spins up a real
+  daemon in a throwaway profile (own config/data/runtime dirs, ephemeral port,
+  isolated LLM-sidecar socket, autonomy off) to exercise a feature — arbitrary
+  config including `[mcp.*]` servers and sub-agents, real models — without
+  touching a live daemon. Replaces the non-isolated `scripts/test-daemon.sh` and
+  the superseded `scripts/live-tests/*` and exploratory `scripts/cache-tests/*`
+  shell probes (cache economics now live in `dev/test-harness/tests/`). See
+  `scripts/e2e/README.md`.
 - **Built-in `opencode-go` provider for the OpenCode Go subscription.** Enable
   `[providers.opencode-go]` and reference any served model as
   `opencode-go:<model_id>` — transport defaults (base URL, `OPENCODE_API_KEY`)
