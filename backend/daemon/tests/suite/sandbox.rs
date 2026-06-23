@@ -141,7 +141,7 @@ fn blocks_outbound_network() {
     // Only the control connect reaches the listener; the sandboxed connect is
     // blocked at socket() and never arrives.
     let accept_thread = std::thread::spawn(move || {
-        let _ = listener.accept();
+        drop(listener.accept());
     });
 
     let connect = format!("exec 3<>/dev/tcp/127.0.0.1/{port}");
@@ -182,7 +182,7 @@ fn allows_outbound_network_with_allow_network() {
     // connect and the sandboxed --allow-network connect.
     let accept_thread = std::thread::spawn(move || {
         for _ in 0..2 {
-            let _ = listener.accept();
+            drop(listener.accept());
         }
     });
 
