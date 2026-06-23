@@ -29,11 +29,21 @@ fn workspace() -> tempfile::TempDir {
     dir
 }
 
-/// Run the helper: `<bin> __sandbox-exec --root <root> [--require] -- <argv...>`.
-fn run_helper(bin: &str, root: &Path, require: bool, argv: &[&str]) -> std::process::ExitStatus {
+/// Run the helper: `<bin> __sandbox-exec --root <root> [--require]
+/// [--allow-network] -- <argv...>`.
+fn run_helper_cfg(
+    bin: &str,
+    root: &Path,
+    require: bool,
+    allow_network: bool,
+    argv: &[&str],
+) -> std::process::ExitStatus {
     let mut helper_args: Vec<OsString> = vec![HELPER_ARG.into(), "--root".into(), root.into()];
     if require {
         helper_args.push("--require".into());
+    }
+    if allow_network {
+        helper_args.push("--allow-network".into());
     }
     helper_args.push("--".into());
     helper_args.extend(argv.iter().map(OsString::from));
@@ -41,6 +51,11 @@ fn run_helper(bin: &str, root: &Path, require: bool, argv: &[&str]) -> std::proc
         .args(&helper_args)
         .status()
         .expect("spawn sandbox helper")
+}
+
+/// The common case: sandboxed with network blocked.
+fn run_helper(bin: &str, root: &Path, require: bool, argv: &[&str]) -> std::process::ExitStatus {
+    run_helper_cfg(bin, root, require, false, argv)
 }
 
 /// True when the sandbox actually enforces on this kernel: a `--require` run of
@@ -146,5 +161,46 @@ fn blocks_outbound_network() {
     assert!(
         !status.success(),
         "outbound TCP connect must be blocked inside the sandbox"
+    );
+}
+
+#[test]
+fn allows_outbound_network_with_allow_network() {
+    let bin = daemon_bin();
+    let tmp = workspace();
+    let ws = tmp.path().join("ws");
+
+    if !sandbox_enforced(&bin, &ws) {
+        eprintln!("skipping: Landlock not enforced on this kernel");
+        return;
+    }
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind listener");
+    let port = listener.local_addr().expect("local addr").port();
+    let _accept_thread = std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            drop(stream);
+        }
+    });
+
+    let connect = format!("exec 3<>/dev/tcp/127.0.0.1/{port}");
+
+    // Control: the connect must work unsandboxed, else this environment can't
+    // exercise the network path (e.g. bash lacks /dev/tcp) — skip.
+    let control = Command::new("bash").arg("-c").arg(&connect).status();
+    match control {
+        Ok(status) if status.success() => {}
+        _ => {
+            eprintln!("skipping: bash /dev/tcp control did not succeed");
+            return;
+        }
+    }
+
+    // With --allow-network the seccomp network cut is lifted, so the same
+    // connect must succeed even under the (still enforced) sandbox.
+    let status = run_helper_cfg(&bin, &ws, true, true, &["bash", "-c", &connect]);
+    assert!(
+        status.success(),
+        "outbound TCP connect must be permitted with --allow-network"
     );
 }

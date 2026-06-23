@@ -1679,6 +1679,13 @@ pub async fn handle_exec(
             let _args = cmd.args(program_args);
             cmd
         }
+        // `sandbox = "on"` requires enforcement we cannot provide here: fail
+        // closed rather than run the command unsandboxed.
+        crate::sandbox::SandboxPlan::Unavailable { reason } => {
+            return Err(ToolError::Io(format!(
+                "exec sandbox required but unavailable: {reason}"
+            )));
+        }
     };
 
     // exec runs as the character: attribute any git commits to it (per-process

@@ -51,7 +51,8 @@ fn policy() -> ExecConfig {
 /// How [`crate::tools::workspace::handle_exec`] should spawn a validated command.
 #[derive(Debug)]
 pub enum SandboxPlan {
-    /// Spawn the program directly — the sandbox is disabled or unavailable.
+    /// Spawn the program directly — the sandbox is disabled, or it is `auto` and
+    /// cannot be enforced (degrade to denylist-only).
     Direct,
     /// Re-exec the daemon binary (`helper`) in [`HELPER_ARG`] mode: pass
     /// `prefix_args`, then `--`, then the real program and its arguments.
@@ -59,17 +60,16 @@ pub enum SandboxPlan {
         helper: std::path::PathBuf,
         prefix_args: Vec<String>,
     },
+    /// The sandbox is **required** (`mode = "on"`) but cannot be applied (e.g. no
+    /// workspace root, or `current_exe()` failed). The caller must fail closed —
+    /// refuse to run the command rather than run it unsandboxed.
+    Unavailable { reason: String },
 }
 
 /// Decide how to spawn an exec command for the given character workspace.
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn plan_for(workspace_dir: &str) -> SandboxPlan {
-    // Without a workspace root there is nothing to confine to; run directly.
-    if workspace_dir.is_empty() {
-        return SandboxPlan::Direct;
-    }
-
     let pol = policy();
     let require = match pol.sandbox {
         SandboxMode::Off => return SandboxPlan::Direct,
@@ -83,11 +83,16 @@ pub fn plan_for(workspace_dir: &str) -> SandboxPlan {
         }
     };
 
+    // Without a workspace root there is nothing to confine to. In `auto` we
+    // degrade to a direct spawn; in `on` we must fail closed.
+    if workspace_dir.is_empty() {
+        return unavailable_or_direct(require, "exec sandbox requires a workspace root");
+    }
+
     let helper = match std::env::current_exe() {
         Ok(path) => path,
         Err(err) => {
-            tracing::warn!(error = %err, "exec sandbox: current_exe() failed; running unsandboxed");
-            return SandboxPlan::Direct;
+            return unavailable_or_direct(require, &format!("current_exe() failed: {err}"));
         }
     };
 
@@ -105,6 +110,20 @@ pub fn plan_for(workspace_dir: &str) -> SandboxPlan {
     SandboxPlan::Wrapped {
         helper,
         prefix_args,
+    }
+}
+
+/// When the sandbox can't be applied: fail closed under `on` (required), or
+/// degrade to a direct spawn under `auto`.
+#[cfg(target_os = "linux")]
+fn unavailable_or_direct(require: bool, reason: &str) -> SandboxPlan {
+    if require {
+        SandboxPlan::Unavailable {
+            reason: reason.to_owned(),
+        }
+    } else {
+        tracing::warn!(reason = %reason, "exec sandbox: running unsandboxed (auto fallback)");
+        SandboxPlan::Direct
     }
 }
 
@@ -288,7 +307,7 @@ fn apply_landlock(root: &std::path::Path, require: bool) -> std::io::Result<()> 
         RulesetStatus, ABI,
     };
 
-    // ABI v3 (Linux 5.19) adds TRUNCATE, closing the open(O_TRUNC) write path.
+    // ABI v3 (Linux 6.2) adds TRUNCATE, closing the open(O_TRUNC) write path.
     // BestEffort (the crate default) downgrades on older kernels.
     let abi = ABI::V3;
 
@@ -421,8 +440,11 @@ fn build_deny_rules(
     let mut rules: std::collections::BTreeMap<i64, Vec<SeccompRule>> =
         std::collections::BTreeMap::new();
 
-    // Unconditional denials: namespace manipulation + process tracing. None of
-    // these have a legitimate use in the allowlisted exec programs.
+    // Unconditional denials: namespace manipulation, process tracing, and
+    // io_uring. None have a legitimate use in the allowlisted exec programs.
+    // io_uring is blocked because its ring ops (IORING_OP_SOCKET/CONNECT,
+    // OPENAT/WRITE) execute outside the syscall path and would otherwise bypass
+    // both the socket filter below and (on some kernels) Landlock.
     let unconditional = [
         libc::SYS_setns,
         libc::SYS_unshare,
@@ -433,6 +455,7 @@ fn build_deny_rules(
         libc::SYS_ptrace,
         libc::SYS_process_vm_readv,
         libc::SYS_process_vm_writev,
+        libc::SYS_io_uring_setup,
     ];
     for nr in unconditional {
         let _ = rules.insert(nr, Vec::new());
@@ -502,7 +525,22 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn empty_workspace_is_direct() {
+        // Uninitialized policy is Off, so an empty workspace plans Direct.
         assert!(matches!(plan_for(""), SandboxPlan::Direct));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn required_but_unavailable_fails_closed() {
+        // `on` (require=true) must surface Unavailable; `auto` degrades to Direct.
+        assert!(matches!(
+            unavailable_or_direct(true, "no root"),
+            SandboxPlan::Unavailable { .. }
+        ));
+        assert!(matches!(
+            unavailable_or_direct(false, "no root"),
+            SandboxPlan::Direct
+        ));
     }
 
     #[cfg(target_os = "linux")]
